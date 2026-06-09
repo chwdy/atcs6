@@ -288,7 +288,7 @@ class RailwayPathfinder:
                 if t is None or t.is_switch or t.block_section_id != bid:
                     break
                 j += 1
-            direction = self._block_run_direction(bid, tiles[i])
+            direction = self._block_run_direction(bid, tiles[i], entry_edges[i])
             for k in range(i, j):
                 block_dir[k] = direction
             i = j
@@ -358,22 +358,37 @@ class RailwayPathfinder:
         return sw.get_active_length(state)
 
     def _block_run_direction(
-        self, block_id: str, run_entry_tile: Tuple[int, int]
+        self,
+        block_id: str,
+        run_entry_tile: Tuple[int, int],
+        run_entry_edge: Optional[str] = None,
     ) -> Optional[str]:
-        """Block-relative direction for a block run entered at ``run_entry_tile``.
+        """Block-relative direction for a block run entered at ``run_entry_tile``
+        through ``run_entry_edge``.
 
-        Forward when the run enters at ``Block.ordered_tiles[0]``, reverse when
-        it enters at the last ordered tile, else None. Mirrors
-        ``_terminal_direction`` so the cached geometry and the live
-        terminal-direction filter agree.
+        Multi-tile blocks: forward when the run enters at
+        ``Block.ordered_tiles[0]``, reverse when it enters at the last ordered
+        tile. Single-tile blocks have the same tile at both endpoints, so the
+        entry-tile test cannot tell the two directions apart; direction is
+        decided by the entry edge against the block's forward-entry anchor
+        ``Block.ordered_tiles[0].entry_edge`` (design_new.md "Block model": a
+        single tile can be traversed in either direction). Returns None when
+        geometry is insufficient. Mirrors ``_terminal_direction`` so the cached
+        geometry and the live terminal-direction filter agree.
         """
         block = self.network.blocks.get(block_id)
         ordered = (getattr(block, "ordered_tiles", None) or []) if block else []
         if not ordered:
             return None
-        if run_entry_tile == (ordered[0].x, ordered[0].y):
+        first = (ordered[0].x, ordered[0].y)
+        last = (ordered[-1].x, ordered[-1].y)
+        if first == last:
+            # Single-tile block: direction is decided by the entry edge against
+            # the forward-entry anchor — the canonical rule on Block.
+            return block.block_direction_for_compass_entry(run_entry_edge)
+        if run_entry_tile == first:
             return "forward"
-        if run_entry_tile == (ordered[-1].x, ordered[-1].y):
+        if run_entry_tile == last:
             return "reverse"
         return None
 
@@ -929,16 +944,33 @@ class RailwayPathfinder:
         dest_block_id = dest_block.block_id
         # Find the first tile that belongs to the destination block.
         first_dest_tile: Optional[Tuple[int, int]] = None
-        for tile in walk.tiles:
+        first_dest_idx: Optional[int] = None
+        for idx, tile in enumerate(walk.tiles):
             track = self.network.get_track(*tile)
             if track is not None and track.block_section_id == dest_block_id:
                 first_dest_tile = tile
+                first_dest_idx = idx
                 break
         if first_dest_tile is None:
             return None
 
         forward_first = (ordered_tiles[0].x, ordered_tiles[0].y)
         forward_last = (ordered_tiles[-1].x, ordered_tiles[-1].y)
+        # Single-tile destination block: the two endpoints coincide, so the
+        # entry-tile test cannot distinguish direction. Decide by the edge the
+        # walk enters the tile through vs the block's forward-entry anchor
+        # (Block.ordered_tiles[0].entry_edge) per design_new.md "Block model".
+        if forward_first == forward_last:
+            if not first_dest_idx:
+                return None
+            prev = walk.tiles[first_dest_idx - 1]
+            edges = self.network.get_connection_edges(prev, first_dest_tile)
+            if not edges:
+                return None
+            entry_edge = str(edges[1]).upper()
+            # Single-tile block: defer to the canonical entry-edge-vs-anchor
+            # rule on Block (same verdict as _block_run_direction).
+            return dest_block.block_direction_for_compass_entry(entry_edge)
         if first_dest_tile == forward_first:
             return "forward"
         if first_dest_tile == forward_last:

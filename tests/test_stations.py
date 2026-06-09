@@ -308,13 +308,23 @@ class TestExtensionValidation:
         with pytest.raises(ValueError, match="must be adjacent to existing block"):
             network.extend_block("BLOCK_A", [(5, 0)])
 
-    def test_block_extension_rejects_crossings(self, network):
+    def test_block_extension_rejects_diagonal_crossings(self, network):
+        # Diagonal crossings (NW+SE, NE+SW) cannot be extended into a block.
+        network.add_track(TrackSegment(0, 0, TRACK_EW))
+        network.create_block("BLOCK_A")
+        network.assign_track_to_block(0, 0, "BLOCK_A")
+        network.add_track(TrackSegment(1, 0, TRACK_NW | TRACK_SE))
+        with pytest.raises(ValueError, match="Cannot add crossing to block"):
+            network.extend_block("BLOCK_A", [(1, 0)])
+
+    def test_block_extension_allows_orthogonal_crossing(self, network):
+        # The orthogonal NS+EW crossing (track_bits 3) may be extended into a block.
         network.add_track(TrackSegment(0, 0, TRACK_EW))
         network.create_block("BLOCK_A")
         network.assign_track_to_block(0, 0, "BLOCK_A")
         network.add_track(TrackSegment(1, 0, TRACK_NS | TRACK_EW))
-        with pytest.raises(ValueError, match="Cannot add crossing to block"):
-            network.extend_block("BLOCK_A", [(1, 0)])
+        network.extend_block("BLOCK_A", [(1, 0)])
+        assert network.get_track(1, 0).block_section_id == "BLOCK_A"
 
 
 class TestStationStoppingBehavior:

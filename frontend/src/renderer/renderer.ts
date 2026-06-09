@@ -198,7 +198,7 @@ interface NetworkPayload {
   blocks?: Record<string, BlockInfo>;
   platforms?: Platform[];
   stations?: Station[];
-  switches?: Record<string, { occupied_by?: unknown; train_protection_claims?: unknown[]; locks?: unknown[] } | undefined>;
+  switches?: Record<string, { occupied_by?: unknown; train_protection_claims?: unknown[]; locks?: unknown[]; main_length_cm?: number; diverge_length_cm?: number } | undefined>;
   tunnels?: Array<{ a: { x: number; y: number; edge: string }; b: { x: number; y: number; edge: string } }>;
   trains?: Array<{ id: string; num_cars?: number }>;
 }
@@ -222,7 +222,8 @@ type BuildPreview =
   | { kind: 'tracks'; tracks: Track[] }
   | { kind: 'eraser'; path: Array<{ x: number; y: number }> }
   | { kind: 'block'; path: Array<{ x: number; y: number }> }
-  | { kind: 'path'; path: Array<{ x: number; y: number }> };
+  | { kind: 'path'; path: Array<{ x: number; y: number }> }
+  | { kind: 'invalid'; path: Array<{ x: number; y: number }> };
 
 /** The editor's signal/platform placement hover ghost. See BuildPreview. */
 interface HoverPreview {
@@ -268,7 +269,7 @@ class Renderer {
   _pendingFlush!: { world: boolean; live: boolean; reason: string } | null;
   _flushFrame!: number | null;
   _lastFlushReason!: string;
-  debugFlags!: { showBlocks: boolean; showSignals: boolean; showTunnelLinks: boolean; showStuck?: boolean; showTileDirections?: boolean; showBlockDirections?: boolean };
+  debugFlags!: { showBlocks: boolean; showSignals: boolean; showTunnelLinks: boolean; showStuck?: boolean; showTileDirections?: boolean; showBlockDirections?: boolean; showOneWayDirections?: boolean; showBlockVoltage?: boolean };
   _resizeObserver?: ResizeObserver;
   // Derived per-network state, set by _updateNetworkState.
   currentPlatforms!: Platform[];
@@ -544,6 +545,8 @@ class Renderer {
     const showStuck = document.getElementById('debug-show-stuck') as HTMLInputElement | null;
     const showTileDirections = document.getElementById('debug-show-tile-directions') as HTMLInputElement | null;
     const showBlockDirections = document.getElementById('debug-show-block-dir') as HTMLInputElement | null;
+    const showOneWayDirections = document.getElementById('debug-show-oneway-dir') as HTMLInputElement | null;
+    const showBlockVoltage = document.getElementById('debug-show-block-voltage') as HTMLInputElement | null;
     this.debugFlags = {
       showBlocks: showBlocks ? !!showBlocks.checked : false,
       showSignals: showSignals ? !!showSignals.checked : false,
@@ -554,6 +557,10 @@ class Renderer {
       showTileDirections: showTileDirections ? !!showTileDirections.checked : true,
       // Block F/R arrows are additive and busy, so default OFF (opt-in).
       showBlockDirections: showBlockDirections ? !!showBlockDirections.checked : false,
+      // One-way arrows only mark restricted blocks, also default OFF (opt-in).
+      showOneWayDirections: showOneWayDirections ? !!showOneWayDirections.checked : false,
+      // Per-block + / - rail voltages; busy, so default OFF (opt-in).
+      showBlockVoltage: showBlockVoltage ? !!showBlockVoltage.checked : false,
     };
   }
 
@@ -714,7 +721,6 @@ class Renderer {
   screenToGridX(screenX: number, screenY: number): number { return this.camera.screenToGridX(screenX, screenY); }
   screenToGridY(screenX: number, screenY: number): number { return this.camera.screenToGridY(screenX, screenY); }
   screenToGrid(screenX: number, screenY: number): { x: number; y: number } { return this.camera.screenToGrid(screenX, screenY); }
-  centerOnContent(tracks: ReadonlyArray<{ x: number; y: number }>): void { this.camera.centerOnContent(tracks); }
   fitToContent(tracks: ReadonlyArray<{ x: number; y: number }>): void { this.camera.fitToContent(tracks); }
 
   /**
@@ -808,6 +814,11 @@ class Renderer {
     if (showBlockDebug && !this.showBlockColorsOnly) {
       this.blockHandler.drawBlockDetailLabels(tracks);
     }
+
+    // Per-block + / - rail voltages (independent opt-in toggle).
+    if (this.debugFlags?.showBlockVoltage) {
+      this.blockHandler.drawBlockVoltages(tracks);
+    }
   }
 
   /**
@@ -856,6 +867,10 @@ class Renderer {
     // only). Drawn above trains so a parked train can't hide a mark the
     // operator set on that tile.
     this.drawTileDirectionDebug();
+
+    // One-way constraint arrows: amber per-tile arrows on blocks that allow only
+    // one direction. Same inspection z-order as the forward-dir arrows above.
+    this.drawOneWayDirectionDebug();
 
     // Hovered station overlay (full name + platform highlights).
     this.stationHandler.drawHoverOverlay();
@@ -906,6 +921,9 @@ class Renderer {
         break;
       case 'path':
         this.trackHandler.drawPreviewPath(p.path);
+        break;
+      case 'invalid':
+        this.trackHandler.drawInvalidPreviewPath(p.path);
         break;
     }
   }
@@ -1099,17 +1117,50 @@ class Renderer {
    */
   drawTileDirectionDebug(): void {
     if (!this.debugFlags?.showTileDirections) return;
+    this._drawBlockDirectionArrows('forward');
+  }
+
+  /**
+   * One-way block direction arrows. For every block whose travel is restricted
+   * to a single direction (not "both"), draw an amber arrow along each of its
+   * tiles pointing the way travel is actually allowed: forward-only points the
+   * same way as the "Forward dir" arrows, reverse-only points the opposite way
+   * (its arrowheads read as "<"). Blocks that allow both directions are skipped,
+   * so the only marks on screen are the one-way constraints. Amber sets these
+   * apart from the green forward / cyan reverse arrows. Same per-tile,
+   * on-the-track geometry as drawTileDirectionDebug. Inspection only, gated by
+   * the Debug panel's "One-way dir" toggle.
+   */
+  drawOneWayDirectionDebug(): void {
+    if (!this.debugFlags?.showOneWayDirections) return;
+    this._drawBlockDirectionArrows('oneway');
+  }
+
+  /**
+   * Shared per-tile direction-arrow overlay behind the Forward-dir and
+   * One-way-dir debug toggles. For each block (every block in `'forward'` mode,
+   * only one-way blocks in `'oneway'` mode) draws an arrow along each tile from
+   * the edge forward travel enters to the edge it exits, using forwardArrowEdges
+   * for the on-track geometry. `'forward'` is green and dims blocks that forbid
+   * forward travel; `'oneway'` is amber and swaps the arrow for reverse-only
+   * blocks so the head points the way travel is allowed.
+   */
+  private _drawBlockDirectionArrows(mode: 'forward' | 'oneway'): void {
     const blocks = this.currentBlocks;
     if (!blocks || !this.trackMap) return;
     for (const block of Object.values(blocks) as any[]) {
       const ordered = block && block.ordered_tiles;
       if (!Array.isArray(ordered) || ordered.length === 0) continue;
-      // These arrows show the forward direction, so dim them where the block
-      // does not allow forward travel.
       const allowed: string[] = Array.isArray(block.allowed_travel_directions)
         ? block.allowed_travel_directions
         : ['forward', 'reverse'];
-      const dimmed = !allowed.includes('forward');
+      const hasForward = allowed.includes('forward');
+      const hasReverse = allowed.includes('reverse');
+      // 'oneway' mode draws only one-way blocks: skip both-allowed (the common
+      // case) and, defensively, neither-allowed — no single direction to point.
+      if (mode === 'oneway' && hasForward === hasReverse) continue;
+      const dimmed = mode === 'forward' && !hasForward;
+      const color = mode === 'forward' ? '#04d361' : '#ff9500';
       const n = ordered.length;
       for (let i = 0; i < n; i++) {
         const x = ordered[i][0];
@@ -1123,7 +1174,12 @@ class Renderer {
           i < n - 1 ? compassFromDelta(ordered[i + 1][0] - x, ordered[i + 1][1] - y) : null;
         const edges = forwardArrowEdges(track.track_bits || 0, storedEntry, arrivalDir, departDir);
         if (!edges) continue;
-        this._drawTileForwardArrow(x, y, edges[0], edges[1], '#04d361', { dimmed });
+        // forwardArrowEdges gives [entry, exit] for the forward direction, with
+        // the arrowhead at exit. A reverse-only one-way block traces the same
+        // segment but swaps the two so the head points backward along the tile
+        // order.
+        const [a, b] = mode === 'oneway' && !hasForward ? [edges[1], edges[0]] : edges;
+        this._drawTileForwardArrow(x, y, a, b, color, mode === 'forward' ? { dimmed } : {});
       }
     }
   }

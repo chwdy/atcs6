@@ -150,6 +150,8 @@ class TestSwitchLocking:
             "switch_id": "SW_1",
             "x": 0,
             "y": 0,
+            "main_length_cm": 0.0,
+            "diverge_length_cm": 0.0,
             "locks": [
                 {
                     "path_id": "PATH_1",

@@ -43,3 +43,26 @@ COPY_COUNT_BASE: int = 1_000_000
 # TrainController._ato_calculate_handle to project a future point at
 # `speed_cm_s * tick_delta * LOOKAHEAD_TICKS`.
 LOOKAHEAD_TICKS: int = 5
+
+# Idle-hold release tunables per design_new.md "Idle-hold maintenance and
+# release" (Planning Kernel step 66aa). A RouteRun holding a truncated
+# best-effort authority (authority_end_block_id != requested_destination_block_id)
+# that neither grows nor has the train moving for IDLE_HOLD_RELEASE_TICKS
+# consecutive Phase-1 ticks releases that authority through the
+# pending_path_cancel_request latch so higher-priority runs can claim the held
+# reservations/locks, then skips acquisition for IDLE_HOLD_COOLDOWN_TICKS ticks so
+# the freed resources stay available. Counted in Phase-1 ticks (not wall-clock
+# seconds), so the release is deterministic and testable in the journey harness.
+IDLE_HOLD_RELEASE_TICKS: int = 30
+IDLE_HOLD_COOLDOWN_TICKS: int = 20
+
+# Block occupancy detection debounce per design_new.md "Power -> Block occupancy
+# detection". Each electrically-isolated block has a current detector; current
+# present means a train is on the block. Real contacts flicker, so a momentary
+# open circuit inside the train's span must not immediately vacate the block.
+# A block is confirmed OCCUPIED after OCCUPANCY_ON_THRESHOLD consecutive
+# current reads and confirmed CLEAR after OCCUPANCY_OFF_THRESHOLD consecutive
+# no-current reads. The bias is fail-safe: occupy immediately (1), clear slowly
+# (ride through dropouts). Counted in detection ticks (one read per sim tick).
+OCCUPANCY_ON_THRESHOLD: int = 1
+OCCUPANCY_OFF_THRESHOLD: int = 3

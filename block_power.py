@@ -18,7 +18,10 @@ from typing import Dict, Optional, Any, TYPE_CHECKING
 
 MAX_TRACK_VOLTAGE = 12.0
 MIN_TRACK_VOLTAGE = 0.0
-DEFAULT_LIGHTING_VOLTAGE = 2.5
+# Lighting voltage is a per-train property: it lives on the train's
+# `SpeedProfile.lighting_voltage` and is emitted by `TrainPhysics.
+# compute_track_voltage` for READY / RUNNING_AT_STATION. The block power
+# controller does not hold its own lighting-voltage default.
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
@@ -119,7 +122,6 @@ class BlockPowerController:
         output_interface: Interface for actual voltage output
         max_voltage: Maximum allowable voltage (default 12V)
         min_voltage: Minimum voltage (default 0V)
-        default_lighting_voltage: Voltage for lighting states
     """
 
     network: Optional["RailwayNetwork"] = None
@@ -128,7 +130,6 @@ class BlockPowerController:
     # Voltage limits
     max_voltage: float = MAX_TRACK_VOLTAGE
     min_voltage: float = -MAX_TRACK_VOLTAGE  # Allow negative for opposite polarity
-    default_lighting_voltage: float = DEFAULT_LIGHTING_VOLTAGE
 
     # SimulationController back-reference, set by bootstrap so this
     # controller can fetch the live `TrainController` (for the operational
@@ -271,6 +272,31 @@ class BlockPowerController:
         """
         self.set_block_voltage(block_id, 0.0)
 
+    def deenergize_unheld_blocks(self) -> None:
+        """Drop every block that no train holds back to 0V (full reconciliation).
+
+        A block is *held* when a train physically occupies it (``occupied_by``)
+        or has reserved it as future authority (``reserved_for_train``). Per-train
+        voltage emission (TrainPhysics) only drives a train's own held blocks, so
+        a block a train has vacated and released would otherwise keep its last
+        commanded voltage forever.
+
+        The per-tick path is event-driven: `BlockManager` queues each block as
+        its holder clears and `SimulationController` drains
+        `BlockManager.take_blocks_to_deenergize()` to drive those to 0V. This
+        O(all-blocks) sweep is the fallback for a runtime with no BlockManager
+        wired, plus an admin/test reconciliation primitive.
+        """
+        if not self.network:
+            return
+        for block_id, block in self.network.blocks.items():
+            held = (
+                getattr(block, "occupied_by", None) is not None
+                or getattr(block, "reserved_for_train", None) is not None
+            )
+            if not held and float(getattr(block, "current_voltage", 0.0)) != 0.0:
+                self.set_block_voltage(block_id, 0.0)
+
     def update_all_trains(
         self, speed_profiles: Optional["SpeedProfileRegistry"] = None
     ) -> None:
@@ -299,7 +325,6 @@ class BlockPowerController:
             "voltages": self.get_all_voltages(),
             "max_voltage": self.max_voltage,
             "min_voltage": self.min_voltage,
-            "default_lighting_voltage": self.default_lighting_voltage,
         }
 
     @classmethod
@@ -308,9 +333,6 @@ class BlockPowerController:
         controller = cls(
             max_voltage=data.get("max_voltage", MAX_TRACK_VOLTAGE),
             min_voltage=data.get("min_voltage", MIN_TRACK_VOLTAGE),
-            default_lighting_voltage=data.get(
-                "default_lighting_voltage", DEFAULT_LIGHTING_VOLTAGE
-            ),
         )
 
         # Restore voltages

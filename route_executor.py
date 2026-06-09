@@ -24,6 +24,7 @@ import logging
 import time
 from typing import Any, ClassVar, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
 
+from constants import IDLE_HOLD_COOLDOWN_TICKS, IDLE_HOLD_RELEASE_TICKS
 from enums import ControllerCondition, Direction, TrainState
 from train_controller import TrainController, create_controller_for_train
 from train_route import (
@@ -178,6 +179,19 @@ class RouteExecutionState:
     # run-record payload). NOT a live override — start mode has no meaning after
     # the run's starting position is seeded.
     start_mode: Optional[RouteStartMode] = None
+    # Walk-position this run was seeded to plan toward first — its first real
+    # movement target (per design_new.md "Route-run state"). 0 for FIRST; the
+    # seeded position `s` for NEAREST / SPECIFIC. Written once at allocation by
+    # `RouteExecutor._seed_start_position(...)`. Read only by `is_starting`.
+    start_walk_position: int = 0
+    # Idle-hold release counters (NOT latches), Phase-1-maintained by direct
+    # write in the authority-acquisition step. `idle_hold_ticks` counts
+    # consecutive Phase-1 ticks on a stalled truncated best-effort hold;
+    # `release_cooldown_ticks` is the post-release acquisition-skip countdown.
+    # Per design_new.md "Idle-hold maintenance and release" (Planning Kernel
+    # step 66aa).
+    idle_hold_ticks: int = 0
+    release_cooldown_ticks: int = 0
 
     # ------------------------------------------------------------------
     # Effective-value read helpers (per design_new.md "RouteRun overrides")
@@ -334,6 +348,24 @@ class RouteExecutionState:
                 return i
         return len(self.task_runs) - 1
 
+    @property
+    def is_starting(self) -> bool:
+        """Derived: True while this run is still completing its first real
+        movement target (design_new.md "Route-run state" + the runnable-train
+        ordering rule in "Per-train tick transaction").
+
+        True while ``next_planning_walk_position <= start_walk_position``;
+        flips to False once the train completes the task at the seeded start
+        walk-position, and stays False because ``next_planning_walk_position``
+        (the first unfinished walk-position) only advances over the run —
+        including across CIRCULAR / ROUND_TRIP wrap. ``current_waypoint_index``
+        is unsuitable here: it is ``task_index`` space and cycles on wrap.
+
+        Read by ``RouteExecutor.order_runnable_trains`` as the primary phase
+        tier (running-phase runs ordered ahead of starting-phase runs).
+        """
+        return self.next_planning_walk_position <= self.start_walk_position
+
     def _append_next_walk_task(self, route: "Route") -> None:
         """Grow `task_runs` for the next walk-position when applicable.
 
@@ -434,6 +466,17 @@ class RouteExecutor:
         # `_ensure_run_for(...)`. Set/cleared on every assign/retarget/unassign
         # so a choice can never leak onto a different route's run.
         self._pending_start_overrides: Dict[str, Dict[str, Any]] = {}
+        # Held re-assignment for a same-route structural `Route.tasks` edit (per
+        # design_new.md "Shared-route edit teardown"). The structural-edit
+        # handler records `train_id -> route_id` here instead of re-adding to
+        # `Route.assigned_train_ids` up front, because the Phase-3 deactivate
+        # consumer's `remove_train_route_run(...)` unassigns the train from the
+        # run's `route_id` as part of the clear -- an up-front re-add would be
+        # undone by that unassign. The deactivate consumer applies the held
+        # re-assignment AFTER that clear, so the next eligible Phase 1 sees the
+        # train assigned with no RUNNING run and allocates a fresh run. Consumed
+        # only by the route_deactivate consumer; abort/power-off never record it.
+        self._pending_reassign: Dict[str, str] = {}
 
         # Helper modules — lazy-init on first access. The actual logic lives
         # in `route_target_resolver.RouteTargetResolver` and
@@ -614,30 +657,39 @@ class RouteExecutor:
     def order_runnable_trains(
         self, candidate_train_ids: Iterable[str]
     ) -> List[str]:
-        """Order candidate trains by route priority (descending), stable ties.
+        """Order candidate trains by run phase then route priority, stable ties.
 
-        Per design_new.md "Concrete RouteExecutor tick calls": route-managed
-        trains use the current shared `Route.priority`; trains without a
-        current RouteRun use effective priority 5. The merged set is sorted
-        strictly by effective priority descending (`9` highest, `0` lowest),
-        with stable existing iteration order as the only tie-break.
+        Per design_new.md "Per-train tick transaction" (the canonical ordering
+        rule): sort first by run phase — running-phase runs (`is_starting`
+        False) ahead of starting-phase runs (`is_starting` True) — then by
+        descending effective priority within each tier (route-managed trains use
+        the per-run override or the shared `Route.priority`; trains without a
+        current RouteRun are running-tier at effective priority 5). Stable
+        existing iteration order is the only tie-break.
         """
         routes = self.route_registry
         ordered = list(candidate_train_ids)
 
-        def effective_priority(train_id: str) -> int:
+        def sort_key(train_id: str) -> Tuple[int, int]:
             # Per design_new.md "RouteRun overrides": the per-run override on
             # `priority` wins over the shared `Route.priority` when set.
             run = self.execution_state_for(train_id)
             route_id = self.assigned_route_id_for(train_id)
             route = routes.get(route_id) if route_id else None
             if run is not None:
-                return run.effective_priority(route=route, route_executor=self)
-            if route is not None:
-                return int(getattr(route, "priority", 5))
-            return 5
+                priority = run.effective_priority(route=route, route_executor=self)
+                starting = run.is_starting
+            elif route is not None:
+                priority = int(getattr(route, "priority", 5))
+                starting = False
+            else:
+                priority = 5
+                starting = False
+            # Ascending stable sort: tier 0 (running) before tier 1 (starting);
+            # `-priority` puts higher effective priority first within a tier.
+            return (1 if starting else 0, -priority)
 
-        ordered.sort(key=effective_priority, reverse=True)
+        ordered.sort(key=sort_key)
         return ordered
 
     # ------------------------------------------------------------------
@@ -875,6 +927,11 @@ class RouteExecutor:
         # the first task, so no prefix needs skipping (mode stays as resolved).
         for i in range(s):
             exec_state.task_runs[i].finished_at = exec_state.started_at
+        # Record the seeded first-target walk-position for the `is_starting`
+        # phase tier (design_new.md "Run start-mode seeding"). For the initial
+        # walk, walk-position == task_index, so this is the seed index `s`;
+        # after the prefix-finish above, `next_planning_walk_position == s`.
+        exec_state.start_walk_position = s
 
     def _resolve_run_route(
         self, train_id: str
@@ -992,6 +1049,24 @@ class RouteExecutor:
         if not self._eligible_for_authority_acquisition(controller, exec_state):
             return
 
+        # Idle-hold release cooldown (design_new.md "Idle-hold maintenance and
+        # release"): while cooling down after a release, skip acquisition so the
+        # just-freed reservations/locks stay available for higher-priority runs.
+        if exec_state.release_cooldown_ticks > 0:
+            exec_state.release_cooldown_ticks -= 1
+            return
+
+        # Capture the live authority end before this tick's acquisition so the
+        # idle-hold maintenance below can tell whether the authority grew.
+        _pre_path = (
+            self.path_dispatcher.get_active_path(train_id)
+            if self.path_dispatcher is not None
+            else None
+        )
+        auth_end_before = (
+            _pre_path.get_authority_end_block_id() if _pre_path is not None else None
+        )
+
         # Per design_new.md (fix #14, part a): wrap authority acquisition in a
         # retry loop that accumulates previously-failed resolved_target values
         # into an `exclude` set and re-calls `_find_next_task_target(train_id,
@@ -1048,6 +1123,14 @@ class RouteExecutor:
             if projection is None:
                 # Terminal walk — no later task on the directed walk.
                 break
+
+        # Idle-hold maintenance + release (design_new.md "Idle-hold maintenance
+        # and release", step 66aa). A truncated best-effort hold that neither
+        # grew this tick nor has the train moving accrues idle ticks; at the
+        # threshold it latches the ordinary cancel and returns True (stop
+        # planning this tick — Phase 3 commits the release).
+        if self._maintain_idle_hold(train_id, controller, exec_state, auth_end_before):
+            return
 
         if any_success:
             # A valid task was served this tick → the walk is not all-broken.
@@ -1737,6 +1820,64 @@ class RouteExecutor:
                     )
         return True
 
+    def _maintain_idle_hold(
+        self,
+        train_id: str,
+        controller: TrainController,
+        exec_state: RouteExecutionState,
+        auth_end_before: Optional[str],
+    ) -> bool:
+        """Maintain `idle_hold_ticks` and release a stalled best-effort hold.
+
+        Per design_new.md "Idle-hold maintenance and release" (Planning Kernel
+        step 66aa). Returns True when it latched an idle-hold release (the caller
+        stops planning this tick; Phase 3 commits the cancel). A truncated
+        best-effort authority (``authority_end_block_id !=
+        requested_destination_block_id``) that neither grew this tick (the
+        authority end is unchanged from ``auth_end_before``) nor has the train
+        moving accrues `idle_hold_ticks`; at `IDLE_HOLD_RELEASE_TICKS` it latches
+        ``pending_path_cancel_request(initiator="idle_hold_release")``, starts the
+        cooldown, and returns True. Any growth, train movement, full authority,
+        or no live path resets `idle_hold_ticks` to 0.
+        """
+        path = (
+            self.path_dispatcher.get_active_path(train_id)
+            if self.path_dispatcher is not None
+            else None
+        )
+        if path is None or (
+            path.get_authority_end_block_id() == path.requested_destination_block_id
+        ):
+            # Full authority or no live path → not a truncated best-effort hold.
+            exec_state.idle_hold_ticks = 0
+            return False
+        grew = (
+            auth_end_before is None
+            or path.get_authority_end_block_id() != auth_end_before
+        )
+        moving = not controller.is_stopped()
+        if grew or moving:
+            exec_state.idle_hold_ticks = 0
+            return False
+        exec_state.idle_hold_ticks += 1
+        if exec_state.idle_hold_ticks < IDLE_HOLD_RELEASE_TICKS:
+            return False
+        # Stalled past the budget: release the held truncated authority the
+        # ordinary system-replan way (Phase 1 latches; Phase 3 commits the
+        # cancel once stopped) and start the cooldown so the freed resources
+        # stay available for higher-priority runs.
+        controller.route_hooks.phase_latches.set_path_cancel_request(
+            initiator="idle_hold_release",
+            reason=(
+                f"best-effort authority idle for {exec_state.idle_hold_ticks} "
+                f"ticks at {path.get_authority_end_block_id()}; releasing so "
+                "higher-priority runs can use the held resources"
+            ),
+        )
+        exec_state.release_cooldown_ticks = IDLE_HOLD_COOLDOWN_TICKS
+        exec_state.idle_hold_ticks = 0
+        return True
+
     def finish_route_run(self, train_id: str) -> None:
         """Phase 1 terminal-walk handler.
 
@@ -2095,6 +2236,36 @@ class RouteExecutor:
         # Mark DEACTIVATED and move to the historical archive.
         exec_state.current_route_status = RouteRunStatus.DEACTIVATED
         self._archive_run(exec_state)
+
+    def record_pending_reassign(self, train_id: str, route_id: str) -> None:
+        """Hold a same-route re-assignment until the Phase-3 deactivate clear
+        is done (per design_new.md "Shared-route edit teardown").
+
+        Recorded by the structural `Route.tasks` edit handler instead of
+        re-adding to `Route.assigned_train_ids` up front, because the deactivate
+        consumer's `remove_train_route_run(...)` unassigns the train during the
+        clear and would undo an up-front re-add.
+        """
+        self._pending_reassign[train_id] = route_id
+
+    def apply_pending_reassign(self, train_id: str) -> Optional[str]:
+        """Apply (and clear) any held re-assignment for `train_id` AFTER its run
+        has been torn down and unassigned. Returns the re-assigned `route_id`,
+        or `None` when nothing was held.
+
+        Called only by the Phase-3 `pending_route_deactivate` consumer, after
+        `remove_train_route_run(train_id)` -- per design_new.md "Shared-route
+        edit teardown". The abort and power-off consumers never record a held
+        re-assignment, so they tear down without re-assigning.
+        """
+        route_id = self._pending_reassign.pop(train_id, None)
+        if route_id is None:
+            return None
+        route = self.route_registry.get(route_id)
+        if route is None:
+            return None
+        route.assign_train(train_id)
+        return route_id
 
     # ------------------------------------------------------------------ helper
     def _find_next_task_target(

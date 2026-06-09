@@ -671,6 +671,63 @@ class TestTrainRoutes:
         # fallback), proving the tuple is unpacked rather than tested for truth.
         assert "no active path" in error.lower()
 
+    def test_release_emergency_clears_eb_in_ato_mode(
+        self, client, app_state, network_with_tracks
+    ):
+        """POST /release-emergency clears a latched EB even in ATO mode.
+
+        Regression: the "Release Emergency" / Reset button used to call
+        setHandle(train, 'N'), which never releases EB (the handle and EB are
+        separate; EB clears only via eb.release()) and is rejected outright in
+        ATO mode with "Handle input requires manual mode". The dedicated
+        release-emergency route calls the canonical eb.release() instead, so it
+        works regardless of control mode.
+        """
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0, max_speed=100.0)
+        train = Train("TRAIN_001", consist=[car])
+        app_state.network.add_train(train)
+        app_state.network.place_train(train, 0, 0, Direction.EAST)
+
+        controller = app_state.sim_controller.get_or_create_controller("TRAIN_001")
+        controller.commands.power_on_cmd()  # OFF -> READY; ATO is the default mode
+        assert controller.commands.control_mode == "ato"
+        controller.eb.activate()  # stopped, no path -> EB latches cleanly
+        assert controller.eb.active is True
+
+        # The OLD button path (handle 'N') is still rejected in ATO mode and
+        # leaves EB latched -- exactly the bug the user hit.
+        bad = client.post("/api/trains/TRAIN_001/handle", json={"position": "N"})
+        assert bad.status_code == 400
+        assert "manual mode" in bad.get_json()["error"].lower()
+        assert controller.eb.active is True
+
+        # The NEW path releases EB and lands the controller in READY.
+        resp = client.post("/api/trains/TRAIN_001/release-emergency")
+        assert resp.status_code == 200
+        assert resp.get_json()["status"] == "success"
+        assert controller.eb.active is False
+        assert controller.ops.state == TrainState.READY
+
+    def test_release_emergency_rejected_while_moving(
+        self, client, app_state, network_with_tracks
+    ):
+        """release-emergency is latch-gated: it rejects (400) while the train
+        is still rolling and leaves EB latched, per eb.release()'s contract."""
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0, max_speed=100.0)
+        train = Train("TRAIN_002", consist=[car])
+        app_state.network.add_train(train)
+        app_state.network.place_train(train, 0, 0, Direction.EAST)
+
+        controller = app_state.sim_controller.get_or_create_controller("TRAIN_002")
+        controller.commands.power_on_cmd()
+        controller.eb.activate()
+        controller.physics_sync.current_speed_kmh = 5.0  # still moving
+
+        resp = client.post("/api/trains/TRAIN_002/release-emergency")
+        assert resp.status_code == 400
+        assert "moving" in resp.get_json()["error"].lower()
+        assert controller.eb.active is True
+
 # ============================================================================
 # Path Routes Tests (9 routes)
 # ============================================================================

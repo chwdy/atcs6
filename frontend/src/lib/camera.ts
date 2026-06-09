@@ -27,6 +27,14 @@ export interface GridPoint {
   y: number;
 }
 
+/** The four grid corners of a tile (x,y): used to project its full footprint. */
+const TILE_CORNERS: ReadonlyArray<readonly [number, number]> = [
+  [0, 0],
+  [1, 0],
+  [1, 1],
+  [0, 1],
+];
+
 export class Camera {
   canvas: CanvasLike | null;
   gridSize: number;
@@ -184,37 +192,56 @@ export class Camera {
   }
 
   /**
-   * Zoom AND pan so the whole tile list fits inside the canvas. Unlike
+   * Zoom AND pan so the whole tile list fits tightly inside the canvas. Unlike
    * centerOnContent (which only re-centers at the current scale), this also
-   * picks the scale. The iso projection turns a grid bbox of width W and
-   * height H into a diamond whose screen footprint spans (W + H + 2) tile-units
-   * in BOTH screen axes (see gridToScreenX/Y: X tracks gx+gy, Y tracks gx-gy,
-   * and both ranges work out to W + H, plus 1 tile of corner footprint on each
-   * side). So we size one tile to fit that span into the smaller canvas
-   * dimension (times `margin` for breathing room), clamp to the zoom range,
-   * then reuse centerOnContent to pan it to the middle.
+   * picks the scale.
+   *
+   * We fit the tiles' ACTUAL on-screen footprint, not their grid bounding box.
+   * In the iso projection screen-X tracks (x + y) and screen-Y tracks (x - y)
+   * (see gridToScreenX/Y). A real network is sparse — it never reaches all four
+   * corners of its grid bbox at once — so sizing the bbox's diamond would zoom
+   * to mostly-empty space and leave the layout floating small and off-centre.
+   * Instead we project every tile corner (at scale=1, pan=0 — those are uniform
+   * offsets that don't affect the span or the centre), take the real screen box,
+   * fit each axis independently into the matching canvas dimension (times
+   * `margin` for breathing room), use the smaller scale so both axes fit, clamp
+   * to the zoom range, then pan the footprint's centre to the canvas centre.
    */
   fitToContent(tracks: ReadonlyArray<GridPoint>, margin = 0.9): void {
     if (!tracks || tracks.length === 0) return;
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
-    for (const t of tracks) {
-      if (t.x < minX) minX = t.x;
-      if (t.x > maxX) maxX = t.x;
-      if (t.y < minY) minY = t.y;
-      if (t.y > maxY) maxY = t.y;
-    }
     const canvasW = this.canvas?.width ?? 0;
     const canvasH = this.canvas?.height ?? 0;
-    const spanTiles = maxX - minX + (maxY - minY) + 2;
-    const avail = Math.min(canvasW, canvasH) * margin;
-    if (spanTiles > 0 && avail > 0) {
-      const tileSize = (2 * avail) / spanTiles;
+    if (canvasW <= 0 || canvasH <= 0) return;
+
+    let minSX = Infinity;
+    let maxSX = -Infinity;
+    let minSY = Infinity;
+    let maxSY = -Infinity;
+    for (const t of tracks) {
+      for (const [dx, dy] of TILE_CORNERS) {
+        const gx = t.x + dx;
+        const gy = t.y + dy;
+        // gridToScreenX/Y with tileSize=1 and no centre/pan offset.
+        const px = (gx + gy + 1) / 2;
+        const py = (gx - gy) / 2;
+        if (px < minSX) minSX = px;
+        if (px > maxSX) maxSX = px;
+        if (py < minSY) minSY = py;
+        if (py > maxSY) maxSY = py;
+      }
+    }
+    const footW = maxSX - minSX; // footprint width  in tileSize units
+    const footH = maxSY - minSY; // footprint height in tileSize units
+    if (footW > 0 && footH > 0) {
+      const tileSize = Math.min((canvasW * margin) / footW, (canvasH * margin) / footH);
       this.scale = Math.max(0.1, Math.min(5, tileSize / this.gridSize));
     }
-    this.centerOnContent(tracks);
+    // Pan so the footprint's centre lands at the canvas centre. screenX =
+    // centerX + panX + px * tileSize, so panX = -(footprint centre px) * tileSize.
+    const ts = this.gridSize * this.scale;
+    this.panX = -((minSX + maxSX) / 2) * ts;
+    this.panY = -((minSY + maxSY) / 2) * ts;
+    this._emit();
   }
 
   /**

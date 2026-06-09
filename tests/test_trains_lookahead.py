@@ -64,12 +64,12 @@ class TestTrainControllerMonitorLookahead:
             occupied_tiles=[(0, 0), (1, 0), (2, 0)],
         )
 
-        controller.commands.set_cab("A")
+        controller.commands.set_cab("A", internal=True)  # mode-neutral cab setup
         payload_a = controller.get_lookahead()
         # With Cab A active, head is at end_a which is (0, 0)
         assert payload_a["head_tile"] == [0, 0]
 
-        controller.commands.set_cab("B")
+        controller.commands.set_cab("B", internal=True)  # mode-neutral cab setup
         payload_b = controller.get_lookahead()
         # After switching to Cab B, ends don't swap - the physical span is
         # cab-independent: end_a stays at (0, 0) and end_b stays at (2, 0).
@@ -182,8 +182,8 @@ class TestLookaheadNoPathRegardlessOfNetworkState:
 
         controller = TrainController(train_id=train.train_id, network=network)
         self._seed_span(controller)
-        controller.commands.set_cab("A")
-        controller.commands.set_cab("B")
+        controller.commands.set_cab("A", internal=True)  # mode-neutral cab setup
+        controller.commands.set_cab("B", internal=True)  # mode-neutral cab setup
 
         self._assert_no_authority(controller.get_lookahead())
 
@@ -203,7 +203,7 @@ class TestLookaheadNoPathRegardlessOfNetworkState:
 
         controller = TrainController(train_id=train.train_id, network=network)
         self._seed_span(controller)
-        controller.commands.set_cab("A")
+        controller.commands.set_cab("A", internal=True)  # mode-neutral cab setup
 
         self._assert_no_authority(controller.get_lookahead())
 
@@ -356,7 +356,7 @@ class TestNoPathProducesNoAuthorityPayload:
             occupied_tiles=occupied_tiles,
             occupied_blocks=["TERMINAL"],
         )
-        controller.commands.set_cab("A")
+        controller.commands.set_cab("A", internal=True)  # mode-neutral cab setup
         return controller
 
     def _assert_no_authority_payload(self, lookahead):

@@ -343,17 +343,22 @@ def update_route(
             if train_id in state.network.trains:
                 route.assign_train(train_id)
 
-    # Per design_new.md lines 1467-1469: a structural Route.tasks edit tears down
-    # every assigned train's currently-RUNNING RouteRun (there is no in-place
-    # reconciliation in v1). Set the per-train route_deactivate latch (which fans
-    # out the inclusive path cancel when a live path exists); the trains stay
-    # assigned, so the next eligible Phase 1 allocates a fresh RouteRun against
-    # the edited Route.tasks, and Phase 3 commits the teardown via
-    # RouteExecutor.remove_train_route_run(train_id). Skipped in editor-only mode
-    # (no runtime surface wired, so there is no RouteRun to tear down).
+    # Per design_new.md "Shared-route edit teardown": a structural Route.tasks
+    # edit tears down every assigned train's currently-RUNNING RouteRun (there is
+    # no in-place reconciliation in v1). Set the per-train route_deactivate latch
+    # (which fans out the inclusive path cancel when a live path exists). Phase 3
+    # commits the teardown via RouteExecutor.remove_train_route_run(train_id),
+    # which UNASSIGNS the train from the run's route_id -- so the re-assignment
+    # cannot be applied up front (it would be undone by that unassign). Instead,
+    # hold it on RouteExecutor._pending_reassign and let the Phase-3 deactivate
+    # consumer re-apply it AFTER the clear; the next eligible Phase 1 then sees
+    # the train assigned with no RUNNING run and allocates a fresh RouteRun
+    # against the edited Route.tasks. Skipped in editor-only mode (no runtime
+    # surface wired, so there is no RouteRun to tear down).
     if tasks_structural_edit:
         sim_controller = getattr(state, "sim_controller", None)
         if sim_controller is not None:
+            route_executor = getattr(sim_controller, "route_executor", None)
             teardown_reason = f"route_tasks_edited:{route.route_id}"
             for train_id in list(route.assigned_train_ids):
                 controller = sim_controller.get_controller(train_id)
@@ -365,6 +370,10 @@ def update_route(
                         controller.path_projection.received_path_plan is not None
                     ),
                 )
+                if route_executor is not None:
+                    route_executor.record_pending_reassign(
+                        train_id, route.route_id
+                    )
 
     if definition_edit_touched:
         route.last_edited_at = time.time()

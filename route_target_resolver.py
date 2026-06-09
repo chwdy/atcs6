@@ -174,6 +174,38 @@ class RouteTargetResolver:
             resolved_target=resolved,
         )
 
+    def _forward_move_tasks(self, route, start, *, skip_start):
+        """Yield `(index, task)` for each non-`dwell` task walking forward from
+        `start` — one lap, wrapping for CIRCULAR, stopping at the end for linear
+        routes; with `skip_start=True` the walk begins strictly after `start`.
+
+        The shared task-walk kernel behind `find_next_move_target(...)` (the
+        train's live next move) and `_next_move_block_after_index(...)` (a
+        hypothetical NEAREST seed position). Each caller keeps its own
+        resolve-and-return policy; only the walk order / wrap / dwell-skip is
+        shared here.
+        """
+        task_count = (
+            route.get_task_count() if hasattr(route, "get_task_count") else 0
+        )
+        if task_count == 0:
+            return
+        is_circular = getattr(route, "mode", None) == RouteMode.CIRCULAR
+        begin = 1 if skip_start else 0
+        for step in range(begin, task_count + begin):
+            if is_circular:
+                idx = (start + step) % task_count
+            else:
+                idx = start + step
+                if idx >= task_count:
+                    return
+            task = route.get_task_at(idx) if hasattr(route, "get_task_at") else None
+            if task is None:
+                return
+            if getattr(task, "task_kind", None) == "dwell":
+                continue
+            yield idx, task
+
     def find_next_move_target(self, train_id: str) -> Optional[str]:
         """Resolve the block this train will path to on its next *move*,
         skipping any `dwell` tasks at the current walk position.
@@ -215,18 +247,7 @@ class RouteTargetResolver:
         if start is None:
             return None
 
-        for step in range(task_count):
-            if route.mode == RouteMode.CIRCULAR:
-                idx = (start + step) % task_count
-            else:
-                idx = start + step
-                if idx >= task_count:
-                    break
-            task = route.get_task_at(idx)
-            if task is None:
-                break
-            if task.task_kind == "dwell":
-                continue
+        for _idx, task in self._forward_move_tasks(route, start, skip_start=False):
             block, _reason = self.resolve_task_target_block_detailed(
                 task, train=train
             )
@@ -597,8 +618,48 @@ class RouteTargetResolver:
                 return track.block_section_id
         return None
 
+    def _find_paths_cached(
+        self,
+        dispatcher,
+        start_block_id: str,
+        dest_block_id: str,
+        train_id: Optional[str],
+        direction_constraint: Optional[str],
+        cache: Optional[dict],
+    ):
+        """`dispatcher.find_paths(...)` memoized for one seed pass.
+
+        NEAREST seeding asks for the same directed walk twice per stop — the
+        distance metric (`_walk_metric_to_block`) and the reversal arrival walk
+        (`_seed_stop_forces_reversal`) — so a per-pass cache keyed by
+        `(start, dest, direction_constraint, train_id)` computes it once. A
+        `None` cache disables memoization (callers outside the seed pass). Safe
+        within one synchronous pass because network state does not change
+        between the calls.
+        """
+        if cache is None:
+            return dispatcher.find_paths(
+                start_block_id,
+                dest_block_id,
+                train_id=train_id,
+                direction_constraint=direction_constraint,
+            )
+        key = (start_block_id, dest_block_id, direction_constraint, train_id)
+        if key not in cache:
+            cache[key] = dispatcher.find_paths(
+                start_block_id,
+                dest_block_id,
+                train_id=train_id,
+                direction_constraint=direction_constraint,
+            )
+        return cache[key]
+
     def _walk_metric_to_block(
-        self, train: Optional["Train"], target_block_id: str
+        self,
+        train: Optional["Train"],
+        target_block_id: str,
+        direction_constraint: Optional[str] = None,
+        _walk_cache: Optional[dict] = None,
     ) -> Optional[Tuple[int, float]]:
         """Best graph-walk metric `(tile_count, walk_length_cm)` from the
         train's current block to `target_block_id`, or `None` when no walk
@@ -609,11 +670,18 @@ class RouteTargetResolver:
         `nearest_start_stop_index` (NEAREST start-mode seeding). Uses the same
         `PathDispatcher.find_paths(...)` walk that `create_path(...)` uses;
         candidates come back pre-sorted in winning order, so `[0]` is the best
-        walk. Direction is left unconstrained — block-relative direction is
-        resolved separately by `resolve_task_direction(...)`; this only ranks
-        reach distance, mirroring the no-direction-filter start-side comparison
-        `create_path(...)` runs. Returns `None` when there is no train, no
-        dispatcher, no resolvable start block, or the target is unreachable.
+        walk.
+
+        `direction_constraint` (default `None`) is forwarded to
+        `find_paths(...)`. Left `None`, the walk is direction-agnostic — used by
+        `_closer_platform_end`, where block-relative direction is resolved
+        separately. Set to `"forward"` / `"reverse"`, the metric counts only
+        walks the train can actually run in that block-relative direction —
+        what `nearest_start_stop_index` uses to keep a stop reachable only in a
+        direction its task forbids out of the NEAREST candidate set. Either way
+        the pathfinder still enforces `Block.allowed_travel_directions`. Returns
+        `None` when there is no train, no dispatcher, no resolvable start block,
+        or the target is unreachable under the given constraint.
         """
         if train is None:
             return None
@@ -623,8 +691,13 @@ class RouteTargetResolver:
             return None
         train_id = getattr(train, "train_id", None)
         try:
-            walks = dispatcher.find_paths(
-                start_block_id, target_block_id, train_id=train_id
+            walks = self._find_paths_cached(
+                dispatcher,
+                start_block_id,
+                target_block_id,
+                train_id,
+                direction_constraint,
+                _walk_cache,
             )
         except Exception:
             return None
@@ -663,47 +736,216 @@ class RouteTargetResolver:
         # Both reachable: shorter walk wins; exact tie -> end_a.
         return end_b if key_b < key_a else end_a
 
+    def _next_move_block_after_index(
+        self, route: "Route", train: Optional["Train"], idx: int
+    ) -> Optional[str]:
+        """Resolved block of the first `stop` / `waypoint` task after walk
+        index `idx` (skipping `dwell` tasks, wrapping for CIRCULAR), or `None`.
+
+        Mirrors `find_next_move_target(...)` but for a *hypothetical* seed
+        position rather than the train's live next-planning index, so NEAREST
+        can ask "if I started here, where would my next move go?" without
+        mutating any run state. Shares the forward task-walk kernel
+        (`_forward_move_tasks`); unlike `find_next_move_target` it skips
+        non-dwell tasks that do not resolve to a block and keeps walking.
+        """
+        for _j, task in self._forward_move_tasks(route, idx, skip_start=True):
+            block, _reason = self.resolve_task_target_block_detailed(task, train=train)
+            if block:
+                return block
+        return None
+
+    def _seed_stop_forces_reversal(
+        self,
+        train: Optional["Train"],
+        route: "Route",
+        idx: int,
+        bid: str,
+        arrival_direction: str,
+        _walk_cache: Optional[dict] = None,
+    ) -> bool:
+        """True when a train seeded at stop `idx` (resolved block `bid`) would
+        have to reverse to reach its next route move.
+
+        A reversal at the stop means the next move leaves `bid` back through the
+        very block the train arrived through — it turns around in place rather
+        than driving on. We decide that geometrically by comparing two walks:
+        the arrival walk (train's current block → `bid`) and the onward walk
+        (`bid` → the next move's block). If the onward walk's first step
+        re-enters the block immediately before `bid` on the arrival walk, the
+        train backs out the way it came, so this is a reverse stop.
+
+        `arrival_direction` is the stop's resolved block-relative direction
+        (`resolve_task_direction(...)`, always `"forward"` / `"reverse"`, never
+        `"either"`), threaded in from `nearest_start_stop_index` so the arrival
+        walk is the SAME directed approach that gated the stop's eligibility and
+        distance. It is passed as `find_paths(..., direction_constraint=...)`,
+        which constrains the block-relative direction the walk enters `bid` (its
+        destination). This matters when the stop's task pins an explicit
+        `task_direction` whose forbidden opposite direction has a strictly
+        shorter walk: an undirected arrival walk would return that shorter
+        opposite approach, so `arr_blocks[-2]` would be the block arrived
+        through going the direction the train will never take, and the reversal
+        verdict would be read off a walk that never happens. (For `"either"`
+        tasks there is no mismatch — `resolve_task_direction` already resolves
+        `"either"` to the shorter direction, which equals the undirected
+        shortest.)
+
+        The onward walk is left undirected on purpose. `direction_constraint`
+        filters the *terminal* direction at the onward walk's destination
+        (`next_block_id`), a different block than `bid`, so it cannot describe
+        which end the train departs `bid` through, and `arrival_direction` (a
+        `bid`-relative direction) does not apply to it. We read only the onward
+        walk's first block, so the shortest undirected onward walk is exactly
+        the "nearest way onward" we want: if even that backs out through the
+        arrival block, the seeded train reverses in place.
+
+        Read-only. Returns `False` (no reversal) whenever the block sequences
+        needed to decide are unavailable (no dispatcher, no resolvable start
+        block, no next move, or a walk with fewer than two blocks), so callers
+        degrade to pure-distance ranking exactly as before.
+        """
+        if train is None or not bid:
+            return False
+        dispatcher = getattr(self._e, "path_dispatcher", None)
+        start_block_id = self._current_block_id(train)
+        if dispatcher is None or not start_block_id:
+            return False
+        next_block_id = self._next_move_block_after_index(route, train, idx)
+        if not next_block_id or next_block_id == bid:
+            return False
+        train_id = getattr(train, "train_id", None)
+        try:
+            arrival = self._find_paths_cached(
+                dispatcher,
+                start_block_id,
+                bid,
+                train_id,
+                arrival_direction,
+                _walk_cache,
+            )
+            onward = self._find_paths_cached(
+                dispatcher, bid, next_block_id, train_id, None, _walk_cache
+            )
+        except Exception:
+            return False
+        if not arrival or not onward:
+            return False
+        arr_blocks = getattr(arrival[0], "blocks", None) or []
+        onw_blocks = getattr(onward[0], "blocks", None) or []
+        if len(arr_blocks) < 2 or len(onw_blocks) < 2:
+            return False
+        return onw_blocks[1] == arr_blocks[-2]
+
+    def _claimed_target_blocks(
+        self, train: Optional["Train"], route: "Route"
+    ) -> set:
+        """Blocks that other trains on this route are already heading to —
+        their live next-move targets.
+
+        Used so freshly-seeded trains spread across distinct stops instead of
+        all piling onto the same nearest one. Reads each other assigned run's
+        current next move via `find_next_move_target(...)`, so it reflects where
+        trains are actually going right now (a train that has moved past its
+        seed no longer claims it). Read-only; empty when the executor exposes no
+        run table (the resolver-unit stubs), so it is a no-op there.
+        """
+        train_id = getattr(train, "train_id", None) if train is not None else None
+        route_id = getattr(route, "route_id", None)
+        states = getattr(self._e, "execution_states", None) or {}
+        claimed: set = set()
+        for other_id, st in states.items():
+            if other_id == train_id:
+                continue
+            if getattr(st, "route_id", None) != route_id:
+                continue
+            block = self.find_next_move_target(other_id)
+            if block:
+                claimed.add(block)
+        return claimed
+
     def nearest_start_stop_index(
         self, train: Optional["Train"], route: "Route"
     ) -> Optional[int]:
-        """Task index of the stop nearest the train, for NEAREST start-mode
-        seeding (per design_new.md "Run start-mode seeding").
+        """Task index of the best stop to seed the train at, for NEAREST
+        start-mode seeding (per design_new.md "Run start-mode seeding").
 
-        Considers only `task_kind == "stop"` tasks. For each, resolves the
-        target block via `resolve_task_target_block_detailed(...)` and measures
-        track distance with the shared `_walk_metric_to_block(...)` query.
-        Prefers stops whose resolved block is not occupied by another train;
-        falls back to the nearest stop regardless of occupancy when every
-        reachable stop is occupied. Ties break to the lowest task index.
-        Returns `None` when no stop resolves to a reachable block (the caller
-        then falls back to FIRST).
+        Considers only `task_kind == "stop"` tasks. A stop is *eligible* only
+        when the train has a viable directed path to its resolved block in the
+        block-relative direction the stop's task requires (resolved via
+        `resolve_task_direction(...)`): connectivity plus block travel-direction
+        plus the task's own `task_direction`. A stop the tracks merely touch but
+        that can only be reached in a direction its task forbids is not
+        eligible, so the ladder falls through to the next viable stop. Among
+        eligible stops, ranks each by, in order:
+          1. **No reversal first** — a stop the train can drive on from without
+             turning around (`_seed_stop_forces_reversal(...)` is False) beats
+             one that forces a reverse to reach the next route move.
+          2. **Free first** — a stop not already taken (its block neither
+             occupied by another train nor the live next-move target of another
+             train on this route, see `_claimed_target_blocks(...)`) beats a
+             taken one.
+          3. **Nearest** — shorter track-distance walk wins, measured with the
+             shared `_walk_metric_to_block(...)` query in the stop's required
+             direction.
+          4. **Lowest task index** breaks any remaining tie.
+
+        Each rank only breaks ties left by the ones above it, so a no-reverse
+        stop is preferred even when a reverse stop is a little closer, and a
+        nearer-but-taken stop still loses to a no-reverse free one. Returns
+        `None` when no stop has a viable directed path (the caller then falls
+        back to FIRST).
         """
         tasks = getattr(route, "tasks", []) or []
         train_id = getattr(train, "train_id", None) if train is not None else None
         blocks_registry = getattr(self._e.network, "blocks", {}) or {}
+        claimed_blocks = self._claimed_target_blocks(train, route)
+        # One find_paths memo for the whole pass: each stop's directed arrival
+        # walk is asked for twice (distance metric + reversal check); the cache
+        # computes it once. Scoped to this call, so it never goes stale.
+        walk_cache: dict = {}
 
-        # Each candidate is ((tile_count, walk_length_cm), task_index); tuple
-        # ordering gives "shorter walk wins, lowest index breaks ties" for free.
-        best_free: Optional[Tuple[Tuple[int, float], int]] = None
-        best_any: Optional[Tuple[Tuple[int, float], int]] = None
+        # Each candidate scores (reverse_penalty, taken_penalty, metric, idx);
+        # tuple ordering gives the four-level preference above for free, and the
+        # smallest score wins.
+        best: Optional[Tuple[Tuple[int, int, Tuple[int, float], int], int]] = None
 
         for idx, task in enumerate(tasks):
             if getattr(task, "task_kind", None) != "stop":
                 continue
             bid, _reason = self.resolve_task_target_block_detailed(task, train=train)
-            if not bid:
+            if not bid or train is None:
                 continue
-            metric = self._walk_metric_to_block(train, bid)
+            # Eligibility is a *directed* reach: a stop counts only when the
+            # train has a viable path to it in the block-relative direction the
+            # stop's task requires — the same directed walk a real create_path
+            # to that stop would run (per design_new.md the stop-planning rule
+            # under "RouteTask data"). A stop the tracks merely touch but that
+            # can only be reached against its task's direction (or against block
+            # travel-direction) is skipped, so the ladder falls through to the
+            # next viable stop. That directed walk's metric is also the distance
+            # used for the nearest comparison below.
+            required_dir = self.resolve_task_direction(
+                train, bid, getattr(task, "task_direction", "either"), 1
+            )
+            metric = self._walk_metric_to_block(
+                train, bid, direction_constraint=required_dir, _walk_cache=walk_cache
+            )
             if metric is None:
                 continue
-            cand = (metric, idx)
-            if best_any is None or cand < best_any:
-                best_any = cand
+            reverse_penalty = (
+                1
+                if self._seed_stop_forces_reversal(
+                    train, route, idx, bid, required_dir, _walk_cache=walk_cache
+                )
+                else 0
+            )
             block = blocks_registry.get(bid)
             occupant = getattr(block, "occupied_by", None) if block is not None else None
             occupied_by_other = bool(occupant) and occupant != train_id
-            if not occupied_by_other and (best_free is None or cand < best_free):
-                best_free = cand
+            taken_penalty = 1 if (occupied_by_other or bid in claimed_blocks) else 0
+            score = (reverse_penalty, taken_penalty, metric, idx)
+            if best is None or score < best[0]:
+                best = (score, idx)
 
-        chosen = best_free if best_free is not None else best_any
-        return None if chosen is None else chosen[1]
+        return None if best is None else best[1]

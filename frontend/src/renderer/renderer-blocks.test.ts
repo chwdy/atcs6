@@ -115,3 +115,50 @@ describe('RendererBlockHandler.drawBlockPreviewPath', () => {
     expect(ctx.fill).not.toHaveBeenCalled();
   });
 });
+
+describe('RendererBlockHandler.drawBlockVoltages', () => {
+  it('puts a forward (positive) voltage on the + rail and pills the block', () => {
+    const ctx = makeCtx();
+    const r = makeRenderer(ctx);
+    r.currentBlocks = { B1: { current_voltage: 6 } };
+    const h = new RendererBlockHandler(r);
+    h.drawBlockVoltages([{ x: 0, y: 0, block_section_id: 'B1', track_bits: 1 }]);
+
+    const texts = ctx.fillText.mock.calls.map((c) => c[0]);
+    expect(texts).toContain('+6.0');
+    expect(texts).toContain('−0.0');
+    expect(ctx.roundRect).toHaveBeenCalledTimes(1); // energized → pill drawn
+  });
+
+  it('puts a reverse (negative) voltage on the − rail', () => {
+    const ctx = makeCtx();
+    const r = makeRenderer(ctx);
+    r.currentBlocks = { B1: { current_voltage: -6 } };
+    const h = new RendererBlockHandler(r);
+    h.drawBlockVoltages([{ x: 0, y: 0, block_section_id: 'B1', track_bits: 1 }]);
+
+    const texts = ctx.fillText.mock.calls.map((c) => c[0]);
+    expect(texts).toContain('+0.0');
+    expect(texts).toContain('−6.0');
+  });
+
+  it('labels both rails but draws no pill for an unpowered block (0V)', () => {
+    const ctx = makeCtx();
+    const r = makeRenderer(ctx);
+    r.currentBlocks = { B1: { current_voltage: 0 } };
+    const h = new RendererBlockHandler(r);
+    h.drawBlockVoltages([{ x: 0, y: 0, block_section_id: 'B1', track_bits: 1 }]);
+
+    const texts = ctx.fillText.mock.calls.map((c) => c[0]);
+    expect(texts).toContain('+0.0');
+    expect(texts).toContain('−0.0');
+    expect(ctx.roundRect).not.toHaveBeenCalled(); // unpowered → no pill
+  });
+
+  it('skips tiles with no block section', () => {
+    const ctx = makeCtx();
+    const h = new RendererBlockHandler(makeRenderer(ctx));
+    h.drawBlockVoltages([{ x: 0, y: 0, track_bits: 1 }]);
+    expect(ctx.fillText).not.toHaveBeenCalled();
+  });
+});

@@ -111,6 +111,17 @@ class BlockManager:
         self.simulation_controller = simulation_controller
         self.network = network
         self.history: deque = deque(maxlen=100)
+        # Reverse index: train_id -> set of block ids it has reserved ahead.
+        # Maintained at every reservation mutation in this class so TrainPhysics
+        # can read a train's reserved corridor in O(reserved) instead of
+        # scanning every block each tick. Occupied blocks are NOT tracked here —
+        # physics reads those from its own movement scratchpad.
+        self._reserved_by_train: Dict[str, Set[str]] = {}
+        # Blocks whose holder was cleared this tick (tail vacate / reservation
+        # release / clear). Drained once after every train has emitted voltage;
+        # each is re-checked and dropped to 0V only if still unheld. This is the
+        # event-driven replacement for an all-blocks de-energize sweep.
+        self._blocks_pending_deenergize: Set[str] = set()
 
     # ------------------------------------------------------------------
     # Registry accessors (prefer network over fallback dict)
@@ -157,6 +168,59 @@ class BlockManager:
                 "train_id": train_id,
             }
         )
+
+    # ------------------------------------------------------------------
+    # Reserved-corridor reverse index + de-energize queue
+    # ------------------------------------------------------------------
+
+    def _index_add_reserved(self, block_id: str, train_id: Optional[str]) -> None:
+        """Record that `train_id` reserved `block_id` (no-op when train None)."""
+        if train_id is None:
+            return
+        self._reserved_by_train.setdefault(train_id, set()).add(block_id)
+
+    def _index_drop_reserved(self, block_id: str, train_id: Optional[str]) -> None:
+        """Forget a reservation of `block_id` by `train_id` (no-op when None)."""
+        if train_id is None:
+            return
+        held = self._reserved_by_train.get(train_id)
+        if held is not None:
+            held.discard(block_id)
+            if not held:
+                del self._reserved_by_train[train_id]
+
+    def reserved_blocks_for_train(self, train_id: str) -> Set[str]:
+        """Block ids this train has reserved ahead, in O(reserved) — the
+        canonical reverse of `Block.reserved_for_train`, maintained at every
+        reservation mutation here. TrainPhysics unions this with the train's
+        occupied span to get its held set each tick (no all-blocks scan).
+        """
+        return set(self._reserved_by_train.get(train_id, ()))
+
+    def _mark_for_deenergize(self, block_id: str) -> None:
+        """Queue a block whose holder was just cleared for an end-of-tick 0V
+        check (drained by `take_blocks_to_deenergize`)."""
+        self._blocks_pending_deenergize.add(block_id)
+
+    def take_blocks_to_deenergize(self) -> List[str]:
+        """Return and clear the block ids queued this tick that are *still*
+        unheld (no occupant and no reservation), so the caller drives them to 0V.
+
+        Re-checking the live block fields here — not the queued snapshot — means
+        a block vacated and then re-reserved within the same tick stays
+        energized. This is the event-driven replacement for the former
+        all-blocks de-energize sweep.
+        """
+        pending = self._blocks_pending_deenergize
+        self._blocks_pending_deenergize = set()
+        unheld: List[str] = []
+        for block_id in pending:
+            block = self._block_registry.get(block_id)
+            if block is None:
+                continue
+            if block.occupied_by is None and block.reserved_for_train is None:
+                unheld.append(block_id)
+        return unheld
 
     # ------------------------------------------------------------------
     # Existing primitive operations (kept; called by the new methods)
@@ -226,6 +290,10 @@ class BlockManager:
         # already None, so the FREE case is unaffected.)
         block.occupied_by = train_id
         block.caution = None
+        # Consuming a same-train reservation: drop it from the reserved index
+        # (the block is now occupied, tracked by physics' span, not reserved).
+        # Read `reserved_for_train` before clearing `reservation`.
+        self._index_drop_reserved(block_id, block.reserved_for_train)
         block.reservation = None
         self._record_history(
             block_id, "occupy", prior_state, BlockState.OCCUPIED, train_id
@@ -317,6 +385,7 @@ class BlockManager:
             block.occupied_by = None
             # Direction-less placeholder — cleared by next _reevaluate_caution_blocks.
             block.caution = CautionState(exit_edge="")
+            self._mark_for_deenergize(block_id)
             self._record_history(
                 block_id,
                 "set_caution",
@@ -342,7 +411,9 @@ class BlockManager:
 
         block.occupied_by = None
         block.caution = None
+        self._index_drop_reserved(block_id, block.reserved_for_train)
         block.reservation = None
+        self._mark_for_deenergize(block_id)
 
         self._record_history(
             block_id, "clear", prior_state, BlockState.FREE, prev_train
@@ -593,6 +664,7 @@ class BlockManager:
             block = self._block_registry[block_id]
             traversal = directions[block_id]
             block.reserve_for_path(path_id, train_id, traversal.exit_edge)
+            self._index_add_reserved(block_id, train_id)
             self._record_history(
                 block_id,
                 "reserve",
@@ -646,7 +718,10 @@ class BlockManager:
                     block_id=block_id,
                 )
                 continue
+            reserved_train = block.reserved_for_train
             block.release_path_reservation()
+            self._index_drop_reserved(block_id, reserved_train)
+            self._mark_for_deenergize(block_id)
             if completed and block.caution is not None:
                 block.caution = None
             self._record_history(
@@ -700,6 +775,7 @@ class BlockManager:
         prior_state = block.state
         block.occupied_by = None
         block.caution = CautionState(exit_edge=direction)
+        self._mark_for_deenergize(block_id)
         self._record_history(
             block_id,
             "tail_vacated",

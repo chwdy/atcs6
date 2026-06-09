@@ -14,14 +14,17 @@ import { showToast } from '../lib/toast';
 import {
   ConstructionPathfinder,
   pathToTracks,
+  tileSkipsSegment,
   validateBlockPath,
   getValidSignalDirections,
+  traceNodeKey,
+  type TraceNode,
 } from '../lib/pathfinders';
+import { graphSearch } from '../lib/graph-search';
 import {
   showConfirmModal,
   renderBitToggle,
   getBlockStateColor,
-  getTrackExits,
 } from '../lib/helpers';
 import { FORBIDDEN_TRACK_BITS, isSquareCornerSwitch } from '../lib/constants';
 import { BlockEditorHandler } from './editor-blocks';
@@ -48,8 +51,9 @@ export class Editor {
   dragEnd: any;
   previewPath: any;
   previewTracks: any = null;
-  lastValidPreviewPath: any;
-  lastValidPreviewTracks: any;
+  // Any drag tool: set when the current drag has no buildable route, so the
+  // preview shows a red attempt-line and commitDragBuild lays nothing.
+  previewInvalid: boolean = false;
   lastMouseX: number;
   lastMouseY: number;
   selectedElement: any;
@@ -107,8 +111,6 @@ export class Editor {
     this.dragStart = null;
     this.dragEnd = null;
     this.previewPath = null;
-    this.lastValidPreviewPath = null;
-    this.lastValidPreviewTracks = null;
     this.lastMouseX = 0;
     this.lastMouseY = 0;
     this.selectedElement = null;
@@ -924,6 +926,24 @@ export class Editor {
     };
   }
 
+  // "x,y" → track map over cachedNetwork.tracks, rebuilt only when the tracks
+  // array reference changes. cachedNetwork is replaced wholesale on every
+  // network update, so identity comparison is exact; during a drag it is stable,
+  // so the trace/preview methods (updatePreviewPath runs on every mousemove)
+  // reuse this map instead of rebuilding it over all tracks each call.
+  private _tracksByKeyCache: Map<string, any> | null = null;
+  private _tracksByKeySource: any[] | null = null;
+  private _tracksByKey(): Map<string, any> {
+    const tracks = this.cachedNetwork?.tracks || [];
+    if (this._tracksByKeyCache && this._tracksByKeySource === tracks) {
+      return this._tracksByKeyCache;
+    }
+    const byKey = new Map<string, any>(tracks.map((t: any) => [`${t.x},${t.y}`, t]));
+    this._tracksByKeyCache = byKey;
+    this._tracksByKeySource = tracks;
+    return byKey;
+  }
+
   // Walk the existing-track network from `start` to `goal`, following real
   // segment connectivity (switch-aware), and return the ordered list of track
   // tiles on the shortest connecting path — or null if they are not connected.
@@ -931,67 +951,16 @@ export class Editor {
   // exits its track bits actually bind for the edge it was entered by, so the
   // path cannot cheat across the disconnected segments of a switch.
   _traceTrackPath(start: any, goal: any): Array<{ x: number; y: number }> | null {
-    const tracks = this.cachedNetwork?.tracks || [];
-    const byKey = new Map<string, any>(tracks.map((t: any) => [`${t.x},${t.y}`, t]));
-    const startKey = `${start.x},${start.y}`;
-    const goalKey = `${goal.x},${goal.y}`;
-    if (!byKey.has(startKey) || !byKey.has(goalKey)) return null;
-    if (startKey === goalKey) return [{ x: start.x, y: start.y }];
+    const byKey = this._tracksByKey();
+    if (!byKey.has(`${start.x},${start.y}`) || !byKey.has(`${goal.x},${goal.y}`)) return null;
 
-    const STEP: Record<string, [number, number]> = {
-      NORTH: [0, 1], SOUTH: [0, -1], EAST: [1, 0], WEST: [-1, 0],
-    };
-    const OPP: Record<string, string> = {
-      NORTH: 'SOUTH', SOUTH: 'NORTH', EAST: 'WEST', WEST: 'EAST',
-    };
-    const SHORT2FULL: Record<string, string> = { N: 'NORTH', S: 'SOUTH', E: 'EAST', W: 'WEST' };
-    const portsOf = (bits: number) => getTrackExits(bits || 0).map((s) => SHORT2FULL[s]);
-
-    // BFS state = `${tileKey}|${entryEdge}` (entryEdge '' for the start tile).
-    const startState = `${startKey}|`;
-    const queue: Array<{ x: number; y: number; entry: string; state: string }> = [
-      { x: start.x, y: start.y, entry: '', state: startState },
-    ];
-    const prev = new Map<string, { state: string; x: number; y: number }>();
-    const seen = new Set<string>([startState]);
-
-    while (queue.length) {
-      const cur = queue.shift()!;
-      const bits = byKey.get(`${cur.x},${cur.y}`)?.track_bits ?? 0;
-      // From the start tile any exposed edge is fair game; afterwards the entry
-      // edge constrains the exits to the segment(s) that actually bind it.
-      const exits =
-        cur.entry === '' ? portsOf(bits) : this.pathfinder.getExitsForEntry(bits, cur.entry);
-      for (const exit of exits) {
-        const step = STEP[exit];
-        if (!step) continue;
-        const nx = cur.x + step[0];
-        const ny = cur.y + step[1];
-        const nKey = `${nx},${ny}`;
-        const nTrack = byKey.get(nKey);
-        if (!nTrack) continue;
-        const back = OPP[exit];
-        // The neighbour must carry track on the facing edge to be connected.
-        if (!portsOf(nTrack.track_bits).includes(back)) continue;
-        const nState = `${nKey}|${back}`;
-        if (seen.has(nState)) continue;
-        seen.add(nState);
-        prev.set(nState, { state: cur.state, x: cur.x, y: cur.y });
-        if (nKey === goalKey) {
-          const out = [{ x: nx, y: ny }];
-          let s = nState;
-          while (prev.has(s)) {
-            const p = prev.get(s)!;
-            out.push({ x: p.x, y: p.y });
-            s = p.state;
-          }
-          out.reverse();
-          return out;
-        }
-        queue.push({ x: nx, y: ny, entry: back, state: nState });
-      }
-    }
-    return null;
+    const { path } = graphSearch<TraceNode>({
+      seeds: [{ x: start.x, y: start.y, entry: '' }],
+      key: traceNodeKey,
+      neighbors: this.pathfinder.followExistingNeighbors(byKey),
+      goal: (n) => n.x === goal.x && n.y === goal.y,
+    });
+    return path ? path.map((n) => ({ x: n.x, y: n.y })) : null;
   }
 
   // Flood the existing-track network from `start` — same switch-aware directed
@@ -1000,48 +969,22 @@ export class Editor {
   // second endpoints of a trace; the start tile is excluded since it already
   // carries the yellow anchor highlight.
   _traceReachableTiles(start: any): Set<string> {
-    const tracks = this.cachedNetwork?.tracks || [];
-    const byKey = new Map<string, any>(tracks.map((t: any) => [`${t.x},${t.y}`, t]));
+    const byKey = this._tracksByKey();
     const startKey = `${start.x},${start.y}`;
     const reachable = new Set<string>();
     if (!byKey.has(startKey)) return reachable;
 
-    const STEP: Record<string, [number, number]> = {
-      NORTH: [0, 1], SOUTH: [0, -1], EAST: [1, 0], WEST: [-1, 0],
-    };
-    const OPP: Record<string, string> = {
-      NORTH: 'SOUTH', SOUTH: 'NORTH', EAST: 'WEST', WEST: 'EAST',
-    };
-    const SHORT2FULL: Record<string, string> = { N: 'NORTH', S: 'SOUTH', E: 'EAST', W: 'WEST' };
-    const portsOf = (bits: number) => getTrackExits(bits || 0).map((s) => SHORT2FULL[s]);
-
-    const startState = `${startKey}|`;
-    const queue: Array<{ x: number; y: number; entry: string }> = [
-      { x: start.x, y: start.y, entry: '' },
-    ];
-    const seen = new Set<string>([startState]);
-
-    while (queue.length) {
-      const cur = queue.shift()!;
-      const bits = byKey.get(`${cur.x},${cur.y}`)?.track_bits ?? 0;
-      const exits =
-        cur.entry === '' ? portsOf(bits) : this.pathfinder.getExitsForEntry(bits, cur.entry);
-      for (const exit of exits) {
-        const step = STEP[exit];
-        if (!step) continue;
-        const nx = cur.x + step[0];
-        const ny = cur.y + step[1];
-        const nKey = `${nx},${ny}`;
-        const nTrack = byKey.get(nKey);
-        if (!nTrack) continue;
-        const back = OPP[exit];
-        if (!portsOf(nTrack.track_bits).includes(back)) continue;
-        const nState = `${nKey}|${back}`;
-        if (seen.has(nState)) continue;
-        seen.add(nState);
-        if (nKey !== startKey) reachable.add(nKey);
-        queue.push({ x: nx, y: ny, entry: back });
-      }
+    // No goal → graphSearch floods, settling every reachable (tile, entry)
+    // node. Collapse those to tile keys; the start tile is excluded since it
+    // already carries the yellow anchor highlight.
+    const { visited } = graphSearch<TraceNode>({
+      seeds: [{ x: start.x, y: start.y, entry: '' }],
+      key: traceNodeKey,
+      neighbors: this.pathfinder.followExistingNeighbors(byKey),
+    });
+    for (const node of visited.values()) {
+      const k = `${node.x},${node.y}`;
+      if (k !== startKey) reachable.add(k);
     }
     return reachable;
   }
@@ -1197,8 +1140,7 @@ export class Editor {
         this.isDraggingBuild = true;
         this.dragStart = gridPos;
         this.dragEnd = gridPos;
-        this.lastValidPreviewPath = null;
-        this.lastValidPreviewTracks = null;
+        this.previewInvalid = false;
       }
       // Left mouse + box-select = start screen-space rubber-band rectangle
       else if (e.button === 0 && this.selectedTool === 'box-select') {
@@ -1406,9 +1348,10 @@ export class Editor {
         this.dragEnd = null;
         this.forcedStartSegment = null;
         this.forcedEndSegment = null;
-        const hadPreview = this.previewPath !== null;
+        const hadPreview = this.previewPath !== null || this.previewInvalid;
         this.previewPath = null;
         this.previewTracks = null;
+        this.previewInvalid = false;
         this.renderer.setBuildPreview(null);
 
         if (hadPreview && this.cachedNetwork) {
@@ -1429,8 +1372,7 @@ export class Editor {
         this.forcedEndSegment = null;
         this.previewPath = null;
         this.previewTracks = null;
-        this.lastValidPreviewPath = null;
-        this.lastValidPreviewTracks = null;
+        this.previewInvalid = false;
         this.renderer.setBuildPreview(null);
         if (this.cachedNetwork) {
           this.renderer.requestRedraw();
@@ -1791,6 +1733,30 @@ export class Editor {
 
   // === End Block Manager Methods ===
 
+  // Path for a block/platform/eraser drag: these operate ON existing track, so
+  // they follow existing connectivity (never an empty tile) via graphSearch.
+  // Blocks additionally cannot contain switches or crossings (see
+  // validateBlockTile), so the block tools stop at them — a drag that can only
+  // be completed by crossing one finds no path, which surfaces as the red line.
+  private _followExistingDragPath(): Array<{ x: number; y: number }> | null {
+    const byKey = this._tracksByKey();
+    const s = this.dragStart;
+    const g = this.dragEnd;
+    if (!byKey.has(`${s.x},${s.y}`) || !byKey.has(`${g.x},${g.y}`)) return null;
+
+    const isBlock = this.selectedTool === 'block' || this.selectedTool === 'extend-block';
+    const { path } = graphSearch<TraceNode>({
+      seeds: [{ x: s.x, y: s.y, entry: '' }],
+      key: traceNodeKey,
+      neighbors: this.pathfinder.followExistingNeighbors(
+        byKey,
+        isBlock ? { stopAtSwitches: true, stopAtCrossings: true } : {}
+      ),
+      goal: (n) => n.x === g.x && n.y === g.y,
+    });
+    return path ? path.map((n) => ({ x: n.x, y: n.y })) : null;
+  }
+
   updatePreviewPath(): void {
     if (!this.dragStart || !this.dragEnd) return;
 
@@ -1798,22 +1764,24 @@ export class Editor {
       'track', 'block', 'extend-block', 'platform', 'extend-platform', 'remove-platform-tile', 'remove-block-tile',
     ];
     if (dragToolSet.includes(this.selectedTool)) {
-      const existingTracks = this.cachedNetwork ? this.cachedNetwork.tracks : [];
       const isTrackTool = this.selectedTool === 'track';
-      const foundPath = this.pathfinder.findPath(
-        this.dragStart.x,
-        this.dragStart.y,
-        this.dragEnd.x,
-        this.dragEnd.y,
-        existingTracks,
-        isTrackTool
-          ? {
+      // The track tool LAYS new track, so it routes with the placement A* (it may
+      // cross empty tiles). Every other drag tool operates ON existing track, so
+      // it follows existing connectivity and never proposes an empty tile.
+      const foundPath = isTrackTool
+        ? this.pathfinder.findPath(
+            this.dragStart.x,
+            this.dragStart.y,
+            this.dragEnd.x,
+            this.dragEnd.y,
+            this.cachedNetwork ? this.cachedNetwork.tracks : [],
+            {
               avoidConnect: this.avoidConnectMode,
               forcedStartSegment: this.forcedStartSegment ?? undefined,
               forcedEndSegment: this.forcedEndSegment ?? undefined,
             }
-          : {}
-      );
+          )
+        : this._followExistingDragPath();
 
       if (foundPath) {
         this.previewPath = foundPath;
@@ -1824,11 +1792,39 @@ export class Editor {
               forcedEndSegment: this.forcedEndSegment,
             })
           : null;
-        this.lastValidPreviewPath = this.previewPath;
-        this.lastValidPreviewTracks = this.previewTracks;
+        this.previewInvalid = false;
+
+        // Platform/signal tiles keep their own rail, so pathToTracks lays nothing
+        // on them — a path passing through one would show a gap. The path now
+        // follows that rail (rail-follow rule in the pathfinder), so draw the
+        // tile's existing rail into the preview to bridge the gap. Display only:
+        // commitDragBuild re-runs pathToTracks, which still skips these tiles.
+        if (isTrackTool && this.previewTracks && this.cachedNetwork?.tracks) {
+          const shown = new Set(this.previewTracks.map((t: any) => `${t.x},${t.y}`));
+          const skipTiles = new Map<string, any>();
+          for (const t of this.cachedNetwork.tracks) {
+            if (tileSkipsSegment(t)) {
+              skipTiles.set(`${t.x},${t.y}`, t);
+            }
+          }
+          for (const p of this.previewPath) {
+            const key = `${p.x},${p.y}`;
+            if (shown.has(key)) continue;
+            const ex = skipTiles.get(key);
+            if (ex && ex.track_bits) {
+              this.previewTracks.push({ x: p.x, y: p.y, track_bits: ex.track_bits });
+              shown.add(key);
+            }
+          }
+        }
       } else {
-        this.previewPath = this.lastValidPreviewPath;
-        this.previewTracks = isTrackTool ? this.lastValidPreviewTracks : null;
+        // Any drag tool with no legal route: show the red attempt-line (an
+        // off-track gap, a switch/crossing a block can't cross, a platform/signal
+        // in the way, or a forced segment that can't turn) and leave previewPath
+        // null so commitDragBuild lays nothing — never freeze on a stale shape.
+        this.previewPath = null;
+        this.previewTracks = null;
+        this.previewInvalid = true;
       }
     } else {
       // Single placement for other tools
@@ -1841,7 +1837,9 @@ export class Editor {
     // (Drawing it synchronously here would be wiped when the flush clears the
     // live canvas — see renderer setBuildPreview / _drawLive.)
     if (this.cachedNetwork) {
-      if (this.previewTracks && this.previewTracks.length > 0) {
+      if (this.previewInvalid && this.dragStart && this.dragEnd) {
+        this.renderer.setBuildPreview({ kind: 'invalid', path: [this.dragStart, this.dragEnd] });
+      } else if (this.previewTracks && this.previewTracks.length > 0) {
         this.renderer.setBuildPreview({ kind: 'tracks', tracks: this.previewTracks });
       } else if (
         ['remove-platform-tile', 'remove-block-tile'].includes(this.selectedTool) &&

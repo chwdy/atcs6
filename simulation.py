@@ -32,6 +32,7 @@ from train import Train, TrainCar
 from enums import TrainState, Direction
 from block_power import BlockPowerController
 from switch_power import SwitchPowerController
+from block_occupancy import SimulatedInputInterface, BlockOccupancyDetector
 from notification_center import NotificationCenter, Severity
 from route_executor import RouteExecutor
 
@@ -93,6 +94,26 @@ class SimulationController:
         network.power_controller = self.power_controller
         self.switch_power_controller = SwitchPowerController(network)
         network.switch_power_controller = self.switch_power_controller
+
+        # Block occupancy detection: the global per-block current sensor plus the
+        # debounce/attribution detector (design_new.md "Power -> Block occupancy
+        # detection"). The simulated sensor reads the live spans of all
+        # controllers; `self.controllers` is shared by reference and populated as
+        # trains are added, so the detector sees every train without re-wiring.
+        self.input_interface = SimulatedInputInterface(network, self.controllers)
+        network.input_interface = self.input_interface
+        self.block_occupancy_detector = BlockOccupancyDetector(
+            network=network,
+            input_interface=self.input_interface,
+            controllers=self.controllers,
+            notify=lambda kind, message: self.notification_center.emit(
+                source="BlockOccupancyDetector",
+                kind=kind,
+                severity=Severity.WARNING,
+                event_time=self.simulation_time,
+                payload={"message": message},
+            ),
+        )
         self.route_executor = RouteExecutor(network, path_dispatcher, self.controllers)
         self.speed_profile_registry = network.speed_profiles
         self.simulation_time: float = 0.0
@@ -160,6 +181,15 @@ class SimulationController:
         if self.failed_runtime:
             return
 
+        # Step 0 - Global block-current read + debounce + attribution
+        # (design_new.md "Power -> Block occupancy detection"). One world-wide
+        # current read per tick reflecting end-of-last-tick positions. Confirmed
+        # entered/vacated blocks are attributed to trains and stashed per
+        # controller; each train commits its slice in Phase 3 through the normal
+        # on_controller_progress flow, and the precise position is snapped to the
+        # block seam where the hardware leads it.
+        self._detect_block_occupancy()
+
         # Refresh route-managed scheduling state (time advancement only).
         self.route_executor.update(delta_seconds)
 
@@ -184,9 +214,68 @@ class SimulationController:
 
             self._update_train(train, delta_seconds)
 
+        # After every train has emitted its held-block voltages, drop any block
+        # whose holder cleared this tick (tail vacate / reservation release) to
+        # 0V. BlockManager queued those blocks as their holders cleared and
+        # re-checks each is still unheld, so the energized set is exactly each
+        # train's occupied blocks plus its reserved-ahead corridor (design_new.md
+        # "Power", Block power-controller role). The all-blocks sweep is the
+        # fallback for a runtime with no BlockManager wired.
+        if self.block_manager is not None:
+            for block_id in self.block_manager.take_blocks_to_deenergize():
+                self.power_controller.set_block_voltage(block_id, 0.0)
+        else:
+            self.power_controller.deenergize_unheld_blocks()
+
         # After all trains, refresh signals so they reflect every block state
         # change (including path completions) committed during the tick.
         self.network.update_signals_from_blocks()
+
+    def _detect_block_occupancy(self) -> None:
+        """Step 0 of the tick: read every block's current detector, debounce,
+        attribute confirmed transitions to trains, and stash each train's
+        entered/vacated block slice for its Phase-3 commit (design_new.md
+        "Power -> Block occupancy detection"). The controller drains its slice in
+        on_physics_updated and the existing on_controller_progress flow commits
+        Block.occupied_by.
+        """
+        detector = self.block_occupancy_detector
+
+        # Adopt externally-committed occupancy (place_train / restore) as already
+        # confirmed so a placed-on block does not read as a fresh entry.
+        detector.seed_occupied(
+            block_id
+            for block_id, block in self.network.blocks.items()
+            if block.occupied_by is not None
+        )
+
+        entered, vacated = detector.step()
+        entered_by_train, vacated_by_train = detector.attribute(entered, vacated)
+
+        # Reset every train's slice, then write this tick's attributed sets.
+        for controller in self.controllers.values():
+            controller.physics_sync.pending_detected_entered_blocks = set()
+            controller.physics_sync.pending_detected_vacated_blocks = set()
+        for train_id, block_ids in entered_by_train.items():
+            controller = self.controllers.get(train_id)
+            if controller is not None:
+                controller.physics_sync.pending_detected_entered_blocks = set(block_ids)
+        for train_id, block_ids in vacated_by_train.items():
+            controller = self.controllers.get(train_id)
+            if controller is not None:
+                controller.physics_sync.pending_detected_vacated_blocks = set(block_ids)
+
+        # Physical detection outranks the calculated position: snap each affected
+        # train's span forward to the block seam where the detector leads it
+        # (inert under the v1 simulated sensor; active with real hardware).
+        for train_id in set(entered_by_train) | set(vacated_by_train):
+            controller = self.controllers.get(train_id)
+            train = self.network.trains.get(train_id)
+            if controller is None or train is None:
+                continue
+            self._get_or_create_physics(train).reconcile_to_detected_occupancy(
+                train, controller
+            )
 
     # =========================================================================
     # Per-train three-phase transaction
@@ -370,6 +459,12 @@ class SimulationController:
             return
 
         self.route_executor.remove_train_route_run(train.train_id)
+        # A same-route structural Route.tasks edit holds its re-assignment until
+        # this clear is done (remove_train_route_run unassigns the train), then
+        # re-applies it so the next eligible Phase 1 allocates a fresh RouteRun.
+        # No-op for admin deactivate / abort / power-off (they record nothing).
+        # Per design_new.md "Shared-route edit teardown".
+        self.route_executor.apply_pending_reassign(train.train_id)
         controller.route_hooks.phase_latches.consume_route_deactivate()
 
     # =========================================================================

@@ -108,6 +108,13 @@ CURVE_SAMPLE_RESOLUTION_CM = (
 )
 ATO_SPEED_MARGIN_KMH = 3.0  # ATO stays this far km/h below ATC limit
 
+# ATC overspeed escalation thresholds (km/h above the ATC limit). Named here
+# (not inline literals) so they are tunable via the Advanced settings panel
+# through `runtime_config`. EB escalation at `> OVERSPEED_EB_THRESHOLD_KMH`;
+# a diagnostic warning at `> OVERSPEED_WARN_THRESHOLD_KMH`.
+OVERSPEED_EB_THRESHOLD_KMH = 10.0
+OVERSPEED_WARN_THRESHOLD_KMH = 5.0
+
 
 # =============================================================================
 # Data Structures for Lookahead and ATO
@@ -714,18 +721,25 @@ class TrainController:
             # Get block speed limit for current block
             self.atc.current_block_speed_limit = self._get_current_block_speed_limit()
 
-            # Calculate clearance and ATC speed. Per design_new.md, the
-            # canonical reason for the published ATC limit is the
-            # `atc_limit_reason_*` fields at distance 0 of the lookahead;
-            # the structured code is mirrored onto `_last_atc_limit_reason_code`
-            # so consumers (journey harness, monitor) can read the enum
-            # without parsing the free-form string.
+            # `clearance_ahead_cm` is still published for `is_safe_to_move()`,
+            # diagnostics, and as the no-curve fallback inside
+            # `_distance_zero_atc_anchor()`; refresh it first so that fallback
+            # reads a current value.
             self.atc.clearance_ahead_cm = self.atc.clearance_ahead()
-            (
-                self.atc.speed_limit,
-                _,
-                self.atc._last_limit_reason_code,
-            ) = self.atc.speed_limit_with_code()
+            # Publish the ATC limit + reason from the canonical lookahead's
+            # distance-0 anchor (single source of truth). Per design_new.md,
+            # lookahead is the pure derived authority value: its `speed_curves`
+            # walk the path's tile geometry, so they measure real forward
+            # clearance even where a block's `length_cm` metadata is 0. The
+            # older block-walk clearance (`clearance_ahead()`, which sums
+            # `length_cm`) under-counted authority through zero-length blocks
+            # and published a phantom-low limit that braked the train and
+            # tripped a spurious overspeed EB; the curve anchor has no such
+            # failure mode, and its `atc_limit_reason_code` is the canonical
+            # reason the monitor/journey-harness already read.
+            self.atc.speed_limit, self.atc._last_limit_reason_code = (
+                self._distance_zero_atc_anchor()
+            )
             logger.debug(
                 "[TrainController %s] ATC: clearance=%.2f limit=%.2f",
                 self.train_id,
@@ -747,7 +761,7 @@ class TrainController:
             and not self.is_stopped()
         )
 
-        if overspeed > 10 or no_authority_rolling:
+        if overspeed > OVERSPEED_EB_THRESHOLD_KMH or no_authority_rolling:
             # Emergency brake. Per design_new.md the EB controller-local
             # effects are: set eb_active = True, force handle to EB, clear
             # ato_running, and (when an active path exists) write
@@ -761,7 +775,7 @@ class TrainController:
                 )
             self.notifications.emit(
                 "ATC triggered emergency brake: overspeed"
-                if overspeed > 10
+                if overspeed > OVERSPEED_EB_THRESHOLD_KMH
                 else "No movement authority: emergency brake"
             )
             logger.debug(
@@ -771,7 +785,7 @@ class TrainController:
                 no_authority_rolling,
             )
             return
-        elif overspeed > 5:
+        elif overspeed > OVERSPEED_WARN_THRESHOLD_KMH:
             logger.debug(
                 "[TrainController %s] ATC warning: overspeed=%.2f",
                 self.train_id,
@@ -1963,12 +1977,22 @@ class TrainController:
         # by raw resource_id.
         plan = self.path_projection.received_path_plan
         tile_xy_to_seq_index: Dict[Tuple[int, int], int] = {}
+        # block_id -> sequence_index / forward exit edge from the live plan, used
+        # to enrich the detector-sourced block events (design_new.md "Power ->
+        # Block occupancy detection") the same way tile traversals enrich switch
+        # events with their own sequence_index.
+        block_to_seq_index: Dict[str, int] = {}
+        block_to_exit_edge: Dict[str, str] = {}
         if plan is not None:
             for entry in plan.resource_sequence:
                 for path_tile in entry.path_tiles:
                     tile_xy_to_seq_index[(path_tile.x, path_tile.y)] = (
                         entry.sequence_index
                     )
+                if getattr(entry, "resource_type", None) == "block":
+                    block_to_seq_index[entry.resource_id] = entry.sequence_index
+                    if entry.exit_edge:
+                        block_to_exit_edge[entry.resource_id] = entry.exit_edge
 
         entered_resources: List[ResourceEvent] = []
         seen_entered: set = set()
@@ -1977,15 +2001,17 @@ class TrainController:
             res_type = tile.resource_type
             if res_id is None or res_type is None:
                 continue
+            # Block entry is detector-driven (current detection + debounce); only
+            # switch entry comes from the precise tile diff. The detector's block
+            # slice is appended below on the final no-boundary callback. Switch
+            # events propagate entry_edge + switch_exit_edge so the dispatcher can
+            # build the route key for route-keyed switch occupancy.
+            if res_type != "switch":
+                continue
             key = (res_type, res_id)
             if key in seen_entered:
                 continue
             seen_entered.add(key)
-            # For switch events, propagate entry_edge + switch_exit_edge so
-            # the dispatcher can build the route key for route-keyed
-            # occupancy. Block events leave them None.
-            ev_entry_edge = tile.entry_edge if res_type == "switch" else None
-            ev_switch_exit_edge = tile.exit_edge if res_type == "switch" else None
             entered_resources.append(
                 ResourceEvent(
                     sequence_index=tile_xy_to_seq_index.get(tile.tile_xy),
@@ -1993,8 +2019,8 @@ class TrainController:
                     resource_id=res_id,
                     exit_edge=None,
                     block_id=tile.block_id,
-                    entry_edge=ev_entry_edge,
-                    switch_exit_edge=ev_switch_exit_edge,
+                    entry_edge=tile.entry_edge,
+                    switch_exit_edge=tile.exit_edge,
                 )
             )
 
@@ -2018,25 +2044,43 @@ class TrainController:
             res_type = tile.resource_type
             if res_id is None or res_type is None:
                 continue
+            if res_type == "block":
+                # Block tail-vacate is detector-driven. When the tail fully
+                # clears a block (no remaining occupied tiles), record the
+                # precise forward exit edge so the later debounced vacate carries
+                # the correct caution direction. Partial vacates (block still
+                # occupied on another tile) are ignored, same as before.
+                if res_id in still_occupied_block_ids:
+                    continue
+                self.physics_sync.block_exit_edges[res_id] = tile.exit_edge
+                continue
             key = (res_type, res_id)
             if key in seen_vacated:
                 continue
-            if res_type == "block" and res_id in still_occupied_block_ids:
-                continue
             seen_vacated.add(key)
-            exit_edge = tile.exit_edge if res_type == "block" else None
-            ev_entry_edge = tile.entry_edge if res_type == "switch" else None
-            ev_switch_exit_edge = tile.exit_edge if res_type == "switch" else None
             tail_vacated_resources.append(
                 ResourceEvent(
                     sequence_index=tile_xy_to_seq_index.get(tile.tile_xy),
                     resource_type=res_type,
                     resource_id=res_id,
-                    exit_edge=exit_edge,
+                    exit_edge=None,
                     block_id=tile.block_id,
-                    entry_edge=ev_entry_edge,
-                    switch_exit_edge=ev_switch_exit_edge,
+                    entry_edge=tile.entry_edge,
+                    switch_exit_edge=tile.exit_edge,
                 )
+            )
+
+        # Block entered/vacated events come from the global current detector
+        # (design_new.md "Power -> Block occupancy detection"), not the precise
+        # tile diff. Emit this tick's attributed slice once, on the final
+        # no-boundary callback (added and removed both empty), enriched with
+        # sequence_index / exit edge from the live plan.
+        if not span_update.added_tiles and not span_update.removed_tiles:
+            self._emit_detected_block_events(
+                entered_resources,
+                tail_vacated_resources,
+                block_to_seq_index,
+                block_to_exit_edge,
             )
 
         # Per design_new.md lines 448–450: compute deviation fields from the
@@ -2080,6 +2124,59 @@ class TrainController:
             deviation_reason=None,
         )
         self.physics_sync.queued_progress_reports.append(report)
+
+    def _emit_detected_block_events(
+        self,
+        entered_resources: List[ResourceEvent],
+        tail_vacated_resources: List[ResourceEvent],
+        block_to_seq_index: Dict[str, int],
+        block_to_exit_edge: Dict[str, str],
+    ) -> None:
+        """Append this tick's detector-confirmed block entered/vacated events to
+        the progress report being built (design_new.md "Power -> Block occupancy
+        detection").
+
+        Blocks are ordered by path sequence_index so a multi-block tick advances
+        route waypoints in order. The vacate exit edge comes from the precise
+        edge captured when the tail cleared the block (`block_exit_edges`),
+        falling back to the plan's forward exit edge. Clears the per-tick slice
+        after draining it.
+        """
+        ps = self.physics_sync
+
+        for block_id in sorted(
+            ps.pending_detected_entered_blocks,
+            key=lambda b: block_to_seq_index.get(b, 0),
+        ):
+            entered_resources.append(
+                ResourceEvent(
+                    sequence_index=block_to_seq_index.get(block_id),
+                    resource_type="block",
+                    resource_id=block_id,
+                    exit_edge=None,
+                    block_id=block_id,
+                )
+            )
+
+        for block_id in sorted(
+            ps.pending_detected_vacated_blocks,
+            key=lambda b: block_to_seq_index.get(b, 0),
+        ):
+            exit_edge = ps.block_exit_edges.pop(block_id, None)
+            if exit_edge is None:
+                exit_edge = block_to_exit_edge.get(block_id)
+            tail_vacated_resources.append(
+                ResourceEvent(
+                    sequence_index=block_to_seq_index.get(block_id),
+                    resource_type="block",
+                    resource_id=block_id,
+                    exit_edge=exit_edge,
+                    block_id=block_id,
+                )
+            )
+
+        ps.pending_detected_entered_blocks = set()
+        ps.pending_detected_vacated_blocks = set()
 
     # -------------------------------------------------------------------------
     # Lookahead Calculation (shared by ATC and ATO)
@@ -2199,7 +2296,7 @@ class TrainController:
         if self.physics_sync.current_speed_kmh > 0:
             self.physics_sync.current_speed_kmh = 0.0
 
-        result = self.commands.set_cab(required_cab)
+        result = self.commands.set_cab(required_cab, internal=True)
         return result.success
 
     def _path_needs_cab_flip(self) -> bool:
@@ -3425,6 +3522,38 @@ class TrainController:
         span without reaching into the dataclass field directly.
         """
         return self.physics_sync.current_span
+
+    def _distance_zero_atc_anchor(
+        self,
+    ) -> Tuple[float, Optional[AtcLimitReasonCode]]:
+        """The published ATC speed limit + reason at the train head.
+
+        Primary source is the canonical lookahead's first `speed_curves`
+        anchor (distance 0) — the single source of truth for forward authority
+        per design_new.md "Lookahead is a pure derived value". The curve walks
+        the path's tile geometry, so it measures real clearance even where a
+        block's `length_cm` metadata is 0; this is why the ATC limit is sourced
+        here rather than from the `length_cm`-summing block walk in
+        `clearance_ahead()`. The no-authority / no-cab / head-off-path payloads
+        stamp their own distance-0 anchor (with a structured reason code), so
+        those reasons flow through unchanged.
+
+        Only when the payload carries no `speed_curves` anchor at all — a
+        degenerate path with no usable tile geometry — fall back to the
+        clearance-based `speed_limit_with_code()` recompute (which reads the
+        `clearance_ahead_cm` refreshed just before this call) so the published
+        limit still has a defined value.
+        """
+        payload = self._compute_canonical_lookahead()
+        curves = (payload.get("lookahead") or {}).get("speed_curves") or []
+        if curves:
+            anchor = curves[0]
+            limit = float(anchor.get("atc_limit", 0.0) or 0.0)
+            code_str = anchor.get("atc_limit_reason_code")
+            code = AtcLimitReasonCode(code_str) if code_str else None
+            return limit, code
+        limit, _reason, code = self.atc.speed_limit_with_code()
+        return limit, code
 
     def get_lookahead(self) -> Dict[str, Any]:
         """Return the canonical lookahead payload per design_new.md.

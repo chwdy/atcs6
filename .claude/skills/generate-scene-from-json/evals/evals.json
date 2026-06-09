@@ -1,0 +1,26 @@
+{
+  "skill_name": "generate-scene-from-json",
+  "evals": [
+    {
+      "id": 0,
+      "name": "basic-bake-demo6-json",
+      "prompt": "can you generate a scene from layouts/demo_6.json",
+      "expected_output": "Runs json_to_scene.py on layouts/demo_6.json with --verify, prints VERIFY OK with entity counts, and flags the layout-only caveat (setup_demo_train stub). Does NOT hand-write a new converter.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "name": "named-output-bake",
+      "prompt": "bake layouts/demo_6.json into a python scene file called yard_demo.py with scene id yard_demo",
+      "expected_output": "Runs the baker writing to yard_demo.py with --scene-id yard_demo and --verify; reports the output path, SCENE_ID, and VERIFY OK counts.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "stale-json-match-current-scene",
+      "prompt": "convert demo_6.json into a .py scene, but I want it to match the CURRENT demo_6 (it has way more stations than the json)",
+      "expected_output": "Recognizes that layouts/demo_6.json is stale vs demo_6.py, so serializes the live demo_6 network (to_layout_dict) to a JSON first and bakes THAT, rather than the stale file. Reports counts and the layout-only caveat.",
+      "files": []
+    }
+  ]
+}

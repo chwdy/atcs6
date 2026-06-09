@@ -63,6 +63,8 @@ interface TrainTrack {
   track_bits?: number;
   block_section_id?: string | null;
   is_switch?: boolean;
+  switch_state?: number;
+  switch_id?: string;
 }
 
 interface TunnelEndpointRec {
@@ -79,6 +81,7 @@ interface TunnelPairRec {
 interface TrainNetwork {
   tracks?: TrainTrack[];
   blocks?: Record<string, { length_cm?: number } | undefined>;
+  switches?: Record<string, { main_length_cm?: number; diverge_length_cm?: number } | undefined>;
   tunnels?: TunnelPairRec[];
 }
 
@@ -259,34 +262,53 @@ export class RendererTrainHandler {
   }
 
   /**
-   * Get exit edge from entry edge based on track bits.
-   */
-  getExitEdge(trackBits: number, entryEdge: string): string | null {
-    const BIT_TO_EDGES = [
-      ['N', 'S'],  // bit 0: NS
-      ['E', 'W'],  // bit 1: EW
-      ['N', 'E'],  // bit 2: NE
-      ['N', 'W'],  // bit 3: NW
-      ['S', 'E'],  // bit 4: SE
-      ['S', 'W'],  // bit 5: SW
-    ];
-
-    for (let bit = 0; bit < 6; bit++) {
-      if (trackBits & (1 << bit)) {
-        const [a, b] = BIT_TO_EDGES[bit];
-        if (a === entryEdge) return b;
-        if (b === entryEdge) return a;
-      }
-    }
-    return null;
-  }
-
-  /**
    * Get the opposite edge.
    */
   getOppositeEdge(edge: string): string {
     const opposites: Record<string, string> = { N: 'S', S: 'N', E: 'W', W: 'E' };
     return opposites[edge] || edge;
+  }
+
+  /**
+   * Exit edge a head/tail marker leaves by, having entered `track` via
+   * `entryEdge`. Mirrors backend TrackSegment.get_exits(use_switch_state=True):
+   * a non-switch (or a switch with only one geometric exit from this entry) has
+   * an unambiguous exit; a switch with two exits picks the ACTIVE branch by
+   * switch_state — the main (NS/EW) segment for state 0, the diverge (diagonal)
+   * segment for state 1. For a diagonal-only switch (no NS/EW segment) the
+   * branches are ordered by bit and switch_state selects the Nth. Returns null
+   * when the entry edge carries no segment (caller then pins at the entry edge).
+   */
+  getActiveExitEdge(
+    track: { track_bits?: number; is_switch?: boolean; switch_state?: number } | null | undefined,
+    entryEdge: string,
+  ): string | null {
+    if (!track) return null;
+    const bits = track.track_bits || 0;
+    const BIT_TO_EDGES: Array<[string, string]> = [
+      ['N', 'S'], ['E', 'W'], ['N', 'E'], ['N', 'W'], ['S', 'E'], ['S', 'W'],
+    ];
+    const candidates: Array<{ exit: string; bit: number }> = [];
+    for (let bit = 0; bit < 6; bit++) {
+      if (!(bits & (1 << bit))) continue;
+      const [a, b] = BIT_TO_EDGES[bit];
+      if (a === entryEdge) candidates.push({ exit: b, bit });
+      else if (b === entryEdge) candidates.push({ exit: a, bit });
+    }
+    if (candidates.length === 0) return null;
+    if (candidates.length === 1 || !track.is_switch) return candidates[0].exit;
+
+    const state = track.switch_state || 0;
+    const hasMain = (bits & 0b11) !== 0; // any NS/EW segment present
+    if (hasMain) {
+      const pick = state === 0
+        ? candidates.find((c) => c.bit <= 1) // main: NS/EW
+        : candidates.find((c) => c.bit >= 2); // diverge: diagonal
+      return (pick || candidates[0]).exit;
+    }
+    // Diagonal-only switch: order diverge segments by bit, state selects.
+    candidates.sort((a, b) => a.bit - b.bit);
+    return (candidates[state] || candidates[0]).exit;
   }
 
   /**
@@ -297,7 +319,8 @@ export class RendererTrainHandler {
     entryEdge: string,
     distance_cm: number,
     tile_length_cm: number,
-    trackBits: number,
+    track: TrainTrack | null | undefined,
+    exitEdgeOverride?: string,
   ): { x: number; y: number; rotation: number } {
     const x = tile[0];
     const y = tile[1];
@@ -306,9 +329,14 @@ export class RendererTrainHandler {
     const centerX = this.gridToScreenX(x, y);
     const centerY = this.gridToScreenY(x, y);
 
-    // Get entry and exit edge offsets
+    // Get entry and exit edge offsets. A caller that already knows the exit
+    // edge from the train's grid trajectory (the body/tail) passes it as
+    // `exitEdgeOverride`; otherwise fall back to the track-geometry exit, which
+    // reads live `switch_state` (correct for the head moving into matched track).
     const entryOffset = this.getEdgeCenterOffset(entryEdge);
-    const exitEdge = this.getExitEdge(trackBits, entryEdge);
+    const exitEdge = exitEdgeOverride !== undefined
+      ? exitEdgeOverride
+      : this.getActiveExitEdge(track, entryEdge);
     const exitOffset = exitEdge ? this.getEdgeCenterOffset(exitEdge) : entryOffset;
 
     // Calculate progress along path (0 = entry, 1 = exit)
@@ -361,13 +389,17 @@ export class RendererTrainHandler {
     const headEntryEdge = headEndpoint.entry_edge;
     const tailEntryEdge = tailEndpoint.entry_edge;
 
-    // Per-tile length is `block.length_cm / number_of_tiles_in_block`
-    // (matching `RailwayNetwork._get_tile_length_cm` on the backend).
-    // Switches have length 0 — the head transits them instantly, and
-    // interpolation on a 0-length tile is meaningless, so the renderer
-    // pins it at the entry edge (handled inside getTilePathPosition).
+    // Per-tile length mirrors `RailwayNetwork._get_tile_length_cm` on the
+    // backend: a block tile is `block.length_cm / number_of_tiles_in_block`,
+    // and a configured switch is its state-dependent active length
+    // (main_length_cm for state 0, diverge_length_cm for state 1). The head
+    // physically dwells on a switch for that length, so it must NOT be
+    // hardcoded to 0 — doing so pins the head/tail marker at the entry edge
+    // and freezes it for the whole transit. Only an unconfigured switch (no
+    // entity / 0 lengths) is instant, which correctly reads as a 0-length pin.
     const tracks = this.currentNetwork?.tracks || [];
     const blocks = this.currentNetwork?.blocks || {};
+    const switches = this.currentNetwork?.switches || {};
     const DEFAULT_TILE_LENGTH_CM = 50;
 
     const tileCountByBlock = new Map<string, number>();
@@ -384,7 +416,11 @@ export class RendererTrainHandler {
     const getTileLengthCm = (tile: [number, number]) => {
       const t = getTrack(tile);
       if (!t) return DEFAULT_TILE_LENGTH_CM;
-      if (t.is_switch) return 0;
+      if (t.is_switch) {
+        const sw = t.switch_id ? switches[t.switch_id] : undefined;
+        if (!sw) return 0;
+        return (t.switch_state === 1 ? sw.diverge_length_cm : sw.main_length_cm) || 0;
+      }
       if (!t.block_section_id) return DEFAULT_TILE_LENGTH_CM;
       const block = blocks[t.block_section_id];
       const blockLen = block?.length_cm;
@@ -393,32 +429,18 @@ export class RendererTrainHandler {
       return blockLen / tileCount;
     };
 
-    // Calculate head and tail screen positions
-    const headPos = this.getTilePathPosition(
-      headTile, headEntryEdge, headDistanceCm,
-      getTileLengthCm(headTile), getTrackBits(headTile),
-    );
-
-    const tailPos = this.getTilePathPosition(
-      tailTile, tailEntryEdge, tailDistanceCm,
-      getTileLengthCm(tailTile), getTrackBits(tailTile),
-    );
-
-    const s = this.scale;
-    const occupiedTileCount = occupiedTiles.length;
-
     // === Draw train body (white stroke with dark border from tail to head) ===
-    // Walk occupied_tiles tail→head to build a polyline.
-    // occupied_tiles is ordered end_a → end_b; if the head is end_a, we
-    // need to reverse so the walk goes tail → head.
+    // occupied_tiles is ordered end_a → end_b; reverse so the walk goes
+    // tail → head (used for the body polyline and the tail exit edge below).
     const tilesTailToHead = headFromA
       ? [...occupiedTiles].reverse()
       : occupiedTiles;
+    const occupiedTileCount = occupiedTiles.length;
 
-    // Exit edge from one occupied tile to the next is fixed by their
-    // grid positions — derive it directly. Using `getTrackExits()` with
-    // the live `switch_state` would pick the wrong branch any time the
-    // switch state differs from what the train actually traversed.
+    // Exit edge from one occupied tile to the next is fixed by their grid
+    // positions — derive it directly. Using the live `switch_state` (via
+    // getActiveExitEdge) would pick the wrong branch any time the switch state
+    // differs from what the train actually traversed.
     const edgeFromDelta = (curr: [number, number], next: [number, number]) => {
       const dx = next[0] - curr[0];
       const dy = next[1] - curr[1];
@@ -428,15 +450,40 @@ export class RendererTrainHandler {
       if (dx < 0) return 'W';
       return null;
     };
+    const isGridAdjacent = (a: [number, number], b: [number, number]) => (
+      Math.abs(b[0] - a[0]) + Math.abs(b[1] - a[1]) === 1
+    );
+
+    // Calculate head and tail screen positions. The tail's exit edge is
+    // grid-derived toward the next occupied tile — the same rule the body
+    // polyline uses — so the tail marker never points at a stale switch branch
+    // in the train's wake, where live switch_state may have been re-thrown for
+    // a following train after this train physically passed. The head's forward
+    // exit leaves the occupied span (no next tile), so it falls back to the
+    // track-geometry exit inside getTilePathPosition.
+    const tailExitEdge = (
+      occupiedTileCount > 1 && isGridAdjacent(tilesTailToHead[0], tilesTailToHead[1])
+        ? edgeFromDelta(tilesTailToHead[0], tilesTailToHead[1])
+        : null
+    ) || undefined;
+
+    const headPos = this.getTilePathPosition(
+      headTile, headEntryEdge, headDistanceCm,
+      getTileLengthCm(headTile), getTrack(headTile),
+    );
+
+    const tailPos = this.getTilePathPosition(
+      tailTile, tailEntryEdge, tailDistanceCm,
+      getTileLengthCm(tailTile), getTrack(tailTile), tailExitEdge,
+    );
+
+    const s = this.scale;
 
     // Tunnel hops break grid adjacency: occupied_tiles can contain a
     // pair of tiles separated by an arbitrary delta. The polyline must
     // not span the tunnel — the body needs to render as two separate
     // pieces, one on each mouth.
     const tunnels = this.currentNetwork?.tunnels || [];
-    const isGridAdjacent = (a: [number, number], b: [number, number]) => (
-      Math.abs(b[0] - a[0]) + Math.abs(b[1] - a[1]) === 1
-    );
     const findTunnelEdgePair = (a: [number, number], b: [number, number]) => {
       for (const pair of tunnels) {
         if (pair.a.x === a[0] && pair.a.y === a[1] &&

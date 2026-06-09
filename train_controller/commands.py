@@ -57,8 +57,8 @@ class OperatorCommands:
         self.command_inbox: List[Any] = []
         self.drain_order: tuple = (
             "power_on",
-            "set_cab",
             "set_mode",
+            "set_cab",
             "set_manual_mode_type",
             "set_handle",
             "set_manual_power_percent",
@@ -107,7 +107,7 @@ class OperatorCommands:
         """Drain the command inbox in canonical kind order, FIFO within each.
 
         Per design_new.md "Phase 2 — Execute" / "Driver/operator inputs",
-        commands are drained in the order: power_on -> set_cab -> set_mode
+        commands are drained in the order: power_on -> set_mode -> set_cab
         -> set_manual_mode_type -> set_handle / set_manual_power_percent ->
         activate_emergency_cmd -> release_emergency_cmd -> power_off.
         `ato_go` / `ato_stop` are internal helpers and are not part of the
@@ -385,15 +385,23 @@ class OperatorCommands:
     # Cab & Mode Commands
     # -------------------------------------------------------------------------
 
-    def set_cab(self, cab: Optional[str]) -> CommandResult:
+    def set_cab(self, cab: Optional[str], *, internal: bool = False) -> CommandResult:
         """
         Set active cab. Flips facing_direction when switching cabs.
 
         Rules:
+        - Operator cab selection is only available in manual mode
+          (``control_mode == "manual"``). In ATO the system aligns the cab
+          itself, so an operator-issued ``set_cab`` is rejected.
         - Train must be stopped (speed = 0)
         - Setting cab to 'A' or 'B' transitions to STANDBY
         - Setting cab to None transitions to IDLE
         - Switching from A to B (or vice versa) flips facing_direction
+
+        ``internal=True`` is the ATO auto-cab-selection path: the controller
+        aligns the cab to the live path direction during ``depart()``. It
+        bypasses the manual-mode gate (the system, not the operator, is
+        selecting the cab) but keeps every other rule (stopped, frame flip).
         """
         c = self._c
         train = c._get_train()
@@ -402,6 +410,13 @@ class OperatorCommands:
 
         if not c.is_stopped():
             return CommandResult(False, "Cannot switch cab while moving")
+
+        # Operator cab selection is manual-only; ATO aligns the cab itself
+        # via the internal=True path during depart().
+        if not internal and self.control_mode != "manual":
+            return CommandResult(
+                False, "cab selection is only available in manual mode"
+            )
 
         old_cab = self.cab
 

@@ -1234,7 +1234,7 @@ class TestATODirectionDetection:
         sim = SimulationController(network, PathDispatcher(network))
         controller = _make_seeded_controller(sim, train)
         controller.commands.power_on_cmd()
-        controller.commands.set_cab("A")
+        controller.commands.set_cab("A", internal=True)  # ATO context: system-set cab
 
         assert controller.commands.cab == "A"
         assert controller.ops.state == TrainState.READY
@@ -1261,7 +1261,7 @@ class TestATODirectionDetection:
         sim = SimulationController(network, PathDispatcher(network))
         controller = _make_seeded_controller(sim, train)
         controller.commands.power_on_cmd()
-        controller.commands.set_cab("A")
+        controller.commands.set_cab("A", internal=True)  # ATO context: system-set cab
 
         assert controller.commands.cab == "A"
 
@@ -1410,7 +1410,7 @@ class TestATODirectionDetection:
             occupied_blocks=["BLK_EAST", "BLK_MID"],
         )
         controller.commands.power_on_cmd()
-        controller.commands.set_cab("A")
+        controller.commands.set_cab("A", internal=True)  # ATO context: system-set cab
         controller.commands.control_mode = "ato"
 
         assert controller.commands.cab == "A"
@@ -1437,7 +1437,7 @@ class TestATODirectionDetection:
         sim = SimulationController(network, PathDispatcher(network))
         controller = _make_seeded_controller(sim, train)
         controller.commands.power_on_cmd()
-        controller.commands.set_cab("A")
+        controller.commands.set_cab("A", internal=True)  # ATO context: system-set cab
         controller.commands.control_mode = "ato"
 
         assert controller.commands.cab == "A"
@@ -1777,7 +1777,7 @@ class TestSameBlockSyntheticAuthority:
         sim = SimulationController(network, dispatcher)
         controller = sim._get_or_create_controller(train)
         if cab is not None:
-            controller.commands.set_cab(cab)
+            controller.commands.set_cab(cab, internal=True)  # mode-neutral cab setup
         set_train_span(
             controller,
             head_tile,

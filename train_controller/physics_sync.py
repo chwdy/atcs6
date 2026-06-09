@@ -25,7 +25,7 @@ External callers access live span and speed as:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 from runtime_payloads import ControllerProgressReport
 
@@ -41,3 +41,15 @@ class PhysicsSync:
         self.current_span: Optional[Any] = None
         self.current_speed_kmh: float = 0.0
         self.queued_progress_reports: List[ControllerProgressReport] = []
+
+        # Block occupancy detection (design_new.md "Power -> Block occupancy
+        # detection"). The global current detector confirms block entry/exit at
+        # the top of each tick and writes this train's attributed slice here;
+        # on_physics_updated drains it into the Phase-3 progress report so the
+        # existing on_controller_progress flow commits Block.occupied_by.
+        self.pending_detected_entered_blocks: Set[str] = set()
+        self.pending_detected_vacated_blocks: Set[str] = set()
+        # Precise forward exit edge captured when the tail fully clears a block,
+        # held until the debounced detector confirms the vacate so the caution
+        # direction matches the physical exit edge.
+        self.block_exit_edges: Dict[str, str] = {}

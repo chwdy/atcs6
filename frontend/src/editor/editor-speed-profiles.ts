@@ -41,7 +41,24 @@ interface SpeedProfileData {
   air_resistance_enabled: boolean;
   drag_coefficient: number;
   reference_speed_kmh: number;
+  // Per-train notch response: multipliers keyed by handle ("P1".."P5" /
+  // "B1".."B8"). Power notches scale acceleration; brake notches scale the
+  // operational decel rate. Mirrors SpeedProfile.power/brake_multipliers.
+  power_multipliers: Record<string, number>;
+  brake_multipliers: Record<string, number>;
 }
+
+// Standard notch tables (match enums.POWER_MULTIPLIERS / BRAKE_MULTIPLIERS).
+// Used as the render order and as the fallback when a profile omits a notch.
+const POWER_NOTCHES: ReadonlyArray<[string, number]> = [
+  ['P1', 0.2], ['P2', 0.4], ['P3', 0.6], ['P4', 0.8], ['P5', 1.0],
+];
+const BRAKE_NOTCHES: ReadonlyArray<[string, number]> = [
+  ['B1', 0.2], ['B2', 0.4], ['B3', 0.55], ['B4', 0.7],
+  ['B5', 0.85], ['B6', 1.0], ['B7', 1.3], ['B8', 1.7],
+];
+const DEFAULT_POWER_MULT: Record<string, number> = Object.fromEntries(POWER_NOTCHES);
+const DEFAULT_BRAKE_MULT: Record<string, number> = Object.fromEntries(BRAKE_NOTCHES);
 
 interface PlotAxis {
   yMin: number;
@@ -521,6 +538,10 @@ export class SpeedProfileEditorHandler {
       air_resistance_enabled: d.air_resistance_enabled ?? true,
       drag_coefficient: d.drag_coefficient ?? 0.001,
       reference_speed_kmh: d.reference_speed_kmh ?? 100,
+      // Merge the profile's notch tables over the standard table so a missing
+      // notch falls back rather than reading as undefined.
+      power_multipliers: { ...DEFAULT_POWER_MULT, ...(d.power_multipliers || {}) },
+      brake_multipliers: { ...DEFAULT_BRAKE_MULT, ...(d.brake_multipliers || {}) },
     };
   }
 
@@ -624,6 +645,14 @@ export class SpeedProfileEditorHandler {
                     ${this._rateRow('Reference speed (km/h)', 'sp-refspeed', p.reference_speed_kmh)}
                 </details>
 
+                <details class="tc-disclosure">
+                    <summary>Notch response</summary>
+                    <div class="input-small-row mb-8"><label class="input-small-label">Power notches (× acceleration)</label></div>
+                    ${POWER_NOTCHES.map(([h]) => this._notchRow(h, `sp-pm-${h}`, p.power_multipliers[h])).join('')}
+                    <div class="input-small-row mb-8"><label class="input-small-label">Brake notches (× operational decel)</label></div>
+                    ${BRAKE_NOTCHES.map(([h]) => this._notchRow(h, `sp-bm-${h}`, p.brake_multipliers[h])).join('')}
+                </details>
+
                 ${
                   p.profile_id === 'default'
                     ? ''
@@ -637,6 +666,14 @@ export class SpeedProfileEditorHandler {
                     <div class="input-small-row mb-8">
                         <label class="input-small-label input-small-label-inline" for="${id}">${label}</label>
                         <input type="number" id="${id}" class="input-small-field input-small-field-compact" value="${fmt(value, 4)}" step="0.1">
+                    </div>`;
+  }
+
+  private _notchRow(label: string, id: string, value: number): string {
+    return `
+                    <div class="input-small-row mb-8">
+                        <label class="input-small-label input-small-label-inline" for="${id}">${label}</label>
+                        <input type="number" id="${id}" class="input-small-field input-small-field-compact" value="${fmt(value ?? 0, 2)}" min="0" step="0.05">
                     </div>`;
   }
 
@@ -836,6 +873,16 @@ export class SpeedProfileEditorHandler {
     rates.forEach(([id, key]) => {
       const el = document.getElementById(id) as HTMLInputElement | null;
       if (el) el.oninput = () => this._onScalar(el, (v) => ((this._profile as any)[key] = v));
+    });
+
+    // Per-train notch tables.
+    POWER_NOTCHES.forEach(([h]) => {
+      const el = document.getElementById(`sp-pm-${h}`) as HTMLInputElement | null;
+      if (el) el.oninput = () => this._onScalar(el, (v) => { this._profile!.power_multipliers[h] = v; });
+    });
+    BRAKE_NOTCHES.forEach(([h]) => {
+      const el = document.getElementById(`sp-bm-${h}`) as HTMLInputElement | null;
+      if (el) el.oninput = () => this._onScalar(el, (v) => { this._profile!.brake_multipliers[h] = v; });
     });
   }
 

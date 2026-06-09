@@ -31,6 +31,9 @@ export interface BlockInfo {
   length_cm?: number;
   min_radius_cm?: number;
   speed_limit_kmh?: number;
+  // Single signed track voltage (-12V..+12V): magnitude is the drive level,
+  // sign is polarity. The voltage debug overlay splits it into + / - rails.
+  current_voltage?: number;
 }
 
 export interface BlockTrack {
@@ -243,15 +246,38 @@ export class RendererBlockHandler {
     }
   }
 
-  drawBlockDetailLabels(tracks: BlockTrack[]): void {
+  // Group tracks by block and resolve each block's middle-tile screen anchor
+  // (the tile center, before any per-overlay vertical offset). Shared by the
+  // block-name/detail overlay and the block-voltage overlay so both label the
+  // same tile of each block. One entry per non-empty block, in track order.
+  blockAnchors(tracks: BlockTrack[]): Array<{
+    blockId: string;
+    blockTrackList: BlockTrack[];
+    centerTrack: BlockTrack;
+    cx: number;
+    cy: number;
+  }> {
     const blockTracks: Record<string, BlockTrack[]> = {};
     for (const track of tracks) {
       if (!track.block_section_id) continue;
-      if (!blockTracks[track.block_section_id]) {
-        blockTracks[track.block_section_id] = [];
-      }
-      blockTracks[track.block_section_id].push(track);
+      (blockTracks[track.block_section_id] ||= []).push(track);
     }
+    return Object.entries(blockTracks)
+      .filter(([, list]) => list.length > 0)
+      .map(([blockId, blockTrackList]) => {
+        const centerTrack = blockTrackList[Math.floor(blockTrackList.length / 2)];
+        return {
+          blockId,
+          blockTrackList,
+          centerTrack,
+          cx: this.gridToScreenX(centerTrack.x, centerTrack.y),
+          cy: this.gridToScreenY(centerTrack.x, centerTrack.y),
+        };
+      });
+  }
+
+  drawBlockDetailLabels(tracks: BlockTrack[]): void {
+    const anchors = this.blockAnchors(tracks);
 
     const tileSize = this.gridSize * this.scale;
     const halfTile = tileSize / 2;
@@ -264,14 +290,7 @@ export class RendererBlockHandler {
       cy: number;
     } | null = null;
 
-    for (const [blockId, blockTrackList] of Object.entries(blockTracks)) {
-      if (blockTrackList.length === 0) continue;
-
-      const centerIndex = Math.floor(blockTrackList.length / 2);
-      const centerTrack = blockTrackList[centerIndex];
-      const cx = this.gridToScreenX(centerTrack.x, centerTrack.y);
-      const cy = this.gridToScreenY(centerTrack.x, centerTrack.y);
-
+    for (const { blockId, blockTrackList, centerTrack, cx, cy } of anchors) {
       const offsetY = tileSize * 0.35;
       const offsetX = tileSize * 0.3;
       const neOffsetX = 10;
@@ -294,14 +313,8 @@ export class RendererBlockHandler {
       }
     }
 
-    for (const [blockId, blockTrackList] of Object.entries(blockTracks)) {
+    for (const { blockId, cx, cy } of anchors) {
       if (blockId === hoveredBlockId) continue;
-      if (blockTrackList.length === 0) continue;
-
-      const centerIndex = Math.floor(blockTrackList.length / 2);
-      const centerTrack = blockTrackList[centerIndex];
-      const cx = this.gridToScreenX(centerTrack.x, centerTrack.y);
-      const cy = this.gridToScreenY(centerTrack.x, centerTrack.y);
 
       const blockInfo: BlockInfo = this.currentBlocks && this.currentBlocks[blockId]
         ? this.currentBlocks[blockId]
@@ -450,6 +463,69 @@ export class RendererBlockHandler {
 
       this.ctx.fillStyle = '#999';
       this.ctx.fillText(line3, cx + offsetX + neOffsetX, yPos);
+
+      this.ctx.restore();
+    }
+  }
+
+  /**
+   * Debug overlay: each block's output voltage on its + and - rails.
+   *
+   * The backend models block power as one signed scalar (`current_voltage`,
+   * -12V..+12V) where the sign is polarity. We present it as a polarized DC
+   * driver's two terminals: forward polarity (v > 0) energizes the + rail,
+   * reverse polarity (v < 0) energizes the - rail, and 0V leaves both cold.
+   * One small label is drawn above each block's middle tile so it stays clear
+   * of the lower-right block-name label.
+   */
+  drawBlockVoltages(tracks: BlockTrack[]): void {
+    const tileSize = this.gridSize * this.scale;
+    const fontSize = Math.max(5, 8 * this.scale);
+
+    for (const { blockId, cx, cy: baseCy } of this.blockAnchors(tracks)) {
+      const blockInfo: BlockInfo = this.currentBlocks && this.currentBlocks[blockId]
+        ? this.currentBlocks[blockId]
+        : {};
+      const v = blockInfo.current_voltage || 0;
+      const plus = v > 0 ? v : 0;
+      const minus = v < 0 ? -v : 0;
+      const energized = plus > 0 || minus > 0;
+
+      const cy = baseCy - tileSize * 0.42;
+
+      this.ctx.save();
+      this.ctx.font = `${fontSize}px monospace`;
+      this.ctx.textAlign = 'left';
+      this.ctx.textBaseline = 'middle';
+
+      const plusText = `+${plus.toFixed(1)}`;
+      const minusText = `−${minus.toFixed(1)}`;
+      const gap = 4 * this.scale;
+      const plusWidth = this.ctx.measureText(plusText).width;
+      const minusWidth = this.ctx.measureText(minusText).width;
+      const totalWidth = plusWidth + gap + minusWidth;
+      const startX = cx - totalWidth / 2;
+
+      // Pill only behind energized blocks so powered rails pop; unpowered
+      // blocks stay as faint floating text.
+      if (energized) {
+        const padX = 3 * this.scale;
+        const padY = 2 * this.scale;
+        this.ctx.fillStyle = 'rgba(13, 16, 32, 0.72)';
+        this.ctx.strokeStyle = 'rgba(100, 100, 150, 0.4)';
+        this.ctx.lineWidth = 1;
+        this.ctx.beginPath();
+        this.ctx.roundRect(startX - padX, cy - fontSize / 2 - padY, totalWidth + padX * 2, fontSize + padY * 2, 3);
+        this.ctx.fill();
+        this.ctx.stroke();
+      }
+
+      // + rail in red, - rail in blue; the energized side is bright, the cold
+      // side dimmed so polarity reads at a glance.
+      this.ctx.fillStyle = plus > 0 ? '#ff6b6b' : 'rgba(255, 107, 107, 0.3)';
+      this.ctx.fillText(plusText, startX, cy);
+      this.ctx.fillStyle = minus > 0 ? '#5c9cff' : 'rgba(92, 156, 255, 0.3)';
+      this.ctx.fillText(minusText, startX + plusWidth + gap, cy);
 
       this.ctx.restore();
     }

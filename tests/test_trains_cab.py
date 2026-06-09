@@ -56,6 +56,7 @@ class TestCabSwitchEndPositionsBugFix:
         span = network.place_train(train, 1, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
+        controller.commands.control_mode = "manual"  # cab selection is manual-only
         # place_train returns the span but does not seed the controller; the
         # canonical live store is controller.physics_sync.current_span.
         controller.physics_sync.current_span = span
@@ -164,6 +165,7 @@ class TestCabSwitchEntryEdgeFlipBugFix:
         span = network.place_train(train, head_x, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
+        controller.commands.control_mode = "manual"  # cab selection is manual-only
         controller.physics_sync.current_span = span
         return train, controller
 
@@ -254,6 +256,7 @@ class TestSetCabDoubleFlipBugFix:
         span = network.place_train(train, 1, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
+        controller.commands.control_mode = "manual"  # cab selection is manual-only
         controller.physics_sync.current_span = span
         controller.commands.set_cab("A")
 
@@ -277,6 +280,7 @@ class TestSetCabDoubleFlipBugFix:
         span = network.place_train(train, 1, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
+        controller.commands.control_mode = "manual"  # cab selection is manual-only
         controller.physics_sync.current_span = span
         controller.commands.set_cab("A")
 
@@ -410,6 +414,7 @@ class TestSetCabDoubleFlipBugFix:
         span = network.place_train(train, 1, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
+        controller.commands.control_mode = "manual"  # cab selection is manual-only
         controller.physics_sync.current_span = span
 
         # active_cab is None initially

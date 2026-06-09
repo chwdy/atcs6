@@ -710,6 +710,19 @@ export class API {
   }
 
   /**
+   * Release the emergency brake (canonical eb.release()).
+   * The handle never releases EB; this is the only way to clear the EB latch.
+   * Latch-gated: fails until the train is stopped and the EB cancel committed.
+   */
+  async releaseEmergency(trainId: string): Promise<any> {
+    return this._request(
+      `/trains/${encodeURIComponent(trainId)}/release-emergency`,
+      { method: 'POST' },
+      'releaseEmergency'
+    );
+  }
+
+  /**
    * Set control mode (ATO or Manual) via OnboardComputer.
    * @param mode - 'ato' or 'manual'
    */

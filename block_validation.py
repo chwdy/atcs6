@@ -59,60 +59,6 @@ def validate_station_boundary(
     return False, f"Block cannot span multiple stations: {station_list}"
 
 
-def validate_block_path(
-    path: List[Tuple[int, int]], mode: str, network
-) -> Tuple[bool, Optional[str]]:
-    """
-    Validate a path for block creation/extension.
-
-    Validates:
-    1. No switches inside block (switches are block boundaries)
-    2. Path must be continuous
-    3. For CREATE mode, tiles must not have existing block assignment
-    4. Block must respect station boundaries (cannot cross station boundaries)
-
-    Args:
-        path: List of (x, y) tile positions to form the block
-        mode: 'create' or 'extend'
-        network: RailwayNetwork instance for lookups
-
-    Returns:
-        Tuple of (is_valid, error_message)
-        error_message is None if valid
-    """
-    if not path:
-        return True, None
-
-    # Rule 0: Validate station boundaries
-    valid, error = validate_station_boundary(path, network)
-    if not valid:
-        return False, error
-
-    for x, y in path:
-        track = network.get_track(x, y)
-        if not track:
-            return False, f"No track at position ({x}, {y})"
-
-        # Rule 1: No switches inside block
-        if track.is_switch:
-            return False, f"Switches cannot be inside blocks: position ({x}, {y})"
-
-        # Rule 2: For CREATE mode, tiles must not have existing block
-        if mode == "create" and track.block_section_id is not None:
-            return (
-                False,
-                f"Tile ({x}, {y}) already assigned to block {track.block_section_id}",
-            )
-
-    # Rule 4: Path must be continuous
-    if len(path) > 1:
-        is_continuous, errors = validate_block_assignment_continuity([], path, network)
-        if not is_continuous:
-            return False, f"Path is not continuous: {', '.join(errors)}"
-
-    return True, None
-
-
 def is_crossing(track_bits: int) -> bool:
     """
     Check if track_bits represents a crossing (+ shape).
@@ -131,6 +77,30 @@ def is_crossing(track_bits: int) -> bool:
     return track_bits in (3, 24, 36)
 
 
+# Crossings whose tile may still belong to a block. The orthogonal NS+EW
+# crossing (track_bits 3) is allowed: the whole tile is treated as a single
+# occupancy unit, so a block can run straight through it on one axis. The
+# diagonal crossings (24 = NW+SE, 36 = NE+SW) stay excluded.
+BLOCK_ALLOWED_CROSSINGS = frozenset({3})
+
+
+def crossing_disallowed_in_block(track_bits: int) -> bool:
+    """
+    Check if track_bits is a crossing that cannot belong to a block.
+
+    All crossings isolate their two paths, but the orthogonal NS+EW crossing
+    (3) is permitted inside a block; see BLOCK_ALLOWED_CROSSINGS. The diagonal
+    crossings (24, 36) remain disallowed.
+
+    Args:
+        track_bits: 6-bit track configuration
+
+    Returns:
+        True if this crossing must be kept out of blocks
+    """
+    return is_crossing(track_bits) and track_bits not in BLOCK_ALLOWED_CROSSINGS
+
+
 def validate_track_for_block(track, network) -> Tuple[bool, str]:
     """
     Validate if a track can be added to a block.
@@ -138,7 +108,8 @@ def validate_track_for_block(track, network) -> Tuple[bool, str]:
     Rules:
     1. Track must exist
     2. Track cannot be a switch (switches are block boundaries)
-    3. Track cannot be a crossing (crossings isolate paths, blocks can't cross them)
+    3. Track cannot be a disallowed crossing (diagonal crossings isolate paths;
+       the orthogonal NS+EW crossing is allowed - see crossing_disallowed_in_block)
 
     Note: This function does NOT validate station boundaries. Station boundary
     validation is performed separately by validate_station_boundary(), which
@@ -159,8 +130,9 @@ def validate_track_for_block(track, network) -> Tuple[bool, str]:
     if track.is_switch:
         return False, "Cannot add switch to block - switches are block boundaries"
 
-    # Rule 3: Check for crossings (+ shape or X shape)
-    if is_crossing(track.track_bits):
+    # Rule 3: Disallowed crossings. The orthogonal NS+EW crossing may belong to
+    # a block; diagonal crossings may not (see crossing_disallowed_in_block).
+    if crossing_disallowed_in_block(track.track_bits):
         return (
             False,
             "Cannot add crossing to block - crossings isolate paths and blocks cannot span them",

@@ -1123,7 +1123,7 @@ export class TrainEditorHandler {
     if (emergencyResetBtn) {
       emergencyResetBtn.onclick = async () => {
         try {
-          await executeAction('Release Emergency', () => api.setHandle(trainId, 'N'));
+          await executeAction('Release Emergency', () => api.releaseEmergency(trainId));
         } catch (err: any) {
           console.error('[TrainControl] Emergency reset failed:', err);
           showToast(`Emergency Reset: ${err.message}`, 'error', 5000);

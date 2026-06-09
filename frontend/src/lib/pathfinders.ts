@@ -18,6 +18,7 @@ import {
   TRACK_SW,
   FORBIDDEN_TRACK_BITS,
 } from './constants';
+import { graphSearch, type SearchStep } from './graph-search';
 
 // ---- Light shapes the pathfinder reads off otherwise-dynamic objects --------
 
@@ -49,23 +50,12 @@ interface TrackData {
 interface CostTable {
   useExisting: number;
   extend: number;
-  diagonal: number;
-  straight: number;
-  sameTurn: number;
+  move: number;
+  curve: number;
   createSwitch: number;
   createCrossover: number;
   createParallel: number;
   reverse: number;
-}
-
-interface AStarNode {
-  pos: Point;
-  g: number;
-  h: number;
-  f: number;
-  parent: AStarNode | null;
-  fromDir: string | null;
-  prevTurnDir: string | null;
 }
 
 interface FindPathOptions {
@@ -106,6 +96,50 @@ export function pathsToTrackBits(directedPaths: DirectedPath[]): number {
   return bits;
 }
 
+// A node for the follow-existing search: a tile plus the edge it was entered
+// through ('' for a seed, where every exposed edge is a valid first exit).
+export interface TraceNode {
+  x: number;
+  y: number;
+  entry: string;
+}
+
+export const traceNodeKey = (n: TraceNode): string => `${n.x},${n.y}|${n.entry}`;
+
+// A node for the placement search (laying new track): a tile, the direction the
+// path arrived by (null at the seed), the 2-tile-window heading at this tile
+// (grandparent -> here, for the curve penalty; null at the seed), and a parent
+// link so the neighbor rules can read ancestry (the no-90° corner check and the
+// no-self-intersection check both walk it).
+interface PlacementNode {
+  pos: Point;
+  fromDir: string | null;
+  heading: string | null;
+  parent: PlacementNode | null;
+}
+
+// State = tile + arrival direction + 2-tile heading. The heading is part of the
+// state because two paths reaching the same tile by the same last step but with
+// different prior steps (e.g. a straight vs a diagonal heading) face different
+// curve costs onward, so they must stay distinct in the closed set.
+const placementNodeKey = (n: PlacementNode): string =>
+  `${n.pos.x},${n.pos.y},${n.fromDir ?? '_'},${n.heading ?? '_'}`;
+
+interface PlacementContext {
+  trackMap: Map<string, TrackData>;
+  costs: CostTable;
+  preferredDirs: string[];
+  startEdges: string[] | null;
+  endEdges: string[] | null;
+  end: Point;
+  boundMinX: number;
+  boundMaxX: number;
+  boundMinY: number;
+  boundMaxY: number;
+  forcedStartSegment: string | null;
+  tileSkipsSegment: (t: TrackData | undefined) => boolean;
+}
+
 export class ConstructionPathfinder {
   costs: CostTable;
   avoidConnectCosts: CostTable;
@@ -117,42 +151,42 @@ export class ConstructionPathfinder {
   TRACK_SW: number;
 
   constructor() {
+    // Simutrans-style cost model. A "move" is one tile step; a straight step and
+    // a diagonal (staircase) step cost the SAME base, and direction is taxed
+    // separately by `curve`, measured over a 2-tile window (see
+    // placementNeighbors / heuristic). So a clean straight run and a clean 45°
+    // diagonal are both cheap, and only the transitions between headings cost.
     this.costs = {
-      useExisting: 0.2,
-      extend: 0.5,
-      diagonal: 1,
-      straight: 2,
-      sameTurn: 3,
-      createSwitch: 5,
-      createCrossover: 7,
-      // A parallel crossing (laying NE|SW or NW|SE over an existing track that
-      // already holds the other half) is a benign double-track, not a junction:
-      // the two segments run parallel on screen and never meet. Charge nothing
-      // extra so it costs the same as a normal zigzag move (its base diagonal
-      // cost), instead of being avoided like the perpendicular crossover.
-      createParallel: 0,
-      reverse: 100,
+      useExisting: 1, // step along existing track (path of least resistance)
+      extend: 2, // first step extending the start tile's own track
+      move: 3, // any step on empty ground — straight or diagonal alike
+      curve: 5, // per 2-tile-window heading change (the straightness lever)
+      createSwitch: 8, // merging the new track into existing track as a switch
+      createCrossover: 12, // crossing existing track perpendicularly
+      // A parallel crossing (NE|SW or NW|SE over a track that holds the other
+      // half) is a benign double-track, not a junction: a minimal surcharge so
+      // the router lays it almost as freely as a plain move.
+      createParallel: 1,
+      reverse: 100, // 180° about-face — effectively forbidden
     };
 
-    // Avoid-connect mode (shift key): flip the incentives so the path
-    // routes through existing tiles as a crossover instead of merging
-    // into a switch. createSwitch becomes prohibitive, reusing an
-    // existing edge is heavily penalised, and createCrossover gets a
-    // negative cost so A* actively prefers cutting through over
-    // sidestepping. The -2 value is tuned so A* crosses when the path
-    // naturally would pass through existing track, but does not detour
-    // to chase a crossing when none is needed. A parallel crossing gets the
-    // same negative incentive, so it too costs less than a plain zigzag move
-    // and the path lays a parallel double-track rather than merging in.
+    // Avoid-connect mode (shift key): same move/curve model as normal, but the
+    // moves that CONNECT to existing track are penalised so the new track stays
+    // independent — reusing an existing edge (useExisting), extending an existing
+    // segment (extend), and merging into a switch (createSwitch, penalised the
+    // hardest). The INDEPENDENT overlaps are not connections: createParallel (a
+    // parallel double-track) is free, and createCrossover (a perpendicular
+    // crossing) keeps its normal cost. Because merging costs far more than a
+    // crossing, a drag forced through existing track lays a crossing rather than
+    // a switch, and the router never detours out of its way to seek one.
     this.avoidConnectCosts = {
-      useExisting: 50,
-      extend: 50,
-      diagonal: 1,
-      straight: 2,
-      sameTurn: 3,
-      createSwitch: 200,
-      createCrossover: -2,
-      createParallel: -2,
+      useExisting: 500,
+      extend: 500,
+      move: 3, // same as normal
+      curve: 5, // same as normal
+      createSwitch: 2000, // never merge into a switch
+      createCrossover: 12, // normal cost — an independent overlap, not a connection
+      createParallel: 0, // free — a benign independent double-track
       reverse: 100,
     };
 
@@ -285,6 +319,208 @@ export class ConstructionPathfinder {
     return [...exits];
   }
 
+  // Neighbor plug for graphSearch over EXISTING track only (trace, reachable
+  // preview, and — with the stop knobs — block/platform selection). It never
+  // steps onto an empty tile: from a seed (entry '') every exposed edge is a
+  // valid first exit; afterwards the entry edge constrains exits to the
+  // segment(s) that bind it (getExitsForEntry), so a path cannot cheat across
+  // the disconnected segments of a switch. A neighbour must carry track on the
+  // facing edge to count as connected. Cost is 1 per hop (shortest = fewest
+  // tiles). With stopAtSwitches / stopAtCrossings the walk refuses to enter (or
+  // leave) switch / crossing tiles — used by block/platform, which cannot
+  // contain them (see validateBlockTile).
+  followExistingNeighbors(
+    trackByKey: Map<string, TrackData>,
+    opts: { stopAtSwitches?: boolean; stopAtCrossings?: boolean } = {}
+  ): (node: TraceNode) => SearchStep<TraceNode>[] {
+    const STEP: Record<string, [number, number]> = {
+      NORTH: [0, 1], SOUTH: [0, -1], EAST: [1, 0], WEST: [-1, 0],
+    };
+    const OPP: Record<string, string> = {
+      NORTH: 'SOUTH', SOUTH: 'NORTH', EAST: 'WEST', WEST: 'EAST',
+    };
+    return (node: TraceNode): SearchStep<TraceNode>[] => {
+      const here = trackByKey.get(`${node.x},${node.y}`);
+      const bits = here?.track_bits ?? 0;
+      if (opts.stopAtSwitches && here?.is_switch) return [];
+      if (opts.stopAtCrossings && isCrossingForBlock(bits)) return [];
+      const exits =
+        node.entry === ''
+          ? this.getExistingTrackDirections(bits)
+          : this.getExitsForEntry(bits, node.entry);
+      const out: SearchStep<TraceNode>[] = [];
+      for (const exit of exits) {
+        const step = STEP[exit];
+        if (!step) continue;
+        const nx = node.x + step[0];
+        const ny = node.y + step[1];
+        const nTrack = trackByKey.get(`${nx},${ny}`);
+        if (!nTrack) continue;
+        const back = OPP[exit];
+        if (!this.getExistingTrackDirections(nTrack.track_bits ?? 0).includes(back)) continue;
+        if (opts.stopAtSwitches && nTrack.is_switch) continue;
+        if (opts.stopAtCrossings && isCrossingForBlock(nTrack.track_bits ?? 0)) continue;
+        out.push({ node: { x: nx, y: ny, entry: back }, cost: 1 });
+      }
+      return out;
+    };
+  }
+
+  // Neighbor plug for graphSearch when LAYING new track (the track tool). Unlike
+  // followExistingNeighbors it may step onto empty tiles; it carries the full
+  // construction rule set — the cost table, segment-binding on existing track,
+  // the no-90° corner rule, the no-self-intersection rule, the bounded search
+  // box, and the forced start/end edges. Returns the valid successors in
+  // N→E→S→W order (the order the search settles ties by). The end tile is never
+  // expanded past — findPath's goal check owns the end.
+  placementNeighbors(ctx: PlacementContext): (node: PlacementNode) => SearchStep<PlacementNode>[] {
+    return (current: PlacementNode): SearchStep<PlacementNode>[] => {
+      const out: SearchStep<PlacementNode>[] = [];
+      if (current.pos.x === ctx.end.x && current.pos.y === ctx.end.y) return out;
+
+      const posKey = `${current.pos.x},${current.pos.y}`;
+      const neighbors = [
+        { x: current.pos.x, y: current.pos.y + 1, dir: 'NORTH' },
+        { x: current.pos.x + 1, y: current.pos.y, dir: 'EAST' },
+        { x: current.pos.x, y: current.pos.y - 1, dir: 'SOUTH' },
+        { x: current.pos.x - 1, y: current.pos.y, dir: 'WEST' },
+      ];
+
+      for (const neighbor of neighbors) {
+        if (
+          neighbor.x < ctx.boundMinX ||
+          neighbor.x > ctx.boundMaxX ||
+          neighbor.y < ctx.boundMinY ||
+          neighbor.y > ctx.boundMaxY
+        ) {
+          continue;
+        }
+
+        const nPosKey = `${neighbor.x},${neighbor.y}`;
+        const existingTrack = ctx.trackMap.get(nPosKey);
+        const entryDir = this.getOppositeDir(neighbor.dir);
+
+        if (ctx.startEdges && current.fromDir === null && !ctx.startEdges.includes(neighbor.dir)) {
+          continue;
+        }
+
+        if (
+          ctx.endEdges &&
+          neighbor.x === ctx.end.x &&
+          neighbor.y === ctx.end.y &&
+          !ctx.endEdges.includes(entryDir)
+        ) {
+          continue;
+        }
+
+        if (existingTrack && (existingTrack.type === 'signal' || existingTrack.signal_state)) {
+          const signalPorts = this.getExistingTrackDirections(existingTrack.track_bits || 0);
+          if (!signalPorts.includes(entryDir)) continue;
+        }
+
+        if (existingTrack && (existingTrack.type === 'station' || existingTrack.station_id)) {
+          const stationPorts = this.getExistingTrackDirections(existingTrack.track_bits || 0);
+          if (!stationPorts.includes(entryDir)) continue;
+        }
+
+        // A platform/signal keeps its own rail, so the new track must join that
+        // rail rather than an edge it doesn't serve. Passing THROUGH one (we have
+        // an entry), the exit must be the paired edge of the segment we entered
+        // on — follow the rail straight through, no turning inside. Starting ON
+        // one (no entry yet), the first move must leave via one of its rail
+        // ports, so the new track connects to the rail instead of dangling.
+        const curSkip = ctx.trackMap.get(posKey);
+        if (curSkip && ctx.tileSkipsSegment(curSkip)) {
+          if (current.fromDir !== null) {
+            const entryEdgeHere = this.getOppositeDir(current.fromDir);
+            const railExits = this.getExitsForEntry(curSkip.track_bits || 0, entryEdgeHere);
+            if (!railExits.includes(neighbor.dir)) continue;
+          } else {
+            const startPorts = this.getExistingTrackDirections(curSkip.track_bits || 0);
+            if (!startPorts.includes(neighbor.dir)) continue;
+          }
+        }
+
+        if (current.parent && current.fromDir !== null) {
+          // No-90° check. With the rail-follow rule above, a skip tile's in/out
+          // moves trace its own rail, so tileScreenAngle yields that rail's angle
+          // here — platforms no longer need exempting from the corner check.
+          const currentAngle = this.tileScreenAngle(current.fromDir, neighbor.dir);
+          const parentAngle =
+            current.parent.fromDir === null
+              ? this.startTileScreenAngle(
+                  ctx.trackMap,
+                  current.parent.pos.x,
+                  current.parent.pos.y,
+                  ctx.forcedStartSegment,
+                  current.fromDir
+                )
+              : this.tileScreenAngle(current.parent.fromDir, current.fromDir);
+          if (this.isSquareCornerAngle(parentAngle, currentAngle)) continue;
+        }
+
+        let ancestorCrosses = false;
+        for (let a: PlacementNode | null = current; a; a = a.parent) {
+          if (a.pos.x === neighbor.x && a.pos.y === neighbor.y) {
+            ancestorCrosses = true;
+            break;
+          }
+        }
+        if (ancestorCrosses) continue;
+
+        // Base per-tile cost: cheapest along existing track, then extending the
+        // start tile's own track, else a plain move on empty ground. A straight
+        // step and a diagonal (staircase) step cost the SAME here — direction is
+        // charged by the curve penalty below.
+        let moveCost = ctx.costs.move;
+
+        if (existingTrack && existingTrack.track_bits) {
+          const trackDirs = this.getExistingTrackDirections(existingTrack.track_bits);
+          if (trackDirs.includes(entryDir)) moveCost = ctx.costs.useExisting;
+        } else if (!current.fromDir) {
+          if (ctx.preferredDirs.length > 0 && ctx.preferredDirs.includes(neighbor.dir)) {
+            moveCost = ctx.costs.extend;
+          }
+        } else if (this.isReverse(current.fromDir, neighbor.dir)) {
+          moveCost = ctx.costs.reverse;
+        }
+
+        // Curve penalty: pay `curve` whenever the 2-tile-window heading changes.
+        // current.heading is the heading arriving at `current` (grandparent ->
+        // current); newHeading spans current.parent -> neighbor. A clean
+        // staircase keeps a constant diagonal heading, so its steady-state turn
+        // cost is zero — you only pay to enter or leave it. (A 90° heading flip
+        // can't occur: the no-90° screen rule above rejects square corners first.)
+        const refPos = current.parent ? current.parent.pos : current.pos;
+        const newHeading = this.heading8(refPos, { x: neighbor.x, y: neighbor.y });
+        if (current.heading !== null && newHeading !== null && current.heading !== newHeading) {
+          moveCost += ctx.costs.curve;
+        }
+
+        if (current.fromDir) {
+          const currentTileTrack = ctx.trackMap.get(posKey);
+          const currentBits = currentTileTrack ? currentTileTrack.track_bits || 0 : 0;
+          const newPathBit = this.getTrackBitForPath(current.fromDir, neighbor.dir);
+          const switchType = this.detectSwitchType(currentBits, newPathBit);
+          if (switchType === 'crossover') moveCost += ctx.costs.createCrossover;
+          else if (switchType === 'parallel') moveCost += ctx.costs.createParallel;
+          else if (switchType === 'switch') moveCost += ctx.costs.createSwitch;
+        }
+
+        out.push({
+          node: {
+            pos: { x: neighbor.x, y: neighbor.y },
+            fromDir: neighbor.dir,
+            heading: newHeading,
+            parent: current,
+          },
+          cost: moveCost,
+        });
+      }
+      return out;
+    };
+  }
+
   findPath(
     startX: number,
     startY: number,
@@ -297,12 +533,6 @@ export class ConstructionPathfinder {
     const start = { x: startX, y: startY };
     const end = { x: endX, y: endY };
 
-    // Forced-segment constraints: if the user pressed R/T to lock the
-    // start/end tile to a specific 2-edge segment, A* must pick a path
-    // whose first move leaves through one of the start segment's edges
-    // and whose last move enters through one of the end segment's
-    // edges. Otherwise the start/end tile would be laid disconnected
-    // from the rest of the path.
     const SEGMENT_EDGES: Record<string, string[]> = {
       NS: ['NORTH', 'SOUTH'],
       EW: ['EAST', 'WEST'],
@@ -321,9 +551,8 @@ export class ConstructionPathfinder {
 
     // Bound the search to the start–end bounding box plus a margin. The grid is
     // unbounded, so a target the square-corner / no-self-intersection rules make
-    // unreachable would otherwise fan A* across the plane forever (open set
-    // grows without limit). The margin dwarfs any 45° easing detour a
-    // point-to-point draw needs; beyond it there is no valid build to find.
+    // unreachable would otherwise fan the search across the plane forever. The
+    // margin dwarfs any 45° easing detour a point-to-point draw needs.
     const SEARCH_MARGIN = 24;
     const boundMinX = Math.min(startX, endX) - SEARCH_MARGIN;
     const boundMaxX = Math.max(startX, endX) + SEARCH_MARGIN;
@@ -331,7 +560,6 @@ export class ConstructionPathfinder {
     const boundMaxY = Math.max(startY, endY) + SEARCH_MARGIN;
 
     const trackMap = new Map<string, TrackData>();
-
     if (existingTracks) {
       existingTracks.forEach((t) => trackMap.set(`${t.x},${t.y}`, t));
     }
@@ -358,259 +586,94 @@ export class ConstructionPathfinder {
       ? this.getExistingTrackDirections(startTrack.track_bits || 0)
       : [];
 
-    // A* state is (tile, incoming direction): the same tile reached from a
-    // different direction is a distinct state, so the square-corner constraint
-    // below can route a tile a second way instead of dead-ending on the first.
-    const posOf = (x: number, y: number) => `${x},${y}`;
-    const stateOf = (x: number, y: number, dir: string | null) => `${x},${y},${dir ?? '_'}`;
-
-    // Open set as an array (linear extract-min) plus a state->node map for O(1)
-    // lookup. The (x,y,dir) state quadruples the search vs a plain tile A*, so
-    // the old sort-every-pop + linear find would make long drags janky.
-    const startNode: AStarNode = {
-      pos: start,
-      g: 0,
-      h: this.heuristic(start, end),
-      f: this.heuristic(start, end),
-      parent: null,
-      fromDir: null,
-      prevTurnDir: null,
-    };
-    const openSet: AStarNode[] = [startNode];
-    const openMap = new Map<string, AStarNode>([[stateOf(start.x, start.y, null), startNode]]);
-    const closedSet = new Set<string>();
-
-    const tileSkipsSegment = (t: TrackData | undefined): boolean =>
-      !!(t && (t.type === 'signal' || t.signal_state || t.type === 'station' || t.station_id));
-
-    while (openSet.length > 0) {
-      // Extract-min by linear scan, then swap-remove from the array.
-      let minIdx = 0;
-      for (let i = 1; i < openSet.length; i++) {
-        if (openSet[i].f < openSet[minIdx].f) minIdx = i;
-      }
-      const current = openSet[minIdx];
-      openSet[minIdx] = openSet[openSet.length - 1];
-      openSet.pop();
-      const posKey = posOf(current.pos.x, current.pos.y);
-      const stateKey = stateOf(current.pos.x, current.pos.y, current.fromDir);
-      openMap.delete(stateKey);
-
-      if (current.pos.x === end.x && current.pos.y === end.y) {
-        // The end tile lays a connecting segment too; reject this arrival if it
-        // would meet the penultimate tile at a 90° corner. Other arrivals (a
-        // different incoming direction) remain in the open set to be tried.
-        // A forced end segment (T key) is the user's explicit choice for this
-        // tile, so honor it directly instead of detouring — or failing — to
-        // dodge the corner: skip the rejection when endEdges is set.
-        if (!endEdges && current.parent && current.fromDir !== null) {
-          const endTile = trackMap.get(posKey);
-          const penTile = trackMap.get(posOf(current.parent.pos.x, current.parent.pos.y));
-          if (!tileSkipsSegment(endTile) && !tileSkipsSegment(penTile)) {
-            const endAngle = this.endTileScreenAngle(
-              options.forcedEndSegment ?? null,
-              current.fromDir
-            );
-            const penAngle =
-              current.parent.fromDir === null
-                ? this.startTileScreenAngle(
-                    trackMap,
-                    current.parent.pos.x,
-                    current.parent.pos.y,
-                    options.forcedStartSegment ?? null,
-                    current.fromDir
-                  )
-                : this.tileScreenAngle(current.parent.fromDir, current.fromDir);
-            if (this.isSquareCornerAngle(penAngle, endAngle)) {
-              closedSet.add(stateKey);
-              continue;
-            }
-          }
-        }
-
-        const path = this.reconstructPath(current);
-        // alignZigzagTails inserts a tile adjacent to the end to make
-        // zigzag endings look smooth; that insertion ignores R/T
-        // constraints and can also break adjacency, so skip it when
-        // either endpoint is locked.
-        if (startEdges || endEdges) return path;
-        return this.alignZigzagTails(path, end);
-      }
-
-      closedSet.add(stateKey);
-
-      const neighbors = [
-        { x: current.pos.x, y: current.pos.y + 1, dir: 'NORTH' },
-        { x: current.pos.x + 1, y: current.pos.y, dir: 'EAST' },
-        { x: current.pos.x, y: current.pos.y - 1, dir: 'SOUTH' },
-        { x: current.pos.x - 1, y: current.pos.y, dir: 'WEST' },
-      ];
-
-      for (const neighbor of neighbors) {
-        // Outside the bounded search region — keeps the search finite.
-        if (
-          neighbor.x < boundMinX ||
-          neighbor.x > boundMaxX ||
-          neighbor.y < boundMinY ||
-          neighbor.y > boundMaxY
-        ) {
-          continue;
-        }
-
-        const nPosKey = posOf(neighbor.x, neighbor.y);
-        // closedSet is keyed on (tile, incoming direction); the neighbor would
-        // be entered moving neighbor.dir.
-        if (closedSet.has(stateOf(neighbor.x, neighbor.y, neighbor.dir))) continue;
-
-        const existingTrack = trackMap.get(nPosKey);
-        const entryDir = this.getOppositeDir(neighbor.dir);
-
-        // Forced start segment: the first move out of the start
-        // tile must exit through one of the forced segment's edges.
-        if (startEdges && current.fromDir === null && !startEdges.includes(neighbor.dir)) {
-          continue;
-        }
-
-        // Forced end segment: the move that lands on the end tile
-        // must enter through one of the forced end segment's edges
-        // (i.e., the entry edge of the end tile must be in endEdges).
-        if (
-          endEdges &&
-          neighbor.x === end.x &&
-          neighbor.y === end.y &&
-          !endEdges.includes(entryDir)
-        ) {
-          continue;
-        }
-
-        if (existingTrack && (existingTrack.type === 'signal' || existingTrack.signal_state)) {
-          const signalPorts = this.getExistingTrackDirections(existingTrack.track_bits || 0);
-          if (!signalPorts.includes(entryDir)) {
-            continue;
-          }
-        }
-
-        if (existingTrack && (existingTrack.type === 'station' || existingTrack.station_id)) {
-          const stationPorts = this.getExistingTrackDirections(existingTrack.track_bits || 0);
-          if (!stationPorts.includes(entryDir)) {
-            continue;
-          }
-        }
-
-        // Square-corner avoidance: leaving `current` toward this neighbor fixes
-        // current's exit edge and therefore the screen angle of the segment it
-        // lays. Forbid the move if that segment would meet the previous tile's
-        // at a right angle — A* must instead ease the turn through a 45° NS/EW
-        // diagonal. Tiles that lay no segment (signals/stations) are exempt.
-        if (current.parent && current.fromDir !== null) {
-          const curTile = trackMap.get(posKey);
-          const parentTile = trackMap.get(posOf(current.parent.pos.x, current.parent.pos.y));
-          if (!tileSkipsSegment(curTile) && !tileSkipsSegment(parentTile)) {
-            const currentAngle = this.tileScreenAngle(current.fromDir, neighbor.dir);
-            const parentAngle =
-              current.parent.fromDir === null
-                ? this.startTileScreenAngle(
-                    trackMap,
-                    current.parent.pos.x,
-                    current.parent.pos.y,
-                    options.forcedStartSegment ?? null,
-                    current.fromDir
-                  )
-                : this.tileScreenAngle(current.parent.fromDir, current.fromDir);
-            if (this.isSquareCornerAngle(parentAngle, currentAngle)) {
-              continue;
-            }
-          }
-        }
-
-        // No self-intersection: a single drag must not cross its own tiles.
-        // Direction-state search can otherwise loop a tile back over an earlier
-        // one, which renders as a multi-segment switch (and hid a corner). If
-        // the only route would self-cross, A* finds none and the caller treats
-        // the build as not-yet-valid.
-        let ancestorCrosses = false;
-        for (let a: AStarNode | null = current; a; a = a.parent) {
-          if (a.pos.x === neighbor.x && a.pos.y === neighbor.y) {
-            ancestorCrosses = true;
-            break;
-          }
-        }
-        if (ancestorCrosses) continue;
-
-        let moveCost = costs.straight;
-        let turnDir: string | null = null;
-
-        if (existingTrack && existingTrack.track_bits) {
-          const trackDirs = this.getExistingTrackDirections(existingTrack.track_bits);
-          const entryDir = this.getOppositeDir(neighbor.dir);
-          if (trackDirs.includes(entryDir)) {
-            moveCost = costs.useExisting;
-          }
-        } else if (!current.fromDir) {
-          if (preferredDirs.length > 0 && preferredDirs.includes(neighbor.dir)) {
-            moveCost = costs.extend;
-          }
-        } else if (this.isReverse(current.fromDir, neighbor.dir)) {
-          moveCost = costs.reverse;
-        } else if (current.fromDir !== neighbor.dir) {
-          turnDir = this.getTurnDirection(current.fromDir, neighbor.dir);
-          if (current.prevTurnDir && turnDir === current.prevTurnDir) {
-            moveCost = costs.sameTurn;
-          } else {
-            moveCost = costs.diagonal;
-          }
-        }
-
-        if (current.fromDir) {
-          const currentTileTrack = trackMap.get(posKey);
-          const currentBits = currentTileTrack ? currentTileTrack.track_bits || 0 : 0;
-          const newPathBit = this.getTrackBitForPath(current.fromDir, neighbor.dir);
-          const switchType = this.detectSwitchType(currentBits, newPathBit);
-          if (switchType === 'crossover') {
-            moveCost += costs.createCrossover;
-          } else if (switchType === 'parallel') {
-            moveCost += costs.createParallel;
-          } else if (switchType === 'switch') {
-            moveCost += costs.createSwitch;
-          }
-        }
-
-        const g = current.g + moveCost;
-        const h = this.heuristic(neighbor, end);
-        const f = g + h;
-
-        const neighborStateKey = stateOf(neighbor.x, neighbor.y, neighbor.dir);
-        const existing = openMap.get(neighborStateKey);
-        if (existing) {
-          if (g < existing.g) {
-            existing.g = g;
-            existing.f = f;
-            existing.parent = current;
-            existing.fromDir = neighbor.dir;
-            existing.prevTurnDir = turnDir || current.prevTurnDir;
-          }
+    // The end tile lays a connecting segment too; an arrival is only a goal if
+    // that segment would not meet the penultimate tile at a 90° corner. A bad
+    // arrival is left non-goal so other arrivals (a different incoming
+    // direction) can still be tried. A forced end segment is the user's explicit
+    // choice, so the corner check is skipped when endEdges is set.
+    const validEndArrival = (node: PlacementNode): boolean => {
+      if (!endEdges && node.parent && node.fromDir !== null) {
+        const endTile = trackMap.get(`${end.x},${end.y}`);
+        // Cap angle to check against the penultimate tile: a platform end uses
+        // its own rail (the segment the path joins — the one holding the entry
+        // edge), so a path can't meet a platform at a 90° corner; any other end
+        // uses its computed cap. A penultimate platform already traces its rail
+        // (rail-follow rule), so the penAngle below is correct too.
+        let endAngle: number | null;
+        if (tileSkipsSegment(endTile)) {
+          const entryEdge = this.getOppositeDir(node.fromDir);
+          const railExits = this.getExitsForEntry(endTile?.track_bits || 0, entryEdge);
+          endAngle = railExits.length ? this.segScreenAngle(entryEdge, railExits[0]) : null;
+        } else if (options.avoidConnect && endTile && endTile.track_bits) {
+          // Avoid-connect mode lays a non-conflicting segment over existing end
+          // track (a crossover/parallel) rather than the default cap — mirror
+          // pathToTracks' avoid-connect end branch (computeNonConflictingExit) so
+          // the corner check sees the segment that will actually be laid.
+          const entryEdge = this.getOppositeDir(node.fromDir);
+          const avoidExit = computeNonConflictingExit(endTile.track_bits, entryEdge);
+          endAngle = avoidExit ? this.segScreenAngle(entryEdge, avoidExit) : null;
         } else {
-          const node: AStarNode = {
-            pos: { x: neighbor.x, y: neighbor.y },
-            g,
-            h,
-            f,
-            parent: current,
-            fromDir: neighbor.dir,
-            prevTurnDir: turnDir || current.prevTurnDir,
-          };
-          openSet.push(node);
-          openMap.set(neighborStateKey, node);
+          endAngle = this.endTileScreenAngle(options.forcedEndSegment ?? null, node.fromDir);
+        }
+        if (endAngle !== null) {
+          const penAngle =
+            node.parent.fromDir === null
+              ? this.startTileScreenAngle(
+                  trackMap,
+                  node.parent.pos.x,
+                  node.parent.pos.y,
+                  options.forcedStartSegment ?? null,
+                  node.fromDir
+                )
+              : this.tileScreenAngle(node.parent.fromDir, node.fromDir);
+          if (this.isSquareCornerAngle(penAngle, endAngle)) return false;
         }
       }
+      return true;
+    };
+
+    const seed: PlacementNode = { pos: start, fromDir: null, heading: null, parent: null };
+    const { path } = graphSearch<PlacementNode>({
+      seeds: [seed],
+      key: placementNodeKey,
+      heuristic: (n) => this.heuristic(n.pos, end),
+      neighbors: this.placementNeighbors({
+        trackMap,
+        costs,
+        preferredDirs,
+        startEdges,
+        endEdges,
+        end,
+        boundMinX,
+        boundMaxX,
+        boundMinY,
+        boundMaxY,
+        forcedStartSegment: options.forcedStartSegment ?? null,
+        tileSkipsSegment,
+      }),
+      goal: (n) => n.pos.x === end.x && n.pos.y === end.y && validEndArrival(n),
+    });
+
+    if (path) {
+      const tiles = path.map((n) => ({ x: n.pos.x, y: n.pos.y }));
+      // alignZigzagTails smooths zigzag endings but ignores R/T constraints and
+      // can break adjacency, so skip it when either endpoint is locked.
+      if (startEdges || endEdges) return tiles;
+      return this.alignZigzagTails(tiles, end);
     }
 
     // A* exhausted without an eased route. The diagonalLine fallback ignores
-    // existing track, so validate it: if it would lay a 90° corner (e.g. a
-    // forced start segment perpendicular to an adjacent target), there is no
-    // valid build — return null so the preview stays invalid.
+    // existing track, so reject it if it would lay a 90° corner.
     const fallback = this.diagonalLine(start, end);
+    // The straight-line fallback can't follow a platform's rail, so reject it if
+    // it would thread through a platform/signal interior — there is no clean
+    // build, and the caller shows the drag as invalid instead.
+    const threadsSkipTile = fallback.some((p, i) => {
+      if (i === 0 || i === fallback.length - 1) return false;
+      return tileSkipsSegment(trackMap.get(`${p.x},${p.y}`));
+    });
     if (
+      threadsSkipTile ||
       this.pathHasSquareCorner(
         fallback,
         trackMap,
@@ -624,7 +687,23 @@ export class ConstructionPathfinder {
   }
 
   heuristic(a: Point, b: Point): number {
-    return Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
+    // Chebyshev distance scaled by the base move cost, so the estimate tracks
+    // the cost table (each remaining step costs at least one move). Curve
+    // penalties are only ever added on top, so this never overestimates. Both
+    // cost tables share the same move value, so the scale is valid in normal and
+    // avoid-connect mode alike.
+    return this.costs.move * Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
+  }
+
+  // 8-way heading from one tile to another by the sign of the delta (NORTH=+y,
+  // EAST=+x). Used for the 2-tile-window curve penalty: a straight run keeps one
+  // cardinal heading and a clean diagonal staircase keeps one diagonal heading,
+  // so only the transitions between them are charged.
+  heading8(from: Point, to: Point): string | null {
+    const dx = Math.sign(to.x - from.x);
+    const dy = Math.sign(to.y - from.y);
+    if (dx === 0 && dy === 0) return null;
+    return (dy > 0 ? 'N' : dy < 0 ? 'S' : '') + (dx > 0 ? 'E' : dx < 0 ? 'W' : '');
   }
 
   isReverse(dir1: string, dir2: string): boolean {
@@ -664,19 +743,6 @@ export class ConstructionPathfinder {
     return adjacentStationCount <= 1;
   }
 
-  getTurnDirection(fromDir: string, toDir: string): string | null {
-    const turns: Record<string, Record<string, string>> = {
-      NORTH: { EAST: 'RIGHT', WEST: 'LEFT' },
-      EAST: { SOUTH: 'RIGHT', NORTH: 'LEFT' },
-      SOUTH: { WEST: 'RIGHT', EAST: 'LEFT' },
-      WEST: { NORTH: 'RIGHT', SOUTH: 'LEFT' },
-    };
-    if (!turns[fromDir]) {
-      return null;
-    }
-    return turns[fromDir][toDir] || null;
-  }
-
   // --- 90°-corner avoidance (octilinear easing) -----------------------------
   // The render grid is rotated 45°, so each laid segment draws as one of four
   // screen lines: NW/SE => 0° (horizontal), NS => 45° (╱), NE/SW => 90°
@@ -685,14 +751,13 @@ export class ConstructionPathfinder {
   // rejects inside one tile (see constants.ts). A* forbids it across tiles too,
   // so every direction change is eased by a 45° NS/EW diagonal instead.
 
-  // Screen angle (0/45/90/135) of the segment joining two tile edges.
+  // Screen angle (0/45/90/135) of the segment joining two tile edges. Delegates
+  // to the module-level `screenAngle` (the single source of the edge→angle
+  // mapping); an unrecognized edge pair reads as 0 (horizontal) here, matching
+  // the straight-stub fallback this method's callers expect.
   segScreenAngle(edgeA: string, edgeB: string): number {
-    const has = (a: string, b: string) =>
-      (edgeA === a && edgeB === b) || (edgeA === b && edgeB === a);
-    if (has('NORTH', 'SOUTH')) return 45; // NS ╱
-    if (has('EAST', 'WEST')) return 135; // EW ╲
-    if (has('NORTH', 'EAST') || has('SOUTH', 'WEST')) return 90; // NE/SW vertical
-    return 0; // NW or SE horizontal
+    const a = screenAngle(edgeA, edgeB);
+    return a < 0 ? 0 : a;
   }
 
   // Do two screen angles meet at a right angle? (0↔90 or 45↔135.)
@@ -723,8 +788,11 @@ export class ConstructionPathfinder {
 
   // Angle of the START tile's connecting segment when the path leaves via
   // outDir. Mirrors pathToTracks' !prev&&next branch: a forced segment, else
-  // the existing track's port that binds to outDir, else the default
-  // opposite-edge stub (always a 45° diagonal, which never corners).
+  // the existing track's port that binds to outDir, else the auto cap. The
+  // auto cap now mirrors the next tile's piece (parallel to it), so it never
+  // squares with that tile; we return the straight-stub angle here as a safe
+  // stand-in, because the stub never squares with the next tile either — so
+  // the no-90° gate reaches the same verdict whichever cap is laid.
   startTileScreenAngle(
     trackMap: Map<string, TrackData>,
     x: number,
@@ -745,8 +813,10 @@ export class ConstructionPathfinder {
   }
 
   // Angle of the END tile's connecting segment, arrived at by moving arriveDir.
-  // Mirrors pathToTracks' prev&&!next branch's forced/default cases (the
-  // opposite-edge stub is a 45° diagonal).
+  // Mirrors pathToTracks' prev&&!next branch. The auto cap mirrors the previous
+  // tile's piece (parallel to it) and so never squares with it; we return the
+  // straight-stub angle as a safe stand-in (same reasoning as
+  // startTileScreenAngle above), so the no-90° gate's verdict is unchanged.
   endTileScreenAngle(forcedEnd: string | null, arriveDir: string): number {
     if (forcedEnd && FORCED_SEGMENT_PORTS[forcedEnd]) {
       const [p1, p2] = FORCED_SEGMENT_PORTS[forcedEnd];
@@ -791,16 +861,6 @@ export class ConstructionPathfinder {
       prevAngle = angle;
     }
     return false;
-  }
-
-  reconstructPath(node: AStarNode): Point[] {
-    const path: Point[] = [];
-    let current: AStarNode | null = node;
-    while (current) {
-      path.unshift(current.pos);
-      current = current.parent;
-    }
-    return path;
   }
 
   diagonalLine(start: Point, end: Point): Point[] {
@@ -939,6 +999,18 @@ export class ConstructionPathfinder {
       }
     }
 
+    // The head/tail smoothing inserts a tile next to result[0] / end, but the
+    // inserted tile can land diagonally from its other neighbour, breaking the
+    // cardinal-step chain — which renders as a disconnected track at that end.
+    // If smoothing produced any non-adjacent step, discard it and keep the
+    // original (always-cardinal) path: a slightly less-smooth end beats a
+    // broken one.
+    for (let i = 1; i < result.length; i++) {
+      if (Math.abs(result[i].x - result[i - 1].x) + Math.abs(result[i].y - result[i - 1].y) !== 1) {
+        return path;
+      }
+    }
+
     return result;
   }
 
@@ -969,6 +1041,42 @@ export const FORCED_SEGMENT_PORTS: Record<string, [string, string]> = {
   SE: ['SOUTH', 'EAST'],
   SW: ['SOUTH', 'WEST'],
 };
+
+// A tile that carries its own rail — a station/platform tile or a signal. The
+// track tool lays nothing on such a tile and the placement search treats it as
+// a skip. Single source for "does this tile already own its rail", used by
+// findPath and the editor's drag-preview rail bridge.
+export function tileSkipsSegment(t: TrackData | undefined): boolean {
+  return !!(t && (t.type === 'signal' || t.signal_state || t.type === 'station' || t.station_id));
+}
+
+// Screen angle of the piece that joins two tile edges. The single source of the
+// edge→angle mapping (the class method ConstructionPathfinder.segScreenAngle
+// delegates here); kept module-level so the standalone pathToTracks below can
+// pick end-tile pieces. Returns -1 for a missing/invalid edge pair so callers
+// fall back to a straight stub.
+function screenAngle(a: string | null, b: string | null): number {
+  const has = (x: string, y: string) => (a === x && b === y) || (a === y && b === x);
+  if (has('NORTH', 'SOUTH')) return 45; // NS ╱
+  if (has('EAST', 'WEST')) return 135; // EW ╲
+  if (has('NORTH', 'EAST') || has('SOUTH', 'WEST')) return 90; // NE/SW vertical
+  if (has('NORTH', 'WEST') || has('SOUTH', 'EAST')) return 0; // NW/SE horizontal
+  return -1;
+}
+
+// The end-tile piece that shares `sharedEdge` and renders at `angle`. Each
+// edge belongs to exactly one piece per angle, so this is unique when it
+// exists. Returns the piece's OTHER edge, or null when no piece matches
+// (e.g. angle = -1), in which case the caller keeps the straight stub.
+function capEdgeForAngle(sharedEdge: string | null, angle: number): string | null {
+  if (!sharedEdge || angle < 0) return null;
+  for (const [, [a, b]] of Object.entries(FORCED_SEGMENT_PORTS)) {
+    if (screenAngle(a, b) !== angle) continue;
+    if (a === sharedEdge) return b;
+    if (b === sharedEdge) return a;
+  }
+  return null;
+}
 
 interface BuildTrack {
   x: number;
@@ -1129,7 +1237,19 @@ export function pathToTracks(
       }
 
       if (!foundConnection) {
-        addPath(current.x, current.y, entryDir, exitDir, 'both');
+        // Default cap: mirror the next tile's piece so a zigzag reads the same
+        // end-to-end. The piece that shares the exit edge and renders at the
+        // next tile's screen angle is parallel to it, so it always connects and
+        // never makes a square corner. With no tile beyond `next` (a 2-tile
+        // drag) there is no bend to match, so keep the straight stub.
+        const afterNext = i + 2 < path.length ? path[i + 2] : null;
+        let capOther = entryDir;
+        if (afterNext) {
+          const nextAngle = screenAngle(getDirection(next, current), getDirection(next, afterNext));
+          const matched = capEdgeForAngle(exitDir, nextAngle);
+          if (matched) capOther = matched;
+        }
+        addPath(current.x, current.y, capOther, exitDir, 'both');
       }
       continue;
     }
@@ -1173,7 +1293,16 @@ export function pathToTracks(
       }
 
       if (!foundConnection) {
-        addPath(current.x, current.y, entryDir, exitDir, 'both');
+        // Default cap: mirror the previous tile's piece (see the start-tile
+        // branch above for the rationale) so a zigzag reads the same end-to-end.
+        const beforePrev = i - 2 >= 0 ? path[i - 2] : null;
+        let capOther = exitDir;
+        if (beforePrev) {
+          const prevAngle = screenAngle(getDirection(prev, current), getDirection(prev, beforePrev));
+          const matched = capEdgeForAngle(entryDir, prevAngle);
+          if (matched) capOther = matched;
+        }
+        addPath(current.x, current.y, entryDir, capOther, 'both');
       }
       continue;
     }
@@ -1323,7 +1452,10 @@ export function getValidSignalDirections(trackBits: number): string[] {
 // ============================================================================
 
 export function isCrossingForBlock(trackBits: number): boolean {
-  return trackBits === 3 || trackBits === 24 || trackBits === 36;
+  // Diagonal crossings (NW+SE=24, NE+SW=36) isolate their two paths and stay
+  // out of blocks. The orthogonal NS+EW crossing (3) is allowed: the whole tile
+  // acts as one occupancy unit, so a block can run straight through it on one axis.
+  return trackBits === 24 || trackBits === 36;
 }
 
 export function validateBlockTile(track: TrackData | null | undefined): {

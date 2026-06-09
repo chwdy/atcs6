@@ -207,11 +207,17 @@ class Platform:
             x, y = map(int, pos_str.split(","))
             block_assignments[(x, y)] = block_id
 
+        if "length_cm" not in data:
+            raise ValueError(
+                f"Platform.from_dict: platform '{platform_id}' is missing "
+                "required 'length_cm'. Length must be supplied explicitly (0 is "
+                "allowed); there is no silent default."
+            )
         return cls(
             platform_id=platform_id,
             name=data.get("name", ""),
             positions=[tuple(pos) for pos in data.get("positions", [])],
-            length_cm=data.get("length_cm", 0.0),
+            length_cm=float(data["length_cm"]),
             platform_side=PlatformSide(data.get("platform_side", "both")),
             top_speed_kmh=data.get("top_speed_kmh"),
             created_at=data.get("created_at"),

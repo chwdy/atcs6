@@ -519,7 +519,7 @@ async function test_BLK_API_E03_reject_crossing_in_block() {
             tracks: [{
                 x: 1,
                 y: 1,
-                track_bits: TRACK_NS | TRACK_EW  // Crossing
+                track_bits: TRACK_NW | TRACK_SE  // Diagonal crossing (disallowed in block)
             }]
         })
     });
@@ -1348,29 +1348,22 @@ async function test_PARITY_003_valid_signal_directions() {
     assert(result.data.valid_directions.length === 2, 'Should only have N and S');
 }
 
-async function test_PARITY_004_crossing_in_block_rejected() {
+async function test_PARITY_004_orthogonal_crossing_in_block_allowed() {
     await resetNetwork();
 
-    // Create crossing
-    await fetchJSON('/track', {
-        method: 'POST',
-        body: JSON.stringify({
-            x: 1,
-            y: 1,
-            track_bits: 3  // NS + EW crossing
-        })
-    });
+    // Create orthogonal NS+EW crossing
+    await createTrack(1, 1, TRACK_NS | TRACK_EW);
 
-    // Try to create block with crossing
+    // The orthogonal crossing may belong to a block (whole tile = one occupancy unit)
     const result = await fetchJSON('/blocks/create-with-tracks', {
         method: 'POST',
         body: JSON.stringify({
-            block_id: 'BLK_FAIL',
+            block_id: 'BLK_OK',
             positions: [[1, 1]]
         })
     });
 
-    assert(!result.ok, 'Crossing in block should be rejected');
+    assert(result.ok, 'Orthogonal crossing in block should be allowed');
 }
 
 // ============= LAYOUT PERSISTENCE ENDPOINTS =============
@@ -1720,7 +1713,7 @@ async function runAllTests() {
     await runTest('PARITY-001: All forbidden track bits', test_PARITY_001_all_forbidden_track_bits);
     await runTest('PARITY-002: Signal on switch rejected', test_PARITY_002_signal_on_switch_rejected);
     await runTest('PARITY-003: Valid signal directions', test_PARITY_003_valid_signal_directions);
-    await runTest('PARITY-004: Crossing in block rejected', test_PARITY_004_crossing_in_block_rejected);
+    await runTest('PARITY-004: Orthogonal crossing in block allowed', test_PARITY_004_orthogonal_crossing_in_block_allowed);
 
     // Print summary
     console.log('\n========================================');
@@ -2438,7 +2431,7 @@ async function runAllTestsUpdated() {
     await runTest('PARITY-001: All forbidden track bits', test_PARITY_001_all_forbidden_track_bits);
     await runTest('PARITY-002: Signal on switch rejected', test_PARITY_002_signal_on_switch_rejected);
     await runTest('PARITY-003: Valid signal directions', test_PARITY_003_valid_signal_directions);
-    await runTest('PARITY-004: Crossing in block rejected', test_PARITY_004_crossing_in_block_rejected);
+    await runTest('PARITY-004: Orthogonal crossing in block allowed', test_PARITY_004_orthogonal_crossing_in_block_allowed);
 
     // Print summary
     console.log('\n========================================');

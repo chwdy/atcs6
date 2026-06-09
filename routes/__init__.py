@@ -40,6 +40,7 @@ from routes import (
     switches,
     tunnels,
     inspector,
+    settings,
 )
 
 
@@ -66,3 +67,4 @@ def register_all(app, state) -> None:
     switches.register(app, state)
     tunnels.register(app, state)
     inspector.register(app, state)
+    settings.register(app, state)
