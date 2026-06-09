@@ -42,14 +42,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 from constants import STOPPED_SPEED_THRESHOLD_KMH
-from enums import (
-    BRAKE_MULTIPLIERS,
-    POWER_MULTIPLIERS,
-    BlockState,
-    Direction,
-    HandlePosition,
-    TrainState,
-)
+from enums import BRAKE_MULTIPLIERS, POWER_MULTIPLIERS, Direction, HandlePosition, TrainState
 from model_scale import kmh_to_cm_per_sec
 from runtime_payloads import PhysicsSpanUpdate, TileTraversal
 from train_controller_types import (

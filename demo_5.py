@@ -101,7 +101,6 @@ from track import (
     TRACK_SW,
 )
 from path_dispatcher import PathDispatcher
-from railway_signal import SignalType
 from switch import Switch
 
 

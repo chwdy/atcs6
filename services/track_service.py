@@ -24,7 +24,7 @@ knowing any status codes:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 from app_state import AppState
 from services.exceptions import NotFoundError, ValidationError

@@ -27,7 +27,6 @@ import logging
 import time
 
 logger = logging.getLogger(__name__)
-import uuid
 from typing import Dict, List, Optional, Set, Tuple, Any, TYPE_CHECKING
 
 from path import (
@@ -36,33 +35,9 @@ from path import (
     PathTileEntry,
     ResourceSequenceEntry,
 )
-from enums import (
-    BlockState,
-    SwitchState,
-    TrainState,
-    direction_from_delta,
-    OPPOSITE_DIRECTIONS,
-)
+from enums import BlockState, direction_from_delta, OPPOSITE_DIRECTIONS
 from track import OPPOSITE_EDGE
-from model_scale import kmh_to_cm_per_sec
-from runtime_payloads import (
-    AcquisitionMode,
-    CancellationResult,
-    Command,
-    ControllerProgressReport,
-    DEFAULT_PATH_PRIORITY,
-    PathAcquisitionFailureKind,
-    PathAcquisitionResult,
-    PathAcquisitionResultKind,
-    PathCompletionResult,
-    PathSegment,
-    PendingPathCancelRequest,
-    ResourceEvent,
-    RouteExecutorForPathDispatcher,
-    ValidationError,
-    ValidationErrorType,
-    ValidationResult,
-)
+from runtime_payloads import AcquisitionMode, CancellationResult, ControllerProgressReport, PathAcquisitionFailureKind, PathAcquisitionResult, PathAcquisitionResultKind, PathCompletionResult, PathSegment, ResourceEvent, RouteExecutorForPathDispatcher, ValidationError, ValidationErrorType, ValidationResult
 from block_manager import ReservedBlockTraversal
 from switch_manager import SwitchLockRequest
 from railway_pathfinder import RailwayPathfinder
@@ -71,7 +46,6 @@ from path_utils import GraphWalkCandidate, GraphWalkStep
 if TYPE_CHECKING:
     from network import RailwayNetwork
     from block import Block
-    from track import TrackSegment
 
 
 

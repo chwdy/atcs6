@@ -6,7 +6,6 @@ This script runs both Python backend tests and JavaScript API tests
 
 import subprocess
 import sys
-import time
 import requests
 from typing import Tuple
 

@@ -21,7 +21,7 @@ TODO List:
 from datetime import datetime
 import threading
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask
 
 from app_factory import create_app
 from app_state import AppState
@@ -33,33 +33,11 @@ from bootstrap import (
     setup_demo_train,
     _load_scene_module,
 )
-from enums import (
-    Direction,
-    TrackType,
-    TrainState,
-    SignalState as EnumSignalState,
-    SwitchPosition,
-)
 from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
-from path_utils import assign_path_to_train_with_prepend, assign_complete_path_to_train
 from persistence import PersistenceManager
-from railway_signal import Signal, SignalType, SignalState
-from signal_validation import validate_signal_placement, get_valid_directions
-from simulation import SimulationController, build_network_payload
-from track import (
-    TrackSegment,
-    FORBIDDEN_TRACK_BITS,
-    TRACK_NS,
-    TRACK_EW,
-    TRACK_NE,
-    TRACK_NW,
-    TRACK_SE,
-    TRACK_SW,
-)
-from train import Train, TrainCar
-from train_controller import TrainController
-from train_route import Route, RouteMode
+from railway_signal import SignalState
+from simulation import SimulationController
 
 # Global state
 network = RailwayNetwork()

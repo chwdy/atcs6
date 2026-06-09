@@ -27,7 +27,7 @@ v1 model:
 """
 
 from dataclasses import dataclass, field
-from typing import List, NamedTuple, Tuple, Optional, Dict, Any, Set
+from typing import List, NamedTuple, Optional, Dict, Any, Set
 from enums import BlockState
 from track_resource import TrackResource
 

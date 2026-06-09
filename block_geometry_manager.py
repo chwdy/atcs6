@@ -13,7 +13,6 @@ scenario setup, tests) continue to work without change.
 
 from __future__ import annotations
 
-from collections import deque
 from typing import TYPE_CHECKING, List, Optional, Set, Tuple
 
 from block import Block
@@ -21,7 +20,6 @@ from railway_signal import SignalState, SignalType
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
-    from track import TrackSegment
     from railway_signal import Signal
 
 

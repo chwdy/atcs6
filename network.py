@@ -17,23 +17,13 @@ from block import Block
 from block_manager import BlockManager
 from switch_manager import SwitchManager
 from resource_coordinator import ResourceCoordinator
-from enums import (
-    TrackType,
-    Direction,
-    SwitchPosition,
-    BlockState,
-)
+from enums import TrackType, Direction
 from constants import FLANK_PROTECTION_DISTANCE_CM
 from railway_signal import Signal, SignalType, SignalState
 from station import Station
 from railway_platform import Platform
 from speed_profile import SpeedProfileRegistry
-from signal_validation import (
-    validate_signal_placement,
-    get_valid_directions,
-    get_direction_vector,
-    DIRECTION_VECTORS,
-)
+from signal_validation import validate_signal_placement
 
 
 logger = logging.getLogger(__name__)

@@ -14,7 +14,7 @@ Key Concepts:
 - The dispatcher's `Path` is the source of truth; these helpers only validate.
 """
 
-from typing import List, Literal, Optional, Set, Tuple, Dict, Any, Union
+from typing import List, Literal, Optional, Set, Tuple, Dict, Any
 from dataclasses import dataclass, field
 
 from enums import Direction

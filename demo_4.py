@@ -34,17 +34,8 @@ Initial placement:
 """
 
 from network import RailwayNetwork
-from track import (
-    TrackSegment,
-    TRACK_NS,
-    TRACK_EW,
-    TRACK_NE,
-    TRACK_NW,
-    TRACK_SE,
-    TRACK_SW,
-)
+from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NE, TRACK_NW, TRACK_SE
 from path_dispatcher import PathDispatcher
-from railway_signal import SignalType
 from switch import Switch
 
 

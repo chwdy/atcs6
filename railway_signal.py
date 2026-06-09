@@ -5,7 +5,7 @@ Signals control train movement by monitoring blocks, switches, or other signals.
 """
 
 from enum import Enum
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Tuple, Dict, Any
 from enums import SignalState
 

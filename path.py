@@ -17,9 +17,9 @@ See also:
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from enums import PathStatus, direction_from_delta, OPPOSITE_DIRECTIONS
+from enums import PathStatus
 
 
 # ============================================================================

@@ -26,9 +26,8 @@ Curve Detection (connection-based):
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
-import warnings
 
-from enums import TrackType, Direction, SwitchPosition
+from enums import TrackType, Direction
 
 # === Track bit constants ===
 TRACK_NS = 1  # 0b000001 - North to South

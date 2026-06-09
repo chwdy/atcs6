@@ -16,7 +16,7 @@ Track Building using 6-bit track_bits system:
 - Dead-ends are auto-detected by propagation system based on neighbor connectivity
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from network import RailwayNetwork
 from track import (
     TrackSegment,

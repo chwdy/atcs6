@@ -53,20 +53,7 @@ from constants import (
     STOPPED_SPEED_THRESHOLD_KMH,
     TRACK_END_SAFETY_MARGIN_CM,
 )
-from enums import (
-    BRAKE_MULTIPLIERS,
-    HANDLE_POSITION_INDEX,
-    INDEX_TO_HANDLE_POSITION,
-    POWER_MULTIPLIERS,
-    AtcLimitReasonCode,
-    BlockState,
-    CommandResult,
-    ControllerCondition,
-    Direction,
-    HandlePosition,
-    SignalState,
-    TrainState,
-)
+from enums import AtcLimitReasonCode, BlockState, ControllerCondition, Direction, HandlePosition, SignalState, TrainState
 from model_scale import get_speed_conversion_factor
 from runtime_payloads import (
     Command,

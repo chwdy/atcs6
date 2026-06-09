@@ -9,9 +9,8 @@ This format records the construction steps used to build a layout, making it:
 """
 
 import hashlib
-import json
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set
 
 from track import TrackSegment
 

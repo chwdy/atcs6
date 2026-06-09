@@ -6,7 +6,7 @@ This allows layouts to be recreated from their construction history,
 providing a way to verify that API changes don't break existing layouts.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from track import TrackSegment
 

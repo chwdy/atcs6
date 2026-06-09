@@ -23,7 +23,7 @@ without re-walking the network.
 """
 
 from collections import deque
-from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING
+from typing import List, Optional, Set, Tuple, TYPE_CHECKING
 
 from track import OPPOSITE_EDGE
 from path_utils import (

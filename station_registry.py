@@ -14,7 +14,7 @@ forwarders to keep external callers (UI, scenario setup, tests) working.
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 from railway_platform import Platform
 from station import Station
@@ -92,7 +92,6 @@ class StationRegistry:
         Raises:
             ValueError: If position invalid, track is not straight, switch, signal exists, or station exists
         """
-        from track import TRACK_NS, TRACK_EW
 
         # Check if track exists
         track = self._n.get_track(x, y)
