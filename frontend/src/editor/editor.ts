@@ -253,12 +253,8 @@ export class Editor {
     return this.uiHandler.hideSecondarySidebar();
   }
 
-  goBackSecondaryPanel(): any {
-    return this.uiHandler.goBackSecondaryPanel();
-  }
-
-  goForwardSecondaryPanel(): any {
-    return this.uiHandler.goForwardSecondaryPanel();
+  navigateToParentList(): any {
+    return this.uiHandler.navigateToParentList();
   }
 
   closeActiveSecondaryTab(): any {
@@ -343,7 +339,13 @@ export class Editor {
     }
   }
 
-  getBreadcrumbForEntityView(entityView: any): any[] {
+  /** Lineage of a panel snapshot, list-first: `[{label, editorType, editorId}]`.
+   *  One entry for list panels; `[parent list, entity]` for detail panels. The
+   *  last entry's label is the panel's entity-titled tab label; the first
+   *  entry, when navigable (non-null editorType), backs the header's
+   *  `← Parent` button. A null-editorType parent is context only — blocks /
+   *  signals / platforms have no list panel to go to. */
+  getPanelLineage(entityView: any): any[] {
     const type = entityView?.editorType || entityView?.type || null;
     const id = entityView?.editorId || entityView?.id || null;
 
@@ -1496,15 +1498,10 @@ export class Editor {
           activeElement.tagName === 'TEXTAREA' ||
           activeElement.tagName === 'SELECT');
 
+      // Alt+Left mirrors the header's `← Parent` button: detail → its list.
       if (!inInput && e.altKey && !e.metaKey && !e.ctrlKey && e.key === 'ArrowLeft') {
         e.preventDefault();
-        await this.goBackSecondaryPanel();
-        return;
-      }
-
-      if (!inInput && e.altKey && !e.metaKey && !e.ctrlKey && e.key === 'ArrowRight') {
-        e.preventDefault();
-        await this.goForwardSecondaryPanel();
+        await this.navigateToParentList();
         return;
       }
 

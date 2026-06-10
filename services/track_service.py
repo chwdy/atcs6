@@ -187,8 +187,14 @@ def update_track(
 
     if track.track_bits == 0 and len(track.dead_end_ports) == 0:
         state.network.remove_track(x, y)
+        # Connectivity changed: refresh stored switch flank protection so it
+        # cannot go stale and corrupt acquisition (design_new.md:720).
+        state.network.recompute_all_flank_protection()
         return {"status": "removed"}
 
+    # Connectivity changed: refresh stored switch flank protection
+    # (design_new.md:720).
+    state.network.recompute_all_flank_protection()
     return {"status": "updated", "track": track}
 
 
@@ -201,6 +207,9 @@ def delete_track(state: AppState, x: int, y: int) -> bool:
     if not state.network.get_track(x, y):
         raise NotFoundError("Track not found")
     state.network.remove_track(x, y)
+    # Connectivity changed: refresh stored switch flank protection
+    # (design_new.md:720).
+    state.network.recompute_all_flank_protection()
     return True
 
 
@@ -251,6 +260,10 @@ def add_tracks_bulk(
             _ensure_switch_for_tile(state, track, tx, ty)
             added.append(track)
 
+    # Connectivity changed: refresh stored switch flank protection once for the
+    # whole batch (design_new.md:720).
+    if added or updated:
+        state.network.recompute_all_flank_protection()
     return {"added": added, "updated": updated}
 
 
@@ -310,4 +323,8 @@ def delete_tracks_bulk(
             state.network.remove_track(px, py)
             deleted.append([px, py])
 
+    # Connectivity changed: refresh stored switch flank protection once for the
+    # whole batch (design_new.md:720).
+    if deleted:
+        state.network.recompute_all_flank_protection()
     return {"status": "done", "deleted": deleted}

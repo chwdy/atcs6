@@ -628,6 +628,22 @@ class TestBlockPowerController:
         assert restored.get_block_voltage("BLK_001") == 5.0
         assert restored.get_block_voltage("BLK_002") == 8.0
 
+    def test_from_dict_without_min_voltage_keeps_reverse_polarity(self):
+        """A dict that omits ``min_voltage`` must keep the bipolar floor.
+
+        ``to_dict`` always writes ``min_voltage``, so round-trips are fine,
+        but a hand-written or legacy dict may omit it. The fallback must
+        match the dataclass default (``-MAX_TRACK_VOLTAGE``) so negative
+        (reverse-polarity) block voltages stay drivable rather than being
+        silently clamped up to 0.
+        """
+        restored = BlockPowerController.from_dict({"voltages": {}})
+
+        assert restored.min_voltage == -MAX_TRACK_VOLTAGE
+        # Negative drive survives: -8V is not clamped to 0.
+        restored.set_block_voltage("BLK_001", -8.0)
+        assert restored.get_block_voltage("BLK_001") == -8.0
+
 
 class TestBlockCurrentVoltage:
     """Tests for Block.current_voltage property."""

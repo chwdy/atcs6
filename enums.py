@@ -220,6 +220,11 @@ class AtcLimitReasonCode(Enum):
     NO_CAB = "no_cab"
     WRONG_DIRECTION_CAB = "wrong_direction_cab"
     EB = "eb"
+    # A posted block speed limit (`Block.speed_limit_kmh`) below the train's
+    # current maximum: a permitted-speed restriction ahead, distinct from
+    # `obstruction` (an in-path resource conflict). Per design_new.md canonical
+    # `atc_limit_reason_code` enumeration.
+    SPEED_LIMIT = "speed_limit"
     # Per design_new.md line 1728: used when the train or network object is
     # not yet wired, so the empty anchor reports a structured reason code.
     NO_TRAIN = "no_train"

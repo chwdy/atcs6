@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional, Any, TYPE_CHECKING
 
 MAX_TRACK_VOLTAGE = 12.0
-MIN_TRACK_VOLTAGE = 0.0
 # Lighting voltage is a per-train property: it lives on the train's
 # `SpeedProfile.lighting_voltage` and is emitted by `TrainPhysics.
 # compute_track_voltage` for READY / RUNNING_AT_STATION. The block power
@@ -77,6 +76,16 @@ class OutputInterface(ABC):
         """
         pass
 
+    @abstractmethod
+    def enter_safe_state(self) -> None:
+        """Drive the safe state: every block track voltage to 0.
+
+        Per design_new.md:2235 the runtime issues this when it stops driving
+        outputs (simulation stop or process shutdown). The simulated interface
+        zeroes its stored outputs; real hardware de-energizes the track.
+        """
+        pass
+
 
 class SimulatedOutputInterface(OutputInterface):
     """
@@ -105,6 +114,11 @@ class SimulatedOutputInterface(OutputInterface):
         """Clear all stored voltages."""
         self._voltages.clear()
 
+    def enter_safe_state(self) -> None:
+        """Safe state: zero every stored block voltage (design_new.md:2235)."""
+        for block_id in self._voltages:
+            self._voltages[block_id] = 0.0
+
 
 @dataclass
 class BlockPowerController:
@@ -121,7 +135,7 @@ class BlockPowerController:
         network: Reference to the railway network
         output_interface: Interface for actual voltage output
         max_voltage: Maximum allowable voltage (default 12V)
-        min_voltage: Minimum voltage (default 0V)
+        min_voltage: Minimum voltage (default -12V, negative for opposite polarity)
     """
 
     network: Optional["RailwayNetwork"] = None
@@ -142,6 +156,14 @@ class BlockPowerController:
     def set_network(self, network: "RailwayNetwork") -> None:
         """Set the network reference."""
         self.network = network
+
+    def enter_safe_state(self) -> None:
+        """Put the block output hardware into its safe state — every block track
+        voltage at 0 (design_new.md:2235). Issued by the runtime when it stops
+        driving outputs. As the only caller of the output interface, the
+        controller delegates the zeroing/de-energizing to it.
+        """
+        self.output_interface.enter_safe_state()
 
     def update_for_train(
         self, train: "Train", speed_profile: Optional["SpeedProfile"] = None
@@ -329,11 +351,22 @@ class BlockPowerController:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "BlockPowerController":
-        """Reconstruct from dictionary."""
-        controller = cls(
-            max_voltage=data.get("max_voltage", MAX_TRACK_VOLTAGE),
-            min_voltage=data.get("min_voltage", MIN_TRACK_VOLTAGE),
-        )
+        """Reconstruct from dictionary.
+
+        Voltage limits are only overridden when present in ``data``;
+        absent keys fall back to the dataclass field defaults
+        (``max_voltage`` = ``MAX_TRACK_VOLTAGE``, ``min_voltage`` =
+        ``-MAX_TRACK_VOLTAGE``). Keeping the defaults in one place — the
+        fields themselves — means a hand-written or legacy dict that omits
+        ``min_voltage`` still retains the full bipolar range and can drive
+        reverse-polarity (negative) block voltages.
+        """
+        kwargs: Dict[str, Any] = {}
+        if "max_voltage" in data:
+            kwargs["max_voltage"] = data["max_voltage"]
+        if "min_voltage" in data:
+            kwargs["min_voltage"] = data["min_voltage"]
+        controller = cls(**kwargs)
 
         # Restore voltages
         for block_id, voltage in data.get("voltages", {}).items():

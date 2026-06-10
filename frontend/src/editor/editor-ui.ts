@@ -1,8 +1,9 @@
-// editor-ui.ts — Editor UI Handler (secondary sidebar, tabs/history/breadcrumb,
+// editor-ui.ts — Editor UI Handler (secondary sidebar, working-set tabs,
 // collapsible categories, JSON viewer, bit/visual track editors).
 //
-// Migrated from static/js/editor-ui.js (longterm_todo.md item #7, Wave 2).
-// Behavior is unchanged. Owned by the Editor (`new EditorUIHandler(this)`).
+// Owned by the Editor (`new EditorUIHandler(this)`). The sidebar chrome is
+// header (parent link · title · pin · close) + one row of entity-titled tabs;
+// see DESIGN_LANGUAGE.md §12 "Editor navigation".
 
 import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
@@ -25,32 +26,20 @@ const LIST_PANEL_EDITOR_TYPES = new Set([
 
 export class EditorUIHandler {
   editor: EditorHost;
-  secondaryPanelHistoryBack: any[];
-  secondaryPanelHistoryForward: any[];
   currentSecondaryPanel: any;
-  isHistoryNavigation: boolean;
   isTabNavigation: boolean;
-  maxSecondaryHistory: number;
-  currentBreadcrumbSegments: any[];
   secondaryTabs: any[];
   activeSecondaryTabId: string | null;
-  maxSecondaryTabs: number;
   secondaryPanelPinned: boolean;
   secondaryInspectorStorageKey: string;
   sidebarSectionStorageKey: string;
 
   constructor(editor: EditorHost) {
     this.editor = editor;
-    this.secondaryPanelHistoryBack = [];
-    this.secondaryPanelHistoryForward = [];
     this.currentSecondaryPanel = null;
-    this.isHistoryNavigation = false;
     this.isTabNavigation = false;
-    this.maxSecondaryHistory = 50;
-    this.currentBreadcrumbSegments = [];
     this.secondaryTabs = [];
     this.activeSecondaryTabId = null;
-    this.maxSecondaryTabs = 8;
     this.secondaryPanelPinned = false;
     this.secondaryInspectorStorageKey = 'secondaryInspectorStateV1';
     this.sidebarSectionStorageKey = 'sidebarSectionStatesV1';
@@ -72,17 +61,10 @@ export class EditorUIHandler {
       });
     }
 
-    const backBtn = document.getElementById('secondary-nav-back');
-    if (backBtn) {
-      backBtn.addEventListener('click', async () => {
-        await this.goBackSecondaryPanel();
-      });
-    }
-
-    const forwardBtn = document.getElementById('secondary-nav-forward');
-    if (forwardBtn) {
-      forwardBtn.addEventListener('click', async () => {
-        await this.goForwardSecondaryPanel();
+    const parentBtn = document.getElementById('secondary-nav-parent');
+    if (parentBtn) {
+      parentBtn.addEventListener('click', async () => {
+        await this.navigateToParentList();
       });
     }
 
@@ -119,23 +101,6 @@ export class EditorUIHandler {
             await this.activateSecondaryTab(tabId);
           }
         }
-      });
-    }
-
-    const breadcrumb = document.getElementById('secondary-sidebar-breadcrumb');
-    if (breadcrumb) {
-      breadcrumb.addEventListener('click', async (event) => {
-        const target = (event.target as HTMLElement).closest(
-          '.secondary-breadcrumb-segment[data-breadcrumb-index]'
-        ) as HTMLElement | null;
-        if (!target) {
-          return;
-        }
-        const index = parseInt(target.dataset.breadcrumbIndex ?? '', 10);
-        if (Number.isNaN(index)) {
-          return;
-        }
-        await this.navigateBreadcrumbSegment(index);
       });
     }
 
@@ -290,20 +255,6 @@ export class EditorUIHandler {
     const contentEl = document.getElementById('secondary-sidebar-content');
 
     if (sidebar && titleEl && contentEl) {
-      if (
-        !this.isHistoryNavigation &&
-        !this.isTabNavigation &&
-        sidebar.classList.contains('visible') &&
-        this.currentSecondaryPanel
-      ) {
-        const currentKey = `${this.currentSecondaryPanel.editorType || '__none__'}:${this.currentSecondaryPanel.editorId || '__none__'}`;
-        const nextKey = `${this.editor._currentEditorType || '__none__'}:${this.editor._currentEditorId || '__none__'}`;
-        if (currentKey !== nextKey) {
-          this.pushSecondaryHistoryBack(this.currentSecondaryPanel);
-          this.secondaryPanelHistoryForward = [];
-        }
-      }
-
       titleEl.textContent = title;
       contentEl.innerHTML = content;
 
@@ -325,7 +276,6 @@ export class EditorUIHandler {
       };
       this.syncSecondaryTabsWithCurrentPanel();
       this.renderSecondaryTabs();
-      this.renderSecondaryBreadcrumb();
       this.updateSecondaryNavigationState();
       this.persistSecondaryInspectorState();
     }
@@ -343,14 +293,10 @@ export class EditorUIHandler {
 
     this.cleanupSecondaryPanelSubscriptions();
 
-    this.secondaryPanelHistoryBack = [];
-    this.secondaryPanelHistoryForward = [];
     this.currentSecondaryPanel = null;
-    this.currentBreadcrumbSegments = [];
     this.secondaryTabs = [];
     this.activeSecondaryTabId = null;
     this.renderSecondaryTabs();
-    this.renderSecondaryBreadcrumb();
     this.updateSecondaryNavigationState();
     this.persistSecondaryInspectorState();
 
@@ -363,83 +309,35 @@ export class EditorUIHandler {
     }
   }
 
-  async goBackSecondaryPanel(): Promise<void> {
-    if (this.secondaryPanelHistoryBack.length === 0) {
-      return;
+  /** The navigable parent list of the current panel, or null when there is
+   *  none (list panels; detail panels with no list home, e.g. blocks). The
+   *  header's `← Parent` button shows exactly when this is non-null. */
+  getCurrentParentSegment(): any | null {
+    if (!this.currentSecondaryPanel) {
+      return null;
     }
-
-    const previousPanel = this.secondaryPanelHistoryBack.pop();
-    if (this.currentSecondaryPanel) {
-      this.secondaryPanelHistoryForward.push(this.currentSecondaryPanel);
+    const segments = this.editor.getPanelLineage(this.currentSecondaryPanel) || [];
+    if (segments.length < 2) {
+      return null;
     }
-    await this.restoreSecondaryHistoryPanel(previousPanel);
-    this.persistSecondaryInspectorState();
+    const parent = segments[0];
+    return parent && parent.editorType ? parent : null;
   }
 
-  async goForwardSecondaryPanel(): Promise<void> {
-    if (this.secondaryPanelHistoryForward.length === 0) {
+  /** Open the current detail panel's parent list (header `← Parent` button,
+   *  Alt+Left). The list activates its existing tab or opens as a new one. */
+  async navigateToParentList(): Promise<void> {
+    const parent = this.getCurrentParentSegment();
+    if (!parent) {
       return;
     }
-
-    const nextPanel = this.secondaryPanelHistoryForward.pop();
-    if (this.currentSecondaryPanel) {
-      this.pushSecondaryHistoryBack(this.currentSecondaryPanel);
-    }
-    await this.restoreSecondaryHistoryPanel(nextPanel);
-    this.persistSecondaryInspectorState();
-  }
-
-  async navigateBreadcrumbSegment(index: number): Promise<void> {
-    if (
-      !this.currentSecondaryPanel ||
-      index < 0 ||
-      index >= this.currentBreadcrumbSegments.length
-    ) {
-      return;
-    }
-    if (index === this.currentBreadcrumbSegments.length - 1) {
-      return;
-    }
-
-    const segment = this.currentBreadcrumbSegments[index];
-    if (!segment || !segment.editorType) {
-      return;
-    }
-
-    const targetPanel = {
-      title: segment.label,
-      editorType: segment.editorType,
-      editorId: segment.editorId || null,
-      content: '',
-    };
-
-    this.pushSecondaryHistoryBack(this.currentSecondaryPanel);
-    this.secondaryPanelHistoryForward = [];
-    await this.restoreSecondaryHistoryPanel(targetPanel);
-    this.persistSecondaryInspectorState();
-  }
-
-  pushSecondaryHistoryBack(panelSnapshot: any): void {
-    this.secondaryPanelHistoryBack.push(panelSnapshot);
-    if (this.secondaryPanelHistoryBack.length > this.maxSecondaryHistory) {
-      this.secondaryPanelHistoryBack.shift();
-    }
-  }
-
-  async restoreSecondaryHistoryPanel(panelSnapshot: any): Promise<void> {
     this.cleanupSecondaryPanelSubscriptions();
-    this.isHistoryNavigation = true;
-    try {
-      const restored = await this.editor.restoreSecondaryPanel(panelSnapshot);
-      if (!restored) {
-        this.editor._currentEditorType = panelSnapshot.editorType || null;
-        this.editor._currentEditorId = panelSnapshot.editorId || null;
-        this.showSecondarySidebar(panelSnapshot.title || 'Editor', panelSnapshot.content || '');
-      }
-    } finally {
-      this.isHistoryNavigation = false;
-      this.updateSecondaryNavigationState();
-    }
+    await this.editor.restoreSecondaryPanel({
+      title: parent.label,
+      editorType: parent.editorType,
+      editorId: parent.editorId || null,
+      content: '',
+    });
   }
 
   makeSecondaryPanelKey(panelSnapshot: any): string {
@@ -481,18 +379,24 @@ export class EditorUIHandler {
 
     const nextTab = this.createSecondaryTabSnapshot(this.currentSecondaryPanel);
     this.secondaryTabs.push(nextTab);
-    if (this.secondaryTabs.length > this.maxSecondaryTabs) {
-      const removeIndex = this.secondaryTabs.findIndex(
-        (tab) => tab.tabId !== this.activeSecondaryTabId
-      );
-      if (removeIndex >= 0) {
-        this.secondaryTabs.splice(removeIndex, 1);
-      } else {
-        this.secondaryTabs.shift();
-      }
-    }
     this.activeSecondaryTabId = nextTab.tabId;
     this.persistSecondaryInspectorState();
+  }
+
+  /** Display label + tooltip for a tab. Detail tabs are titled by the entity
+   *  they hold (`BLK_588D28`, `#1000001`) — not by the editor's name — so two
+   *  open blocks stay distinguishable. List tabs keep their list name. The
+   *  tooltip carries the full lineage (`Blocks › BLK_588D28`). */
+  getSecondaryTabDisplay(tab: any): { label: string; tooltip: string } {
+    const segments = this.editor.getPanelLineage(tab) || [];
+    if (segments.length === 0) {
+      const fallback = tab?.title || 'Editor';
+      return { label: fallback, tooltip: fallback };
+    }
+    const label = segments[segments.length - 1].label || tab?.title || 'Editor';
+    const tooltip =
+      segments.length > 1 ? segments.map((s: any) => s.label).join(' › ') : label;
+    return { label, tooltip };
   }
 
   renderSecondaryTabs(): void {
@@ -508,17 +412,26 @@ export class EditorUIHandler {
 
     tabsEl.innerHTML = this.secondaryTabs
       .map((tab) => {
-        const safeTitle = this.escapeHtml(tab.title || 'Editor');
+        const { label, tooltip } = this.getSecondaryTabDisplay(tab);
+        const safeLabel = this.escapeHtml(label);
+        const safeTooltip = this.escapeHtml(tooltip);
         const activeClass = tab.tabId === this.activeSecondaryTabId ? ' active' : '';
         const listClass = LIST_PANEL_EDITOR_TYPES.has(tab.editorType) ? ' secondary-tab--list' : '';
         return (
-          `<div class="secondary-tab${activeClass}${listClass}" title="${safeTitle}">` +
-          `<button class="secondary-tab-label btn-size-tight" data-tab-id="${tab.tabId}">${safeTitle}</button>` +
+          `<div class="secondary-tab${activeClass}${listClass}" title="${safeTooltip}">` +
+          `<button class="secondary-tab-label btn-size-tight" data-tab-id="${tab.tabId}">${safeLabel}</button>` +
           `<button class="secondary-tab-close" data-tab-id="${tab.tabId}" title="Close tab">×</button>` +
           `</div>`
         );
       })
       .join('');
+
+    // The strip is a single row with horizontal scroll — keep the active tab
+    // in view when it changes.
+    const activeEl = tabsEl.querySelector('.secondary-tab.active');
+    if (activeEl && typeof activeEl.scrollIntoView === 'function') {
+      activeEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
   }
 
   async activateSecondaryTab(tabId: string): Promise<void> {
@@ -638,7 +551,6 @@ export class EditorUIHandler {
       const tabs = Array.isArray(parsed?.tabs) ? parsed.tabs : [];
       this.secondaryTabs = tabs
         .filter((tab: any) => tab && tab.editorType)
-        .slice(0, this.maxSecondaryTabs)
         .map((tab: any) => ({
           tabId: tab.tabId || `${tab.editorType}:${tab.editorId || Date.now()}`,
           key: tab.key || this.makeSecondaryPanelKey(tab),
@@ -764,8 +676,6 @@ export class EditorUIHandler {
     this.secondaryTabs = [];
     this.activeSecondaryTabId = null;
     this.currentSecondaryPanel = null;
-    this.secondaryPanelHistoryBack = [];
-    this.secondaryPanelHistoryForward = [];
     try {
       localStorage.removeItem(this.secondaryInspectorStorageKey);
     } catch (e) {}
@@ -786,43 +696,6 @@ export class EditorUIHandler {
     if (this.editor.speedProfileHandler?._cleanup) this.editor.speedProfileHandler._cleanup();
   }
 
-  renderSecondaryBreadcrumb(): void {
-    const breadcrumbEl = document.getElementById('secondary-sidebar-breadcrumb');
-    if (!breadcrumbEl) {
-      return;
-    }
-
-    if (!this.currentSecondaryPanel) {
-      breadcrumbEl.innerHTML = '';
-      this.currentBreadcrumbSegments = [];
-      return;
-    }
-
-    const segments = this.editor.getBreadcrumbForEntityView(this.currentSecondaryPanel) || [];
-    this.currentBreadcrumbSegments = segments;
-
-    if (segments.length === 0) {
-      breadcrumbEl.innerHTML = '';
-      return;
-    }
-
-    let html = '';
-    for (let i = 0; i < segments.length; i++) {
-      const segment = segments[i];
-      const isLast = i === segments.length - 1;
-      const segmentLabel = this.escapeHtml(segment.label || 'Editor');
-
-      if (isLast || !segment.editorType) {
-        html += `<span class="secondary-breadcrumb-current">${segmentLabel}</span>`;
-      } else {
-        html += `<button class="secondary-breadcrumb-segment" data-breadcrumb-index="${i}">${segmentLabel}</button>`;
-        html += `<span class="secondary-breadcrumb-separator">></span>`;
-      }
-    }
-
-    breadcrumbEl.innerHTML = html;
-  }
-
   escapeHtml(text: any): string {
     return String(text)
       .replace(/&/g, '&amp;')
@@ -839,14 +712,20 @@ export class EditorUIHandler {
     }
     closeBtn.title = 'Close';
 
-    const backBtn = document.getElementById('secondary-nav-back') as HTMLButtonElement | null;
-    if (backBtn) {
-      backBtn.disabled = this.secondaryPanelHistoryBack.length === 0;
-    }
-
-    const forwardBtn = document.getElementById('secondary-nav-forward') as HTMLButtonElement | null;
-    if (forwardBtn) {
-      forwardBtn.disabled = this.secondaryPanelHistoryForward.length === 0;
+    // `← Trains`-style parent link: shown only when the open panel is a
+    // detail view whose parent list exists (DESIGN_LANGUAGE.md §12 — the back
+    // button is labeled with its destination).
+    const parentBtn = document.getElementById('secondary-nav-parent') as HTMLButtonElement | null;
+    if (parentBtn) {
+      const parent = this.getCurrentParentSegment();
+      if (parent) {
+        parentBtn.hidden = false;
+        parentBtn.textContent = `← ${parent.label}`;
+        parentBtn.title = `Back to ${parent.label}`;
+      } else {
+        parentBtn.hidden = true;
+        parentBtn.textContent = '';
+      }
     }
 
     const pinBtn = document.getElementById('secondary-nav-pin');

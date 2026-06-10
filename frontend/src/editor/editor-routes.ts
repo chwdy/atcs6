@@ -504,11 +504,6 @@ export class RouteEditorHandler {
     return `
             <div class="route-editor" data-route-id="${route.route_id}">
                 <div class="re-toolbar">
-                    <button id="back-to-routes-btn"
-                            class="btn btn-secondary btn-sm re-toolbar-back"
-                            title="Return to the routes list">
-                        ← Routes
-                    </button>
                     <div class="re-toolbar-spacer">
                         ${
                           isDirty
@@ -1374,11 +1369,6 @@ export class RouteEditorHandler {
   }
 
   initRouteEditorHandlers(): void {
-    const backBtn = document.getElementById('back-to-routes-btn') as HTMLButtonElement | null;
-    if (backBtn) {
-      backBtn.onclick = () => this.showRoutesPanel();
-    }
-
     const saveBtn = document.getElementById('save-route-btn') as HTMLButtonElement | null;
     if (saveBtn) {
       saveBtn.onclick = () => this.saveRoute();

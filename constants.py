@@ -56,6 +56,12 @@ LOOKAHEAD_TICKS: int = 5
 IDLE_HOLD_RELEASE_TICKS: int = 30
 IDLE_HOLD_COOLDOWN_TICKS: int = 20
 
+# Delay-class on-time tolerance per design_new.md "RouteTaskRun schema"
+# (delay_class). A task's actual elapsed travel time is compared with its
+# expected `task_time`: elapsed below `task_time - tol` is "early", above
+# `task_time + tol` is "late", otherwise "on_time". Tunable; diagnostic only.
+DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS: float = 5.0
+
 # Block occupancy detection debounce per design_new.md "Power -> Block occupancy
 # detection". Each electrically-isolated block has a current detector; current
 # present means a train is on the block. Real contacts flicker, so a momentary
@@ -66,3 +72,12 @@ IDLE_HOLD_COOLDOWN_TICKS: int = 20
 # (ride through dropouts). Counted in detection ticks (one read per sim tick).
 OCCUPANCY_ON_THRESHOLD: int = 1
 OCCUPANCY_OFF_THRESHOLD: int = 3
+
+# Reserved sentinel for an "unknown" / unmodeled block occupant per
+# design_new.md "Power -> Block occupancy detection" (Attribution): when the
+# current detector confirms a block occupied but no modeled train reserves or
+# covers it, `Block.occupied_by` is set to this value (a value no real train
+# uses) rather than committed to a wrong train or silently dropped. Only
+# reachable with real hardware — the simulated detector builds current from live
+# train spans, so every confirmed block already matches a modeled train.
+UNKNOWN_TRAIN_ID: str = "__UNKNOWN_OCCUPANT__"

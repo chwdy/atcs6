@@ -44,8 +44,6 @@ EDIT_FIELDS = (
     "mode",
     "priority",
     "acquisition_mode",
-    "start_mode",
-    "start_task_index",
 )
 
 # Per design_new.md "RouteRun overrides" — fields that may carry per-field
@@ -303,18 +301,18 @@ def update_route(
         definition_edit_touched = True
         changed_overridable.append("acquisition_mode")
 
-    # start_mode / start_task_index are definition edits (bump last_edited_at),
-    # but they are NOT structural (no RouteRun teardown) and NOT live overrides
-    # (no push). They are consulted only when a fresh run is allocated, so an
-    # edit here changes the default for future runs and leaves already-running
-    # runs alone. Per design_new.md "Run start-mode seeding".
+    # start_mode / start_task_index are definition edits but are NOT in the
+    # last_edited_at bump-set (design_new.md "Route edit timestamps": the set is
+    # exactly name/tasks/mode/priority/acquisition_mode). They are also NOT
+    # structural (no RouteRun teardown) and NOT live overrides (no push) — they
+    # are consulted only when a fresh run is allocated, so an edit here changes
+    # the default for future runs and leaves already-running runs alone. Per
+    # "Run start-mode seeding".
     if start_mode is not None:
         route.start_mode = _coerce_start_mode(start_mode)
-        definition_edit_touched = True
 
     if start_task_index_present:
         route.start_task_index = _coerce_start_task_index(start_task_index)
-        definition_edit_touched = True
 
     # Apply per-field push policies to currently RUNNING RouteRuns for
     # this route per design_new.md "RouteRun overrides". Only look up the

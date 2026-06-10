@@ -215,10 +215,15 @@ class RouteTask:
     ) -> bool:
         """Return True when the task is ready to depart.
 
-        For `dwell` tasks, returns True when:
-          * `target_time` is present and `now >= target_time`, or
-          * `task_time` has elapsed since `dwell_started_at`, or
-          * neither is set (depart immediately).
+        For a `dwell` task the canonical rule (design_new.md "Task time
+        semantics") is: depart when
+
+            now >= max(dwell_started_at, target_time) + task_time
+
+        treating `target_time` as -inf when unset and `task_time` as 0 when
+        unset. So with both set, the train holds for `task_time` after the
+        later of its actual arrival and the scheduled start — a late arrival
+        still serves the full hold, an early arrival waits for the schedule.
 
         For `waypoint` and `stop` tasks, returns True (the caller controls
         movement; this method is consulted only by the Phase 1 dwell-complete
@@ -227,37 +232,47 @@ class RouteTask:
         if self.task_kind != "dwell":
             return True
 
-        if self.target_time is not None:
-            return now >= self.target_time
+        task_t = self.task_time if (self.task_time is not None and self.task_time > 0.0) else 0.0
 
         if dwell_started_at is None:
-            # No predecessor finish yet → not ready.
-            return False
+            # Predecessor not finished, so the dwell has not actually started.
+            # Only an absolute scheduled departure can authorize leaving early.
+            if self.target_time is None:
+                return False
+            return now >= self.target_time + task_t
 
-        if self.task_time is None or self.task_time <= 0.0:
-            return True
-
-        return (now - dwell_started_at) >= self.task_time
+        if self.target_time is None:
+            base = dwell_started_at
+        else:
+            base = max(dwell_started_at, self.target_time)
+        return now >= base + task_t
 
     def get_remaining_dwell_time(
         self,
         now: float,
         dwell_started_at: Optional[float],
     ) -> float:
-        """Return remaining seconds before depart-ready (`dwell` only)."""
+        """Return remaining seconds before depart-ready (`dwell` only).
+
+        Mirrors `should_depart`: remaining = (depart threshold) - now, clamped
+        at 0, where the threshold is `max(dwell_started_at, target_time) +
+        task_time` (design_new.md "Task time semantics").
+        """
         if self.task_kind != "dwell":
             return 0.0
 
-        if self.target_time is not None:
-            return max(0.0, self.target_time - now)
+        task_t = self.task_time if (self.task_time is not None and self.task_time > 0.0) else 0.0
 
         if dwell_started_at is None:
-            return self.task_time if self.task_time is not None else 0.0
+            if self.target_time is None:
+                return task_t
+            return max(0.0, self.target_time + task_t - now)
 
-        if self.task_time is None or self.task_time <= 0.0:
-            return 0.0
-
-        return max(0.0, self.task_time - (now - dwell_started_at))
+        if self.target_time is None:
+            base = dwell_started_at
+        else:
+            base = max(dwell_started_at, self.target_time)
+        return max(0.0, base + task_t - now)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to a JSON-compatible dict.

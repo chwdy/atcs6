@@ -751,10 +751,12 @@ class PathDispatcher:
                 now=self._now(),
             )
 
-        # Find geometry candidates (shortest first). Direction is enforced
-        # downstream during acquisition; it is intentionally not passed as a
-        # walk-search filter here because the terminal-direction check is not
-        # tunnel-aware (a tunnel hop has no meaningful tile delta to classify).
+        # Find geometry candidates (shortest first). The pathfinder enforces
+        # `Block.allowed_travel_directions` over the whole walk; the caller's
+        # requested terminal direction is enforced downstream during
+        # acquisition and is intentionally not passed as a walk-search filter
+        # here because the terminal-direction check is not tunnel-aware (a
+        # tunnel hop has no meaningful tile delta to classify).
         candidates = self._find_walk_candidates(
             start_block_id_resolved,
             requested_destination_block_id,
@@ -1060,7 +1062,9 @@ class PathDispatcher:
             )
 
         # Find extension geometry from current authority end (shortest first).
-        # As in create_path, direction is enforced downstream during
+        # As in create_path, the pathfinder enforces
+        # `Block.allowed_travel_directions` over the whole walk; the caller's
+        # requested terminal direction is enforced downstream during
         # acquisition, not as a walk-search filter (the terminal-direction
         # check is not tunnel-aware).
         start_block_id = path.get_authority_end_block_id()

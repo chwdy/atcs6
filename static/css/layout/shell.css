@@ -387,12 +387,6 @@ textarea {
     border-bottom: 1px solid var(--border-color);
 }
 
-.secondary-sidebar-nav {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-}
-
 .secondary-nav-btn {
     background: var(--bg-dark);
     border: 1px solid var(--border-color);
@@ -408,6 +402,20 @@ textarea {
     align-items: center;
     justify-content: center;
     transition: color 0.15s, border-color 0.15s;
+    flex-shrink: 0;
+}
+
+/* `← Trains`-style parent link — the one history affordance in the header.
+   Same ghost chrome as the square nav buttons, sized to its label. */
+.secondary-nav-parent {
+    width: auto;
+    padding: 0 8px;
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+.secondary-nav-parent[hidden] {
+    display: none;
 }
 
 .secondary-nav-btn:hover:not(:disabled) {
@@ -482,14 +490,35 @@ textarea {
     padding: 15px;
 }
 
+/* One row, never wraps: overflow scrolls horizontally so every open tab stays
+   reachable (no silent eviction, no multi-row strip eating the panel). */
 .secondary-sidebar-tabs {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: stretch;
     gap: 0 2px;
     padding: 0 8px;
     border-bottom: 1px solid var(--border-color);
     background: rgba(255, 255, 255, 0.02);
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+
+.secondary-sidebar-tabs::-webkit-scrollbar {
+    height: 4px;
+}
+
+.secondary-sidebar-tabs::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.1);
+}
+
+.secondary-sidebar-tabs::-webkit-scrollbar-thumb {
+    background: rgba(130, 87, 229, 0.3);
+    border-radius: 3px;
+}
+
+.secondary-sidebar-tabs::-webkit-scrollbar-thumb:hover {
+    background: rgba(130, 87, 229, 0.5);
 }
 
 /* Tab strip per DESIGN_LANGUAGE.md §3 — flat tabs, no per-tab border or fill;
@@ -527,6 +556,11 @@ textarea {
     white-space: nowrap;
     padding: 0;
     user-select: none;
+    /* Entity ids are opaque identifiers — clamp per DESIGN_LANGUAGE.md §5;
+       the tab's title tooltip carries the full lineage. */
+    max-width: 110px;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* Standalone list/collection tabs (all trains, all routes, …) read bolder than
@@ -552,41 +586,6 @@ textarea {
 
 .secondary-tab-close:hover {
     color: var(--danger-color);
-}
-
-.secondary-sidebar-breadcrumb {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-height: 30px;
-    padding: 6px 24px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-    background: rgba(255, 255, 255, 0.02);
-    overflow-x: auto;
-    white-space: nowrap;
-}
-
-.secondary-breadcrumb-segment {
-    background: none;
-    border: none;
-    color: var(--text-secondary);
-    font-size: 0.75rem;
-    padding: 0;
-    cursor: pointer;
-}
-
-.secondary-breadcrumb-segment:hover {
-    color: var(--accent-hover);
-}
-
-.secondary-breadcrumb-current {
-    color: var(--text-primary);
-    font-size: 0.75rem;
-}
-
-.secondary-breadcrumb-separator {
-    color: var(--text-muted);
-    font-size: 0.7rem;
 }
 
 /* Resize handle for secondary sidebar - on RIGHT edge */

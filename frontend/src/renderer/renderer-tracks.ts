@@ -11,6 +11,7 @@
 // (`new RendererTrackHandler(this)`).
 
 import { getActiveSegments, isCrossing, TRACK_WIDTH } from '../lib/constants';
+import { getBlockStateColor } from '../lib/helpers';
 import type { Signal } from './renderer-signals';
 
 export interface EdgePoint {
@@ -66,15 +67,17 @@ export function blockTrackColor(
   block: { state?: string; disabled?: boolean; manual?: boolean } | undefined | null,
 ): string | null {
   if (!block) return null;
-  if (block.disabled) return '#6c6c78';
-  if (block.manual) return '#ff9500';
-  switch ((block.state || 'free').toLowerCase()) {
-    case 'occupied': return '#e83f5b';
-    case 'reserved': return '#04d361';
-    case 'free': return '#4285f4';
-    case 'caution': return '#ffcd1e';
-    default: return null;
+  // Consume the --block-* design tokens via the canonical resolver, the same
+  // path renderer-blocks / train-monitor use (DESIGN_LANGUAGE.md: "Track / block
+  // renderers consume these tokens; do not hard-code hex literals at the call
+  // site"). Availability (disabled/manual) overrides live state.
+  if (block.disabled) return getBlockStateColor('disabled');
+  if (block.manual) return getBlockStateColor('manual');
+  const state = (block.state || 'free').toLowerCase();
+  if (state === 'occupied' || state === 'reserved' || state === 'free' || state === 'caution') {
+    return getBlockStateColor(state);
   }
+  return null;
 }
 
 export class RendererTrackHandler {

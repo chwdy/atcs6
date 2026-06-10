@@ -308,6 +308,13 @@ class OperatorCommands:
         if not c.is_stopped():
             return CommandResult(False, "Cannot power off while moving")
 
+        # power_off while already OFF is a no-op (design_new.md:1783): the train
+        # is already off, so do NOT arm the `power_off` latch. A stale latch
+        # would survive a later `power_on_cmd()` and tear the freshly-powered
+        # train straight back to OFF in the next Phase-3 cleanup.
+        if c.ops.state == TrainState.OFF:
+            return CommandResult(True, "Power off (already off)")
+
         self._apply_power_off_request()
 
         return CommandResult(True, "Power off accepted; shutdown deferred to Phase 3")

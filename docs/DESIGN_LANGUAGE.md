@@ -122,8 +122,9 @@ the resolved color directly. CSS custom properties are not substituted
 when read from JS, so `var()` chains return the unresolved string.
 
 Canonical consumer: `getBlockStateColor(state, alpha)` in
-[static/js/helpers.js](../static/js/helpers.js). Pass `alpha` < 1 to get
-the rgba form used for canvas overlays.
+[frontend/src/lib/helpers.ts](../frontend/src/lib/helpers.ts). Pass `alpha` < 1
+to get the rgba form used for canvas overlays. Track/block renderers reach it
+through this resolver rather than hard-coding hex at the call site.
 
 ### Layout
 
@@ -368,6 +369,18 @@ control."
 - **Tabs** — no border, no fill by default. 11px Inter, `--text-secondary`, `padding: 6px 6px`. Padding is deliberately tight: a tab is text + a click target, not a button — let the words speak.
 - **Hover** — `background-color: var(--bg-hover)`, `color: var(--text-primary)`.
 - **Active** — `color: var(--accent-hover)`, plus a 2px `border-bottom: var(--accent-color)` with `margin-bottom: -1px` so the active underline overlaps the strip's bottom rule (the active tab "owns" that segment of the divider). Inactive tabs carry a 2px transparent `border-bottom` so the active underline doesn't shift heights between tabs.
+
+**Working-set variant (editor sidebar).** The secondary sidebar's strip
+holds an open-ended, data-driven set of open panels, not a fixed pane
+set, so it relaxes two rules: each tab carries a close `×`, and the row
+never wraps — it stays one line and scrolls horizontally, so every open
+tab stays reachable and the strip never eats the panel. Tabs are titled
+by the record they hold (`BLK_588D28`, `#1000001`), never by the
+editor's name — two open blocks must read apart at a glance. List tabs
+(all trains, all routes) keep their list name, in bold, so collections
+read apart from instances. Labels clamp with ellipsis (opaque
+identifiers, §5 Overflow); the tab tooltip carries the full lineage
+(`Blocks › BLK_588D28`).
 
 Reference: `.secondary-sidebar-tabs` / `.secondary-tab` in
 [layout/shell.css](../static/css/layout/shell.css).
@@ -1307,20 +1320,40 @@ Same principle covers any "execute with options" pattern: per-task
 direction picker next to the move button, per-row enable toggle next to
 the row action, etc.
 
-### Editor toolbars and the unsaved-edits indicator
+### Editor navigation and the unsaved-edits indicator
 
-A long editor panel (Route Editor, Path Editor) shouldn't bury Save in
-the bottom section. Sections describe what they edit; Save applies to
-the whole panel, so it lives in a sticky top toolbar instead of inside
-any one section. Reference: `.re-toolbar` in
+Navigation up and out of an editor lives in the sidebar's shared header
+chrome — one implementation for every panel — never inside any one
+panel's body:
+
+```
+[← Routes]  Route Editor                    [pin] [×]
+[Trains][T_NWY_1][Routes][RT_4F2A]   ← one tab row, scrolls
+```
+
+- **Parent link** — when the open panel is the detail view of a record
+  whose list panel exists, the header's left slot is a ghost button
+  labeled with the destination (`← Routes`), never the ambiguous word
+  "Back." It opens the list, re-activating the list's tab when one is
+  already open. List panels, and detail views with no list home
+  (blocks, signals, platforms), show no parent link. Keyboard:
+  Alt+Left.
+- **Pin** — freezes the panel on its current record so canvas clicks
+  don't retarget it. Tabler `ti-pin`, icon-only.
+- **Tabs** — the working-set tab strip (§3) sits directly under the
+  header. No breadcrumb row: the parent link covers "go up," the tab
+  label names the record, and the tab tooltip carries the lineage.
+
+A long editor panel (Route Editor, Path Editor) also shouldn't bury
+Save in the bottom section. Sections describe what they edit; Save
+applies to the whole panel, so it lives in a sticky top toolbar instead
+of inside any one section. Reference: `.re-toolbar` in
 `features/routes-paths.css`.
 
 ```
-[← Routes]      ● unsaved      [⟳]  [Save *]
+● unsaved      [⟳]  [Save *]
 ```
 
-- **Back button** — labeled with destination (`← Routes`), not the
-  ambiguous word "Back."
 - **Dirty indicator** — warn-color `● unsaved` text in the spacer. No
   border, no badge — it's a status marker, not a button.
 - **Refresh** — icon-only ghost button. Polls already keep the panel in
@@ -1517,7 +1550,7 @@ highlight strokes (below).
 
 ### Z-order is liveness-based
 
-Draw order in [renderer.js](../static/js/renderer.js) `drawNetwork`:
+Draw order in [renderer.ts](../frontend/src/renderer/renderer.ts) `drawNetwork`:
 
 1. Track chassis + block colors (bottom)
 2. Platform bodies + platform labels (identity tier)
@@ -1538,6 +1571,19 @@ station label, that one label gets a second pass at the very top of the
 stack so it wins over the moving train. `drawStations()` runs at step 3 for
 all non-hovered labels; `drawHoverOverlay()` runs at step 7 for just the
 hovered one.
+
+**Two-canvas implementation.** The single conceptual stack above is realized on
+two stacked canvases (see [canvas.css](../static/css/layout/canvas.css)): a
+`#rail-world-canvas` (z-index 1, purely visual) painted by `_drawWorld` — track,
+blocks, platform bodies, signals, debug overlays, block-detail labels — and a
+`#rail-live-canvas` (z-index 2, owns the pointer) painted on top by `_drawLive`
+— the platform/station identity labels (which re-evaluate on every mousemove for
+hover), route overlays, trains + train labels, and the select overlay.
+`drawNetwork` runs `_drawWorld` then `_drawLive`. Within-canvas order keeps the
+rule above (a train paints over a station name; the hovered label gets its top
+pass). The one consequence of the split: the interactive identity labels on the
+live canvas sit above the world canvas's display-only signal / debug /
+block-detail marks rather than beneath them.
 
 ### Highlight strokes
 

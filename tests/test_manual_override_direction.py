@@ -10,7 +10,7 @@ Per design_new.md `disabled` and `manual` availability flags canonical home
 These tests pin the two enforcement sites:
 
   1. `RailwayPathfinder._walk_passes_filters(...)` — pathfinder-level
-     terminal-direction policy check.
+     direction-policy check over every block the walk traverses.
   2. `BlockManager.reserve_blocks_for_path(...)` — per-block direction
      eligibility check.
 

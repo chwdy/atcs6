@@ -1,0 +1,102 @@
+"""HAL safe-state (M1) + unknown-occupant attribution (M2).
+
+design_new.md "Power":
+- enter_safe_state() (2235): the runtime drives every block track voltage to 0
+  and de-energizes every switch motor when it stops driving outputs (simulation
+  stop or process shutdown).
+- Attribution (2243): a confirmed block entry that matches no modeled train is
+  committed to the reserved UNKNOWN_TRAIN_ID sentinel (not a wrong train, not
+  dropped) and cleared when its current drops for the off-window.
+
+Both paths are real-hardware-only — the simulated detector builds current from
+live spans and the simulated outputs have no physical effect — so they are
+exercised here as unit contracts.
+"""
+
+from block import Block
+from block_occupancy import BlockOccupancyDetector, SimulatedInputInterface
+from block_power import BlockPowerController, SimulatedOutputInterface
+from constants import UNKNOWN_TRAIN_ID
+from network import RailwayNetwork
+from path_dispatcher import PathDispatcher
+from simulation import SimulationController
+from switch_power import SimulatedSwitchOutputInterface, SwitchPowerController
+
+
+# --------------------------------------------------------------- M1 safe state
+
+def test_block_output_interface_enter_safe_state_zeroes_voltages():
+    iface = SimulatedOutputInterface()
+    iface.set_voltage("B1", 5.0)
+    iface.set_voltage("B2", 8.0)
+    iface.enter_safe_state()
+    assert iface.get_actual_voltage("B1") == 0.0
+    assert iface.get_actual_voltage("B2") == 0.0
+    assert all(v == 0.0 for v in iface.get_all_voltages().values())
+
+
+def test_switch_output_interface_enter_safe_state_deenergizes():
+    iface = SimulatedSwitchOutputInterface()
+    iface.set_throw("S1", 1)
+    iface.enter_safe_state()
+    assert iface.get_last_throw("S1") is None
+
+
+def test_block_power_controller_delegates_safe_state():
+    iface = SimulatedOutputInterface()
+    controller = BlockPowerController(output_interface=iface)
+    iface.set_voltage("B1", 7.0)
+    controller.enter_safe_state()
+    assert iface.get_actual_voltage("B1") == 0.0
+
+
+def test_switch_power_controller_delegates_safe_state():
+    iface = SimulatedSwitchOutputInterface()
+    controller = SwitchPowerController(output_interface=iface)
+    iface.set_throw("S1", 1)
+    controller.enter_safe_state()
+    assert iface.get_last_throw("S1") is None
+
+
+def test_simulation_controller_enter_safe_state_drives_all_outputs_safe():
+    network = RailwayNetwork()
+    sim = SimulationController(network, PathDispatcher(network))
+    sim.power_controller.output_interface.set_voltage("B1", 9.0)
+    sim.switch_power_controller.output_interface.set_throw("S1", 1)
+    sim.enter_safe_state()
+    assert sim.power_controller.output_interface.get_actual_voltage("B1") == 0.0
+    assert sim.switch_power_controller.output_interface.get_last_throw("S1") is None
+
+
+# ----------------------------------------------------------- M2 unknown occupant
+
+def _detector():
+    network = RailwayNetwork()
+    network.blocks["BLK_X"] = Block(block_id="BLK_X", length_cm=100.0)
+    controllers = {}
+    detector = BlockOccupancyDetector(
+        network=network,
+        input_interface=SimulatedInputInterface(network, controllers),
+        controllers=controllers,
+    )
+    return network, detector
+
+
+def test_unattributable_entry_becomes_unknown_occupant():
+    network, detector = _detector()
+    block = network.blocks["BLK_X"]
+    # No reserving train, no covering span -> unmodeled occupant.
+    entered_by_train, _ = detector.attribute({"BLK_X"}, set())
+    # Committed to the sentinel, not dropped and not routed to any train.
+    assert block.occupied_by == UNKNOWN_TRAIN_ID
+    routed = {b for blocks in entered_by_train.values() for b in blocks}
+    assert "BLK_X" not in routed
+
+
+def test_unknown_occupant_cleared_on_vacate():
+    network, detector = _detector()
+    block = network.blocks["BLK_X"]
+    block.occupied_by = UNKNOWN_TRAIN_ID
+    _, vacated_by_train = detector.attribute(set(), {"BLK_X"})
+    assert block.occupied_by is None
+    assert UNKNOWN_TRAIN_ID not in vacated_by_train

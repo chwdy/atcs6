@@ -1618,6 +1618,7 @@ class TrainController:
                 "clearance_cm": 0.0,
                 "safety_margin_cm": 0.0,
                 "authority_boundary_delta_cm": 0.0,
+                "target_stop_cm": 0.0,
                 "speed_curves": [],
             },
         }
@@ -1870,21 +1871,29 @@ class TrainController:
         Per design_new.md step `8df5`, this is the post-physics usable-
         authority stop check used by Phase 3 path completion.
 
-        The spec lists two satisfying cases for this gate: the train has
-        either "physically progressed through the final `resource_sequence`
-        entry" (i.e. its head occupies the authority-end block), or "the
-        remaining projected authority distance is too short to grant
-        additional positive clearance after applying the controller safety
-        margin" (i.e. `atc_limit` at distance 0 has fallen to zero). The
-        first case is the natural commit point under discrete physics:
-        ATO brakes the train to rest somewhere inside the destination
-        block, and forward-Euler integration cannot land exactly on the
-        safety-margin boundary, so `atc_limit` at d=0 generally still
-        reads a few km/h. Requiring `atc_limit == 0` (or the operational-
-        limit equivalent) would leave the gate failing in normal cases
-        and trap ATO in a low-speed creep loop. Using head-in-destination
-        + reason-code AUTHORITY_STOP captures the canonical intent without
-        depending on a precision the integrator cannot deliver.
+        The spec lists two satisfying cases: the train has either "physically
+        progressed through the final `resource_sequence` entry" (its head
+        occupies the authority-end block) or "the remaining projected authority
+        distance is too short to grant additional positive clearance after
+        applying the controller safety margin" (it braked to rest at the
+        safety-margin boundary short of that block — common when the
+        authority-end block is very short or zero-length). Both cases surface
+        identically at distance 0: the lookahead curve's dominant restriction
+        becomes the path-end stop, so its reason code is `AUTHORITY_STOP`. The
+        literal `atc_limit == 0` the spec mentions is unreachable under
+        forward-Euler integration (a step cannot land exactly on the boundary,
+        so the value reads a few km/h); the `AUTHORITY_STOP` reason code is the
+        reachable expression of the same intent.
+
+        The gate therefore fires on `is_stopped()` + reason code
+        `AUTHORITY_STOP` and does NOT require the head to occupy the
+        authority-end block. Requiring head occupancy would strand a train that
+        stopped just short of a very short final block — it satisfies the
+        spec's second case yet would never complete. The dispatcher's
+        `try_complete_active_path(...)` separately verifies the live authority
+        actually reached the requested destination block (and, for multi-tile
+        blocks, its direction), so this controller-side gate only answers
+        "stopped at my current usable authority end?".
         """
         if not self.is_stopped():
             return False
@@ -1895,23 +1904,20 @@ class TrainController:
         plan = self.path_projection.received_path_plan
         if plan is None:
             return False
-        # ATO curve has terminated at the authority end: distance-0
-        # lookahead's dominant restriction is the path-end stop.
+        # The ATO curve has collapsed to the path-end stop at distance 0: the
+        # dominant restriction's reason code is AUTHORITY_STOP. This holds in
+        # both spec cases (head in the authority-end block, or stopped short of
+        # a very short final block by the safety margin), so no head-occupancy
+        # test is needed here — the dispatcher's try_complete_active_path
+        # verifies the authority actually reached the requested destination.
         payload = self._compute_canonical_lookahead()
         curves = (payload or {}).get("lookahead", {}).get("speed_curves") or []
         if not curves:
             return False
-        if (
+        return (
             curves[0].get("atc_limit_reason_code")
-            != AtcLimitReasonCode.AUTHORITY_STOP.value
-        ):
-            return False
-        # Train head is at the destination (authority-end) block — the
-        # spec's first satisfying case.
-        head_block_id = self._get_current_block_id()
-        if head_block_id is None:
-            return False
-        return head_block_id == plan.get_authority_end_block_id()
+            == AtcLimitReasonCode.AUTHORITY_STOP.value
+        )
 
     # -------------------------------------------------------------------------
     # Physics callback — Phase 2 storage / Phase 3 enqueue (per design_new.md)
@@ -2864,7 +2870,10 @@ class TrainController:
                         else min(block_speed, CAUTION_SPEED_LIMIT_KMH)
                     )
                 else:
-                    block_code = AtcLimitReasonCode.OBSTRUCTION
+                    # A posted block speed limit is a permitted-speed
+                    # restriction, not an in-path conflict (design_new.md
+                    # reason-code enumeration): use SPEED_LIMIT, not OBSTRUCTION.
+                    block_code = AtcLimitReasonCode.SPEED_LIMIT
                     restriction_speed = block_speed
                 if restriction_speed is not None and restriction_speed < max_speed:
                     block_id = block.get("id")
@@ -2991,7 +3000,9 @@ class TrainController:
                                 else min(block_speed, CAUTION_SPEED_LIMIT_KMH)
                             )
                         else:
-                            inside_code = AtcLimitReasonCode.OBSTRUCTION
+                            # Posted block speed limit, not an in-path conflict:
+                            # SPEED_LIMIT, not OBSTRUCTION (see above).
+                            inside_code = AtcLimitReasonCode.SPEED_LIMIT
                             inside_speed = block_speed
                         if inside_speed is not None:
                             block_id = block.get("id")

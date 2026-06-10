@@ -51,6 +51,10 @@
     "kind": "tabler",
     "value": "route"
   },
+  "pin-panel": {
+    "kind": "tabler",
+    "value": "pin"
+  },
   "platform": {
     "kind": "tabler",
     "value": "plus"

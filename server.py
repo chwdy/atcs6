@@ -271,6 +271,15 @@ def main() -> None:
         setup_train=not args.no_demo,
     )
 
+    # design_new.md:2235 — loss-of-control fail-safe: a process shutdown must
+    # drive outputs to the safe state (block voltages 0, switch motors
+    # de-energized). The simulation-stop route issues the same enter_safe_state
+    # call. Registered only on the real `python server.py` boot, not in tests.
+    import atexit
+
+    if sim_controller is not None:
+        atexit.register(sim_controller.enter_safe_state)
+
     simulation_lock = threading.Lock()
     simulation_running = False
     simulation_speed = 1.0

@@ -693,13 +693,13 @@
 }
 
 /* ----------------------------------------------------------------------------
-   Route Editor: top toolbar (back / refresh / save).
+   Route Editor: top toolbar (dirty indicator / save). Back-to-list lives in
+   the shared sidebar header (`← Routes` parent link), not in this toolbar.
 
-   Sticky to the panel top so Save and Refresh are always reachable —
-   fixes the "Save is two scrolls away from Tasks" UX bug. Save also
-   carries a small dirty indicator ("Save *" + tinted bg) so the user
-   knows when they have unsaved edits without having to scroll to look
-   for it.
+   Sticky to the panel top so Save is always reachable — fixes the "Save is
+   two scrolls away from Tasks" UX bug. Save also carries a small dirty
+   indicator ("Save *" + tinted bg) so the user knows when they have unsaved
+   edits without having to scroll to look for it.
    ---------------------------------------------------------------------------- */
 
 .re-toolbar {
@@ -713,11 +713,6 @@
     margin: -8px 0 12px;
     background-color: var(--bg-panel);
     border-bottom: 1px solid var(--border-color);
-}
-
-.re-toolbar-back {
-    /* "← Routes" — short pill on the left edge. */
-    flex-shrink: 0;
 }
 
 .re-toolbar-spacer {

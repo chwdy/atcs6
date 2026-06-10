@@ -12,6 +12,12 @@ vi.mock('../lib/constants', async (importActual) => {
   return { ...actual, getActiveSegments: mocks.getActiveSegments, isCrossing: mocks.isCrossing };
 });
 
+// blockTrackColor now delegates to the --block-* token consumer; mock it so the
+// unit test verifies the delegation without depending on getComputedStyle.
+vi.mock('../lib/helpers', () => ({
+  getBlockStateColor: (state: string) => `token:${state}`,
+}));
+
 import { RendererTrackHandler, blockTrackColor, type TrackHandlerRenderer } from './renderer-tracks';
 
 // renderer-tracks.js had no test before the migration; this is fresh coverage
@@ -86,25 +92,25 @@ describe('RendererTrackHandler', () => {
       expect(blockTrackColor(null)).toBeNull();
     });
 
-    it('maps live state to the canvas palette', () => {
-      expect(blockTrackColor({ state: 'occupied' })).toBe('#e83f5b');
-      expect(blockTrackColor({ state: 'reserved' })).toBe('#04d361');
-      expect(blockTrackColor({ state: 'free' })).toBe('#4285f4');
-      expect(blockTrackColor({ state: 'caution' })).toBe('#ffcd1e');
-      expect(blockTrackColor({})).toBe('#4285f4'); // missing state -> free
+    it('delegates each live state to the --block-* token consumer', () => {
+      expect(blockTrackColor({ state: 'occupied' })).toBe('token:occupied');
+      expect(blockTrackColor({ state: 'reserved' })).toBe('token:reserved');
+      expect(blockTrackColor({ state: 'free' })).toBe('token:free');
+      expect(blockTrackColor({ state: 'caution' })).toBe('token:caution');
+      expect(blockTrackColor({})).toBe('token:free'); // missing state -> free
       expect(blockTrackColor({ state: 'mystery' })).toBeNull(); // unknown -> default
     });
 
-    it('renders disabled blocks grey and manual blocks orange', () => {
-      expect(blockTrackColor({ disabled: true })).toBe('#6c6c78');
-      expect(blockTrackColor({ manual: true })).toBe('#ff9500');
+    it('maps availability (disabled/manual) to its --block-* token', () => {
+      expect(blockTrackColor({ disabled: true })).toBe('token:disabled');
+      expect(blockTrackColor({ manual: true })).toBe('token:manual');
     });
 
     it('lets availability override live state, with disabled winning over manual', () => {
-      // A manual or disabled block reads its availability color even when occupied.
-      expect(blockTrackColor({ manual: true, state: 'occupied' })).toBe('#ff9500');
-      expect(blockTrackColor({ disabled: true, state: 'occupied' })).toBe('#6c6c78');
-      expect(blockTrackColor({ disabled: true, manual: true, state: 'occupied' })).toBe('#6c6c78');
+      // A manual or disabled block reads its availability token even when occupied.
+      expect(blockTrackColor({ manual: true, state: 'occupied' })).toBe('token:manual');
+      expect(blockTrackColor({ disabled: true, state: 'occupied' })).toBe('token:disabled');
+      expect(blockTrackColor({ disabled: true, manual: true, state: 'occupied' })).toBe('token:disabled');
     });
   });
 

@@ -165,6 +165,10 @@ class TestLookaheadNoPathRegardlessOfNetworkState:
         )
         assert inner["clearance_cm"] == 0.0
         assert inner["authority_boundary_delta_cm"] == 0.0
+        # M5: the empty/no-authority payload must still carry the nested
+        # target_stop_cm key (emit 0.0, don't omit it) so consumers see a
+        # consistent shape between the empty and populated payloads.
+        assert inner["target_stop_cm"] == 0.0
         curves = inner["speed_curves"]
         assert len(curves) == 1
         assert curves[0]["atc_limit"] == 0.0
@@ -370,6 +374,10 @@ class TestNoPathProducesNoAuthorityPayload:
         assert inner["stations"] == []
         assert inner["clearance_cm"] == 0.0
         assert inner["authority_boundary_delta_cm"] == 0.0
+        # M5: the empty/no-authority payload must still carry the nested
+        # target_stop_cm key (emit 0.0, don't omit it) so consumers see a
+        # consistent shape between the empty and populated payloads.
+        assert inner["target_stop_cm"] == 0.0
         curves = inner["speed_curves"]
         assert len(curves) == 1
         anchor = curves[0]

@@ -1,117 +1,19 @@
-"""
-JavaScript Syntax Validation Tests
+"""Frontend module-structure tests.
 
-These tests ensure that all JavaScript files have valid syntax and can be loaded
-without errors. This catches issues before they reach the browser.
-
-Critical: These tests MUST pass before any commit.
+The classic ``static/js/`` scripts migrated to ``frontend/src/`` (longterm_todo.md
+item #7) and are bundled by Vite. These tests assert that the migrated TypeScript
+entry points exist and still define the classes and helpers the app relies on.
 """
 
-import os
-import shutil
-import subprocess
-import pytest
 from pathlib import Path
 
 
 # Get the project root directory
 PROJECT_ROOT = Path(__file__).parent.parent
-JS_DIR = PROJECT_ROOT / "static" / "js"
-
-# Node.js major version required for ES2020+ syntax
-_NODE_MAJOR = "22"
-
-
-def _resolve_node_path() -> str:
-    """Resolve a Node.js binary that satisfies the required major version.
-
-    Resolution order:
-    1. nvm: source nvm.sh, use 'nvm which <major>' to get the exact path.
-       If the version is not installed, run 'nvm install <major>' first.
-    2. System node (PATH): used as a fallback when nvm is not present.
-
-    Returns:
-        Absolute path to the node binary.
-
-    Raises:
-        RuntimeError: If no suitable Node.js binary can be found or installed.
-    """
-    nvm_sh = Path(os.path.expanduser("~/.nvm/nvm.sh"))
-
-    if nvm_sh.exists():
-        # Ask nvm for the path of the installed version (fast, no subshell overhead)
-        result = subprocess.run(
-            ["bash", "-c", f"source {nvm_sh} && nvm which {_NODE_MAJOR}"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            path = result.stdout.strip()
-            if path and Path(path).exists():
-                return path
-
-        # Not installed — install it now
-        print(
-            f"\n[test_javascript_syntax] Node {_NODE_MAJOR} not found via nvm, installing..."
-        )
-        install = subprocess.run(
-            ["bash", "-c", f"source {nvm_sh} && nvm install {_NODE_MAJOR}"],
-            capture_output=False,  # show output so the user can see progress
-            text=True,
-        )
-        if install.returncode != 0:
-            raise RuntimeError(
-                f"nvm install {_NODE_MAJOR} failed (exit {install.returncode})"
-            )
-
-        # Try nvm which again after install
-        result = subprocess.run(
-            ["bash", "-c", f"source {nvm_sh} && nvm which {_NODE_MAJOR}"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            path = result.stdout.strip()
-            if path and Path(path).exists():
-                return path
-
-        raise RuntimeError(
-            f"nvm install {_NODE_MAJOR} succeeded but 'nvm which {_NODE_MAJOR}' still failed"
-        )
-
-    # nvm not available — fall back to whatever node is on PATH
-    system_node = shutil.which("node")
-    if system_node:
-        return system_node
-
-    raise RuntimeError(
-        f"Node.js {_NODE_MAJOR} not found. "
-        "Install nvm (https://github.com/nvm-sh/nvm) or install Node.js manually."
-    )
-
-
-# Resolved once at import time so pytest parametrize runs cleanly
-NODE_PATH = _resolve_node_path()
-
-
-def get_all_js_files():
-    """Get all JavaScript files in the static/js directory"""
-    return list(JS_DIR.glob("*.js"))
 
 
 class TestJavaScriptSyntax:
-    """Test JavaScript files for syntax errors"""
-
-    @pytest.mark.parametrize("js_file", get_all_js_files(), ids=lambda p: p.name)
-    def test_javascript_syntax_valid(self, js_file):
-        """Test that JavaScript file has valid syntax using Node.js"""
-        result = subprocess.run(
-            [NODE_PATH, "--check", str(js_file)], capture_output=True, text=True
-        )
-
-        assert result.returncode == 0, (
-            f"Syntax error in {js_file.name}:\n{result.stderr}"
-        )
+    """Assert the migrated frontend/src modules exist and expose their classes/helpers."""
 
     def test_all_required_js_files_exist(self):
         """The migrated frontend entry points exist.
@@ -196,30 +98,3 @@ class TestJavaScriptSyntax:
         assert "updateCabButtons" in content, (
             "Train control live update should include updateCabButtons helper"
         )
-
-    def test_no_duplicate_code_blocks(self):
-        """Test that JavaScript files don't have obvious duplicate code blocks"""
-        for js_file in get_all_js_files():
-            content = js_file.read_text()
-            lines = content.split("\n")
-
-            # Check for duplicate "return result;" followed by "} catch (e) {" patterns
-            # This was the exact bug that broke the app
-            for i in range(len(lines) - 3):
-                if (
-                    lines[i].strip() == "return result;"
-                    and lines[i + 1].strip() == "} catch (e) {"
-                    and i > 0
-                ):
-                    # Check if there's another "return result;" within 20 lines before
-                    window_start = max(0, i - 20)
-                    window = lines[window_start:i]
-                    if any("return result;" in line for line in window):
-                        # Found potential duplicate - check if it's in a complete try-catch
-                        prev_content = "\n".join(lines[window_start:i])
-                        # If we see "} catch (e) {" without a matching try, it's likely duplicate
-                        if prev_content.count("} catch") > prev_content.count("try {"):
-                            pytest.fail(
-                                f"Potential duplicate code block in {js_file.name} "
-                                f"around line {i + 1}"
-                            )

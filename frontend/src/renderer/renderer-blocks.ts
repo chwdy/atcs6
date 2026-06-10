@@ -469,63 +469,118 @@ export class RendererBlockHandler {
   }
 
   /**
-   * Debug overlay: each block's output voltage on its + and - rails.
+   * Debug overlay: one consolidated info box per block. Each enabled metric is
+   * a color-coded row inside a single box anchored above the block's middle
+   * tile, so turning several on stacks lines in one container rather than
+   * scattering a separate pill per metric.
    *
-   * The backend models block power as one signed scalar (`current_voltage`,
-   * -12V..+12V) where the sign is polarity. We present it as a polarized DC
-   * driver's two terminals: forward polarity (v > 0) energizes the + rail,
-   * reverse polarity (v < 0) energizes the - rail, and 0V leaves both cold.
-   * One small label is drawn above each block's middle tile so it stays clear
-   * of the lower-right block-name label.
+   * Rows (top to bottom, only the ones whose flag is set):
+   *  - voltage — the signed `current_voltage` (-12V..+12V) split into a + rail
+   *    (red, forward polarity) and a − rail (blue, reverse polarity); 0V leaves
+   *    both cold.
+   *  - length — `length_cm` in gold.
+   *  - radius — `min_radius_cm` in cyan (`R<cm>`).
+   *  - speed  — `speed_limit_kmh` in green.
+   *
+   * A row with a real value is bright; a missing/zero value shows a dim
+   * placeholder (`--cm`, `R--`, `--km/h`). The background pill is drawn only
+   * when at least one enabled row carries a real value, matching the original
+   * voltage overlay's "cold blocks stay as faint floating text" rule.
    */
-  drawBlockVoltages(tracks: BlockTrack[]): void {
+  drawBlockMetrics(
+    tracks: BlockTrack[],
+    opts: { voltage?: boolean; length?: boolean; radius?: boolean; speed?: boolean },
+  ): void {
     const tileSize = this.gridSize * this.scale;
     const fontSize = Math.max(5, 8 * this.scale);
+    const gap = 4 * this.scale;
+    const lineHeight = fontSize + 3 * this.scale;
 
     for (const { blockId, cx, cy: baseCy } of this.blockAnchors(tracks)) {
-      const blockInfo: BlockInfo = this.currentBlocks && this.currentBlocks[blockId]
+      const info: BlockInfo = this.currentBlocks && this.currentBlocks[blockId]
         ? this.currentBlocks[blockId]
         : {};
-      const v = blockInfo.current_voltage || 0;
-      const plus = v > 0 ? v : 0;
-      const minus = v < 0 ? -v : 0;
-      const energized = plus > 0 || minus > 0;
 
-      const cy = baseCy - tileSize * 0.42;
+      // Build the rows top-to-bottom. Each row is one or more colored text
+      // segments plus a `live` flag (true = real value, drawn bright; false =
+      // dim placeholder).
+      const rows: Array<{ segments: Array<{ text: string; color: string }>; live: boolean }> = [];
+
+      if (opts.voltage) {
+        const v = info.current_voltage || 0;
+        const plus = v > 0 ? v : 0;
+        const minus = v < 0 ? -v : 0;
+        rows.push({
+          live: plus > 0 || minus > 0,
+          segments: [
+            { text: `+${plus.toFixed(1)}`, color: plus > 0 ? '#ff6b6b' : 'rgba(255, 107, 107, 0.3)' },
+            { text: `−${minus.toFixed(1)}`, color: minus > 0 ? '#5c9cff' : 'rgba(92, 156, 255, 0.3)' },
+          ],
+        });
+      }
+      if (opts.length) {
+        const len = info.length_cm;
+        const has = len !== undefined && len !== null && len > 0;
+        rows.push({ live: has, segments: [{ text: has ? `${len}cm` : '--cm', color: has ? '#f0c060' : 'rgba(240, 192, 96, 0.3)' }] });
+      }
+      if (opts.radius) {
+        const rad = info.min_radius_cm;
+        const has = rad !== undefined && rad !== null && rad > 0;
+        rows.push({ live: has, segments: [{ text: has ? `R${rad}` : 'R--', color: has ? '#60d0f0' : 'rgba(96, 208, 240, 0.3)' }] });
+      }
+      if (opts.speed) {
+        const spd = info.speed_limit_kmh;
+        const has = spd !== undefined && spd !== null && spd > 0;
+        rows.push({ live: has, segments: [{ text: has ? `${spd}km/h` : '--km/h', color: has ? '#60f090' : 'rgba(96, 240, 144, 0.3)' }] });
+      }
+
+      if (rows.length === 0) continue;
 
       this.ctx.save();
       this.ctx.font = `${fontSize}px monospace`;
       this.ctx.textAlign = 'left';
       this.ctx.textBaseline = 'middle';
 
-      const plusText = `+${plus.toFixed(1)}`;
-      const minusText = `−${minus.toFixed(1)}`;
-      const gap = 4 * this.scale;
-      const plusWidth = this.ctx.measureText(plusText).width;
-      const minusWidth = this.ctx.measureText(minusText).width;
-      const totalWidth = plusWidth + gap + minusWidth;
-      const startX = cx - totalWidth / 2;
+      // Lay each row out left-to-right; row width = sum of segment widths plus
+      // an inter-segment gap. The box is as wide as the widest row.
+      const rowWidths = rows.map((row) =>
+        row.segments.reduce((w, seg, i) => w + this.ctx.measureText(seg.text).width + (i > 0 ? gap : 0), 0),
+      );
+      const boxWidth = Math.max(...rowWidths);
+      const textBlockHeight = (rows.length - 1) * lineHeight + fontSize;
 
-      // Pill only behind energized blocks so powered rails pop; unpowered
-      // blocks stay as faint floating text.
-      if (energized) {
+      // Center the stack on the tile and sit it above the tile center, clear of
+      // the lower-right block-name label. topCy is the first row's center.
+      const anchorY = baseCy - tileSize * 0.30;
+      const topCy = anchorY - (rows.length - 1) * lineHeight / 2;
+
+      if (rows.some((row) => row.live)) {
         const padX = 3 * this.scale;
         const padY = 2 * this.scale;
         this.ctx.fillStyle = 'rgba(13, 16, 32, 0.72)';
         this.ctx.strokeStyle = 'rgba(100, 100, 150, 0.4)';
         this.ctx.lineWidth = 1;
         this.ctx.beginPath();
-        this.ctx.roundRect(startX - padX, cy - fontSize / 2 - padY, totalWidth + padX * 2, fontSize + padY * 2, 3);
+        this.ctx.roundRect(
+          cx - boxWidth / 2 - padX,
+          topCy - fontSize / 2 - padY,
+          boxWidth + padX * 2,
+          textBlockHeight + padY * 2,
+          3,
+        );
         this.ctx.fill();
         this.ctx.stroke();
       }
 
-      // + rail in red, - rail in blue; the energized side is bright, the cold
-      // side dimmed so polarity reads at a glance.
-      this.ctx.fillStyle = plus > 0 ? '#ff6b6b' : 'rgba(255, 107, 107, 0.3)';
-      this.ctx.fillText(plusText, startX, cy);
-      this.ctx.fillStyle = minus > 0 ? '#5c9cff' : 'rgba(92, 156, 255, 0.3)';
-      this.ctx.fillText(minusText, startX + plusWidth + gap, cy);
+      rows.forEach((row, i) => {
+        let x = cx - rowWidths[i] / 2;
+        const y = topCy + i * lineHeight;
+        for (const seg of row.segments) {
+          this.ctx.fillStyle = seg.color;
+          this.ctx.fillText(seg.text, x, y);
+          x += this.ctx.measureText(seg.text).width + gap;
+        }
+      });
 
       this.ctx.restore();
     }

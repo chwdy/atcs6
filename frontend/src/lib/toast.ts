@@ -5,11 +5,13 @@
 // lazily on the first toast so the module imports cleanly under Node (Vitest)
 // where there is no DOM at import time.
 
+// Monochrome Tabler glyphs, not color emoji (DESIGN_LANGUAGE.md §13/§14: no
+// emoji in UI chrome). The glyph inherits the toast's status color via CSS.
 const ICONS: Record<string, string> = {
-  error: '❌',
-  success: '✅',
-  warning: '⚠️',
-  info: 'ℹ️',
+  error: 'ti-circle-x',
+  success: 'ti-circle-check',
+  warning: 'ti-alert-triangle',
+  info: 'ti-info-circle',
 };
 
 let toastCounter = 0;
@@ -39,7 +41,7 @@ export function showToast(message: string, type: string = 'info', duration: numb
   toast.className = `toast ${type}`;
   toast.id = toastId;
   toast.innerHTML = `
-            <span class="toast-icon">${ICONS[type] || ICONS.info}</span>
+            <span class="toast-icon ti ${ICONS[type] || ICONS.info}"></span>
             <div class="toast-message">${message}</div>
             <button class="toast-close" aria-label="Close">×</button>
         `;

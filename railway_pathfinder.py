@@ -199,7 +199,7 @@ class RailwayPathfinder:
             c
             for c in candidates
             if self._walk_passes_filters(
-                c.walk, direction_constraint, manual_override=manual_override
+                c, direction_constraint, manual_override=manual_override
             )
         ]
         surviving.sort(key=lambda c: c.comparison_key())
@@ -832,23 +832,28 @@ class RailwayPathfinder:
 
     def _walk_passes_filters(
         self,
-        walk: PathSegment,
+        candidate: GraphWalkCandidate,
         direction_constraint: Optional[str],
         manual_override: bool = False,
     ) -> bool:
-        """Reject walks that traverse a disabled resource, traverse a manual
-        resource without operator override, violate
-        ``Block.allowed_travel_directions`` without operator override, or
+        """Reject candidates that traverse a disabled resource, traverse a
+        manual resource without operator override, traverse any block against
+        its ``Block.allowed_travel_directions`` without operator override, or
         violate ``direction_constraint``.
 
         Per the `disabled` and `manual` availability flags canonical home in
         design_new.md (under TrackResource): disabled blocks/switches are
         always rejected; manual blocks/switches and the
         ``Block.allowed_travel_directions`` policy are rejected/enforced when
-        ``manual_override`` is False. The ``direction_constraint`` (the
-        operator's requested terminal direction) is always enforced — the
+        ``manual_override`` is False. The travel-direction policy applies to
+        every block the walk traverses (design_new.md create_path step 2 and
+        pathfinding-home item 6), not only the destination: a candidate that
+        crosses a one-way block against its direction can never be acquired,
+        so it must not survive the search. The ``direction_constraint`` (the
+        caller's requested terminal direction) is always enforced — the
         override relaxes the block's policy, not the caller's request.
         """
+        walk = candidate.walk
         # Disabled-block and manual-block filters.
         for block_id in walk.blocks:
             block = self.network.blocks.get(block_id)
@@ -881,21 +886,43 @@ class RailwayPathfinder:
             ):
                 return False
 
-        # Direction filter against the destination block.
+        # Travel-direction policy filter over the whole walk. Each step's
+        # ``block_direction`` comes from the cached ``ordered_walk`` (decided
+        # once per contiguous block run at cache-build time, tunnel-aware).
+        # ``None`` means the run's geometry cannot classify a direction (for
+        # example a start run beginning mid-block, or a block with no
+        # ``ordered_tiles``); such runs are not rejected here — the
+        # reservation-time check in ``BlockManager.reserve_blocks_for_path``
+        # remains the acquisition guard for them.
+        if not manual_override:
+            prev_block_id: Optional[str] = None
+            for step in candidate.ordered_walk or ():
+                block_id = step.block_id
+                if not block_id:
+                    prev_block_id = None
+                    continue
+                if block_id == prev_block_id:
+                    continue
+                prev_block_id = block_id
+                if step.block_direction is None:
+                    continue
+                block = self.network.blocks.get(block_id)
+                if block is None:
+                    continue
+                allowed: Set[str] = (
+                    set(getattr(block, "allowed_travel_directions", set()))
+                    or {"forward", "reverse"}
+                )
+                if step.block_direction not in allowed:
+                    return False
+
+        # Requested terminal-direction filter.
         if not walk.blocks:
             return True
-        dest_block_id = walk.blocks[-1]
-        dest_block = self.network.blocks.get(dest_block_id)
+        dest_block = self.network.blocks.get(walk.blocks[-1])
         if dest_block is None:
             return True
         terminal_direction = self._terminal_direction(walk, dest_block)
-        if not manual_override:
-            allowed: Set[str] = (
-                set(getattr(dest_block, "allowed_travel_directions", set()))
-                or {"forward", "reverse"}
-            )
-            if terminal_direction is not None and terminal_direction not in allowed:
-                return False
         if (
             direction_constraint is not None
             and terminal_direction is not None

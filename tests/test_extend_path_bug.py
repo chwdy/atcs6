@@ -544,43 +544,9 @@ class TestExtendPathAtoSync:
     # `Train.current_path`, gone in v1. Canonical path geometry is
     # `controller.path_projection.received_path_plan.path_tiles`, read live.
 
-    def test_extension_without_train_does_not_crash(self, three_block_network):
-        """Extending a path with no train_id should not crash the sync logic."""
-        dispatcher = PathDispatcher(three_block_network)
-
-        # Create a path without a train
-        result = dispatcher.create_path(
-            train_id=None,
-            requested_destination_block_id="BLK_B",
-        )
-
-        result.path = dispatcher.get_path(result.path_id) if result.path_id else None
-        if not result.success:
-            # Pre-existing v1 limitation (not the position-migration regression):
-            # `create_path` requires a train_id in v1, so a trainless path can no
-            # longer be created and this no-train scenario is unreachable. Left
-            # skipping until the v1 dispatcher supports trainless path creation.
-            pytest.skip(
-                f"v1: create_path requires a train_id, so a trainless path "
-                f"cannot be created (reason={result.reason!r}); the no-train "
-                f"extend scenario is unreachable in v1."
-            )
-        assert result.success
-
-        # Extend it - should not raise
-        ext_result = dispatcher.extend_path(result.path.path_id, "BLK_C")
-
-        ext_result.path = dispatcher.get_path(ext_result.path_id) if ext_result.path_id else None
-        if not ext_result.success:
-            pytest.skip(
-                f"v1: extend_path on a trainless path is unreachable "
-                f"(reason={ext_result.reason!r})."
-            )
-        assert ext_result.success
-
-        # Path object should still be updated correctly
-        updated_path = dispatcher.get_path(result.path.path_id)
-        assert updated_path.get_authority_end_block_id() == "BLK_C"
+    # v1: removed `test_extension_without_train_does_not_crash` — it exercised
+    # the trainless-path extend scenario, which is unreachable in v1 because
+    # `create_path` requires a train_id. The test could only ever skip itself.
 
     # v1: removed `test_failed_extension_does_not_sync` — referenced
     # `Train.current_path` (gone in v1) and the v0 sync mechanism. The v1

@@ -488,6 +488,10 @@ export class PathEditorHandler {
    *  secondary sidebar hides or switches to a different panel. */
   _cleanup(): void {
     this._stopPathsListPoller();
+    // The highlight belongs to the open path panel; drop it when leaving.
+    if (this.renderer.clearPathHighlight) {
+      this.renderer.clearPathHighlight();
+    }
   }
 
   renderPathListItem(path: any): string {
@@ -753,9 +757,6 @@ export class PathEditorHandler {
                     </div>
                 </div>
 
-                <button id="back-to-paths-btn" class="btn btn-secondary btn-full btn-sm mt-12">
-                    ← Back to Paths List
-                </button>
             </div>
         `;
 
@@ -769,16 +770,6 @@ export class PathEditorHandler {
   }
 
   initPathEditorHandlers(pathId: any, path: any): void {
-    const backBtn = document.getElementById('back-to-paths-btn') as HTMLButtonElement | null;
-    if (backBtn) {
-      backBtn.onclick = async () => {
-        if (this.renderer.clearPathHighlight) {
-          this.renderer.clearPathHighlight();
-        }
-        await this.showPathsPanel();
-      };
-    }
-
     const cancelBtn = document.getElementById('cancel-path-btn') as HTMLButtonElement | null;
     if (cancelBtn) {
       cancelBtn.onclick = async () => {
@@ -894,11 +885,9 @@ export class PathEditorHandler {
       this.renderer.clearPathHighlight();
     }
     if (this.editor._currentEditorType === 'extend-path-setup') {
-      await this.editor.goBackSecondaryPanel();
-      // If history was empty, goBack does nothing - close sidebar as fallback.
-      if (this.editor._currentEditorType === 'extend-path-setup') {
-        this.editor.hideSecondarySidebar();
-      }
+      // Leaving extend mode closes its setup tab; the next open tab takes
+      // over, and the sidebar hides when none is left.
+      await this.editor.closeActiveSecondaryTab();
     }
     if (this.cachedNetwork) {
       this.renderer.requestRedraw();

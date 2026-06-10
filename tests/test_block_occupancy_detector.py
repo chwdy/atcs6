@@ -2,14 +2,16 @@
 
 Covers the debounce state machine (on/off thresholds, flicker tolerance,
 multi-block-per-tick diffing) and model-based attribution (reserved_for_train,
-span-owner fallback, drop-and-retry, occupied_by for vacates). These exercise
-the detector in isolation with scripted current frames — no simulation loop.
+span-owner fallback, unknown-occupant attribution, occupied_by for vacates).
+These exercise the detector in isolation with scripted current frames — no
+simulation loop.
 """
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from block_occupancy import BlockOccupancyDetector, InputInterface
+from constants import UNKNOWN_TRAIN_ID
 
 
 class ScriptedInput(InputInterface):
@@ -173,17 +175,17 @@ def test_attribute_entered_falls_back_to_span_owner():
     assert entered_by_train == {"T2": {"A"}}
 
 
-def test_attribute_unresolved_entry_drops_and_retries():
+def test_attribute_unresolved_entry_becomes_unknown_occupant():
     net, det = make_detector(["A"], [{"A": True}], on=1)
     entered, _ = det.step()
     assert entered == {"A"}
-    # No reserving train and no covering span -> unresolved.
+    # No reserving train and no covering span -> unmodeled (unknown) occupant
+    # (design_new.md "Attribution"): committed to the reserved sentinel, not
+    # routed to any train, and kept confirmed so it blocks availability there.
     entered_by_train, _ = det.attribute(entered, set())
     assert entered_by_train == {}
-    assert det.confirmed_occupied == set()  # dropped, so it can retry
-    # Next tick the same current re-confirms it (retry path).
-    entered, _ = det.step()
-    assert entered == {"A"}
+    assert net.blocks["A"].occupied_by == UNKNOWN_TRAIN_ID
+    assert det.confirmed_occupied == {"A"}
 
 
 def test_attribute_vacated_uses_occupied_by():

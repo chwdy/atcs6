@@ -56,13 +56,18 @@
     gap: 2px; /* Reduced gap */
 }
 
+/* Primary action in a panel = accent TINT, never a solid fill
+   (DESIGN_LANGUAGE.md §3/§12). The one sanctioned solid accent button — the
+   header Play/Pause — sets its own fill via a more specific rule (shell.css). */
 .btn-primary {
-    background-color: var(--accent-color);
-    color: white;
+    background-color: rgba(130, 87, 229, 0.18);
+    color: var(--accent-hover);
+    border: 1px solid transparent;
 }
 
-.btn-primary:hover {
-    background-color: var(--accent-hover);
+.btn-primary:hover:not(:disabled) {
+    background-color: rgba(130, 87, 229, 0.28);
+    border-color: var(--accent-color);
 }
 
 /* Accent-tint CTA — the panel-safe "primary". Per DESIGN_LANGUAGE.md §3/§12
@@ -98,13 +103,18 @@
     background-color: rgba(232, 63, 91, 0.2);
 }
 
+/* Success action in a panel = green TINT, not a solid fill
+   (DESIGN_LANGUAGE.md §3/§12). The sanctioned solid green is the driver-facing
+   hero (.tc-btn-hero), not a panel button. --success-color is #04d361. */
 .btn-success {
-    background-color: var(--success-color);
-    color: white;
+    background-color: rgba(4, 211, 97, 0.14);
+    color: var(--success-color);
+    border: 1px solid transparent;
 }
 
-.btn-success:hover {
-    filter: brightness(0.9);
+.btn-success:hover:not(:disabled) {
+    background-color: rgba(4, 211, 97, 0.24);
+    border-color: var(--success-color);
 }
 
 .btn-outline {
@@ -391,41 +401,6 @@
     margin-top: 8px;
 }
 
-.debug-controls {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 2px;
-    margin-bottom: 0;
-}
-
-.debug-controls label {
-    display: flex;
-    align-items: center;
-    cursor: pointer;
-    font-size: 10px;
-    padding: 2px 4px;
-    border-radius: 4px;
-    transition: background 0.2s;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.debug-controls label:hover {
-    background: rgba(130, 87, 229, 0.1);
-}
-
-.debug-controls input[type="checkbox"] {
-    margin-right: 6px;
-    cursor: pointer;
-    width: 14px;
-    height: 14px;
-}
-
-.debug-controls span {
-    color: var(--text-primary);
-}
-
 /* ============= Settings Panel Styles ============= */
 .settings-panel {
     background: var(--bg-panel);
@@ -459,6 +434,10 @@
     padding: 4px 6px;
     font-size: 11px;
     height: 24px;
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
 }
 
 .input-group {
@@ -488,7 +467,7 @@
 }
 
 .setting-select:focus,
-.setting-input:focus {
+.setting-input-compact:focus {
     outline: none;
     border-color: var(--accent-color);
 }
@@ -507,6 +486,25 @@
 #scale-current-display {
     font-family: var(--font-mono);
     color: var(--accent-color);
+}
+
+/* Advanced settings rows use a fixed 70:30 label/value split — long setting
+   names get room to read on the left, the short numeric inputs stay compact on
+   the right. Scoped to the Advanced section so Display rows keep their layout. */
+.advanced-settings-controls .setting-row {
+    display: grid;
+    grid-template-columns: 7fr 3fr;
+    column-gap: 8px;
+    align-items: center;
+}
+
+.advanced-settings-controls .setting-label-compact {
+    width: auto;
+    min-width: 0;
+}
+
+.advanced-settings-controls .setting-input-compact {
+    min-width: 0;
 }
 
 .tile-details {

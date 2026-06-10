@@ -76,7 +76,10 @@ class TestRouteAndTask:
         assert should_depart is True
 
     def test_dwell_task_should_depart_absolute_target(self):
-        """Test dwell task depart logic when target_time is set (absolute)."""
+        """Both target_time and task_time set: hold task_time past the LATER of
+        actual start and the scheduled start (design_new.md "Task time
+        semantics"). Scheduled start 1000 + 10s hold => depart at 1010; the
+        earlier arrival (800) does not shorten the hold."""
         task = RouteTask(
             task_kind="dwell",
             task_location="STA_A",
@@ -84,13 +87,26 @@ class TestRouteAndTask:
             target_time=1000.0,
         )
 
-        # Current simulation time 900 - too early
-        should_depart = task.should_depart(now=900.0, dwell_started_at=800.0)
-        assert should_depart is False
+        # Before the scheduled start: too early.
+        assert task.should_depart(now=900.0, dwell_started_at=800.0) is False
+        # At/after the scheduled start but before the hold elapses: still holding.
+        assert task.should_depart(now=1000.0, dwell_started_at=800.0) is False
+        assert task.should_depart(now=1009.0, dwell_started_at=800.0) is False
+        # Full hold served past the scheduled start.
+        assert task.should_depart(now=1010.0, dwell_started_at=800.0) is True
 
-        # Current simulation time 1000 - time to depart
-        should_depart = task.should_depart(now=1000.0, dwell_started_at=800.0)
-        assert should_depart is True
+    def test_dwell_late_arrival_serves_full_hold(self):
+        """A late arrival (after target_time) still serves the full task_time
+        hold from its actual start (design_new.md "Task time semantics")."""
+        task = RouteTask(
+            task_kind="dwell",
+            task_location="STA_A",
+            task_time=30.0,
+            target_time=1000.0,
+        )
+        # Arrived late at 1050; hold 30s from max(1050, 1000) = 1050 -> 1080.
+        assert task.should_depart(now=1070.0, dwell_started_at=1050.0) is False
+        assert task.should_depart(now=1080.0, dwell_started_at=1050.0) is True
 
     def test_non_dwell_task_should_depart_immediately(self):
         """waypoint and stop tasks return True for should_depart (caller controls movement)."""

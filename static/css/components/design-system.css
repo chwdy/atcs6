@@ -929,12 +929,13 @@
     gap: 6px;
     cursor: pointer;
     padding: 2px 0;
-    transition: opacity 0.2s ease;
 }
 
-.checkbox-wrapper:hover {
-    opacity: 0.9;
-}
+/* No opacity-dim on hover. Animating opacity promotes the row to its own GPU
+   layer for the transition, then tears it down when the transition ends — that
+   promote→demote flickers the row in Chromium ("animates on hover, vanishes
+   when the animation finishes"). The hover affordance is the accent border-lift
+   below (DESIGN_LANGUAGE.md §4) plus the debug grid's bg-tint, not a dim. */
 
 .checkbox-wrapper.disabled {
     opacity: 0.4;
@@ -1035,6 +1036,23 @@
 
 .debug-controls .checkbox-wrapper:hover {
     background: rgba(255, 255, 255, 0.02);
+}
+
+/* Debug Info sub-groups — a labeled cluster of related toggles (Track, Blocks,
+   Infrastructure, Trains) inside the Settings modal's Debug Info section. The
+   group title sits one tier quieter and smaller than the .settings-section-title
+   so the "DEBUG INFO" umbrella still reads as the parent. */
+.debug-group + .debug-group {
+    margin-top: 14px;
+}
+
+.debug-group-title {
+    margin: 0 0 6px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-tertiary);
 }
 
 /* ============================================================================

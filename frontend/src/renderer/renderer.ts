@@ -269,7 +269,7 @@ class Renderer {
   _pendingFlush!: { world: boolean; live: boolean; reason: string } | null;
   _flushFrame!: number | null;
   _lastFlushReason!: string;
-  debugFlags!: { showBlocks: boolean; showSignals: boolean; showTunnelLinks: boolean; showStuck?: boolean; showTileDirections?: boolean; showBlockDirections?: boolean; showOneWayDirections?: boolean; showBlockVoltage?: boolean };
+  debugFlags!: { showBlocks: boolean; showSignals: boolean; showTunnelLinks: boolean; showStuck?: boolean; showTileDirections?: boolean; showBlockDirections?: boolean; showOneWayDirections?: boolean; showBlockVoltage?: boolean; showBlockLength?: boolean; showBlockRadius?: boolean; showBlockSpeedLimit?: boolean };
   _resizeObserver?: ResizeObserver;
   // Derived per-network state, set by _updateNetworkState.
   currentPlatforms!: Platform[];
@@ -547,6 +547,9 @@ class Renderer {
     const showBlockDirections = document.getElementById('debug-show-block-dir') as HTMLInputElement | null;
     const showOneWayDirections = document.getElementById('debug-show-oneway-dir') as HTMLInputElement | null;
     const showBlockVoltage = document.getElementById('debug-show-block-voltage') as HTMLInputElement | null;
+    const showBlockLength = document.getElementById('debug-show-block-length') as HTMLInputElement | null;
+    const showBlockRadius = document.getElementById('debug-show-block-radius') as HTMLInputElement | null;
+    const showBlockSpeedLimit = document.getElementById('debug-show-block-speed-limit') as HTMLInputElement | null;
     this.debugFlags = {
       showBlocks: showBlocks ? !!showBlocks.checked : false,
       showSignals: showSignals ? !!showSignals.checked : false,
@@ -561,6 +564,9 @@ class Renderer {
       showOneWayDirections: showOneWayDirections ? !!showOneWayDirections.checked : false,
       // Per-block + / - rail voltages; busy, so default OFF (opt-in).
       showBlockVoltage: showBlockVoltage ? !!showBlockVoltage.checked : false,
+      showBlockLength: showBlockLength ? !!showBlockLength.checked : false,
+      showBlockRadius: showBlockRadius ? !!showBlockRadius.checked : false,
+      showBlockSpeedLimit: showBlockSpeedLimit ? !!showBlockSpeedLimit.checked : false,
     };
   }
 
@@ -815,9 +821,16 @@ class Renderer {
       this.blockHandler.drawBlockDetailLabels(tracks);
     }
 
-    // Per-block + / - rail voltages (independent opt-in toggle).
-    if (this.debugFlags?.showBlockVoltage) {
-      this.blockHandler.drawBlockVoltages(tracks);
+    // Per-block metric overlays (voltage, length, radius, speed limit). Each is
+    // an independent opt-in toggle, but they render into ONE consolidated box
+    // per block so enabling several stacks color-coded rows instead of
+    // scattering a separate pill per metric.
+    const mV = this.debugFlags?.showBlockVoltage;
+    const mL = this.debugFlags?.showBlockLength;
+    const mR = this.debugFlags?.showBlockRadius;
+    const mS = this.debugFlags?.showBlockSpeedLimit;
+    if (mV || mL || mR || mS) {
+      this.blockHandler.drawBlockMetrics(tracks, { voltage: mV, length: mL, radius: mR, speed: mS });
     }
   }
 

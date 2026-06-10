@@ -116,13 +116,13 @@ describe('RendererBlockHandler.drawBlockPreviewPath', () => {
   });
 });
 
-describe('RendererBlockHandler.drawBlockVoltages', () => {
+describe('RendererBlockHandler.drawBlockMetrics', () => {
   it('puts a forward (positive) voltage on the + rail and pills the block', () => {
     const ctx = makeCtx();
     const r = makeRenderer(ctx);
     r.currentBlocks = { B1: { current_voltage: 6 } };
     const h = new RendererBlockHandler(r);
-    h.drawBlockVoltages([{ x: 0, y: 0, block_section_id: 'B1', track_bits: 1 }]);
+    h.drawBlockMetrics([{ x: 0, y: 0, block_section_id: 'B1', track_bits: 1 }], { voltage: true });
 
     const texts = ctx.fillText.mock.calls.map((c) => c[0]);
     expect(texts).toContain('+6.0');
@@ -135,7 +135,7 @@ describe('RendererBlockHandler.drawBlockVoltages', () => {
     const r = makeRenderer(ctx);
     r.currentBlocks = { B1: { current_voltage: -6 } };
     const h = new RendererBlockHandler(r);
-    h.drawBlockVoltages([{ x: 0, y: 0, block_section_id: 'B1', track_bits: 1 }]);
+    h.drawBlockMetrics([{ x: 0, y: 0, block_section_id: 'B1', track_bits: 1 }], { voltage: true });
 
     const texts = ctx.fillText.mock.calls.map((c) => c[0]);
     expect(texts).toContain('+0.0');
@@ -147,7 +147,7 @@ describe('RendererBlockHandler.drawBlockVoltages', () => {
     const r = makeRenderer(ctx);
     r.currentBlocks = { B1: { current_voltage: 0 } };
     const h = new RendererBlockHandler(r);
-    h.drawBlockVoltages([{ x: 0, y: 0, block_section_id: 'B1', track_bits: 1 }]);
+    h.drawBlockMetrics([{ x: 0, y: 0, block_section_id: 'B1', track_bits: 1 }], { voltage: true });
 
     const texts = ctx.fillText.mock.calls.map((c) => c[0]);
     expect(texts).toContain('+0.0');
@@ -155,10 +155,40 @@ describe('RendererBlockHandler.drawBlockVoltages', () => {
     expect(ctx.roundRect).not.toHaveBeenCalled(); // unpowered → no pill
   });
 
+  it('renders length, radius and speed rows with placeholders for missing values', () => {
+    const ctx = makeCtx();
+    const r = makeRenderer(ctx);
+    r.currentBlocks = { B1: { length_cm: 60, speed_limit_kmh: 45 } }; // no radius set
+    const h = new RendererBlockHandler(r);
+    h.drawBlockMetrics(
+      [{ x: 0, y: 0, block_section_id: 'B1', track_bits: 1 }],
+      { length: true, radius: true, speed: true },
+    );
+
+    const texts = ctx.fillText.mock.calls.map((c) => c[0]);
+    expect(texts).toContain('60cm');
+    expect(texts).toContain('R--'); // radius absent → dim placeholder
+    expect(texts).toContain('45km/h');
+  });
+
+  it('draws a single consolidated box when several metrics are enabled', () => {
+    const ctx = makeCtx();
+    const r = makeRenderer(ctx);
+    r.currentBlocks = { B1: { current_voltage: 6, length_cm: 60, speed_limit_kmh: 45 } };
+    const h = new RendererBlockHandler(r);
+    h.drawBlockMetrics(
+      [{ x: 0, y: 0, block_section_id: 'B1', track_bits: 1 }],
+      { voltage: true, length: true, radius: true, speed: true },
+    );
+
+    // One box for all four rows, not one pill per metric.
+    expect(ctx.roundRect).toHaveBeenCalledTimes(1);
+  });
+
   it('skips tiles with no block section', () => {
     const ctx = makeCtx();
     const h = new RendererBlockHandler(makeRenderer(ctx));
-    h.drawBlockVoltages([{ x: 0, y: 0, track_bits: 1 }]);
+    h.drawBlockMetrics([{ x: 0, y: 0, track_bits: 1 }], { voltage: true });
     expect(ctx.fillText).not.toHaveBeenCalled();
   });
 });

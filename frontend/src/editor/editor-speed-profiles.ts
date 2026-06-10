@@ -568,7 +568,6 @@ export class SpeedProfileEditorHandler {
     return `
             <div class="sp-editor">
                 <div class="sp-toolbar">
-                    <button id="sp-back-btn" class="rr-flat-btn">← Speed Profiles</button>
                     <span class="sp-spacer"></span>
                     <span id="sp-save-status" class="sp-save-status"></span>
                 </div>
@@ -707,8 +706,6 @@ export class SpeedProfileEditorHandler {
     this._bindConverter();
     this._recomputeConverter();
 
-    const back = document.getElementById('sp-back-btn');
-    if (back) back.onclick = () => this.showProfilesPanel();
     const del = document.getElementById('sp-delete-btn');
     if (del) del.onclick = () => this._deleteProfile(this._profile!.profile_id);
   }

@@ -35,6 +35,13 @@ def register(app, state: AppState) -> None:
         elif action == "set_speed":
             state.simulation_speed = data.get("speed", 1.0)
 
+        if action in ("stop", "reset"):
+            # design_new.md:2235 — issue enter_safe_state when the runtime stops
+            # driving outputs (block voltages 0, switch motors de-energized).
+            sim = getattr(state, "sim_controller", None)
+            if sim is not None:
+                sim.enter_safe_state()
+
         return jsonify(
             {
                 "status": "success",

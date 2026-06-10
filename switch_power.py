@@ -70,6 +70,15 @@ class SwitchOutputInterface(ABC):
     def get_last_throw(self, switch_id: str) -> Optional[int]:
         """Return the last target_state commanded for ``switch_id``, or None."""
 
+    @abstractmethod
+    def enter_safe_state(self) -> None:
+        """Drive the safe state: every switch point motor de-energized.
+
+        Per design_new.md:2235 the runtime issues this when it stops driving
+        outputs (simulation stop or process shutdown). The simulated interface
+        drops its commanded drive; real hardware de-energizes the point motors.
+        """
+
 
 class SimulatedSwitchOutputInterface(SwitchOutputInterface):
     """Simulated throw output — records the last commanded target per switch.
@@ -90,6 +99,12 @@ class SimulatedSwitchOutputInterface(SwitchOutputInterface):
         return self._throws.get(switch_id)
 
     def clear(self) -> None:
+        self._throws.clear()
+
+    def enter_safe_state(self) -> None:
+        """Safe state: drop every commanded throw (motors de-energized). The
+        switch's commanded `Switch.position` remains the alignment authority;
+        this only stops asserting drive (design_new.md:2235)."""
         self._throws.clear()
 
 
@@ -149,6 +164,12 @@ class SwitchPowerController:
         return self.output_interface.set_throw(
             switch_id, 0 if target_state == 0 else 1
         )
+
+    def enter_safe_state(self) -> None:
+        """Put the switch output hardware into its safe state — every point motor
+        de-energized (design_new.md:2235). Issued by the runtime when it stops
+        driving outputs; delegated to the output interface."""
+        self.output_interface.enter_safe_state()
 
     # ------------------------------------------------------------------
     # Throw continuity verification

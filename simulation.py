@@ -253,6 +253,19 @@ class SimulationController:
         finally:
             net._lookahead_memo_active = False
 
+    def enter_safe_state(self) -> None:
+        """Put all hardware outputs into their safe state — every block track
+        voltage at 0 and every switch motor de-energized (design_new.md:2235).
+
+        The runtime issues this when it stops driving outputs (simulation stop
+        or process shutdown). It routes through the power controllers, the only
+        callers of the output interfaces.
+        """
+        if self.power_controller is not None:
+            self.power_controller.enter_safe_state()
+        if self.switch_power_controller is not None:
+            self.switch_power_controller.enter_safe_state()
+
     def _detect_block_occupancy(self) -> None:
         """Step 0 of the tick: read every block's current detector, debounce,
         attribute confirmed transitions to trains, and stash each train's

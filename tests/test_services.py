@@ -582,6 +582,43 @@ class TestTrackService:
         assert result["deleted"] == [[0, 0], [1, 0]]
         assert track_service.get_track(state, 0, 0) is None
 
+    # H4: editor connectivity edits must refresh switch flank protection so it
+    # cannot go stale and corrupt acquisition (design_new.md:720). Spy on the
+    # recompute to assert each edit path triggers it.
+    def _spy_flank(self, state, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            state.network,
+            "recompute_all_flank_protection",
+            lambda: calls.append(1),
+        )
+        return calls
+
+    def test_delete_track_recomputes_flank(self, state, monkeypatch):
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        calls = self._spy_flank(state, monkeypatch)
+        track_service.delete_track(state, 0, 0)
+        assert calls, "delete_track must recompute switch flank protection"
+
+    def test_update_track_recomputes_flank(self, state, monkeypatch):
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        calls = self._spy_flank(state, monkeypatch)
+        track_service.update_track(state, 0, 0, data={"track_bits": 1})
+        assert calls, "update_track must recompute switch flank protection"
+
+    def test_add_tracks_bulk_recomputes_flank(self, state, monkeypatch):
+        calls = self._spy_flank(state, monkeypatch)
+        track_service.add_tracks_bulk(
+            state, tracks_data=[{"x": 0, "y": 0, "track_bits": 2}]
+        )
+        assert calls, "add_tracks_bulk must recompute switch flank protection"
+
+    def test_delete_tracks_bulk_recomputes_flank(self, state, monkeypatch):
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        calls = self._spy_flank(state, monkeypatch)
+        track_service.delete_tracks_bulk(state, positions=[[0, 0]])
+        assert calls, "delete_tracks_bulk must recompute switch flank protection"
+
 
 # ------------------------------------------------------ platform_service ----
 

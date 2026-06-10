@@ -84,6 +84,10 @@ class StubMeasuredInterface(OutputInterface):
     def get_all_voltages(self):
         return dict(self._measured)
 
+    def enter_safe_state(self):
+        for block_id in self._measured:
+            self._measured[block_id] = 0.0
+
 
 def _standard_switch_network():
     """Switch at (1,0) = EW|NW.

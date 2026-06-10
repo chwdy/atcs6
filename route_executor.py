@@ -24,7 +24,11 @@ import logging
 import time
 from typing import Any, ClassVar, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
 
-from constants import IDLE_HOLD_COOLDOWN_TICKS, IDLE_HOLD_RELEASE_TICKS
+from constants import (
+    DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS,
+    IDLE_HOLD_COOLDOWN_TICKS,
+    IDLE_HOLD_RELEASE_TICKS,
+)
 from enums import ControllerCondition, Direction, TrainState
 from train_controller import TrainController, create_controller_for_train
 from train_route import (
@@ -1477,6 +1481,7 @@ class RouteExecutor:
             if row is None:
                 break
             row.finished_at = now
+            self._record_delay_class(exec_state, route, pos, now)
             exec_state._append_next_walk_task(route)
             self._advance_to_next_task(route, exec_state)
 
@@ -1969,6 +1974,7 @@ class RouteExecutor:
             row = exec_state.task_runs[idx]
             if row.finished_at is None:
                 row.finished_at = now
+                self._record_delay_class(exec_state, route, idx, now)
                 exec_state._append_next_walk_task(route)
 
         self._advance_to_next_task(route, exec_state)
@@ -2124,6 +2130,46 @@ class RouteExecutor:
         # eligible Phase 1 dwell-entry step.
         return True
 
+    def _record_delay_class(
+        self,
+        exec_state: RouteExecutionState,
+        route: "Route",
+        row_pos: int,
+        now: float,
+    ) -> None:
+        """Classify `task_runs[row_pos].delay_class` on real task completion.
+
+        Per design_new.md "RouteTaskRun schema": compares the shared task's
+        expected `task_time` with elapsed time since the predecessor walk
+        position's finish (`RouteRun.started_at` for row 0). No-op for `dwell`
+        rows and for tasks with no `task_time`. Tasks pre-finished by start-mode
+        seeding or skipped as broken are never routed here, so they keep
+        `delay_class = None`.
+        """
+        if not (0 <= row_pos < len(exec_state.task_runs)):
+            return
+        row = exec_state.task_runs[row_pos]
+        if not (0 <= row.task_index < len(route.tasks)):
+            return
+        task = route.tasks[row.task_index]
+        if task.task_kind == "dwell" or task.task_time is None:
+            return
+        started = (
+            exec_state.started_at
+            if row_pos == 0
+            else exec_state.task_runs[row_pos - 1].finished_at
+        )
+        if started is None:
+            return
+        elapsed = now - started
+        tol = DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS
+        if elapsed < task.task_time - tol:
+            row.delay_class = "early"
+        elif elapsed > task.task_time + tol:
+            row.delay_class = "late"
+        else:
+            row.delay_class = "on_time"
+
     def _enter_task_arrival(
         self,
         exec_state: RouteExecutionState,
@@ -2144,6 +2190,7 @@ class RouteExecutor:
         if row.finished_at is not None:
             return
         row.finished_at = now
+        self._record_delay_class(exec_state, route, walk_position, now)
         exec_state._append_next_walk_task(route)
 
     # ------------------------------------------------------------------ removal

@@ -28,7 +28,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, Optional, Set, Tuple, TYPE_CHECKING
 
-from constants import OCCUPANCY_OFF_THRESHOLD, OCCUPANCY_ON_THRESHOLD
+from constants import (
+    OCCUPANCY_OFF_THRESHOLD,
+    OCCUPANCY_ON_THRESHOLD,
+    UNKNOWN_TRAIN_ID,
+)
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
@@ -190,11 +194,20 @@ class BlockOccupancyDetector:
             if train_id is None:
                 train_id = self._span_owner(block_id)
             if train_id is None:
-                self._confirmed.discard(block_id)
+                # design_new.md "Attribution": a confirmed entry that matches no
+                # modeled train is an unmodeled (unknown) occupant. The detector
+                # is the authority for Block.occupied_by, so commit the block to
+                # the reserved UNKNOWN_TRAIN_ID sentinel directly (no controller
+                # exists to route it through) and keep it confirmed, so the block
+                # blocks reservation / clean entry there until its current clears
+                # for the off-window. Unreachable under the simulated detector,
+                # which builds current from live spans.
+                if block is not None:
+                    block.occupied_by = UNKNOWN_TRAIN_ID
                 self._emit(
-                    "block_attribution_unresolved",
-                    f"confirmed entry on block {block_id} has no reserving or "
-                    f"covering train; retrying next tick",
+                    "block_attribution_unknown",
+                    f"confirmed entry on block {block_id} matches no modeled "
+                    f"train; attributing to unknown occupant",
                 )
                 continue
             entered_by_train.setdefault(train_id, set()).add(block_id)
@@ -204,6 +217,13 @@ class BlockOccupancyDetector:
             block = self.network.blocks.get(block_id)
             train_id = getattr(block, "occupied_by", None) if block else None
             if train_id is None:
+                continue
+            if train_id == UNKNOWN_TRAIN_ID:
+                # An unknown occupant has no controller to route a vacate to;
+                # the detector clears it directly once its current drops for the
+                # off-window (design_new.md "Attribution").
+                if block is not None:
+                    block.occupied_by = None
                 continue
             vacated_by_train.setdefault(train_id, set()).add(block_id)
 

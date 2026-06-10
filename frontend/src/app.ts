@@ -1165,7 +1165,7 @@ class App {
     });
 
     // Add change listeners to debug checkboxes to trigger re-render
-    const checkboxIds = ['debug-show-bits', 'debug-show-coords', 'debug-show-switches', 'debug-show-edges', 'debug-show-blocks', 'debug-show-block-voltage', 'debug-show-signals', 'debug-show-block-boundaries', 'debug-show-tunnel-links'];
+    const checkboxIds = ['debug-show-bits', 'debug-show-coords', 'debug-show-switches', 'debug-show-edges', 'debug-show-blocks', 'debug-show-block-voltage', 'debug-show-block-length', 'debug-show-block-radius', 'debug-show-block-speed-limit', 'debug-show-signals', 'debug-show-block-boundaries', 'debug-show-tunnel-links'];
     checkboxIds.forEach(id => {
       const checkbox = document.getElementById(id);
       if (checkbox) {
