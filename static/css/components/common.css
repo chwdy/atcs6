@@ -535,7 +535,7 @@
 }
 
 .debug-table td:first-child {
-    color: var(--accent-purple);
+    color: var(--accent-color);
     font-weight: bold;
     padding-right: 8px;
     width: 40%;
@@ -571,7 +571,7 @@
     margin: 0 0 4px 0;
     font-size: 11px;
     font-weight: bold;
-    color: var(--accent-purple);
+    color: var(--accent-color);
 }
 
 .train-debug-row {
@@ -601,15 +601,15 @@
 }
 
 .train-debug-value.text-track {
-    color: var(--accent-green);
+    color: var(--success-color);
 }
 
 .train-debug-value.text-block {
-    color: var(--accent-purple);
+    color: var(--accent-color);
 }
 
 .train-debug-value.text-warning {
-    color: var(--accent-yellow);
+    color: var(--warning-color);
 }
 
 .train-debug-subsection {
@@ -639,7 +639,7 @@
     border-radius: 3px;
     font-size: 10px;
     font-family: var(--font-mono);
-    color: var(--accent-green);
+    color: var(--success-color);
 }
 
 .train-debug-path {
@@ -661,15 +661,15 @@
 }
 
 .train-debug-path-step.train-debug-path-current {
-    color: var(--bg-primary);
+    color: var(--bg-dark);
     font-weight: bold;
     text-decoration: underline;
 }
 
 
 .train-debug-path-current {
-    background: var(--accent-blue);
-    color: var(--bg-primary);
+    background: var(--info-color);
+    color: var(--bg-dark);
     font-weight: bold;
 }
 

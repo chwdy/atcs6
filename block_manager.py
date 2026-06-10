@@ -214,7 +214,7 @@ class BlockManager:
         pending = self._blocks_pending_deenergize
         self._blocks_pending_deenergize = set()
         unheld: List[str] = []
-        for block_id in pending:
+        for block_id in sorted(pending):
             block = self._block_registry.get(block_id)
             if block is None:
                 continue

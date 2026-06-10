@@ -2475,7 +2475,7 @@ export class Editor {
 
     try {
       const track = await this.api.getTrack(gridPos.x, gridPos.y);
-      if (track.error) return;
+      if (!track || track.error) return;
 
       if (track.is_switch) {
         const newState = track.switch_state === 0 ? 1 : 0;
@@ -2518,7 +2518,7 @@ export class Editor {
     this.tunnelEditorHandler?.clearSelection();
     try {
       const track = await this.api.getTrack(gridPos.x, gridPos.y);
-      if (!track.error) {
+      if (track && !track.error) {
         if (track.signals && track.signals.length > 0) {
           // The signals array contains {signal_id, direction, state, etc.}
         }

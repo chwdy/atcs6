@@ -292,9 +292,9 @@
     min-width: 0;
 }
 .inspector-row-source-badge[data-source="stored"] { background-color: #555560; }
-.inspector-row-source-badge[data-source="property"] { background-color: var(--accent-blue); color: #001a22; }
+.inspector-row-source-badge[data-source="property"] { background-color: var(--info-color); color: #001a22; }
 .inspector-row-source-badge[data-source="latch"] { background-color: var(--warning-color); color: #2a1f00; }
-.inspector-row-source-badge[data-source="external"] { background-color: var(--accent-green); color: #00200d; }
+.inspector-row-source-badge[data-source="external"] { background-color: var(--success-color); color: #00200d; }
 
 /* ---- Diff flash ---- */
 @keyframes inspector-row-flash-anim {
@@ -384,8 +384,8 @@
     font-size: 11px;
 }
 .inspector-json-scalar { color: var(--text-secondary); }
-.inspector-json-string { color: var(--accent-green, #6abf69); }
-.inspector-json-number { color: var(--accent-blue, #6cb9d6); }
+.inspector-json-string { color: var(--success-color, #6abf69); }
+.inspector-json-number { color: var(--info-color, #6cb9d6); }
 .inspector-json-bool { color: var(--warning-color, #d49a2c); }
 .inspector-json-null { color: var(--text-secondary); font-style: italic; }
 .inspector-json-empty { color: var(--text-secondary); }

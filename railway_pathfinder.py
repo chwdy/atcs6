@@ -479,7 +479,7 @@ class RailwayPathfinder:
             track = self.network.get_track(*pos)
             if not track:
                 continue
-            for edge in track.edges:
+            for edge in sorted(track.edges):
                 neighbor = self.network.get_neighbor(*pos, edge)
                 if neighbor and neighbor.block_section_id != start_block_id:
                     queue: deque = deque([(pos[0], pos[1], edge)])
@@ -509,7 +509,7 @@ class RailwayPathfinder:
                         for next_exit in all_exits:
                             queue.append((next_x, next_y, next_exit))
 
-        result = list(reachable_blocks)
+        result = sorted(reachable_blocks)
         if include_stations:
             for station_id, station in self.network.stations.items():
                 for pos in station.positions:
@@ -582,7 +582,7 @@ class RailwayPathfinder:
                 for next_exit in all_exits:
                     queue.append((next_x, next_y, next_exit))
 
-        result = list(reachable_blocks)
+        result = sorted(reachable_blocks)
         if include_stations:
             for station_id, station in self.network.stations.items():
                 for pos in station.positions:
@@ -617,7 +617,9 @@ class RailwayPathfinder:
             track = self.network.get_track(*start_pos)
             if not track:
                 continue
-            for edge in track.edges:
+            # Sorted: enumeration order feeds first-seen dedup and
+            # candidate_rank, so it must not depend on str-hash set order.
+            for edge in sorted(track.edges):
                 neighbor = self.network.get_neighbor(*start_pos, edge)
                 if neighbor and neighbor.block_section_id != start_block_id:
                     raw_walks.extend(

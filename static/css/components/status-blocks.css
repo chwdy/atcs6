@@ -202,13 +202,15 @@
    (different padding, some missing the italic, some hardcoding the grey).
    Use .empty-state-warn / .empty-state-error for a status-colored variant
    (e.g. "Train no longer exists", "Error: …"); those drop the italic so the
-   color carries the meaning. */
+   color carries the meaning. Use .empty-state-action when the empty
+   collection has an obvious next action — one plain-language line over one
+   .btn-accent CTA; not italic, it's an invitation rather than a shrug. */
 .empty-state {
-    padding: 16px 12px;
+    padding: var(--space-16) var(--space-12);
     text-align: center;
     color: var(--text-secondary);
     font-style: italic;
-    font-size: 11px;
+    font-size: var(--font-size-body);
 }
 
 .empty-state-warn {
@@ -219,4 +221,15 @@
 .empty-state-error {
     color: var(--danger-color);
     font-style: normal;
+}
+
+.empty-state-action {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-8);
+    padding: var(--space-16) var(--space-12);
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: var(--font-size-body);
 }

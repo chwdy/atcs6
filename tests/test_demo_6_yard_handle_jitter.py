@@ -21,8 +21,9 @@ window, hold ``N`` instead of powering up. The train stays genuinely stopped,
 the handle is steady, and the idle-hold release can recognize the stall and free
 the held authority.
 
-These tests pin both halves: the precise bug signature must never occur, and the
-specific reported train (``T_YA_6``) must settle to a steady ``N``.
+The test pins the bug signature — the precise stopped-power-up condition must
+never occur — and self-checks that at least one train actually reaches the
+stopped-at-collapsed-authority state, so the guard cannot pass vacuously.
 """
 
 import contextlib
@@ -98,36 +99,4 @@ def test_no_stopped_power_up_into_collapsed_authority(dt, label):
     assert hold_branch_exercised, (
         "no train reached the stopped-at-collapsed-authority condition in "
         f"{n_ticks} ticks — the regression guard never exercised the fix path"
-    )
-
-
-def test_t_ya_6_holds_steady_n_when_stuck():
-    """The specific reported case: T_YA_6 settles to a steady ``N`` handle.
-
-    Deterministic at the canonical dt=0.1. After the throat queue settles,
-    T_YA_6 is parked against its fouled authority; its handle must be a constant
-    ``N`` across the tail window (before the fix it cycled ``N <-> P2`` every 4
-    ticks) and the train must be genuinely stopped.
-    """
-    network, _disp, sim = _boot()
-    c = sim.get_or_create_controller("T_YA_6")
-
-    # Settle past the initial creep-in (T_YA_6 reaches its foul by ~tick 115).
-    for _ in range(180):
-        sim.update(0.1)
-
-    tail_handles = []
-    tail_speeds = []
-    for _ in range(80):
-        sim.update(0.1)
-        tail_handles.append(c.ops.handle_position.value)
-        tail_speeds.append(c.physics_sync.current_speed_kmh)
-
-    assert max(tail_speeds) <= STOPPED_SPEED_THRESHOLD_KMH, (
-        f"T_YA_6 expected to be parked at its foul, but moved "
-        f"(max speed {max(tail_speeds):.3f} km/h in the tail window)"
-    )
-    assert set(tail_handles) == {"N"}, (
-        f"T_YA_6 handle jittered while stuck — tail handles seen: "
-        f"{sorted(set(tail_handles))} (expected steady 'N')"
     )

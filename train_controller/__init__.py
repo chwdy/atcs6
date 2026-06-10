@@ -2156,7 +2156,7 @@ class TrainController:
 
         for block_id in sorted(
             ps.pending_detected_entered_blocks,
-            key=lambda b: block_to_seq_index.get(b, 0),
+            key=lambda b: (block_to_seq_index.get(b, 0), b),
         ):
             entered_resources.append(
                 ResourceEvent(
@@ -2170,7 +2170,7 @@ class TrainController:
 
         for block_id in sorted(
             ps.pending_detected_vacated_blocks,
-            key=lambda b: block_to_seq_index.get(b, 0),
+            key=lambda b: (block_to_seq_index.get(b, 0), b),
         ):
             exit_edge = ps.block_exit_edges.pop(block_id, None)
             if exit_edge is None:

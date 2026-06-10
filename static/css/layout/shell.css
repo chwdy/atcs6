@@ -572,7 +572,7 @@ textarea {
 .secondary-tab-close {
     border: none;
     background: none;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     cursor: pointer;
     font-size: 0.7rem;
     line-height: 1;

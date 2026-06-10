@@ -11,6 +11,10 @@ and the follower is left stuck in the yard.
 They must now seed to distinct *drive-on* stops on the B-leg, where the route
 continues forward without a reversal. The nearest free drive-on stop is
 `PLT_BR_4_B`; the rest spread to `PLT_BR_3_B`, `PLT_BR_2_B`, `PLT_BR_1_B`.
+
+The demo_6 scene parks only `T_NWY_1` (the other yard roads are commented out
+of its `TRAINS` list), so the test stages `T_NWY_2..4` itself with the scene's
+own placement helper — the packed-yard premise the seeding rule exists for.
 """
 
 import contextlib
@@ -18,12 +22,33 @@ import io
 
 import pytest
 
+import demo_6 as demo_6_scene
 from bootstrap import bootstrap_runtime
 from train_route import StationTarget
 
 pytestmark = pytest.mark.scene("demo_6")
 
 _NW_TRAINS = ["T_NWY_1", "T_NWY_2", "T_NWY_3", "T_NWY_4"]
+
+
+def _place_missing_nw_trains(network, sim):
+    """Park a locomotive on every NW-Yard road the scene leaves empty, exactly
+    the way demo_6's setup places its own stock (same helper, same geometry)."""
+    for tid in _NW_TRAINS:
+        if tid in network.trains:
+            continue
+        platform_id = f"PLT_{tid[2:]}"
+        facing, head_tile = demo_6_scene._yard_train_placement(network, platform_id)
+        sim.add_train(
+            train_id=tid,
+            starting_block_id=f"{platform_id}_BLOCK",
+            initial_direction=facing,
+            max_speed_kmh=120.0,
+            length_cm=45.0,
+            train_type="LOCOMOTIVE",
+            initial_cab="A",
+            start_tile=head_tile,
+        )
 
 
 def _seed_branch_trains():
@@ -33,6 +58,7 @@ def _seed_branch_trains():
         network, _disp, sim, _ = bootstrap_runtime(
             demo=True, setup_train=True, scene="demo_6"
         )
+        _place_missing_nw_trains(network, sim)
     ex = sim.route_executor
     route = ex.route_registry.get("ROUTE_BRANCH")
     assert route is not None, "demo_6 must register ROUTE_BRANCH"

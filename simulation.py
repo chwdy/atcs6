@@ -303,7 +303,7 @@ class SimulationController:
         # Physical detection outranks the calculated position: snap each affected
         # train's span forward to the block seam where the detector leads it
         # (inert under the v1 simulated sensor; active with real hardware).
-        for train_id in set(entered_by_train) | set(vacated_by_train):
+        for train_id in sorted(set(entered_by_train) | set(vacated_by_train)):
             controller = self.controllers.get(train_id)
             train = self.network.trains.get(train_id)
             if controller is None or train is None:

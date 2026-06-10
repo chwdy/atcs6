@@ -1,0 +1,14 @@
+# Backend dependencies, pinned to the versions in the `general` conda env
+# (Python 3.12). Keep in sync with that env when upgrading.
+#
+# Install: pip install -r requirements.txt
+# Test:    python -m pytest tests/
+
+Flask==3.1.3
+flask-cors==6.0.2
+Werkzeug==3.1.6
+requests==2.32.5
+
+# Test runner (pytest.ini uses -n, which needs xdist)
+pytest==9.0.2
+pytest-xdist==3.8.0

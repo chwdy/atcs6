@@ -943,10 +943,9 @@ export class EditorUIHandler {
       // Removing the last segment (newBits === 0, no dead-end ports) deletes
       // the whole tile. The server reports that with a removed/empty result
       // that carries no `track` payload, so there is nothing left to re-fetch
-      // — calling getTrack would 404 and throw us into the failure path even
-      // though the removal succeeded. Track removal so we skip the re-fetch and
-      // still fall through to refreshNetwork + reselect, which leaves the now
-      // empty tile selected.
+      // — getTrack on the removed tile would just 404 to null. Track removal
+      // so we skip the pointless re-fetch and still fall through to
+      // refreshNetwork + reselect, which leaves the now empty tile selected.
       let tileRemoved = false;
       if (track.isVirtual) {
         await api.addTracksBulk([

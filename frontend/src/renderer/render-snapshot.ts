@@ -31,6 +31,7 @@ export interface TrainController {
   facing_direction?: unknown;
   control_mode?: unknown;
   route_teardown_pending?: unknown;
+  eb_active?: unknown;
   span?: ControllerSpan | null;
 }
 
@@ -64,6 +65,8 @@ export interface RenderSnapshotTrain {
   controlMode: unknown;
   /** True while an operator route teardown (abort/deactivate) is latched. */
   teardownPending: boolean;
+  /** True while the emergency brake is active. Drives the purple body tint. */
+  ebActive: boolean;
   span: RenderSnapshotSpan;
   waitingForBlockId: unknown;
 }
@@ -104,6 +107,7 @@ export function buildRenderSnapshot(
       facing: controller.facing_direction ?? null,
       controlMode: controller.control_mode ?? null,
       teardownPending: controller.route_teardown_pending === true,
+      ebActive: controller.eb_active === true,
       span: {
         occupiedTiles: span.occupied_tiles,
         leadingEnd: span.leading_end,

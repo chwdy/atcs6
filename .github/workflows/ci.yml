@@ -1,13 +1,14 @@
 name: CI
 
-# Frontend build-pipeline gate (longterm_todo.md item #7). Runs the three
-# checks that keep the Vite/TypeScript bundle healthy: a strict typecheck, the
-# Vitest unit suite, and a production build. Node 22 matches the version the
-# repo's nvm setup pins for npm/vite/vitest/tsc.
+# Two gates:
 #
-# The Python backend suite is not run here yet: its dependencies live in the
-# `general` conda env and the repo has no pip-installable requirements manifest.
-# Add a second job once one exists.
+# frontend — the three checks that keep the Vite/TypeScript bundle healthy:
+# a strict typecheck, the Vitest unit suite, and a production build. Node 22
+# matches the version the repo's nvm setup pins for npm/vite/vitest/tsc.
+#
+# backend — the full pytest suite under Python 3.12 (matches the `general`
+# conda env used locally), installed from requirements.txt. pytest.ini
+# supplies the run flags (-n 8 via pytest-xdist, short tracebacks).
 
 on:
   push:
@@ -43,3 +44,20 @@ jobs:
 
       - name: Build (Vite)
         run: npm run build
+
+  backend:
+    name: Backend (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run test suite
+        run: python -m pytest tests/

@@ -1089,7 +1089,7 @@ def _yard_train_placement(network: RailwayNetwork, platform_id: str):
     edge_to_dir = {"N": "NORTH", "S": "SOUTH", "E": "EAST", "W": "WEST"}
     for (x, y) in positions:
         track = network.get_track(x, y)
-        for edge in track.edges:
+        for edge in sorted(track.edges):
             neighbor = network.get_neighbor(x, y, edge)
             if neighbor is None or (neighbor.x, neighbor.y) in tile_set:
                 continue

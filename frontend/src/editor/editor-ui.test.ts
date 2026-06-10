@@ -28,14 +28,12 @@ describe('_commitTrackBits — removing the last segment', () => {
 
   it('removes the tile without re-fetching it or surfacing an error', async () => {
     // Server deletes the tile when the last segment goes (bits=0): the PATCH
-    // response carries a message and NO `track`. The old code then called
-    // getTrack, which 404s and threw the commit into the failure path.
+    // response carries a message and NO `track`. There is nothing left to
+    // re-fetch, so the commit must skip getTrack entirely.
     const api = {
       updateTrack: vi.fn().mockResolvedValue({ status: 'success', message: 'removed (empty)' }),
-      // The real api.getTrack throws on 404. If the fix regresses and this is
-      // called for a just-removed tile, the reject reproduces the original bug
-      // (commit lands in the failure path, error toast, no refresh).
-      getTrack: vi.fn().mockRejectedValue(Object.assign(new Error('Track not found'), { status: 404 })),
+      // The real api.getTrack resolves null on 404 (expected miss).
+      getTrack: vi.fn().mockResolvedValue(null),
       createSwitchAt: vi.fn(),
     };
     const { handler, selectElement } = makeHandler(api);

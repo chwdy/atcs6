@@ -932,7 +932,7 @@ class BlockGeometryManager:
         edge_offsets = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
         opposite_edge = {"N": "S", "S": "N", "E": "W", "W": "E"}
 
-        for edge in track.edges:
+        for edge in sorted(track.edges):
             if edge not in edge_offsets:
                 continue
             dx, dy = edge_offsets[edge]

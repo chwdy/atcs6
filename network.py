@@ -392,7 +392,7 @@ class RailwayNetwork:
                 return (edge_a, edge_b)
 
         # 2. Tunnel-linked path.
-        for edge in track_a.edges:
+        for edge in sorted(track_a.edges):
             far = self.tunnels.get((int(ax), int(ay), edge))
             if far is None:
                 continue
@@ -762,7 +762,7 @@ class RailwayNetwork:
         edge_offsets = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
         opposite_edge = {"N": "S", "S": "N", "E": "W", "W": "E"}
 
-        for edge in track.edges:
+        for edge in sorted(track.edges):
             if edge not in edge_offsets:
                 continue
             dx, dy = edge_offsets[edge]
@@ -1977,7 +1977,10 @@ class RailwayNetwork:
         origin_track = self.get_track(*origin)
         if origin_track is None:
             return []
-        for edge in origin_track.edges:
+        # Sorted edge iteration: the first pop of a tile fixes its walk
+        # distance for the budget prune, so visit order must not depend on
+        # str-hash set order.
+        for edge in sorted(origin_track.edges):
             neighbor_coords = self._get_neighbor_coords(origin[0], origin[1], edge)
             # `get_neighbor` also resolves tunnels; map back to coords.
             neighbor = self.get_neighbor(origin[0], origin[1], edge)
@@ -2014,7 +2017,7 @@ class RailwayNetwork:
             tile = self.get_track(cx, cy)
             if tile is None:
                 continue
-            for edge in tile.edges:
+            for edge in sorted(tile.edges):
                 nb = self.get_neighbor(cx, cy, edge)
                 if nb is None:
                     continue
@@ -2093,7 +2096,7 @@ class RailwayNetwork:
             return None
         best_edge: Optional[str] = None
         best_dist: Optional[int] = None
-        for edge in ntrack.edges:
+        for edge in sorted(ntrack.edges):
             nb = self.get_neighbor(ncoords[0], ncoords[1], edge)
             if nb is None:
                 continue

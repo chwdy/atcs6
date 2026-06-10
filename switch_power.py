@@ -319,7 +319,10 @@ class SwitchPowerController:
             source = self._source_voltage(current)
             if abs(source) > ENERGIZED_EPS_V:
                 node_voltage = source
-            for neighbor in adjacency.get(current, ()):
+            # Sorted: when a group transiently carries more than one energized
+            # source, the winner is the last one visited, so traversal order
+            # must not depend on str-hash set order.
+            for neighbor in sorted(adjacency.get(current, ())):
                 if neighbor not in seen:
                     frontier.append(neighbor)
         return node_voltage

@@ -14,14 +14,21 @@
 import { stateManager } from '../lib/state-manager';
 import { BIT_TO_EDGES, getLabelSpacingMultiplier, DIRECTION_PREFERRED_QUADRANTS } from '../lib/constants';
 
-// Train body fill, chosen by control mode / route-teardown state. The dark
-// border (#333) is unchanged; only the inner fill is tinted so the head/tail
-// markers stay readable. Teardown wins over manual when both apply.
+// Train body fill, chosen by EB / route-teardown / control-mode state. The
+// dark border (#333) is unchanged; only the inner fill is tinted so the
+// head/tail markers stay readable. EB wins over everything — an EB'd train
+// must be findable at a glance; teardown wins over manual when both apply.
 const TRAIN_BODY_DEFAULT = '#ffffff';
 const TRAIN_BODY_MANUAL = '#ffe066'; // light yellow — manual driving
 const TRAIN_BODY_TEARDOWN = '#c8a2ff'; // light purple — route abort/deactivate in progress
+const TRAIN_BODY_EB = '#8257e5'; // saturated purple — emergency brake active
 
-export function trainBodyFill(snap: { controlMode?: string | null; teardownPending?: boolean }): string {
+export function trainBodyFill(snap: {
+  controlMode?: string | null;
+  teardownPending?: boolean;
+  ebActive?: boolean;
+}): string {
+  if (snap.ebActive) return TRAIN_BODY_EB;
   if (snap.teardownPending) return TRAIN_BODY_TEARDOWN;
   if (snap.controlMode === 'manual') return TRAIN_BODY_MANUAL;
   return TRAIN_BODY_DEFAULT;
@@ -48,6 +55,8 @@ export interface TrainSnap {
   controlMode?: string | null;
   /** True while an operator route teardown (abort/deactivate) is latched. */
   teardownPending?: boolean;
+  /** True while the emergency brake is active. Drives the purple body tint. */
+  ebActive?: boolean;
   span: TrainSnapSpan;
   waitingForBlockId?: string | null;
 }
@@ -172,6 +181,7 @@ export class RendererTrainHandler {
       facing: controller.facing_direction ?? null,
       controlMode: controller.control_mode ?? null,
       teardownPending: controller.route_teardown_pending === true,
+      ebActive: controller.eb_active === true,
       span: {
         occupiedTiles: controller.span.occupied_tiles,
         leadingEnd: controller.span.leading_end,

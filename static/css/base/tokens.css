@@ -11,14 +11,7 @@
     --danger-color: #e83f5b;
     --success-color: #04d361;
     --warning-color: #ffcd1e;
-    --text-muted: var(--text-secondary);
     --info-color: #00d4ff;
-    --bg-primary: var(--bg-dark);
-    --bg-secondary: var(--bg-panel);
-    --accent-purple: var(--accent-color);
-    --accent-green: var(--success-color);
-    --accent-yellow: var(--warning-color);
-    --accent-blue: var(--info-color);
 
     /* Block / track status palette. FREE/RESERVED/OCCUPIED/CAUTION reuse
        the §1 info/success/danger/warning hues so a block-state pill reads
@@ -36,7 +29,42 @@
     --control-height-sm: 32px;
     --control-height-xs: 28px;
     --control-radius-sm: 6px;
-    
+    --radius-xs: 4px;      /* inner elements: badges, small controls inside cards */
+    --radius-md: 8px;      /* floating overlays: toast, hero CTA */
+    --radius-lg: 12px;     /* modal dialogs */
+    --radius-pill: 999px;  /* chips / pills */
+
+    /* Spacing scale — multiples of 2px. 1px is the hairline border
+       width, not a spacing step. */
+    --space-2: 2px;
+    --space-4: 4px;
+    --space-6: 6px;
+    --space-8: 8px;
+    --space-10: 10px;
+    --space-12: 12px;
+    --space-16: 16px;
+
+    /* Type scale — the panel language's working sizes. */
+    --font-size-micro: 9px;   /* state badges, tool-tile labels */
+    --font-size-label: 10px;  /* field labels, chips, disclosure summaries */
+    --font-size-body: 11px;   /* prose, tabs, checkbox labels, units */
+    --font-size-value: 12px;  /* field values, inputs, panel titles */
+    --font-size-title: 14px;  /* detail-page record titles */
+    --font-size-hero: 28px;   /* hero numbers */
+
+    /* Z-index registry — pick the layer token, never a number between
+       layers. Values mirror the shipped layering; the inspector-above-
+       modal inversion is a Known divergence in DESIGN_LANGUAGE.md. */
+    --z-canvas-world: 1;
+    --z-canvas-live: 2;
+    --z-canvas-overlay: 3;
+    --z-shell: 10;        /* sidebars, bottom dock, sticky panel toolbars */
+    --z-picker: 1000;     /* floating pickers, modal backdrops */
+    --z-modal: 1100;      /* modal dialogs */
+    --z-restart: 1200;    /* full-app restart overlay */
+    --z-inspector: 9000;  /* floating debug panels */
+    --z-toast: 10000;     /* toasts — always on top */
+
     --font-main: 'Inter', sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
 }

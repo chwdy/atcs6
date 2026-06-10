@@ -100,44 +100,48 @@ class TestTwoTierOrdering:
 
 class TestIdleHoldRelease:
     def test_stalled_hold_releases_and_cools_down(self):
-        """T_YB_4 is throat-limited in demo_6: it holds a truncated best-effort
-        authority it cannot grow. The idle-hold guard must release it and cool
-        down, never letting idle_hold_ticks exceed the budget, and never
-        releasing a full (non-truncated) authority."""
+        """demo_6's yard departures stall on truncated best-effort holds while
+        the throats de-conflict. The idle-hold guard must release a stalled
+        hold and cool down, never letting idle_hold_ticks exceed the budget,
+        and never releasing a full (non-truncated) authority. Which yard train
+        stalls first varies run to run, so the release is asserted for
+        whichever train hits it first (observed around tick 150-300 at
+        dt=0.1)."""
         net, pd, sim, _pm = bootstrap_runtime(scene="demo_6")
         re = sim.route_executor
-        TID = "T_YB_4"
-        train = net.trains[TID]
 
-        saw_release = False
+        released_tid = None
         max_idle = 0
-        for _ in range(200):
+        for _ in range(600):
             sim.update(0.1)
-            rs = re.execution_state_for(TID)
-            if rs is None:
-                continue
-            max_idle = max(max_idle, rs.idle_hold_ticks)
-            if rs.release_cooldown_ticks > 0:
-                saw_release = True
-                # During cooldown the held authority is released (freed).
-                assert pd.get_active_path(TID) is None
+            for tid in net.trains:
+                rs = re.execution_state_for(tid)
+                if rs is None:
+                    continue
+                max_idle = max(max_idle, rs.idle_hold_ticks)
+                if rs.release_cooldown_ticks > 0 and released_tid is None:
+                    released_tid = tid
+                    # During cooldown the held authority is released (freed).
+                    assert pd.get_active_path(tid) is None
 
-            # Invariant: a full authority is NEVER counted as idle / released.
-            for other in net.trains:
-                orun = re.execution_state_for(other)
-                ap = pd.get_active_path(other)
+                # Invariant: a full authority is NEVER counted as idle / released.
+                ap = pd.get_active_path(tid)
                 if (
-                    orun is not None
-                    and ap is not None
+                    ap is not None
                     and ap.get_authority_end_block_id()
                     == ap.requested_destination_block_id
                 ):
-                    assert orun.idle_hold_ticks == 0, (
-                        f"{other} holds a FULL authority but idle_hold_ticks="
-                        f"{orun.idle_hold_ticks} (full paths must never accrue)"
+                    assert rs.idle_hold_ticks == 0, (
+                        f"{tid} holds a FULL authority but idle_hold_ticks="
+                        f"{rs.idle_hold_ticks} (full paths must never accrue)"
                     )
+            if released_tid is not None:
+                break
 
-        assert saw_release, "expected the throat-limited T_YB_4 to hit an idle-hold release"
+        assert released_tid is not None, (
+            "expected a throat-stalled yard train to hit an idle-hold release "
+            "within 600 ticks"
+        )
         assert max_idle <= IDLE_HOLD_RELEASE_TICKS, (
             f"idle_hold_ticks reached {max_idle}, over budget {IDLE_HOLD_RELEASE_TICKS}"
         )

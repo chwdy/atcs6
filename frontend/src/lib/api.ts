@@ -121,8 +121,14 @@ export class API {
 
   // Individual track operations
 
+  /**
+   * Get the track at a tile. Returns null when the tile has no track —
+   * callers probe empty cells routinely (e.g. selecting an empty tile in
+   * the editor), so a 404 here is an expected miss, not an error. Real
+   * failures (network, 5xx) still throw and log.
+   */
   async getTrack(x: number, y: number): Promise<any> {
-    return this._request(`/track/${x}/${y}`, {}, 'getTrack');
+    return this._request(`/track/${x}/${y}`, { returnNullOn404: true }, 'getTrack');
   }
 
   async updateTrack(x: number, y: number, updates: unknown): Promise<any> {

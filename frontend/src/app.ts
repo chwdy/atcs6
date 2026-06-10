@@ -1010,7 +1010,7 @@ class App {
         html += `<div class="train-debug-subsection-title">Occupied Blocks (${blocks.length})</div>`;
         html += `<div class="train-debug-tiles">`;
         blocks.forEach((b: any) => {
-          html += `<span class="train-debug-tile" style="color: var(--accent-purple);">${b}</span>`;
+          html += `<span class="train-debug-tile" style="color: var(--accent-color);">${b}</span>`;
         });
         html += `</div></div>`;
         blocksBlock.innerHTML = html;

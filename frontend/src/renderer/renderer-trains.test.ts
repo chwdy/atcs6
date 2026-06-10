@@ -121,5 +121,15 @@ describe('RendererTrainHandler pure helpers', () => {
     it('lets teardown win over manual when both apply', () => {
       expect(trainBodyFill({ controlMode: 'manual', teardownPending: true })).toBe('#c8a2ff');
     });
+
+    it('tints saturated purple while the emergency brake is active', () => {
+      expect(trainBodyFill({ ebActive: true })).toBe('#8257e5');
+    });
+
+    it('lets EB win over teardown and manual when all apply', () => {
+      expect(
+        trainBodyFill({ controlMode: 'manual', teardownPending: true, ebActive: true }),
+      ).toBe('#8257e5');
+    });
   });
 });

@@ -49,8 +49,11 @@ def test_no_phantom_clearance_eb_at_3x():
     reached_br7 = False
     path_present_eb: dict[str, int] = {}
 
-    # Run past the historical EB tick (~541 at dt=0.3).
-    for tick in range(1, 600):
+    # Run past the historical EB tick (~541 at dt=0.3). The scene parks 4
+    # trains with one on the Branch route (T_NWY_1, from the NW yard), which
+    # first reaches PLT_BR_7_A around tick 700 — later than the old packed-yard
+    # stock did, and with some run-to-run spread — so the budget leaves margin.
+    for tick in range(1, 1200):
         sim.update(dt)
         for tid in train_ids:
             c = sim.get_or_create_controller(tid)
