@@ -399,6 +399,36 @@ export class EditorUIHandler {
     return { label, tooltip };
   }
 
+  /** Tabler icon class for the entity-type indicator in the vertical tab strip.
+   *  Icon values are registered in static/icon-selections.json. */
+  getTabIconClass(editorType: string | null): string {
+    const iconMap: Record<string, string> = {
+      'block': 'ti-square',
+      'signal': 'ti-traffic-lights',
+      'platform': 'ti-building',
+      'switch': 'ti-git-branch',
+      'switches-list': 'ti-git-branch',
+      'tunnel': 'ti-building-tunnel',
+      'train-control': 'ti-train',
+      'trains-list': 'ti-train',
+      'route-editor': 'ti-map-route',
+      'route-run-editor': 'ti-player-play',
+      'route-runs-list': 'ti-player-play',
+      'routes-list': 'ti-map-route',
+      'path': 'ti-route',
+      'path-setup': 'ti-route',
+      'extend-path-setup': 'ti-arrows-horizontal',
+      'paths-list': 'ti-route',
+      'station-group': 'ti-home',
+      'station-group-detail': 'ti-home',
+      'station-group-list': 'ti-home',
+      'multi-select': 'ti-marquee-2',
+      'speed-profile': 'ti-gauge',
+      'speed-profiles-list': 'ti-gauge',
+    };
+    return iconMap[editorType || ''] ?? 'ti-file';
+  }
+
   renderSecondaryTabs(): void {
     const tabsEl = document.getElementById('secondary-sidebar-tabs');
     if (!tabsEl) {
@@ -417,8 +447,10 @@ export class EditorUIHandler {
         const safeTooltip = this.escapeHtml(tooltip);
         const activeClass = tab.tabId === this.activeSecondaryTabId ? ' active' : '';
         const listClass = LIST_PANEL_EDITOR_TYPES.has(tab.editorType) ? ' secondary-tab--list' : '';
+        const iconClass = this.getTabIconClass(tab.editorType);
         return (
           `<div class="secondary-tab${activeClass}${listClass}" title="${safeTooltip}">` +
+          `<i class="ti ${iconClass} secondary-tab-icon" aria-hidden="true"></i>` +
           `<button class="secondary-tab-label btn-size-tight" data-tab-id="${tab.tabId}">${safeLabel}</button>` +
           `<button class="secondary-tab-close" data-tab-id="${tab.tabId}" title="Close tab">×</button>` +
           `</div>`
@@ -426,11 +458,10 @@ export class EditorUIHandler {
       })
       .join('');
 
-    // The strip is a single row with horizontal scroll — keep the active tab
-    // in view when it changes.
+    // Scroll the active tab into view in the vertical strip.
     const activeEl = tabsEl.querySelector('.secondary-tab.active');
     if (activeEl && typeof activeEl.scrollIntoView === 'function') {
-      activeEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      activeEl.scrollIntoView({ block: 'nearest', inline: 'start' });
     }
   }
 
@@ -823,14 +854,6 @@ export class EditorUIHandler {
       case 'signal':
         if (track.signals && track.signals.length > 0) {
           this.editor.showSignalsEditorForTile(track);
-        } else {
-          this.hideSecondarySidebar();
-        }
-        break;
-
-      case 'block':
-        if (track.block_section_id) {
-          this.editor.showBlockEditor(track.block_section_id);
         } else {
           this.hideSecondarySidebar();
         }

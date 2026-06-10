@@ -115,6 +115,34 @@
     "kind": "tabler",
     "value": "lock"
   },
+  "tab-block": {
+    "kind": "tabler",
+    "value": "square"
+  },
+  "tab-fallback": {
+    "kind": "tabler",
+    "value": "file"
+  },
+  "tab-multi-select": {
+    "kind": "tabler",
+    "value": "marquee-2"
+  },
+  "tab-platform": {
+    "kind": "tabler",
+    "value": "building"
+  },
+  "tab-route-run": {
+    "kind": "tabler",
+    "value": "player-play"
+  },
+  "tab-switch": {
+    "kind": "tabler",
+    "value": "git-branch"
+  },
+  "tab-tunnel": {
+    "kind": "tabler",
+    "value": "building-tunnel"
+  },
   "track": {
     "kind": "tabler",
     "value": "track"

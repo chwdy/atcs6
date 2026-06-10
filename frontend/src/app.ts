@@ -592,6 +592,15 @@ class App {
 
       // Clear the network
       await api.clearNetwork();
+
+      // A new blank layout is a hard reset. Drop any in-progress tool, build /
+      // hover preview, and block-color overlay first: otherwise, if a tool with
+      // a live hover preview is active (signal/platform) or a build drag is in
+      // flight, refreshNetwork()'s fast path updates the caches but skips the
+      // world redraw, so the renderer keeps painting the stale tracks / blocks /
+      // switches over the now-empty layout.
+      await this.editor.resetForBlankLayout();
+
       showToast('New layout created', 'success');
       await this.refreshNetwork();
 

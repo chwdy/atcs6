@@ -1664,6 +1664,29 @@ export class Editor {
     }
   }
 
+  /**
+   * Hard-reset transient editor state for a destructive "New Layout" clear.
+   * Exits any active mode, returns to the inspect tool, and drops the build /
+   * hover preview and the block-color overlay. This guarantees isToolActive()
+   * is false so the follow-up refreshNetwork() takes the full-redraw path and
+   * the renderer actually paints the cleared (empty) network. Without it, the
+   * tool-active fast path in refreshNetwork() updates the caches but skips the
+   * world redraw, so the renderer keeps painting the stale tracks / blocks /
+   * switches over the now-empty layout.
+   */
+  async resetForBlankLayout(): Promise<void> {
+    if (this.activeMode) await this.exitMode();
+    this._setSelectedTool('inspect');
+    this.previewPath = null;
+    this.previewTracks = null;
+    this.isDraggingBuild = false;
+    this.hoverPosition = null;
+    this.hoverValid = false;
+    this.renderer.showBlockColorsOnly = false;
+    this.renderer.setBuildPreview(null);
+    this.renderer.setHoverPreview(null);
+  }
+
   // Pure DOM + state update. Does NOT call enter/exitMode (no recursion).
   _setSelectedTool(toolName: string): void {
     this.selectedTool = toolName;

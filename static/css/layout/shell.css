@@ -490,49 +490,31 @@ textarea {
     padding: 15px;
 }
 
-/* One row, never wraps: overflow scrolls horizontally so every open tab stays
-   reachable (no silent eviction, no multi-row strip eating the panel). */
+/* Tabs flow left-to-right and wrap to the next row when the strip is full —
+   browser-tab behaviour. Each tab is content-sized; multiple short tabs share
+   a row; a long tab wraps alone if needed. No scrollbar: all tabs stay visible. */
 .secondary-sidebar-tabs {
     display: flex;
-    flex-wrap: nowrap;
-    align-items: stretch;
-    gap: 0 2px;
-    padding: 0 8px;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2) var(--space-4);
+    padding: var(--space-4) var(--space-8);
     border-bottom: 1px solid var(--border-color);
     background: rgba(255, 255, 255, 0.02);
-    overflow-x: auto;
-    overflow-y: hidden;
 }
 
-.secondary-sidebar-tabs::-webkit-scrollbar {
-    height: 4px;
-}
-
-.secondary-sidebar-tabs::-webkit-scrollbar-track {
-    background: rgba(0, 0, 0, 0.1);
-}
-
-.secondary-sidebar-tabs::-webkit-scrollbar-thumb {
-    background: rgba(130, 87, 229, 0.3);
-    border-radius: 3px;
-}
-
-.secondary-sidebar-tabs::-webkit-scrollbar-thumb:hover {
-    background: rgba(130, 87, 229, 0.5);
-}
-
-/* Tab strip per DESIGN_LANGUAGE.md §3 — flat tabs, no per-tab border or fill;
-   active state is an accent-coloured underline that overlaps the strip's bottom
-   rule (so the active tab "owns" that segment of the divider). */
+/* Tab strip per DESIGN_LANGUAGE.md §3 — flat tabs; active state is a 2px left
+   accent border plus a subtle tint that marks the selected row in the stack. */
 .secondary-tab {
-    display: inline-flex;
+    display: flex;
     align-items: center;
-    gap: 3px;
-    flex-shrink: 0;
+    gap: var(--space-4);
     padding: 3px 6px;
     color: var(--text-secondary);
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
+    border-left: 2px solid transparent;
+    border-radius: var(--control-radius-sm);
+    min-width: 0;
     transition: color 0.15s, background-color 0.15s, border-color 0.15s;
 }
 
@@ -543,7 +525,20 @@ textarea {
 
 .secondary-tab.active {
     color: var(--accent-hover);
-    border-bottom-color: var(--accent-color);
+    border-left-color: var(--accent-color);
+    background-color: rgba(130, 87, 229, 0.08);
+}
+
+/* Tabler icon glyph that identifies the entity category in each tab. */
+.secondary-tab-icon {
+    font-size: 11px;
+    flex-shrink: 0;
+    opacity: 0.7;
+    line-height: 1;
+}
+
+.secondary-tab.active .secondary-tab-icon {
+    opacity: 1;
 }
 
 .secondary-tab-label {
@@ -557,8 +552,8 @@ textarea {
     padding: 0;
     user-select: none;
     /* Entity ids are opaque identifiers — clamp per DESIGN_LANGUAGE.md §5;
-       the tab's title tooltip carries the full lineage. */
-    max-width: 110px;
+       max-width keeps tabs compact while still truncating very long IDs. */
+    max-width: 160px;
     overflow: hidden;
     text-overflow: ellipsis;
 }
@@ -582,6 +577,7 @@ textarea {
     align-items: center;
     justify-content: center;
     padding: 0;
+    flex-shrink: 0;
 }
 
 .secondary-tab-close:hover {
