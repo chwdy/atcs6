@@ -60,6 +60,34 @@ def list_trains(state: AppState) -> List[Train]:
 # ------------------------------------------------------------------ CRUD ----
 
 
+def _apply_train_config(
+    state: AppState,
+    train: Train,
+    speed_profile_id: Optional[str],
+    min_radius_cm: Optional[float],
+    max_slope: Optional[float],
+) -> None:
+    """Apply optional persistent train config in place.
+
+    Covers the fields the create form sends beyond identity/length/speed:
+    speed profile, minimum curve radius, and maximum gradient. Each value is
+    None to leave the model default untouched. An unknown ``speed_profile_id``
+    is ignored — the train then falls back to its default profile.
+    """
+    if min_radius_cm is not None:
+        try:
+            train.min_radius_cm = float(min_radius_cm)
+        except (TypeError, ValueError):
+            pass
+    if max_slope is not None:
+        try:
+            train.max_slope = float(max_slope)
+        except (TypeError, ValueError):
+            pass
+    if speed_profile_id and state.speed_profile_registry.get(speed_profile_id):
+        train.speed_profile_id = speed_profile_id
+
+
 def create_train(
     state: AppState,
     *,
@@ -69,6 +97,9 @@ def create_train(
     car_number: str = "",
     position: Optional[dict] = None,
     direction: str = "EAST",
+    speed_profile_id: Optional[str] = None,
+    min_radius_cm: Optional[float] = None,
+    max_slope: Optional[float] = None,
 ) -> Train:
     """Create a train, placing it when a position is given.
 
@@ -122,6 +153,7 @@ def create_train(
                 "Tile-precise placement failed for %s: %s", train_id, exc
             )
 
+        _apply_train_config(state, train, speed_profile_id, min_radius_cm, max_slope)
         state.network.update_signals_from_blocks()
         return train
 
@@ -138,6 +170,7 @@ def create_train(
         max_speed=max_speed_kmh,
         car_number=car_number,
     )
+    _apply_train_config(state, train, speed_profile_id, min_radius_cm, max_slope)
     state.network.add_train(train)
     state.network.update_signals_from_blocks()
     return train

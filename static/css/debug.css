@@ -61,12 +61,7 @@ body {
 }
 
 .status-off { background: #484f58; }
-.status-on { background: #3fb950; animation: pulse 2s infinite; }
-
-@keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
-}
+.status-on { background: #3fb950; }
 
 /* Path bar */
 .path-bar {

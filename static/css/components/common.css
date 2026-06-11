@@ -673,11 +673,6 @@
     font-weight: bold;
 }
 
-@keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
-}
-
 /* Block Modal Dialog - Floating Style */
 .block-modal-overlay {
     position: fixed;
@@ -710,6 +705,9 @@
     animation: floatIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
     pointer-events: auto;
     z-index: 1001;
+    /* Clip the header gradient + footer (square corners) to the rounded card so
+       the bottom corners don't show square nubs past the border radius. */
+    overflow: hidden;
 }
 
 @keyframes floatIn {
@@ -721,6 +719,69 @@
         transform: translate(-50%, -50%) scale(1);
         opacity: 1;
     }
+}
+
+/* Anchored variant — the dialog hovers over the tiles on the canvas and follows
+   pan/zoom. The card's left/top are set inline by anchorToTiles(); the backdrop
+   stays transparent and click-through so the canvas underneath stays usable. */
+.block-modal-overlay.anchored {
+    background: transparent;
+}
+
+.block-modal.anchored {
+    position: fixed;
+    top: 0;
+    left: 0;
+    transform: none;
+    min-width: 280px;
+    max-width: 340px;
+    animation: blockModalPop 0.16s ease;
+}
+
+@keyframes blockModalPop {
+    from { opacity: 0; transform: scale(0.96); }
+    to   { opacity: 1; transform: scale(1); }
+}
+
+/* Two compact fields side by side (min radius + slope) inside the popover. */
+.block-modal .form-row {
+    display: flex;
+    gap: 12px;
+}
+
+.block-modal .form-row .form-group {
+    flex: 1;
+    min-width: 0;
+}
+
+/* Keep both row labels on one line so the two inputs start at the same height. */
+.block-modal .form-row .form-group label {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Compact spacing so the anchored popover stays short enough to hug its block
+   (the centered modal keeps its roomier default padding). */
+.block-modal.anchored h3 {
+    padding: 14px 18px 10px;
+    font-size: 15px;
+}
+
+.block-modal.anchored .modal-body {
+    padding: 14px 18px;
+}
+
+.block-modal.anchored .modal-info {
+    margin-bottom: 12px;
+}
+
+.block-modal.anchored .form-group {
+    margin-bottom: 12px;
+}
+
+.block-modal.anchored .modal-footer {
+    padding: 12px 18px 14px;
 }
 
 .block-modal-header {

@@ -111,6 +111,7 @@ def register(app, state: AppState) -> None:
                 name=data.get("name", ""),
                 length_cm=data.get("length_cm"),
                 min_radius_cm=data.get("min_radius_cm"),
+                grade_percent=data.get("grade_percent"),
                 speed_limit_kmh=data.get("speed_limit_kmh"),
                 max_speed_kmh=data.get("max_speed_kmh"),
             )

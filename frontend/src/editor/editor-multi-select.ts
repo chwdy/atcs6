@@ -404,13 +404,15 @@ export class MultiSelectActionsHandler {
     const result = await this.editor.showBlockModal({
       mode: 'create',
       trackCount: positions.length,
+      anchorTiles: positions.map(([x, y]) => ({ x, y })),
     });
     if (!result) return;
 
-    await this.api.createBlock(result.blockId, result.name || '');
-    if (result.maxSpeed) {
-      await this.api.updateBlock(result.blockId, { speed_limit_kmh: result.maxSpeed });
-    }
+    const options: Record<string, unknown> = {};
+    if (result.maxSpeed) options.speed_limit_kmh = result.maxSpeed;
+    if (result.minRadius != null) options.min_radius_cm = result.minRadius;
+    if (result.slope != null) options.grade_percent = result.slope;
+    await this.api.createBlock(result.blockId, result.name || '', options);
     // force=true so tiles already in another block get reassigned, matching
     // the existing "Block New" tool's behaviour.
     await this.api.addTracksToBlock(result.blockId, positions, true);

@@ -274,6 +274,33 @@ class RailwayNetwork:
         # next get_block_tracks() rebuilds it from the new topology.
         self._block_index_cache = None
 
+    def clear(self) -> None:
+        """Reset the network to empty.
+
+        Clears every entity dict AND the derived tile->block / tile->platform
+        reverse indices and the walk/block caches. The reverse indices are not
+        stored on the entity dicts, so emptying ``tracks`` / ``blocks`` alone
+        leaves them stale: a new track drawn on a tile a previous layout used
+        would read its old block via ``tile_to_block_id()`` and block creation
+        would reject it. This is the single reset used by the "New Layout"
+        action and by ``from_dict``'s "clear existing" step.
+        """
+        self.tracks.clear()
+        self.trains.clear()
+        self.blocks.clear()
+        self.signals.clear()
+        self.platforms.clear()  # self.stations is the same object
+        self.station_groups.clear()
+        self.switches.clear()
+        self.tunnels.clear()
+        # Derived tile -> owner reverse indices. Not held on any entity dict,
+        # so they must be cleared explicitly to avoid stale block/platform
+        # membership on reused tiles.
+        self._tile_to_block.clear()
+        self._tile_to_platform.clear()
+        # Drops _walk_cache + _block_index_cache.
+        self.invalidate_pathfinding_cache()
+
     def add_track(self, track: TrackSegment):
         """Add a track segment to the network and propagate updates"""
         key = (track.x, track.y)
@@ -2201,16 +2228,10 @@ class RailwayNetwork:
 
     def from_dict(self, data: dict):
         """Reconstruct network from dictionary"""
-        # Clear existing
-        self.invalidate_pathfinding_cache()
-        self.tracks.clear()
-        self.trains.clear()
-        self.blocks.clear()
-        self.signals.clear()
-        self.platforms.clear()
-        self.station_groups.clear()
-        self.switches.clear()  # NEW: Clear switches
-        self.tunnels.clear()
+        # Clear existing — entity dicts plus the tile->owner reverse indices
+        # and caches, so a load can never inherit stale block/platform
+        # membership on tiles the previous layout occupied.
+        self.clear()
 
         for block_id, block_data in data.get("blocks", {}).items():
             self.blocks[block_id] = Block.from_dict(block_data)

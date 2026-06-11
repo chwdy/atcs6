@@ -71,11 +71,16 @@ interface CurvePlotOptions {
   /** Lock the left endpoint in Y too (plot-2 origin (0,0)). X of both endpoints is always locked. */
   lockLeftY: boolean;
   onChange: (points: CurvePoint[], dragging: boolean) => void;
+  /** Left-click on the line: insert a point in segment `segIndex` at plot-space (x, y). */
+  onInsert: (segIndex: number, x: number, y: number) => void;
+  /** Right-click an interior handle: remove point `index` (endpoints are never reported). */
+  onRemove: (index: number) => void;
 }
 
 const EPS_X = 0.5; // min power gap between adjacent points (keeps X strictly ascending)
 const EPS_Y = 0.02; // min gap to keep Y strictly ascending (invertibility)
 const HIT_R = 9; // px hit radius for grabbing a point handle
+const ADD_HIT_R = 6; // px distance from the line that still reads as "click the line to add a point"
 const PAD = { left: 40, right: 14, top: 14, bottom: 26 };
 
 /** Round for display without trailing-zero noise. */
@@ -84,9 +89,11 @@ function fmt(n: number, digits = 2): string {
 }
 
 /**
- * One draggable piecewise-linear plot over a `<canvas>`. Axis-agnostic: it works
+ * One editable piecewise-linear plot over a `<canvas>`. Axis-agnostic: it works
  * in plot space `[x, y]` (x = power 0..100 here) and reports edits back through
- * `onChange`. The handler owns translation to/from backend curve storage and the
+ * `onChange` (drag a handle), `onInsert` (left-click the line to add a point),
+ * and `onRemove` (right-click an interior point to delete it — the two endpoints
+ * are locked). The handler owns translation to/from backend curve storage and the
  * commit. Both X and Y are kept strictly ascending so the curve stays invertible
  * (the backend's reverse lookups assume monotonicity).
  */
@@ -96,6 +103,8 @@ class CurvePlot {
   private color: string;
   private lockLeftY: boolean;
   private onChange: (points: CurvePoint[], dragging: boolean) => void;
+  private onInsert: (segIndex: number, x: number, y: number) => void;
+  private onRemove: (index: number) => void;
   private points: CurvePoint[] = [];
   private axis: PlotAxis = { yMin: 0, yMax: 1 };
   private xMin = 0;
@@ -107,6 +116,7 @@ class CurvePlot {
   private onMove: (e: MouseEvent) => void;
   private onUp: (e: MouseEvent) => void;
   private onLeave: (e: MouseEvent) => void;
+  private onContext: (e: MouseEvent) => void;
 
   constructor(opts: CurvePlotOptions) {
     this.canvas = opts.canvas;
@@ -114,6 +124,8 @@ class CurvePlot {
     this.color = opts.color;
     this.lockLeftY = opts.lockLeftY;
     this.onChange = opts.onChange;
+    this.onInsert = opts.onInsert;
+    this.onRemove = opts.onRemove;
 
     this.onDown = (e) => this.handleDown(e);
     this.onMove = (e) => this.handleMove(e);
@@ -122,10 +134,12 @@ class CurvePlot {
       this.hoverIndex = null;
       if (this.dragIndex === null) this.draw();
     };
+    this.onContext = (e) => this.handleContext(e);
     this.canvas.addEventListener('mousedown', this.onDown);
     window.addEventListener('mousemove', this.onMove);
     window.addEventListener('mouseup', this.onUp);
     this.canvas.addEventListener('mouseleave', this.onLeave);
+    this.canvas.addEventListener('contextmenu', this.onContext);
 
     this.ro = new ResizeObserver(() => this.resize());
     this.ro.observe(this.canvas);
@@ -143,6 +157,7 @@ class CurvePlot {
     window.removeEventListener('mousemove', this.onMove);
     window.removeEventListener('mouseup', this.onUp);
     this.canvas.removeEventListener('mouseleave', this.onLeave);
+    this.canvas.removeEventListener('contextmenu', this.onContext);
     this.ro?.disconnect();
     this.ro = null;
   }
@@ -304,20 +319,62 @@ class CurvePlot {
     return best;
   }
 
+  /**
+   * Nearest polyline segment within ADD_HIT_R of (px, py), or null. Returns the
+   * segment's start index plus the click in plot space, for inserting a point.
+   */
+  private segmentAt(
+    px: number,
+    py: number,
+    rect: DOMRect,
+  ): { index: number; x: number; y: number } | null {
+    let best: { index: number; x: number; y: number } | null = null;
+    let bestD = ADD_HIT_R * ADD_HIT_R;
+    for (let i = 0; i < this.points.length - 1; i++) {
+      const ax = this.xToPx(this.points[i][0], rect);
+      const ay = this.yToPx(this.points[i][1], rect);
+      const bx = this.xToPx(this.points[i + 1][0], rect);
+      const by = this.yToPx(this.points[i + 1][1], rect);
+      const vx = bx - ax;
+      const vy = by - ay;
+      const len2 = vx * vx + vy * vy || 1;
+      let t = ((px - ax) * vx + (py - ay) * vy) / len2;
+      t = Math.max(0, Math.min(1, t));
+      const cx = ax + t * vx;
+      const cy = ay + t * vy;
+      const d = (px - cx) * (px - cx) + (py - cy) * (py - cy);
+      if (d <= bestD) {
+        bestD = d;
+        best = { index: i, x: this.pxToX(px, rect), y: this.pxToY(py, rect) };
+      }
+    }
+    return best;
+  }
+
   private handleDown(e: MouseEvent): void {
+    if (e.button !== 0) return; // left button only; right-click is handled by contextmenu
     const { px, py, rect } = this.localPoint(e);
     const idx = this.handleAt(px, py, rect);
-    if (idx === null) return;
-    e.preventDefault();
-    this.dragIndex = idx;
-    this.draw();
+    if (idx !== null) {
+      e.preventDefault();
+      this.dragIndex = idx;
+      this.draw();
+      return;
+    }
+    // Not on a handle — a left-click on the line adds a point there.
+    const seg = this.segmentAt(px, py, rect);
+    if (seg) {
+      e.preventDefault();
+      this.onInsert(seg.index, seg.x, seg.y);
+    }
   }
 
   private handleMove(e: MouseEvent): void {
     const { px, py, rect } = this.localPoint(e);
     if (this.dragIndex === null) {
       const idx = this.handleAt(px, py, rect);
-      this.canvas.style.cursor = idx === null ? 'default' : 'grab';
+      if (idx !== null) this.canvas.style.cursor = 'grab';
+      else this.canvas.style.cursor = this.segmentAt(px, py, rect) ? 'copy' : 'default';
       if (idx !== this.hoverIndex) {
         this.hoverIndex = idx;
         this.draw();
@@ -359,6 +416,17 @@ class CurvePlot {
     this.draw();
     this.onChange(this.points, false);
   }
+
+  /** Right-click an interior handle to remove it; the two endpoints are locked. */
+  private handleContext(e: MouseEvent): void {
+    e.preventDefault(); // keep the browser context menu off the plot
+    const { px, py, rect } = this.localPoint(e);
+    const idx = this.handleAt(px, py, rect);
+    if (idx === null || idx === 0 || idx === this.points.length - 1) return;
+    this.hoverIndex = null;
+    this.dragIndex = null;
+    this.onRemove(idx);
+  }
 }
 
 export class SpeedProfileEditorHandler {
@@ -368,7 +436,6 @@ export class SpeedProfileEditorHandler {
   private _vpPlot: CurvePlot | null = null;
   private _psPlot: CurvePlot | null = null;
   private _saveTimer: ReturnType<typeof setTimeout> | null = null;
-  private _statusTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(editor: EditorHost) {
     this.editor = editor;
@@ -567,14 +634,9 @@ export class SpeedProfileEditorHandler {
   private _editorHtml(p: SpeedProfileData): string {
     return `
             <div class="sp-editor">
-                <div class="sp-toolbar">
-                    <span class="sp-spacer"></span>
-                    <span id="sp-save-status" class="sp-save-status"></span>
-                </div>
-
                 <div class="control-section">
                     <div class="control-section-header">Voltage ↔ Power</div>
-                    <div class="text-muted text-xs mb-8">X = power %, Y = track voltage. Drag points or edit the list.</div>
+                    <div class="text-muted text-xs mb-8">X = power %, Y = track voltage. Click the line to add a point · drag to move · right-click a point to remove.</div>
                     <div class="sp-plot-block">
                         <div class="sp-point-list" id="sp-vp-list"></div>
                         <canvas class="sp-canvas" id="sp-vp-canvas"></canvas>
@@ -583,7 +645,7 @@ export class SpeedProfileEditorHandler {
 
                 <div class="control-section">
                     <div class="control-section-header">Power ↔ Speed</div>
-                    <div class="text-muted text-xs mb-8">X = power %, Y = speed (km/h). Left point is pinned at the origin.</div>
+                    <div class="text-muted text-xs mb-8">X = power %, Y = speed (km/h). Click the line to add a point · drag to move · right-click to remove. Left point is pinned at the origin.</div>
                     <div class="sp-plot-block">
                         <div class="sp-point-list" id="sp-ps-list"></div>
                         <canvas class="sp-canvas" id="sp-ps-canvas"></canvas>
@@ -635,6 +697,7 @@ export class SpeedProfileEditorHandler {
 
                 <details class="tc-disclosure">
                     <summary>Motion &amp; drag</summary>
+                    <div class="tc-disclosure-body">
                     ${this._rateRow('Acceleration (km/h/s)', 'sp-accel', p.acceleration_rate)}
                     ${this._rateRow('Deceleration (km/h/s)', 'sp-decel', p.deceleration_rate)}
                     ${this._rateRow('Emergency brake (km/h/s)', 'sp-eb', p.emergency_brake_rate)}
@@ -642,14 +705,17 @@ export class SpeedProfileEditorHandler {
                     ${this._rateRow('Operational decel ratio', 'sp-opdecel', p.operational_decel_ratio)}
                     ${this._rateRow('Drag coefficient', 'sp-drag', p.drag_coefficient)}
                     ${this._rateRow('Reference speed (km/h)', 'sp-refspeed', p.reference_speed_kmh)}
+                    </div>
                 </details>
 
                 <details class="tc-disclosure">
                     <summary>Notch response</summary>
+                    <div class="tc-disclosure-body">
                     <div class="input-small-row mb-8"><label class="input-small-label">Power notches (× acceleration)</label></div>
                     ${POWER_NOTCHES.map(([h]) => this._notchRow(h, `sp-pm-${h}`, p.power_multipliers[h])).join('')}
                     <div class="input-small-row mb-8"><label class="input-small-label">Brake notches (× operational decel)</label></div>
                     ${BRAKE_NOTCHES.map(([h]) => this._notchRow(h, `sp-bm-${h}`, p.brake_multipliers[h])).join('')}
+                    </div>
                 </details>
 
                 ${
@@ -687,6 +753,8 @@ export class SpeedProfileEditorHandler {
         color: getComputedStyle(document.documentElement).getPropertyValue('--info-color').trim() || '#4aa3ff',
         lockLeftY: false,
         onChange: (pts, dragging) => this._applyVpPlot(pts, dragging),
+        onInsert: (seg, x, y) => this._insertPlotPoint('vp', seg, x, y),
+        onRemove: (i) => this._removePoint('vp', i),
       });
       this._vpPlot.setData(this._vpPlotPoints(), this._vpAxis());
     }
@@ -696,6 +764,8 @@ export class SpeedProfileEditorHandler {
         color: getComputedStyle(document.documentElement).getPropertyValue('--success-color').trim() || '#4ade80',
         lockLeftY: true,
         onChange: (pts, dragging) => this._applyPsPlot(pts, dragging),
+        onInsert: (seg, x, y) => this._insertPlotPoint('ps', seg, x, y),
+        onRemove: (i) => this._removePoint('ps', i),
       });
       this._psPlot.setData(this._psPlotPoints(), this._psAxis());
     }
@@ -720,8 +790,7 @@ export class SpeedProfileEditorHandler {
     this._profile!.lighting_voltage = storage[0][0];
     this._profile!.max_voltage = storage[storage.length - 1][0];
     this._syncValues();
-    if (dragging) this._setSaveStatus('');
-    else this._commitDebounced(0);
+    if (!dragging) this._commitDebounced(0);
   }
 
   private _applyPsPlot(plotPts: CurvePoint[], dragging: boolean): void {
@@ -810,6 +879,32 @@ export class SpeedProfileEditorHandler {
     const nx = (a[0] + b[0]) / 2;
     const ny = (a[1] + b[1]) / 2;
     pts.splice(gapAt + 1, 0, [nx, ny]);
+    if (isVp) this._applyVpPlot(pts, false);
+    else this._applyPsPlot(pts, false);
+    this._rebuildPointList(which);
+    (isVp ? this._vpPlot : this._psPlot)?.setData(pts, isVp ? this._vpAxis() : this._psAxis());
+  }
+
+  /** Insert a point from a click on the plot line: segment `segIndex`, at plot-space (x, y). */
+  private _insertPlotPoint(which: 'vp' | 'ps', segIndex: number, x: number, y: number): void {
+    if (!this._profile) return;
+    const isVp = which === 'vp';
+    const pts = isVp ? this._vpPlotPoints() : this._psPlotPoints();
+    const a = pts[segIndex];
+    const b = pts[segIndex + 1];
+    if (!a || !b) return;
+    // Keep the new point strictly inside the segment so X and Y stay ascending.
+    const loX = a[0] + EPS_X;
+    const hiX = b[0] - EPS_X;
+    const loY = a[1] + EPS_Y;
+    const hiY = b[1] - EPS_Y;
+    if (hiX <= loX || hiY <= loY) {
+      showToast('No room to add another point here', 'warning', 2500);
+      return;
+    }
+    const nx = Math.min(hiX, Math.max(loX, x));
+    const ny = Math.min(hiY, Math.max(loY, y));
+    pts.splice(segIndex + 1, 0, [nx, ny]);
     if (isVp) this._applyVpPlot(pts, false);
     else this._applyPsPlot(pts, false);
     this._rebuildPointList(which);
@@ -964,7 +1059,6 @@ export class SpeedProfileEditorHandler {
 
   private async _commit(): Promise<void> {
     if (!this._profile) return;
-    this._setSaveStatus('saving');
     try {
       const updated = await this.api.updateSpeedProfile(this._profile.profile_id, this._profile);
       this._profile = this._normalize(updated);
@@ -972,7 +1066,6 @@ export class SpeedProfileEditorHandler {
       this._vpPlot?.setData(this._vpPlotPoints(), this._vpAxis());
       this._psPlot?.setData(this._psPlotPoints(), this._psAxis());
       this._syncValues();
-      this._setSaveStatus('saved');
     } catch (err: any) {
       console.error('[SpeedProfileEditorHandler] save failed:', err);
       showToast('Failed to save profile: ' + (err.message || err), 'error', 5000);
@@ -983,29 +1076,6 @@ export class SpeedProfileEditorHandler {
       this._vpPlot?.setData(this._vpPlotPoints(), this._vpAxis());
       this._psPlot?.setData(this._psPlotPoints(), this._psAxis());
       this._syncValues();
-      this._setSaveStatus('error');
-    }
-  }
-
-  private _setSaveStatus(state: '' | 'saving' | 'saved' | 'error'): void {
-    const el = document.getElementById('sp-save-status');
-    if (!el) return;
-    if (this._statusTimer) clearTimeout(this._statusTimer);
-    if (state === 'saving') {
-      el.textContent = '● saving…';
-      el.className = 'sp-save-status sp-save-saving';
-    } else if (state === 'saved') {
-      el.textContent = 'Saved ✓';
-      el.className = 'sp-save-status sp-save-saved';
-      this._statusTimer = setTimeout(() => {
-        if (el.textContent === 'Saved ✓') el.textContent = '';
-      }, 1500);
-    } else if (state === 'error') {
-      el.textContent = '● save failed';
-      el.className = 'sp-save-status sp-save-error';
-    } else {
-      el.textContent = '';
-      el.className = 'sp-save-status';
     }
   }
 
@@ -1013,10 +1083,6 @@ export class SpeedProfileEditorHandler {
     if (this._saveTimer) {
       clearTimeout(this._saveTimer);
       this._saveTimer = null;
-    }
-    if (this._statusTimer) {
-      clearTimeout(this._statusTimer);
-      this._statusTimer = null;
     }
     this._vpPlot?.destroy();
     this._psPlot?.destroy();

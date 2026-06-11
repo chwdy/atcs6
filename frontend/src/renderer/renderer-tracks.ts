@@ -10,13 +10,29 @@
 // Part of the Vite bundle; the Renderer constructs it directly
 // (`new RendererTrackHandler(this)`).
 
-import { getActiveSegments, isCrossing, TRACK_WIDTH } from '../lib/constants';
+import { getActiveSegments, trackBitsToEdges, isCrossing, TRACK_WIDTH } from '../lib/constants';
 import { getBlockStateColor } from '../lib/helpers';
 import type { Signal } from './renderer-signals';
 
 export interface EdgePoint {
   x: number;
   y: number;
+}
+
+/**
+ * Colors for drawTileExtentHighlight — the track-aware overlay used for the
+ * box/lasso/paint selection and the block/platform drag-build preview. Both
+ * flows share the geometry; only these four colors differ between them.
+ */
+export interface TileExtentStyle {
+  /** Faint diamond fill, so a tile with no track still reads as selected. */
+  tileFill: string;
+  /** Wide, soft underlay that haloes the track stroke. */
+  glow: string;
+  /** Bright thin line over the glow — the "this track is selected" mark. */
+  core: string;
+  /** End-cap tick, drawn across every track edge that leaves the set. */
+  cap: string;
 }
 
 interface SwitchEntity {
@@ -48,6 +64,9 @@ export interface TrackHandlerRenderer {
   gridSize: number;
   currentBlocks?: Record<string, { state?: string; disabled?: boolean; manual?: boolean } | undefined> | null;
   currentNetwork?: { switches?: Record<string, SwitchEntity | undefined> } | null;
+  // "x,y" -> track, used by drawTileExtentHighlight to read each selected
+  // tile's track_bits so it can light the real stroke (not just the cell).
+  trackMap?: Record<string, { track_bits?: number } | undefined>;
   gridToScreenX(x: number, y: number): number;
   gridToScreenY(x: number, y: number): number;
   signalHandler: { drawSingleSignal(signal: unknown, trackBits: number | undefined, half: number): void };
@@ -681,6 +700,129 @@ export class RendererTrackHandler {
       else this.ctx.lineTo(cx, cy);
     }
     this.ctx.stroke();
+
+    this.ctx.restore();
+  }
+
+  /**
+   * Track-aware overlay for a set of grid tiles (the box/lasso/paint selection,
+   * and the block/platform drag preview). Filling each tile diamond makes a run
+   * of diagonal tiles read as a zigzag of cells even when the track through them
+   * is a straight line, so instead this:
+   *   1. dims the tile diamond (faint), so a tile that carries no track still
+   *      reads as selected;
+   *   2. lights the actual track stroke on each tile (soft glow + bright core),
+   *      so the selection looks like the line of track it really is; and
+   *   3. ticks every track edge that exits the set, so the ends of the run —
+   *      "where it stops" — are obvious, including a one-tile gap mid-run.
+   *
+   * `keys` are "x,y" strings; track_bits come from the renderer's trackMap.
+   */
+  drawTileExtentHighlight(keys: Set<string>, style: TileExtentStyle): void {
+    if (!keys || keys.size === 0) return;
+
+    const cellSize = this.gridSize * this.scale;
+    const half = cellSize / 2;
+    const trackMap = this.renderer.trackMap || {};
+    const edgePoints = this.getEdgePoints(half);
+    const neighborDeltas: Record<string, { dx: number; dy: number }> = {
+      N: { dx: 0, dy: 1 }, E: { dx: 1, dy: 0 }, S: { dx: 0, dy: -1 }, W: { dx: -1, dy: 0 },
+    };
+
+    this.ctx.save();
+
+    // 1) Dim tile diamonds, but only for selected tiles that carry NO track:
+    //    a tile with track is shown by its rail below (drawing the cell too just
+    //    rebuilds the "field of diamonds"), while a selected-but-trackless tile —
+    //    e.g. a gap at the end of a run — still shows up as a diamond so it is
+    //    easy to spot a missing segment.
+    this.ctx.fillStyle = style.tileFill;
+    for (const key of keys) {
+      if (trackMap[key]?.track_bits) continue;
+      const [xs, ys] = key.split(',');
+      const cx = this.gridToScreenX(Number(xs), Number(ys));
+      const cy = this.gridToScreenY(Number(xs), Number(ys));
+      this.ctx.beginPath();
+      this.ctx.moveTo(cx, cy - half);
+      this.ctx.lineTo(cx + half, cy);
+      this.ctx.lineTo(cx, cy + half);
+      this.ctx.lineTo(cx - half, cy);
+      this.ctx.closePath();
+      this.ctx.fill();
+    }
+
+    // 2) Track stroke: a soft glow pass, then a bright core pass on top.
+    this.ctx.lineCap = 'round';
+    this.ctx.lineJoin = 'round';
+    const passes: Array<{ color: string; width: number }> = [
+      { color: style.glow, width: TRACK_WIDTH * 2.1 * this.scale },
+      { color: style.core, width: TRACK_WIDTH * 1.2 * this.scale },
+    ];
+    for (const pass of passes) {
+      this.ctx.strokeStyle = pass.color;
+      this.ctx.lineWidth = pass.width;
+      for (const key of keys) {
+        const bits = trackMap[key]?.track_bits ?? 0;
+        if (!bits) continue;
+        const [xs, ys] = key.split(',');
+        const cx = this.gridToScreenX(Number(xs), Number(ys));
+        const cy = this.gridToScreenY(Number(xs), Number(ys));
+        this.ctx.save();
+        this.ctx.translate(cx, cy);
+        for (const [e1, e2] of getActiveSegments(bits)) {
+          const s = edgePoints[e1];
+          const en = edgePoints[e2];
+          if (!s || !en) continue;
+          this.ctx.beginPath();
+          this.ctx.moveTo(s.x, s.y);
+          this.ctx.lineTo(en.x, en.y);
+          this.ctx.stroke();
+        }
+        this.ctx.restore();
+      }
+    }
+
+    // 3) End-caps at every track edge whose neighbor is not in the set: a tick
+    //    laid across the rail (perpendicular to the track direction at that
+    //    edge) so the run's ends pop.
+    this.ctx.strokeStyle = style.cap;
+    this.ctx.lineWidth = 2.5 * this.scale;
+    const capHalf = half * 0.38;
+    for (const key of keys) {
+      const bits = trackMap[key]?.track_bits ?? 0;
+      if (!bits) continue;
+      const [xs, ys] = key.split(',');
+      const x = Number(xs);
+      const y = Number(ys);
+      const segments = getActiveSegments(bits);
+      this.ctx.save();
+      this.ctx.translate(this.gridToScreenX(x, y), this.gridToScreenY(x, y));
+      for (const edge of trackBitsToEdges(bits)) {
+        const d = neighborDeltas[edge];
+        if (!d || keys.has(`${x + d.dx},${y + d.dy}`)) continue;
+        const ep = edgePoints[edge];
+        if (!ep) continue;
+        // Track direction at this end = edge midpoint minus its segment partner
+        // (fall back to the outward radial if the segment has no partner).
+        let partner: string | null = null;
+        for (const [e1, e2] of segments) {
+          if (e1 === edge) { partner = e2; break; }
+          if (e2 === edge) { partner = e1; break; }
+        }
+        const pp = partner ? edgePoints[partner] : null;
+        let tx = pp ? ep.x - pp.x : ep.x;
+        let ty = pp ? ep.y - pp.y : ep.y;
+        const tl = Math.hypot(tx, ty) || 1;
+        tx /= tl; ty /= tl;
+        const px = -ty;
+        const py = tx;
+        this.ctx.beginPath();
+        this.ctx.moveTo(ep.x - px * capHalf, ep.y - py * capHalf);
+        this.ctx.lineTo(ep.x + px * capHalf, ep.y + py * capHalf);
+        this.ctx.stroke();
+      }
+      this.ctx.restore();
+    }
 
     this.ctx.restore();
   }

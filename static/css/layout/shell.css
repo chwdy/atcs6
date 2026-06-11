@@ -591,21 +591,19 @@ textarea {
     right: 0;
     top: 0;
     bottom: 0;
-    width: 8px;
+    width: 6px;
     cursor: ew-resize;
-    background: linear-gradient(to right, transparent, rgba(130, 87, 229, 0.3));
-    opacity: 0;
-    transition: opacity 0.2s;
+    background-color: transparent;
+    transition: background-color 0.15s;
     z-index: 1000;
 }
 
 .secondary-sidebar:hover::before {
-    opacity: 1;
+    background-color: var(--accent-color);
 }
 
 .secondary-sidebar.resizing::before {
-    opacity: 1;
-    background: linear-gradient(to right, transparent, rgba(130, 87, 229, 0.6));
+    background-color: var(--accent-color);
 }
 
 /* Sidebar */
@@ -668,21 +666,19 @@ textarea {
     right: 0;
     top: 0;
     bottom: 0;
-    width: 8px;
+    width: 6px;
     cursor: ew-resize;
-    background: linear-gradient(to right, transparent, rgba(130, 87, 229, 0.3));
-    opacity: 0;
-    transition: opacity 0.2s;
+    background-color: transparent;
+    transition: background-color 0.15s;
     z-index: 1000;
 }
 
 .sidebar:hover::after {
-    opacity: 1;
+    background-color: var(--accent-color);
 }
 
 .sidebar.resizing::after {
-    opacity: 1;
-    background: linear-gradient(to right, transparent, rgba(130, 87, 229, 0.6));
+    background-color: var(--accent-color);
 }
 
 .sidebar-section {

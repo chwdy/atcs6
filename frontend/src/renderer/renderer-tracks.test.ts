@@ -54,12 +54,17 @@ function makeRenderer(ctx: ReturnType<typeof makeCtx>): TrackHandlerRenderer {
     gridSize: 40,
     currentBlocks: {},
     currentNetwork: {},
+    trackMap: {},
     gridToScreenX: (x) => x * 10,
     gridToScreenY: (_x, y) => y * 10,
     signalHandler: { drawSingleSignal: vi.fn() },
     debugHandler: { highlightDeadEnds: vi.fn() },
   };
 }
+
+const EXTENT_STYLE = {
+  tileFill: 'fill', glow: 'glow', core: 'core', cap: 'cap',
+};
 
 afterEach(() => {
   mocks.getActiveSegments.mockReset();
@@ -125,5 +130,37 @@ describe('RendererTrackHandler', () => {
     const ctx2 = makeCtx();
     new RendererTrackHandler(makeRenderer(ctx2)).drawTrackFromBits(3, 40, '#666', []);
     expect(ctx2.fill).toHaveBeenCalledTimes(2); // segment quad + crossing dot
+  });
+});
+
+describe('RendererTrackHandler.drawTileExtentHighlight', () => {
+  it('lights the track stroke and caps the run ends (no cell fill for track tiles)', () => {
+    // Two stacked NS tiles. getActiveSegments is mocked to [['N','S']];
+    // trackBitsToEdges(1) is real -> {N, S}. (0,0)'s N neighbor is (0,1) and
+    // (0,1)'s S neighbor is (0,0) — both in the set — so only the two outer
+    // ends of the run get a cap.
+    mocks.getActiveSegments.mockReturnValue([['N', 'S']]);
+    const ctx = makeCtx();
+    const r = makeRenderer(ctx);
+    r.trackMap = { '0,0': { track_bits: 1 }, '0,1': { track_bits: 1 } };
+    new RendererTrackHandler(r).drawTileExtentHighlight(new Set(['0,0', '0,1']), EXTENT_STYLE);
+    expect(ctx.fill).not.toHaveBeenCalled(); // track tiles show as rail, not a diamond
+    // 2 glow + 2 core segment strokes, then 2 end-cap ticks (run ends only).
+    expect(ctx.stroke).toHaveBeenCalledTimes(6);
+  });
+
+  it('draws a dim diamond (and no stroke) only for a selected tile with no track', () => {
+    const ctx = makeCtx();
+    const r = makeRenderer(ctx); // trackMap is empty -> 3,3 carries no track
+    new RendererTrackHandler(r).drawTileExtentHighlight(new Set(['3,3']), EXTENT_STYLE);
+    expect(ctx.fill).toHaveBeenCalledTimes(1);
+    expect(ctx.stroke).not.toHaveBeenCalled();
+  });
+
+  it('draws nothing for an empty set', () => {
+    const ctx = makeCtx();
+    new RendererTrackHandler(makeRenderer(ctx)).drawTileExtentHighlight(new Set(), EXTENT_STYLE);
+    expect(ctx.fill).not.toHaveBeenCalled();
+    expect(ctx.stroke).not.toHaveBeenCalled();
   });
 });

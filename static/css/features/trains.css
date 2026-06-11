@@ -8,17 +8,6 @@
    duplicate is removed; design-system.css is now the single source of truth.
    ============================================================================ */
 
-/* Animations referenced by train-control.css and any consumer of pulse */
-@keyframes pulse-glow {
-    0%, 100% { box-shadow: 0 0 4px rgba(4, 211, 97, 0.3); }
-    50% { box-shadow: 0 0 8px rgba(4, 211, 97, 0.6); }
-}
-
-@keyframes pulse-danger {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.6; }
-}
-
 /* ============================================================================
    TRAINS LIST PANEL (sidebar list of trains)
    ============================================================================ */
@@ -144,4 +133,70 @@
 .slider-full:disabled::-moz-range-thumb {
     background: var(--text-secondary);
     cursor: not-allowed;
+}
+
+/* ============================================================================
+   ADD TRAIN PANEL (secondary-sidebar form)
+   Location is picked by clicking a track and Facing is built from that track's
+   own exits, so spatial truths live on the map rather than as typed coordinates
+   (DESIGN_LANGUAGE.md Principle 9). The form reuses the canonical sidebar
+   primitives — .input-large-*, .input-small-*, .switch-group.fluid, .btn-accent
+   — so it matches every other editor; only the bits below are new.
+   ============================================================================ */
+
+.at-form {
+    display: flex;
+    flex-direction: column;
+}
+
+/* Location row: the picked coordinate (or a placeholder) beside the map-pick
+   button that acts on it (DESIGN_LANGUAGE.md §12 "modifiers touch their action"). */
+.at-place-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.at-place-value {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-primary);
+}
+
+.at-pick-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+/* Armed: the accent tint marks "click a track now", matching the segmented
+   active state (DESIGN_LANGUAGE.md §3). */
+.at-pick-btn.active {
+    background-color: rgba(130, 87, 229, 0.18);
+    color: var(--accent-hover);
+    border-color: var(--accent-color);
+}
+
+/* Unit suffix after a number input in an .input-small-row. */
+.at-unit {
+    flex-shrink: 0;
+    font-size: 10px;
+    color: var(--text-secondary);
+}
+
+/* Derived footprint readout under the Length row (Derived values principle).
+   min-height holds its line so the layout doesn't jump when it's empty. */
+.at-note {
+    font-size: 10px;
+    color: var(--text-secondary);
+    margin: -4px 0 10px 2px;
+    min-height: 12px;
+}
+
+.at-note-warn {
+    color: var(--warning-color);
 }

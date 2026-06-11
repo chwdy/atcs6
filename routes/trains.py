@@ -105,6 +105,9 @@ def register(app, state: AppState) -> None:
                 car_number=data.get("car_number", ""),
                 position=data.get("position"),
                 direction=data.get("direction", "EAST"),
+                speed_profile_id=data.get("speed_profile_id"),
+                min_radius_cm=data.get("min_radius_cm"),
+                max_slope=data.get("max_slope"),
             )
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400

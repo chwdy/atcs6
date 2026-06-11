@@ -17,6 +17,7 @@ import {
   TRACK_SE,
   TRACK_SW,
 } from './constants';
+import { anchorToTiles } from './popover-anchor';
 
 // ---- Light shapes the helpers read off otherwise-dynamic objects ------------
 
@@ -454,6 +455,9 @@ interface FormModalOptions {
   confirmText?: string;
   cancelText?: string;
   confirmVariant?: string;
+  // When given, the modal anchors over these grid tiles and follows pan/zoom
+  // instead of rendering as a full-screen centered modal.
+  anchorTiles?: Array<{ x: number; y: number }>;
 }
 
 /**
@@ -471,6 +475,7 @@ export function showFormModal(
     confirmText = 'Save',
     cancelText = 'Cancel',
     confirmVariant = 'primary',
+    anchorTiles,
   } = options;
 
   const variantClassMap: Record<string, string> = {
@@ -647,8 +652,10 @@ export function showFormModal(
       return { ok: true, values };
     };
 
+    let anchorCleanup = (): void => {};
     const cleanup = () => {
       document.removeEventListener('keydown', onKeyDown);
+      anchorCleanup();
       overlay.remove();
     };
 
@@ -686,6 +693,11 @@ export function showFormModal(
     document.addEventListener('keydown', onKeyDown);
 
     document.body.appendChild(overlay);
+    if (anchorTiles && anchorTiles.length > 0) {
+      overlay.classList.add('anchored');
+      modal.classList.add('anchored');
+      anchorCleanup = anchorToTiles(modal, anchorTiles);
+    }
     const firstInput = form.querySelector('input, select, textarea') as HTMLInputElement | null;
     if (firstInput) {
       firstInput.focus();

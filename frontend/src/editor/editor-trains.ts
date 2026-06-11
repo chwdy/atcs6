@@ -11,7 +11,7 @@
 import { stateManager } from '../lib/state-manager';
 import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
-import { showConfirmModal } from '../lib/helpers';
+import { showConfirmModal, getTrackExits, getNeighborPosition } from '../lib/helpers';
 
 /** Read the value of an input by id (empty string if missing). */
 function inputValue(id: string): string {
@@ -26,6 +26,12 @@ export class TrainEditorHandler {
   _trainsListInterval: ReturnType<typeof setInterval> | null;
   _trainsListIntervalMs: number;
   _trainsListCache: any[];
+  // Add-train placement state. Spatial inputs (where + which way) live on the
+  // map, not as typed coordinates — see showAddTrainDialog.
+  _placePos: { x: number; y: number } | null;
+  _placeFacing: string | null;
+  _placeExits: string[];
+  _placeLengthCm: number;
 
   constructor(editor: EditorHost) {
     this.editor = editor;
@@ -35,6 +41,10 @@ export class TrainEditorHandler {
     this._trainsListInterval = null;
     this._trainsListIntervalMs = 1500;
     this._trainsListCache = [];
+    this._placePos = null;
+    this._placeFacing = null;
+    this._placeExits = [];
+    this._placeLengthCm = 100;
   }
 
   get api(): any {
@@ -42,83 +52,401 @@ export class TrainEditorHandler {
   }
 
   showAddTrainDialog(): void {
+    // Location and facing are spatial facts, so they're set on the map, not
+    // typed as coordinates (DESIGN_LANGUAGE.md Principle 9). "Pick on map" drops
+    // into a placement mode; clicking a track sets the location, the track's own
+    // exit directions become the Cab/facing choice, and a translucent ghost on
+    // the canvas shows how long the train will be along the track.
+    this._resetPlacementState();
+
     const content = `
-            <div class="add-train-panel">
-                <div class="form-group">
-                    <label for="train-id-input">Train ID</label>
-                    <input type="text" id="train-id-input" placeholder="e.g., TRAIN_01">
-                </div>
-                <div class="form-group">
-                    <label for="train-position-x">Position X</label>
-                    <input type="number" id="train-position-x" value="0">
-                </div>
-                <div class="form-group">
-                    <label for="train-position-y">Position Y</label>
-                    <input type="number" id="train-position-y" value="0">
-                </div>
-                <div class="form-group">
-                    <label for="train-direction">Direction</label>
-                    <select id="train-direction">
-                        <option value="NORTH">North</option>
-                        <option value="EAST" selected>East</option>
-                        <option value="SOUTH">South</option>
-                        <option value="WEST">West</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label for="train-max-speed">Max Speed (km/h)</label>
-                    <input type="number" id="train-max-speed" value="100" min="1" max="200">
-                </div>
-                <div class="form-group">
-                    <label for="train-length">Length (units)</label>
-                    <input type="number" id="train-length" value="1" min="1" max="10">
-                </div>
-                <button id="btn-confirm-add-train" class="btn btn-accent btn-full mt-16">Add Train</button>
-            </div>
-        `;
+      <div class="at-form">
+        <div class="input-large-container">
+          <label class="input-large-label" for="train-id-input">Train ID</label>
+          <input type="text" id="train-id-input" class="input-large-field" placeholder="e.g., TRAIN_01">
+        </div>
+
+        <div class="input-large-container">
+          <label class="input-large-label">Location</label>
+          <div class="at-place-row">
+            <span class="at-place-value" id="at-location-value">Not placed</span>
+            <button type="button" id="at-pick-btn" class="btn btn-outline btn-sm at-pick-btn">
+              <i class="ti ti-map-pin"></i> Pick on map
+            </button>
+          </div>
+        </div>
+
+        <div class="input-large-container">
+          <label class="input-large-label">Facing</label>
+          <div id="at-facing-slot">${this._renderFacingOptions()}</div>
+        </div>
+
+        <div class="input-small-row">
+          <label class="input-small-label input-small-label-inline" for="train-max-speed">Max speed</label>
+          <input type="number" id="train-max-speed" class="input-small-field" value="100" min="1" max="500">
+          <span class="at-unit">km/h</span>
+        </div>
+
+        <div class="input-small-row">
+          <label class="input-small-label input-small-label-inline" for="train-speed-profile">Speed profile</label>
+          <select id="train-speed-profile" class="input-small-field">
+            <option value="">Default</option>
+          </select>
+        </div>
+
+        <div class="input-small-row">
+          <label class="input-small-label input-small-label-inline" for="train-min-radius">Min radius</label>
+          <input type="number" id="train-min-radius" class="input-small-field" value="30" min="0" step="1">
+          <span class="at-unit">cm</span>
+        </div>
+
+        <div class="input-small-row">
+          <label class="input-small-label input-small-label-inline" for="train-max-slope">Max slope</label>
+          <input type="number" id="train-max-slope" class="input-small-field" value="0" min="0" step="0.1">
+          <span class="at-unit">%</span>
+        </div>
+
+        <div class="input-small-row">
+          <label class="input-small-label input-small-label-inline" for="train-length">Length</label>
+          <input type="number" id="train-length" class="input-small-field" value="100" min="10" step="10">
+          <span class="at-unit">cm</span>
+        </div>
+        <div class="at-note" id="at-length-note"></div>
+
+        <button id="btn-confirm-add-train" class="btn btn-accent btn-full mt-16" disabled>Add Train</button>
+      </div>
+    `;
 
     this.editor.showSecondarySidebar('Add Train', content);
 
-    setTimeout(() => {
-      const addBtn = document.getElementById('btn-confirm-add-train') as HTMLButtonElement | null;
-      if (addBtn) {
-        addBtn.onclick = async () => {
-          const trainId = inputValue('train-id-input').trim();
-          const posX = parseInt(inputValue('train-position-x')) || 0;
-          const posY = parseInt(inputValue('train-position-y')) || 0;
-          const direction = inputValue('train-direction');
-          const maxSpeed = parseInt(inputValue('train-max-speed')) || 100;
-          const length = parseFloat(inputValue('train-length')) || 1;
+    setTimeout(() => this._initAddTrainHandlers(), 0);
+  }
 
-          if (!trainId) {
-            showToast('Please enter a train ID', 'error', 3000);
-            return;
-          }
+  /** Wire the add-train panel after it mounts: default id, speed-profile list,
+   *  length/pick/facing handlers, and the submit button. */
+  async _initAddTrainHandlers(): Promise<void> {
+    const idInput = document.getElementById('train-id-input') as HTMLInputElement | null;
+    if (idInput && !idInput.value) {
+      idInput.value = `TRAIN_${Date.now().toString().slice(-4)}`;
+    }
 
-          try {
-            const api: any = this.api;
-            await api.createTrain({
-              id: trainId,
-              position: { x: posX, y: posY },
-              direction: direction,
-              max_speed: maxSpeed,
-              length: length,
-            });
-            showToast(`Train "${trainId}" created successfully`, 'success', 3000);
-            this.editor.hideSecondarySidebar();
-            window.app?.refreshNetwork();
-          } catch (err: any) {
-            console.error('[TrainEditorHandler] Failed to create train:', err);
-            showToast('Failed to create train: ' + err.message, 'error', 5000);
-          }
-        };
+    // Populate the speed-profile select from the network's profiles (data-driven
+    // set → a select, per DESIGN_LANGUAGE.md §4 "Choosing a selection control").
+    try {
+      const profiles = await this.api.getSpeedProfiles();
+      const sel = document.getElementById('train-speed-profile') as HTMLSelectElement | null;
+      if (sel && Array.isArray(profiles)) {
+        for (const p of profiles) {
+          const id = p?.profile_id ?? p?.id;
+          if (!id) continue;
+          const opt = document.createElement('option');
+          opt.value = id;
+          opt.textContent = p?.name || id;
+          sel.appendChild(opt);
+        }
       }
+    } catch (err) {
+      console.debug('[TrainEditorHandler] speed profiles load failed:', err);
+    }
 
-      const idInput = document.getElementById('train-id-input') as HTMLInputElement | null;
-      if (idInput && !idInput.value) {
-        idInput.value = `TRAIN_${Date.now().toString().slice(-4)}`;
+    const lengthInput = document.getElementById('train-length') as HTMLInputElement | null;
+    if (lengthInput) {
+      this._placeLengthCm = Math.max(0, parseFloat(lengthInput.value) || 100);
+      lengthInput.addEventListener('input', () => {
+        this._placeLengthCm = Math.max(0, parseFloat(lengthInput.value) || 0);
+        this._refreshPlacementUI();
+      });
+    }
+
+    this._bindPickButton();
+    this._bindFacingButtons();
+
+    const addBtn = document.getElementById('btn-confirm-add-train') as HTMLButtonElement | null;
+    if (addBtn) addBtn.onclick = () => this._submitAddTrain();
+
+    this._refreshPlacementUI();
+  }
+
+  /** Clear placement state and any canvas ghost. */
+  _resetPlacementState(): void {
+    this._placePos = null;
+    this._placeFacing = null;
+    this._placeExits = [];
+    this._placeLengthCm = 100;
+    this.editor.renderer?.setTrainGhostPreview?.(null);
+    this.editor.renderer?.requestRedraw?.();
+  }
+
+  /** Build the Facing segment from the picked track's exit directions. Two
+   *  exits read as Cab A / Cab B (the track's two ends); any other count
+   *  degrades to plain direction buttons. */
+  _renderFacingOptions(): string {
+    const DIR_WORD: Record<string, string> = { N: 'North', E: 'East', S: 'South', W: 'West' };
+    if (!this._placePos || this._placeExits.length === 0) {
+      return `<div class="switch-group fluid"><button type="button" class="switch-btn" disabled>Place on a track first</button></div>`;
+    }
+    const twoWay = this._placeExits.length === 2;
+    const btns = this._placeExits
+      .map((edge, i) => {
+        const active = edge === this._placeFacing ? 'active' : '';
+        const cab = twoWay ? `Cab ${i === 0 ? 'A' : 'B'} · ` : '';
+        return `<button type="button" class="switch-btn ${active}" data-facing="${edge}">${cab}→ ${DIR_WORD[edge] ?? edge}</button>`;
+      })
+      .join('');
+    return `<div class="switch-group fluid">${btns}</div>`;
+  }
+
+  _bindFacingButtons(): void {
+    document.querySelectorAll<HTMLElement>('#at-facing-slot .switch-btn[data-facing]').forEach((btn) => {
+      btn.onclick = () => {
+        this._placeFacing = btn.dataset.facing || null;
+        this._refreshPlacementUI();
+      };
+    });
+  }
+
+  _bindPickButton(): void {
+    const btn = document.getElementById('at-pick-btn') as HTMLButtonElement | null;
+    if (!btn) return;
+    btn.onclick = () => {
+      const active = this.editor.activeMode?.toolName === 'place-train';
+      if (active) {
+        this.editor.exitMode();
+        this.editor._setSelectedTool?.('inspect');
+      } else {
+        this.editor.enterMode(this._buildTrainPlacementMode());
       }
-    }, 0);
+      this._refreshPickButton();
+    };
+  }
+
+  _refreshPickButton(): void {
+    const btn = document.getElementById('at-pick-btn') as HTMLButtonElement | null;
+    if (!btn) return;
+    const active = this.editor.activeMode?.toolName === 'place-train';
+    btn.classList.toggle('active', active);
+    btn.innerHTML = active
+      ? `<i class="ti ti-map-pin"></i> Click a track… (Esc)`
+      : `<i class="ti ti-map-pin"></i> ${this._placePos ? 'Re-pick' : 'Pick on map'}`;
+  }
+
+  /** EditorMode for placing a new train by clicking a track tile. */
+  _buildTrainPlacementMode(): any {
+    const setStatus = (txt: string) => {
+      const el = document.getElementById('status-state');
+      if (el) el.textContent = txt;
+    };
+    return {
+      name: 'Place train',
+      toolName: 'place-train',
+      cancelMessage: 'Train placement cancelled',
+      onEnter: () => {
+        setStatus('Click a track tile to place the train (Esc to cancel)');
+        this._refreshPickButton();
+      },
+      onHover: (gridPos: any) => {
+        const track = this._trackAt(gridPos.x, gridPos.y);
+        if (!track || !track.block_section_id) {
+          // Off a block: keep a committed ghost (re-pick), else show nothing.
+          if (!this._placePos) {
+            this.editor.renderer?.setTrainGhostPreview?.(null);
+            this.editor.renderer?.requestRedraw?.();
+          }
+          return;
+        }
+        const exits = getTrackExits(track.track_bits || 0);
+        this._setGhost(gridPos, exits[0] || 'E');
+      },
+      onClick: async ({ gridPos }: any) => {
+        const track = this._trackAt(gridPos.x, gridPos.y);
+        if (!track || !track.block_section_id) {
+          showToast('No block here — place the train on a track that belongs to a block', 'error', 4000);
+          return true;
+        }
+        const exits = getTrackExits(track.track_bits || 0);
+        if (exits.length === 0) {
+          showToast('This tile has no track direction to face along', 'error', 4000);
+          return true;
+        }
+        this._placePos = { x: gridPos.x, y: gridPos.y };
+        this._placeExits = exits;
+        this._placeFacing = exits[0];
+        await this.editor.exitMode();
+        this.editor._setSelectedTool?.('inspect');
+        this._refreshPlacementUI();
+        return true;
+      },
+      onExit: () => {
+        setStatus('Ready');
+        // Drop the transient hover ghost; a committed placement re-asserts its
+        // locked ghost in _refreshPlacementUI immediately after exitMode.
+        if (!this._placePos) {
+          this.editor.renderer?.setTrainGhostPreview?.(null);
+          this.editor.renderer?.requestRedraw?.();
+        }
+        this._refreshPickButton();
+      },
+    };
+  }
+
+  /** Compute and push the placement ghost for a head tile + facing edge. */
+  _setGhost(headTile: { x: number; y: number }, facing: string): void {
+    const { tiles, fits } = this._computeGhostTiles(headTile, facing, this._placeLengthCm);
+    this.editor.renderer?.setTrainGhostPreview?.({ tiles, headTile, facing, fits });
+    this.editor.renderer?.requestRedraw?.();
+  }
+
+  /** Refresh the location text, facing segment, length note, ghost, and the
+   *  Add button's enabled state from the current placement state. */
+  _refreshPlacementUI(): void {
+    const locEl = document.getElementById('at-location-value');
+    if (locEl) locEl.textContent = this._placePos ? `(${this._placePos.x}, ${this._placePos.y})` : 'Not placed';
+
+    const facingSlot = document.getElementById('at-facing-slot');
+    if (facingSlot) {
+      facingSlot.innerHTML = this._renderFacingOptions();
+      this._bindFacingButtons();
+    }
+
+    const addBtn = document.getElementById('btn-confirm-add-train') as HTMLButtonElement | null;
+    const note = document.getElementById('at-length-note');
+    if (this._placePos && this._placeFacing) {
+      const { tiles, fits } = this._computeGhostTiles(this._placePos, this._placeFacing, this._placeLengthCm);
+      this.editor.renderer?.setTrainGhostPreview?.({ tiles, headTile: this._placePos, facing: this._placeFacing, fits });
+      this.editor.renderer?.requestRedraw?.();
+      if (note) {
+        const n = tiles.length;
+        note.textContent = fits
+          ? `Spans ${n} tile${n === 1 ? '' : 's'} along the track`
+          : `⚠ Track too short — ${this._placeLengthCm} cm needs more than the ${n} tile${n === 1 ? '' : 's'} ahead`;
+        note.classList.toggle('at-note-warn', !fits);
+      }
+      if (addBtn) addBtn.disabled = false;
+    } else {
+      if (note) {
+        note.textContent = '';
+        note.classList.remove('at-note-warn');
+      }
+      if (addBtn) addBtn.disabled = true;
+    }
+    this._refreshPickButton();
+  }
+
+  /** Walk the track backward from the head tile (opposite the facing edge),
+   *  accumulating each tile's length until the train's length is covered. The
+   *  returned tiles are head-first; `fits` is false when the track runs out (a
+   *  dead end / stub) before the length is reached. */
+  _computeGhostTiles(
+    head: { x: number; y: number },
+    facing: string,
+    lengthCm: number
+  ): { tiles: Array<{ x: number; y: number }>; fits: boolean } {
+    const OPP: Record<string, string> = { N: 'S', S: 'N', E: 'W', W: 'E' };
+    const tiles: Array<{ x: number; y: number }> = [{ x: head.x, y: head.y }];
+    const counts = this._blockTileCounts();
+    let remaining = lengthCm - this._tileLengthCm(this._trackAt(head.x, head.y), counts);
+    let curr = head;
+    let back = OPP[facing] || 'W';
+    const MAX = 60;
+    while (remaining > 0 && tiles.length < MAX) {
+      const [nx, ny] = getNeighborPosition(curr.x, curr.y, back);
+      const t = this._trackAt(nx, ny);
+      if (!t) break;
+      const exits = getTrackExits(t.track_bits || 0);
+      const entering = OPP[back]; // the neighbor's edge that touches curr
+      if (!exits.includes(entering)) break;
+      tiles.push({ x: nx, y: ny });
+      remaining -= this._tileLengthCm(t, counts);
+      const others = exits.filter((e) => e !== entering);
+      if (others.length === 0) break; // stub
+      const through = OPP[entering];
+      back = others.includes(through) ? through : others[0];
+      curr = { x: nx, y: ny };
+    }
+    return { tiles, fits: remaining <= 0 };
+  }
+
+  /** Per-tile physical length in cm, mirroring the renderer's body
+   *  interpolation (block.length_cm / tiles-in-block; switch state length;
+   *  50 cm fallback for 0-length tiles). */
+  _tileLengthCm(track: any, counts: Map<string, number>): number {
+    const DEFAULT = 50;
+    if (!track) return DEFAULT;
+    const blocks = this.editor.cachedNetwork?.blocks || {};
+    const switches = this.editor.cachedNetwork?.switches || {};
+    if (track.is_switch) {
+      const sw = track.switch_id ? switches[track.switch_id] : undefined;
+      if (!sw) return 0;
+      return (track.switch_state === 1 ? sw.diverge_length_cm : sw.main_length_cm) || 0;
+    }
+    if (!track.block_section_id) return DEFAULT;
+    const len = blocks[track.block_section_id]?.length_cm;
+    if (!len || len <= 0) return DEFAULT;
+    return len / (counts.get(track.block_section_id) || 1);
+  }
+
+  _blockTileCounts(): Map<string, number> {
+    const m = new Map<string, number>();
+    for (const t of this.editor.cachedNetwork?.tracks || []) {
+      if (!t.block_section_id) continue;
+      m.set(t.block_section_id, (m.get(t.block_section_id) || 0) + 1);
+    }
+    return m;
+  }
+
+  _trackAt(x: number, y: number): any {
+    return (this.editor.cachedNetwork?.tracks || []).find((t: any) => t.x === x && t.y === y);
+  }
+
+  /** Exit placement mode (if active) and clear the canvas ghost. */
+  _clearPlacement(): void {
+    if (this.editor.activeMode?.toolName === 'place-train') {
+      this.editor.exitMode();
+      this.editor._setSelectedTool?.('inspect');
+    }
+    this.editor.renderer?.setTrainGhostPreview?.(null);
+    this.editor.renderer?.requestRedraw?.();
+  }
+
+  async _submitAddTrain(): Promise<void> {
+    const trainId = inputValue('train-id-input').trim();
+    if (!trainId) {
+      showToast('Please enter a train ID', 'error', 3000);
+      return;
+    }
+    if (!this._placePos || !this._placeFacing) {
+      showToast('Pick a location on the map first', 'error', 3000);
+      return;
+    }
+
+    const DIR: Record<string, string> = { N: 'NORTH', E: 'EAST', S: 'SOUTH', W: 'WEST' };
+    const maxSpeed = parseFloat(inputValue('train-max-speed')) || 100;
+    const lengthCm = Math.max(0, parseFloat(inputValue('train-length')) || 100);
+    const minRadius = parseFloat(inputValue('train-min-radius'));
+    const maxSlope = parseFloat(inputValue('train-max-slope'));
+    const profile = inputValue('train-speed-profile');
+
+    const payload: any = {
+      id: trainId,
+      position: { x: this._placePos.x, y: this._placePos.y },
+      direction: DIR[this._placeFacing] || 'EAST',
+      max_speed: maxSpeed,
+      length: lengthCm / 100, // API takes "track units" (× 100 = cm)
+    };
+    if (profile) payload.speed_profile_id = profile;
+    if (Number.isFinite(minRadius)) payload.min_radius_cm = minRadius;
+    if (Number.isFinite(maxSlope)) payload.max_slope = maxSlope;
+
+    try {
+      await this.api.createTrain(payload);
+      showToast(`Train "${trainId}" created`, 'success', 3000);
+      this._clearPlacement();
+      this.editor.hideSecondarySidebar();
+      window.app?.refreshNetwork();
+    } catch (err: any) {
+      console.error('[TrainEditorHandler] Failed to create train:', err);
+      showToast('Failed to create train: ' + (err?.message ?? err), 'error', 5000);
+    }
   }
 
   async showTrainsPanel(): Promise<void> {
@@ -324,7 +652,8 @@ export class TrainEditorHandler {
 
   getHandleVisualClass(handlePosition: string): string {
     if (handlePosition?.startsWith('P')) return 'handle-power';
-    if (handlePosition?.startsWith('B') || handlePosition === 'EB') return 'handle-brake';
+    if (handlePosition === 'EB') return 'handle-eb';
+    if (handlePosition?.startsWith('B')) return 'handle-brake';
     return 'handle-neutral';
   }
 
@@ -1040,7 +1369,7 @@ export class TrainEditorHandler {
           handleLabel.textContent = position;
           this._replaceVisualClass(
             handleLabel,
-            ['handle-power', 'handle-brake', 'handle-neutral'],
+            ['handle-power', 'handle-brake', 'handle-neutral', 'handle-eb'],
             this.getHandleVisualClass(position)
           );
         }
@@ -1341,7 +1670,7 @@ export class TrainEditorHandler {
 
     if (handleDisplay) {
       handleDisplay.textContent = handlePosition;
-      this._replaceVisualClass(handleDisplay, ['handle-power', 'handle-brake', 'handle-neutral'], this.getHandleVisualClass(handlePosition));
+      this._replaceVisualClass(handleDisplay, ['handle-power', 'handle-brake', 'handle-neutral', 'handle-eb'], this.getHandleVisualClass(handlePosition));
     }
 
     const atoBadge = document.querySelector('#obc-ato-running-badge');
@@ -1445,7 +1774,7 @@ export class TrainEditorHandler {
 
       if (handleDisplay) {
         handleDisplay.textContent = handlePosition;
-        this._replaceVisualClass(handleDisplay, ['handle-power', 'handle-brake', 'handle-neutral'], this.getHandleVisualClass(handlePosition));
+        this._replaceVisualClass(handleDisplay, ['handle-power', 'handle-brake', 'handle-neutral', 'handle-eb'], this.getHandleVisualClass(handlePosition));
       }
 
       const atoBadge = panel.querySelector('#obc-ato-running-badge');
@@ -1542,7 +1871,7 @@ export class TrainEditorHandler {
 
       if (handleLabel) {
         handleLabel.textContent = handlePosition;
-        this._replaceVisualClass(handleLabel, ['handle-power', 'handle-brake', 'handle-neutral'], this.getHandleVisualClass(handlePosition));
+        this._replaceVisualClass(handleLabel, ['handle-power', 'handle-brake', 'handle-neutral', 'handle-eb'], this.getHandleVisualClass(handlePosition));
       }
 
       if (handleDesc) {
@@ -1677,7 +2006,7 @@ export class TrainEditorHandler {
         handleHmi.textContent = handlePosition;
         this._replaceVisualClass(
           handleHmi,
-          ['handle-power', 'handle-brake', 'handle-neutral'],
+          ['handle-power', 'handle-brake', 'handle-neutral', 'handle-eb'],
           this.getHandleVisualClass(handlePosition)
         );
       }

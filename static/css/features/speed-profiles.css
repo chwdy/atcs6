@@ -2,35 +2,9 @@
  *
  * Follows DESIGN_LANGUAGE.md §4 "Two views of one value": each plot section is
  * one container holding a narrow numeric control column beside a wide canvas,
- * with the values laid straight into the section body (no nested cards). The
- * save-status pill replaces a manual Save button (auto-save contract, §5C). */
-
-/* ---- per-profile editor toolbar (§12 editor toolbar) ---- */
-.sp-toolbar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 12px;
-}
-.sp-toolbar .sp-spacer {
-    flex: 1;
-}
-.sp-save-status {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--text-tertiary);
-    min-width: 70px;
-    text-align: right;
-}
-.sp-save-status.sp-save-saving {
-    color: var(--warning-color);
-}
-.sp-save-status.sp-save-saved {
-    color: var(--success-color);
-}
-.sp-save-status.sp-save-error {
-    color: var(--danger-color);
-}
+ * with the values laid straight into the section body (no nested cards). Edits
+ * auto-save silently (auto-save contract, §5C) — there is no Save button and no
+ * save-status banner, so nothing shifts the layout as a save settles. */
 
 /* ---- plot block: narrow control column + wide canvas ---- */
 .sp-plot-block {
@@ -127,4 +101,14 @@
     color: var(--text-tertiary);
     text-align: center;
     font-size: 13px;
+}
+
+/* ---- Motion & drag / Notch response disclosures ----
+   These reuse the train-control disclosure shell (.tc-disclosure). Its body
+   (.tc-disclosure-body) supplies the 10px side padding so the fields inset
+   from the panel edge like the CONVERTER / CALIBRATION cards above. The
+   fields already carry their own row margin (mb-8), so drop the body's flex
+   gap to keep the row rhythm identical to those cards. */
+.sp-editor .tc-disclosure-body {
+    gap: 0;
 }

@@ -677,6 +677,38 @@ of flat-ghost rows, not radios.)
   button will do sits in the same flex cluster as that button, never a row
   away — see §12 "Action modifiers must touch their action."
 
+### Spatial inputs (set on the map, not typed)
+
+Some fields are spatial — a tile location, a facing direction — and the
+honest place to set them is the map, not a typed coordinate or a free
+compass list. This is the input mirror of the Derived-values principle's
+spatial note (Principle 9): if the value lives somewhere on the canvas,
+put the user there.
+
+- **Location is picked, not typed.** A "Pick on map" ghost button (§3,
+  with the `map-pin` glyph) arms a placement mode; the next canvas click
+  sets the value. The panel shows the result as a read-only mono
+  coordinate with a "Re-pick" affordance — never a pair of raw X / Y
+  number inputs, which make the user read a position off the canvas and
+  transcribe it back.
+- **Offer only what the geometry allows.** A direction field reads its
+  options from the thing under the cursor, not the full compass. The
+  Add-Train "Facing" segment is built from the clicked track's real exits
+  (`getTrackExits`), so a straight E–W track offers `Cab A · → East` /
+  `Cab B · → West` and nothing the track can't hold. The set is read from
+  data but stays a **segment**, not a select: a tile's exits are bounded
+  by geometry to a tiny fixed few, so the data-driven→select tie-breaker
+  above (which is about open-ended sets — trains, stations) does not
+  apply. When the count isn't the usual two (a switch tile), the cells
+  fall back to plain direction labels.
+- **Preview the result where it lands.** While a spatial field is being
+  set, draw what it will produce on the canvas — see §17 "Selection and
+  previews" for the placement ghost that shows a new train's footprint and
+  facing before commit.
+
+Reference: `showAddTrainDialog` and the `place-train` mode in
+[editor-trains.ts](../frontend/src/editor/editor-trains.ts).
+
 ### Control row layout
 
 A zone of segmented controls (Power / Mode / Cab in the train panel)
@@ -722,6 +754,13 @@ Background `var(--bg-dark)`, border `1px solid var(--border-color)`,
 radius `var(--control-radius-sm)`, focus border `var(--accent-color)` —
 the same chrome as the ghost button, so a form field and the button
 next to it visually belong to the same family.
+
+Compose sidebar form rows from these primitives — `.input-large-*` for a
+prominent field (a name or id) and `.input-small-*` for a compact
+label-beside-input row — not from `.form-group`. `.form-group` is the
+**modal-body** form-row primitive (§13); it has no sidebar styling, so a
+panel that reaches for it falls back to the browser's default oversized
+inputs instead of the 28px control language.
 
 Reference: `.inspector-panel-field select` in
 [features/inspector.css](../static/css/features/inspector.css).
@@ -1883,6 +1922,26 @@ previews draw dashed: orange for track about to be placed, red for the
 eraser, purple for a block path; invalid placements drop opacity.
 These sit at the very top of the live layer (§16 draw order).
 
+**Entity placement ghost.** Previewing a whole entity that will span many
+tiles — a new train being placed — reuses the amber selection fill above,
+not a dashed tool outline: the filled band reads as the footprint the
+entity will occupy. Fill each tile's diamond (its four edge corners),
+never a polyline through tile centers — on the diagonal staircase tiles
+that make up most of the network, center-to-center segments zigzag, while
+abutting diamonds tessellate into a clean band that follows the track. A
+small filled arrow at the head marks the facing direction. The band stays
+amber while the configured length fits and turns danger red when the track
+runs out before the length is covered (consistent with "invalid
+placements" above); the matching "track too short" note in the panel keeps
+the state off hue alone (§14). Amber, **not** the train's purple — a
+train-scale purple body is reserved for EB (see "Train mode" above), so a
+placement aid must never paint one. The ghost is owned by its panel: it
+clears when the panel closes or the placement commits. Reference:
+`_drawTrainGhost` / `setTrainGhostPreview` in
+[renderer.ts](../frontend/src/renderer/renderer.ts), fed by
+`_computeGhostTiles` in
+[editor-trains.ts](../frontend/src/editor/editor-trains.ts).
+
 ### Rules
 
 - **State marks consume tokens.** New marks pick from §1. The existing
@@ -1928,12 +1987,11 @@ Rules:
 - **Reduced motion.** When `prefers-reduced-motion: reduce` is set,
   looping pulse / blink degrade to their static high-contrast state —
   the badge holds solid danger, the conflict tile holds solid red + `×`.
-  Not yet implemented (see Known divergences).
-
-The codebase currently carries four separate pulse keyframes (`pulse`
-twice, `pulse-glow`, `pulse-danger`, `tc-pulse-danger`) — freelance
-copies of one idea; consolidate onto a single danger pulse when
-touching those files (see Known divergences).
+  The CSS path is implemented in
+  [base/motion.css](../static/css/base/motion.css): a universal reset
+  holds every looping animation and transition at its end state, so the
+  badge stays solid danger. Canvas marks are drawn in the renderer, which
+  does not yet read the setting.
 
 ---
 
@@ -2037,6 +2095,4 @@ same change.
 | Pre-token literals — spacing, type sizes, radii, z-index written as raw values | all of `static/css` | Compose from the §1 scale tokens (`--space-*`, `--font-size-*`, `--radius-*`, `--z-*`); consolidate off-ramp values (13px type, 5/7/9px gaps, 3px small radii) to the nearest step | When touching the declaration |
 | Floating inspector outranks modals (z-index 9000 over 1100) | [inspector.css](../static/css/features/inspector.css) | Modal layer wins over debug panels | Next inspector or modal rework |
 | Canvas state marks hard-code hex — signal lamps, route status fills (incl. `#00ff88`), switch badges and locks, train mode tints | `renderer-{signals,routes,tracks,trains}.ts` | Consume §1 tokens / a tokenized canvas palette (§17 Rules) | When touching each renderer |
-| Four duplicate pulse keyframes (`pulse` ×2, `pulse-glow`, `pulse-danger`, `tc-pulse-danger`) | debug.css, trains.css, common.css, train-control.css | One shared danger pulse (§18) | When touching any of those files |
-| No `prefers-reduced-motion` handling on looping animations | all animated CSS | §18 reduced-motion rule | Next motion-related change |
 | Passive empty states where a creation action exists | route / train / run list panels | §10 `.empty-state-action` with a `.btn-accent` CTA (§19) | When touching each panel |

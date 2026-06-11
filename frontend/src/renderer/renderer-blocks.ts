@@ -17,6 +17,7 @@ import {
   DEBUG_BLOCK_WIDTH,
 } from '../lib/constants';
 import { getBlockStateColor } from '../lib/helpers';
+import type { TileExtentStyle } from './renderer-tracks';
 
 export interface EdgePoint {
   x: number;
@@ -30,6 +31,7 @@ export interface BlockInfo {
   manual?: boolean;
   length_cm?: number;
   min_radius_cm?: number;
+  grade_percent?: number;
   speed_limit_kmh?: number;
   // Single signed track voltage (-12V..+12V): magnitude is the drive level,
   // sign is polarity. The voltage debug overlay splits it into + / - rails.
@@ -65,6 +67,7 @@ export interface BlockHandlerRenderer {
       e2: string,
       color: string | null,
     ): void;
+    drawTileExtentHighlight(keys: Set<string>, style: TileExtentStyle): void;
   };
 }
 
@@ -586,51 +589,18 @@ export class RendererBlockHandler {
     }
   }
 
+  // Block/platform drag-build preview. Same track-aware overlay as the
+  // committed selection (drawBoxSelection) — dim tile, lit track stroke, capped
+  // run ends — in purple so an in-progress drag reads as the editor accent, not
+  // as a finished amber selection.
   drawBlockPreviewPath(path: Array<{ x: number; y: number }> | null | undefined): void {
     if (!path || path.length === 0) return;
-
-    this.ctx.save();
-    this.ctx.strokeStyle = 'rgba(130, 87, 229, 0.8)';
-    this.ctx.fillStyle = 'rgba(130, 87, 229, 0.3)';
-    this.ctx.lineWidth = 4 * this.scale;
-    this.ctx.setLineDash([6, 4]);
-
-    const cellSize = this.gridSize * this.scale;
-    const halfTile = cellSize / 2;
-
-    for (const pos of path) {
-      const cx = this.gridToScreenX(pos.x, pos.y);
-      const cy = this.gridToScreenY(pos.x, pos.y);
-
-      this.ctx.beginPath();
-      this.ctx.moveTo(cx, cy - halfTile);
-      this.ctx.lineTo(cx + halfTile, cy);
-      this.ctx.lineTo(cx, cy + halfTile);
-      this.ctx.lineTo(cx - halfTile, cy);
-      this.ctx.closePath();
-      this.ctx.fill();
-
-      const boxSize = halfTile * 0.3;
-      this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
-      this.ctx.lineWidth = 2 * this.scale;
-      this.ctx.setLineDash([]);
-      this.ctx.strokeRect(cx - boxSize, cy - boxSize, boxSize * 2, boxSize * 2);
-      this.ctx.setLineDash([6, 4]);
-      this.ctx.strokeStyle = 'rgba(130, 87, 229, 0.8)';
-    }
-
-    this.ctx.setLineDash([]);
-    this.ctx.strokeStyle = 'rgba(130, 87, 229, 0.6)';
-    this.ctx.lineWidth = 2 * this.scale;
-    this.ctx.beginPath();
-    for (let i = 0; i < path.length; i++) {
-      const cx = this.gridToScreenX(path[i].x, path[i].y);
-      const cy = this.gridToScreenY(path[i].x, path[i].y);
-      if (i === 0) this.ctx.moveTo(cx, cy);
-      else this.ctx.lineTo(cx, cy);
-    }
-    this.ctx.stroke();
-
-    this.ctx.restore();
+    const keys = new Set(path.map((p) => `${p.x},${p.y}`));
+    this.renderer.trackHandler.drawTileExtentHighlight(keys, {
+      tileFill: 'rgba(130, 87, 229, 0.16)',
+      glow: 'rgba(130, 87, 229, 0.30)',
+      core: 'rgba(190, 160, 255, 0.95)',
+      cap: 'rgba(255, 255, 255, 0.95)',
+    });
   }
 }

@@ -10,7 +10,7 @@
 // Imports BIT_TO_EDGES from ../lib/constants.
 
 import { stateManager } from '../lib/state-manager';
-import { BIT_TO_EDGES, getActiveSegments, getOppositeEdge } from '../lib/constants';
+import { BIT_TO_EDGES, getActiveSegments, getOppositeEdge, TRACK_WIDTH } from '../lib/constants';
 import { Camera } from '../lib/camera';
 import { buildRenderSnapshot } from './render-snapshot';
 import { RendererTrackHandler, type Track } from './renderer-tracks';
@@ -234,6 +234,28 @@ interface HoverPreview {
   trackBits: number | null;
 }
 
+/** The add-train placement ghost: the tiles the new train will occupy, its
+ * head tile, the facing edge ('N'|'E'|'S'|'W'), and whether the configured
+ * length fits along the track. Driven via setTrainGhostPreview and painted in
+ * _drawLive (see BuildPreview). */
+interface TrainGhost {
+  tiles: Array<{ x: number; y: number }>;
+  headTile: { x: number; y: number };
+  facing: string;
+  fits: boolean;
+}
+
+// One entity the committed selection touches (a block, platform, switch, or
+// signal), carrying only that entity's selected tiles plus how to stroke its
+// perimeter. The editor builds these from the network so the renderer can trace
+// one coloured outline per entity instead of a field of per-tile cells.
+interface SelectionOutlineGroup {
+  keys: Set<string>; // "x,y" tiles of this entity that are in the selection
+  color: string; // stroke hue (matches the selection-panel chip for this type)
+  width: number; // base stroke width in px (scaled by zoom at draw time)
+  dash: number[]; // line-dash pattern in px ([] = solid); nests overlapping outlines
+}
+
 class Renderer {
   liveCanvas: HTMLCanvasElement | null;
   worldCanvas: HTMLCanvasElement | null;
@@ -252,10 +274,12 @@ class Renderer {
   blockColorCounter!: number;
   currentNetwork!: NetworkPayload | null;
   boxSelection!: Set<string>;
+  selectionGroups!: SelectionOutlineGroup[];
   boxSelectRect!: { startX: number; startY: number; endX: number; endY: number } | null;
   lassoPath!: Array<{ x: number; y: number }> | null;
   buildPreview!: BuildPreview | null;
   hoverPreview!: HoverPreview | null;
+  trainGhost!: TrainGhost | null;
   trackHandler!: RendererTrackHandler;
   signalHandler!: RendererSignalHandler;
   platformHandler!: RendererPlatformHandler;
@@ -337,6 +361,9 @@ class Renderer {
 
     // Box-select overlay state (driven by the box-select editor tool)
     this.boxSelection = new Set();   // Set of "x,y" keys for highlighted tracks
+    // Per-entity outline groups for the committed selection (block / platform /
+    // switch / signal footprints), supplied by the editor alongside boxSelection.
+    this.selectionGroups = [];
     this.boxSelectRect = null;       // {startX, startY, endX, endY} screen coords, or null
     // Lasso-select overlay state (driven by the lasso-select editor tool).
     // Array of {x, y} screen-space points being drawn, or null when idle.
@@ -346,6 +373,9 @@ class Renderer {
     // null when no preview is active. Painted in _drawLive (see BuildPreview).
     this.buildPreview = null;
     this.hoverPreview = null;
+    // Add-train placement ghost (occupied tiles + facing arrow). Driven via
+    // setTrainGhostPreview; painted last in _drawLive so it sits on top.
+    this.trainGhost = null;
 
     this.trackHandler = new RendererTrackHandler(this);
     this.signalHandler = new RendererSignalHandler(this);
@@ -897,10 +927,15 @@ class Renderer {
     // the live layer (as it did when the editor drew it after a redraw).
     this._drawBuildPreview();
     this._drawHoverPreview();
+    this._drawTrainGhost();
   }
 
   setBoxSelection(keysSet: Set<string> | null): void {
     this.boxSelection = keysSet || new Set();
+  }
+
+  setSelectionGroups(groups: SelectionOutlineGroup[] | null): void {
+    this.selectionGroups = groups || [];
   }
 
   setBoxSelectRect(rect: { startX: number; startY: number; endX: number; endY: number } | null): void {
@@ -917,6 +952,10 @@ class Renderer {
 
   setHoverPreview(hover: HoverPreview | null): void {
     this.hoverPreview = hover;
+  }
+
+  setTrainGhostPreview(ghost: TrainGhost | null): void {
+    this.trainGhost = ghost;
   }
 
   _drawBuildPreview(): void {
@@ -947,6 +986,73 @@ class Renderer {
     this.trackHandler.drawHoverPreview(h.gridPos, h.toolType, h.isValid, h.signalDirection, h.trackBits);
   }
 
+  // Add-train placement ghost: a translucent filled band over the tiles the new
+  // train will occupy, plus a head arrow for the facing edge. Amber — the canvas
+  // selection / placement color, matching drawBoxSelection — while the length
+  // fits; danger red when the track is too short. NOT purple: a train-scale
+  // purple body is reserved for the EB-active state (DESIGN_LANGUAGE.md §17
+  // "Train mode"), so a placement aid must not paint one. Translucent so the
+  // track and block colors read through — it's a preview, not a committed entity.
+  _drawTrainGhost(): void {
+    const g = this.trainGhost;
+    if (!g || !g.tiles || g.tiles.length === 0) return;
+    const ctx = this.ctx;
+    const s = this.scale;
+    const rgb = g.fits === false ? '232, 63, 91' : '255, 205, 30';
+    // Tile-diamond corner vectors. The grid→screen map is affine, so the two
+    // step vectors — and thus the diamond corners — are constant across tiles.
+    // Filling each occupied tile's diamond tessellates into a clean band that
+    // follows the track exactly, with no center-to-center zigzag on the diagonal
+    // staircase runs that make up most of the network.
+    const ox = this.gridToScreenX(0, 0);
+    const oy = this.gridToScreenY(0, 0);
+    const ex = this.gridToScreenX(1, 0) - ox;
+    const ey = this.gridToScreenY(1, 0) - oy;
+    const nx = this.gridToScreenX(0, 1) - ox;
+    const ny = this.gridToScreenY(0, 1) - oy;
+    const v1x = (ex + nx) / 2;
+    const v1y = (ey + ny) / 2;
+    const v2x = (ex - nx) / 2;
+    const v2y = (ey - ny) / 2;
+    ctx.save();
+    ctx.fillStyle = `rgba(${rgb}, 0.32)`;
+    for (const t of g.tiles) {
+      const cx = this.gridToScreenX(t.x, t.y);
+      const cy = this.gridToScreenY(t.x, t.y);
+      ctx.beginPath();
+      ctx.moveTo(cx + v1x, cy + v1y);
+      ctx.lineTo(cx + v2x, cy + v2y);
+      ctx.lineTo(cx - v1x, cy - v1y);
+      ctx.lineTo(cx - v2x, cy - v2y);
+      ctx.closePath();
+      ctx.fill();
+    }
+    // Head arrow pointing along the facing edge (head is tiles[0]).
+    const hx = this.gridToScreenX(g.headTile.x, g.headTile.y);
+    const hy = this.gridToScreenY(g.headTile.x, g.headTile.y);
+    const off: Record<string, [number, number]> = { N: [0, 1], E: [1, 0], S: [0, -1], W: [-1, 0] };
+    const d = off[g.facing] || [1, 0];
+    let vx = this.gridToScreenX(g.headTile.x + d[0], g.headTile.y + d[1]) - hx;
+    let vy = this.gridToScreenY(g.headTile.x + d[0], g.headTile.y + d[1]) - hy;
+    const mag = Math.hypot(vx, vy) || 1;
+    vx /= mag;
+    vy /= mag;
+    const al = Math.min(Math.max(10, s * 5), 22);
+    const aw = al * 0.55;
+    const tipX = hx + vx * al;
+    const tipY = hy + vy * al;
+    const px = -vy;
+    const py = vx;
+    ctx.beginPath();
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(hx + px * aw, hy + py * aw);
+    ctx.lineTo(hx - px * aw, hy - py * aw);
+    ctx.closePath();
+    ctx.fillStyle = `rgba(${rgb}, 0.9)`;
+    ctx.fill();
+    ctx.restore();
+  }
+
   setPendingTunnelEndpoint(endpoint: { x: number; y: number; edge: string } | null): void {
     this._pendingTunnelEndpoint = endpoint;
     this.requestRedraw({ world: true, live: true, reason: 'tunnel-pending' });
@@ -957,28 +1063,79 @@ class Renderer {
     this.requestRedraw({ world: true, live: true, reason: 'tunnel-select' });
   }
 
+  // Committed box/lasso/paint selection. Dims each tile and lights the real
+  // track stroke + run ends through the shared overlay, so a chain of diagonal
+  // tiles reads as the line of track it is, not a zigzag of cells. Amber keeps
+  // the selection identity distinct from the purple drag-build preview.
   drawBoxSelection(): void {
-    if (!this.boxSelection || this.boxSelection.size === 0) return;
-    const cellSize = this.gridSize * this.scale;
-    const halfTile = cellSize / 2;
+    this.trackHandler.drawTileExtentHighlight(this.boxSelection, {
+      tileFill: 'rgba(255, 205, 30, 0.14)',
+      glow: 'rgba(255, 185, 55, 0.26)',
+      core: 'rgba(255, 226, 138, 0.95)',
+      cap: 'rgba(255, 255, 255, 0.95)',
+    });
+    this.drawSelectionEntityOutlines();
+  }
+
+  // Per-entity rail tint for the committed selection, painted over the amber
+  // track overlay above. Each block / platform / switch / signal the selection
+  // touches re-strokes its own tiles' rail in its panel-chip hue + dash, so
+  // membership reads as a colored line of track rather than a tile perimeter.
+  // The amber rail underneath still says "selected" and its end-caps still mark
+  // where each run stops. Group color / width / dash / order come straight from
+  // _buildSelectionOutlineGroups: later groups paint on top (the block is drawn
+  // last as a thin, light line so it stays a delicate marker over the wider
+  // dashed platform / switch / signal beneath it).
+  drawSelectionEntityOutlines(): void {
+    const groups = this.selectionGroups;
+    if (!groups || groups.length === 0) return;
+    const half = (this.gridSize * this.scale) / 2;
+    const trackMap = this.trackMap || {};
+    const edgePoints = this.trackHandler.getEdgePoints(half);
+    // A fixed-width translucent aura under each group's core, so even a thin
+    // line (the block, width 2) tints the whole rail its color and reads at a
+    // glance — the precise solid/dashed core then sits on top.
+    const auraWidth = TRACK_WIDTH * 2.6 * this.scale;
     this.ctx.save();
-    this.ctx.fillStyle = 'rgba(255, 205, 30, 0.30)';
-    this.ctx.strokeStyle = 'rgba(255, 165, 0, 0.95)';
-    this.ctx.lineWidth = 2 * this.scale;
-    for (const key of this.boxSelection) {
-      const [xs, ys] = key.split(',');
-      const x = Number(xs), y = Number(ys);
-      const cx = this.gridToScreenX(x, y);
-      const cy = this.gridToScreenY(x, y);
-      this.ctx.beginPath();
-      this.ctx.moveTo(cx, cy - halfTile);
-      this.ctx.lineTo(cx + halfTile, cy);
-      this.ctx.lineTo(cx, cy + halfTile);
-      this.ctx.lineTo(cx - halfTile, cy);
-      this.ctx.closePath();
-      this.ctx.fill();
-      this.ctx.stroke();
+    this.ctx.lineJoin = 'round';
+    this.ctx.lineCap = 'round';
+    const strokeGroupRail = (g: SelectionOutlineGroup): void => {
+      for (const key of g.keys) {
+        const bits = trackMap[key]?.track_bits ?? 0;
+        if (!bits) continue;
+        const [xs, ys] = key.split(',');
+        const cx = this.gridToScreenX(Number(xs), Number(ys));
+        const cy = this.gridToScreenY(Number(xs), Number(ys));
+        this.ctx.save();
+        this.ctx.translate(cx, cy);
+        for (const [e1, e2] of getActiveSegments(bits)) {
+          const s = edgePoints[e1];
+          const en = edgePoints[e2];
+          if (!s || !en) continue;
+          this.ctx.beginPath();
+          this.ctx.moveTo(s.x, s.y);
+          this.ctx.lineTo(en.x, en.y);
+          this.ctx.stroke();
+        }
+        this.ctx.restore();
+      }
+    };
+    for (const g of groups) {
+      if (g.keys.size === 0) continue;
+      this.ctx.strokeStyle = g.color;
+      // Aura pass (solid, translucent, fixed wide), then the core pass (full
+      // strength, builder width + dash).
+      this.ctx.globalAlpha = 0.3;
+      this.ctx.lineWidth = auraWidth;
+      this.ctx.setLineDash([]);
+      strokeGroupRail(g);
+      this.ctx.globalAlpha = 1;
+      this.ctx.lineWidth = g.width * this.scale;
+      this.ctx.setLineDash(g.dash.map((d) => d * this.scale));
+      strokeGroupRail(g);
     }
+    this.ctx.globalAlpha = 1;
+    this.ctx.setLineDash([]);
     this.ctx.restore();
   }
 

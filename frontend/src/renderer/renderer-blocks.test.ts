@@ -32,6 +32,7 @@ function makeCtx() {
 
 interface RendererOpts {
   drawGridSegment?: ReturnType<typeof vi.fn>;
+  drawTileExtentHighlight?: ReturnType<typeof vi.fn>;
 }
 
 function makeRenderer(ctx: ReturnType<typeof makeCtx>, opts: RendererOpts = {}): BlockHandlerRenderer {
@@ -54,6 +55,7 @@ function makeRenderer(ctx: ReturnType<typeof makeCtx>, opts: RendererOpts = {}):
         W: { x: -1, y: 0 },
       }),
       drawGridSegment: opts.drawGridSegment ?? vi.fn(),
+      drawTileExtentHighlight: opts.drawTileExtentHighlight ?? vi.fn(),
     },
   };
 }
@@ -99,20 +101,22 @@ describe('RendererBlockHandler.drawBlockIdColors', () => {
 });
 
 describe('RendererBlockHandler.drawBlockPreviewPath', () => {
-  it('fills a diamond + box per tile and strokes the connecting line', () => {
+  it('delegates to the shared track-extent overlay with the path tiles as keys', () => {
     const ctx = makeCtx();
-    const h = new RendererBlockHandler(makeRenderer(ctx));
+    const drawTileExtentHighlight = vi.fn();
+    const h = new RendererBlockHandler(makeRenderer(ctx, { drawTileExtentHighlight }));
     h.drawBlockPreviewPath([{ x: 0, y: 0 }, { x: 1, y: 0 }]);
-    expect(ctx.fill).toHaveBeenCalledTimes(2);
-    expect(ctx.strokeRect).toHaveBeenCalledTimes(2);
-    expect(ctx.stroke).toHaveBeenCalledTimes(1);
+    expect(drawTileExtentHighlight).toHaveBeenCalledTimes(1);
+    const keys = drawTileExtentHighlight.mock.calls[0][0] as Set<string>;
+    expect([...keys].sort()).toEqual(['0,0', '1,0']);
   });
 
   it('draws nothing for an empty path', () => {
     const ctx = makeCtx();
-    const h = new RendererBlockHandler(makeRenderer(ctx));
+    const drawTileExtentHighlight = vi.fn();
+    const h = new RendererBlockHandler(makeRenderer(ctx, { drawTileExtentHighlight }));
     h.drawBlockPreviewPath([]);
-    expect(ctx.fill).not.toHaveBeenCalled();
+    expect(drawTileExtentHighlight).not.toHaveBeenCalled();
   });
 });
 

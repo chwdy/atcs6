@@ -57,6 +57,9 @@ class RailwayPathfinder:
         direction_constraint: Optional[str] = None,
         max_candidates: Optional[int] = None,
         manual_override: bool = False,
+        train_min_radius_cm: Optional[float] = None,
+        train_max_speed_kmh: Optional[float] = None,
+        train_max_slope_percent: Optional[float] = None,
     ) -> List[GraphWalkCandidate]:
         """Thin adapter over ``query_graph_walks`` for block-ID callers.
 
@@ -74,6 +77,18 @@ class RailwayPathfinder:
                 must satisfy on the destination block.
             max_candidates: Optional cap on the number of returned
                 candidates after sorting.
+            train_min_radius_cm: The train's minimum curve radius capability
+                in centimetres, or None for geometry-only callers. When set,
+                candidates that traverse a block or switch leg whose curve
+                radius is tighter than this value are rejected.
+            train_max_speed_kmh: The train's maximum speed in km/h, or None for
+                geometry-only callers. When set, surviving candidates are
+                ranked by estimated travel time (posted block speed limits
+                capped at this max) instead of distance alone.
+            train_max_slope_percent: The train's maximum climbable gradient
+                (percent grade), or None / 0.0 for no limit. When set above
+                zero, candidates that climb a block steeper than this in the
+                traversed direction are rejected.
 
         Returns:
             List of ``GraphWalkCandidate`` sorted in winning order
@@ -114,6 +129,9 @@ class RailwayPathfinder:
             return_tiles=True,
             return_blocks=True,
             manual_override=manual_override,
+            train_min_radius_cm=train_min_radius_cm,
+            train_max_speed_kmh=train_max_speed_kmh,
+            train_max_slope_percent=train_max_slope_percent,
         )
         candidates = self.query_graph_walks(request)
         if max_candidates is not None and max_candidates >= 0:
@@ -199,11 +217,55 @@ class RailwayPathfinder:
             c
             for c in candidates
             if self._walk_passes_filters(
-                c, direction_constraint, manual_override=manual_override
+                c,
+                direction_constraint,
+                manual_override=manual_override,
+                train_min_radius_cm=request.train_min_radius_cm,
+                train_max_slope_percent=request.train_max_slope_percent,
             )
         ]
-        surviving.sort(key=lambda c: c.comparison_key())
+        # When the caller supplies the train's max speed, rank by estimated
+        # travel time (posted block limits capped at that max) so a faster
+        # route wins over an equal-or-shorter-distance slow one; the distance
+        # keys stay as tie-breakers. Geometry-only callers (no max speed) keep
+        # the distance-only canonical ordering.
+        max_speed = request.train_max_speed_kmh
+        if max_speed is not None and max_speed > 0:
+            surviving.sort(
+                key=lambda c: (
+                    self._candidate_travel_time(c, max_speed),
+                    *c.comparison_key(),
+                )
+            )
+        else:
+            surviving.sort(key=lambda c: c.comparison_key())
         return surviving
+
+    def _candidate_travel_time(
+        self, candidate: GraphWalkCandidate, max_speed_kmh: float
+    ) -> float:
+        """Estimated traversal-time cost for a candidate (lower is faster).
+
+        Sums each ordered-walk step's length divided by the effective speed
+        there: the posted ``Block.speed_limit_kmh`` capped at the train's max
+        speed, or the train's max speed where no limit is posted. Switch steps
+        and unposted blocks use the train's max speed. The unit is
+        cm / (km/h) -- not a real time unit, but consistent across candidates,
+        so the value is only meaningful for comparison. A candidate with no
+        ``ordered_walk`` returns 0.0.
+        """
+        total = 0.0
+        for step in candidate.ordered_walk or ():
+            speed = max_speed_kmh
+            if step.resource_type == "block":
+                block = self.network.blocks.get(step.block_id or step.resource_id)
+                limit = getattr(block, "speed_limit_kmh", None) if block else None
+                if limit is not None and limit > 0:
+                    speed = min(speed, limit)
+            if speed <= 0:
+                speed = max_speed_kmh
+            total += step.length_cm / speed
+        return total
 
     def _build_candidates(
         self, raw_walks: List[PathSegment], request: GraphWalkQuery
@@ -837,11 +899,15 @@ class RailwayPathfinder:
         candidate: GraphWalkCandidate,
         direction_constraint: Optional[str],
         manual_override: bool = False,
+        train_min_radius_cm: Optional[float] = None,
+        train_max_slope_percent: Optional[float] = None,
     ) -> bool:
         """Reject candidates that traverse a disabled resource, traverse a
         manual resource without operator override, traverse any block against
-        its ``Block.allowed_travel_directions`` without operator override, or
-        violate ``direction_constraint``.
+        its ``Block.allowed_travel_directions`` without operator override,
+        traverse a block or switch leg whose curve radius is tighter than
+        ``train_min_radius_cm``, climb a block steeper than
+        ``train_max_slope_percent``, or violate ``direction_constraint``.
 
         Per the `disabled` and `manual` availability flags canonical home in
         design_new.md (under TrackResource): disabled blocks/switches are
@@ -887,6 +953,51 @@ class RailwayPathfinder:
                 and not manual_override
             ):
                 return False
+
+        # Curve-radius feasibility filter over the whole walk. A train cannot
+        # navigate a curve tighter than its minimum radius, so any candidate
+        # that traverses a block (``Block.min_radius_cm``) or switch leg
+        # (``Switch.get_active_radius`` for the step's required state) whose
+        # radius is below ``train_min_radius_cm`` is rejected. This is a
+        # physical limit, not an availability policy, so ``manual_override``
+        # does not relax it. ``None`` radius means the resource carries no
+        # curve limit; ``train_min_radius_cm`` None (geometry-only callers)
+        # skips the filter entirely.
+        if train_min_radius_cm is not None:
+            for step in candidate.ordered_walk or ():
+                if step.resource_type == "switch":
+                    switch = switches.get(step.resource_id)
+                    if switch is None or step.switch_required_state is None:
+                        continue
+                    radius = switch.get_active_radius(step.switch_required_state)
+                else:
+                    block = self.network.blocks.get(step.block_id or step.resource_id)
+                    radius = getattr(block, "min_radius_cm", None) if block else None
+                if radius is not None and radius < train_min_radius_cm:
+                    return False
+
+        # Slope (grade) feasibility filter over the whole walk. A train stalls
+        # on a climb steeper than its maximum climbable gradient, so any
+        # candidate that climbs such a block is rejected. ``Block.grade_percent``
+        # is signed (+ uphill in the block's forward direction); a reverse
+        # traversal climbs the opposite sign, so the effective uphill grade is
+        # negated for reverse steps. Only an uphill climb steeper than the train
+        # can manage rejects -- a descent never does. Like the curve filter this
+        # is a physical limit, so ``manual_override`` does not relax it. Skipped
+        # when the caller supplies no positive max gradient (``None`` or the 0.0
+        # ``Train.max_slope`` "unspecified" sentinel), or a step has no
+        # classified block direction (cannot tell uphill from downhill).
+        if train_max_slope_percent is not None and train_max_slope_percent > 0:
+            for step in candidate.ordered_walk or ():
+                if step.resource_type != "block" or step.block_direction is None:
+                    continue
+                block = self.network.blocks.get(step.block_id or step.resource_id)
+                grade = getattr(block, "grade_percent", None) if block else None
+                if grade is None:
+                    continue
+                effective = grade if step.block_direction == "forward" else -grade
+                if effective > train_max_slope_percent:
+                    return False
 
         # Travel-direction policy filter over the whole walk. Each step's
         # ``block_direction`` comes from the cached ``ordered_walk`` (decided

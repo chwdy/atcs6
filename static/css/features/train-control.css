@@ -473,7 +473,7 @@
 .tc-handle-tick.active {
     color: var(--accent-hover);
     font-weight: 700;
-    background-color: rgba(130, 87, 229, 0.20);
+    background-color: rgba(130, 87, 229, 0.18);
     border-radius: 2px;
 }
 
@@ -523,7 +523,7 @@
 }
 
 .tc-handle-slider:disabled {
-    opacity: 0.5;
+    opacity: 0.4;
     cursor: not-allowed;
 }
 
@@ -545,8 +545,7 @@
 .tc-handle-pos.handle-power   { color: var(--success-color); }
 .tc-handle-pos.handle-brake   { color: var(--warning-color); }
 .tc-handle-pos.handle-neutral { color: var(--text-primary); }
-/* EB-emphasis applied via inline check elsewhere; fall back: */
-.tc-handle-pos[class*="handle-brake"]:where(:not(.tc-handle-pos)) { /* placeholder */ }
+.tc-handle-pos.handle-eb      { color: var(--danger-color); }
 
 .tc-handle-desc {
     font-size: 11px;

@@ -145,6 +145,38 @@ class GraphWalkQuery:
     disabled ones. When True (operator-initiated paths only), manual resources
     participate normally. Disabled resources are always filtered regardless."""
 
+    train_min_radius_cm: Optional[float] = None
+    """The train's minimum curve radius capability (centimetres), or None when
+    the caller has no train context (geometry-only queries). When set, the
+    pathfinder rejects any candidate that traverses a block or switch leg whose
+    curve radius is tighter than this value -- the train physically cannot take
+    that curve. None disables the check entirely. ``manual_override`` does NOT
+    relax it: a curve the train cannot navigate is a physical limit, not an
+    availability policy."""
+
+    train_max_speed_kmh: Optional[float] = None
+    """The routed train's maximum speed (km/h), or None when the caller has no
+    train context (geometry-only queries). When set, the pathfinder ranks
+    surviving candidates by estimated travel time -- the sum over the walk of
+    each segment's length divided by its effective speed (the posted
+    ``Block.speed_limit_kmh`` capped at this max, or this max where no limit is
+    posted) -- so a faster route wins over an equal-or-shorter-distance slow
+    one. ``tile_count`` and ``walk_length_cm`` remain the tie-breakers. None
+    falls back to the distance-only ``GraphWalkCandidate.comparison_key()``
+    ordering, which every geometry-only caller keeps."""
+
+    train_max_slope_percent: Optional[float] = None
+    """The routed train's maximum climbable gradient (percent grade), or None
+    when the caller has no train context, or 0.0 (the ``Train.max_slope``
+    "unspecified" sentinel) to disable the check. When set above zero, the
+    pathfinder rejects any candidate that climbs a block whose uphill gradient
+    in the traversed direction exceeds this value -- the train would stall on
+    that grade. ``Block.grade_percent`` is signed (+ uphill in the block's
+    forward direction), so a reverse traversal flips the sign; only an uphill
+    climb steeper than the train can manage rejects, a descent never does.
+    ``manual_override`` does NOT relax it: a grade the train cannot climb is a
+    physical limit, not an availability policy."""
+
 
 @dataclass(order=False)
 class GraphWalkCandidate:

@@ -78,6 +78,7 @@ class Train:
     model: str = ""  # Train model name (e.g., "BR 218", "Shinkansen E5")
     car_number: str = ""  # Unique entity car number
     min_radius_cm: float = 30.0  # Minimum curve radius train can navigate
+    max_slope: float = 0.0  # Maximum gradient the train can climb, percent grade (0 = unspecified)
 
     # Speed profile and route assignment (persistent/configuration only).
     # Live cab, control mode, ATO state, EB state, and operational state live on
@@ -125,6 +126,7 @@ class Train:
             "model": self.model,
             "car_number": self.car_number,
             "min_radius_cm": self.min_radius_cm,
+            "max_slope": self.max_slope,
             "speed_profile_id": self.speed_profile_id,
         }
 
@@ -151,6 +153,7 @@ class Train:
         train.model = data.get("model", "")
         train.car_number = data.get("car_number", "")
         train.min_radius_cm = float(data.get("min_radius_cm", 30.0))
+        train.max_slope = float(data.get("max_slope", 0.0))
 
         train.speed_profile_id = data.get("speed_profile_id")
 

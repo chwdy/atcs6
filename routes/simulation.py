@@ -155,16 +155,12 @@ def register(app, state: AppState) -> None:
                     "tunnels": len(state.network.tunnels_to_list()),
                 }
 
-                # Clear everything
-                state.network.tracks.clear()
-                state.network.blocks.clear()
-                state.network.signals.clear()
-                state.network.platforms.clear()
-                if hasattr(state.network, "station_groups"):
-                    state.network.station_groups.clear()
-                state.network.trains.clear()
-                state.network.switches.clear()
-                state.network.tunnels.clear()
+                # Clear everything — entity dicts plus the derived tile->owner
+                # reverse indices and caches (see RailwayNetwork.clear). Without
+                # the index reset, a new track drawn on a tile the old layout
+                # used keeps reporting its old block, so block creation fails
+                # with "already assigned to block(s)".
+                state.network.clear()
 
                 # Update simulation controller reference
                 state.sim_controller.network = state.network

@@ -243,6 +243,12 @@ export class Editor {
       this.renderer.clearBlockDirectionFocus();
     }
     this.renderer?.setSelectedTunnel?.(null);
+    // Opening any panel other than Add Train drops a lingering train-placement
+    // ghost and exits the place-train mode, so neither can outlive its panel.
+    if (title !== 'Add Train') {
+      this.renderer?.setTrainGhostPreview?.(null);
+      if (this.activeMode?.toolName === 'place-train') this.exitMode();
+    }
     return this.uiHandler.showSecondarySidebar(title, content);
   }
 
@@ -1234,6 +1240,11 @@ export class Editor {
       else if (['signal', 'platform'].includes(this.selectedTool)) {
         this.updateHoverPreview(gridPos);
       }
+      // Any active mode with an onHover hook (e.g. train placement) gets the
+      // hovered tile so it can update its own canvas preview.
+      else if (this.activeMode?.onHover) {
+        this.activeMode.onHover(gridPos);
+      }
     });
 
     // Mouse leaves the canvas - drop the signal/platform hover ghost so it
@@ -1697,7 +1708,79 @@ export class Editor {
   // Wrapper around renderer.setBoxSelection that also syncs the sidebar panel.
   _applyBoxSelection(keys: any): void {
     this.renderer.setBoxSelection(keys);
+    this.renderer.setSelectionGroups(this._buildSelectionOutlineGroups(keys));
     this.multiSelectHandler?.update(this.boxSelectState.selectedKeys);
+  }
+
+  // Group the selected tiles by the entity each belongs to, so the renderer can
+  // trace one coloured perimeter per entity (block / platform / switch / signal)
+  // instead of a field of tiles. A tile can land in several groups (a switch
+  // tile is also in a block); each group carries only its own tiles, so its
+  // outline is exactly that entity's footprint. Colours match the
+  // selection-panel chips. The block outline is thin, light, and drawn last
+  // (on top) so it stays a delicate border; platform / switch / signal are a
+  // touch wider and drawn first, so they still peek around the block when they
+  // share its tiles.
+  _buildSelectionOutlineGroups(keys: Set<string>): any[] {
+    if (!keys || keys.size === 0) return [];
+    const tracks = this.cachedNetwork?.tracks || [];
+    const byKey = new Map<string, any>();
+    for (const t of tracks) byKey.set(`${t.x},${t.y}`, t);
+
+    const blocks = new Map<string, Set<string>>();
+    const platforms = new Map<string, Set<string>>();
+    const switches = new Map<string, Set<string>>();
+    const signals = new Map<string, Set<string>>();
+    const add = (m: Map<string, Set<string>>, id: string, key: string): void => {
+      let s = m.get(id);
+      if (!s) {
+        s = new Set();
+        m.set(id, s);
+      }
+      s.add(key);
+    };
+    for (const key of keys) {
+      const t = byKey.get(key);
+      if (!t) continue;
+      if (t.block_section_id) add(blocks, t.block_section_id, key);
+      // A tile's `station_id` holds the platform it belongs to (historically
+      // named; see _summarize in editor-multi-select.ts).
+      if (t.station_id) add(platforms, t.station_id, key);
+      if (t.switch_id) add(switches, t.switch_id, key);
+      for (const sid of t.signal_ids || []) add(signals, sid, key);
+    }
+
+    const hue = (token: string, fallback: string): string => {
+      try {
+        const v = getComputedStyle(document.documentElement).getPropertyValue(token).trim();
+        return v || fallback;
+      } catch {
+        return fallback;
+      }
+    };
+    // Mix a hex colour toward white so the block border reads light, not bold.
+    const lighten = (hex: string, amt: number): string => {
+      const m = hex.trim().replace('#', '');
+      const full = m.length === 3 ? m.split('').map((c) => c + c).join('') : m;
+      if (full.length !== 6) return hex;
+      const ch = (i: number): number => parseInt(full.slice(i, i + 2), 16);
+      const mix = (c: number): number => Math.round(c + (255 - c) * amt);
+      return `rgb(${mix(ch(0))}, ${mix(ch(2))}, ${mix(ch(4))})`;
+    };
+    const blockColor = lighten(hue('--accent-hover', '#9466ff'), 0.45);
+    const platformColor = hue('--info-color', '#00d4ff');
+    const switchColor = hue('--warning-color', '#ffcd1e');
+    const signalColor = hue('--success-color', '#04d361');
+
+    // Draw platform / switch / signal first (a touch wider) and the block last
+    // (thin + light, on top) so the block stays a delicate border that never
+    // hides the entities sharing its tiles.
+    const groups: any[] = [];
+    for (const s of platforms.values()) groups.push({ keys: s, color: platformColor, width: 3.5, dash: [7, 5] });
+    for (const s of switches.values()) groups.push({ keys: s, color: switchColor, width: 3.5, dash: [2, 4] });
+    for (const s of signals.values()) groups.push({ keys: s, color: signalColor, width: 3.5, dash: [7, 4, 2, 4] });
+    for (const s of blocks.values()) groups.push({ keys: s, color: blockColor, width: 2, dash: [] });
+    return groups;
   }
 
   // The tools that share the box-select selection set. Space and right-click
@@ -1928,18 +2011,17 @@ export class Editor {
         const result = await this.showBlockModal({
           mode: 'create',
           trackCount: this.previewPath.length,
+          anchorTiles: this.previewPath.map((p: any) => ({ x: p.x, y: p.y })),
         });
 
         if (!result) return; // Cancelled
 
         try {
-          await this.api.createBlock(result.blockId, result.name || '');
-
-          if (result.maxSpeed) {
-            await this.api.updateBlock(result.blockId, {
-              speed_limit_kmh: result.maxSpeed,
-            });
-          }
+          const blockOptions: Record<string, unknown> = {};
+          if (result.maxSpeed) blockOptions.speed_limit_kmh = result.maxSpeed;
+          if (result.minRadius != null) blockOptions.min_radius_cm = result.minRadius;
+          if (result.slope != null) blockOptions.grade_percent = result.slope;
+          await this.api.createBlock(result.blockId, result.name || '', blockOptions);
 
           const positions = this.previewPath.map((p: any) => [p.x, p.y]);
           await this.api.addTracksToBlock(result.blockId, positions);
@@ -2020,7 +2102,10 @@ export class Editor {
 
         const positions = this.previewPath.map((p: any) => [p.x, p.y]);
 
-        const platformData = await this.showPlatformModal({ mode: 'create' });
+        const platformData = await this.showPlatformModal({
+          mode: 'create',
+          anchorTiles: this.previewPath.map((p: any) => ({ x: p.x, y: p.y })),
+        });
         if (!platformData) return; // User cancelled
 
         try {

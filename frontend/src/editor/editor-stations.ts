@@ -230,11 +230,16 @@ export class PlatformEditorHandler {
     }
   }
 
-  async showModal(options?: { platformId?: string; name?: string }): Promise<any> {
+  async showModal(options?: {
+    platformId?: string;
+    name?: string;
+    anchorTiles?: Array<{ x: number; y: number }>;
+  }): Promise<any> {
     const defaultId = `PLAT_${Date.now().toString().slice(-6)}`;
     const values = await showFormModal({
       title: 'Create Platform',
       message: 'Enter platform properties.',
+      anchorTiles: options?.anchorTiles,
       fields: [
         {
           name: 'platformId',

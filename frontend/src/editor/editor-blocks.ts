@@ -16,6 +16,7 @@ import {
   detectOrientation,
   calculateNextTile,
 } from '../lib/helpers';
+import { anchorToTiles } from '../lib/popover-anchor';
 
 export class BlockEditorHandler {
   editor: EditorHost;
@@ -493,9 +494,14 @@ export class BlockEditorHandler {
   // === Block Modal Dialogs ===
 
   /** Show a modal dialog for block creation or extension. */
-  showModal(options: { mode: string; trackCount: number; existingBlocks?: string[] }): Promise<any> {
+  showModal(options: {
+    mode: string;
+    trackCount: number;
+    existingBlocks?: string[];
+    anchorTiles?: Array<{ x: number; y: number }>;
+  }): Promise<any> {
     return new Promise((resolve) => {
-      const { mode, trackCount, existingBlocks = [] } = options;
+      const { mode, trackCount, existingBlocks = [], anchorTiles } = options;
 
       // Create modal overlay
       const overlay = document.createElement('div');
@@ -522,6 +528,16 @@ export class BlockEditorHandler {
                             <div class="form-group">
                                 <label for="modal-max-speed">Max Speed km/h (optional)</label>
                                 <input type="number" id="modal-max-speed" placeholder="e.g., 60" min="0" step="1">
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="modal-min-radius">Min Radius (cm)</label>
+                                    <input type="number" id="modal-min-radius" placeholder="e.g., 300" min="0" step="1">
+                                </div>
+                                <div class="form-group">
+                                    <label for="modal-slope">Slope (%)</label>
+                                    <input type="number" id="modal-slope" placeholder="e.g., 1.5" step="0.1">
+                                </div>
                             </div>
                         </div>
                         <div class="modal-footer">
@@ -596,6 +612,23 @@ export class BlockEditorHandler {
       overlay.innerHTML = modalContent;
       document.body.appendChild(overlay);
 
+      // Anchor the dialog over the tiles it edits so it hovers on the canvas and
+      // follows pan/zoom, instead of a full-screen centered modal. Falls back to
+      // the centered modal when no anchor tiles are supplied.
+      let anchorCleanup = (): void => {};
+      const card = overlay.querySelector<HTMLElement>('.block-modal');
+      if (anchorTiles && anchorTiles.length > 0 && card) {
+        overlay.classList.add('anchored');
+        card.classList.add('anchored');
+        anchorCleanup = anchorToTiles(card, anchorTiles);
+      }
+
+      const close = (): void => {
+        anchorCleanup();
+        document.removeEventListener('keydown', handleEscape);
+        overlay.remove();
+      };
+
       // Focus first input
       const firstInput = overlay.querySelector<HTMLElement>('input[type="text"], input[type="number"]');
       if (firstInput) {
@@ -621,18 +654,22 @@ export class BlockEditorHandler {
           const blockId = overlay.querySelector<HTMLInputElement>('#modal-block-id')?.value?.trim();
           const name = overlay.querySelector<HTMLInputElement>('#modal-block-name')?.value?.trim();
           const maxSpeed = overlay.querySelector<HTMLInputElement>('#modal-max-speed')?.value;
+          const minRadius = overlay.querySelector<HTMLInputElement>('#modal-min-radius')?.value;
+          const slope = overlay.querySelector<HTMLInputElement>('#modal-slope')?.value;
 
           if (!blockId) {
             showToast('Block ID is required', 'error', 5000);
             return;
           }
 
-          overlay.remove();
+          close();
           resolve({
             action: 'create',
             blockId,
             name: name || '',
             maxSpeed: maxSpeed ? parseFloat(maxSpeed) : null,
+            minRadius: minRadius ? parseFloat(minRadius) : null,
+            slope: slope !== undefined && slope !== '' ? parseFloat(slope) : null,
           });
         } else if (mode === 'extend') {
           const blockId = confirmBtn!.dataset.blockId;
@@ -641,7 +678,7 @@ export class BlockEditorHandler {
             return;
           }
 
-          overlay.remove();
+          close();
           resolve({
             action: 'extend',
             blockId,
@@ -651,14 +688,14 @@ export class BlockEditorHandler {
 
       // Handle cancel
       overlay.querySelector('#modal-cancel')?.addEventListener('click', () => {
-        overlay.remove();
+        close();
         resolve(null);
       });
 
       // Handle overlay click (close)
       overlay.addEventListener('click', (e) => {
         if (e.target === overlay) {
-          overlay.remove();
+          close();
           resolve(null);
         }
       });
@@ -666,8 +703,7 @@ export class BlockEditorHandler {
       // Handle Escape key
       const handleEscape = (e: KeyboardEvent) => {
         if (e.key === 'Escape') {
-          overlay.remove();
-          document.removeEventListener('keydown', handleEscape);
+          close();
           resolve(null);
         }
       };

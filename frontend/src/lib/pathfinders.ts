@@ -42,9 +42,6 @@ interface TrackData {
   signal_state?: unknown;
   block_section_id?: string;
   is_switch?: boolean;
-  directed_paths?: DirectedPath[];
-  paths?: string[][];
-  connections?: Record<string, unknown>;
 }
 
 interface CostTable {
@@ -1078,6 +1075,25 @@ function capEdgeForAngle(sharedEdge: string | null, angle: number): string | nul
   return null;
 }
 
+// For a tile's existing track_bits and one edge (`port`) the new track touches,
+// return the OTHER end of the existing segment that uses that edge, or null when
+// no single existing segment uses it. A draw that starts or ends on an existing
+// rail uses this to reuse that rail's segment instead of laying a crossing stub
+// (which would merge into a phantom switch). When several segments share the
+// edge (an existing switch), the first in bit order wins.
+function pairedPortForEdge(bits: number, port: string | null): string | null {
+  if (bits & 1 && (port === 'NORTH' || port === 'SOUTH'))
+    return port === 'NORTH' ? 'SOUTH' : 'NORTH';
+  if (bits & 2 && (port === 'EAST' || port === 'WEST')) return port === 'EAST' ? 'WEST' : 'EAST';
+  if (bits & 4 && (port === 'NORTH' || port === 'EAST')) return port === 'NORTH' ? 'EAST' : 'NORTH';
+  if (bits & 8 && (port === 'NORTH' || port === 'WEST')) return port === 'NORTH' ? 'WEST' : 'NORTH';
+  if (bits & 16 && (port === 'SOUTH' || port === 'EAST'))
+    return port === 'SOUTH' ? 'EAST' : 'SOUTH';
+  if (bits & 32 && (port === 'SOUTH' || port === 'WEST'))
+    return port === 'SOUTH' ? 'WEST' : 'SOUTH';
+  return null;
+}
+
 interface BuildTrack {
   x: number;
   y: number;
@@ -1104,24 +1120,6 @@ export function pathToTracks(
     for (const track of cachedNetwork.tracks) {
       existingTracks.set(`${track.x},${track.y}`, track);
     }
-  }
-
-  function neighborHasPortTo(neighborX: number, neighborY: number, portName: string): boolean {
-    const neighborTrack = existingTracks.get(`${neighborX},${neighborY}`);
-    if (!neighborTrack) return false;
-
-    if (neighborTrack.directed_paths) {
-      return neighborTrack.directed_paths.some(
-        (p) => p.port1 === portName || p.port2 === portName
-      );
-    }
-    if (neighborTrack.paths) {
-      return neighborTrack.paths.some((p) => p.includes(portName));
-    }
-    if (neighborTrack.connections) {
-      return portName in neighborTrack.connections;
-    }
-    return false;
   }
 
   function addPath(
@@ -1195,44 +1193,10 @@ export function pathToTracks(
 
       const existingTrack = existingTracks.get(`${current.x},${current.y}`);
       if (existingTrack && existingTrack.track_bits) {
-        const getConnectedPort = (bits: number, port: string | null): string | null => {
-          if (bits & 1 && (port === 'NORTH' || port === 'SOUTH'))
-            return port === 'NORTH' ? 'SOUTH' : 'NORTH';
-          if (bits & 2 && (port === 'EAST' || port === 'WEST'))
-            return port === 'EAST' ? 'WEST' : 'EAST';
-          if (bits & 4 && (port === 'NORTH' || port === 'EAST'))
-            return port === 'NORTH' ? 'EAST' : 'NORTH';
-          if (bits & 8 && (port === 'NORTH' || port === 'WEST'))
-            return port === 'NORTH' ? 'WEST' : 'NORTH';
-          if (bits & 16 && (port === 'SOUTH' || port === 'EAST'))
-            return port === 'SOUTH' ? 'EAST' : 'SOUTH';
-          if (bits & 32 && (port === 'SOUTH' || port === 'WEST'))
-            return port === 'SOUTH' ? 'WEST' : 'SOUTH';
-          return null;
-        };
-
-        const connectedPort = getConnectedPort(existingTrack.track_bits, exitDir);
+        const connectedPort = pairedPortForEdge(existingTrack.track_bits, exitDir);
         if (connectedPort) {
           addPath(current.x, current.y, connectedPort, exitDir, 'both');
           foundConnection = true;
-        }
-      }
-
-      if (!foundConnection) {
-        const neighbors = [
-          { dx: 0, dy: 1, myPort: 'NORTH', theirPort: 'SOUTH' },
-          { dx: 0, dy: -1, myPort: 'SOUTH', theirPort: 'NORTH' },
-          { dx: 1, dy: 0, myPort: 'EAST', theirPort: 'WEST' },
-          { dx: -1, dy: 0, myPort: 'WEST', theirPort: 'EAST' },
-        ];
-
-        for (const n of neighbors) {
-          if (n.myPort === exitDir) continue;
-
-          if (neighborHasPortTo(current.x + n.dx, current.y + n.dy, n.theirPort)) {
-            addPath(current.x, current.y, n.myPort, exitDir, 'both');
-            foundConnection = true;
-          }
         }
       }
 
@@ -1275,19 +1239,18 @@ export function pathToTracks(
         continue;
       }
 
-      const neighbors = [
-        { dx: 0, dy: 1, myPort: 'NORTH', theirPort: 'SOUTH' },
-        { dx: 0, dy: -1, myPort: 'SOUTH', theirPort: 'NORTH' },
-        { dx: 1, dy: 0, myPort: 'EAST', theirPort: 'WEST' },
-        { dx: -1, dy: 0, myPort: 'WEST', theirPort: 'EAST' },
-      ];
-
       let foundConnection = false;
-      for (const n of neighbors) {
-        if (n.myPort === entryDir) continue;
 
-        if (neighborHasPortTo(current.x + n.dx, current.y + n.dy, n.theirPort)) {
-          addPath(current.x, current.y, entryDir, n.myPort, 'both');
+      // Symmetric to the start-tile branch: if the tile we land on already has a
+      // rail touching the edge we arrive on, reuse that rail's segment rather
+      // than laying a crossing stub (which would merge into a phantom switch). A
+      // perpendicular meeting shares no edge here, so it falls through to the
+      // crossover cap below.
+      const existingEnd = existingTracks.get(`${current.x},${current.y}`);
+      if (existingEnd && existingEnd.track_bits) {
+        const connectedPort = pairedPortForEdge(existingEnd.track_bits, entryDir);
+        if (connectedPort) {
+          addPath(current.x, current.y, entryDir, connectedPort, 'both');
           foundConnection = true;
         }
       }

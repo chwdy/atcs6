@@ -127,8 +127,36 @@ def gen_stations(net) -> tuple[str, list[str]]:
             )
         lines.append("    ]),")
     lines.append("]")
-    orphans = [pid for pid in net.platforms if pid not in grouped]
-    return "\n".join(lines), orphans
+    return "\n".join(lines), grouped
+
+
+def gen_platforms(net, grouped: set) -> str:
+    """Emit the platforms that belong to no station group.
+
+    Grouped platforms are created by ``_add_stations``; these ungrouped ones
+    are created directly by ``_add_platforms`` with the same anchor-tile +
+    extensions construction but no ``create_station_group`` call. Each still
+    auto-creates its ``{platform_id}_BLOCK``.
+    """
+    lines = ["PLATFORMS = ["]
+    for pid in sorted(net.platforms):
+        if pid in grouped:
+            continue
+        p = net.platforms[pid]
+        positions = [tuple(pt) for pt in p.positions]
+        first, extras = positions[0], positions[1:]
+        # The auto-created station block name is reproduced verbatim: a platform
+        # renamed after creation keeps its original id-based block name, which
+        # ``add_station(name=...)`` would not regenerate.
+        block = net.blocks.get(f"{pid}_BLOCK")
+        block_name = block.name if block is not None else ""
+        lines.append(
+            f"    ({pid!r}, {p.name!r}, {_xy(first)}, {_xy_list(extras)}, "
+            f"{_side_str(p.platform_side)!r}, {p.length_cm}, {p.top_speed_kmh}, "
+            f"{block_name!r}),"
+        )
+    lines.append("]")
+    return "\n".join(lines)
 
 
 def gen_blocks(net) -> str:
@@ -138,7 +166,11 @@ def gen_blocks(net) -> str:
         if bid in platform_block_ids:
             continue  # auto-created by add_station
         b = net.blocks[bid]
-        positions = [(e.x, e.y) for e in b.ordered_tiles]
+        # Editor-authored blocks serialize with empty ``ordered_tiles`` and
+        # carry their membership on the tracks (``track.block_section_id``).
+        # ``get_block_positions`` reads that track-derived membership, so it is
+        # the correct source for every block regardless of how it was authored.
+        positions = net.get_block_positions(bid)
         lines.append(
             f"    ({bid!r}, {b.name!r}, {_xy_list(positions)}, "
             f"{b.length_cm}, {b.speed_limit_kmh}),"
@@ -215,6 +247,30 @@ def _add_stations(network: RailwayNetwork) -> None:
         )
 
 
+def _add_platforms(network: RailwayNetwork) -> None:
+    """Build platforms that belong to no station group.
+
+    Same anchor-tile + extensions construction as ``_add_stations`` but with no
+    ``create_station_group`` call. Each platform still auto-creates its
+    ``{platform_id}_BLOCK``.
+    """
+    for (platform_id, name, first_tile, extra_tiles, side, length_cm, top_speed_kmh, block_name) in PLATFORMS:
+        platform = network.add_station(
+            x=first_tile[0],
+            y=first_tile[1],
+            station_id=platform_id,
+            name=name,
+            length_cm=length_cm,
+            platform_side=side,
+            top_speed_kmh=top_speed_kmh,
+        )
+        for extra in extra_tiles:
+            network.extend_station(platform.platform_id, [extra])
+        station_block = network.blocks.get(f"{platform.platform_id}_BLOCK")
+        if station_block is not None:
+            station_block.name = block_name
+
+
 def _add_blocks(network: RailwayNetwork) -> None:
     """Create the non-platform blocks from their baked tile lists."""
     for (block_id, name, positions, length_cm, speed_limit_kmh) in BLOCKS:
@@ -252,6 +308,7 @@ def create_comprehensive_demo() -> RailwayNetwork:
     _add_tracks(network)
     _add_switches(network)
     _add_stations(network)
+    _add_platforms(network)
     _add_blocks(network)
     _add_tunnels(network)
     _add_signals(network)
@@ -276,7 +333,8 @@ def build_module_text(snapshot: dict, scene_id: str, source_name: str) -> tuple[
 
     tiles = gen_tiles(net)
     switches, sw_warn = gen_switches(net)
-    stations, orphans = gen_stations(net)
+    stations, grouped = gen_stations(net)
+    platforms = gen_platforms(net, grouped)
     blocks = gen_blocks(net)
     tunnels = gen_tunnels(net)
     signals = gen_signals(snapshot)
@@ -286,11 +344,6 @@ def build_module_text(snapshot: dict, scene_id: str, source_name: str) -> tuple[
         warnings.append(
             f"{len(sw_warn)} switch(es) carry non-default metadata not captured "
             f"by the (id, x, y) form: {sorted(set(sw_warn))[:10]}"
-        )
-    if orphans:
-        warnings.append(
-            f"{len(orphans)} platform(s) belong to no station group and were "
-            f"skipped: {orphans[:10]}"
         )
 
     n_platform_blocks = sum(
@@ -321,7 +374,9 @@ from switch import Switch
 
 SCENE_ID = {scene_id!r}'''
 
-    body = "\n\n\n".join([header, tiles, switches, stations, blocks, tunnels, signals])
+    body = "\n\n\n".join(
+        [header, tiles, switches, stations, platforms, blocks, tunnels, signals]
+    )
     return body + "\n\n" + _BUILDERS, warnings
 
 

@@ -482,11 +482,27 @@ class PathDispatcher:
         whole candidate; `find_paths` is the thin `.walk`-only adapter for the
         UI/route callers that need only geometry.
         """
+        # Resolve the train's curve-radius capability (so the pathfinder can
+        # reject curves it cannot take) and its max speed (so candidates rank by
+        # travel time). None (no train context) disables both, leaving the
+        # distance-only ordering for geometry-only callers.
+        train_min_radius_cm: Optional[float] = None
+        train_max_speed_kmh: Optional[float] = None
+        train_max_slope_percent: Optional[float] = None
+        if train_id is not None:
+            train = self.network.trains.get(train_id)
+            if train is not None:
+                train_min_radius_cm = train.min_radius_cm
+                train_max_speed_kmh = train.max_speed
+                train_max_slope_percent = train.max_slope
         return self._pathfinder.find_ordered_walk(
             start_block_id=start_block_id,
             end_block_id=end_block_id,
             direction_constraint=direction_constraint,
             manual_override=manual_override,
+            train_min_radius_cm=train_min_radius_cm,
+            train_max_speed_kmh=train_max_speed_kmh,
+            train_max_slope_percent=train_max_slope_percent,
         )
 
     # ========================================================================

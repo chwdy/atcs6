@@ -118,6 +118,7 @@ class Block(TrackResource):
     # Physical properties (set on BLOCK, not tiles)
     length_cm: float = 0.0  # Total track length in cm
     min_radius_cm: Optional[float] = None  # Tightest curve radius
+    grade_percent: Optional[float] = None  # Track gradient as percent (+ uphill / - downhill)
     speed_limit_kmh: Optional[float] = None  # Speed limit for block
 
     # Underlying primitive state fields. `state` is a computed @property
@@ -224,6 +225,7 @@ class Block(TrackResource):
             "name": self.name,
             "length_cm": self.length_cm,
             "min_radius_cm": self.min_radius_cm,
+            "grade_percent": self.grade_percent,
             "speed_limit_kmh": self.speed_limit_kmh,
             "state": self.state.value,
             "occupied_by": self.occupied_by,
@@ -264,6 +266,7 @@ class Block(TrackResource):
             "name": self.name,
             "length_cm": self.length_cm,
             "min_radius_cm": self.min_radius_cm,
+            "grade_percent": self.grade_percent,
             "speed_limit_kmh": self.speed_limit_kmh,
             "disabled": self.disabled,
             "manual": self.manual,
@@ -312,6 +315,7 @@ class Block(TrackResource):
             name=data.get("name", ""),
             length_cm=float(data["length_cm"]),
             min_radius_cm=data.get("min_radius_cm"),
+            grade_percent=data.get("grade_percent"),
             speed_limit_kmh=data.get("speed_limit_kmh", data.get("max_speed_kmh")),
             disabled=bool(data.get("disabled", False)),
             manual=bool(data.get("manual", False)),

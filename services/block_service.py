@@ -65,6 +65,7 @@ def create_block(
     name: str = "",
     length_cm: Optional[Any] = None,
     min_radius_cm: Optional[Any] = None,
+    grade_percent: Optional[Any] = None,
     speed_limit_kmh: Optional[Any] = None,
     max_speed_kmh: Optional[Any] = None,
 ):
@@ -83,6 +84,8 @@ def create_block(
             block.length_cm = float(length_cm)
         if min_radius_cm is not None:
             block.min_radius_cm = min_radius_cm
+        if grade_percent is not None:
+            block.grade_percent = grade_percent
         if speed_limit_kmh is not None:
             block.speed_limit_kmh = speed_limit_kmh
         elif max_speed_kmh is not None:
@@ -117,6 +120,8 @@ def update_block(state: AppState, block_id: str, *, data: Dict[str, Any]):
             block.length_cm = float(data["length_cm"])
         if "min_radius_cm" in data:
             block.min_radius_cm = data["min_radius_cm"]
+        if "grade_percent" in data:
+            block.grade_percent = data["grade_percent"]
         if "speed_limit_kmh" in data:
             block.speed_limit_kmh = data["speed_limit_kmh"]
         elif "max_speed_kmh" in data:
