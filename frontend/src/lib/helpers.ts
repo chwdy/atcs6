@@ -18,6 +18,7 @@ import {
   TRACK_SW,
 } from './constants';
 import { anchorToTiles } from './popover-anchor';
+import { showToast } from './toast';
 
 // ---- Light shapes the helpers read off otherwise-dynamic objects ------------
 
@@ -820,7 +821,15 @@ export function availabilityStateToFlags(state: string): { disabled: boolean; ma
 export function renderAvailabilitySegment(
   entityKind: string,
   entity: AvailabilityEntity | null,
-  opts: { idBase?: string; label?: string; help?: string } = {}
+  opts: {
+    idBase?: string;
+    label?: string;
+    help?: string;
+    // When provided, the three states are explained one per line below the
+    // segment (block editor) instead of the single-line `help` string the
+    // other panels keep.
+    explanations?: { normal: string; manual: string; disabled: string };
+  } = {}
 ): string {
   const state = deriveAvailabilityState(entity);
   const idBase = (opts.idBase || `${entityKind}-availability`).replace(/[^a-z0-9-]/gi, '-');
@@ -829,6 +838,14 @@ export function renderAvailabilitySegment(
     opts.help ||
     'Manual = hidden from automatic routing (operator can still override). Disabled = fully off-limits.';
   const dis = (s: string) => (state === s ? 'active' : '');
+  const ex = opts.explanations;
+  const explain = ex
+    ? `<div class="seg-explain mt-4">
+                <div><span class="seg-explain-term">Normal</span> — ${ex.normal}</div>
+                <div><span class="seg-explain-term">Manual</span> — ${ex.manual}</div>
+                <div><span class="seg-explain-term">Disabled</span> — ${ex.disabled}</div>
+            </div>`
+    : `<div class="text-xxs text-muted mt-4">${help}</div>`;
   return `
         <div class="input-large-container mb-8" data-availability-segment="${entityKind}">
             <label class="input-large-label">${label}</label>
@@ -837,19 +854,19 @@ export function renderAvailabilitySegment(
                     class="switch-btn ${dis('available')}"
                     id="${idBase}-available"
                     data-availability="available"
-                    title="Available — normal operation">Available</button>
+                    title="Normal — works under automatic routing and ATO">Normal</button>
                 <button type="button"
                     class="switch-btn ${dis('manual')}"
                     id="${idBase}-manual"
                     data-availability="manual"
-                    title="Manual — auto-routing skips this; operator can override with manual_override=true">Manual</button>
+                    title="Manual — automatic routing skips it; an operator route with override can still use it">Manual</button>
                 <button type="button"
                     class="switch-btn ${dis('disabled')}"
                     id="${idBase}-disabled"
                     data-availability="disabled"
-                    title="Disabled — physically off-limits; no operator override">Disabled</button>
+                    title="Disabled — off-limits to all trains; treated as missing track">Disabled</button>
             </div>
-            <div class="text-xxs text-muted mt-4">${help}</div>
+            ${explain}
         </div>
     `;
 }
@@ -886,6 +903,163 @@ export function validatePriorityInput(
     return { kind: 'error', message: 'Priority must be between 0 and 9' };
   }
   return { kind: 'ok', value: n };
+}
+
+// Generic whole-number validator for editor number fields (lengths, radii,
+// speeds typed as integers). Mirrors validatePriorityInput's three-shape
+// return so callers share one "empty / ok / error" decision:
+//   { kind: 'empty' }            — blank; caller decides revert-vs-clear.
+//   { kind: 'ok', value: int }   — a whole number within [min, max].
+//   { kind: 'error', message }   — not an integer, or out of range.
+export function validateIntegerInput(
+  rawValue: unknown,
+  opts: { min?: number; max?: number; label?: string } = {}
+): { kind: 'empty' } | { kind: 'ok'; value: number } | { kind: 'error'; message: string } {
+  const label = opts.label || 'Value';
+  if (rawValue === undefined || rawValue === null) return { kind: 'empty' };
+  const trimmed = String(rawValue).trim();
+  if (trimmed === '') return { kind: 'empty' };
+  const n = Number(trimmed);
+  if (!Number.isInteger(n)) {
+    return { kind: 'error', message: `${label} must be a whole number` };
+  }
+  if (opts.min !== undefined && n < opts.min) {
+    return { kind: 'error', message: `${label} must be ${opts.min} or more` };
+  }
+  if (opts.max !== undefined && n > opts.max) {
+    return { kind: 'error', message: `${label} must be ${opts.max} or less` };
+  }
+  return { kind: 'ok', value: n };
+}
+
+// Escape a string for safe interpolation into an HTML attribute value
+// (double-quoted). Used where user-entered text — a block/station display
+// name — is rendered back into a `value="…"` / `title="…"` attribute.
+export function escapeAttr(value: string): string {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+// ============================================================================
+// PER-FIELD AUTO-SAVE (§5C / §19)
+// ----------------------------------------------------------------------------
+// The shared wiring behind the no-Save-button editing contract. Every entity
+// editor (block / switch / platform / station) commits each field on blur (or
+// `change` for a select), with a one-shot field-flash as the only success
+// acknowledgement and a revert + danger-flash on a rejected value. There is no
+// success toast — six fields each saving themselves would spam; only an
+// unexpected server error earns a toast.
+// ============================================================================
+
+// A field parse outcome: a validated value to commit, or a rejection (the
+// caller reverts to the last good value and flashes danger).
+export type FieldParseResult = { ok: true; value: unknown } | { ok: false };
+
+// Briefly flash a field's border: 'ok' (accent) acknowledges a save, 'err'
+// (danger) marks a rejected/reverted value. Re-adding the class after a forced
+// reflow restarts the animation when the same field is edited twice in a row.
+// The global reduced-motion reset (base/motion.css) collapses it to its end
+// state.
+export function flashField(el: HTMLElement | null, kind: 'ok' | 'err'): void {
+  if (!el) return;
+  const cls = kind === 'ok' ? 'field-flash-ok' : 'field-flash-err';
+  el.classList.remove('field-flash-ok', 'field-flash-err');
+  void el.offsetWidth;
+  el.classList.add(cls);
+  window.setTimeout(() => el.classList.remove(cls), 700);
+}
+
+// Wire one input (or select) to the auto-save cycle. `parse` turns the raw
+// string into a value or a rejection; `commit` POSTs just that field and
+// returns the API result (so a server-side `{error}` reverts too); `onApplied`
+// runs after a successful save for any in-place DOM sync (a header summary,
+// refreshNetwork). A select commits on `change`; a text/number input on blur,
+// and Enter blurs to commit.
+export function bindFieldAutoSave(
+  input: HTMLInputElement | HTMLSelectElement | null,
+  opts: {
+    parse: (raw: string) => FieldParseResult;
+    commit: (value: unknown) => Promise<{ error?: string } | unknown>;
+    onApplied?: () => void | Promise<void>;
+    event?: 'blur' | 'change';
+  }
+): void {
+  if (!input) return;
+  input.dataset.lastValue = input.value;
+  const run = async (): Promise<void> => {
+    const raw = input.value;
+    if (raw === (input.dataset.lastValue ?? '')) return; // unchanged — skip the round-trip
+    const parsed = opts.parse(raw);
+    if (!parsed.ok) {
+      input.value = input.dataset.lastValue ?? '';
+      flashField(input, 'err');
+      return;
+    }
+    try {
+      const result = (await opts.commit(parsed.value)) as { error?: string } | undefined;
+      if (result && result.error) {
+        showToast(`Couldn't save: ${result.error}`, 'error', 4000);
+        input.value = input.dataset.lastValue ?? '';
+        flashField(input, 'err');
+        return;
+      }
+      input.dataset.lastValue = input.value;
+      await opts.onApplied?.();
+      flashField(input, 'ok');
+    } catch (err: any) {
+      console.error('[auto-save] field commit failed', err);
+      showToast(`Couldn't save: ${err.message || err}`, 'error', 4000);
+      input.value = input.dataset.lastValue ?? '';
+      flashField(input, 'err');
+    }
+  };
+  const evt = opts.event || 'blur';
+  input.addEventListener(evt, () => void run());
+  if (evt === 'blur') {
+    input.addEventListener('keydown', (e) => {
+      if ((e as KeyboardEvent).key === 'Enter') {
+        e.preventDefault();
+        (input as HTMLInputElement).blur();
+      }
+    });
+  }
+}
+
+// Parse factories shared by the editors so the mm↔cm conversion and the
+// "empty = no limit" rule live in one place.
+
+// Optional free text (a name / notes); empty is allowed.
+export const parseText = (raw: string): FieldParseResult => ({ ok: true, value: raw.trim() });
+
+// Required whole millimetres ≥ 0, returned as cm (÷10). Blank or invalid → reject.
+export function parseRequiredMmToCm(label: string): (raw: string) => FieldParseResult {
+  return (raw) => {
+    const v = validateIntegerInput(raw, { min: 0, label });
+    return v.kind === 'ok' ? { ok: true, value: v.value / 10 } : { ok: false };
+  };
+}
+
+// Optional whole millimetres ≥ 0, returned as cm (÷10). Empty → null ("no limit").
+export function parseOptionalMmToCm(label: string): (raw: string) => FieldParseResult {
+  return (raw) => {
+    const v = validateIntegerInput(raw, { min: 0, label });
+    if (v.kind === 'empty') return { ok: true, value: null };
+    if (v.kind === 'ok') return { ok: true, value: v.value / 10 };
+    return { ok: false };
+  };
+}
+
+// Optional whole integer ≥ 0 (a km/h speed). Empty → null ("no limit").
+export function parseOptionalInt(label: string): (raw: string) => FieldParseResult {
+  return (raw) => {
+    const v = validateIntegerInput(raw, { min: 0, label });
+    if (v.kind === 'empty') return { ok: true, value: null };
+    if (v.kind === 'ok') return { ok: true, value: v.value };
+    return { ok: false };
+  };
 }
 
 // receives `(state, flags)` where `flags = {disabled, manual}` ready to send
@@ -979,12 +1153,12 @@ export function renderDirectionSegment(
                     class="switch-btn ${dir('forward')}"
                     id="${idBase}-forward"
                     data-direction="forward"
-                    title="Forward only — increasing tile order">Forward</button>
+                    title="Forward only — follow the direction arrows on the layout">Forward</button>
                 <button type="button"
                     class="switch-btn ${dir('reverse')}"
                     id="${idBase}-reverse"
                     data-direction="reverse"
-                    title="Reverse only — decreasing tile order">Reverse</button>
+                    title="Reverse only — follow the direction arrows on the layout">Reverse</button>
             </div>
             <div class="text-xxs text-muted mt-4">${help}</div>
         </div>
@@ -1050,7 +1224,7 @@ export function renderTileItem(
 
     const removeButton = isEdge
       ? `<button class="${removeBtnClass} btn btn-xs btn-danger" data-x="${x}" data-y="${y}">Remove</button>`
-      : `<span class="tile-list-middle-label">middle</span>`;
+      : `<span class="tile-list-middle-label" title="Interior tiles can't be removed — only the first and last tile.">middle</span>`;
 
     content = `
             <div class="flex items-center gap-8">
@@ -1066,7 +1240,7 @@ export function renderTileItem(
     // Simple tile item
     const removeButton = isEdge
       ? `<button class="${removeBtnClass} btn btn-xs btn-danger" data-x="${x}" data-y="${y}">Remove</button>`
-      : `<span class="tile-list-middle-label">middle</span>`;
+      : `<span class="tile-list-middle-label" title="Interior tiles can't be removed — only the first and last tile.">middle</span>`;
 
     content = `
             <span class="tile-list-coords">(${x}, ${y})</span>
@@ -1081,6 +1255,12 @@ export function renderTileItem(
     `;
 }
 
+interface ExtendBtnOpts {
+  label?: string; // button text (default "Extend Start" / "Extend End")
+  disabled?: boolean; // greyed out when there's no clean next tile
+  title?: string; // tooltip — the predicted coordinate, or the refusal reason
+}
+
 interface TileListOptions {
   entityType: string;
   extendStartBtnId: string;
@@ -1089,6 +1269,13 @@ interface TileListOptions {
   blockAssignments?: Array<string | null> | null;
   blocks?: BlockLike[] | null;
   assignBtnClass?: string | null;
+  // Override the list heading text (block editor uses "Tiles"; stations keep
+  // the "<Block|Platform> Tiles" default). The "(N)" count is always appended.
+  headerLabel?: string | null;
+  // Per-end extend-button overrides — used by the block editor to show the
+  // predicted next-tile coordinate (and disable when extension is impossible).
+  extendStart?: ExtendBtnOpts | null;
+  extendEnd?: ExtendBtnOpts | null;
 }
 
 export function renderTileList(sortedPositions: Coord[], options: TileListOptions): string {
@@ -1101,6 +1288,9 @@ export function renderTileList(sortedPositions: Coord[], options: TileListOption
     blockAssignments = null,
     blocks = null,
     assignBtnClass = null,
+    headerLabel = null,
+    extendStart = null,
+    extendEnd = null,
   } = options;
 
   if (!sortedPositions?.length) return '';
@@ -1121,15 +1311,23 @@ export function renderTileList(sortedPositions: Coord[], options: TileListOption
     })
     .join('');
 
+  const heading = headerLabel || `${entityType === 'platform' ? 'Platform' : 'Block'} Tiles`;
+  const extendBtn = (id: string, fallback: string, o: ExtendBtnOpts | null): string => {
+    const text = o?.label || fallback;
+    const disabled = o?.disabled ? ' disabled' : '';
+    const title = o?.title ? ` title="${escapeAttr(o.title)}"` : '';
+    return `<button id="${id}" class="btn btn-secondary btn-sm tile-list-extend-btn"${disabled}${title}><i class="ti ti-plus"></i> ${text}</button>`;
+  };
+
   return `
         <div class="tile-list">
-            <div class="tile-list-header">${entityType === 'platform' ? 'Platform' : 'Block'} Tiles (${sortedPositions.length})</div>
-            <button id="${extendStartBtnId}" class="btn btn-secondary btn-sm tile-list-extend-btn"><i class="ti ti-plus"></i> Extend Start</button>
+            <div class="tile-list-header">${heading} (${sortedPositions.length})</div>
+            ${extendBtn(extendStartBtnId, 'Extend Start', extendStart)}
             <div class="tile-list-container">
                 ${tileItems}
             </div>
-            <button id="${extendEndBtnId}" class="btn btn-secondary btn-sm tile-list-extend-btn"><i class="ti ti-plus"></i> Extend End</button>
-            <div class="info-box-warning text-xxs text-warning mt-4 mb-0">Only edge tiles (start/end) can be removed</div>
+            ${extendBtn(extendEndBtnId, 'Extend End', extendEnd)}
+            <div class="tile-list-note text-xxs text-muted mt-4 mb-0">Only the first and last tile can be removed.</div>
         </div>
     `;
 }

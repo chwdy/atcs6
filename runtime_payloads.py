@@ -195,6 +195,10 @@ class PendingPathCancelRequest:
         ``"revoked"``. Functional behavior is identical regardless of value;
         consumers must not branch on it.
       * `reason: Optional[str]` — optional plain-text diagnostic.
+      * `deviation_kind: Optional["out_of_sequence" | "beyond_authorized_target"]`
+        — set only by the movement-derived deviation writer; it rides the latch
+        payload so the Phase-3 commit can forward it into `cancel_path(...)` and
+        onto the `path_cancellation` notification.
 
     Consumed by Phase 3 only when the train is fully stopped. While the train
     is still rolling, the latch survives across ticks and is reconsidered on
@@ -204,6 +208,9 @@ class PendingPathCancelRequest:
 
     initiator: str
     reason: Optional[str] = None
+    deviation_kind: Optional[
+        Literal["out_of_sequence", "beyond_authorized_target"]
+    ] = None
 
 
 # Note: per design_new.md (Latch Table), `pending_route_abort` and
@@ -246,11 +253,21 @@ class PhaseLatches:
     # ------------------------------------------------------------------
 
     def set_path_cancel_request(
-        self, initiator: str, reason: Optional[str] = None
+        self,
+        initiator: str,
+        reason: Optional[str] = None,
+        deviation_kind: Optional[
+            Literal["out_of_sequence", "beyond_authorized_target"]
+        ] = None,
     ) -> None:
-        """Leaf writer for `path_cancel_request`."""
+        """Leaf writer for `path_cancel_request`.
+
+        `deviation_kind` is set only by the movement-derived deviation writer
+        (`initiator="deviation"`); it rides the latch payload into the Phase-3
+        `cancel_path(...)` commit per design_new.md line 270.
+        """
         self.path_cancel_request = PendingPathCancelRequest(
-            initiator=initiator, reason=reason
+            initiator=initiator, reason=reason, deviation_kind=deviation_kind
         )
 
     def set_route_abort(

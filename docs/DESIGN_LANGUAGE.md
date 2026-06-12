@@ -549,6 +549,19 @@ A row of mutually-exclusive buttons inside a single `var(--bg-dark)` container w
 
 Reference: `.switch-group` / `.switch-btn` (+ `.switch-group.fluid`, and the `.success` / `.danger` / `.warning` variants) in [components/design-system.css](../static/css/components/design-system.css) is the canonical segmented control — every panel that needs one consumes it directly. The active cell is the accent **tint** (`rgba(130, 87, 229, 0.18)` + `--accent-hover`), never a solid fill, and there are **no internal dividers** — the container outline groups the cells and the active tint marks the selection. The train-control HMI (`.tc-seg-btn`) and train-monitor view-distance (`.tm-seg-btn`) carry their own copies of this shape (see Known divergences).
 
+**Explaining the options.** A one-line help string under the segment is the
+default; when each option needs its own gloss, stack one line per option
+instead of cramming them into a run-on sentence (`Manual = … Disabled = …`).
+Each line leads with the option term one brightness tier above its
+description, so the column of terms scans like a small legend. Keep it to one
+short clause per option — an option that needs a paragraph belongs in a
+tooltip, not under the control. Reference: `.seg-explain` /
+`.seg-explain-term` in
+[components/design-system.css](../static/css/components/design-system.css),
+rendered by the `explanations` option of `renderAvailabilitySegment`
+([helpers.ts](../frontend/src/lib/helpers.ts)) for the block editor's
+availability control.
+
 ### Tab strip
 
 A row of mutually-exclusive labels that switches the body content below.
@@ -765,6 +778,32 @@ inputs instead of the 28px control language.
 Reference: `.inspector-panel-field select` in
 [features/inspector.css](../static/css/features/inspector.css).
 
+### Seamless inline edit
+
+A field that reads as plain text until you click it, then becomes a normal
+input. Use it where the value **is** the identity shown in place — the
+display name in a §11 status header — so editing happens where the eye
+already is, not in a separate "Name" field stacked below. It is a real
+`<input>` the whole time; only its chrome changes with state:
+
+- **Resting** — transparent background, transparent border, inheriting the
+  type of the text line it stands in (the 11px `--text-secondary`
+  display-name line). It looks like a label, not a box, so it doesn't add a
+  second framed control to a header that already has a title.
+- **Hover** — the border lifts to `--border-color`, announcing the field is
+  editable before the click (a static label never does this).
+- **Focus** — drops in the standard input chrome: `--bg-dark` fill,
+  `--accent-color` border. Now it reads as the 28px field language above.
+
+Pair it with the auto-save contract (§5C): it commits on blur, with the
+field-edit flash (§18) as the only acknowledgement — an inline edit never
+carries its own Save button. Give it the italic `--text-tertiary`
+placeholder invitation ("Add a name…") so an empty value still teaches what
+the field is (§19). Reference: `.status-header-name-input` in
+[components/status-blocks.css](../static/css/components/status-blocks.css),
+consumed by the block-editor header in
+[editor-blocks.ts](../frontend/src/editor/editor-blocks.ts).
+
 ### Checkbox
 
 The on/off primitive — see "Choosing a selection control" above for when a
@@ -967,6 +1006,14 @@ change is the cleaner contract: segment clicks and input `change`
 events POST the override directly, no confirmation step. If explicit
 confirmation is needed, one Save for the whole section beats N
 parallel saves.
+
+Auto-save needs a quiet acknowledgement in place of the button it removed.
+Use the one-shot field-edit flash (§18) — an accent border pulse for an
+accepted value, a danger pulse for a rejected one that reverts to the last
+good value — not a toast: a toast on every blur is noise when six fields each
+save themselves. A client-invalid entry (non-integer, out of range) reverts
+and flashes danger without a round-trip; only an unexpected server error
+earns a toast.
 
 References: `.route-header-row.run-overrides-grid` in
 [features/routes-paths.css](../static/css/features/routes-paths.css)
@@ -1887,7 +1934,12 @@ with a matching border, plus per-tile direction arrows in the same
 status color. Emphasized routes add brown lock circles on their locked
 switches. Reachable-destination highlights are amber diamonds. A
 conflict tile flashes — red fill, white outline, white `×`, blinking
-every 200ms — the only blinking mark on the canvas (see §18 Motion).
+every 200ms — the only blinking mark on the canvas (see §18 Motion). That
+flash is one preset of a general `flashTiles` primitive: `flashConflictTiles`
+is the red-strobe-with-`×` case, and a quieter **locate** flash — a solid
+accent fill, one shot, no `×` — fires when the user clicks a tile in an
+editor list to find it on the map. Locate stays solid and non-repeating, so
+the conflict strobe remains the only *blinking* mark.
 
 ### Switch state
 
@@ -1972,6 +2024,8 @@ motion means. The inventory is deliberately small.
 | Modal entrance | One short float-in (`floatInFlex` in [modals.css](../static/css/components/modals.css)) | Dialog appearing |
 | Danger pulse | `tc-pulse-danger` — 0.8s infinite, opacity 1 → 0.55 | The EB-active badge (§3). Nothing else |
 | Conflict blink | 200ms on / off | Route conflict tiles on canvas (§17). Nothing else |
+| Field-edit flash | One-shot 0.7s border flash — accent (saved) / danger (rejected) | Auto-save acknowledgement on a panel field (§5C) |
+| Locate flash | One-shot solid tile fill, ~650ms, accent | Pointing at a tile from a list — clicking a block-editor tile row (§17) |
 | Spinner | `restart-spin` | The blocking restart overlay |
 
 Rules:

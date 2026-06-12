@@ -228,6 +228,12 @@ class AtcLimitReasonCode(Enum):
     # Per design_new.md line 1728: used when the train or network object is
     # not yet wired, so the empty anchor reports a structured reason code.
     NO_TRAIN = "no_train"
+    # Per design_new.md lines 279/1825: a movement-derived deviation cancel is
+    # latched (the live path stays ACTIVE), so the head is off its still-active
+    # authority. The distance-0 anchor reports `atc_limit = 0` with this reason
+    # so ATC brakes the train and the overspeed branch escalates to EB. Distinct
+    # from `no_authority`, which is the genuinely-absent-plan case.
+    DEVIATION = "deviation"
 
 
 class HandlePosition(Enum):

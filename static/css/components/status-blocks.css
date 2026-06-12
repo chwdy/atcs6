@@ -111,6 +111,39 @@
     overflow-wrap: anywhere;
 }
 
+/* Inline-editable variant of the display-name line. Reads like
+   .status-header-name (it sits on the header's --bg-hover, so its resting
+   chrome is transparent) until focused, when it drops in the --bg-dark field
+   fill + accent border of a normal input. Auto-saves on blur (§5C). */
+.status-header-name-input {
+    width: 100%;
+    box-sizing: border-box;
+    font-family: var(--font-main);
+    font-size: 11px;
+    color: var(--text-secondary);
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-xs);
+    padding: 3px 6px;
+    transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.status-header-name-input::placeholder {
+    color: var(--text-tertiary);
+    font-style: italic;
+}
+
+.status-header-name-input:hover {
+    border-color: var(--border-color);
+}
+
+.status-header-name-input:focus {
+    outline: none;
+    background-color: var(--bg-dark);
+    border-color: var(--accent-color);
+    color: var(--text-primary);
+}
+
 /* Identity line — Role + identifier in inline mono fragments separated by
    middle dots. Wraps when the panel is narrow. */
 .status-header-ident {

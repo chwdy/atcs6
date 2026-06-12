@@ -819,6 +819,44 @@
     margin-top: 8px;
 }
 
+/* Block-editor tile rows are clickable — clicking one flashes that tile on
+   the layout, so a coordinate in the list maps to a place on the map. */
+.block-editor-panel .tile-list-item {
+    cursor: pointer;
+}
+
+/* Per-line segment explanations (block-editor availability). One short line
+   per state; the state term reads one brightness tier above its description. */
+.seg-explain {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 10px;
+    line-height: 1.5;
+    color: var(--text-tertiary);
+}
+
+.seg-explain-term {
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+/* Field-edit feedback — a one-shot border flash on auto-save (§5C): accent for
+   an accepted value, danger for a rejected/reverted one. The global
+   reduced-motion rule in base/motion.css collapses these to their end state. */
+@keyframes field-flash-ok-kf {
+    0%   { border-color: var(--accent-color); box-shadow: 0 0 0 2px rgba(130, 87, 229, 0.35); }
+    100% { border-color: var(--border-color); box-shadow: none; }
+}
+
+@keyframes field-flash-err-kf {
+    0%   { border-color: var(--danger-color); box-shadow: 0 0 0 2px rgba(232, 63, 91, 0.35); }
+    100% { border-color: var(--border-color); box-shadow: none; }
+}
+
+.field-flash-ok { animation: field-flash-ok-kf 0.7s ease-out; }
+.field-flash-err { animation: field-flash-err-kf 0.7s ease-out; }
+
 /* ============================================================================
    INPUT SIZE SCALE - Form input sizing system
    ============================================================================ */

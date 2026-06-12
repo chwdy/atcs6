@@ -21,6 +21,23 @@ export interface Route {
   switch_positions?: Record<string, unknown>;
 }
 
+/** Visual style for a tile flash. The conflict flash is a red strobe with a
+ *  white X; a "locate" flash (e.g. clicking a tile row in the block editor) is
+ *  a solid single-color highlight with no mark. */
+interface FlashStyle {
+  rgb: string; // "r, g, b" channels for the diamond fill
+  fillAlpha: number; // diamond fill opacity
+  blink: boolean; // true = strobe on/off every 200ms (conflict); false = solid
+  mark: 'x' | 'none'; // 'x' = white cross overlay (conflict); 'none' = clean
+}
+
+const CONFLICT_FLASH_STYLE: FlashStyle = {
+  rgb: '232, 63, 91',
+  fillAlpha: 0.5,
+  blink: true,
+  mark: 'x',
+};
+
 /** The slice of the Renderer the route handler reads through its back-reference. */
 export interface RouteHandlerRenderer {
   ctx: CanvasRenderingContext2D;
@@ -39,6 +56,7 @@ export class RendererRouteHandler {
   highlightedRouteId: string | null | undefined;
   conflictFlashTiles: Array<[number, number]>;
   conflictFlashEnd: number;
+  flashStyle: FlashStyle;
 
   constructor(renderer: RouteHandlerRenderer) {
     this.renderer = renderer;
@@ -48,6 +66,7 @@ export class RendererRouteHandler {
     this.highlightedRouteId = null;
     this.conflictFlashTiles = [];
     this.conflictFlashEnd = 0;
+    this.flashStyle = { ...CONFLICT_FLASH_STYLE };
   }
 
   get ctx(): CanvasRenderingContext2D {
@@ -92,13 +111,35 @@ export class RendererRouteHandler {
     this.reachableHighlights = new Set();
   }
 
-  flashConflictTiles(tiles: Array<[number, number]> | null | undefined, durationMs = 2000): void {
+  // General tile flash. `flashConflictTiles` is the red-strobe-with-X special
+  // case; callers that just want to point at a tile (e.g. the block editor's
+  // tile list) pass their own color and a solid, mark-free style.
+  flashTiles(
+    tiles: Array<[number, number]> | null | undefined,
+    opts: {
+      rgb?: string;
+      fillAlpha?: number;
+      durationMs?: number;
+      blink?: boolean;
+      mark?: 'x' | 'none';
+    } = {}
+  ): void {
+    this.flashStyle = {
+      rgb: opts.rgb ?? '0, 212, 255',
+      fillAlpha: opts.fillAlpha ?? 0.4,
+      blink: opts.blink ?? false,
+      mark: opts.mark ?? 'none',
+    };
     this.conflictFlashTiles = tiles || [];
-    this.conflictFlashEnd = Date.now() + durationMs;
+    this.conflictFlashEnd = Date.now() + (opts.durationMs ?? 650);
 
     if (this.conflictFlashTiles.length > 0) {
       this._animateConflictFlash();
     }
+  }
+
+  flashConflictTiles(tiles: Array<[number, number]> | null | undefined, durationMs = 2000): void {
+    this.flashTiles(tiles, { ...CONFLICT_FLASH_STYLE, durationMs });
   }
 
   _animateConflictFlash(): void {
@@ -330,11 +371,13 @@ export class RendererRouteHandler {
   drawConflictFlash(): void {
     const cellSize = this.gridSize * this.scale;
     const halfTile = cellSize / 2;
+    const style = this.flashStyle;
 
-    const flash = Math.floor(Date.now() / 200) % 2 === 0;
-    if (!flash) return;
+    // A strobing flash (conflict) hides on the "off" half-cycle; a solid flash
+    // (locate) stays drawn for its whole window.
+    if (style.blink && Math.floor(Date.now() / 200) % 2 !== 0) return;
 
-    this.ctx.fillStyle = 'rgba(232, 63, 91, 0.5)';
+    this.ctx.fillStyle = `rgba(${style.rgb}, ${style.fillAlpha})`;
 
     for (const tile of this.conflictFlashTiles) {
       const [x, y] = tile;
@@ -350,21 +393,23 @@ export class RendererRouteHandler {
       this.ctx.fill();
     }
 
-    this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
-    this.ctx.lineWidth = 3 * this.scale;
+    if (style.mark === 'x') {
+      this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+      this.ctx.lineWidth = 3 * this.scale;
 
-    for (const tile of this.conflictFlashTiles) {
-      const [x, y] = tile;
-      const cx = this.gridToScreenX(x, y);
-      const cy = this.gridToScreenY(x, y);
-      const size = halfTile * 0.4;
+      for (const tile of this.conflictFlashTiles) {
+        const [x, y] = tile;
+        const cx = this.gridToScreenX(x, y);
+        const cy = this.gridToScreenY(x, y);
+        const size = halfTile * 0.4;
 
-      this.ctx.beginPath();
-      this.ctx.moveTo(cx - size, cy - size);
-      this.ctx.lineTo(cx + size, cy + size);
-      this.ctx.moveTo(cx + size, cy - size);
-      this.ctx.lineTo(cx - size, cy + size);
-      this.ctx.stroke();
+        this.ctx.beginPath();
+        this.ctx.moveTo(cx - size, cy - size);
+        this.ctx.lineTo(cx + size, cy + size);
+        this.ctx.moveTo(cx + size, cy - size);
+        this.ctx.lineTo(cx - size, cy + size);
+        this.ctx.stroke();
+      }
     }
   }
 }

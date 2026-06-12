@@ -31,6 +31,7 @@ from services.exceptions import (
     ServiceUnavailableError,
     ValidationError,
 )
+from services.validation import coerce_nonneg
 from switch import Switch
 
 
@@ -153,6 +154,18 @@ def update_switch(
 
     if manual_change is not None:
         switch.manual = bool(manual_change)
+
+    # Geometry config validation (the UI enters whole mm and sends cm). The
+    # two path lengths are required non-negative numbers; the two radii accept
+    # None = "no curve (straight)". All non-None values must be numbers >= 0.
+    for length_field in ("main_length_cm", "diverge_length_cm"):
+        if length_field in data:
+            if data[length_field] is None:
+                raise ValidationError(f"{length_field} is required and cannot be empty")
+            data[length_field] = coerce_nonneg(data[length_field], length_field)
+    for radius_field in ("main_radius_cm", "diverge_radius_cm"):
+        if radius_field in data and data[radius_field] is not None:
+            data[radius_field] = coerce_nonneg(data[radius_field], radius_field)
 
     # Forward any remaining config fields to the network's update helper.
     if data:

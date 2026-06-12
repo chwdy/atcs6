@@ -1966,10 +1966,14 @@ class TrainController:
             self.ops.state == TrainState.RUNNING_MOVING
             and self.is_stopped()
             and self.path_projection.received_path_plan is None
+            and self.eb.active == False
         ):
             # No-authority braking completion: zero speed reached without
             # live authority. transition_to_ready() clears ato_running and
-            # path-run bookkeeping in lockstep.
+            # path-run bookkeeping in lockstep. Per design_new.md lines
+            # 1783/1788, this reactive path must NOT fire while EB is latched
+            # (eb.active == True): the controller stays in RUNNING_MOVING and
+            # only TrainController.eb.release() drives the return to READY.
             self.transition_to_ready()
 
         # 2/3. Build progress report from tile delta and enqueue for Phase 3.
@@ -3777,12 +3781,35 @@ class TrainController:
             ):
                 # Path exists but the head's tile is not in its
                 # resource_sequence and the head's block doesn't match the
-                # first authority block either — the path is structurally
-                # disconnected from the head. Per design_new.md step `22a9`,
-                # we publish the no-authority empty payload rather than
-                # silently fabricating block-bounded authority. If the train
-                # is rolling, the no-authority overspeed branch in step
-                # `826a` will escalate to EB.
+                # first authority block either — the head is off its own
+                # authority. Per design_new.md step `22a9`, we publish the
+                # empty distance-0 anchor rather than silently fabricating
+                # block-bounded authority.
+                #
+                # Per design_new.md lines 279/1825: when a movement-derived
+                # deviation cancel is latched (initiator "deviation"), the live
+                # path stays ACTIVE with its locks while the head has run off
+                # it, so the anchor reports `atc_limit = 0` with reason
+                # `deviation`. ATC brakes the train and the overspeed branch in
+                # step `826a` escalates a still-rolling train to EB; the gated
+                # Phase-3 explicit-cancel step commits the latch once stopped.
+                # The `no_authority` reason remains for a genuinely-absent plan
+                # (handled in the `not plan` branch above) and for any other
+                # head-off-path case with no deviation latch pending.
+                latched_cancel = (
+                    self.route_hooks.phase_latches.path_cancel_request
+                )
+                if (
+                    latched_cancel is not None
+                    and latched_cancel.initiator == "deviation"
+                ):
+                    return self._build_empty_monitor_lookahead(
+                        head_tile=head_tile,
+                        head_distance_cm=head_distance_cm,
+                        travel_direction=travel_direction,
+                        speed_limit_reason="deviation",
+                        reason_code=AtcLimitReasonCode.DEVIATION,
+                    )
                 return self._build_empty_monitor_lookahead(
                     head_tile=head_tile,
                     head_distance_cm=head_distance_cm,

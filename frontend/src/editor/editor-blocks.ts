@@ -15,6 +15,12 @@ import {
   showConfirmModal,
   detectOrientation,
   calculateNextTile,
+  escapeAttr,
+  bindFieldAutoSave,
+  parseText,
+  parseRequiredMmToCm,
+  parseOptionalMmToCm,
+  parseOptionalInt,
 } from '../lib/helpers';
 import { anchorToTiles } from '../lib/popover-anchor';
 
@@ -134,20 +140,60 @@ export class BlockEditorHandler {
     const trackCount = block.track_count || 0;
     const lengthCm = block.length_cm || 0;
 
+    // Lengths and radii are shown in millimetres at the UI boundary; the
+    // backend stays in centimetres, so the panel converts on display (×10)
+    // and on save (÷10). Speed stays km/h. An unset radius/speed means
+    // "no limit" (null), shown as a placeholder rather than a number.
+    const lengthMm = Math.round(lengthCm * 10);
+    const radiusMm = block.min_radius_cm != null ? Math.round(block.min_radius_cm * 10) : '';
+    const speedKmh = block.speed_limit_kmh != null ? block.speed_limit_kmh : '';
+
+    // Predict the next tile each Extend button would add so the button shows
+    // the coordinate instead of a generic "Start/End". calculateNextTile
+    // throws when there's no clean single extension (edge tile lacks two
+    // exits, or both neighbours already belong to the block) — fall back to a
+    // disabled button whose tooltip carries the reason.
+    const sortedPositions = block.sorted_positions || block.track_positions || [];
+    const tracks = this.editor.cachedNetwork?.tracks || [];
+    const predictExtend = (dir: 'start' | 'end'): { label: string; disabled: boolean; title: string } => {
+      try {
+        if (!sortedPositions.length) throw new Error('no tiles yet');
+        const orientation = detectOrientation(sortedPositions, tracks);
+        const next = calculateNextTile(sortedPositions, orientation, dir, tracks);
+        return {
+          label: `+ (${next.x}, ${next.y})`,
+          disabled: false,
+          title: `Add tile (${next.x}, ${next.y}) to this block`,
+        };
+      } catch (err: any) {
+        return {
+          label: '+ Extend',
+          disabled: true,
+          title: `Can't extend here: ${err?.message || 'no clean next tile'}`,
+        };
+      }
+    };
+
     const content = `
             <div class="block-editor-panel" data-block-id="${blockId}">
-                <!-- §11 Status header — identity + state pill, dynamic accent. -->
+                <!-- §11 Status header — identity + state pill, dynamic accent.
+                     The display name is editable inline here (auto-saves on
+                     blur), so identity lives in the title rather than being
+                     buried in a property field. -->
                 <div class="status-header ${accentClass}">
                     <div class="status-header-row">
-                        <div class="status-header-id font-mono" title="${blockId}">${blockId}</div>
+                        <div class="status-header-id font-mono" title="${escapeAttr(blockId)}">${blockId}</div>
                         <span class="chip chip-state ${chipClass}">${stateText}</span>
                     </div>
+                    <input type="text" id="block-name-input" class="status-header-name-input"
+                        value="${escapeAttr(block.name || '')}" placeholder="Add a name…"
+                        title="Display name — click to edit" aria-label="Block display name">
                     <div class="status-header-ident">
                         <span class="status-header-role">Block</span>
                         <span class="status-sep">·</span>
                         <span class="font-mono">${trackCount} tile${trackCount === 1 ? '' : 's'}</span>
                         <span class="status-sep">·</span>
-                        <span class="font-mono">${lengthCm} cm</span>
+                        <span class="font-mono" id="block-length-summary">${lengthMm} mm</span>
                     </div>
                 </div>
 
@@ -163,49 +209,64 @@ export class BlockEditorHandler {
                     : ''
                 }
 
-                <!-- TILES LIST (Scrollable with extend buttons) -->
+                <!-- TILES LIST — the heading lives in the tile-list header
+                     ("Tiles (N)"), so there's no separate section h4 above it.
+                     Click a tile row to flash it on the layout. -->
                 <div class="control-section mt-12">
-                    <h4 class="text-sm text-muted mb-8">Tiles</h4>
-                    ${renderTileList(block.sorted_positions, {
+                    ${renderTileList(sortedPositions, {
                       entityType: 'block',
                       extendStartBtnId: 'extend-block-start-btn',
                       extendEndBtnId: 'extend-block-end-btn',
                       removeBtnClass: 'delete-block-tile-btn',
+                      headerLabel: 'Tiles',
+                      extendStart: predictExtend('start'),
+                      extendEnd: predictExtend('end'),
                     })}
                 </div>
 
-                <!-- EDITABLE PROPERTIES SECTION -->
+                <!-- EDITABLE PROPERTIES — every field auto-saves on blur
+                     (§5C / §19 auto-apply); there is no Save button. Lengths
+                     and radii are entered as whole millimetres. -->
                 <div class="control-section control-section-divider mt-12 pt-12">
                     <h4 class="text-sm text-muted mb-8">Properties</h4>
 
-                    <div class="input-large-container mb-8">
-                        <label class="input-large-label">Block Name</label>
-                        <input type="text" id="block-name-input" class="input-large-field" value="${block.name || ''}" placeholder="Enter block name...">
+                    <div class="input-small-row mb-8">
+                        <label class="input-small-label input-small-label-inline" for="block-length-input">Length (mm)</label>
+                        <input type="number" id="block-length-input" class="input-small-field input-small-field-compact" value="${lengthMm}" min="0" step="1" inputmode="numeric">
                     </div>
 
                     <div class="input-small-row mb-8">
-                        <label class="input-small-label input-small-label-inline" for="block-length-input">Length (cm)</label>
-                        <input type="number" id="block-length-input" class="input-small-field input-small-field-compact" value="${block.length_cm || 0}" min="0" step="1">
-                    </div>
-
-                    <div class="input-small-row mb-8">
-                        <label class="input-small-label input-small-label-inline" for="block-radius-input">Min Radius (cm)</label>
-                        <input type="number" id="block-radius-input" class="input-small-field input-small-field-compact" value="${block.min_radius_cm || ''}" min="0" step="1" placeholder="Not set">
+                        <label class="input-small-label input-small-label-inline" for="block-radius-input">Min Radius (mm)</label>
+                        <input type="number" id="block-radius-input" class="input-small-field input-small-field-compact" value="${radiusMm}" min="0" step="1" inputmode="numeric" placeholder="No limit" title="Tightest curve on this block. Empty = no curve limit (any train may pass).">
                     </div>
 
                     <div class="input-small-row mb-8">
                         <label class="input-small-label input-small-label-inline" for="block-speed-input">Max Speed (km/h)</label>
-                        <input type="number" id="block-speed-input" class="input-small-field input-small-field-compact" value="${block.speed_limit_kmh || ''}" min="0" step="1" placeholder="Not set">
+                        <input type="number" id="block-speed-input" class="input-small-field input-small-field-compact" value="${speedKmh}" min="0" step="1" inputmode="numeric" placeholder="No limit">
                     </div>
 
-                    ${renderAvailabilitySegment('block', block, { idBase: 'block-availability' })}
+                    ${renderAvailabilitySegment('block', block, {
+                      idBase: 'block-availability',
+                      explanations: {
+                        normal: 'automatic routing can plan through and reserve this block.',
+                        manual:
+                          'automatic routing skips it; an operator route with override (Quick Route) can still use it.',
+                        disabled: 'off-limits to all trains; treated as missing track.',
+                      },
+                    })}
 
-                    ${renderDirectionSegment('block', block, { idBase: 'block-direction' })}
+                    ${renderDirectionSegment('block', block, {
+                      idBase: 'block-direction',
+                      label: 'Allowed travel direction',
+                      help: 'Forward and reverse follow the direction arrows shown on the layout. Automatic routing obeys this; an operator route with override (Quick Route) can ignore it.',
+                    })}
+                </div>
 
-                    <div class="flex gap-8">
-                        <button id="save-block-btn" class="btn btn-accent btn-sm flex-1"><i class="ti ti-device-floppy"></i> Save</button>
-                        <button id="delete-block-btn" class="btn btn-danger btn-sm flex-1"><i class="ti ti-trash"></i> Delete</button>
-                    </div>
+                <!-- Deleting the whole block is a block-level action, not a
+                     property edit — kept apart at the foot as a quiet danger
+                     button. The confirm modal is the §19 backstop. -->
+                <div class="control-section control-section-divider mt-12 pt-12">
+                    <button id="delete-block-btn" class="btn btn-danger-ghost btn-sm w-full"><i class="ti ti-trash"></i> Delete block</button>
                 </div>
             </div>
         `;
@@ -227,23 +288,22 @@ export class BlockEditorHandler {
   }
 
   async initEditorHandlers(blockId: string): Promise<void> {
-    const saveBtn = document.getElementById('save-block-btn') as HTMLButtonElement | null;
     const deleteBtn = document.getElementById('delete-block-btn') as HTMLButtonElement | null;
     const nameInput = document.getElementById('block-name-input') as HTMLInputElement | null;
     const lengthInput = document.getElementById('block-length-input') as HTMLInputElement | null;
     const radiusInput = document.getElementById('block-radius-input') as HTMLInputElement | null;
     const speedInput = document.getElementById('block-speed-input') as HTMLInputElement | null;
 
-    // Availability segment (disabled / manual). Per docs/DESIGN_LANGUAGE.md §3.
+    // Availability segment (normal / manual / disabled). Auto-applies on click
+    // (§5C); no success toast. On reject, re-render so the active cell rolls
+    // back to the server's value.
     bindAvailabilitySegment('block-availability', async (_state, flags) => {
       try {
         const result = await this.api.updateBlock(blockId, flags);
         if (result && result.error) {
           showToast(`Cannot change availability: ${result.error}`, 'error', 4000);
-          // Re-render to roll the active class back to the server's value.
           this.showEditor(blockId);
         } else {
-          showToast(`Block ${blockId} availability updated`, 'info', 1500);
           await window.app?.refreshNetwork();
         }
       } catch (err: any) {
@@ -253,16 +313,15 @@ export class BlockEditorHandler {
       }
     });
 
-    // Allowed-travel-direction segment (forward / reverse / both).
+    // Allowed-travel-direction segment (both / forward / reverse). Same
+    // auto-apply contract as availability above.
     bindDirectionSegment('block-direction', async (_state, payload) => {
       try {
         const result = await this.api.updateBlock(blockId, payload);
         if (result && result.error) {
           showToast(`Cannot change travel direction: ${result.error}`, 'error', 4000);
-          // Re-render to roll the active class back to the server's value.
           this.showEditor(blockId);
         } else {
-          showToast(`Block ${blockId} travel direction updated`, 'info', 1500);
           await window.app?.refreshNetwork();
         }
       } catch (err: any) {
@@ -272,68 +331,59 @@ export class BlockEditorHandler {
       }
     });
 
-    // Save button
-    if (saveBtn) {
-      saveBtn.onclick = async () => {
-        const updates: Record<string, unknown> = {};
+    // --- Per-field auto-save (§5C / §19) -----------------------------------
+    // Each property field commits on blur (or Enter) via the shared
+    // `bindFieldAutoSave` wiring — no Save button, no success toast, a flash as
+    // the ack. The panel is never re-rendered on a field save, so focus and
+    // scroll survive. `refreshAfterSave` repaints the canvas and keeps the main
+    // Properties pane in sync if it shows this block.
+    const refreshAfterSave = async (): Promise<void> => {
+      await window.app?.refreshNetwork();
+      if (this.selectedElement?.block_section_id === blockId) {
+        await this.editor.selectElement({ x: this.selectedElement.x, y: this.selectedElement.y });
+      }
+    };
 
-        if (nameInput) {
-          updates.name = nameInput.value.trim(); // Allow empty string
-        }
-        if (lengthInput) {
-          const val = parseFloat(lengthInput.value);
-          if (!isNaN(val) && val >= 0) {
-            updates.length_cm = val;
-          }
-        }
-        if (radiusInput) {
-          const val = radiusInput.value.trim();
-          if (val === '') {
-            updates.min_radius_cm = null;
-          } else {
-            const numVal = parseFloat(val);
-            if (!isNaN(numVal) && numVal >= 0) {
-              updates.min_radius_cm = numVal;
-            }
-          }
-        }
-        if (speedInput) {
-          const val = speedInput.value.trim();
-          if (val === '') {
-            updates.speed_limit_kmh = null;
-          } else {
-            const numVal = parseFloat(val);
-            if (!isNaN(numVal) && numVal >= 0) {
-              updates.speed_limit_kmh = numVal;
-            }
-          }
-        }
+    // Name — optional free text; empty is allowed (identity falls back to id).
+    bindFieldAutoSave(nameInput, {
+      parse: parseText,
+      commit: (value) => this.api.updateBlock(blockId, { name: value }),
+      onApplied: refreshAfterSave,
+    });
 
-        console.log('[BlockEditorHandler] Saving block updates:', blockId, updates);
-        try {
-          const result = await this.api.updateBlock(blockId, updates);
-          console.log('[BlockEditorHandler] Block save result:', result);
-          await window.app?.refreshNetwork();
-          // Also refresh the blocks cache
-          await this.refreshList();
-          // Re-open to show updated values
-          this.showEditor(blockId);
-          // Also refresh main properties panel if it shows this block
-          if (this.selectedElement?.block_section_id === blockId) {
-            await this.editor.selectElement({ x: this.selectedElement.x, y: this.selectedElement.y });
-          }
-        } catch (err: any) {
-          console.error('Failed to save block properties:', err);
-          showToast('Failed to save block properties: ' + err.message, 'error', 5000);
+    // Length — required whole millimetres ≥ 0, stored as cm (÷10).
+    bindFieldAutoSave(lengthInput, {
+      parse: parseRequiredMmToCm('Length'),
+      commit: (value) => this.api.updateBlock(blockId, { length_cm: value }),
+      onApplied: async () => {
+        const summary = document.getElementById('block-length-summary');
+        if (summary && lengthInput) {
+          summary.textContent = `${parseInt(lengthInput.value || '0', 10) || 0} mm`;
         }
-      };
-    }
+        await refreshAfterSave();
+      },
+    });
+
+    // Min radius — optional mm ≥ 0, stored as cm (÷10). Empty means "no curve
+    // limit" (null), NOT 0 — 0 would reject every train.
+    bindFieldAutoSave(radiusInput, {
+      parse: parseOptionalMmToCm('Min radius'),
+      commit: (value) => this.api.updateBlock(blockId, { min_radius_cm: value }),
+      onApplied: refreshAfterSave,
+    });
+
+    // Max speed — optional whole km/h ≥ 0. Empty means "no limit" (null).
+    bindFieldAutoSave(speedInput, {
+      parse: parseOptionalInt('Max speed'),
+      commit: (value) => this.api.updateBlock(blockId, { speed_limit_kmh: value }),
+      onApplied: refreshAfterSave,
+    });
 
     // Delete button
     if (deleteBtn) {
       deleteBtn.onclick = async () => {
         const confirmed = await showConfirmModal({
-          title: 'Delete Block',
+          title: 'Delete block',
           message: `Delete block "${blockId}"?`,
           detail: 'Tracks assigned to this block will be unassigned.',
           confirmText: 'Delete',
@@ -398,6 +448,25 @@ export class BlockEditorHandler {
           showToast(`Failed to remove tile: ${err.message}`, 'error', 5000);
         }
       };
+    });
+
+    // Click a tile row (anywhere but the Remove button) → flash that tile on
+    // the layout, so a coordinate in the list maps to a place on the map.
+    const tileRows = document.querySelectorAll<HTMLElement>('.block-editor-panel .tile-list-item');
+    tileRows.forEach((row) => {
+      row.addEventListener('click', (e) => {
+        if ((e.target as HTMLElement).closest('button')) return; // let Remove handle its own click
+        const x = parseInt(row.dataset.x ?? '', 10);
+        const y = parseInt(row.dataset.y ?? '', 10);
+        if (Number.isNaN(x) || Number.isNaN(y)) return;
+        // Accent purple — a "locate" highlight, not a danger flash (§17 keeps
+        // red for danger).
+        this.editor.renderer?.flashTiles?.([[x, y]], {
+          rgb: '130, 87, 229',
+          fillAlpha: 0.45,
+          durationMs: 650,
+        });
+      });
     });
   }
 

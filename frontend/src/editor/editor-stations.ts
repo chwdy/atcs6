@@ -13,6 +13,10 @@ import {
   showFormModal,
   showPromptModal,
   showConfirmModal,
+  bindFieldAutoSave,
+  parseText,
+  parseRequiredMmToCm,
+  parseOptionalInt,
 } from '../lib/helpers';
 
 /** Escape a string for safe use inside an HTML attribute value. */
@@ -73,43 +77,39 @@ export class PlatformEditorHandler {
                         <div class="status-header-id font-mono" title="${escAttr(platformId)}">${platformId}</div>
                         ${stateChip}
                     </div>
+                    <input type="text" id="platform-name-input" class="status-header-name-input"
+                        value="${escAttr(platform.name || '')}" placeholder="Add a name…"
+                        title="Display name — click to edit" aria-label="Platform display name">
                     <div class="status-header-ident">
                         <span class="status-header-role">Platform</span>
                         <span class="status-sep">·</span>
                         <span class="font-mono">${tileCount} tile${tileCount === 1 ? '' : 's'}</span>
                         <span class="status-sep">·</span>
-                        <span>${side}</span>
+                        <span id="platform-side-summary">${side}</span>
                     </div>
                 </div>
 
-                <!-- TILES LIST (Scrollable with extend buttons) -->
+                <!-- TILES LIST — heading lives in the tile-list header. -->
                 <div class="control-section mt-12">
-                    <h4 class="control-section-header">Tiles</h4>
                     ${renderTileList(sortedPositions, {
                       entityType: 'platform',
                       extendStartBtnId: 'extend-platform-start-btn',
                       extendEndBtnId: 'extend-platform-end-btn',
                       removeBtnClass: 'remove-platform-tile-btn',
+                      headerLabel: 'Tiles',
                     })}
                 </div>
 
-                <!-- EDITABLE PROPERTIES SECTION -->
+                <!-- EDITABLE PROPERTIES — every field auto-saves on blur /
+                     change (§5C); there is no Save button. Length is whole mm. -->
                 <div class="control-section control-section-divider mt-12 pt-12">
                     <h4 class="control-section-header">Properties</h4>
 
-                    <!-- Name field - Large/Medium size -->
-                    <div class="input-large-container mb-8">
-                        <label class="input-large-label">Platform Name</label>
-                        <input type="text" id="platform-name-input" class="input-large-field" value="${platform.name || ''}" placeholder="Enter platform name...">
-                    </div>
-
-                    <!-- Length - Small size -->
                     <div class="input-small-row mb-8">
-                        <label class="input-small-label input-small-label-inline" for="platform-length-input">Length (cm)</label>
-                        <input type="number" id="platform-length-input" class="input-small-field input-small-field-compact" value="${platform.length_cm || 0}" min="0" step="1">
+                        <label class="input-small-label input-small-label-inline" for="platform-length-input">Length (mm)</label>
+                        <input type="number" id="platform-length-input" class="input-small-field input-small-field-compact" value="${Math.round((platform.length_cm || 0) * 10)}" min="0" step="1" inputmode="numeric">
                     </div>
 
-                    <!-- Platform Side - Small size -->
                     <div class="input-small-row mb-8">
                         <label class="input-small-label input-small-label-inline" for="platform-side-input">Platform Side</label>
                         <select id="platform-side-input" class="input-small-field input-small-field-compact">
@@ -119,22 +119,22 @@ export class PlatformEditorHandler {
                         </select>
                     </div>
 
-                    <!-- Top Speed - Small size -->
                     <div class="input-small-row mb-8">
                         <label class="input-small-label input-small-label-inline" for="platform-speed-input">Max Speed (km/h)</label>
-                        <input type="number" id="platform-speed-input" class="input-small-field input-small-field-compact" value="${platform.top_speed_kmh || ''}" min="0" step="1" placeholder="Not set">
+                        <input type="number" id="platform-speed-input" class="input-small-field input-small-field-compact" value="${platform.top_speed_kmh != null ? platform.top_speed_kmh : ''}" min="0" step="1" inputmode="numeric" placeholder="No limit">
                     </div>
 
                     ${renderAvailabilitySegment('platform', platform, { idBase: 'platform-availability' })}
-
-                    <div class="flex gap-8">
-                        <button id="save-platform-btn" class="btn btn-accent btn-sm flex-1"><i class="ti ti-device-floppy"></i> Save</button>
-                        <button id="delete-platform-btn" class="btn btn-danger btn-sm flex-1"><i class="ti ti-trash"></i> Delete</button>
-                    </div>
                 </div>
 
                 <div class="mt-8">
                     <button id="open-stations-panel-btn" class="btn btn-secondary btn-sm btn-full">Manage Logical Stations</button>
+                </div>
+
+                <!-- Deleting the platform is a platform-level action, not a
+                     property edit — kept apart at the foot as a quiet danger button. -->
+                <div class="control-section control-section-divider mt-12 pt-12">
+                    <button id="delete-platform-btn" class="btn btn-danger-ghost btn-sm w-full"><i class="ti ti-trash"></i> Delete platform</button>
                 </div>
             </div>
         `;
@@ -154,7 +154,6 @@ export class PlatformEditorHandler {
           showToast(`Cannot change availability: ${result.error}`, 'error', 4000);
           this.showEditor(platformId);
         } else {
-          showToast(`Platform ${platformId} availability updated`, 'info', 1500);
           await window.app?.refreshNetwork();
         }
       } catch (err: any) {
@@ -164,33 +163,46 @@ export class PlatformEditorHandler {
       }
     });
 
-    const saveBtn = document.getElementById('save-platform-btn') as HTMLButtonElement | null;
-    if (saveBtn) {
-      saveBtn.onclick = async () => {
-        try {
-          const updates: Record<string, unknown> = {
-            name: inputValue('platform-name-input') || '',
-            length_cm: parseFloat(inputValue('platform-length-input') || '0') || 0,
-            platform_side: inputValue('platform-side-input') || 'both',
-          };
-          const topSpeedRaw = inputValue('platform-speed-input');
-          updates.top_speed_kmh = topSpeedRaw === '' ? null : parseFloat(topSpeedRaw ?? '') || 0;
+    // Per-field auto-save (§5C / §19). Name is edited inline in the header;
+    // length is whole mm; the side select commits on `change`. No Save button,
+    // no success toast — a field-flash is the ack. Platform edits have no live
+    // subscription, so refreshNetwork is safe (it won't rebuild the panel).
+    const savePlatformField = (field: string) => (value: unknown) =>
+      this.api.updatePlatform(platformId, { [field]: value });
+    const refreshAfterSave = () => window.app?.refreshNetwork();
 
-          await this.api.updatePlatform(platformId, updates);
-          await window.app?.refreshNetwork();
-          await this.showEditor(platformId);
-          showToast('Platform updated', 'success', 2500);
-        } catch (err: any) {
-          showToast(`Failed to update platform: ${err.message}`, 'error', 5000);
-        }
-      };
-    }
+    bindFieldAutoSave(document.getElementById('platform-name-input') as HTMLInputElement | null, {
+      parse: parseText,
+      commit: savePlatformField('name'),
+      onApplied: refreshAfterSave,
+    });
+    bindFieldAutoSave(document.getElementById('platform-length-input') as HTMLInputElement | null, {
+      parse: parseRequiredMmToCm('Length'),
+      commit: savePlatformField('length_cm'),
+      onApplied: refreshAfterSave,
+    });
+    bindFieldAutoSave(document.getElementById('platform-side-input') as HTMLSelectElement | null, {
+      parse: (raw) => ({ ok: true, value: raw || 'both' }),
+      commit: savePlatformField('platform_side'),
+      event: 'change',
+      onApplied: async () => {
+        const summary = document.getElementById('platform-side-summary');
+        const sideInput = document.getElementById('platform-side-input') as HTMLSelectElement | null;
+        if (summary && sideInput) summary.textContent = sideInput.value;
+        await window.app?.refreshNetwork();
+      },
+    });
+    bindFieldAutoSave(document.getElementById('platform-speed-input') as HTMLInputElement | null, {
+      parse: parseOptionalInt('Max speed'),
+      commit: savePlatformField('top_speed_kmh'),
+      onApplied: refreshAfterSave,
+    });
 
     const deleteBtn = document.getElementById('delete-platform-btn') as HTMLButtonElement | null;
     if (deleteBtn) {
       deleteBtn.onclick = async () => {
         const confirmed = await showConfirmModal({
-          title: 'Delete Platform',
+          title: 'Delete platform',
           message: `Delete platform "${platformId}"?`,
           detail: 'Platform assignments on its track tiles will be removed.',
           confirmText: 'Delete',
@@ -510,9 +522,8 @@ export class StationGroupEditorHandler {
                 </div>
 
                 <label class="property-label">Name</label>
-                <div class="flex gap-8 mb-12">
-                    <input id="station-detail-name" class="property-input" value="${(station.name || '').replace(/"/g, '&quot;')}">
-                    <button id="station-detail-save-name-btn" class="btn btn-sm btn-accent">Save</button>
+                <div class="mb-12">
+                    <input id="station-detail-name" class="property-input w-full" value="${escAttr(station.name)}" placeholder="Add a name…">
                 </div>
 
                 ${renderAvailabilitySegment('station', station, { idBase: 'station-availability' })}
@@ -542,7 +553,7 @@ export class StationGroupEditorHandler {
 
                 <div class="mt-16 flex justify-between">
                     <button id="station-detail-back-btn" class="btn btn-sm btn-secondary">All Stations</button>
-                    <button id="station-detail-delete-btn" class="btn btn-sm btn-danger">Delete Station</button>
+                    <button id="station-detail-delete-btn" class="btn btn-sm btn-danger-ghost"><i class="ti ti-trash"></i> Delete station</button>
                 </div>
             </div>
         `;
@@ -567,7 +578,6 @@ export class StationGroupEditorHandler {
           showToast(`Cannot change availability: ${result.error}`, 'error', 4000);
           this.showStationDetail(stationId);
         } else {
-          showToast(`Station ${stationId} availability updated`, 'info', 1500);
           await window.app?.refreshNetwork();
         }
       } catch (err: any) {
@@ -577,20 +587,13 @@ export class StationGroupEditorHandler {
       }
     });
 
-    const saveBtn = document.getElementById('station-detail-save-name-btn') as HTMLButtonElement | null;
-    if (saveBtn) {
-      saveBtn.onclick = async () => {
-        const name = inputValue('station-detail-name') || '';
-        try {
-          await this.api.updateStationGroup(stationId, { name });
-          await window.app?.refreshNetwork();
-          await this.showStationDetail(stationId);
-          showToast('Station name updated', 'success', 2000);
-        } catch (err: any) {
-          showToast(`Failed to save: ${err.message}`, 'error', 5000);
-        }
-      };
-    }
+    // Station name auto-saves on blur (§5C) — no Save button, a flash as the
+    // ack. No live subscription here, so refreshNetwork is safe.
+    bindFieldAutoSave(document.getElementById('station-detail-name') as HTMLInputElement | null, {
+      parse: parseText,
+      commit: (value) => this.api.updateStationGroup(stationId, { name: value }),
+      onApplied: () => window.app?.refreshNetwork(),
+    });
 
     const addBtn = document.getElementById('station-detail-add-platform-btn') as HTMLButtonElement | null;
     if (addBtn) {

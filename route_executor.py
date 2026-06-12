@@ -1001,7 +1001,14 @@ class RouteExecutor:
             exec_state.path_cancelled = False
 
         # ---------- 70c3: dwell-complete timer check -------------------------
-        # Per design_new.md line 2133: EB freezes the dwell timer (fix #8).
+        # Per design_new.md lines 1826/1828 (EB-while-dwelling rows `0a8e`/`9f74`
+        # and the EB-while-dwelling suppression rule): the dwell timer itself is
+        # NOT frozen by EB — it is the derived `task_started_at(...)` value,
+        # which `eb.activate()` never touches, so it keeps counting toward
+        # `should_depart`. What is suppressed is dwell COMPLETION: finish_dwell /
+        # depart must not fire while `eb.active == True` (you must not depart a
+        # train under EB). Completion is served only once `eb.release()` clears
+        # the latch.
         if controller.ops.state == TrainState.RUNNING_AT_STATION and not controller.eb.active:
             self._dwell_complete_check(train, route, exec_state, controller, now)
 
@@ -1340,8 +1347,13 @@ class RouteExecutor:
     ) -> None:
         """Phase 1 step 2: finish a dwell whose timer has elapsed.
 
-        Per design_new.md line 2133: if EB is active, the dwell timer is
-        frozen — return immediately (fix #8).
+        Per design_new.md lines 1826/1828 (EB-while-dwelling rows `0a8e`/`9f74`):
+        EB does NOT freeze the dwell timer — `started_at` is the derived
+        `task_started_at(...)` value, which `eb.activate()` never touches, so the
+        timer keeps counting. What EB suppresses is dwell COMPLETION: while
+        `eb.active == True` this step returns immediately so finish_dwell / depart
+        do not fire (a train must not depart under EB); completion resumes only
+        once `eb.release()` clears the latch.
 
         Per design_new.md, on completion this step writes
         `task_runs[task_index].finished_at = now`, advances
@@ -1351,7 +1363,9 @@ class RouteExecutor:
         finished_at write per the canonical rule, so there is no separate
         write step.
         """
-        # EB freezes dwell timer (design_new.md line 2133, fix #8).
+        # EB suppresses dwell COMPLETION, not the timer (design_new.md lines
+        # 1826/1828): the timer is the derived `started_at`, untouched by EB, so
+        # it keeps counting; finish_dwell / depart only fire once EB is released.
         if controller.eb.active:
             return
 
@@ -1450,6 +1464,18 @@ class RouteExecutor:
                 # stopped at the destination block with no active path. The
                 # pathfinder returns 0 candidates for same-block paths, so
                 # create_path would never succeed in this case.
+                #
+                # The covered-stop stays HEAD-anchored (head tile in the
+                # destination block), not span-anchored: a long train at a
+                # dead-end can have its TAIL spill into the next block — which on
+                # a turnaround is the very destination it must drive back to —
+                # while its head is still short of it. Span membership alone
+                # would wrongly declare that stop complete and finish the route
+                # without the train ever turning around. The head must actually
+                # reach the destination. (The covered-stop's doc home,
+                # design_new.md line 1458, describes the train already parked AT
+                # the destination, where head and span agree; head-anchoring is
+                # the safe reading of that case and preserves turnaround safety.)
                 if not controller.is_stopped():
                     break
                 if self._get_active_path_id(train.train_id) is not None:
@@ -1457,8 +1483,12 @@ class RouteExecutor:
                 if not self._is_train_at_block(train, target_block):
                     break
             else:
-                # waypoint coverage: check current span or platform tile.
-                if not self._is_train_at_block(train, target_block):
+                # waypoint coverage (design_new.md line 1458): covered when the
+                # resolved target block is anywhere in the train's current span
+                # (a waypoint the train physically passed mid-span is covered
+                # even after its head has moved beyond it), or — for a
+                # platform-anchored task — the head sits at the platform tile.
+                if not self._target_block_in_current_span(controller, target_block):
                     if not self._is_train_at_platform_for_task(train, task):
                         break
 
@@ -1484,6 +1514,27 @@ class RouteExecutor:
             self._record_delay_class(exec_state, route, pos, now)
             exec_state._append_next_walk_task(route)
             self._advance_to_next_task(route, exec_state)
+
+    @staticmethod
+    def _target_block_in_current_span(
+        controller: TrainController, block_id: str
+    ) -> bool:
+        """True when ``block_id`` is anywhere in the train's current span.
+
+        Covered-task / covered-stop coverage reads the train's full physical
+        span, not just the head-tile block (design_new.md line 1458): the
+        target is covered when it appears in
+        ``SimulationController.get_or_create_controller(train_id)
+        .get_current_span().occupied_blocks``. Returns False when no span is
+        available yet (early bootstrap), mirroring the head-only predicate's
+        not-at-target result.
+        """
+        if controller is None:
+            return False
+        span = controller.get_current_span()
+        if span is None:
+            return False
+        return block_id in (getattr(span, "occupied_blocks", None) or [])
 
     def _dwell_entry_step(
         self,

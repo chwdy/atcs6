@@ -61,6 +61,7 @@ export interface ControllerProgressReport {
 export interface PendingPathCancelRequest {
   initiator: string;
   reason: string | null;
+  deviation_kind: "out_of_sequence" | "beyond_authorized_target" | null;
 }
 
 export interface PhaseLatches {

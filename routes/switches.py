@@ -79,6 +79,8 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": str(exc)}), 404
         except ConflictError as exc:
             return jsonify({"error": str(exc)}), 409
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
 
         return jsonify(switch.to_dict(state.network))
 

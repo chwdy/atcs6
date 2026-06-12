@@ -403,10 +403,14 @@ class SimulationController:
 
         active_path_id = self.path_dispatcher.active_path_id_by_train(train.train_id)
         if active_path_id is not None:
+            # design_new.md line 270 + step `389a`: a movement-derived deviation
+            # latch carries `deviation_kind`; forward it from the latch payload
+            # into the commit so it reaches the `path_cancellation` notification.
             self.path_dispatcher.cancel_path(
                 active_path_id,
                 initiator=payload.initiator,
                 reason=payload.reason,
+                deviation_kind=payload.deviation_kind,
             )
         else:
             # design_new.md fix #18: emit INFO notification instead of logger.debug.

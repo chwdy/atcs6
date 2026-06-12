@@ -103,6 +103,26 @@
     background-color: rgba(232, 63, 91, 0.2);
 }
 
+/* Muted destructive — a flat danger ghost for a block-level Delete that sits
+   apart from the property fields. Danger text, no resting fill; hover lifts a
+   10% danger tint (§11 "destructive actions inside a card go flat"). */
+.btn-danger-ghost {
+    background-color: transparent;
+    border: 1px solid transparent;
+    color: var(--danger-color);
+}
+
+.btn-danger-ghost:hover {
+    background-color: rgba(232, 63, 91, 0.1);
+}
+
+/* Disabled control — e.g. a predicted-coordinate Extend button when there is
+   no clean next tile. */
+.btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
 /* Success action in a panel = green TINT, not a solid fill
    (DESIGN_LANGUAGE.md §3/§12). The sanctioned solid green is the driver-facing
    hero (.tc-btn-hero), not a panel button. --success-color is #04d361. */

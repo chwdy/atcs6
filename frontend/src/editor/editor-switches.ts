@@ -8,19 +8,22 @@
 import { stateManager } from '../lib/state-manager';
 import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
-import { renderAvailabilitySegment, bindAvailabilitySegment, showConfirmModal } from '../lib/helpers';
-
-/** Read the trimmed/raw value of a text/number input by id. */
-function inputValue(id: string): string | undefined {
-  return (document.getElementById(id) as HTMLInputElement | null)?.value;
-}
+import {
+  renderAvailabilitySegment,
+  bindAvailabilitySegment,
+  showConfirmModal,
+  escapeAttr,
+  bindFieldAutoSave,
+  parseText,
+  parseRequiredMmToCm,
+  parseOptionalMmToCm,
+} from '../lib/helpers';
 
 export class SwitchEditorHandler {
   editor: EditorHost;
   _switchId: string | null;
   _unsubscribe: (() => void) | null;
   _localState: any;
-  _isDirty: boolean;
   // Switches-list panel (showSwitchesPanel): the last-fetched list plus its
   // background poller, mirroring the routes-list panel in editor-routes.ts.
   switches: any[];
@@ -32,7 +35,6 @@ export class SwitchEditorHandler {
     this._switchId = null;
     this._unsubscribe = null;
     this._localState = null;
-    this._isDirty = false;
     this.switches = [];
     this._switchesListInterval = null;
     this._switchesListIntervalMs = 1500;
@@ -194,29 +196,30 @@ export class SwitchEditorHandler {
                 ${isLocked ? '<div class="text-warning text-xs mt-8">Switch is locked and cannot be toggled.</div>' : ''}
             </div>
 
-            <!-- LENGTH PROPERTIES SECTION -->
+            <!-- LENGTH PROPERTIES SECTION — whole millimetres; every field
+                 auto-saves on blur (§5C), so there is no Save button. -->
             <div class="control-section">
-                <div class="control-section-header">Path Lengths (cm)</div>
+                <div class="control-section-header">Path Lengths (mm)</div>
                 <div class="input-small-row mb-8">
                     <label class="input-small-label input-small-label-inline" for="switch-main-length">MAIN Path Length</label>
-                    <input type="number" id="switch-main-length" class="input-small-field input-small-field-compact" value="${switchData.main_length_cm || 0}" min="0" step="0.1" placeholder="Length in cm">
+                    <input type="number" id="switch-main-length" class="input-small-field input-small-field-compact" value="${Math.round((switchData.main_length_cm || 0) * 10)}" min="0" step="1" inputmode="numeric">
                 </div>
                 <div class="input-small-row mb-8">
                     <label class="input-small-label input-small-label-inline" for="switch-diverge-length">DIVERGE Path Length</label>
-                    <input type="number" id="switch-diverge-length" class="input-small-field input-small-field-compact" value="${switchData.diverge_length_cm || 0}" min="0" step="0.1" placeholder="Length in cm">
+                    <input type="number" id="switch-diverge-length" class="input-small-field input-small-field-compact" value="${Math.round((switchData.diverge_length_cm || 0) * 10)}" min="0" step="1" inputmode="numeric">
                 </div>
             </div>
 
-            <!-- RADIUS PROPERTIES SECTION -->
+            <!-- RADIUS PROPERTIES SECTION — empty = "None (straight)" (null). -->
             <div class="control-section">
-                <div class="control-section-header">Path Radii (cm)</div>
+                <div class="control-section-header">Path Radii (mm)</div>
                 <div class="input-small-row mb-8">
                     <label class="input-small-label input-small-label-inline" for="switch-main-radius">MAIN Path Radius</label>
-                    <input type="number" id="switch-main-radius" class="input-small-field input-small-field-compact" value="${switchData.main_radius_cm || ''}" min="0" step="0.1" placeholder="None (straight)">
+                    <input type="number" id="switch-main-radius" class="input-small-field input-small-field-compact" value="${switchData.main_radius_cm != null ? Math.round(switchData.main_radius_cm * 10) : ''}" min="0" step="1" inputmode="numeric" placeholder="None (straight)">
                 </div>
                 <div class="input-small-row mb-8">
                     <label class="input-small-label input-small-label-inline" for="switch-diverge-radius">DIVERGE Path Radius</label>
-                    <input type="number" id="switch-diverge-radius" class="input-small-field input-small-field-compact" value="${switchData.diverge_radius_cm || ''}" min="0" step="0.1" placeholder="None (straight)">
+                    <input type="number" id="switch-diverge-radius" class="input-small-field input-small-field-compact" value="${switchData.diverge_radius_cm != null ? Math.round(switchData.diverge_radius_cm * 10) : ''}" min="0" step="1" inputmode="numeric" placeholder="None (straight)">
                 </div>
             </div>
 
@@ -225,19 +228,20 @@ export class SwitchEditorHandler {
                 <div class="control-section-header">Properties</div>
                 <div class="input-large-container mb-8">
                     <label class="input-large-label">Switch Name</label>
-                    <input type="text" id="switch-name" class="input-large-field" value="${switchData.name || ''}" placeholder="Switch name...">
+                    <input type="text" id="switch-name" class="input-large-field" value="${escapeAttr(switchData.name || '')}" placeholder="Switch name...">
                 </div>
                 <div class="property-item mb-8">
                     <label class="property-label">Notes</label>
-                    <input type="text" id="switch-notes" class="property-input" value="${switchData.notes || ''}" placeholder="Notes...">
+                    <input type="text" id="switch-notes" class="property-input" value="${escapeAttr(switchData.notes || '')}" placeholder="Notes...">
                 </div>
 
                 ${renderAvailabilitySegment('switch', switchData, { idBase: 'switch-availability' })}
+            </div>
 
-                <div class="flex gap-8 mt-16">
-                    <button id="save-switch-btn" class="btn btn-secondary btn-sm flex-1">Save Properties</button>
-                    <button id="delete-switch-btn" class="btn btn-danger btn-sm">Delete</button>
-                </div>
+            <!-- Deleting the switch config is a switch-level action, not a
+                 property edit — kept apart at the foot as a quiet danger button. -->
+            <div class="control-section control-section-divider mt-12 pt-12">
+                <button id="delete-switch-btn" class="btn btn-danger-ghost btn-sm w-full"><i class="ti ti-trash"></i> Delete switch</button>
             </div>
         `;
 
@@ -259,7 +263,6 @@ export class SwitchEditorHandler {
           showToast(`Cannot change availability: ${result.error}`, 'error', 4000);
           this.showEditor(switchData.switch_id);
         } else {
-          showToast(`Switch ${switchData.switch_id} availability updated`, 'info', 1500);
           await window.app?.refreshNetwork();
         }
       } catch (err: any) {
@@ -291,39 +294,46 @@ export class SwitchEditorHandler {
       };
     }
 
-    // Save properties
-    const saveBtn = document.getElementById('save-switch-btn') as HTMLButtonElement | null;
-    if (saveBtn) {
-      saveBtn.onclick = async () => {
-        const updates = {
-          name: inputValue('switch-name')?.trim() || '',
-          notes: inputValue('switch-notes')?.trim() || '',
-          main_length_cm: parseFloat(inputValue('switch-main-length') || '') || 0,
-          diverge_length_cm: parseFloat(inputValue('switch-diverge-length') || '') || 0,
-          main_radius_cm: parseFloat(inputValue('switch-main-radius') || '') || null,
-          diverge_radius_cm: parseFloat(inputValue('switch-diverge-radius') || '') || null,
-        };
-
-        try {
-          await this.api.updateSwitch(switchData.switch_id, updates);
-          // Saved: the form now matches the server, so drop the dirty guard
-          // and let the live panel re-render again on the refresh below.
-          this._isDirty = false;
-          showToast('Switch properties saved', 'success', 2000);
-          await window.app?.refreshNetwork();
-        } catch (err: any) {
-          console.error('[SwitchEditorHandler] Failed to save switch:', err);
-          showToast('Failed to save switch: ' + err.message, 'error', 5000);
-        }
-      };
-    }
+    // Per-field auto-save (§5C / §19). Each field commits on blur via the
+    // shared `bindFieldAutoSave` wiring — no Save button, no success toast, a
+    // flash as the ack. These fields don't change the canvas, so they skip
+    // refreshNetwork (which would re-render the panel through the subscription
+    // and wipe the flash); the live subscription still reflects sim-driven
+    // state once the field loses focus.
+    const sid = switchData.switch_id;
+    const saveSwitchField = (field: string) => (value: unknown) =>
+      this.api.updateSwitch(sid, { [field]: value });
+    bindFieldAutoSave(document.getElementById('switch-name') as HTMLInputElement | null, {
+      parse: parseText,
+      commit: saveSwitchField('name'),
+    });
+    bindFieldAutoSave(document.getElementById('switch-notes') as HTMLInputElement | null, {
+      parse: parseText,
+      commit: saveSwitchField('notes'),
+    });
+    bindFieldAutoSave(document.getElementById('switch-main-length') as HTMLInputElement | null, {
+      parse: parseRequiredMmToCm('Main length'),
+      commit: saveSwitchField('main_length_cm'),
+    });
+    bindFieldAutoSave(document.getElementById('switch-diverge-length') as HTMLInputElement | null, {
+      parse: parseRequiredMmToCm('Diverge length'),
+      commit: saveSwitchField('diverge_length_cm'),
+    });
+    bindFieldAutoSave(document.getElementById('switch-main-radius') as HTMLInputElement | null, {
+      parse: parseOptionalMmToCm('Main radius'),
+      commit: saveSwitchField('main_radius_cm'),
+    });
+    bindFieldAutoSave(document.getElementById('switch-diverge-radius') as HTMLInputElement | null, {
+      parse: parseOptionalMmToCm('Diverge radius'),
+      commit: saveSwitchField('diverge_radius_cm'),
+    });
 
     // Delete switch
     const deleteBtn = document.getElementById('delete-switch-btn') as HTMLButtonElement | null;
     if (deleteBtn) {
       deleteBtn.onclick = async () => {
         const confirmed = await showConfirmModal({
-          title: 'Delete Switch',
+          title: 'Delete switch',
           message: `Delete switch "${switchData.switch_id}"?`,
           detail: 'The switch configuration will be removed, but track geometry will remain.',
           confirmText: 'Delete',
@@ -359,21 +369,6 @@ export class SwitchEditorHandler {
       };
     });
 
-    // Mark the panel dirty on the first edit to any editable field. While
-    // dirty, _onSwitchUpdate skips its re-render (see the `_isDirty` guard
-    // there) so a sim tick can't rebuild the panel and wipe what the user is
-    // typing. The flag is cleared after a save and on every re-render (the
-    // `_isDirty = false` reset in the subscription setup below).
-    ['switch-name', 'switch-notes', 'switch-main-length', 'switch-diverge-length',
-     'switch-main-radius', 'switch-diverge-radius'].forEach((id) => {
-      const field = document.getElementById(id);
-      if (field) {
-        field.oninput = () => {
-          this._isDirty = true;
-        };
-      }
-    });
-
     // ═══════════════════════════════════════════════════════════════
     // SUBSCRIPTION SETUP (Phase 4)
     // ═══════════════════════════════════════════════════════════════
@@ -381,7 +376,6 @@ export class SwitchEditorHandler {
     this._cleanup();
     this._switchId = switchData.switch_id;
     this._localState = JSON.parse(JSON.stringify(switchData));
-    this._isDirty = false;
 
     this._unsubscribe =
       stateManager?.subscribe(
@@ -408,8 +402,6 @@ export class SwitchEditorHandler {
     ) {
       return;
     }
-
-    if (this._isDirty) return;
 
     this._localState = JSON.parse(JSON.stringify(newSwitch));
     this._updateSwitchDisplay(newSwitch);
@@ -620,6 +612,5 @@ export class SwitchEditorHandler {
     }
     this._switchId = null;
     this._localState = null;
-    this._isDirty = false;
   }
 }

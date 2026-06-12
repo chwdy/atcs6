@@ -64,7 +64,9 @@ def _assert_forward_block_occupied(behind_id: str):
             f"caution=None; state={block.state.value}"
         )
         bm = s.sim_controller.block_manager
-        next_fwd = bm._next_block_along_direction(block, block.caution.exit_edge)
+        next_fwd, _entry_edge = bm._next_block_along_direction(
+            block, block.caution.exit_edge
+        )
         assert next_fwd is not None, (
             f"topology walk failed to find a forward block from {behind_id} "
             f"in direction {block.caution.exit_edge!r}; the test "

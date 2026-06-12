@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 from app_state import AppState
 from enums import PlatformSide
 from services.exceptions import NotFoundError, ValidationError
+from services.validation import coerce_nonneg
 
 
 def get_platform(state: AppState, platform_id: str):
@@ -103,15 +104,20 @@ def update_platform(state: AppState, platform_id: str, *, data: Dict[str, Any]):
 
     if "name" in data:
         platform.name = data["name"]
+    # Geometry (the UI enters whole mm and sends cm). Length is required and
+    # non-negative; top speed accepts None = "no limit".
     if "length_cm" in data:
-        platform.length_cm = data["length_cm"]
+        if data["length_cm"] is None:
+            raise ValidationError("length_cm is required and cannot be empty")
+        platform.length_cm = coerce_nonneg(data["length_cm"], "length_cm")
     if "platform_side" in data:
         try:
             platform.platform_side = PlatformSide(data["platform_side"])
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
     if "top_speed_kmh" in data:
-        platform.top_speed_kmh = data["top_speed_kmh"]
+        raw = data["top_speed_kmh"]
+        platform.top_speed_kmh = None if raw is None else coerce_nonneg(raw, "top_speed_kmh")
     # Availability flags per design_new.md "Availability flag REST API
     # surface": both succeed unconditionally -- they affect only future
     # route target resolution.

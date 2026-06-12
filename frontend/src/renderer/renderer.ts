@@ -1199,6 +1199,19 @@ class Renderer {
     this.routeHandler.flashConflictTiles(tiles, durationMs);
   }
 
+  flashTiles(
+    tiles: Array<[number, number]> | null | undefined,
+    opts: {
+      rgb?: string;
+      fillAlpha?: number;
+      durationMs?: number;
+      blink?: boolean;
+      mark?: 'x' | 'none';
+    } = {}
+  ): void {
+    this.routeHandler.flashTiles(tiles, opts);
+  }
+
   highlightPath(path: { route_id?: string } | null | undefined): void {
     this.routeHandler.highlightRoute(path);
   }

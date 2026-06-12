@@ -90,5 +90,20 @@ describe('RendererRouteHandler', () => {
     expect(h.conflictFlashEnd).toBeGreaterThan(0);
     expect(r.requestRedraw).toHaveBeenCalled();
     expect(raf).toHaveBeenCalled();
+    // flashConflictTiles is the red-strobe-with-X special case.
+    expect(h.flashStyle).toMatchObject({ rgb: '232, 63, 91', blink: true, mark: 'x' });
+  });
+
+  it('flashTiles records tiles with a custom, solid, mark-free style', () => {
+    const raf = vi.fn();
+    (globalThis as { requestAnimationFrame?: unknown }).requestAnimationFrame = raf;
+    const ctx = makeCtx();
+    const r = makeRenderer(ctx);
+    const h = new RendererRouteHandler(r);
+    h.flashTiles([[2, 3]], { rgb: '130, 87, 229', fillAlpha: 0.45, durationMs: 650 });
+    expect(h.conflictFlashTiles).toEqual([[2, 3]]);
+    expect(h.conflictFlashEnd).toBeGreaterThan(0);
+    expect(h.flashStyle).toEqual({ rgb: '130, 87, 229', fillAlpha: 0.45, blink: false, mark: 'none' });
+    expect(raf).toHaveBeenCalled();
   });
 });

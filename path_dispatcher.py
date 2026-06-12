@@ -2656,13 +2656,25 @@ class PathDispatcher:
 
         if report.deviation:
             if active_path is not None:
-                # design_new.md fix #16: forward deviation_kind from report to cancel_path.
-                self.cancel_path(
-                    active_path.path_id,
-                    initiator="deviation",
-                    reason=report.deviation_reason or "",
-                    deviation_kind=report.deviation_kind,
-                )
+                # design_new.md step `389a` + lines 277-279: movement-derived
+                # deviation LATCHES the cancel instead of committing it inline.
+                # Writing the controller's `set_path_cancel_request` leaves the
+                # live path ACTIVE with its not-yet-entered reservations and
+                # switch locks, so a still-rolling deviated train keeps consuming
+                # its own locks cleanly at each entry instead of releasing future
+                # resources ahead of itself. The canonical lookahead reports
+                # `atc_limit = 0` with `atc_limit_reason_code = "deviation"`, so
+                # ATC brakes the train and the overspeed branch escalates to EB;
+                # the gated Phase-3 explicit-cancel step (`7b40`) commits the
+                # latch through `cancel_path(...)` once `is_stopped()` is true,
+                # pulling `deviation_kind` from the latch payload.
+                controller = self._get_controller(train_id)
+                if controller is not None:
+                    controller.route_hooks.phase_latches.set_path_cancel_request(
+                        initiator="deviation",
+                        reason=report.deviation_reason or "",
+                        deviation_kind=report.deviation_kind,
+                    )
             # design_new.md fix #2: do NOT return here — fall through so that
             # tail_vacated_resources for already-occupied resources still fire.
 

@@ -840,8 +840,10 @@ class BlockManager:
             # Without a network we cannot walk topology; bail safely.
             if self.network is None:
                 continue
-            next_block = self._next_block_along_direction(block, edge)
-            if next_block is None:
+            next_block, chain_entry_edge = self._next_block_along_direction(
+                block, edge
+            )
+            if next_block is None or chain_entry_edge is None:
                 block.caution = None
                 cleared.append(block.block_id)
                 continue
@@ -849,7 +851,7 @@ class BlockManager:
                 block.caution = None
                 cleared.append(block.block_id)
                 continue
-            if self._forward_train_has_reversed(next_block, edge):
+            if self._forward_train_has_reversed(next_block, chain_entry_edge):
                 block.caution = None
                 cleared.append(block.block_id)
 
@@ -863,15 +865,22 @@ class BlockManager:
             )
 
     def _forward_train_has_reversed(
-        self, next_block: Block, caution_exit_edge: str
+        self, next_block: Block, chain_entry_edge: str
     ) -> bool:
         """Return True when the OCCUPIED ``next_block`` holds a train whose
-        current ``travel_direction`` is the opposite of ``caution_exit_edge``.
+        current ``travel_direction`` points back out through the protection
+        chain's entry edge at that block (the train has flipped its cab and
+        is heading back toward the CAUTION block).
 
-        The CAUTION block's protection chain was built assuming the train
-        ahead is still moving away in ``caution_exit_edge``. If the train
-        has since flipped its cab so its travel direction now points back
-        through the CAUTION block, the protection is stale.
+        ``chain_entry_edge`` is the edge through which the connectivity walk
+        actually entered ``next_block`` (per design_new.md line 842): for a
+        straight adjacent block this is the side facing the CAUTION block, but
+        through switch legs and curves it is the entry edge the walk used, not
+        the geometric opposite of the CAUTION block's exit edge. The CAUTION
+        block's protection chain was built assuming the train ahead is still
+        moving away from that entry edge; if the train's travel direction now
+        equals that entry edge, it is heading back through the chain and the
+        protection is stale.
 
         Returns False (preserve current keep-caution behaviour) whenever the
         train, its controller, or its travel direction cannot be resolved —
@@ -897,10 +906,10 @@ class BlockManager:
         travel_direction = getattr(controller, "travel_direction", None)
         if not isinstance(travel_direction, str) or not travel_direction:
             return False
-        opposite = self._OPPOSITE_EDGE.get(caution_exit_edge.upper())
-        if opposite is None:
+        entry_edge = chain_entry_edge.upper() if chain_entry_edge else None
+        if entry_edge not in self._EDGE_OFFSETS:
             return False
-        return travel_direction.upper() == opposite
+        return travel_direction.upper() == entry_edge
 
     # ------------------------------------------------------------------
     # Topology walk helper for directional caution reevaluation
@@ -916,19 +925,29 @@ class BlockManager:
 
     def _next_block_along_direction(
         self, block: Block, direction: str
-    ) -> Optional[Block]:
-        """Return the next reachable block when walking forward from ``block``
-        through its ``direction`` exit edge.
+    ) -> Tuple[Optional[Block], Optional[str]]:
+        """Return ``(next_block, chain_entry_edge)`` when walking forward from
+        ``block`` through its ``direction`` exit edge.
+
+        ``next_block`` is the next reachable block resource. ``chain_entry_edge``
+        is the edge through which this walk actually entered that block (per
+        design_new.md line 842): for a straight adjacent block this is simply
+        the side facing ``block``, but through switch tiles and curves it is the
+        entry edge the walk used as it crossed switch legs. The caller compares
+        the occupant train's ``travel_direction`` against this entry edge to
+        decide CAUTION -> FREE, so the walk must hand it back rather than letting
+        the caller fall back to the geometric opposite of ``direction``.
 
         Walks tile connectivity through any intervening switch tiles using
-        the current ``Switch.position``. Returns None if the walk runs off the
-        network, hits a dead end, or loops back into the same block.
+        the current ``Switch.position``. Returns ``(None, None)`` if the walk
+        runs off the network, hits a dead end, or loops back into the same
+        block.
         """
         if self.network is None:
-            return None
+            return (None, None)
         direction = direction.upper() if direction else None
         if direction not in self._EDGE_OFFSETS:
-            return None
+            return (None, None)
 
         # Locate the exit tile inside `block` for this direction: the tile
         # whose own track has an edge in `direction` AND whose neighbour in
@@ -947,45 +966,50 @@ class BlockManager:
                 exit_tile = (tx, ty)
                 break
         if exit_tile is None:
-            return None
+            return (None, None)
 
-        # Step out into the neighbour tile and walk forward.
+        # Step out into the neighbour tile and walk forward. `entry_edge`
+        # tracks the edge through which the walk enters the current tile; it
+        # starts as the geometric opposite of the CAUTION block's exit edge and
+        # is updated as the walk crosses each switch leg, so when the walk
+        # reaches the next block tile it holds that block's actual chain-entry
+        # edge.
         first_neighbour = self.network.get_neighbor(
             exit_tile[0], exit_tile[1], direction
         )
         if first_neighbour is None:
-            return None
+            return (None, None)
         cur_x, cur_y = first_neighbour.x, first_neighbour.y
         entry_edge = self._OPPOSITE_EDGE[direction]
         visited: Set[Tuple[int, int]] = set()
 
         while True:
             if (cur_x, cur_y) in visited:
-                return None
+                return (None, None)
             visited.add((cur_x, cur_y))
             tile = self.network.get_track(cur_x, cur_y)
             if tile is None:
-                return None
+                return (None, None)
             # Plain block tile: this is the next reachable block.
             if tile.block_section_id and not tile.is_switch:
-                return self._block_registry.get(tile.block_section_id)
+                return (self._block_registry.get(tile.block_section_id), entry_edge)
             if tile.block_section_id and tile.is_switch:
                 # Block-internal switch tile: still part of a block; treat as
                 # reaching that block.
-                return self._block_registry.get(tile.block_section_id)
+                return (self._block_registry.get(tile.block_section_id), entry_edge)
             # Bare switch tile (boundary between blocks). Cross via the live
             # active exit determined by the current Switch.position.
             if tile.is_switch:
                 exits = tile.get_exits(entry_edge, use_switch_state=True)
                 if not exits:
-                    return None
+                    return (None, None)
                 exit_edge = exits[0]
                 step = self.network.get_neighbor(cur_x, cur_y, exit_edge)
                 if step is None:
-                    return None
+                    return (None, None)
                 cur_x, cur_y = step.x, step.y
                 entry_edge = self._OPPOSITE_EDGE[exit_edge]
                 continue
             # Plain track tile not assigned to any block: nothing protectable
             # ahead.
-            return None
+            return (None, None)
