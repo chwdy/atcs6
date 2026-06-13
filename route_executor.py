@@ -1431,9 +1431,10 @@ class RouteExecutor:
         if not task.should_depart(now, dwell_started_at):
             return
 
-        # Mark the dwell row finished and advance.
-        row.finished_at = now
-        exec_state._append_next_walk_task(route)
+        # Mark the dwell row finished and advance through the canonical
+        # finished_at + delay_class + walk-append writer (delay_class no-ops
+        # for dwell rows per `_record_delay_class`).
+        self.advance_walk_position(exec_state, route, row_pos, now)
 
         # Advance the per-run cursor based on the route mode.
         self._advance_to_next_task(route, exec_state)
@@ -1534,9 +1535,7 @@ class RouteExecutor:
                     break
             if row is None:
                 break
-            row.finished_at = now
-            self._record_delay_class(exec_state, route, pos, now)
-            exec_state._append_next_walk_task(route)
+            self.advance_walk_position(exec_state, route, pos, now)
             self._advance_to_next_task(route, exec_state)
 
     @staticmethod
@@ -2045,12 +2044,7 @@ class RouteExecutor:
         now = self._now()
         idx = projection.walk_position
         self._sync_task_runs(route, exec_state)
-        if 0 <= idx < len(exec_state.task_runs):
-            row = exec_state.task_runs[idx]
-            if row.finished_at is None:
-                row.finished_at = now
-                self._record_delay_class(exec_state, route, idx, now)
-                exec_state._append_next_walk_task(route)
+        self.advance_walk_position(exec_state, route, idx, now)
 
         self._advance_to_next_task(route, exec_state)
 
@@ -2190,17 +2184,33 @@ class RouteExecutor:
                 )
             return False
 
-        # Record finished_at on the matched stop row via _enter_task_arrival
-        # (fix #27: extracted helper; per design_new.md line ~1479). Both the
-        # cursor and the match index are list positions in `task_runs`, not
-        # `Route.tasks` indices, so this loop correctly targets the current
-        # walk's rows even after CIRCULAR / ROUND_TRIP wrap-around.
+        # Finish the matched stop row — plus any intervening walk-positions the
+        # cursor lagged on — through the canonical `advance_walk_position(...)`
+        # writer. The intervening sweep is a safety net: a waypoint the train
+        # passed and then vacated is no longer in its span, so Phase 1's
+        # covered-task advance (which keys on span membership) can no longer
+        # finish it; finishing it here keeps the derived progress cursor from
+        # stalling behind a vacated waypoint. Both the cursor and the match
+        # index are list positions in `task_runs`, not `Route.tasks` indices, so
+        # this loop targets the current walk's rows even after CIRCULAR /
+        # ROUND_TRIP wrap-around.
         for pos in range(start_pos, match_pos + 1):
             if not (0 <= pos < len(exec_state.task_runs)):
                 continue
             row = exec_state.task_runs[pos]
-            if row.finished_at is None:
-                self._enter_task_arrival(exec_state, route, pos, event_time)
+            if row.finished_at is not None:
+                continue
+            # The matched stop (pos == match_pos) is always finished here. An
+            # intervening lagged row is force-finished ONLY when it is a
+            # `waypoint` the train passed and vacated — the sole case Phase 1's
+            # span-keyed covered-task advance can no longer reach. A non-waypoint
+            # intervening row is outside that safety net and must not be
+            # force-finished (it would fabricate an arrival/`delay_class`).
+            if pos != match_pos:
+                task = route.get_task_at(row.task_index)
+                if task is None or task.task_kind != "waypoint":
+                    continue
+            self.advance_walk_position(exec_state, route, pos, event_time)
         # Phase 3 must NOT call enter_station_dwell — that fires from the next
         # eligible Phase 1 dwell-entry step.
         return True
@@ -2245,19 +2255,24 @@ class RouteExecutor:
         else:
             row.delay_class = "on_time"
 
-    def _enter_task_arrival(
+    def advance_walk_position(
         self,
         exec_state: RouteExecutionState,
         route: "Route",
         walk_position: int,
         now: float,
     ) -> None:
-        """Record task arrival: write `task_runs[walk_position].finished_at = now`.
+        """Advance one walk-position: write `task_runs[walk_position].finished_at`,
+        classify `delay_class`, and append the next walk task.
 
-        Per design_new.md line ~1479 (`_enter_task_arrival` helper): this is the
-        canonical and only writer of `task_runs[i].finished_at` for the
-        stop-completion path (fix #27). Also triggers `_append_next_walk_task`
-        so CIRCULAR/ROUND_TRIP routes grow the walk-position list correctly.
+        This is `RouteRun.advance_walk_position(...)` per design_new.md
+        "Route-run state" — the single canonical writer of the
+        finished_at + delay_class + walk-append sequence. Every completion site
+        (stop arrival, head-advance, covered-task advance, dwell-complete)
+        routes through it so the three steps cannot drift. Idempotent: a
+        walk-position whose `finished_at` is already set is a no-op.
+        `_record_delay_class` no-ops for `dwell` rows and tasks without
+        `task_time`.
         """
         if not (0 <= walk_position < len(exec_state.task_runs)):
             return

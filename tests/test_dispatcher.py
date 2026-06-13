@@ -1728,25 +1728,21 @@ class TestBestEffortAcquisitionContract:
         )
 
 
-class TestSameBlockSyntheticAuthority:
-    """`create_path(...)` same-block / same-tile synthetic authority per
-    design_new.md:958-:971 (M8).
+class TestSameBlockRejected:
+    """`create_path(...)` must reject a same-block request with
+    `invalid_request` (design_new.md create_path flow item 8, lines 982 and
+    1012; invariant 9 at line 983: dispatcher "never synthesizes an in-place
+    frame from the train's own covered tiles").
 
-    When the requested destination block is already inside the train's
-    current occupied span, the pathfinder cannot walk a block to itself, so
-    dispatcher must instead build a synthetic local path with one block
-    resource whose `path_tiles` slice covers the local movement, derived
-    from the train's occupied span plus `requested_destination_direction`.
-    For a movement that stays inside a single tile, dispatcher must also
-    have a selected cab whose direction agrees with
-    `requested_destination_direction`, else reject with a defined reason
-    (design_new.md:961).
+    A destination already covered by the train's head block is a covered stop,
+    finished by Phase 1's covered-task index advance — there is no dispatcher
+    authority for it. A non-head spanned block (the tail) is a turnaround and
+    still routes through the normal candidate search.
     """
 
     def _rebuild_geometry(self, network):
-        """Populate `Block.ordered_tiles` the way a real edited network
-        does, so block-relative `forward`/`reverse` resolve to real compass
-        edges (the bare fixtures only set `block_section_id`)."""
+        """Populate `Block.ordered_tiles` the way a real edited network does,
+        so block-relative `forward`/`reverse` resolve to real compass edges."""
         gm = network._get_block_geometry_manager()
         for block_id in list(network.blocks.keys()):
             gm.rebuild_block_ordered_tiles(block_id)
@@ -1761,12 +1757,14 @@ class TestSameBlockSyntheticAuthority:
         block_id,
         facing=Direction.EAST,
         cab=None,
+        occupied_blocks=None,
     ):
         """Place a train whose occupied span covers `block_id` and seed a
         controller span so the dispatcher reads it as the current block.
 
-        Mirrors `TestBestEffortAcquisitionContract._make_probe_train` but
-        lets the caller span a multi-tile block and pick a cab.
+        `occupied_blocks` defaults to the single `[block_id]`; pass an explicit
+        list to span more than one block (e.g. head in one block, tail in
+        another) so the head block and a spanned tail block differ.
         """
         car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="T_SAME", consist=[car], max_speed=60.0)
@@ -1782,39 +1780,34 @@ class TestSameBlockSyntheticAuthority:
             head_tile,
             facing_direction=facing,
             occupied_tiles=list(occupied_tiles),
-            occupied_blocks=[block_id],
+            occupied_blocks=list(occupied_blocks) if occupied_blocks is not None else [block_id],
         )
         return train, controller
 
-    def _cab_block_direction(self, controller, network):
-        """The block-relative ("forward"/"reverse") direction the selected
-        cab faces, mapped from the head end's outward compass edge through
-        the head block's `block_direction_for_compass_exit`. This is the
-        same disambiguation signal the dispatcher must use for a same-tile
-        move (design_new.md:961)."""
-        head_end = controller._head_end_label()
-        facing = controller._orientation_for_head_end(head_end)
-        edge = controller._direction_to_edge(facing) if facing else None
-        head_tile = controller._get_head_tile()
-        track = network.get_track(*head_tile)
-        block = network.blocks[track.block_section_id]
-        return block.block_direction_for_compass_exit(edge)
+    def _assert_same_block_rejected(self, result, dispatcher):
+        assert not result.success, (
+            f"same-block create_path must be rejected per design_new.md:982; "
+            f"got success result_kind={result.result_kind!r}"
+        )
+        assert (
+            result.failure_kind == PathAcquisitionFailureKind.INVALID_REQUEST
+        ), (
+            f"rejection must use INVALID_REQUEST (design_new.md:1012); got "
+            f"failure_kind={result.failure_kind!r}, reason={result.reason!r}"
+        )
+        assert result.path_id is None
+        assert not result.resource_sequence  # failure → [] (or None) per contract
+        # No live path record was created for the train.
+        assert all(p.train_id != "T_SAME" for p in dispatcher.paths.values())
 
-    def _opposite_of_cab_block_direction(self, controller, network):
-        d = self._cab_block_direction(controller, network)
-        return "reverse" if d == "forward" else "forward"
-
-    def test_same_block_forward_builds_one_block_synthetic_path(
+    def test_same_block_forward_rejected(
         self, simple_linear_network, dispatcher,
     ):
-        """A train spanning the multi-tile BLOCK_B that requests BLOCK_B as
-        its own destination must NOT get NO_VIABLE_PATH; dispatcher builds a
-        synthetic one-block authority over the local movement
-        (design_new.md:960-:961).
-        """
+        """A train spanning multi-tile BLOCK_B that requests BLOCK_B (forward)
+        as its own destination is rejected with invalid_request, not
+        synthesized (design_new.md:982)."""
         dispatcher.network = simple_linear_network
         self._rebuild_geometry(simple_linear_network)
-        # Train body covers both BLOCK_B tiles; head at (2,0) facing EAST.
         self._seed_train_in_block(
             simple_linear_network,
             dispatcher,
@@ -1829,38 +1822,13 @@ class TestSameBlockSyntheticAuthority:
             requested_destination_direction="forward",
             acquisition_mode=AcquisitionMode.BEST_EFFORT,
         )
+        self._assert_same_block_rejected(result, dispatcher)
 
-        assert result.success, (
-            f"Same-block create_path must build synthetic local authority "
-            f"per design_new.md:960-:961, not NO_VIABLE_PATH. Got "
-            f"failure_kind={result.failure_kind!r}, reason={result.reason!r}"
-        )
-        assert result.authority_end_block_id == "BLOCK_B"
-        assert result.requested_destination_block_id == "BLOCK_B"
-        # Exactly one block resource in the live sequence.
-        assert result.resource_sequence is not None
-        assert len(result.resource_sequence) == 1
-        entry = result.resource_sequence[0]
-        assert entry.resource_type == "block"
-        assert entry.resource_id == "BLOCK_B"
-        # Forward traversal of BLOCK_B exits EAST and enters from WEST.
-        assert entry.exit_edge == "E", (
-            f"forward exit edge must be E (BLOCK_B increasing direction); "
-            f"got {entry.exit_edge!r}"
-        )
-        assert entry.entry_edge == "W"
-        # path_tiles cover the local block tiles in forward (ordered) order.
-        assert [(t.x, t.y) for t in entry.path_tiles] == [(1, 0), (2, 0)]
-        # A live ACTIVE path record exists keyed by the returned id.
-        live = dispatcher.paths.get(result.path_id)
-        assert live is not None and live.status == PathStatus.ACTIVE
-
-    def test_same_block_reverse_builds_reversed_tile_slice(
+    def test_same_block_reverse_rejected(
         self, simple_linear_network, dispatcher,
     ):
-        """A reverse same-block request must build the local frame in the
-        decreasing direction of the block's `ordered_tiles`
-        (design_new.md:958 direction interpretation)."""
+        """A reverse same-block request is rejected too — direction does not
+        unlock a synthetic in-place frame (design_new.md:982)."""
         dispatcher.network = simple_linear_network
         self._rebuild_geometry(simple_linear_network)
         self._seed_train_in_block(
@@ -1877,27 +1845,11 @@ class TestSameBlockSyntheticAuthority:
             requested_destination_direction="reverse",
             acquisition_mode=AcquisitionMode.BEST_EFFORT,
         )
+        self._assert_same_block_rejected(result, dispatcher)
 
-        assert result.success, (
-            f"reverse same-block create_path must succeed; got "
-            f"failure_kind={result.failure_kind!r}, reason={result.reason!r}"
-        )
-        assert len(result.resource_sequence) == 1
-        entry = result.resource_sequence[0]
-        assert entry.resource_id == "BLOCK_B"
-        # Reverse traversal exits WEST and enters from EAST.
-        assert entry.exit_edge == "W", (
-            f"reverse exit edge must be W; got {entry.exit_edge!r}"
-        )
-        assert entry.entry_edge == "E"
-        # Tiles in decreasing (reversed) order.
-        assert [(t.x, t.y) for t in entry.path_tiles] == [(2, 0), (1, 0)]
-
-    def test_same_tile_no_cab_is_rejected(self, network, dispatcher):
-        """When the local movement stays inside a SINGLE tile and no cab is
-        selected, dispatcher must reject with the documented reason rather
-        than guessing the frame (design_new.md:961)."""
-        # Single-tile block A at (0,0).
+    def test_same_tile_no_cab_rejected(self, network, dispatcher):
+        """A single-tile same-block request with no cab is rejected as
+        invalid_request (the same-block rule, not a cab-direction question)."""
         network.add_track(TrackSegment(x=0, y=0, track_bits=TRACK_EW))
         network.add_track(TrackSegment(x=1, y=0, track_bits=TRACK_EW))
         network.create_block("BLOCK_A", "Block A")
@@ -1906,7 +1858,6 @@ class TestSameBlockSyntheticAuthority:
         network.get_track(1, 0).block_section_id = "BLOCK_B"
         self._rebuild_geometry(network)
 
-        # Train occupies only the single-tile BLOCK_A; cab=None (no cab).
         self._seed_train_in_block(
             network,
             dispatcher,
@@ -1922,20 +1873,12 @@ class TestSameBlockSyntheticAuthority:
             requested_destination_direction="forward",
             acquisition_mode=AcquisitionMode.BEST_EFFORT,
         )
+        self._assert_same_block_rejected(result, dispatcher)
 
-        assert not result.success, (
-            "same-tile synthetic movement with no selected cab must be "
-            "rejected per design_new.md:961"
-        )
-        assert "cab" in (result.reason or "").lower(), (
-            f"rejection reason must name the missing cab; got "
-            f"{result.reason!r}"
-        )
-
-    def test_same_tile_cab_disagrees_is_rejected(self, network, dispatcher):
-        """Single-tile move with a selected cab whose direction disagrees
-        with `requested_destination_direction` must be rejected
-        (design_new.md:961)."""
+    def test_same_tile_with_cab_rejected(self, network, dispatcher):
+        """A single-tile same-block request WITH a selected cab is still
+        rejected — the same-block rule does not depend on cab state
+        (design_new.md:982)."""
         network.add_track(TrackSegment(x=0, y=0, track_bits=TRACK_EW))
         network.add_track(TrackSegment(x=1, y=0, track_bits=TRACK_EW))
         network.create_block("BLOCK_A", "Block A")
@@ -1944,7 +1887,7 @@ class TestSameBlockSyntheticAuthority:
         network.get_track(1, 0).block_section_id = "BLOCK_B"
         self._rebuild_geometry(network)
 
-        _, controller = self._seed_train_in_block(
+        self._seed_train_in_block(
             network,
             dispatcher,
             head_tile=(0, 0),
@@ -1953,68 +1896,20 @@ class TestSameBlockSyntheticAuthority:
             facing=Direction.EAST,
             cab="A",
         )
-        # The cab's block-relative direction is fixed by the block geometry
-        # (single-tile `ordered_tiles` anchor) — request the OPPOSITE so the
-        # cab and requested direction disagree, whatever the anchor resolved to.
-        disagreeing = self._opposite_of_cab_block_direction(controller, network)
 
         result = dispatcher.create_path(
             train_id="T_SAME",
             requested_destination_block_id="BLOCK_A",
-            requested_destination_direction=disagreeing,
+            requested_destination_direction="forward",
             acquisition_mode=AcquisitionMode.BEST_EFFORT,
         )
-
-        assert not result.success, (
-            "same-tile move whose cab direction disagrees with the "
-            "requested direction must be rejected per design_new.md:961"
-        )
-
-    def test_same_tile_cab_agrees_succeeds(self, network, dispatcher):
-        """Single-tile move with a selected cab whose direction agrees with
-        the requested direction builds a synthetic one-tile authority."""
-        network.add_track(TrackSegment(x=0, y=0, track_bits=TRACK_EW))
-        network.add_track(TrackSegment(x=1, y=0, track_bits=TRACK_EW))
-        network.create_block("BLOCK_A", "Block A")
-        network.get_track(0, 0).block_section_id = "BLOCK_A"
-        network.create_block("BLOCK_B", "Block B")
-        network.get_track(1, 0).block_section_id = "BLOCK_B"
-        self._rebuild_geometry(network)
-
-        _, controller = self._seed_train_in_block(
-            network,
-            dispatcher,
-            head_tile=(0, 0),
-            occupied_tiles=[(0, 0)],
-            block_id="BLOCK_A",
-            facing=Direction.EAST,
-            cab="A",
-        )
-        # Request exactly the cab's block-relative direction so they agree.
-        agreeing = self._cab_block_direction(controller, network)
-
-        result = dispatcher.create_path(
-            train_id="T_SAME",
-            requested_destination_block_id="BLOCK_A",
-            requested_destination_direction=agreeing,
-            acquisition_mode=AcquisitionMode.BEST_EFFORT,
-        )
-
-        assert result.success, (
-            f"same-tile move with an agreeing cab ({agreeing!r}) must "
-            f"succeed; got failure_kind={result.failure_kind!r}, "
-            f"reason={result.reason!r}"
-        )
-        assert len(result.resource_sequence) == 1
-        assert result.resource_sequence[0].resource_id == "BLOCK_A"
-        assert result.authority_end_block_id == "BLOCK_A"
+        self._assert_same_block_rejected(result, dispatcher)
 
     def test_normal_different_block_still_works(
         self, simple_linear_network, dispatcher,
     ):
-        """The same-block branch must NOT disturb the ordinary different-block
-        path build: a train in BLOCK_A routing to BLOCK_C still walks the
-        network normally."""
+        """Rejecting same-block must NOT disturb the ordinary different-block
+        path build: a train in BLOCK_A routing to BLOCK_C still walks."""
         dispatcher.network = simple_linear_network
         self._rebuild_geometry(simple_linear_network)
         self._seed_train_in_block(
@@ -2042,10 +1937,109 @@ class TestSameBlockSyntheticAuthority:
             if e.resource_type == "block"
         ]
         assert block_ids[-1] == "BLOCK_C"
-        # More than one block resource -> this went through the normal walk,
-        # not the single-block synthetic branch.
         assert len(block_ids) >= 2
 
+    def test_tail_block_target_falls_through_not_rejected(
+        self, simple_linear_network, dispatcher,
+    ):
+        """A multi-block-span request targeting the TAIL block (head != dest)
+        must NOT hit the head-keyed same-block rejection: only the head block is
+        a covered stop, so a spanned tail block is a turnaround that falls
+        through to the normal candidate search (design_new.md item 8)."""
+        dispatcher.network = simple_linear_network
+        self._rebuild_geometry(simple_linear_network)
+        # Span covers BLOCK_A (tail, tile (0,0)) and BLOCK_B (head, tiles
+        # (1,0)/(2,0)); head at (2,0), so the head block is BLOCK_B, not BLOCK_A.
+        self._seed_train_in_block(
+            simple_linear_network,
+            dispatcher,
+            head_tile=(2, 0),
+            occupied_tiles=[(0, 0), (1, 0), (2, 0)],
+            block_id="BLOCK_B",
+            occupied_blocks=["BLOCK_A", "BLOCK_B"],
+        )
 
+        result = dispatcher.create_path(
+            train_id="T_SAME",
+            requested_destination_block_id="BLOCK_A",
+            requested_destination_direction="reverse",
+            acquisition_mode=AcquisitionMode.BEST_EFFORT,
+        )
 
+        # The head block is BLOCK_B, so the covered-stop rejection (keyed on the
+        # head block only) must NOT fire for the tail block BLOCK_A. The request
+        # falls through to candidate search, which may succeed or return
+        # NO_VIABLE_PATH — but never the covered-stop INVALID_REQUEST.
+        assert (
+            result.failure_kind != PathAcquisitionFailureKind.INVALID_REQUEST
+        ), (
+            f"tail-block target was wrongly rejected as a same-block covered "
+            f"stop (reason={result.reason!r}); the rejection must be keyed on the "
+            f"head block only (design_new.md item 8)"
+        )
 
+    def test_cabless_start_resolves_to_shorter_walk_tail_end(
+        self, network, dispatcher,
+    ):
+        """design_new.md create_path item 4: a cabless train plans from whichever
+        physical span end has the shorter successful graph walk to the target.
+
+        Layout A-B-C-D (B and C multi-tile). The train spans B+C with its head in
+        C; reaching A from the head end C would have to walk back through the
+        train's own body, while the tail end B reaches A directly. So both the
+        start-side resolver and the resulting path must plan from the tail block
+        B, not the head block C — this is what wiring `_resolve_create_start_block`
+        into `create_path` adds; a head-only resolution would plan from C.
+        """
+        for x in range(6):
+            network.add_track(TrackSegment(x=x, y=0, track_bits=TRACK_EW))
+        for bid, xs in [
+            ("BLOCK_A", [0]), ("BLOCK_B", [1, 2]),
+            ("BLOCK_C", [3, 4]), ("BLOCK_D", [5]),
+        ]:
+            network.create_block(bid, bid)
+            for x in xs:
+                network.get_track(x, 0).block_section_id = bid
+        self._rebuild_geometry(network)
+        train, _ = self._seed_train_in_block(
+            network,
+            dispatcher,
+            head_tile=(4, 0),
+            occupied_tiles=[(1, 0), (2, 0), (3, 0), (4, 0)],
+            block_id="BLOCK_C",
+            occupied_blocks=["BLOCK_B", "BLOCK_C"],
+        )
+
+        # Head is in BLOCK_C, but the cabless dual-end comparison resolves the
+        # start side to the shorter-walk tail end BLOCK_B.
+        assert dispatcher._get_current_block_id_for_train(train) == "BLOCK_C"
+        start = dispatcher._resolve_create_start_block(
+            train, "T_SAME", "BLOCK_A", "BLOCK_C", False
+        )
+        assert start == "BLOCK_B", (
+            f"cabless start must resolve to the shorter-walk tail end BLOCK_B; "
+            f"got {start!r}"
+        )
+
+        # And create_path plans the path from that tail end: the first block in
+        # the live resource_sequence is BLOCK_B (a head-only resolution would
+        # begin at BLOCK_C).
+        result = dispatcher.create_path(
+            train_id="T_SAME",
+            requested_destination_block_id="BLOCK_A",
+            requested_destination_direction="reverse",
+            acquisition_mode=AcquisitionMode.BEST_EFFORT,
+        )
+        assert result.success, (
+            f"cabless turnaround to BLOCK_A must plan from the tail; got "
+            f"failure_kind={result.failure_kind!r}, reason={result.reason!r}"
+        )
+        seq_blocks = [
+            e.resource_id for e in result.resource_sequence
+            if e.resource_type == "block"
+        ]
+        assert seq_blocks and seq_blocks[0] == "BLOCK_B", (
+            f"path must start from the dual-end-resolved tail block BLOCK_B; got "
+            f"resource_sequence blocks {seq_blocks}"
+        )
+        assert result.authority_end_block_id == "BLOCK_A"

@@ -508,6 +508,50 @@ class TestBlockService:
         with pytest.raises(NotFoundError):
             block_service.delete_block(state, "GHOST")
 
+    def test_delete_block_cascades_to_owning_platform(self, state):
+        # A station/platform owning exactly one block: deleting that block must
+        # drop it from the platform's block_assignments and, since that empties
+        # the platform, delete the platform too (design_new.md:644).
+        from track import TRACK_NS
+
+        state.network.add_track(TrackSegment(0, 0, TRACK_NS))
+        platform = state.network.add_station(
+            0, 0, station_id="STA_CASCADE", name="Cascade", length_cm=200.0
+        )
+        block_id = f"{platform.platform_id}_BLOCK"
+        assert block_id in state.network.blocks
+        assert platform.platform_id in state.network.platforms
+        assert block_id in platform.get_all_assigned_blocks()
+
+        assert block_service.delete_block(state, block_id) is True
+
+        assert block_id not in state.network.blocks
+        # The platform held only this block, so the cascade removed it too.
+        assert platform.platform_id not in state.network.platforms
+
+    def test_remove_last_tile_cascades_to_owning_platform(self, state):
+        # Removing the LAST tile of a platform-owned block auto-deletes the
+        # block; that auto-delete must run the same downward platform cascade as
+        # delete_block, so the emptied platform is torn down instead of left with
+        # a dangling block_assignments entry (design_new.md:644).
+        from track import TRACK_NS
+
+        state.network.add_track(TrackSegment(0, 0, TRACK_NS))
+        platform = state.network.add_station(
+            0, 0, station_id="STA_RMTILE", name="RmTile", length_cm=200.0
+        )
+        block_id = f"{platform.platform_id}_BLOCK"
+        assert block_id in state.network.blocks
+        assert platform.platform_id in state.network.platforms
+
+        # Remove the block's only tile -> block becomes empty -> auto-deleted.
+        block_service.remove_tracks_from_block(state, block_id, positions=[[0, 0]])
+
+        assert block_id not in state.network.blocks
+        # The auto-delete cascaded through the service layer: the now-empty
+        # platform is gone, not left dangling.
+        assert platform.platform_id not in state.network.platforms
+
     def test_add_tracks_unknown_block_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
             block_service.add_tracks_to_block(state, "GHOST", positions=[[0, 0]])
@@ -699,3 +743,53 @@ class TestPlatformService:
     def test_remove_tile_unknown_platform_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
             platform_service.remove_tile(state, "GHOST", x=0, y=0)
+
+
+class TestRouteServiceLeadingDwell:
+    """design_new.md:1310 — a route's first task must not be a dwell."""
+
+    def test_create_route_rejects_leading_dwell(self, state):
+        with pytest.raises(ValidationError):
+            train_route_service.create_route(
+                state,
+                name="bad-leading-dwell",
+                tasks=[
+                    {"task_kind": "dwell", "task_location": "B1"},
+                    {"task_kind": "stop", "task_location": "B2"},
+                ],
+            )
+
+    def test_update_route_rejects_leading_dwell(self, state):
+        route = train_route_service.create_route(
+            state,
+            name="ok",
+            tasks=[{"task_kind": "stop", "task_location": "B1"}],
+        )
+        with pytest.raises(ValidationError):
+            train_route_service.update_route(
+                state,
+                route.route_id,
+                # A new name alongside the invalid task list: the rejection must
+                # not partially apply the name before validating the tasks.
+                name="renamed",
+                tasks=[
+                    {"task_kind": "dwell", "task_location": "B1"},
+                    {"task_kind": "stop", "task_location": "B2"},
+                ],
+            )
+        # Validate-then-mutate: the rejected update left the live route untouched
+        # (name and the original single stop task both unchanged).
+        assert route.name == "ok"
+        assert [t.task_kind for t in route.tasks] == ["stop"]
+
+    def test_create_route_allows_leading_stop_then_dwell(self, state):
+        route = train_route_service.create_route(
+            state,
+            name="good",
+            tasks=[
+                {"task_kind": "stop", "task_location": "B1"},
+                {"task_kind": "dwell", "task_location": "B1"},
+            ],
+        )
+        assert route.tasks[0].task_kind == "stop"
+        assert route.tasks[1].task_kind == "dwell"

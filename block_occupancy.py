@@ -181,9 +181,10 @@ class BlockOccupancyDetector:
 
         Entered blocks attribute to `Block.reserved_for_train` (the train that
         reserved the block it is entering), falling back to the train whose live
-        span covers the block. An entered block that resolves to no train is
-        dropped from the confirmed set so the next tick re-diffs and retries it,
-        rather than committing it to the wrong train. Vacated blocks attribute to
+        span covers the block. An entered block that resolves to no modeled train
+        is committed to the reserved `UNKNOWN_TRAIN_ID` sentinel and kept
+        confirmed (an unmodeled occupant), so it blocks reservation / clean entry
+        there until its detector current clears. Vacated blocks attribute to
         `Block.occupied_by`; a vacate whose block is already clear is a benign
         double-clear and is skipped.
         """

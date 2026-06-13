@@ -362,6 +362,52 @@ DEFAULT_SPEED_PROFILE = SpeedProfile(
 )
 
 
+def make_default_speed_profile(train_id: str, max_speed_kmh: float) -> SpeedProfile:
+    """Build a train's default `SpeedProfile` (design_new.md "SpeedProfile").
+
+    The `power_speed_curve` is linear from 0% -> 0 km/h to 100% -> the owning
+    train's configured `max_speed`, so manual `power_percent` mode is anchored
+    to THIS train's top speed instead of the module-global `DEFAULT_SPEED_PROFILE`
+    whose curve maps 100% -> 100 km/h regardless of the train. This is the single
+    home for that default: `SimulationController.add_train` registers one per
+    train, and the `_get_speed_profile` resolvers fall back to it for trains
+    created by paths that do not seed a profile (layout load, step replay,
+    editor add-without-place).
+    """
+    # `Train.from_dict` returns None for an explicit `"max_speed": null` (the
+    # 100.0 default only applies when the key is absent), and `float(None)`
+    # raises. Treat a missing / non-numeric max_speed as the module-global top
+    # speed so the curve stays well-formed instead of crashing.
+    try:
+        top_speed = float(max_speed_kmh)
+    except (TypeError, ValueError):
+        top_speed = 100.0
+    return SpeedProfile(
+        profile_id=f"default_{train_id}",
+        name=f"Default ({train_id})",
+        power_speed_curve=[(0.0, 0.0), (100.0, top_speed)],
+    )
+
+
+def resolve_memoized_default_profile(cache_holder, train) -> SpeedProfile:
+    """Per-train default `SpeedProfile`, memoized on `cache_holder`.
+
+    `TrainController` and `TrainPhysics` both fall back here when a train has no
+    assigned / resolvable profile (layout load, step replay, editor
+    add-without-place). The result is cached on the holder under
+    `_default_profile_cache` and rebuilt only when the train's id or `max_speed`
+    changes, so the per-tick read does not re-allocate and re-sort a
+    `SpeedProfile` every tick. This is the single home for that fallback, so the
+    controller and physics read paths cannot drift.
+    """
+    key = (train.train_id, train.max_speed)
+    cache = getattr(cache_holder, "_default_profile_cache", None)
+    if cache is None or cache[0] != key:
+        cache = (key, make_default_speed_profile(train.train_id, train.max_speed))
+        cache_holder._default_profile_cache = cache
+    return cache[1]
+
+
 class SpeedProfileRegistry:
     def __init__(self):
         self._profiles: Dict[str, SpeedProfile] = {}

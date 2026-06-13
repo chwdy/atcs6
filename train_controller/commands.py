@@ -233,14 +233,12 @@ class OperatorCommands:
         return CommandResult(True, "Power on")
 
     def _execute_power_off(self, payload, event_time) -> CommandResult:
-        c = self._c
-        train = c._get_train()
-        if train is None:
-            return CommandResult(False, "Train not found")
-        if not c.is_stopped():
-            return CommandResult(False, "Cannot power off while moving")
-        self._apply_power_off_request()
-        return CommandResult(True, "Power off accepted")
+        # The drained-queue path delegates to the canonical command method so
+        # the stopped-only check AND the already-OFF no-op guard
+        # (design_new.md:1799) stay in one place. Otherwise an enqueued
+        # `power_off` drained on an already-OFF train would arm a stale
+        # `power_off` latch that tears a later freshly-powered train back to OFF.
+        return self.power_off_cmd()
 
     def _execute_activate_emergency_cmd(self, payload, event_time) -> CommandResult:
         return self._c.eb.activate()

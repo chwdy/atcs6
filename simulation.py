@@ -255,7 +255,8 @@ class SimulationController:
 
     def enter_safe_state(self) -> None:
         """Put all hardware outputs into their safe state — every block track
-        voltage at 0 and every switch motor de-energized (design_new.md:2235).
+        voltage at 0 and every switch motor de-energized (design_new.md Power,
+        Hardware interface boundary).
 
         The runtime issues this when it stops driving outputs (simulation stop
         or process shutdown). It routes through the power controllers, the only
@@ -353,13 +354,17 @@ class SimulationController:
                 self.path_dispatcher.on_controller_progress(report)
 
         # 3b. Post-physics usable-authority stop check + path completion.
+        # A pending path-cancel outranks completion (design_new.md step `c6f1`):
+        # when `pending_path_cancel_request` is set, skip completion so step 3c
+        # commits the cancellation instead of finishing the stop.
         if self.path_dispatcher is not None:
-            if self.path_dispatcher.active_path_id_by_train(train.train_id) is not None:
-                if controller.is_stopped_at_authority_end():
-                    event_time = time.time()
-                    self.path_dispatcher.try_complete_active_path(
-                        train.train_id, event_time
-                    )
+            if controller.route_hooks.phase_latches.path_cancel_request is None:
+                if self.path_dispatcher.active_path_id_by_train(train.train_id) is not None:
+                    if controller.is_stopped_at_authority_end():
+                        event_time = time.time()
+                        self.path_dispatcher.try_complete_active_path(
+                            train.train_id, event_time
+                        )
 
         # 3c. Consume Phase-3 latches in canonical order.
         self._consume_pending_path_cancel_request(controller, train)
@@ -733,13 +738,9 @@ class SimulationController:
         if train.speed_profile_id is None and hasattr(
             self.network, "speed_profiles"
         ):
-            from speed_profile import SpeedProfile
+            from speed_profile import make_default_speed_profile
 
-            default_profile = SpeedProfile(
-                profile_id=f"default_{train_id}",
-                name=f"Default ({train_id})",
-                power_speed_curve=[(0.0, 0.0), (100.0, float(max_speed_kmh))],
-            )
+            default_profile = make_default_speed_profile(train_id, max_speed_kmh)
             self.network.speed_profiles.register(default_profile)
             train.speed_profile_id = default_profile.profile_id
 

@@ -48,7 +48,6 @@ if TYPE_CHECKING:
     from block import Block
 
 
-
 class PathDispatcher:
     """
     Manages path creation, validation, lifecycle, and progress consumption.
@@ -180,6 +179,65 @@ class PathDispatcher:
         if track is None:
             return None
         return track.block_section_id
+
+    def _resolve_create_start_block(
+        self,
+        train,
+        train_id: str,
+        target_block_id: str,
+        head_block: Optional[str],
+        manual_override: bool,
+    ) -> Optional[str]:
+        """Resolve the start-side block for `create_path` (design_new.md
+        create_path flow items 4 and 13).
+
+        A cab-selected train walks from the head end implied by that cab
+        (``head_block``). A cabless train compares both physical span ends
+        against the resolved target and starts from the end whose shortest
+        successful graph walk is shorter (canonical ``GraphWalkCandidate``
+        comparison; ``end_a`` wins exact ties). Each end uses the inward
+        occupied block, which already skips a switch the physical end may sit
+        on. Falls back to ``head_block`` whenever a second end cannot improve on
+        it (cab selected, single-block span, target inside the span, or neither
+        end yields a walk), so the cab-selected and covered/turnaround paths are
+        left unchanged.
+        """
+        ctrl = self._get_controller(train_id)
+        cab = (
+            getattr(getattr(ctrl, "commands", None), "cab", None)
+            if ctrl is not None
+            else None
+        )
+        if cab is not None or ctrl is None:
+            return head_block
+
+        span = ctrl.get_current_span()
+        occupied = list(getattr(span, "occupied_blocks", None) or []) if span else []
+        if len(occupied) < 2:
+            return head_block
+
+        # End_a-side and end_b-side blocks, skipping any end already at the
+        # target (a covered/turnaround case handled outside this helper).
+        seen: Set[str] = set()
+        end_blocks: List[str] = []
+        for b in (occupied[0], occupied[-1]):
+            if b and b != target_block_id and b not in seen:
+                seen.add(b)
+                end_blocks.append(b)
+
+        best_block: Optional[str] = None
+        best_key = None
+        for end_block in end_blocks:
+            candidates = self._find_walk_candidates(
+                end_block, target_block_id, train_id, manual_override=manual_override
+            )
+            if not candidates:
+                continue
+            key = candidates[0].comparison_key()
+            if best_key is None or key < best_key:
+                best_key = key
+                best_block = end_block
+        return best_block or head_block
 
     def _train_head_is_on_switch(self, train) -> bool:
         """Whether the train's head tile is a switch resource."""
@@ -735,9 +793,10 @@ class PathDispatcher:
                 reason=f"Train {train_id} already has active path {existing.path_id}",
             )
 
-        # Resolve start block from train's current head tile.
-        start_block_id_resolved = self._get_current_block_id_for_train(train)
-        if not start_block_id_resolved:
+        # Resolve the cab-implied head-end block (the start-side anchor for a
+        # cab-selected train, and the same-block rejection key below).
+        head_block = self._get_current_block_id_for_train(train)
+        if not head_block:
             return PathAcquisitionResult(
                 success=False,
                 failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
@@ -746,29 +805,35 @@ class PathDispatcher:
                 reason=f"Cannot resolve current block for train {train_id}",
             )
 
-        # Same-block repositioning (the same-block synthetic-path rule, create_path
-        # step 8 in design_new.md "Path And PathDispatcher"). When the requested
-        # destination block is already inside the train's current occupied span,
-        # the pathfinder cannot walk a block to itself, so dispatcher builds a
-        # synthetic one-block local authority over the train's own block instead
-        # of running the normal candidate search. The block is already occupied
-        # by this train (the covered-span seed), so it is NOT newly reserved.
-        # Restrict the synthetic path to the case where the train's HEAD is in
-        # the destination block — a genuine reposition within the head's own
-        # block. A destination that is a *non-head* spanned block (e.g. the tail)
-        # is a reversal/turnaround, which must go through the normal cab-flip +
-        # covered-task flow; building a degenerate synthetic path there would
-        # hijack it. Per that same-block rule the synthetic path is an explicit
-        # repositioning capability, "rather than ... the normal route-side
-        # handling for an already covered stop waypoint."
-        if self._get_current_block_id_for_train(train) == requested_destination_block_id:
-            return self._create_same_block_path(
-                train=train,
-                train_id=train_id,
-                block_id=requested_destination_block_id,
+        # A same-block target is a covered stop, finished by Phase 1's
+        # covered-task index advance — never by dispatcher authority. Per the
+        # create_path flow (design_new.md item 8, lines 982 and 1012) and
+        # invariant 9 (line 983: dispatcher "never synthesizes an in-place frame
+        # from the train's own covered tiles"), reject a destination already
+        # covered by the train's head block with `invalid_request`. A non-head
+        # spanned block (the tail) is a turnaround and still falls through to the
+        # normal cab-flip candidate search below.
+        if head_block == requested_destination_block_id:
+            return PathAcquisitionResult(
+                success=False,
+                failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
+                requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
-                now=self._now(),
+                reason="destination block already covered by the train's span",
             )
+
+        # Resolve the start-side block for candidate search (design_new.md
+        # create_path flow item 4). A cab-selected train starts from `head_block`;
+        # a cabless train starts from whichever physical span end has the shorter
+        # successful graph walk to the target, so a reverse / turnaround move
+        # plans out of the tail end instead of failing to walk from the head.
+        start_block_id_resolved = self._resolve_create_start_block(
+            train,
+            train_id,
+            requested_destination_block_id,
+            head_block,
+            manual_override,
+        )
 
         # Find geometry candidates (shortest first). The pathfinder enforces
         # `Block.allowed_travel_directions` over the whole walk; the caller's
@@ -2436,178 +2501,6 @@ class PathDispatcher:
                 flat.append(t)
         return flat
 
-    def _cab_block_direction(
-        self, train_id: str, block
-    ) -> Optional[str]:
-        """Block-relative ("forward"/"reverse") direction the selected cab
-        faces inside ``block``, or None when no cab is selected, the span has
-        no geometry, or the outward edge does not map to a block direction.
-
-        Used by same-tile synthetic-path disambiguation (the same-block
-        repositioning rule in design_new.md "Path And PathDispatcher"):
-        the head end's outward compass edge is read from the controller span
-        and mapped through ``Block.block_direction_for_compass_exit``.
-        """
-        ctrl = self._get_controller(train_id)
-        if ctrl is None:
-            return None
-        # No cab selected -> no disambiguation signal for the same-tile edge.
-        if getattr(ctrl.commands, "cab", None) is None:
-            return None
-        head_end = ctrl._head_end_label()
-        facing = ctrl._orientation_for_head_end(head_end)
-        if facing is None:
-            return None
-        edge = ctrl._direction_to_edge(facing)
-        if not edge:
-            return None
-        return block.block_direction_for_compass_exit(edge)
-
-    def _create_same_block_path(
-        self,
-        train,
-        train_id: str,
-        block_id: str,
-        requested_destination_direction: str,
-        now: float,
-    ) -> PathAcquisitionResult:
-        """Build a synthetic one-block local authority for same-block
-        repositioning (the same-block synthetic-path rule, create_path step 8
-        in design_new.md "Path And PathDispatcher").
-
-        The requested destination block is already inside the train's current
-        occupied span, so dispatcher does not run the candidate search (a block
-        cannot be walked to itself) and does not newly reserve the block (the
-        train already occupies it as its covered-span seed). It instead derives
-        the local terminal frame from the block's own geometry plus
-        ``requested_destination_direction``: ``"forward"`` traverses
-        ``Block.ordered_tiles`` in increasing order, ``"reverse"`` in decreasing
-        order. When the movement stays inside a single tile, the block geometry
-        alone cannot anchor a direction, so a selected cab whose direction
-        agrees with ``requested_destination_direction`` is required; otherwise
-        the request is rejected with a defined reason.
-        """
-        block = self.network.blocks.get(block_id)
-        ordered = list(getattr(block, "ordered_tiles", None) or []) if block else []
-        if not block or not ordered:
-            return PathAcquisitionResult(
-                success=False,
-                failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
-                requested_destination_block_id=block_id,
-                requested_destination_direction=requested_destination_direction,
-                reason=(
-                    f"same-block synthetic movement requires block geometry "
-                    f"for {block_id}"
-                ),
-            )
-
-        # Block boundary compass edges for the requested traversal direction.
-        # `_resolve_reservation_direction` maps block-relative "forward"/"reverse"
-        # to the compass exit edge from `ordered_tiles`; the entry edge into the
-        # block is the exit edge of the opposite direction (the other end).
-        opposite_direction = (
-            "reverse" if requested_destination_direction == "forward" else "forward"
-        )
-        block_exit_edge = block._resolve_reservation_direction(
-            requested_destination_direction
-        )
-        block_entry_edge = block._resolve_reservation_direction(opposite_direction)
-
-        # Traversal tile order: ordered_tiles increasing for forward, reversed
-        # for reverse.
-        tiles: List[Tuple[int, int]] = [(int(e[0]), int(e[1])) for e in ordered]
-        if requested_destination_direction == "reverse":
-            tiles = list(reversed(tiles))
-
-        # Same-tile sub-case: a movement that stays inside one tile cannot be
-        # disambiguated from the block geometry alone, so require a selected cab
-        # whose direction agrees with the request (the same-block repositioning
-        # rule in design_new.md "Path And PathDispatcher").
-        if len(tiles) <= 1:
-            cab_direction = self._cab_block_direction(train_id, block)
-            if cab_direction is None:
-                return PathAcquisitionResult(
-                    success=False,
-                    failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
-                    requested_destination_block_id=block_id,
-                    requested_destination_direction=requested_destination_direction,
-                    reason=(
-                        "same-tile synthetic movement requires a selected cab "
-                        "direction"
-                    ),
-                )
-            if cab_direction != requested_destination_direction:
-                return PathAcquisitionResult(
-                    success=False,
-                    failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
-                    requested_destination_block_id=block_id,
-                    requested_destination_direction=requested_destination_direction,
-                    reason=(
-                        f"same-tile synthetic movement direction "
-                        f"{requested_destination_direction!r} disagrees with "
-                        f"the selected cab direction {cab_direction!r}"
-                    ),
-                )
-
-        # Build per-tile entry/exit edges. Interior transitions come from
-        # tile-to-tile deltas; the two ends use the block boundary edges.
-        path_tiles: List[PathTileEntry] = []
-        last_idx = len(tiles) - 1
-        for i, (x, y) in enumerate(tiles):
-            if i == 0:
-                entry_edge = block_entry_edge or ""
-            else:
-                px, py = tiles[i - 1]
-                heading_in = direction_from_delta(x - px, y - py)
-                entry_edge = OPPOSITE_EDGE.get(heading_in or "", "") or ""
-            if i == last_idx:
-                exit_edge = block_exit_edge or ""
-            else:
-                nx, ny = tiles[i + 1]
-                exit_edge = direction_from_delta(nx - x, ny - y) or ""
-            path_tiles.append(
-                PathTileEntry(
-                    x=x,
-                    y=y,
-                    entry_edge=entry_edge,
-                    exit_edge=exit_edge,
-                    resource_sequence_index=0,
-                )
-            )
-
-        path_id = self._generate_path_id(train_id, block_id)
-        sequence = [
-            ResourceSequenceEntry(
-                sequence_index=0,
-                resource_type="block",
-                resource_id=block_id,
-                path_tiles=path_tiles,
-                entry_edge=block_entry_edge or "",
-                exit_edge=block_exit_edge or "",
-            )
-        ]
-        path = Path(
-            path_id=path_id,
-            status=PathStatus.ACTIVE,
-            train_id=train_id,
-            requested_destination_block_id=block_id,
-            requested_destination_direction=requested_destination_direction,
-            resource_sequence=sequence,
-            current_resource_index=0,
-            last_status_updated_time=now,
-        )
-        self.paths[path_id] = path
-        return PathAcquisitionResult(
-            success=True,
-            result_kind=PathAcquisitionResultKind.REACHED_REQUESTED_TARGET,
-            path_id=path_id,
-            requested_destination_block_id=block_id,
-            requested_destination_direction=requested_destination_direction,
-            authority_end_block_id=path.get_authority_end_block_id(),
-            resource_sequence=list(path.resource_sequence),
-            reason="same-block synthetic authority",
-        )
-
     def _build_path_from_segment(
         self,
         path_id: str,
@@ -3047,10 +2940,13 @@ class PathDispatcher:
             return None
 
         # Same pathfinder call extend_path makes from the current authority end.
-        # `Path` does not retain the route's manual_override; the live blocker is
-        # an occupancy/reservation/lock conflict (not an availability-flag
-        # filter), so the automatic-caller default (False) is correct here.
-        manual_override = getattr(path, "manual_override", False)
+        # The route-driven extends this mirrors always run with
+        # manual_override=False (RouteExecutor never passes it, and `Path` does
+        # not store it), so False is the faithful value here. An operator path
+        # created through the REST surface with manual_override=True is not
+        # tracked on `Path`; recomputing its blocker under override is out of
+        # scope for this read.
+        manual_override = False
         candidates = self._find_walk_candidates(
             authority_end,
             target,
@@ -3071,8 +2967,9 @@ class PathDispatcher:
         # Mirror extend_path's first-blocker derivation read-only: validate the
         # best forward candidate against this path_id and report the first
         # occupancy-class (occupied / reserved / switch-locked) conflict's block.
+        segment = forward_candidates[0].walk
         validation = self.validate_path(
-            forward_candidates[0].walk,
+            segment,
             path.path_id,
             train_id,
             manual_override=manual_override,
@@ -3081,8 +2978,22 @@ class PathDispatcher:
             # Suffix is currently acquirable end-to-end — nothing blocking it.
             return None
         for err in validation.errors:
-            if err.type.is_occupancy_class() and err.block_id:
+            if not err.type.is_occupancy_class():
+                continue
+            if err.block_id:
                 return err.block_id
+            # A SWITCH_LOCKED conflict records the failing switch as a tile
+            # position, not a block_id. Report the block the train holds at —
+            # the last acquirable block before that locked switch — so the lock
+            # conflict still surfaces in the "show stuck" overlay (design_new.md
+            # "Data Flow To UI"). `_position_to_block_index` is the same
+            # switch-position -> block resolution `_compute_truncate_hint` uses;
+            # it returns the acquirable-prefix length, so the held block is at
+            # index (length - 1).
+            if err.position is not None:
+                prefix_len = self._position_to_block_index(segment, err.position)
+                if prefix_len and 0 < prefix_len <= len(segment.blocks):
+                    return segment.blocks[prefix_len - 1]
         return None
 
     def get_active_path_progress(self, train_id: str) -> Optional[Dict[str, Any]]:

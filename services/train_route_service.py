@@ -131,6 +131,21 @@ def require_route(state: AppState, route_id: str) -> Route:
     return _require_route(state, route_id)
 
 
+def _reject_leading_dwell(tasks) -> None:
+    """A route's first task must not be a dwell (design_new.md:1310).
+
+    A dwell holds after a preceding task at that location; the initial walk has
+    no predecessor, so there is nothing to hold after. The API rejects a
+    leading dwell at creation/update time.
+    """
+    if tasks and tasks[0].task_kind == "dwell":
+        raise ValidationError(
+            "Route.tasks[0] must not be a dwell task (design_new.md:1310): a "
+            "dwell holds after a preceding task, but the first task has no "
+            "predecessor."
+        )
+
+
 def create_route(
     state: AppState,
     *,
@@ -186,8 +201,10 @@ def create_route(
     if start_task_index is not None:
         route.start_task_index = _coerce_start_task_index(start_task_index)
 
-    for task_data in tasks or ():
-        route.add_task(_coerce_route_task(task_data))
+    coerced_tasks = [_coerce_route_task(task_data) for task_data in (tasks or ())]
+    _reject_leading_dwell(coerced_tasks)
+    for task in coerced_tasks:
+        route.add_task(task)
 
     for train_id in assigned_train_ids or ():
         if train_id in state.network.trains:
@@ -246,16 +263,13 @@ def update_route(
     # applied after all writes commit.
     changed_overridable: List[str] = []
 
-    if name is not None:
-        route.name = name
-        definition_edit_touched = True
-
-    if mode is not None:
-        route.mode = _coerce_mode(mode)
-        definition_edit_touched = True
-
+    # Validate-then-mutate: coerce and validate the replacement task list
+    # (including the leading-dwell rule) BEFORE writing any field, so a rejected
+    # update does not leave name/mode partially mutated on the live registry
+    # route.
+    new_tasks: Optional[List[RouteTask]] = None
     if tasks is not None:
-        new_tasks: List[RouteTask] = []
+        new_tasks = []
         for task_data in tasks:
             if not isinstance(task_data, dict):
                 raise ValidationError("task entry must be an object")
@@ -264,7 +278,17 @@ def update_route(
                     "task_location required for each task"
                 )
             new_tasks.append(_coerce_route_task(task_data))
+        _reject_leading_dwell(new_tasks)
 
+    if name is not None:
+        route.name = name
+        definition_edit_touched = True
+
+    if mode is not None:
+        route.mode = _coerce_mode(mode)
+        definition_edit_touched = True
+
+    if new_tasks is not None:
         # Structural change = any difference in kind / location / direction /
         # ordering of the walk. Timing-only edits (task_time / target_time) are
         # excluded, so they do not force a teardown.

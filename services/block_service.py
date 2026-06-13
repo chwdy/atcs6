@@ -209,8 +209,31 @@ def delete_block(state: AppState, block_id: str) -> bool:
     Raises:
         NotFoundError when no block has that id.
     """
-    if not state.network.delete_block(block_id):
+    network = state.network
+    if not network.delete_block(block_id):
         raise NotFoundError("Block not found")
+
+    # Downward auto-delete cascade (design_new.md:644): drop the deleted block
+    # from any owning Platform's `block_assignments`; if that leaves a platform
+    # with no assigned blocks, delete the platform too (which cascades to an
+    # emptied logical Station group). Done at the service layer rather than
+    # inside `network.delete_block` because Station teardown itself calls
+    # `network.delete_block` for its member blocks, and re-entering platform
+    # deletion there would double-delete the platform.
+    emptied_platform_ids: List[str] = []
+    for platform in list(network.platforms.values()):
+        assignments = getattr(platform, "block_assignments", None)
+        if not assignments:
+            continue
+        stale_positions = [pos for pos, bid in assignments.items() if bid == block_id]
+        if not stale_positions:
+            continue
+        for pos in stale_positions:
+            del assignments[pos]
+        if not platform.get_all_assigned_blocks():
+            emptied_platform_ids.append(platform.platform_id)
+    for platform_id in emptied_platform_ids:
+        network.delete_platform(platform_id)
     return True
 
 
@@ -388,10 +411,14 @@ def remove_tracks_from_block(
         removed.append([x, y])
         position_set.discard((x, y))
 
-    # Auto-delete the block when it has no tracks left.
+    # Auto-delete the block when it has no tracks left. Route through the
+    # service-level `delete_block` so the downward platform cascade (drop the
+    # block from any owning Platform.block_assignments; delete a platform left
+    # empty) runs here too — a bare `network.delete_block` would leave a dangling
+    # block_assignments entry and an orphaned empty platform.
     block_deleted = False
     if len(state.network.get_block_tracks(block_id)) == 0:
-        state.network.delete_block(block_id)
+        delete_block(state, block_id)
         block_deleted = True
 
     return {

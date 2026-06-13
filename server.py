@@ -271,7 +271,8 @@ def main() -> None:
         setup_train=not args.no_demo,
     )
 
-    # design_new.md:2235 — loss-of-control fail-safe: a process shutdown must
+    # design_new.md Power, Hardware interface boundary — loss-of-control
+    # fail-safe: a process shutdown must
     # drive outputs to the safe state (block voltages 0, switch motors
     # de-energized). The simulation-stop route issues the same enter_safe_state
     # call. Registered only on the real `python server.py` boot, not in tests.

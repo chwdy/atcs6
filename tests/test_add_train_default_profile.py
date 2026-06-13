@@ -14,6 +14,7 @@ from network import RailwayNetwork
 from track import TrackSegment, TRACK_EW
 from path_dispatcher import PathDispatcher
 from simulation import SimulationController
+from train import Train
 from train_physics import TrainPhysics
 
 
@@ -88,3 +89,48 @@ def test_two_trains_get_distinct_profiles_for_distinct_max_speeds():
     slow_profile = net.speed_profiles.get(slow.speed_profile_id)
     assert fast_profile.power_percent_to_speed(100.0) == 120.0
     assert slow_profile.power_percent_to_speed(100.0) == 40.0
+
+
+def test_profile_less_train_resolves_to_max_speed_anchored_default():
+    """A train created by a path that does NOT seed a profile (from_dict load,
+    step replay, editor add-without-place) has speed_profile_id=None; the
+    `_get_speed_profile` resolver must still anchor its power curve to the
+    train's own max_speed rather than the shared 100 km/h DEFAULT_SPEED_PROFILE.
+    """
+    net = _two_block_line()
+    # Register a train directly, bypassing SimulationController.add_train's
+    # seeding (mirrors network.from_dict / step_player / editor add-without-place).
+    train = Train(train_id="T75", max_speed=75.0)
+    net.add_train(train)
+    assert train.speed_profile_id is None
+
+    resolved = TrainPhysics(train.train_id, net)._get_speed_profile()
+    assert resolved.power_percent_to_speed(100.0) == 75.0
+    assert resolved.power_percent_to_speed(50.0) == 37.5
+    assert resolved.power_percent_to_speed(0.0) == 0.0
+    # Distinct from the shared module-global default (which would map 100 -> 100).
+    assert resolved.profile_id != "default"
+
+
+def test_profile_resolution_tolerates_none_max_speed():
+    """A train whose `max_speed` is None — reachable via `Train.from_dict` on an
+    explicit `"max_speed": null` (the 100.0 default only applies when the key is
+    absent) — must not crash profile resolution. The factory coerces a
+    missing/non-numeric max_speed to the module-global top speed instead of
+    raising on `float(None)`.
+    """
+    from speed_profile import make_default_speed_profile
+
+    # The factory itself does not raise and yields a well-formed curve.
+    prof = make_default_speed_profile("TNONE", None)
+    assert prof.power_percent_to_speed(0.0) == 0.0
+    assert prof.power_percent_to_speed(100.0) == 100.0  # coerced fallback top speed
+
+    # The physics resolver tolerates a None-max_speed train end-to-end.
+    net = _two_block_line()
+    train = Train(train_id="TNONE", max_speed=75.0)
+    net.add_train(train)
+    train.max_speed = None  # simulate from_dict explicit-null load
+    resolved = TrainPhysics(train.train_id, net)._get_speed_profile()
+    assert resolved is not None
+    assert resolved.power_percent_to_speed(0.0) == 0.0

@@ -207,7 +207,15 @@ class TrainPhysics:
             if profile:
                 return profile
 
-        return DEFAULT_SPEED_PROFILE
+        # No assigned/resolvable profile: anchor the default power curve to THIS
+        # train's max_speed instead of the module-global DEFAULT_SPEED_PROFILE
+        # (which maps 100% -> 100 km/h regardless of the train). Covers trains
+        # created by paths that do not seed a profile (from_dict load, step
+        # replay, editor add-without-place). The memoized fallback lives in one
+        # shared home so the controller and physics read paths cannot drift.
+        from speed_profile import resolve_memoized_default_profile
+
+        return resolve_memoized_default_profile(self, train)
 
     def _get_block_manager(self) -> Optional["BlockManager"]:
         """Get the BlockManager from network."""
