@@ -37,10 +37,10 @@ _TRAIN_CONFIG_FIELDS: List[str] = [
     "max_speed",
     "num_cars",
     "priority",
-    "max_braking_rate",
     "model",
     "car_number",
     "min_radius_cm",
+    "max_slope",
     "length_cm",  # @property on Train but a pure config readout
 ]
 

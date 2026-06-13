@@ -157,24 +157,16 @@ class Path:
     requested_destination_block_id: str = ""
     requested_destination_direction: str = ""
 
-    # Geometry. resource_sequence is the single source of truth; path_tiles
-    # is a derived `@property` that concatenates resource_sequence[*].path_tiles
-    # live on every read. There is no stored copy.
+    # Geometry. resource_sequence is the single source of truth; the flat
+    # tile list is derived by the `get_path_tiles()` method, which
+    # concatenates resource_sequence[*].path_tiles live on every call. There
+    # is no stored copy.
     resource_sequence: List[ResourceSequenceEntry] = field(default_factory=list)
 
     # Head-based progress through resource_sequence. Stores the
     # sequence_index of the current path-progress anchor resource, not the
     # first matching raw resource ID.
     current_resource_index: int = 0
-
-    # Diagnostic only (consumed by the UI, never by the control loop): when a
-    # best-effort extend is held short of the requested destination because
-    # the next resource is occupied/reserved/locked, the dispatcher records
-    # that blocking resource id here. Refreshed on every extend attempt and
-    # cleared to None once authority reaches the requested target. Used by the
-    # "Show stuck" debug overlay to point from a stalled train to what it is
-    # waiting on.
-    waiting_for_block_id: Optional[str] = None
 
     # System-time Unix timestamp (seconds) of the most recent status
     # change. Set on creation and on every transition.

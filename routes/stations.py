@@ -18,20 +18,12 @@ def _build_station_response(network, station) -> Dict[str, Any]:
         platform = network.get_platform(platform_id)
         if not platform:
             continue
-        block_ids = list(platform.get_all_assigned_blocks())
-        if not block_ids:
-            for x, y in platform.positions:
-                track = network.get_track(x, y)
-                if track and track.block_section_id:
-                    block_ids.append(track.block_section_id)
-            block_ids = sorted(set(block_ids))
-
         platforms.append(
             {
                 "platform_id": platform.platform_id,
                 "name": platform.name,
                 "positions": [list(pos) for pos in platform.positions],
-                "block_ids": block_ids,
+                "block_ids": sorted(platform.get_all_assigned_blocks()),
             }
         )
 

@@ -401,8 +401,9 @@ class OperatorCommands:
           (``control_mode == "manual"``). In ATO the system aligns the cab
           itself, so an operator-issued ``set_cab`` is rejected.
         - Train must be stopped (speed = 0)
-        - Setting cab to 'A' or 'B' transitions to STANDBY
-        - Setting cab to None transitions to IDLE
+        - From any state other than RUNNING_AT_STATION, setting the cab (to
+          'A', 'B', or None) transitions to READY. From RUNNING_AT_STATION the
+          dwell state is preserved (and `set_cab(None)` is rejected outright).
         - Switching from A to B (or vice versa) flips facing_direction
 
         ``internal=True`` is the ATO auto-cab-selection path: the controller
@@ -482,14 +483,14 @@ class OperatorCommands:
         Set control mode (ATO or Manual).
 
         Per design_new.md, manual is a control mode, not a separate
-        operational state. Stopped manual trains sit in STANDBY/IDLE just
+        operational state. Stopped manual trains sit in READY just
         like ATO trains. From RUNNING_AT_STATION, the dwell state is
         preserved; only the side effects (ato_running cleared) apply.
 
         Rules:
         - Train must be stopped
-        - 'ato' / 'manual' both leave the state at STANDBY (cab) or IDLE
-          (no cab), unless coming from RUNNING_AT_STATION which is preserved.
+        - 'ato' / 'manual' both leave a stopped train in READY, unless coming
+          from RUNNING_AT_STATION which is preserved.
         """
         c = self._c
         train = c._get_train()

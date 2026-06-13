@@ -473,12 +473,11 @@ class SimulationController:
 
         self.route_executor.remove_train_route_run(train.train_id)
 
-        # Controller-local OFF cleanup.
-        controller.ops.state = TrainState.OFF
-        controller.commands.cab = None
-        controller.eb.active = False
-        controller.ato.running = False
-        controller.route_hooks.phase_latches.consume_power_off()
+        # Controller-owned OFF cleanup. `complete_power_off()` is the single
+        # OFF-writing entry point besides startup (design_new.md:282, :1808):
+        # it sets `state = OFF`, clears cab / eb.active / ato.running, and
+        # consumes `pending_power_off`.
+        controller.complete_power_off()
 
     def _consume_pending_route_deactivate(
         self, controller: TrainController, train: Train
@@ -723,6 +722,26 @@ class SimulationController:
             model=(train_type or ""),
             car_number=(name or ""),
         )
+
+        # Seed the train's default SpeedProfile so `power_percent` manual mode
+        # has a defined power->speed mapping anchored to THIS train's max_speed
+        # (design_new.md:2235, :2257, :2259): the default `power_speed_curve` is
+        # linear from 0% -> 0 km/h to 100% -> the train's configured max_speed.
+        # Without this the train shares the module-global DEFAULT_SPEED_PROFILE
+        # whose curve hardcodes 100% -> 100 km/h, which is wrong for any train
+        # whose max_speed != 100. Register it and point the train at it.
+        if train.speed_profile_id is None and hasattr(
+            self.network, "speed_profiles"
+        ):
+            from speed_profile import SpeedProfile
+
+            default_profile = SpeedProfile(
+                profile_id=f"default_{train_id}",
+                name=f"Default ({train_id})",
+                power_speed_curve=[(0.0, 0.0), (100.0, float(max_speed_kmh))],
+            )
+            self.network.speed_profiles.register(default_profile)
+            train.speed_profile_id = default_profile.profile_id
 
         # Register and place. place_train raises ValueError if the train does
         # not fit on available track.
@@ -997,13 +1016,16 @@ def build_network_payload(
 ) -> Dict[str, Any]:
     """Build network payload in the canonical sibling-payload shape.
 
-    Per design_new.md "Data Flow To UI" (~line 2065), live runtime data
-    is exposed as three sibling maps alongside the persistent `trains`
-    list, never merged into Train.to_dict() output:
+    Per design_new.md "Data Flow To UI" (~line 2309), live runtime data
+    is exposed as sibling maps alongside the persistent `trains` list,
+    never merged into Train.to_dict() output:
 
       - `controllers_by_train_id`: TrainController.to_dict() per train
       - `dispatcher_progress_by_train_id`: PathDispatcher progress per train
       - `assigned_routes_by_train_id`: RouteExecutor-derived route id per train
+      - `route_runs_by_train_id`: RouteExecutor 5-field summary
+        ({route_id, run_number, state, display_state, last_error}) of the
+        train's currently-RUNNING RouteRun, or None
     """
     payload = network.to_dict()
 
@@ -1011,6 +1033,7 @@ def build_network_payload(
         payload["controllers_by_train_id"] = {}
         payload["dispatcher_progress_by_train_id"] = {}
         payload["assigned_routes_by_train_id"] = {}
+        payload["route_runs_by_train_id"] = {}
         payload["simulation_time"] = 0.0
         payload["failed_runtime"] = False
         payload["failed_runtime_conflict"] = None
@@ -1024,6 +1047,7 @@ def build_network_payload(
     controllers_by_train_id: Dict[str, Any] = {}
     dispatcher_progress_by_train_id: Dict[str, Any] = {}
     assigned_routes_by_train_id: Dict[str, Any] = {}
+    route_runs_by_train_id: Dict[str, Any] = {}
 
     for train_id, train in network.trains.items():
         controller = sim_controller._get_or_create_controller(train)
@@ -1056,12 +1080,25 @@ def build_network_payload(
                     e,
                 )
                 assigned_routes_by_train_id[train_id] = None
+            try:
+                route_runs_by_train_id[train_id] = (
+                    route_executor.route_run_summary_for(train_id)
+                )
+            except Exception as e:
+                logger.debug(
+                    "Failed to resolve route run summary for train %s: %s",
+                    train_id,
+                    e,
+                )
+                route_runs_by_train_id[train_id] = None
         else:
             assigned_routes_by_train_id[train_id] = None
+            route_runs_by_train_id[train_id] = None
 
     payload["controllers_by_train_id"] = controllers_by_train_id
     payload["dispatcher_progress_by_train_id"] = dispatcher_progress_by_train_id
     payload["assigned_routes_by_train_id"] = assigned_routes_by_train_id
+    payload["route_runs_by_train_id"] = route_runs_by_train_id
 
     # Fatal physical-entry conflict halt (set by enter_failed_runtime). While
     # it is set, update() skips every train tick — the trains freeze at their

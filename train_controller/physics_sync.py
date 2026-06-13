@@ -52,4 +52,4 @@ class PhysicsSync:
         # Precise forward exit edge captured when the tail fully clears a block,
         # held until the debounced detector confirms the vacate so the caution
         # direction matches the physical exit edge.
-        self.block_exit_edges: Dict[str, str] = {}
+        self.pending_block_exit_edges: Dict[str, str] = {}

@@ -119,13 +119,15 @@ def register(app, state: AppState) -> None:
         """List all trains in the canonical sibling-payload shape.
 
         Per design_new.md "Data Flow To UI": expose `trains`,
-        `controllers_by_train_id`, `dispatcher_progress_by_train_id`, and
-        `assigned_routes_by_train_id` as sibling collections.
+        `controllers_by_train_id`, `dispatcher_progress_by_train_id`,
+        `assigned_routes_by_train_id`, and `route_runs_by_train_id` as sibling
+        collections.
         """
         trains_list = []
         controllers_by_train_id: Dict[str, object] = {}
         dispatcher_by_train_id: Dict[str, object] = {}
         assigned_routes_by_train_id: Dict[str, object] = {}
+        route_runs_by_train_id: Dict[str, object] = {}
         route_executor = (
             state.sim_controller.route_executor if state.sim_controller else None
         )
@@ -139,12 +141,18 @@ def register(app, state: AppState) -> None:
                 if route_executor
                 else None
             )
+            route_runs_by_train_id[train.train_id] = (
+                route_executor.route_run_summary_for(train.train_id)
+                if route_executor
+                else None
+            )
         return jsonify(
             {
                 "trains": trains_list,
                 "controllers_by_train_id": controllers_by_train_id,
                 "dispatcher_progress_by_train_id": dispatcher_by_train_id,
                 "assigned_routes_by_train_id": assigned_routes_by_train_id,
+                "route_runs_by_train_id": route_runs_by_train_id,
             }
         )
 

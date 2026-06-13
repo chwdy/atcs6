@@ -64,13 +64,13 @@ class ReserveResult:
     `success == True` means every requested future block was eligible and
     has had its reservation primitives written. `success == False` means the
     call rejected before any state change was committed; `failed_block_id`
-    points at the offending block and `failure_reason` is a short tag for
+    points at the offending block and `reason` is a short tag for
     diagnostics.
     """
 
     success: bool
     failed_block_id: Optional[str] = None
-    failure_reason: Optional[str] = None
+    reason: Optional[str] = None
     reserved_block_ids: List[str] = field(default_factory=list)
 
 
@@ -612,25 +612,25 @@ class BlockManager:
                 return ReserveResult(
                     success=False,
                     failed_block_id=block_id,
-                    failure_reason="unknown_block",
+                    reason="unknown_block",
                 )
             if block.disabled:
                 return ReserveResult(
                     success=False,
                     failed_block_id=block_id,
-                    failure_reason="disabled",
+                    reason="disabled",
                 )
             if block.manual and not manual_override:
                 return ReserveResult(
                     success=False,
                     failed_block_id=block_id,
-                    failure_reason="manual_no_override",
+                    reason="manual_no_override",
                 )
             if block.occupied_by is not None:
                 return ReserveResult(
                     success=False,
                     failed_block_id=block_id,
-                    failure_reason="occupied",
+                    reason="occupied",
                 )
             if (
                 block.reserved_by_path is not None
@@ -639,7 +639,7 @@ class BlockManager:
                 return ReserveResult(
                     success=False,
                     failed_block_id=block_id,
-                    failure_reason="reserved_by_other_path",
+                    reason="reserved_by_other_path",
                 )
 
             traversal = directions.get(block_id) if directions else None
@@ -647,7 +647,7 @@ class BlockManager:
                 return ReserveResult(
                     success=False,
                     failed_block_id=block_id,
-                    failure_reason="missing_direction",
+                    reason="missing_direction",
                 )
             if (
                 not manual_override
@@ -656,7 +656,7 @@ class BlockManager:
                 return ReserveResult(
                     success=False,
                     failed_block_id=block_id,
-                    failure_reason="direction_not_allowed",
+                    reason="direction_not_allowed",
                 )
 
         # Second pass: commit. By here every block is eligible.

@@ -199,6 +199,10 @@ class StationRegistry:
                 initial_orientation = group
                 break
 
+        # Record the tile -> station block on the Platform's canonical
+        # block_assignments, mirroring track.block_section_id set above so
+        # ordered_blocks / get_all_assigned_blocks see this platform's block
+        # without any tile scan.
         station = Platform(
             platform_id=station_id,
             name=name,
@@ -207,6 +211,7 @@ class StationRegistry:
             platform_side=platform_enum,
             top_speed_kmh=top_speed_kmh,
             initial_orientation=initial_orientation,
+            block_assignments={(x, y): station_block_id},
         )
 
         # Store physical platform (legacy station semantics)
@@ -418,9 +423,13 @@ class StationRegistry:
                         if track.block_section_id != station_block_id:
                             affected_blocks.add(track.block_section_id)
                         self._n.remove_tile_from_block(x, y)
-                    # Assign to station's block
+                    # Assign to station's block, mirroring track.block_section_id
+                    # onto the Platform's canonical block_assignments so
+                    # ordered_blocks / get_all_assigned_blocks see this tile's
+                    # block without any tile scan.
                     if station_block_id in self._n.blocks:
                         track.block_section_id = station_block_id
+                        station.block_assignments[(x, y)] = station_block_id
                     track.station_id = station_id
 
         # Refresh ordered_tiles on the station block plus any block we

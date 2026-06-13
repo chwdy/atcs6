@@ -72,9 +72,12 @@ class SpeedProfile:
     power_speed_curve: List[Tuple[float, float]] = field(
         default_factory=lambda: [(0.0, 0.0), (100.0, 100.0)]
     )
-    voltage_power_curve: List[Tuple[float, float]] = field(
-        default_factory=lambda: [(2.0, 0.0), (12.0, 100.0)]
-    )
+    # Default left empty here and synthesized in __post_init__ as a linear ramp
+    # anchored to this profile's own `lighting_voltage` (0%) and `max_voltage`
+    # (100%), per design_new.md "SpeedProfile". With the default
+    # lighting_voltage=2.0 / max_voltage=12.0 this reproduces the historical
+    # [(2.0, 0.0), (12.0, 100.0)] curve.
+    voltage_power_curve: List[Tuple[float, float]] = field(default_factory=list)
 
     lighting_voltage: float = 2.0  # Lit-but-stationary voltage; also the 0%-power anchor of voltage_power_curve
     acceleration_rate: float = 10.0  # km/h per second
@@ -88,7 +91,8 @@ class SpeedProfile:
     air_resistance_enabled: bool = True  # Master switch
     drag_coefficient: float = 0.001  # Quadratic drag coefficient
     reference_speed_kmh: float = 100.0  # Speed at which drag = drag_coefficient km/h/s
-    # Top of the usable track_voltage range for the first mapping stage (design line 2028)
+    # Top of the usable track_voltage range for the first mapping stage
+    # (design_new.md "SpeedProfile", `max_voltage` field)
     max_voltage: float = 12.0
     # Per-train notch mapping. Power notches scale `acceleration_rate`; brake
     # notches scale the operational decel rate (`deceleration_rate ×
@@ -104,15 +108,25 @@ class SpeedProfile:
     )
 
     def __post_init__(self) -> None:
-        """Ensure all calibration curves are sorted by their independent axis."""
+        """Synthesize the default voltage->power curve and sort all curves.
+
+        When no `voltage_power_curve` is supplied, the v1 default is a linear
+        ramp from `lighting_voltage` (0%) to `max_voltage` (100%) per
+        design_new.md "SpeedProfile", so the default tracks this profile's own
+        voltage anchors instead of hardcoded constants.
+        """
+        if not self.voltage_power_curve:
+            self.voltage_power_curve = [
+                (self.lighting_voltage, 0.0),
+                (self.max_voltage, 100.0),
+            ]
         if self.power_speed_curve:
             self.power_speed_curve = sorted(
                 self.power_speed_curve, key=lambda x: x[0]
             )
-        if self.voltage_power_curve:
-            self.voltage_power_curve = sorted(
-                self.voltage_power_curve, key=lambda x: x[0]
-            )
+        self.voltage_power_curve = sorted(
+            self.voltage_power_curve, key=lambda x: x[0]
+        )
 
     def disable_air_resistance(self) -> None:
         """Disable air resistance for real train operation.
@@ -308,9 +322,9 @@ class SpeedProfile:
 
         voltage_power_raw = data.get("voltage_power_curve")
         if voltage_power_raw is None:
-            voltage_power_tuples: List[Tuple[float, float]] = [
-                (2.0, 0.0), (12.0, 100.0)
-            ]
+            # Leave empty so __post_init__ synthesizes the default ramp from the
+            # parsed lighting_voltage/max_voltage anchors below.
+            voltage_power_tuples: List[Tuple[float, float]] = []
         else:
             voltage_power_tuples = [(float(v), float(p)) for v, p in voltage_power_raw]
 

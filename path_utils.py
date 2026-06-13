@@ -21,7 +21,8 @@ from enums import Direction
 
 
 # =============================================================================
-# Graph walk types (canonical home per design_new.md lines 1864–1942)
+# Graph walk types (canonical home: the pathfinding function table and
+# GraphWalkCandidate payload in design_new.md "Path And PathDispatcher")
 # =============================================================================
 
 
@@ -217,7 +218,8 @@ class GraphWalkCandidate:
     walk: Optional[Any] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-    # --- New fields added by #25 canonical API (design_new.md 1868-1880) ---
+    # --- Canonical graph-walk API fields (the GraphWalkCandidate payload in
+    # design_new.md "Path And PathDispatcher") ---
 
     # Canonical directed walk over graph steps in traversal order. Each step
     # contains enough resource/tile/frame data for dispatcher acquisition,

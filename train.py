@@ -59,16 +59,12 @@ class Train:
     # Persistent/configuration scalars. Live speed lives on
     # `TrainController.physics_sync.current_speed_kmh` per design_new.md.
     max_speed: float = 100.0  # Operational max speed (min of cars)
-    acceleration: float = 2.0  # Acceleration in m/s² (config; physics owns live)
 
     # Number of cars in train (for display purposes)
     num_cars: int = 1  # Number of cars/wagons in train consist
 
     # Priority (for dispatcher system)
     priority: int = 5  # 1-10, higher = higher priority, default 5
-
-    # Braking
-    max_braking_rate: float = 3.0  # Maximum braking deceleration in m/s²
 
     # ========================================================================
     # TRAIN PROPERTIES (Phase 1 - Train System)

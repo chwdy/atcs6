@@ -104,7 +104,7 @@ def test_invalid_reverse_latches_cancel_and_skips_last_error():
     # The recovery path latches a Phase-3 cancellation instead of bubbling
     # the failure up as last_error.
     assert latches.path_cancel_request is not None
-    assert latches.path_cancel_request.initiator == "auto_recreate_for_reverse"
+    assert latches.path_cancel_request.initiator == "revoked"
     assert "reverse" in (latches.path_cancel_request.reason or "")
 
     # No hard error should be recorded — the operator does not need to act.

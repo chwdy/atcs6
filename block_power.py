@@ -80,9 +80,10 @@ class OutputInterface(ABC):
     def enter_safe_state(self) -> None:
         """Drive the safe state: every block track voltage to 0.
 
-        Per design_new.md:2235 the runtime issues this when it stops driving
-        outputs (simulation stop or process shutdown). The simulated interface
-        zeroes its stored outputs; real hardware de-energizes the track.
+        Per design_new.md "Power" (Safe state / fail-safe) the runtime issues
+        this when it stops driving outputs (simulation stop or process
+        shutdown). The simulated interface zeroes its stored outputs; real
+        hardware de-energizes the track.
         """
         pass
 
@@ -115,7 +116,8 @@ class SimulatedOutputInterface(OutputInterface):
         self._voltages.clear()
 
     def enter_safe_state(self) -> None:
-        """Safe state: zero every stored block voltage (design_new.md:2235)."""
+        """Safe state: zero every stored block voltage (design_new.md "Power",
+        Safe state / fail-safe)."""
         for block_id in self._voltages:
             self._voltages[block_id] = 0.0
 
@@ -159,9 +161,10 @@ class BlockPowerController:
 
     def enter_safe_state(self) -> None:
         """Put the block output hardware into its safe state — every block track
-        voltage at 0 (design_new.md:2235). Issued by the runtime when it stops
-        driving outputs. As the only caller of the output interface, the
-        controller delegates the zeroing/de-energizing to it.
+        voltage at 0 (design_new.md "Power", Safe state / fail-safe). Issued by
+        the runtime when it stops driving outputs. As the only caller of the
+        output interface, the controller delegates the zeroing/de-energizing
+        to it.
         """
         self.output_interface.enter_safe_state()
 

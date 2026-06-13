@@ -70,14 +70,15 @@ class TestSpeedProfile:
         """Create a basic speed profile for testing.
 
         Uses the default two-stage calibration (power_speed_curve
-        [(0,0),(100,100)] + voltage_power_curve [(2,0),(12,100)] linear from
-        lighting_voltage to max_voltage), which maps 30 -> 5 V, 60 -> 8 V,
-        120 -> 12 V.
+        [(0,0),(100,100)] + voltage_power_curve synthesized linear from
+        lighting_voltage (0%) to max_voltage (100%) per design_new.md
+        "SpeedProfile"). With lighting_voltage=2.0 / max_voltage=12.0 this is
+        [(2,0),(12,100)], which maps 30 -> 5 V, 60 -> 8 V, 120 -> 12 V.
         """
         return SpeedProfile(
             profile_id="test_profile",
             name="Test Profile",
-            lighting_voltage=2.5,
+            lighting_voltage=2.0,
             acceleration_rate=10.0,
             deceleration_rate=15.0,
             emergency_brake_rate=30.0,
@@ -87,7 +88,7 @@ class TestSpeedProfile:
         """Test profile is created correctly."""
         assert basic_profile.profile_id == "test_profile"
         assert basic_profile.name == "Test Profile"
-        assert basic_profile.lighting_voltage == 2.5
+        assert basic_profile.lighting_voltage == 2.0
         assert basic_profile.acceleration_rate == 10.0
         assert basic_profile.deceleration_rate == 15.0
         assert basic_profile.emergency_brake_rate == 30.0

@@ -81,10 +81,10 @@ class ResolvedNextTaskProjection:
     `failure_reason` carries the resolver's diagnostic when
     `resolved_target is None` for a non-dwell task because every candidate
     block / platform was filtered out (disabled, manual without override,
-    every station platform unavailable). Phase 1 writes this string into
-    `task_runs[walk_position].last_error` via `_record_run_error(...)` so
-    the operator sees why the task is stalled instead of an empty
-    diagnostic. `None` for dwell projections and for the same-tick exclude
+    every station platform unavailable). Phase 1 writes this string directly
+    into `task_runs[walk_position].last_error` (inlined in
+    `tick_train_phase1`) so the operator sees why the task is stalled instead
+    of an empty diagnostic. `None` for dwell projections and for the same-tick exclude
     sentinel (all candidates already attempted) — both of those non-None-
     target paths do not need a fresh resolver-level error record.
     """
@@ -549,6 +549,30 @@ class RouteExecutor:
             if train_id in getattr(route, "assigned_train_ids", []):
                 return route_id
         return None
+
+    def route_run_summary_for(self, train_id: str) -> Optional[Dict[str, Any]]:
+        """Five-field summary of the train's currently-`RUNNING` `RouteRun`,
+        or ``None`` when the train has no RUNNING run.
+
+        Per design_new.md "Data Flow To UI" (~line 2309), the composite
+        network/train snapshot exposes `route_runs_by_train_id` mapping
+        `train_id -> {route_id, run_number, state, display_state, last_error}`
+        for the RUNNING run. The live run lives in `execution_states[train_id]`
+        (PLANNING/RUNNING; terminal runs are archived out of the slot); only a
+        run whose stored `current_route_status` is `RUNNING` is reported here.
+        """
+        run = self.execution_states.get(train_id)
+        if run is None or run.current_route_status != RouteRunStatus.RUNNING:
+            return None
+        return {
+            "route_id": run.route_id,
+            "run_number": run.run_number,
+            "state": run.current_route_status.value,
+            "display_state": run.display_state,
+            "last_error": (
+                run.last_error.to_dict() if run.last_error is not None else None
+            ),
+        }
 
     def history_for_train(self, train_id: str) -> List[RouteExecutionState]:
         """Return every `RouteRun` for `train_id`, sorted by `run_number`.
@@ -1644,7 +1668,7 @@ class RouteExecutor:
                     or "extend would reverse at authority end"
                 )
                 controller.route_hooks.phase_latches.set_path_cancel_request(
-                    initiator="auto_recreate_for_reverse",
+                    initiator="revoked",
                     reason=(
                         f"{cancel_reason}; auto-cancelling so the next "
                         "acquisition uses create_path from the train's "

@@ -267,6 +267,53 @@ class RailwayPathfinder:
             total += step.length_cm / speed
         return total
 
+    def measure_along_walk(
+        self,
+        ordered_walk: List[GraphWalkStep],
+        locator_a: GraphLocator,
+        locator_b: GraphLocator,
+    ) -> float:
+        """In-walk centimeter distance between two locators on a chosen walk
+        (the `RailwayPathfinder.measure_along_walk` row of the pathfinding
+        function table in design_new.md "Path And PathDispatcher").
+
+        ``ordered_walk`` is the directed per-step list of the already-chosen
+        walk; each step carries its ``tile`` and physical ``length_cm``.
+        ``locator_a`` is the start (its ``distance_cm``, when set, is the
+        already-traversed in-tile offset on its own step and is netted out so the
+        partial first tile is not double-counted); ``locator_b`` is the end. The
+        result is the absolute forward distance from ``locator_a`` to
+        ``locator_b``: the sum of step lengths from ``locator_a``'s step through
+        ``locator_b``'s step inclusive, minus ``locator_a``'s in-tile offset,
+        clamped at zero.
+
+        Used by the canonical lookahead (head→authority-end clearance) and
+        platform-end pair comparison. When either locator's tile is absent from
+        the walk, the projection falls back to the whole-walk length so callers
+        still get a non-negative measurement.
+        """
+        steps = ordered_walk or []
+        if not steps:
+            return 0.0
+
+        def _index_of(tile: Optional[Tuple[int, int]]) -> int:
+            if tile is None:
+                return -1
+            for i, step in enumerate(steps):
+                if tuple(step.tile) == tuple(tile):
+                    return i
+            return -1
+
+        i_a = _index_of(locator_a.tile)
+        i_b = _index_of(locator_b.tile)
+        if i_a < 0 or i_b < 0:
+            # Locator tile not on the walk: best-effort whole-walk length.
+            total = sum(float(step.length_cm) for step in steps)
+            return max(0.0, total - float(locator_a.distance_cm or 0.0))
+        lo, hi = (i_a, i_b) if i_a <= i_b else (i_b, i_a)
+        total = sum(float(steps[i].length_cm) for i in range(lo, hi + 1))
+        return max(0.0, total - float(locator_a.distance_cm or 0.0))
+
     def _build_candidates(
         self, raw_walks: List[PathSegment], request: GraphWalkQuery
     ) -> List[GraphWalkCandidate]:

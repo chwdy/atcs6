@@ -244,7 +244,7 @@ class TestReserveBlocksForPathDirectionOverride:
             "a traversal whose block_direction is not in "
             "allowed_travel_directions. Got "
             f"failed_block_id={result.failed_block_id!r}, "
-            f"failure_reason={result.failure_reason!r}"
+            f"reason={result.reason!r}"
         )
         assert block.reserved_by_path == "PATH_OPERATOR"
         assert block.reservation is not None
@@ -270,6 +270,6 @@ class TestReserveBlocksForPathDirectionOverride:
 
         assert not result.success
         assert result.failed_block_id == "BLOCK_X"
-        assert result.failure_reason == "direction_not_allowed"
+        assert result.reason == "direction_not_allowed"
         # No reservation written on rejection.
         assert block.reserved_by_path is None

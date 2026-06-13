@@ -112,7 +112,7 @@ class PathProjection:
         """Derived read: does this controller currently have a
         path/route/destination context backing the run?
 
-        Per design_new.md "Latch table" canonical home, this is not a
+        Per design_new.md "Latch Table" canonical home, this is not a
         stored latch field — it is a derived projection of
         ``received_path_plan``, the active route execution state, and
         ``ato_destination_block_id``. Returns the same boolean that

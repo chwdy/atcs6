@@ -85,8 +85,9 @@ class PathDispatcher:
         # available. Used to resolve TrainController instances and the
         # NotificationCenter for progress callbacks.
         self.simulation_controller: Optional[Any] = None
-        # Canonical pathfinding home shared with RouteExecutor (per
-        # design_new.md line 605). The same instance services dispatcher
+        # Canonical pathfinding home shared with RouteExecutor (the shared
+        # pathfinding home in design_new.md "Path And PathDispatcher"). The
+        # same instance services dispatcher
         # candidate enumeration and any RouteExecutor platform-end
         # selection that needs the shared comparison rules.
         self._pathfinder = RailwayPathfinder(network)
@@ -630,7 +631,8 @@ class PathDispatcher:
                 required_state, manual_override=manual_override
             ):
                 # Representative lock holder for the diagnostic field; the
-                # canonical lock store is `Switch.locks` (design_new.md:651).
+                # canonical lock store is `Switch.locks` (the Switch lock
+                # ownership rule in design_new.md "Switch Entity").
                 holder_path = next(iter(switch_entity.locks), (None,))[0]
                 errors.append(
                     ValidationError(
@@ -744,7 +746,8 @@ class PathDispatcher:
                 reason=f"Cannot resolve current block for train {train_id}",
             )
 
-        # Same-block repositioning (design_new.md:958-:971). When the requested
+        # Same-block repositioning (the same-block synthetic-path rule, create_path
+        # step 8 in design_new.md "Path And PathDispatcher"). When the requested
         # destination block is already inside the train's current occupied span,
         # the pathfinder cannot walk a block to itself, so dispatcher builds a
         # synthetic one-block local authority over the train's own block instead
@@ -755,7 +758,7 @@ class PathDispatcher:
         # block. A destination that is a *non-head* spanned block (e.g. the tail)
         # is a reversal/turnaround, which must go through the normal cab-flip +
         # covered-task flow; building a degenerate synthetic path there would
-        # hijack it. Per design_new.md:960 the synthetic path is an explicit
+        # hijack it. Per that same-block rule the synthetic path is an explicit
         # repositioning capability, "rather than ... the normal route-side
         # handling for an already covered stop waypoint."
         if self._get_current_block_id_for_train(train) == requested_destination_block_id:
@@ -817,7 +820,8 @@ class PathDispatcher:
             )
         candidates = non_revisit_candidates
 
-        # design_new.md:931 / :940 — dispatcher selects EXACTLY ONE candidate
+        # create_path step 2 (design_new.md "Path And PathDispatcher") — dispatcher
+        # selects EXACTLY ONE candidate
         # (the shortest walk per the GraphWalkCandidate comparison) and applies
         # acquisition_mode to that one candidate. It must NOT fall through to a
         # second, longer candidate when the chosen one cannot be acquired or
@@ -1160,7 +1164,8 @@ class PathDispatcher:
             )
         candidates = non_revisit_candidates
 
-        # design_new.md:931 / :940 / :1045 — like create_path, extend commits to
+        # create_path step 2 / extend_path single-candidate rule (design_new.md
+        # "Path And PathDispatcher") — like create_path, extend commits to
         # EXACTLY ONE candidate (the shortest forward-continuing extension) and
         # never falls through to a longer alternative route to the same target.
         # When that one extension is blocked the tail returns BLOCKED_NO_GROWTH
@@ -1283,14 +1288,9 @@ class PathDispatcher:
             if path.get_authority_end_block_id() == requested_destination_block_id:
                 grown_kind = PathAcquisitionResultKind.REACHED_REQUESTED_TARGET
                 grown_reason = "extended to requested target"
-                # Reached the target: no longer waiting on anything.
-                path.waiting_for_block_id = None
             else:
                 grown_kind = PathAcquisitionResultKind.TRUNCATED_GREW
                 grown_reason = "extended (truncated short of requested target)"
-                # Grew but still short — `last_resource` is the block that
-                # stopped further growth, i.e. what the train is waiting on.
-                path.waiting_for_block_id = last_resource
 
             return PathAcquisitionResult(
                 success=True,
@@ -1325,9 +1325,9 @@ class PathDispatcher:
             # No status transition here: the path is already ACTIVE and stays
             # ACTIVE on a BLOCKED_NO_GROWTH hold, so `last_status_updated_time`
             # must not be re-stamped (design_new.md: status transitions only).
-            # Held short with no growth — `last_resource` is the occupied/
-            # reserved block the train is waiting on.
-            path.waiting_for_block_id = last_resource
+            # The "waiting on" block is not stored — `get_active_path_progress`
+            # recomputes it live (the `waiting_for_block_id` live-recompute rule
+            # in design_new.md "Data Flow To UI", API payload ownership).
             return PathAcquisitionResult(
                 success=True,
                 result_kind=PathAcquisitionResultKind.BLOCKED_NO_GROWTH,
@@ -1340,9 +1340,10 @@ class PathDispatcher:
             )
 
         # Extend failed outright but the existing authority is untouched and
-        # still ACTIVE — surface the blocking resource for the "Show stuck"
-        # overlay (None when the obstruction was not a specific resource).
-        path.waiting_for_block_id = last_resource
+        # still ACTIVE. The blocking resource for the "Show stuck" overlay is
+        # not stored — `get_active_path_progress` recomputes it live (the
+        # `waiting_for_block_id` live-recompute rule in design_new.md "Data Flow
+        # To UI", API payload ownership).
         return PathAcquisitionResult(
             success=False,
             failure_kind=PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET,
@@ -1427,9 +1428,11 @@ class PathDispatcher:
         # Mark path CANCELLED.
         path._set_status(PathStatus.CANCELLED, now)
 
-        # Notify route executor (bookkeeping only). Per design_new.md line 1559
-        # the diagnostic `initiator` does not cross the callback boundary — it is
-        # carried only on the `path_cancellation` notification emitted below.
+        # Notify route executor (bookkeeping only). Per the
+        # `pending_path_cancel_request` payload rule in design_new.md "Core
+        # Runtime Loop", the diagnostic `initiator` does not cross the callback
+        # boundary — it is carried only on the `path_cancellation` notification
+        # emitted below.
         train_id = path.train_id
         if train_id:
             route_executor = self._get_route_executor()
@@ -1620,7 +1623,8 @@ class PathDispatcher:
     ) -> List[str]:
         """Subset of `block_ids` whose future reservation `path_id` still holds.
 
-        Per design_new.md:781, `release_path_block_reservations(...)` is meant
+        Per the `release_path_block_reservations(...)` contract in design_new.md
+        "BlockManager", that method is meant
         to release a path's *not-yet-entered* reservation set, and it emits the
         "not reserved for <path_id>" diagnostic for any block whose
         `reserved_by_path` no longer matches. A block leaves the path's future
@@ -1657,10 +1661,10 @@ class PathDispatcher:
         already reserved and already in `resource_sequence` — inside its
         extension segment; without this guard the rollback would release that
         seam's reservation while it stays in the authority, leaving a
-        not-yet-entered authority block unreserved. design_new.md:1059 / :1062
-        require a blocked extend to keep the live path unchanged, and :179 says
-        the dispatcher owns the reservation for every not-yet-entered authority
-        resource. For `create_path(...)` the path record is not yet in
+        not-yet-entered authority block unreserved. The completion/cancellation
+        release rules in design_new.md "Path And PathDispatcher" require a
+        blocked extend to keep the live path unchanged, and the dispatcher owns
+        the reservation for every not-yet-entered authority resource. For `create_path(...)` the path record is not yet in
         `paths_by_id` when its acquire-failure rollback runs, so the exclusion
         set is empty and the full segment is released as before.
         """
@@ -1885,8 +1889,9 @@ class PathDispatcher:
             start = max_prefix
         else:
             start = max(2, min(start_at_block_count, max_prefix))
-        # design_new.md line 965: resolve this run's waypoint target blocks so the
-        # loop never stores a live authority terminating on a waypoint target.
+        # Per the route-managed point-to-point planning rule in design_new.md
+        # "Path And PathDispatcher": resolve this run's waypoint target blocks so
+        # the loop never stores a live authority terminating on a waypoint target.
         route_executor = self._get_route_executor()
         waypoint_targets = (
             route_executor.waypoint_target_blocks(train_id)
@@ -1995,8 +2000,10 @@ class PathDispatcher:
                 ordered_walk=self._slice_ordered_walk(ordered_walk, cutoff_tiles),
             )
             if ok:
-                # design_new.md line 965: never store an authority whose terminal
-                # block is a waypoint target. The loop is longest-first, so a
+                # Per the route-managed point-to-point planning rule in
+                # design_new.md "Path And PathDispatcher": never store an
+                # authority whose terminal block is a waypoint target. The loop
+                # is longest-first, so a
                 # waypoint terminal here means no longer, past-the-waypoint prefix
                 # was acquirable — roll back and fail (create_path's tail reports
                 # BLOCKED_BEFORE_TARGET) rather than land short of the waypoint.
@@ -2436,7 +2443,8 @@ class PathDispatcher:
         faces inside ``block``, or None when no cab is selected, the span has
         no geometry, or the outward edge does not map to a block direction.
 
-        Used by same-tile synthetic-path disambiguation (design_new.md:961):
+        Used by same-tile synthetic-path disambiguation (the same-block
+        repositioning rule in design_new.md "Path And PathDispatcher"):
         the head end's outward compass edge is read from the controller span
         and mapped through ``Block.block_direction_for_compass_exit``.
         """
@@ -2464,7 +2472,8 @@ class PathDispatcher:
         now: float,
     ) -> PathAcquisitionResult:
         """Build a synthetic one-block local authority for same-block
-        repositioning (design_new.md:958-:971).
+        repositioning (the same-block synthetic-path rule, create_path step 8
+        in design_new.md "Path And PathDispatcher").
 
         The requested destination block is already inside the train's current
         occupied span, so dispatcher does not run the candidate search (a block
@@ -2512,7 +2521,8 @@ class PathDispatcher:
 
         # Same-tile sub-case: a movement that stays inside one tile cannot be
         # disambiguated from the block geometry alone, so require a selected cab
-        # whose direction agrees with the request (design_new.md:961).
+        # whose direction agrees with the request (the same-block repositioning
+        # rule in design_new.md "Path And PathDispatcher").
         if len(tiles) <= 1:
             cab_direction = self._cab_block_direction(train_id, block)
             if cab_direction is None:
@@ -2743,7 +2753,9 @@ class PathDispatcher:
         if route_executor is None:
             return
         # Populate the block-relative traversal_direction the head-advance
-        # callback matches a waypoint against (design_new.md:462, 465). For a
+        # callback matches a waypoint against (the head-advance waypoint-match
+        # rule — block AND direction — in design_new.md
+        # "PathDispatcher.on_controller_progress"). For a
         # block resource it is computed by the canonical block-direction helper
         # from the entered block's `resource_sequence` entry exit_edge against
         # `Block.ordered_tiles`; for switches it stays None. The controller's
@@ -2896,7 +2908,8 @@ class PathDispatcher:
         terminal_block_direction = terminal_block.block_direction_for_compass_exit(
             terminal_entry.exit_edge
         )
-        # Per design_new.md line 687, block-relative `"forward"` / `"reverse"`
+        # Per the block-relative direction definition in design_new.md "Block",
+        # block-relative `"forward"` / `"reverse"`
         # are defined against the increasing/decreasing direction of
         # `Block.ordered_tiles`. A single-tile destination block has only
         # one entry in `ordered_tiles`, so there is no increasing direction
@@ -2945,8 +2958,9 @@ class PathDispatcher:
 
         # Deliver completion through the SimulationController surface, which
         # delegates to RouteExecutor.handle_path_completion(...) and emits the
-        # canonical `path_completion` notification (design_new.md:240, 415,
-        # 1553). Fall back to a direct RouteExecutor call only when no
+        # canonical `path_completion` notification (the terminal-teardown flow,
+        # step `09b0` in design_new.md "Core Runtime Loop"). Fall back to a
+        # direct RouteExecutor call only when no
         # SimulationController is wired (isolated unit tests) — there is no
         # NotificationCenter to emit through in that case.
         sc = self.simulation_controller
@@ -3009,6 +3023,68 @@ class PathDispatcher:
         path = self.get_active_path(train_id)
         return path.path_id if path else None
 
+    def _recompute_waiting_for_block_id(self, path: Path) -> Optional[str]:
+        """Live recompute of ``waiting_for_block_id`` (the live-recompute rule
+        in design_new.md "Data Flow To UI", API payload ownership).
+
+        Never stored: re-runs the same shared pathfinder/eligibility walk
+        ``extend_path(...)`` uses toward the stored requested target and reports
+        the block owning the first forward resource that fails acquisition
+        because of a live occupancy/reservation/lock conflict. Returns ``None``
+        when the authority already reaches its target or no viable suffix
+        exists. Read-only: ``_find_walk_candidates`` and ``validate_path`` touch
+        no path/block/switch state, so this is safe to call on every projection
+        read (best-effort extension retries change the blocker tick to tick,
+        which is why it is recomputed rather than retained).
+        """
+        authority_end = path.get_authority_end_block_id()
+        target = path.requested_destination_block_id
+        # Reached the requested target (or no target recorded): not waiting.
+        if not target or authority_end == target:
+            return None
+        train_id = path.train_id
+        if not train_id:
+            return None
+
+        # Same pathfinder call extend_path makes from the current authority end.
+        # `Path` does not retain the route's manual_override; the live blocker is
+        # an occupancy/reservation/lock conflict (not an availability-flag
+        # filter), so the automatic-caller default (False) is correct here.
+        manual_override = getattr(path, "manual_override", False)
+        candidates = self._find_walk_candidates(
+            authority_end,
+            target,
+            train_id,
+            manual_override=manual_override,
+        )
+        if not candidates:
+            # No viable suffix toward the target.
+            return None
+        forward_candidates = [
+            cand
+            for cand in candidates
+            if self._segment_continues_forward(path, cand.walk)
+        ]
+        if not forward_candidates:
+            return None
+
+        # Mirror extend_path's first-blocker derivation read-only: validate the
+        # best forward candidate against this path_id and report the first
+        # occupancy-class (occupied / reserved / switch-locked) conflict's block.
+        validation = self.validate_path(
+            forward_candidates[0].walk,
+            path.path_id,
+            train_id,
+            manual_override=manual_override,
+        )
+        if validation.valid:
+            # Suffix is currently acquirable end-to-end — nothing blocking it.
+            return None
+        for err in validation.errors:
+            if err.type.is_occupancy_class() and err.block_id:
+                return err.block_id
+        return None
+
     def get_active_path_progress(self, train_id: str) -> Optional[Dict[str, Any]]:
         """Read-only projection of dispatcher state for a single train.
 
@@ -3025,9 +3101,13 @@ class PathDispatcher:
             "authority_end_block_id": path.get_authority_end_block_id(),
             "requested_destination_block_id": path.requested_destination_block_id,
             "requested_destination_direction": path.requested_destination_direction,
-            # Diagnostic for the "Show stuck" overlay: the block this train is
-            # held waiting on (occupied/reserved ahead), or None when not stuck.
-            "waiting_for_block_id": path.waiting_for_block_id,
+            # Diagnostic for the "Show stuck" overlay: recomputed live on each
+            # read (the `waiting_for_block_id` live-recompute rule in
+            # design_new.md "Data Flow To UI") — the block owning the first forward
+            # resource that fails acquisition because of a live occupancy/
+            # reservation/lock conflict, or None when the authority reaches its
+            # target or no viable suffix exists.
+            "waiting_for_block_id": self._recompute_waiting_for_block_id(path),
             "resource_sequence": [
                 {
                     "sequence_index": entry.sequence_index,

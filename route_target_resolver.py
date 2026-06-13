@@ -308,8 +308,9 @@ class RouteTargetResolver:
         `disabled` or `manual` while RouteExecutor's auto-routing context
         cannot use manual_override). `reason` is a short human-readable
         string suitable for `RouteTaskRun.last_error.text`; Phase 1 writes
-        it via `_record_run_error(...)` so the operator sees why the task
-        stalled instead of an empty diagnostic.
+        it directly onto `task_runs[walk_position].last_error` (inlined in
+        `tick_train_phase1`) so the operator sees why the task stalled
+        instead of an empty diagnostic.
 
         Per design_new.md line 1125, `task_location` is a tagged union of
         `BlockTarget | PlatformTarget | StationTarget`; this method

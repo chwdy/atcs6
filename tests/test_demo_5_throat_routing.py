@@ -209,7 +209,7 @@ def test_best_effort_return_leg_truncated_at_b1_still_crosses_sw_lead():
         directions={"BLK_S2_N_TO_S3_N_A":
                     ReservedBlockTraversal(exit_edge="E", block_direction="forward")},
     )
-    assert res.success, f"could not reserve block A: {res.failure_reason}"
+    assert res.success, f"could not reserve block A: {res.reason}"
 
     # B_1 sits straight off SW_8_10, so the junction-fouling exclusion would
     # normally hold a truncated authority BACK before SW_8_10 (at B_2). Marking
@@ -305,7 +305,7 @@ def test_best_effort_return_leg_holds_at_b2_not_b1_when_throat_busy(dt, label):
         directions={"BLK_S2_N_TO_S3_N_A":
                     ReservedBlockTraversal(exit_edge="E", block_direction="forward")},
     )
-    assert res.success, f"could not reserve block A: {res.failure_reason}"
+    assert res.success, f"could not reserve block A: {res.reason}"
 
     # BEST_EFFORT Quick Route S3_N -> S2_N; B_1 stays two-way (the demo default).
     train_route_service.create_route(

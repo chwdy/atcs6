@@ -120,7 +120,7 @@ class ResourceCoordinator:
                     success=False,
                     failed_resource_type="block",
                     failed_resource_id=br.failed_block_id,
-                    reason=br.failure_reason or "reserve_failed",
+                    reason=br.reason or "reserve_failed",
                 )
 
         return SegmentReserveResult(

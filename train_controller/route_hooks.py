@@ -17,7 +17,7 @@ External callers access route-hook state and the latch surface as:
   - ``controller.route_hooks.phase_latches.set_path_cancel_request(...)``
     / ``.set_route_abort(...)`` / ``.set_power_off(...)`` /
     ``.set_route_deactivate(...)`` — canonical writer helpers per
-    design_new.md "Latch table"
+    design_new.md "Latch Table"
   - ``controller.route_hooks.phase_latches.path_cancel_request``
     (Optional[payload]) etc. — read-only field access
 

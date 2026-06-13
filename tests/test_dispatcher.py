@@ -201,7 +201,6 @@ def train():
     train = Train(
         train_id="TRAIN_001",
         max_speed=100.0,
-        acceleration=2.0,
         priority=5,
     )
     train.consist = [

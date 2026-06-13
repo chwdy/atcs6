@@ -74,9 +74,10 @@ class SwitchOutputInterface(ABC):
     def enter_safe_state(self) -> None:
         """Drive the safe state: every switch point motor de-energized.
 
-        Per design_new.md:2235 the runtime issues this when it stops driving
-        outputs (simulation stop or process shutdown). The simulated interface
-        drops its commanded drive; real hardware de-energizes the point motors.
+        Per design_new.md "Power" (Safe state / fail-safe) the runtime issues
+        this when it stops driving outputs (simulation stop or process
+        shutdown). The simulated interface drops its commanded drive; real
+        hardware de-energizes the point motors.
         """
 
 
@@ -104,7 +105,8 @@ class SimulatedSwitchOutputInterface(SwitchOutputInterface):
     def enter_safe_state(self) -> None:
         """Safe state: drop every commanded throw (motors de-energized). The
         switch's commanded `Switch.position` remains the alignment authority;
-        this only stops asserting drive (design_new.md:2235)."""
+        this only stops asserting drive (design_new.md "Power", Safe state /
+        fail-safe)."""
         self._throws.clear()
 
 
@@ -167,8 +169,9 @@ class SwitchPowerController:
 
     def enter_safe_state(self) -> None:
         """Put the switch output hardware into its safe state — every point motor
-        de-energized (design_new.md:2235). Issued by the runtime when it stops
-        driving outputs; delegated to the output interface."""
+        de-energized (design_new.md "Power", Safe state / fail-safe). Issued by
+        the runtime when it stops driving outputs; delegated to the output
+        interface."""
         self.output_interface.enter_safe_state()
 
     # ------------------------------------------------------------------

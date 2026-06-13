@@ -9,7 +9,7 @@ coordinator for all railway system components.
 
 from collections import deque
 import logging
-from typing import Dict, List, Optional, Set, Tuple, Any, Union
+from typing import Dict, List, Optional, Set, Tuple, Any, Union, TYPE_CHECKING
 import uuid
 from track import TrackSegment, EDGE_MASKS, BIT_TO_EDGES
 from train import Train
@@ -24,6 +24,9 @@ from station import Station
 from railway_platform import Platform
 from speed_profile import SpeedProfileRegistry
 from signal_validation import validate_signal_placement
+
+if TYPE_CHECKING:
+    from path_utils import GraphLocator, DirectedBlockFrame
 
 
 logger = logging.getLogger(__name__)
@@ -427,6 +430,27 @@ class RailwayNetwork:
                 return (edge, far[2])
 
         return None
+
+    def project_authority_boundary_delta(
+        self,
+        head_locator: "GraphLocator",
+        authority_end: "DirectedBlockFrame",
+        safety_margin_cm: float,
+    ) -> float:
+        """Project the head's forward distance to the safety-margin-adjusted
+        authority boundary (design_new.md:2161).
+
+        ``head_locator`` carries the already-measured forward clearance from the
+        head to ``authority_end`` in ``head_locator.distance_cm`` (the
+        head→authority-end walk produced by the canonical lookahead, which steps
+        ``authority_end``'s directed frame tile-by-tile). ``safety_margin_cm`` is
+        the controller's effective safety margin. The boundary delta is the
+        clearance minus that margin, clamped at zero so a head already inside the
+        margin reports ``0`` rather than a negative overshoot. This is the same
+        axis the ``speed_curves`` samples use while authority is live.
+        """
+        clearance_cm = max(0.0, float(head_locator.distance_cm or 0.0))
+        return max(0.0, clearance_cm - float(safety_margin_cm))
 
     # ------------------------------------------------------------------
     # Tunnels: pair two dead-end edges so they act like neighbouring tiles.
@@ -2133,13 +2157,6 @@ class RailwayNetwork:
                 best_edge = edge
         return best_edge
 
-    def recompute_flank_protection_for(self, switch_id: str) -> None:
-        """Recompute and store `flank_protection` for one switch."""
-        switch = self.switches.get(switch_id)
-        if switch is None:
-            return
-        switch.flank_protection = self.compute_flank_protection_for(switch)
-
     def recompute_all_flank_protection(self) -> None:
         """Recompute `flank_protection` for every switch in the network.
 
@@ -2264,6 +2281,16 @@ class RailwayNetwork:
         for platform_data in platforms_data:
             platform = Platform.from_dict(platform_data)
             self.platforms[platform.platform_id] = platform
+            # Establish the canonical block_assignments index from the loaded
+            # tile ownership when a platform was serialized without it, so
+            # ordered_blocks / get_all_assigned_blocks resolve every platform's
+            # block without any read-time tile scan. Tracks are already loaded
+            # above, and this is a no-op when block_assignments came through.
+            if not platform.block_assignments:
+                for px, py in platform.positions:
+                    ptrack = self.get_track(px, py)
+                    if ptrack and ptrack.block_section_id:
+                        platform.block_assignments[(px, py)] = ptrack.block_section_id
 
         # Rebuild logical station groups (optional in legacy saves)
         for station_data in data.get("station_groups", []):

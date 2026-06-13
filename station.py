@@ -102,11 +102,6 @@ class Station:
             platform = network.platforms.get(platform_id)
             if platform:
                 block_ids.update(platform.get_all_assigned_blocks())
-                # Also include blocks from tile track references
-                for x, y in platform.positions:
-                    track = network.get_track(x, y)
-                    if track and track.block_section_id:
-                        block_ids.add(track.block_section_id)
         return block_ids
 
     def get_center_position(
