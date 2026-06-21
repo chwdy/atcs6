@@ -7,6 +7,8 @@
 // Part of the Vite bundle; the Renderer constructs it directly
 // (`new RendererRouteHandler(this)`).
 
+import type { TileExtentStyle } from './renderer-tracks';
+
 interface RedrawRequest {
   live?: boolean;
   world?: boolean;
@@ -29,6 +31,9 @@ interface FlashStyle {
   fillAlpha: number; // diamond fill opacity
   blink: boolean; // true = strobe on/off every 200ms (conflict); false = solid
   mark: 'x' | 'none'; // 'x' = white cross overlay (conflict); 'none' = clean
+  // true = also light the track running through each flashed tile (the block
+  // editor's "locate" flash), so the highlight shows the rail, not just the cell
+  highlightTrack: boolean;
 }
 
 const CONFLICT_FLASH_STYLE: FlashStyle = {
@@ -36,6 +41,7 @@ const CONFLICT_FLASH_STYLE: FlashStyle = {
   fillAlpha: 0.5,
   blink: true,
   mark: 'x',
+  highlightTrack: false,
 };
 
 /** The slice of the Renderer the route handler reads through its back-reference. */
@@ -47,6 +53,8 @@ export interface RouteHandlerRenderer {
   gridToScreenX(x: number, y: number): number;
   gridToScreenY(x: number, y: number): number;
   requestRedraw(opts: RedrawRequest): void;
+  // Used by the "locate" flash to light the track through each flashed tile.
+  trackHandler: { drawTileExtentHighlight(keys: Set<string>, style: TileExtentStyle): void };
 }
 
 export class RendererRouteHandler {
@@ -122,6 +130,7 @@ export class RendererRouteHandler {
       durationMs?: number;
       blink?: boolean;
       mark?: 'x' | 'none';
+      highlightTrack?: boolean;
     } = {}
   ): void {
     this.flashStyle = {
@@ -129,6 +138,7 @@ export class RendererRouteHandler {
       fillAlpha: opts.fillAlpha ?? 0.4,
       blink: opts.blink ?? false,
       mark: opts.mark ?? 'none',
+      highlightTrack: opts.highlightTrack ?? false,
     };
     this.conflictFlashTiles = tiles || [];
     this.conflictFlashEnd = Date.now() + (opts.durationMs ?? 650);
@@ -391,6 +401,19 @@ export class RendererRouteHandler {
       this.ctx.lineTo(cx - halfTile, cy);
       this.ctx.closePath();
       this.ctx.fill();
+    }
+
+    // Light the track through each flashed tile on top of the diamond, so a
+    // "locate" flash shows both the tile boundary and the rail section. Reuses
+    // the selection/preview track overlay, tinted to the flash color.
+    if (style.highlightTrack) {
+      const keys = new Set(this.conflictFlashTiles.map(([x, y]) => `${x},${y}`));
+      this.renderer.trackHandler.drawTileExtentHighlight(keys, {
+        tileFill: `rgba(${style.rgb}, 0.16)`,
+        glow: `rgba(${style.rgb}, 0.5)`,
+        core: `rgba(${style.rgb}, 1)`,
+        cap: 'rgba(255, 255, 255, 0.95)',
+      });
     }
 
     if (style.mark === 'x') {

@@ -31,6 +31,7 @@ function makeRenderer(ctx: ReturnType<typeof makeCtx>): RouteHandlerRenderer {
     gridToScreenX: (x) => x * 10,
     gridToScreenY: (_x, y) => y * 10,
     requestRedraw: vi.fn(),
+    trackHandler: { drawTileExtentHighlight: vi.fn() },
   };
 }
 
@@ -103,7 +104,41 @@ describe('RendererRouteHandler', () => {
     h.flashTiles([[2, 3]], { rgb: '130, 87, 229', fillAlpha: 0.45, durationMs: 650 });
     expect(h.conflictFlashTiles).toEqual([[2, 3]]);
     expect(h.conflictFlashEnd).toBeGreaterThan(0);
-    expect(h.flashStyle).toEqual({ rgb: '130, 87, 229', fillAlpha: 0.45, blink: false, mark: 'none' });
+    expect(h.flashStyle).toEqual({
+      rgb: '130, 87, 229',
+      fillAlpha: 0.45,
+      blink: false,
+      mark: 'none',
+      highlightTrack: false,
+    });
     expect(raf).toHaveBeenCalled();
+  });
+
+  it('a highlightTrack flash lights the track extent on top of the diamond', () => {
+    const raf = vi.fn();
+    (globalThis as { requestAnimationFrame?: unknown }).requestAnimationFrame = raf;
+    const ctx = makeCtx();
+    const r = makeRenderer(ctx);
+    const h = new RendererRouteHandler(r);
+    h.flashTiles([[2, 3]], { rgb: '255, 217, 61', highlightTrack: true });
+    expect(h.flashStyle.highlightTrack).toBe(true);
+    // While the flash window is open, drawRouteOverlays draws the diamond and
+    // then the track-aware extent overlay for the flashed tile.
+    h.drawRouteOverlays();
+    expect(r.trackHandler.drawTileExtentHighlight).toHaveBeenCalledTimes(1);
+    const keys = (r.trackHandler.drawTileExtentHighlight as ReturnType<typeof vi.fn>).mock
+      .calls[0][0] as Set<string>;
+    expect(keys.has('2,3')).toBe(true);
+  });
+
+  it('a plain (non-highlightTrack) flash does not touch the track overlay', () => {
+    const raf = vi.fn();
+    (globalThis as { requestAnimationFrame?: unknown }).requestAnimationFrame = raf;
+    const ctx = makeCtx();
+    const r = makeRenderer(ctx);
+    const h = new RendererRouteHandler(r);
+    h.flashTiles([[2, 3]], { rgb: '130, 87, 229' });
+    h.drawRouteOverlays();
+    expect(r.trackHandler.drawTileExtentHighlight).not.toHaveBeenCalled();
   });
 });

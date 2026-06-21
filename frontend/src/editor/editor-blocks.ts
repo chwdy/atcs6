@@ -155,21 +155,25 @@ export class BlockEditorHandler {
     // disabled button whose tooltip carries the reason.
     const sortedPositions = block.sorted_positions || block.track_positions || [];
     const tracks = this.editor.cachedNetwork?.tracks || [];
-    const predictExtend = (dir: 'start' | 'end'): { label: string; disabled: boolean; title: string } => {
+    const predictExtend = (
+      dir: 'start' | 'end'
+    ): { label: string; disabled: boolean; title: string; icon: string } => {
       try {
         if (!sortedPositions.length) throw new Error('no tiles yet');
         const orientation = detectOrientation(sortedPositions, tracks);
         const next = calculateNextTile(sortedPositions, orientation, dir, tracks);
         return {
-          label: `+ (${next.x}, ${next.y})`,
+          label: `Extend tiles (${next.x}, ${next.y})`,
           disabled: false,
           title: `Add tile (${next.x}, ${next.y}) to this block`,
+          icon: '',
         };
       } catch (err: any) {
         return {
-          label: '+ Extend',
+          label: 'Extend tiles',
           disabled: true,
           title: `Can't extend here: ${err?.message || 'no clean next tile'}`,
+          icon: '',
         };
       }
     };
@@ -450,8 +454,9 @@ export class BlockEditorHandler {
       };
     });
 
-    // Click a tile row (anywhere but the Remove button) → flash that tile on
-    // the layout, so a coordinate in the list maps to a place on the map.
+    // Click a tile row (anywhere but the Remove button) → center the layout on
+    // that tile and flash it, so a coordinate in the list maps to a place on
+    // the map.
     const tileRows = document.querySelectorAll<HTMLElement>('.block-editor-panel .tile-list-item');
     tileRows.forEach((row) => {
       row.addEventListener('click', (e) => {
@@ -459,12 +464,19 @@ export class BlockEditorHandler {
         const x = parseInt(row.dataset.x ?? '', 10);
         const y = parseInt(row.dataset.y ?? '', 10);
         if (Number.isNaN(x) || Number.isNaN(y)) return;
-        // Accent purple — a "locate" highlight, not a danger flash (§17 keeps
-        // red for danger).
-        this.editor.renderer?.flashTiles?.([[x, y]], {
-          rgb: '130, 87, 229',
-          fillAlpha: 0.45,
-          durationMs: 650,
+        const renderer = this.editor.renderer;
+        // Recenter the view on the tile (panToWorld handles the isometric math),
+        // then repaint the world layer at the new offset.
+        renderer?.camera?.panToWorld?.(x, y);
+        renderer?.requestRedraw?.({ world: true, live: true, reason: 'locate-tile' });
+        // Yellow "locate" highlight — not a danger flash (§17 keeps red for
+        // danger). highlightTrack lights the rail through the tile on top of the
+        // tile diamond, so both the boundary and the track section stand out.
+        renderer?.flashTiles?.([[x, y]], {
+          rgb: '255, 217, 61',
+          fillAlpha: 0.4,
+          durationMs: 900,
+          highlightTrack: true,
         });
       });
     });

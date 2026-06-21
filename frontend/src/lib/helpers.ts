@@ -1259,6 +1259,10 @@ interface ExtendBtnOpts {
   label?: string; // button text (default "Extend Start" / "Extend End")
   disabled?: boolean; // greyed out when there's no clean next tile
   title?: string; // tooltip — the predicted coordinate, or the refusal reason
+  // Leading icon HTML. Omitted = the default plus icon; '' (or null) drops the
+  // icon entirely (the block editor's "Extend tiles (x, y)" buttons spell out
+  // the action in words, so they pass '').
+  icon?: string | null;
 }
 
 interface TileListOptions {
@@ -1316,7 +1320,10 @@ export function renderTileList(sortedPositions: Coord[], options: TileListOption
     const text = o?.label || fallback;
     const disabled = o?.disabled ? ' disabled' : '';
     const title = o?.title ? ` title="${escapeAttr(o.title)}"` : '';
-    return `<button id="${id}" class="btn btn-secondary btn-sm tile-list-extend-btn"${disabled}${title}><i class="ti ti-plus"></i> ${text}</button>`;
+    // Default leading icon is the plus; a caller can pass icon: '' to drop it.
+    const iconHtml = o?.icon !== undefined ? (o.icon ?? '') : '<i class="ti ti-plus"></i>';
+    const iconPart = iconHtml ? `${iconHtml} ` : '';
+    return `<button id="${id}" class="btn btn-secondary btn-sm tile-list-extend-btn"${disabled}${title}>${iconPart}${text}</button>`;
   };
 
   return `
