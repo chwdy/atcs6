@@ -114,6 +114,7 @@ describe('_drawLive paints the previews as part of the live-layer flush', () => 
       drawLassoPath: vi.fn(),
       _drawBuildPreview: vi.fn(),
       _drawHoverPreview: vi.fn(),
+      _drawTrainGhost: vi.fn(),
     };
     Renderer.prototype._drawLive.call(liveThis, { tracks: [] });
     expect(liveThis._drawBuildPreview).toHaveBeenCalledTimes(1);
