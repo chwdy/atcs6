@@ -1,4 +1,5 @@
-// api.ts — Thin HTTP client over the Flask `/api` surface.
+// api.ts — Thin HTTP client over the Flask `/api` surface. Implements the
+// `LayoutDataClient` + `SimClient` data contract (see layout-data-client.ts).
 //
 // Migrated from static/js/api.js (longterm_todo.md item #7, Wave 1 — foundation
 // cluster). Behavior is unchanged from the classic file: each method is a thin
@@ -9,6 +10,8 @@
 
 // Caller-supplied fetch options plus the custom `returnNullOn404` flag stripped
 // before the request reaches fetch().
+import type { LayoutDataClient, SimClient } from './layout-data-client';
+
 interface RequestOptions {
   method?: string;
   headers?: Record<string, string>;
@@ -25,7 +28,10 @@ interface RequestConfig {
   [key: string]: unknown;
 }
 
-export class API {
+// `implements` makes the compiler verify this client satisfies both halves of
+// the data contract — the layout surface the reusable editor/renderer need and
+// the sim surface the sim plugin needs.
+export class API implements LayoutDataClient, SimClient {
   baseUrl: string;
 
   constructor(baseUrl = '/api') {

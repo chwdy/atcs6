@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // editor-ui pulls in toast + helpers for their side-effecting DOM helpers; we
 // only care about the track-bit commit logic here, so stub both. constants
@@ -9,21 +9,19 @@ vi.mock('../lib/helpers', () => ({ showConfirmModal: vi.fn() }));
 import { EditorUIHandler } from './editor-ui';
 import { showToast } from '../lib/toast';
 
-// Build an EditorUIHandler wired to a fake host. `_commitTrackBits` only
-// touches host.api, host.selectElement, and window.app.refreshNetwork.
+// Build an EditorUIHandler wired to a fake editor. `_commitTrackBits` only
+// touches editor.api, editor.selectElement, and editor.host.refreshNetwork
+// (the injected host — P3 replaced the window.app global with editor.host).
 function makeHandler(api: Record<string, any>) {
   const selectElement = vi.fn().mockResolvedValue(undefined);
-  const handler = new EditorUIHandler({ api, selectElement } as any);
-  return { handler, selectElement };
+  const refreshNetwork = vi.fn().mockResolvedValue(undefined);
+  const handler = new EditorUIHandler({ api, selectElement, host: { refreshNetwork } } as any);
+  return { handler, selectElement, refreshNetwork };
 }
 
 describe('_commitTrackBits — removing the last segment', () => {
   beforeEach(() => {
-    (globalThis as any).window = { app: { refreshNetwork: vi.fn().mockResolvedValue(undefined) } };
     vi.mocked(showToast).mockClear();
-  });
-  afterEach(() => {
-    delete (globalThis as any).window;
   });
 
   it('removes the tile without re-fetching it or surfacing an error', async () => {
@@ -36,7 +34,7 @@ describe('_commitTrackBits — removing the last segment', () => {
       getTrack: vi.fn().mockResolvedValue(null),
       createSwitchAt: vi.fn(),
     };
-    const { handler, selectElement } = makeHandler(api);
+    const { handler, selectElement, refreshNetwork } = makeHandler(api);
 
     await handler._commitTrackBits({ x: 3, y: 4 }, 0);
 
@@ -44,7 +42,7 @@ describe('_commitTrackBits — removing the last segment', () => {
     // The whole point of the fix: a removed tile is never re-fetched.
     expect(api.getTrack).not.toHaveBeenCalled();
     // Map refresh + reselect still run; no spurious failure toast.
-    expect((globalThis as any).window.app.refreshNetwork).toHaveBeenCalledTimes(1);
+    expect(refreshNetwork).toHaveBeenCalledTimes(1);
     expect(selectElement).toHaveBeenLastCalledWith({ x: 3, y: 4 });
     expect(showToast).not.toHaveBeenCalled();
   });

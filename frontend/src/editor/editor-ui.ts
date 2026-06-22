@@ -50,7 +50,7 @@ export class EditorUIHandler {
   }
 
   setupSecondarySidebar(): void {
-    const closeBtn = document.getElementById('close-secondary-sidebar');
+    const closeBtn = this.editor.$id('close-secondary-sidebar');
     if (closeBtn) {
       closeBtn.addEventListener('click', async () => {
         if (this.activeSecondaryTabId) {
@@ -61,14 +61,14 @@ export class EditorUIHandler {
       });
     }
 
-    const parentBtn = document.getElementById('secondary-nav-parent');
+    const parentBtn = this.editor.$id('secondary-nav-parent');
     if (parentBtn) {
       parentBtn.addEventListener('click', async () => {
         await this.navigateToParentList();
       });
     }
 
-    const pinBtn = document.getElementById('secondary-nav-pin');
+    const pinBtn = this.editor.$id('secondary-nav-pin');
     if (pinBtn) {
       pinBtn.addEventListener('click', () => {
         this.secondaryPanelPinned = !this.secondaryPanelPinned;
@@ -77,7 +77,7 @@ export class EditorUIHandler {
       });
     }
 
-    const tabsEl = document.getElementById('secondary-sidebar-tabs');
+    const tabsEl: HTMLElement | null = this.editor.$id('secondary-sidebar-tabs');
     if (tabsEl) {
       tabsEl.addEventListener('click', async (event) => {
         const closeBtn = (event.target as HTMLElement).closest(
@@ -205,7 +205,7 @@ export class EditorUIHandler {
   expandCategoryForTool(toolName: any): void {
     if (!toolName) return;
 
-    const toolBtn = document.querySelector(`.tool-btn[data-tool="${toolName}"]`);
+    const toolBtn = this.editor.$q(`.tool-btn[data-tool="${toolName}"]`);
     if (!toolBtn) return;
 
     const category = toolBtn.closest('.tool-category');
@@ -250,9 +250,9 @@ export class EditorUIHandler {
   }
 
   showSecondarySidebar(title: string, content: string): void {
-    const sidebar = document.getElementById('secondary-sidebar');
-    const titleEl = document.getElementById('secondary-sidebar-title');
-    const contentEl = document.getElementById('secondary-sidebar-content');
+    const sidebar = this.editor.$id('secondary-sidebar');
+    const titleEl = this.editor.$id('secondary-sidebar-title');
+    const contentEl = this.editor.$id('secondary-sidebar-content');
 
     if (sidebar && titleEl && contentEl) {
       titleEl.textContent = title;
@@ -282,7 +282,7 @@ export class EditorUIHandler {
   }
 
   async hideSecondarySidebar(): Promise<void> {
-    const sidebar = document.getElementById('secondary-sidebar');
+    const sidebar = this.editor.$id('secondary-sidebar');
     if (sidebar) {
       sidebar.classList.remove('visible');
       sidebar.classList.remove('compact');
@@ -430,7 +430,7 @@ export class EditorUIHandler {
   }
 
   renderSecondaryTabs(): void {
-    const tabsEl = document.getElementById('secondary-sidebar-tabs');
+    const tabsEl: HTMLElement | null = this.editor.$id('secondary-sidebar-tabs');
     if (!tabsEl) {
       return;
     }
@@ -737,7 +737,7 @@ export class EditorUIHandler {
   }
 
   updateSecondaryNavigationState(): void {
-    const closeBtn = document.getElementById('close-secondary-sidebar');
+    const closeBtn = this.editor.$id('close-secondary-sidebar');
     if (!closeBtn) {
       return;
     }
@@ -746,7 +746,7 @@ export class EditorUIHandler {
     // `← Trains`-style parent link: shown only when the open panel is a
     // detail view whose parent list exists (DESIGN_LANGUAGE.md §12 — the back
     // button is labeled with its destination).
-    const parentBtn = document.getElementById('secondary-nav-parent') as HTMLButtonElement | null;
+    const parentBtn = this.editor.$id('secondary-nav-parent') as HTMLButtonElement | null;
     if (parentBtn) {
       const parent = this.getCurrentParentSegment();
       if (parent) {
@@ -759,7 +759,7 @@ export class EditorUIHandler {
       }
     }
 
-    const pinBtn = document.getElementById('secondary-nav-pin');
+    const pinBtn = this.editor.$id('secondary-nav-pin');
     if (pinBtn) {
       pinBtn.classList.toggle('active', this.secondaryPanelPinned);
       pinBtn.title = this.secondaryPanelPinned ? 'Unpin inspector' : 'Pin inspector';
@@ -786,7 +786,7 @@ export class EditorUIHandler {
     this.showSecondarySidebar(title, content);
 
     setTimeout(() => {
-      const copyBtn = document.getElementById('copy-json-btn') as HTMLButtonElement | null;
+      const copyBtn = this.editor.$id('copy-json-btn') as HTMLButtonElement | null;
       if (copyBtn) {
         copyBtn.onclick = () => {
           navigator.clipboard
@@ -875,7 +875,7 @@ export class EditorUIHandler {
   }
 
   initViewFullJSONButton(track: any): void {
-    const viewJsonBtn = document.getElementById('view-full-json-btn') as HTMLButtonElement | null;
+    const viewJsonBtn = this.editor.$id('view-full-json-btn') as HTMLButtonElement | null;
     if (viewJsonBtn) {
       viewJsonBtn.onclick = () => {
         this.showFullJSONViewer(track, `JSON: (${track.x}, ${track.y})`);
@@ -896,7 +896,7 @@ export class EditorUIHandler {
   }
 
   initBitEditor(track: any): void {
-    const body = document.getElementById('track-bits-panel-body');
+    const body: HTMLElement | null = this.editor.$id('track-bits-panel-body');
     if (!body) return;
 
     const checkboxes = body.querySelectorAll<HTMLInputElement>('input[type="checkbox"][data-bit]');
@@ -915,9 +915,9 @@ export class EditorUIHandler {
     // there is nothing to repaint here beyond the numeric readout.
     const updateReadout = () => {
       const bits = calculateBits();
-      const total = document.getElementById('bit-total');
-      const binary = document.getElementById('bit-binary');
-      const forbidden = document.getElementById('bit-forbidden');
+      const total = this.editor.$id('bit-total');
+      const binary = this.editor.$id('bit-binary');
+      const forbidden = this.editor.$id('bit-forbidden');
       if (total) total.textContent = String(bits);
       if (binary) binary.textContent = bits.toString(2).padStart(6, '0');
       if (forbidden) {
@@ -998,7 +998,7 @@ export class EditorUIHandler {
         }
       }
 
-      await window.app?.refreshNetwork();
+      await this.editor.host?.refreshNetwork();
       await this.editor.selectElement({ x: track.x, y: track.y });
     };
 
@@ -1052,7 +1052,7 @@ export class EditorUIHandler {
   }
 
   initVisualTrackEditor(canvasId: string, track: any): void {
-    const canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
+    const canvas = this.editor.$id(canvasId) as HTMLCanvasElement | null;
     if (!canvas) return;
 
     const ctx = canvas.getContext('2d')!;
@@ -1240,7 +1240,7 @@ export class EditorUIHandler {
   }
 
   clearPropertiesPanel(): void {
-    const panel = document.querySelector('.properties-panel');
+    const panel = this.editor.$q('.properties-panel');
     if (panel) {
       panel.innerHTML = `
                 <h3>Properties</h3>

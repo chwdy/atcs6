@@ -103,8 +103,9 @@ describe('_drawLive paints the previews as part of the live-layer flush', () => 
       _clearLiveCanvas: vi.fn(),
       platformHandler: { drawPlatforms: vi.fn() },
       stationHandler: { drawStations: vi.fn(), drawHoverOverlay: vi.fn() },
-      routeHandler: { drawRouteOverlays: vi.fn() },
-      trainHandler: { drawTrain: vi.fn() },
+      // Sim draws (route overlays, trains, train-placement ghost) now go through
+      // registered overlays, invoked via _emitOverlay at each z-order point.
+      _emitOverlay: vi.fn(),
       drawBlockDirectionOverlay: vi.fn(),
       drawTileDirectionDebug: vi.fn(),
       drawOneWayDirectionDebug: vi.fn(),

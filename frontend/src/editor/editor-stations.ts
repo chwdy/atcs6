@@ -154,7 +154,7 @@ export class PlatformEditorHandler {
           showToast(`Cannot change availability: ${result.error}`, 'error', 4000);
           this.showEditor(platformId);
         } else {
-          await window.app?.refreshNetwork();
+          await this.editor.host?.refreshNetwork();
         }
       } catch (err: any) {
         console.error('Failed to update platform availability:', err);
@@ -169,36 +169,36 @@ export class PlatformEditorHandler {
     // subscription, so refreshNetwork is safe (it won't rebuild the panel).
     const savePlatformField = (field: string) => (value: unknown) =>
       this.api.updatePlatform(platformId, { [field]: value });
-    const refreshAfterSave = () => window.app?.refreshNetwork();
+    const refreshAfterSave = () => this.editor.host?.refreshNetwork();
 
-    bindFieldAutoSave(document.getElementById('platform-name-input') as HTMLInputElement | null, {
+    bindFieldAutoSave(this.editor.$id('platform-name-input') as HTMLInputElement | null, {
       parse: parseText,
       commit: savePlatformField('name'),
       onApplied: refreshAfterSave,
     });
-    bindFieldAutoSave(document.getElementById('platform-length-input') as HTMLInputElement | null, {
+    bindFieldAutoSave(this.editor.$id('platform-length-input') as HTMLInputElement | null, {
       parse: parseRequiredMmToCm('Length'),
       commit: savePlatformField('length_cm'),
       onApplied: refreshAfterSave,
     });
-    bindFieldAutoSave(document.getElementById('platform-side-input') as HTMLSelectElement | null, {
+    bindFieldAutoSave(this.editor.$id('platform-side-input') as HTMLSelectElement | null, {
       parse: (raw) => ({ ok: true, value: raw || 'both' }),
       commit: savePlatformField('platform_side'),
       event: 'change',
       onApplied: async () => {
-        const summary = document.getElementById('platform-side-summary');
-        const sideInput = document.getElementById('platform-side-input') as HTMLSelectElement | null;
+        const summary = this.editor.$id('platform-side-summary');
+        const sideInput = this.editor.$id('platform-side-input') as HTMLSelectElement | null;
         if (summary && sideInput) summary.textContent = sideInput.value;
-        await window.app?.refreshNetwork();
+        await this.editor.host?.refreshNetwork();
       },
     });
-    bindFieldAutoSave(document.getElementById('platform-speed-input') as HTMLInputElement | null, {
+    bindFieldAutoSave(this.editor.$id('platform-speed-input') as HTMLInputElement | null, {
       parse: parseOptionalInt('Max speed'),
       commit: savePlatformField('top_speed_kmh'),
       onApplied: refreshAfterSave,
     });
 
-    const deleteBtn = document.getElementById('delete-platform-btn') as HTMLButtonElement | null;
+    const deleteBtn = this.editor.$id('delete-platform-btn') as HTMLButtonElement | null;
     if (deleteBtn) {
       deleteBtn.onclick = async () => {
         const confirmed = await showConfirmModal({
@@ -213,7 +213,7 @@ export class PlatformEditorHandler {
         }
         try {
           await this.api.deletePlatform(platformId);
-          await window.app?.refreshNetwork();
+          await this.editor.host?.refreshNetwork();
           this.editor.hideSecondarySidebar();
           showToast('Platform deleted', 'success', 2500);
         } catch (err: any) {
@@ -228,7 +228,7 @@ export class PlatformEditorHandler {
           const x = parseInt(btn.dataset.x ?? '', 10);
           const y = parseInt(btn.dataset.y ?? '', 10);
           await this.api.removePlatformTile(platformId, x, y);
-          await window.app?.refreshNetwork();
+          await this.editor.host?.refreshNetwork();
           await this.showEditor(platformId);
         } catch (err: any) {
           showToast(`Failed to remove tile: ${err.message}`, 'error', 5000);
@@ -236,7 +236,7 @@ export class PlatformEditorHandler {
       };
     });
 
-    const openStationsBtn = document.getElementById('open-stations-panel-btn') as HTMLButtonElement | null;
+    const openStationsBtn = this.editor.$id('open-stations-panel-btn') as HTMLButtonElement | null;
     if (openStationsBtn) {
       openStationsBtn.onclick = () => this.editor.showStationsPanel();
     }
@@ -331,7 +331,7 @@ export class PlatformEditorHandler {
       return;
     }
     await this.api.assignPlatformTileToBlock(platformId, x, y, normalizedBlockId);
-    await window.app?.refreshNetwork();
+    await this.editor.host?.refreshNetwork();
     await this.showEditor(platformId);
   }
 
@@ -354,7 +354,7 @@ export class StationGroupEditorHandler {
     this.editor._currentEditorId = null;
 
     const stationsResp = await this.api.listStationGroups();
-    const platforms = window.app?.currentNetwork?.platforms || [];
+    const platforms = this.editor.host?.currentNetwork?.platforms || [];
 
     const stations = stationsResp?.stations || [];
     const platformOptions = (platforms || [])
@@ -411,7 +411,7 @@ export class StationGroupEditorHandler {
   }
 
   initHandlers(platforms: any[]): void {
-    const createBtn = document.getElementById('create-station-group-btn') as HTMLButtonElement | null;
+    const createBtn = this.editor.$id('create-station-group-btn') as HTMLButtonElement | null;
     if (createBtn) {
       createBtn.onclick = async () => {
         try {
@@ -470,7 +470,7 @@ export class StationGroupEditorHandler {
     this.editor._currentEditorId = stationId;
 
     const stationsResp = await this.api.listStationGroups();
-    const platforms = window.app?.currentNetwork?.platforms || [];
+    const platforms = this.editor.host?.currentNetwork?.platforms || [];
     const station = (stationsResp?.stations || []).find((s: any) => s.station_id === stationId);
     if (!station) {
       showToast(`Station ${stationId} not found`, 'error', 4000);
@@ -578,7 +578,7 @@ export class StationGroupEditorHandler {
           showToast(`Cannot change availability: ${result.error}`, 'error', 4000);
           this.showStationDetail(stationId);
         } else {
-          await window.app?.refreshNetwork();
+          await this.editor.host?.refreshNetwork();
         }
       } catch (err: any) {
         console.error('Failed to update station availability:', err);
@@ -589,19 +589,19 @@ export class StationGroupEditorHandler {
 
     // Station name auto-saves on blur (§5C) — no Save button, a flash as the
     // ack. No live subscription here, so refreshNetwork is safe.
-    bindFieldAutoSave(document.getElementById('station-detail-name') as HTMLInputElement | null, {
+    bindFieldAutoSave(this.editor.$id('station-detail-name') as HTMLInputElement | null, {
       parse: parseText,
       commit: (value) => this.api.updateStationGroup(stationId, { name: value }),
-      onApplied: () => window.app?.refreshNetwork(),
+      onApplied: () => this.editor.host?.refreshNetwork(),
     });
 
-    const addBtn = document.getElementById('station-detail-add-platform-btn') as HTMLButtonElement | null;
+    const addBtn = this.editor.$id('station-detail-add-platform-btn') as HTMLButtonElement | null;
     if (addBtn) {
       addBtn.onclick = async () => {
         const platformId = inputValue('station-detail-add-platform');
         if (!platformId) return;
         const force =
-          (document.getElementById('station-detail-add-force') as HTMLInputElement | null)?.checked ||
+          (this.editor.$id('station-detail-add-force') as HTMLInputElement | null)?.checked ||
           false;
         const owner = ownerByPlatform[platformId];
         const conflict = !!owner && owner.id !== stationId;
@@ -643,7 +643,7 @@ export class StationGroupEditorHandler {
         }
         try {
           await this.api.addPlatformToStation(stationId, platformId, force);
-          await window.app?.refreshNetwork();
+          await this.editor.host?.refreshNetwork();
           await this.showStationDetail(stationId);
         } catch (err: any) {
           showToast(`Failed to add: ${err.message}`, 'error', 5000);
@@ -656,7 +656,7 @@ export class StationGroupEditorHandler {
         const platformId = btn.dataset.platformId;
         try {
           const resp = await this.api.removePlatformFromStation(stationId, platformId);
-          await window.app?.refreshNetwork();
+          await this.editor.host?.refreshNetwork();
           if (resp?.station_deleted) {
             // Removing the last platform auto-deleted the group; its detail
             // view no longer exists, so fall back to the station list.
@@ -670,7 +670,7 @@ export class StationGroupEditorHandler {
       };
     });
 
-    const deleteBtn = document.getElementById('station-detail-delete-btn') as HTMLButtonElement | null;
+    const deleteBtn = this.editor.$id('station-detail-delete-btn') as HTMLButtonElement | null;
     if (deleteBtn) {
       deleteBtn.onclick = async () => {
         const confirmed = await showConfirmModal({
@@ -682,12 +682,12 @@ export class StationGroupEditorHandler {
         });
         if (!confirmed) return;
         await this.api.deleteStationGroup(stationId);
-        await window.app?.refreshNetwork();
+        await this.editor.host?.refreshNetwork();
         await this.showPanel();
       };
     }
 
-    const backBtn = document.getElementById('station-detail-back-btn') as HTMLButtonElement | null;
+    const backBtn = this.editor.$id('station-detail-back-btn') as HTMLButtonElement | null;
     if (backBtn) {
       backBtn.onclick = () => this.showPanel();
     }

@@ -3,7 +3,6 @@
 // Migrated from static/js/editor-blocks.js (longterm_todo.md item #7, Wave 2).
 // Behavior is unchanged. Owned by the Editor (`new BlockEditorHandler(this)`).
 
-import { stateManager } from '../lib/state-manager';
 import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
 import {
@@ -292,11 +291,11 @@ export class BlockEditorHandler {
   }
 
   async initEditorHandlers(blockId: string): Promise<void> {
-    const deleteBtn = document.getElementById('delete-block-btn') as HTMLButtonElement | null;
-    const nameInput = document.getElementById('block-name-input') as HTMLInputElement | null;
-    const lengthInput = document.getElementById('block-length-input') as HTMLInputElement | null;
-    const radiusInput = document.getElementById('block-radius-input') as HTMLInputElement | null;
-    const speedInput = document.getElementById('block-speed-input') as HTMLInputElement | null;
+    const deleteBtn = this.editor.$id('delete-block-btn') as HTMLButtonElement | null;
+    const nameInput = this.editor.$id('block-name-input') as HTMLInputElement | null;
+    const lengthInput = this.editor.$id('block-length-input') as HTMLInputElement | null;
+    const radiusInput = this.editor.$id('block-radius-input') as HTMLInputElement | null;
+    const speedInput = this.editor.$id('block-speed-input') as HTMLInputElement | null;
 
     // Availability segment (normal / manual / disabled). Auto-applies on click
     // (§5C); no success toast. On reject, re-render so the active cell rolls
@@ -308,7 +307,7 @@ export class BlockEditorHandler {
           showToast(`Cannot change availability: ${result.error}`, 'error', 4000);
           this.showEditor(blockId);
         } else {
-          await window.app?.refreshNetwork();
+          await this.editor.host?.refreshNetwork();
         }
       } catch (err: any) {
         console.error('Failed to update block availability:', err);
@@ -326,7 +325,7 @@ export class BlockEditorHandler {
           showToast(`Cannot change travel direction: ${result.error}`, 'error', 4000);
           this.showEditor(blockId);
         } else {
-          await window.app?.refreshNetwork();
+          await this.editor.host?.refreshNetwork();
         }
       } catch (err: any) {
         console.error('Failed to update block travel direction:', err);
@@ -342,7 +341,7 @@ export class BlockEditorHandler {
     // scroll survive. `refreshAfterSave` repaints the canvas and keeps the main
     // Properties pane in sync if it shows this block.
     const refreshAfterSave = async (): Promise<void> => {
-      await window.app?.refreshNetwork();
+      await this.editor.host?.refreshNetwork();
       if (this.selectedElement?.block_section_id === blockId) {
         await this.editor.selectElement({ x: this.selectedElement.x, y: this.selectedElement.y });
       }
@@ -360,7 +359,7 @@ export class BlockEditorHandler {
       parse: parseRequiredMmToCm('Length'),
       commit: (value) => this.api.updateBlock(blockId, { length_cm: value }),
       onApplied: async () => {
-        const summary = document.getElementById('block-length-summary');
+        const summary = this.editor.$id('block-length-summary');
         if (summary && lengthInput) {
           summary.textContent = `${parseInt(lengthInput.value || '0', 10) || 0} mm`;
         }
@@ -403,7 +402,7 @@ export class BlockEditorHandler {
         const wasShowingThisBlock = this.selectedElement?.block_section_id === blockId;
         try {
           await this.api.deleteBlock(blockId);
-          await window.app?.refreshNetwork();
+          await this.editor.host?.refreshNetwork();
           this.editor.hideSecondarySidebar();
           // Refresh main properties panel if it was showing this block
           if (wasShowingThisBlock && selectedPos) {
@@ -417,7 +416,7 @@ export class BlockEditorHandler {
     }
 
     // Extend Start button
-    const extendBlockStartBtn = document.getElementById('extend-block-start-btn') as HTMLButtonElement | null;
+    const extendBlockStartBtn = this.editor.$id('extend-block-start-btn') as HTMLButtonElement | null;
     if (extendBlockStartBtn) {
       extendBlockStartBtn.onclick = () => {
         this.extendBlock(blockId, 'start');
@@ -425,7 +424,7 @@ export class BlockEditorHandler {
     }
 
     // Extend End button
-    const extendBlockEndBtn = document.getElementById('extend-block-end-btn') as HTMLButtonElement | null;
+    const extendBlockEndBtn = this.editor.$id('extend-block-end-btn') as HTMLButtonElement | null;
     if (extendBlockEndBtn) {
       extendBlockEndBtn.onclick = () => {
         this.extendBlock(blockId, 'end');
@@ -440,7 +439,7 @@ export class BlockEditorHandler {
       btn.onclick = async () => {
         try {
           await this.api.removeBlockTiles(blockId, [{ x, y }]);
-          await window.app?.refreshNetwork();
+          await this.editor.host?.refreshNetwork();
           // Refresh block editor
           this.showEditor(blockId);
           // Refresh main properties panel if showing this tile
@@ -507,7 +506,7 @@ export class BlockEditorHandler {
       );
 
       await this.api.extendBlock(blockId, [[nextTile.x, nextTile.y]], false);
-      await window.app?.refreshNetwork();
+      await this.editor.host?.refreshNetwork();
 
       this.showEditor(blockId);
 
@@ -565,7 +564,7 @@ export class BlockEditorHandler {
         this.selectedBlockId = null;
       }
       await this.refreshList();
-      await window.app?.refreshNetwork();
+      await this.editor.host?.refreshNetwork();
     } catch (err: any) {
       console.error('[BlockEditorHandler] Failed to delete block:', err);
       showToast('Failed to delete block: ' + err.message, 'error', 5000);
@@ -946,7 +945,7 @@ export class BlockEditorHandler {
     this._localState = JSON.parse(JSON.stringify(blockData));
 
     this._unsubscribe =
-      stateManager?.subscribe(
+      this.editor.stateManager?.subscribe(
         'blocks',
         blockId,
         (newBlock: any, oldBlock: any) => this._onBlockUpdate(newBlock, oldBlock),

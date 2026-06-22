@@ -1,18 +1,18 @@
 // renderer.ts — Isometric Railway Renderer (the orchestrator).
 //
 // Migrated from static/js/renderer.js (longterm_todo.md item #7, the last
-// renderer-cluster file). Behavior is unchanged. As a module it imports the
-// nine now-migrated handler classes + Camera + buildRenderSnapshot directly,
-// owns the two stacked canvases, the rAF-coalesced redraw loop, the
-// ResizeObserver, mouse tracking, and the shared label-placement geometry.
+// renderer-cluster file). As a module it imports the nine handler classes +
+// Camera directly, owns the two stacked canvases, the rAF-coalesced redraw
+// loop, the ResizeObserver, mouse tracking, and the shared label-placement
+// geometry. It draws only the layout; simulation state (trains, routes, the
+// train-placement ghost) is drawn by registered overlays (see renderer-overlay
+// + sim-overlay), so a renderer with no overlay is a pure layout viewer.
 //
 // app.ts constructs it via `new Renderer('rail-canvas')` (imported directly).
 // Imports BIT_TO_EDGES from ../lib/constants.
 
-import { stateManager } from '../lib/state-manager';
 import { BIT_TO_EDGES, getActiveSegments, getOppositeEdge, TRACK_WIDTH } from '../lib/constants';
 import { Camera } from '../lib/camera';
-import { buildRenderSnapshot } from './render-snapshot';
 import { RendererTrackHandler, type Track } from './renderer-tracks';
 import { RendererSignalHandler } from './renderer-signals';
 import { RendererPlatformHandler, type Platform, type PlatformBound } from './renderer-platforms';
@@ -22,6 +22,8 @@ import { RendererRouteHandler } from './renderer-routes';
 import { RendererTrainHandler, type TrainSnap } from './renderer-trains';
 import { RendererTunnelHandler, type TunnelPair } from './renderer-tunnels';
 import { RendererDebugHandler } from './renderer-debug';
+import type { NetworkPayload } from './payload-types';
+import type { OverlayPhase, RendererOverlay } from './renderer-overlay';
 
 const COLORS = {
   BACKGROUND: '#0a0a0c',
@@ -192,16 +194,8 @@ interface LabelBound {
   tier: string;
 }
 
-/** The fields of the server network payload the renderer + handlers read. */
-interface NetworkPayload {
-  tracks?: Track[];
-  blocks?: Record<string, BlockInfo>;
-  platforms?: Platform[];
-  stations?: Station[];
-  switches?: Record<string, { occupied_by?: unknown; train_protection_claims?: unknown[]; locks?: unknown[]; main_length_cm?: number; diverge_length_cm?: number } | undefined>;
-  tunnels?: Array<{ a: { x: number; y: number; edge: string }; b: { x: number; y: number; edge: string } }>;
-  trains?: Array<{ id: string; num_cars?: number }>;
-}
+// The network payload type (`NetworkPayload`) and its layout/sim split live in
+// ./payload-types and are imported above.
 
 interface RequestRedrawOpts {
   world?: boolean;
@@ -289,6 +283,9 @@ class Renderer {
   trainHandler!: RendererTrainHandler;
   tunnelHandler!: RendererTunnelHandler;
   debugHandler!: RendererDebugHandler;
+  // Overlays drawn on top of the layout (e.g. the sim view). Empty = pure
+  // layout viewer. Populated by the host via registerOverlay().
+  _overlays!: RendererOverlay[];
   _pendingResizeFrame!: number | null;
   _pendingFlush!: { world: boolean; live: boolean; reason: string } | null;
   _flushFrame!: number | null;
@@ -386,6 +383,7 @@ class Renderer {
     this.trainHandler = new RendererTrainHandler(this);
     this.tunnelHandler = new RendererTunnelHandler(this);
     this.debugHandler = new RendererDebugHandler(this);
+    this._overlays = [];
 
     // Set up mouse tracking for hover effects
 
@@ -553,14 +551,10 @@ class Renderer {
       return;
     }
     this._updateNetworkState(this.currentNetwork);
-    // Build the per-frame snapshot once so both layers see the same view
-    // of sim state. Renderers read from this instead of reaching into
-    // stateManager directly (Phase 6). The snapshot's span endpoints
-    // are richer at runtime than render-snapshot.ts types them, so we widen
-    // to the train-handler's shape here.
-    this.currentSnapshot = buildRenderSnapshot(this.currentNetwork, stateManager) as unknown as {
-      trains?: Record<string, TrainSnap>;
-    };
+    // The per-frame sim snapshot (trains) is built by the sim overlay during the
+    // live draw (see sim-overlay.ts) — the core renderer no longer reads the
+    // stateManager singleton. With no overlay registered, no snapshot is built
+    // and no sim state is drawn.
     // Refresh debug-checkbox state once per flush. Hot paths read
     // `this.debugFlags.X` instead of querying the DOM on every draw call.
     this._refreshDebugFlags();
@@ -781,6 +775,18 @@ class Renderer {
    * platforms, signals, station labels, debug overlays. Repainted only
    * when the world flag is set (map shape / state changes / viewport).
    */
+  /** Register a draw layer painted on top of the layout (e.g. the sim view). */
+  registerOverlay(overlay: RendererOverlay): void {
+    this._overlays.push(overlay);
+  }
+
+  /** Run every registered overlay for one z-order point of the live layer. */
+  _emitOverlay(phase: OverlayPhase, network: NetworkPayload): void {
+    for (const overlay of this._overlays) {
+      overlay.draw(phase, network, this);
+    }
+  }
+
   _drawWorld(network: NetworkPayload): void {
     this.ctx = this.worldCtx;
     this.clear();
@@ -890,8 +896,10 @@ class Renderer {
     // label + platform highlights on top.
     this.stationHandler.drawStations();
 
-    // Route overlays (reachable highlights, active routes, conflict flash).
-    this.routeHandler.drawRouteOverlays();
+    // Sim overlay: route overlays (reachable highlights, active routes, conflict
+    // flash). Drawn above stations, below the block-direction overlay and trains.
+    // No-op when no sim overlay is registered (pure layout viewer).
+    this._emitOverlay('afterStations', network);
 
     // Block direction arrows — only while the block editor is open. Drawn
     // above the route wash but below trains: it's editor context, not a
@@ -899,12 +907,9 @@ class Renderer {
     // as station identity labels).
     this.drawBlockDirectionOverlay();
 
-    // Trains.
-    if (network.trains) {
-      network.trains.forEach((train) => {
-        this.trainHandler.drawTrain(train);
-      });
-    }
+    // Sim overlay: trains (and the per-frame sim snapshot they read). Drawn above
+    // the block-direction overlay, below the inspection debug arrows.
+    this._emitOverlay('afterBlockDirection', network);
 
     // Per-tile absolute-direction debug arrows (operator-painted, inspection
     // only). Drawn above trains so a parked train can't hide a mark the
@@ -927,7 +932,9 @@ class Renderer {
     // the live layer (as it did when the editor drew it after a redraw).
     this._drawBuildPreview();
     this._drawHoverPreview();
-    this._drawTrainGhost();
+
+    // Sim overlay: train-placement ghost, painted on top of the editor previews.
+    this._emitOverlay('top', network);
   }
 
   setBoxSelection(keysSet: Set<string> | null): void {

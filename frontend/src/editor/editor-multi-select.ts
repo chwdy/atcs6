@@ -38,7 +38,7 @@ export class MultiSelectActionsHandler {
   // dedicated panel the block / path editors use), so the panel content element
   // is that sidebar's content area.
   get panel(): HTMLElement | null {
-    return document.getElementById('secondary-sidebar-content');
+    return this.editor.$id('secondary-sidebar-content');
   }
   get api(): any {
     return this.editor.api;

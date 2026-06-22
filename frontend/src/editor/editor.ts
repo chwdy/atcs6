@@ -6,11 +6,13 @@
 // 11 entity handlers — which it imports directly as real modules.
 //
 // app.ts constructs it via `new Editor(renderer, api)` (imported directly).
-// renderer / api are typed `any`: the Editor is glue over the (large) Renderer
-// and API surfaces.
+// `renderer` is typed `any` (the large Renderer surface); `api` is typed against
+// the `FullDataClient` data contract (layout + sim), so the layout handlers and
+// the sim handlers each draw from a named, swappable surface.
 
-import { stateManager } from '../lib/state-manager';
+import type { StateManager } from '../lib/state-manager';
 import { showToast } from '../lib/toast';
+import type { FullDataClient } from '../lib/layout-data-client';
 import {
   ConstructionPathfinder,
   pathToTracks,
@@ -30,20 +32,45 @@ import { FORBIDDEN_TRACK_BITS, isSquareCornerSwitch } from '../lib/constants';
 import { BlockEditorHandler } from './editor-blocks';
 import { SignalEditorHandler } from './editor-signals';
 import { PlatformEditorHandler, StationGroupEditorHandler } from './editor-stations';
-import { TrainEditorHandler } from './editor-trains';
-import { PathEditorHandler } from './editor-paths';
-import { RouteEditorHandler } from './editor-routes';
-import { RouteRunEditorHandler } from './editor-route-runs';
+// Sim-editor handlers are provided by the SimEditorPlugin (sim-plugin.ts), not
+// instantiated by the core editor — imported as types only so a layout-only
+// build does not pull in their code.
+import type { TrainEditorHandler } from './editor-trains';
+import type { PathEditorHandler } from './editor-paths';
+import type { RouteEditorHandler } from './editor-routes';
+import type { RouteRunEditorHandler } from './editor-route-runs';
 import { SwitchEditorHandler } from './editor-switches';
 import { TunnelEditorHandler } from './editor-tunnels';
-import { SpeedProfileEditorHandler } from './editor-speed-profiles';
+import type { SpeedProfileEditorHandler } from './editor-speed-profiles';
 import { EditorUIHandler } from './editor-ui';
 import { MultiSelectActionsHandler } from './editor-multi-select';
 import { showResourcePicker, dismissResourcePicker } from './resource-picker';
 
+/**
+ * A plugin that augments the editor with extra handlers and tools. The sim
+ * (trains, paths, routes, route-runs, speed profiles) is registered this way
+ * (see sim-plugin.ts), keeping the core editor a layout-only editor.
+ */
+export interface EditorPlugin {
+  register(editor: Editor): void;
+}
+
+/**
+ * The host the editor calls back into. The editor never reaches a global
+ * (`window.app`) directly — the host injects this so the editor is portable to
+ * any host that can re-fetch the network and (optionally) surface sim state.
+ */
+export interface HostApp {
+  refreshNetwork(): Promise<void> | void;
+  currentNetwork?: any;
+  isSimulationRunning?: boolean;
+  selectTrain?(trainId: string): void;
+  updateTrainDebugPanel?(train: any): void;
+}
+
 export class Editor {
   renderer: any;
-  api: any;
+  api: FullDataClient;
   selectedTool: string;
   isPanning: boolean;
   isDraggingBuild: boolean;
@@ -80,15 +107,24 @@ export class Editor {
   signalHandler: SignalEditorHandler;
   platformHandler: PlatformEditorHandler;
   stationGroupHandler: StationGroupEditorHandler;
-  trainHandler: TrainEditorHandler;
-  pathHandler: PathEditorHandler;
-  routeHandler: RouteEditorHandler;
-  routeRunHandler: RouteRunEditorHandler;
+  // Sim handlers — present only when the SimEditorPlugin is registered.
+  trainHandler?: TrainEditorHandler;
+  pathHandler?: PathEditorHandler;
+  routeHandler?: RouteEditorHandler;
+  routeRunHandler?: RouteRunEditorHandler;
   switchHandler: SwitchEditorHandler;
   tunnelEditorHandler: TunnelEditorHandler;
-  speedProfileHandler: SpeedProfileEditorHandler;
+  speedProfileHandler?: SpeedProfileEditorHandler;
   uiHandler: EditorUIHandler;
   multiSelectHandler: MultiSelectActionsHandler;
+  _plugins: EditorPlugin[] = [];
+  // Injected by the host (app.ts) — the editor calls these instead of reaching
+  // the `window.app` / `stateManager` globals, so it is portable to any host.
+  host?: HostApp;
+  stateManager?: StateManager;
+  // Where the editor looks up its DOM. Defaults to the document; a host embedding
+  // the editor sets a container element to scope (and isolate) its panels.
+  root: ParentNode = document;
   _currentEditorType: string | null;
   _currentEditorId: string | null;
   // Assigned lazily by event handlers.
@@ -102,7 +138,7 @@ export class Editor {
   _networkReady: Promise<void>;
   _resolveNetworkReady: (() => void) | null = null;
 
-  constructor(renderer: any, api: any) {
+  constructor(renderer: any, api: FullDataClient) {
     this.renderer = renderer;
     this.api = api;
     this.selectedTool = 'inspect';
@@ -181,13 +217,10 @@ export class Editor {
     this.signalHandler = new SignalEditorHandler(this);
     this.platformHandler = new PlatformEditorHandler(this);
     this.stationGroupHandler = new StationGroupEditorHandler(this);
-    this.trainHandler = new TrainEditorHandler(this);
-    this.pathHandler = new PathEditorHandler(this);
-    this.routeHandler = new RouteEditorHandler(this);
-    this.routeRunHandler = new RouteRunEditorHandler(this);
+    // Sim handlers (train/path/route/routeRun/speedProfile) are instantiated by
+    // the SimEditorPlugin via registerPlugin(), not here — see sim-plugin.ts.
     this.switchHandler = new SwitchEditorHandler(this);
     this.tunnelEditorHandler = new TunnelEditorHandler(this);
-    this.speedProfileHandler = new SpeedProfileEditorHandler(this);
     this.uiHandler = new EditorUIHandler(this);
     this.multiSelectHandler = new MultiSelectActionsHandler(this);
 
@@ -204,6 +237,26 @@ export class Editor {
   }
 
   // === Secondary Sidebar Management ===
+
+  /**
+   * Register a plugin that augments the editor (e.g. the SimEditorPlugin). The
+   * plugin instantiates its handlers and assigns them onto the editor. Call
+   * after construction, before the first network refresh.
+   */
+  registerPlugin(plugin: EditorPlugin): void {
+    this._plugins.push(plugin);
+    plugin.register(this);
+  }
+
+  /** Scoped element-by-id lookup within `root` (matches document.getElementById). */
+  $id(id: string): HTMLElement | null {
+    return this.root.querySelector<HTMLElement>(`#${CSS.escape(id)}`);
+  }
+
+  /** Scoped querySelector within `root`. */
+  $q<E extends Element = Element>(selector: string): E | null {
+    return this.root.querySelector<E>(selector);
+  }
 
   setupSecondarySidebar(): any {
     return this.uiHandler.setupSecondarySidebar();
@@ -324,14 +377,14 @@ export class Editor {
         return true;
       case 'route-editor':
         if (!id) return false;
-        await this.routeHandler.showRouteEditor(id);
+        await this.routeHandler?.showRouteEditor(id);
         return true;
       case 'route-runs-list':
-        await this.routeRunHandler.showRouteRunsPanel();
+        await this.routeRunHandler?.showRouteRunsPanel();
         return true;
       case 'route-run-editor':
         if (!id) return false;
-        await this.routeRunHandler.showRouteRunEditor(parseInt(id, 10));
+        await this.routeRunHandler?.showRouteRunEditor(parseInt(id, 10));
         return true;
       case 'speed-profiles-list':
         await this.showSpeedProfilesPanel();
@@ -564,8 +617,8 @@ export class Editor {
     }
 
     if (this._currentEditorType === 'train-control') {
-      if (window.app?.isSimulationRunning) return;
-      this.trainHandler.updateTrainControlPanelValues(this._currentEditorId);
+      if (this.host?.isSimulationRunning) return;
+      this.trainHandler?.updateTrainControlPanelValues(this._currentEditorId);
       return;
     }
 
@@ -598,15 +651,15 @@ export class Editor {
   }
 
   async initTrainEditorHandlers(trainId: any): Promise<any> {
-    return this.trainHandler.initTrainControlHandlers(trainId);
+    return this.trainHandler?.initTrainControlHandlers(trainId);
   }
 
   showAddTrainDialog(): any {
-    return this.trainHandler.showAddTrainDialog();
+    return this.trainHandler?.showAddTrainDialog();
   }
 
   async showTrainsPanel(): Promise<any> {
-    return this.trainHandler.showTrainsPanel();
+    return this.trainHandler?.showTrainsPanel();
   }
 
   async showSwitchesPanel(): Promise<any> {
@@ -614,23 +667,23 @@ export class Editor {
   }
 
   async showSpeedProfilesPanel(): Promise<any> {
-    return this.speedProfileHandler.showProfilesPanel();
+    return this.speedProfileHandler?.showProfilesPanel();
   }
 
   async showSpeedProfileEditor(profileId: string): Promise<any> {
-    return this.speedProfileHandler.showProfileEditor(profileId);
+    return this.speedProfileHandler?.showProfileEditor(profileId);
   }
 
   async showTrainControlPanel(trainId: any): Promise<any> {
-    return this.trainHandler.showTrainControlPanel(trainId);
+    return this.trainHandler?.showTrainControlPanel(trainId);
   }
 
   // Tools that activate a multi-step EditorMode.
   _modeFactoriesByTool(): Record<string, () => any> {
     return {
-      path: () => this.pathHandler.buildRouteToolMode(),
-      'extend-path': () => this.pathHandler.buildExtendRouteMode(),
-      'cancel-path': () => this.pathHandler.buildCancelRouteMode(),
+      path: () => this.pathHandler?.buildRouteToolMode(),
+      'extend-path': () => this.pathHandler?.buildExtendRouteMode(),
+      'cancel-path': () => this.pathHandler?.buildCancelRouteMode(),
       'box-select': () => this._buildBoxSelectMode(),
       'lasso-select': () => this._buildLassoSelectMode(),
       'paint-select': () => this._buildPaintSelectMode(),
@@ -655,7 +708,7 @@ export class Editor {
       cancelMessage: 'Box select cancelled',
       onEnter: () => {
         resetState();
-        const status = document.getElementById('status-state');
+        const status = this.$id('status-state');
         if (status)
           status.textContent =
             'Box: drag to add, Shift+drag to remove, Space/right-click clears, Delete removes tracks';
@@ -663,7 +716,7 @@ export class Editor {
       onClick: () => true,
       onExit: () => {
         resetState();
-        const status = document.getElementById('status-state');
+        const status = this.$id('status-state');
         if (status) status.textContent = 'Ready';
         this.renderer.requestRedraw();
       },
@@ -700,7 +753,7 @@ export class Editor {
       cancelMessage: 'Lasso select cancelled',
       onEnter: () => {
         resetState();
-        const status = document.getElementById('status-state');
+        const status = this.$id('status-state');
         if (status)
           status.textContent =
             'Lasso: draw a shape to add, Shift to remove, Space/right-click clears, Delete removes tracks';
@@ -708,7 +761,7 @@ export class Editor {
       onClick: () => true,
       onExit: () => {
         resetState();
-        const status = document.getElementById('status-state');
+        const status = this.$id('status-state');
         if (status) status.textContent = 'Ready';
         this.renderer.requestRedraw();
       },
@@ -729,7 +782,7 @@ export class Editor {
       cancelMessage: 'Brush select cancelled',
       onEnter: () => {
         resetState();
-        const status = document.getElementById('status-state');
+        const status = this.$id('status-state');
         if (status)
           status.textContent =
             'Brush: click or drag to add, Shift to remove, Space/right-click clears, Delete removes tracks';
@@ -737,7 +790,7 @@ export class Editor {
       onClick: () => true,
       onExit: () => {
         resetState();
-        const status = document.getElementById('status-state');
+        const status = this.$id('status-state');
         if (status) status.textContent = 'Ready';
         this.renderer.requestRedraw();
       },
@@ -756,7 +809,7 @@ export class Editor {
       this._applyBoxSelection(new Set());
     };
     const setStatus = (text: string) => {
-      const status = document.getElementById('status-state');
+      const status = this.$id('status-state');
       if (status) status.textContent = text;
     };
     // Union a set of tiles into the selection and repaint.
@@ -779,7 +832,10 @@ export class Editor {
         const track = this.cachedNetwork?.tracks?.find(
           (t: any) => t.x === gridPos.x && t.y === gridPos.y
         );
-        const options = this.routeHandler._resourceOptionsAtTile(gridPos, track);
+        // _resourceOptionsAtTile resolves the block/platform/station at a tile —
+        // a layout op that currently lives on the route handler. Without the sim
+        // plugin there are no resolvable options (helper relocation is a follow-up).
+        const options = this.routeHandler?._resourceOptionsAtTile(gridPos, track) ?? [];
         if (options.length === 0) {
           setStatus('Entity: nothing here — click a track, platform, or station tile');
           return true;
@@ -833,6 +889,7 @@ export class Editor {
   // truth for what a block / platform / station covers.
   _entityTileSet(opt: any): Set<string> {
     const rh = this.routeHandler;
+    if (!rh) return new Set();
     if (opt.type === 'block') return rh.getBlockPositionSet(opt.id);
     if (opt.type === 'platform') return rh.getPlatformPositionSet([opt.id]);
     if (opt.type === 'station') {
@@ -853,7 +910,7 @@ export class Editor {
       this._applyBoxSelection(new Set());
     };
     const setStatus = (text: string) => {
-      const status = document.getElementById('status-state');
+      const status = this.$id('status-state');
       if (status) status.textContent = text;
     };
     return {
@@ -1030,8 +1087,8 @@ export class Editor {
       'add-train': () => this.showAddTrainDialog(),
       'train-panel': () => this.showTrainsPanel(),
       'routes-panel': () => this.showRoutesPanel(),
-      'route-runs-panel': () => this.routeRunHandler.showRouteRunsPanel(),
-      'new-route': () => this.routeHandler.createNewRoute(),
+      'route-runs-panel': () => this.routeRunHandler?.showRouteRunsPanel(),
+      'new-route': () => this.routeHandler?.createNewRoute(),
       'stations-panel': () => this.showStationsPanel(),
       'switches-panel': () => this.showSwitchesPanel(),
       'speed-profiles-panel': () => this.showSpeedProfilesPanel(),
@@ -1040,7 +1097,7 @@ export class Editor {
 
   /** Sync the status-bar zoom percentage to the camera's current scale. */
   _syncZoomLabel(): void {
-    const zoomLabel = document.getElementById('status-zoom');
+    const zoomLabel = this.$id('status-zoom');
     if (zoomLabel) zoomLabel.textContent = `${Math.round(this.renderer.camera.scale * 100)}%`;
   }
 
@@ -1090,7 +1147,7 @@ export class Editor {
         const wasBlockTool = ['block', 'extend-block'].includes(oldTool);
         if (isBlockTool !== wasBlockTool) {
           this.renderer.showBlockColorsOnly = isBlockTool;
-          window.app?.refreshNetwork();
+          this.host?.refreshNetwork();
         }
 
         if (newTool in modeFactories) {
@@ -1190,7 +1247,7 @@ export class Editor {
       const y = e.clientY - rect.top;
       const gridPos = this.renderer.screenToGrid(x, y);
 
-      const coordsEl = document.getElementById('status-coords');
+      const coordsEl = this.$id('status-coords');
       if (coordsEl) coordsEl.textContent = `${gridPos.x}, ${gridPos.y}`;
 
       if (this.isPanning) {
@@ -1528,7 +1585,7 @@ export class Editor {
     // ESC key - exit extend mode or return to select tool
     document.addEventListener('keydown', async (e) => {
       if (e.key === 'Escape') {
-        const inModal = document.querySelector('.block-modal-overlay, .modal-overlay') !== null;
+        const inModal = this.$q('.block-modal-overlay, .modal-overlay') !== null;
         const inInput =
           document.activeElement?.tagName === 'INPUT' ||
           document.activeElement?.tagName === 'TEXTAREA' ||
@@ -1585,7 +1642,7 @@ export class Editor {
         (document.activeElement.tagName === 'INPUT' ||
           document.activeElement.tagName === 'TEXTAREA' ||
           document.activeElement.tagName === 'SELECT');
-      const inModal = document.querySelector('.block-modal-overlay, .modal-overlay') !== null;
+      const inModal = this.$q('.block-modal-overlay, .modal-overlay') !== null;
       if (inInput || inModal) return;
       e.preventDefault();
 
@@ -1623,7 +1680,7 @@ export class Editor {
         (document.activeElement.tagName === 'INPUT' ||
           document.activeElement.tagName === 'TEXTAREA' ||
           document.activeElement.tagName === 'SELECT');
-      const inModal = document.querySelector('.block-modal-overlay, .modal-overlay') !== null;
+      const inModal = this.$q('.block-modal-overlay, .modal-overlay') !== null;
       if (inInput || inModal) return;
       e.preventDefault();
       await this.tunnelEditorHandler.delete(pair, { confirm: true });
@@ -1639,7 +1696,7 @@ export class Editor {
         (document.activeElement.tagName === 'INPUT' ||
           document.activeElement.tagName === 'TEXTAREA' ||
           document.activeElement.tagName === 'SELECT');
-      const inModal = document.querySelector('.block-modal-overlay, .modal-overlay') !== null;
+      const inModal = this.$q('.block-modal-overlay, .modal-overlay') !== null;
       if (inInput || inModal) return;
       e.preventDefault();
 
@@ -1702,7 +1759,7 @@ export class Editor {
   _setSelectedTool(toolName: string): void {
     this.selectedTool = toolName;
     document.querySelectorAll<HTMLElement>('.tool-btn').forEach((b) => b.classList.remove('active'));
-    document.querySelector(`.tool-btn[data-tool="${toolName}"]`)?.classList.add('active');
+    this.$q(`.tool-btn[data-tool="${toolName}"]`)?.classList.add('active');
   }
 
   // Wrapper around renderer.setBoxSelection that also syncs the sidebar panel.
@@ -2258,7 +2315,7 @@ export class Editor {
 
   /** Unified refresh helper. */
   async refreshAndSelect(gridPos: any): Promise<void> {
-    await window.app?.refreshNetwork();
+    await this.host?.refreshNetwork();
     if (gridPos) {
       await this.selectElement(gridPos);
     }
@@ -2596,7 +2653,7 @@ export class Editor {
           showToast(errMsg, 'error', 5000);
         }
 
-        await window.app?.refreshNetwork();
+        await this.host?.refreshNetwork();
         await this.selectElement(gridPos);
       }
     } catch (err) {
@@ -2674,7 +2731,7 @@ export class Editor {
   }
 
   updatePropertiesPanel(track: any): void {
-    const panel = document.querySelector('.properties-panel');
+    const panel = this.$q('.properties-panel');
     if (!panel) return;
 
     const trackBits: number = track.track_bits ?? 0;
@@ -2740,7 +2797,7 @@ export class Editor {
               const trainsAtTile =
                 this.cachedNetwork && this.cachedNetwork.trains
                   ? this.cachedNetwork.trains.filter((t: any) => {
-                      const span = stateManager?.getController(t.id)?.span;
+                      const span = this.stateManager?.getController(t.id)?.span;
                       if (span && span.occupied_tiles) {
                         return span.occupied_tiles.some((tile: any) => tile[0] === track.x && tile[1] === track.y);
                       }
@@ -2752,7 +2809,7 @@ export class Editor {
                 <div class="property-group-header">Train</div>
                 ${trainsAtTile
                   .map((train: any) => {
-                    const controller: any = stateManager?.getController(train.id);
+                    const controller: any = this.stateManager?.getController(train.id);
                     const dotColor =
                       controller?.control_mode === 'manual'
                         ? 'var(--warning-color)'
@@ -2972,7 +3029,7 @@ export class Editor {
   initBlockEditor(track: any): void {
     if (!track.block_section_id) return;
 
-    const editBtn = document.querySelector(
+    const editBtn = this.$q(
       `.edit-block-btn[data-block-id="${track.block_section_id}"]`
     ) as HTMLElement | null;
     if (editBtn) {
@@ -2986,7 +3043,7 @@ export class Editor {
   initSwitchEditor(track: any): void {
     if (!track.switch_id) return;
 
-    const editBtn = document.querySelector(
+    const editBtn = this.$q(
       `.edit-switch-btn[data-switch-id="${track.switch_id}"]`
     ) as HTMLElement | null;
     if (editBtn) {
@@ -3009,7 +3066,7 @@ export class Editor {
 
   // Populate the dedicated Track Bits sidebar section.
   updateTrackBitsPanel(track: any, editorId: string, trackBits: number, isForbidden: boolean): void {
-    const body = document.getElementById('track-bits-panel-body');
+    const body = this.$id('track-bits-panel-body');
     if (!body) return;
 
     // Two views of one 6-bit value: the clickable compass and a single vertical
@@ -3040,7 +3097,7 @@ export class Editor {
 
   // Reset the Track Bits sidebar section to the empty placeholder.
   clearTrackBitsPanel(): void {
-    const body = document.getElementById('track-bits-panel-body');
+    const body = this.$id('track-bits-panel-body');
     if (body) {
       body.innerHTML = `<p class="properties-empty">Select a track to edit bits</p>`;
     }
@@ -3051,7 +3108,7 @@ export class Editor {
     const trainsAtTile =
       this.cachedNetwork && this.cachedNetwork.trains
         ? this.cachedNetwork.trains.filter((t: any) => {
-            const span = stateManager?.getController(t.id)?.span;
+            const span = this.stateManager?.getController(t.id)?.span;
             if (span && span.occupied_tiles) {
               return span.occupied_tiles.some((tile: any) => tile[0] === track.x && tile[1] === track.y);
             }
@@ -3062,12 +3119,12 @@ export class Editor {
     if (trainsAtTile.length === 0) return;
 
     trainsAtTile.forEach((train: any) => {
-      const editBtn = document.querySelector(
+      const editBtn = this.$q(
         `.edit-train-btn[data-train-id="${train.id}"]`
       ) as HTMLElement | null;
       if (editBtn) {
         editBtn.onclick = () => {
-          window.app?.selectTrain(train.id);
+          this.host?.selectTrain?.(train.id);
         };
       }
     });
@@ -3117,113 +3174,113 @@ export class Editor {
   }
 
   enterRouteToolMode(): any {
-    return this.pathHandler.enterRouteToolMode();
+    return this.pathHandler?.enterRouteToolMode();
   }
 
   async exitRouteToolMode(): Promise<any> {
-    return await this.pathHandler.exitRouteToolMode();
+    return await this.pathHandler?.exitRouteToolMode();
   }
 
   async resetRouteToolState(): Promise<any> {
-    return await this.pathHandler.resetRouteToolState();
+    return await this.pathHandler?.resetRouteToolState();
   }
 
   async handleRouteToolClick(gridPos: any): Promise<any> {
-    return this.pathHandler.handleRouteToolClick(gridPos);
+    return this.pathHandler?.handleRouteToolClick(gridPos);
   }
 
   async handleRouteFirstClick(gridPos: any, track: any): Promise<any> {
-    return this.pathHandler.handleRouteFirstClick(gridPos, track);
+    return this.pathHandler?.handleRouteFirstClick(gridPos, track);
   }
 
   buildReachablePositionsSet(): any {
-    return this.pathHandler.buildReachablePositionsSet();
+    return this.pathHandler?.buildReachablePositionsSet();
   }
 
   async handleRouteSecondClick(gridPos: any, track: any): Promise<any> {
-    return this.pathHandler.handleRouteSecondClick(gridPos, track);
+    return this.pathHandler?.handleRouteSecondClick(gridPos, track);
   }
 
   showRoutePrioritySelector(): any {
-    return this.pathHandler.showRoutePrioritySelector();
+    return this.pathHandler?.showRoutePrioritySelector();
   }
 
   async showPathsPanel(): Promise<any> {
-    return this.pathHandler.showPathsPanel();
+    return this.pathHandler?.showPathsPanel();
   }
 
   renderPathListItem(path: any): any {
-    return this.pathHandler.renderPathListItem(path);
+    return this.pathHandler?.renderPathListItem(path);
   }
 
   getPathStatusColor(status: any): any {
-    return this.pathHandler.getPathStatusColor(status);
+    return this.pathHandler?.getPathStatusColor(status);
   }
 
   initRoutesPanelHandlers(): any {
-    return this.pathHandler.initRoutesPanelHandlers();
+    return this.pathHandler?.initRoutesPanelHandlers();
   }
 
   async showPathEditor(pathId: any): Promise<any> {
-    return this.pathHandler.showPathEditor(pathId);
+    return this.pathHandler?.showPathEditor(pathId);
   }
 
   initPathEditorHandlers(pathId: any, path: any): any {
-    return this.pathHandler.initPathEditorHandlers(pathId, path);
+    return this.pathHandler?.initPathEditorHandlers(pathId, path);
   }
 
   enterExtendRouteMode(): any {
-    return this.pathHandler.enterExtendRouteMode();
+    return this.pathHandler?.enterExtendRouteMode();
   }
 
   async exitExtendRouteMode(): Promise<any> {
-    return await this.pathHandler.exitExtendRouteMode();
+    return await this.pathHandler?.exitExtendRouteMode();
   }
 
   async resetExtendRouteState(): Promise<any> {
-    return await this.pathHandler.resetExtendRouteState();
+    return await this.pathHandler?.resetExtendRouteState();
   }
 
   async handleExtendRouteToolClick(gridPos: any): Promise<any> {
-    return this.pathHandler.handleExtendRouteToolClick(gridPos);
+    return this.pathHandler?.handleExtendRouteToolClick(gridPos);
   }
 
   async handleExtendRouteFirstClick(gridPos: any, track: any): Promise<any> {
-    return this.pathHandler.handleExtendRouteFirstClick(gridPos, track);
+    return this.pathHandler?.handleExtendRouteFirstClick(gridPos, track);
   }
 
   buildExtendRoutePositionsSet(): any {
-    return this.pathHandler.buildExtendRoutePositionsSet();
+    return this.pathHandler?.buildExtendRoutePositionsSet();
   }
 
   async handleExtendRouteSecondClick(gridPos: any, track: any): Promise<any> {
-    return this.pathHandler.handleExtendRouteSecondClick(gridPos, track);
+    return this.pathHandler?.handleExtendRouteSecondClick(gridPos, track);
   }
 
   showExtendRoutePanel(): any {
-    return this.pathHandler.showExtendRoutePanel();
+    return this.pathHandler?.showExtendRoutePanel();
   }
 
   getDirectionName(dir: any): any {
-    return this.pathHandler.getDirectionName(dir);
+    return this.pathHandler?.getDirectionName(dir);
   }
 
   enterCancelRouteMode(): any {
-    return this.pathHandler.enterCancelRouteMode();
+    return this.pathHandler?.enterCancelRouteMode();
   }
 
   exitCancelRouteMode(): any {
-    return this.pathHandler.exitCancelRouteMode();
+    return this.pathHandler?.exitCancelRouteMode();
   }
 
   async handleCancelRouteToolClick(gridPos: any): Promise<any> {
-    return this.pathHandler.handleCancelRouteToolClick(gridPos);
+    return this.pathHandler?.handleCancelRouteToolClick(gridPos);
   }
 
   // === Train Routes Panel Methods ===
 
   async showRoutesPanel(): Promise<any> {
-    return this.routeHandler.showRoutesPanel();
+    return this.routeHandler?.showRoutesPanel();
   }
 
   // === Tunnel Tool ===

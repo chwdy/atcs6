@@ -105,7 +105,7 @@ export class TunnelEditorHandler {
     // stale tunnel highlight (see Editor.showSecondarySidebar), so re-set ours.
     this.editor.renderer?.setSelectedTunnel?.(pair);
 
-    const deleteBtn = document.getElementById('delete-tunnel-btn') as HTMLButtonElement | null;
+    const deleteBtn = this.editor.$id('delete-tunnel-btn') as HTMLButtonElement | null;
     if (deleteBtn) {
       deleteBtn.onclick = () => this.delete(pair, { confirm: true });
     }
@@ -131,7 +131,7 @@ export class TunnelEditorHandler {
       await this.api.deleteTunnel(pair.a.x, pair.a.y, pair.a.edge);
       showToast('Tunnel deleted', 'success', 2000);
       this.clearSelection();
-      await window.app?.refreshNetwork();
+      await this.editor.host?.refreshNetwork();
       this.editor.hideSecondarySidebar();
     } catch (err: any) {
       console.error('[TunnelEditorHandler] Failed to delete tunnel:', err);

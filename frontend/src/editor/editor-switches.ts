@@ -5,7 +5,6 @@
 //
 // Owned by the Editor (`new SwitchEditorHandler(this)`).
 
-import { stateManager } from '../lib/state-manager';
 import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
 import {
@@ -263,7 +262,7 @@ export class SwitchEditorHandler {
           showToast(`Cannot change availability: ${result.error}`, 'error', 4000);
           this.showEditor(switchData.switch_id);
         } else {
-          await window.app?.refreshNetwork();
+          await this.editor.host?.refreshNetwork();
         }
       } catch (err: any) {
         console.error('Failed to update switch availability:', err);
@@ -273,7 +272,7 @@ export class SwitchEditorHandler {
     });
 
     // Toggle switch state
-    const toggleBtn = document.getElementById('toggle-switch-btn') as HTMLButtonElement | null;
+    const toggleBtn = this.editor.$id('toggle-switch-btn') as HTMLButtonElement | null;
     if (toggleBtn && !toggleBtn.disabled) {
       toggleBtn.onclick = async () => {
         try {
@@ -284,7 +283,7 @@ export class SwitchEditorHandler {
 
           await this.api.setSwitchState(switchData.switch_id, newState);
           showToast('Switch state toggled', 'success', 2000);
-          await window.app?.refreshNetwork();
+          await this.editor.host?.refreshNetwork();
           // Refresh editor
           await this.showEditor(switchData.switch_id);
         } catch (err: any) {
@@ -303,33 +302,33 @@ export class SwitchEditorHandler {
     const sid = switchData.switch_id;
     const saveSwitchField = (field: string) => (value: unknown) =>
       this.api.updateSwitch(sid, { [field]: value });
-    bindFieldAutoSave(document.getElementById('switch-name') as HTMLInputElement | null, {
+    bindFieldAutoSave(this.editor.$id('switch-name') as HTMLInputElement | null, {
       parse: parseText,
       commit: saveSwitchField('name'),
     });
-    bindFieldAutoSave(document.getElementById('switch-notes') as HTMLInputElement | null, {
+    bindFieldAutoSave(this.editor.$id('switch-notes') as HTMLInputElement | null, {
       parse: parseText,
       commit: saveSwitchField('notes'),
     });
-    bindFieldAutoSave(document.getElementById('switch-main-length') as HTMLInputElement | null, {
+    bindFieldAutoSave(this.editor.$id('switch-main-length') as HTMLInputElement | null, {
       parse: parseRequiredMmToCm('Main length'),
       commit: saveSwitchField('main_length_cm'),
     });
-    bindFieldAutoSave(document.getElementById('switch-diverge-length') as HTMLInputElement | null, {
+    bindFieldAutoSave(this.editor.$id('switch-diverge-length') as HTMLInputElement | null, {
       parse: parseRequiredMmToCm('Diverge length'),
       commit: saveSwitchField('diverge_length_cm'),
     });
-    bindFieldAutoSave(document.getElementById('switch-main-radius') as HTMLInputElement | null, {
+    bindFieldAutoSave(this.editor.$id('switch-main-radius') as HTMLInputElement | null, {
       parse: parseOptionalMmToCm('Main radius'),
       commit: saveSwitchField('main_radius_cm'),
     });
-    bindFieldAutoSave(document.getElementById('switch-diverge-radius') as HTMLInputElement | null, {
+    bindFieldAutoSave(this.editor.$id('switch-diverge-radius') as HTMLInputElement | null, {
       parse: parseOptionalMmToCm('Diverge radius'),
       commit: saveSwitchField('diverge_radius_cm'),
     });
 
     // Delete switch
-    const deleteBtn = document.getElementById('delete-switch-btn') as HTMLButtonElement | null;
+    const deleteBtn = this.editor.$id('delete-switch-btn') as HTMLButtonElement | null;
     if (deleteBtn) {
       deleteBtn.onclick = async () => {
         const confirmed = await showConfirmModal({
@@ -346,7 +345,7 @@ export class SwitchEditorHandler {
         try {
           await this.api.deleteSwitch(switchData.switch_id);
           showToast('Switch deleted', 'success', 2000);
-          await window.app?.refreshNetwork();
+          await this.editor.host?.refreshNetwork();
           this.editor.hideSecondarySidebar();
         } catch (err: any) {
           console.error('[SwitchEditorHandler] Failed to delete switch:', err);
@@ -359,7 +358,7 @@ export class SwitchEditorHandler {
     // either read-only section opens that switch's editor (same data-switch-id
     // pattern as the track-inspector Edit buttons in editor.ts). showEditor
     // re-fetches and re-renders, so no manual teardown is needed here.
-    const sidebar = document.getElementById('secondary-sidebar-content');
+    const sidebar: HTMLElement | null = this.editor.$id('secondary-sidebar-content');
     sidebar?.querySelectorAll<HTMLButtonElement>('.flank-nav-btn').forEach((btn) => {
       btn.onclick = () => {
         const targetId = btn.dataset.switchId;
@@ -378,7 +377,7 @@ export class SwitchEditorHandler {
     this._localState = JSON.parse(JSON.stringify(switchData));
 
     this._unsubscribe =
-      stateManager?.subscribe(
+      this.editor.stateManager?.subscribe(
         'switches',
         switchData.switch_id,
         (newSwitch: any, oldSwitch: any) => this._onSwitchUpdate(newSwitch, oldSwitch),
@@ -586,7 +585,7 @@ export class SwitchEditorHandler {
 
   /** True when the cursor is over the open switches list. */
   _isSwitchesListHovered(): boolean {
-    const el = document.querySelector('.switches-panel');
+    const el = this.editor.$q('.switches-panel');
     if (!el || typeof el.matches !== 'function') return false;
     try {
       return el.matches(':hover');

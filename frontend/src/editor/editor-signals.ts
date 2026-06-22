@@ -3,7 +3,6 @@
 // Migrated from static/js/editor-signals.js (longterm_todo.md item #7, Wave 2).
 // Behavior is unchanged. Owned by the Editor (`new SignalEditorHandler(this)`).
 
-import { stateManager } from '../lib/state-manager';
 import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
 
@@ -192,7 +191,7 @@ export class SignalEditorHandler {
         try {
           await this.api.updateSignal(signalId, updates);
           showToast('Signal updated successfully', 'success', 5000);
-          await window.app?.refreshNetwork();
+          await this.editor.host?.refreshNetwork();
 
           if (this.selectedElement) {
             await this.editor.selectElement({ x: this.selectedElement.x, y: this.selectedElement.y });
@@ -299,7 +298,7 @@ export class SignalEditorHandler {
         if (block) reachableBlocks.push(block);
       }
 
-      const blockSelect = document.getElementById('signal-block-select') as HTMLSelectElement | null;
+      const blockSelect = this.editor.$id('signal-block-select') as HTMLSelectElement | null;
       if (blockSelect) {
         const currentValue = signal.monitored_block_id;
         blockSelect.innerHTML = `
@@ -315,7 +314,7 @@ export class SignalEditorHandler {
                       .join('')}
                 `;
 
-        const hintDiv = document.getElementById('block-select-hint');
+        const hintDiv = this.editor.$id('block-select-hint');
         if (hintDiv) {
           if (reachableBlocks.length === 0) {
             hintDiv.innerHTML =
@@ -329,11 +328,11 @@ export class SignalEditorHandler {
       console.warn('Failed to fetch reachable blocks:', err);
     }
 
-    const saveBtn = document.getElementById('save-signal-btn') as HTMLButtonElement | null;
+    const saveBtn = this.editor.$id('save-signal-btn') as HTMLButtonElement | null;
     if (saveBtn) {
       saveBtn.onclick = async () => {
-        const nameInput = document.getElementById('signal-name-input') as HTMLInputElement | null;
-        const blockSelect = document.getElementById('signal-block-select') as HTMLSelectElement | null;
+        const nameInput = this.editor.$id('signal-name-input') as HTMLInputElement | null;
+        const blockSelect = this.editor.$id('signal-block-select') as HTMLSelectElement | null;
 
         const updates: Record<string, unknown> = {};
         if (nameInput) updates.name = nameInput.value.trim() || null;
@@ -342,7 +341,7 @@ export class SignalEditorHandler {
         try {
           await this.api.updateSignal(signalId, updates);
           showToast('Signal updated successfully', 'success', 5000);
-          await window.app?.refreshNetwork();
+          await this.editor.host?.refreshNetwork();
 
           if (this.selectedElement) {
             await this.editor.selectElement({ x: this.selectedElement.x, y: this.selectedElement.y });
@@ -367,7 +366,7 @@ export class SignalEditorHandler {
 
     // Subscribe to signal updates
     this._unsubscribe =
-      stateManager?.subscribe(
+      this.editor.stateManager?.subscribe(
         'signals',
         signalId,
         (newSignal: any, oldSignal: any) => this._onSignalUpdate(newSignal, oldSignal),
@@ -410,12 +409,12 @@ export class SignalEditorHandler {
     // Re-drive the §11 status-header left accent and the §7 state chip in
     // place. The single-signal editor is the only path with a live
     // subscription; the multi-signal tile view has none.
-    const header = document.getElementById('signal-status-header');
+    const header = this.editor.$id('signal-status-header');
     if (header) {
       header.classList.remove('accent-success', 'accent-warn', 'accent-danger');
       header.classList.add(accentClass);
     }
-    const chip = document.getElementById('signal-state-chip');
+    const chip = this.editor.$id('signal-state-chip');
     if (chip) {
       chip.classList.remove('chip-success', 'chip-warn', 'chip-danger');
       chip.classList.add(chipClass);
@@ -425,7 +424,7 @@ export class SignalEditorHandler {
     // The monitored block now lives only in the editable select; keep it in
     // sync when the value changes server-side. _onSignalUpdate already bails
     // when a form control is focused, so this never clobbers an active edit.
-    const blockSelect = document.getElementById('signal-block-select') as HTMLSelectElement | null;
+    const blockSelect = this.editor.$id('signal-block-select') as HTMLSelectElement | null;
     if (blockSelect && signal.monitored_block_id) {
       blockSelect.value = signal.monitored_block_id;
     }

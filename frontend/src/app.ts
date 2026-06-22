@@ -12,7 +12,9 @@
 // call app methods.
 
 import { Renderer } from './renderer';
+import { SimRendererOverlay } from './renderer/sim-overlay';
 import { Editor } from './editor/editor';
+import { SimEditorPlugin } from './editor/sim-plugin';
 import { TrainMonitor } from './panels/train-monitor';
 import { showConfirmModal, showFormModal } from './lib/helpers';
 import { setLabelSpacing } from './lib/constants';
@@ -41,7 +43,18 @@ class App {
 
   constructor() {
     this.renderer = new Renderer('rail-canvas');
+    // The renderer draws only the layout; register the sim overlay so this app
+    // draws trains, routes, and the train-placement ghost on top.
+    this.renderer.registerOverlay(new SimRendererOverlay(stateManager));
     this.editor = new Editor(this.renderer, api);
+    // The core editor is layout-only; register the sim plugin so this app also
+    // edits trains, paths, routes, route-runs, and speed profiles.
+    this.editor.registerPlugin(new SimEditorPlugin());
+    // Inject this App as the editor's host + the sim state store, so the editor
+    // core calls back through injected refs instead of the window.app/stateManager
+    // globals. (window.app is still set below for legacy inline handlers.)
+    this.editor.host = this;
+    this.editor.stateManager = stateManager;
     this.trainMonitor = new TrainMonitor();
 
     this.simulationInterval = null;
