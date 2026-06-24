@@ -7,7 +7,7 @@
 .sidebar-tools-section > h3 {
     margin: -6px -8px 8px;
     padding: 8px 10px;
-    background: linear-gradient(135deg, rgba(130, 87, 229, 0.12), rgba(130, 87, 229, 0.04));
+    background: linear-gradient(135deg, rgba(var(--accent-rgb), 0.12), rgba(var(--accent-rgb), 0.04));
     border-bottom: 1px solid var(--border-color);
     font-size: 0.85rem;
     font-weight: 600;
@@ -123,7 +123,7 @@
 }
 
 .tool-btn.active {
-    background-color: rgba(130, 87, 229, 0.18);
+    background-color: rgba(var(--accent-rgb), 0.18);
     color: var(--accent-hover);
 }
 

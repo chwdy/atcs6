@@ -195,9 +195,9 @@
 .text-dim { color: var(--text-secondary); }                        /* very dim */
 
 .text-accent { color: var(--accent-color); }      /* #8257e5 - purple */
-.text-success { color: var(--success-color); }    /* #04d361 - green */
+.text-success { color: var(--success-color); }    /* var(--success-color) - green */
 .text-danger { color: var(--danger-color); }      /* var(--danger-color) - red */
-.text-warning { color: var(--warning-color); }    /* #ffcd1e - yellow */
+.text-warning { color: var(--warning-color); }    /* var(--warning-color) - yellow */
 .text-info { color: var(--info-color); }                    /* cyan/blue */
 
 /* ============================================================================
@@ -380,7 +380,7 @@
 /* Warning variant — §6 status accent: a faint warning tint + 3px warning
    left-border (the banner-warn treatment), not a hardcoded warm hex. */
 .info-box-warning {
-    background: rgba(255, 205, 30, 0.10);
+    background: rgba(var(--warning-rgb), 0.10);
     border-left: 3px solid var(--warning-color);
     padding: 8px;
     border-radius: var(--control-radius-sm);
@@ -433,25 +433,25 @@
 }
 
 .status-display-success {
-    background: rgba(4, 211, 97, 0.2);
+    background: rgba(var(--success-rgb), 0.2);
     border-color: var(--success-color);
     color: var(--success-color);
 }
 
 .status-display-danger {
-    background: rgba(232, 63, 91, 0.2);
+    background: rgba(var(--danger-rgb), 0.2);
     border-color: var(--danger-color);
     color: var(--danger-color);
 }
 
 .status-display-warning {
-    background: rgba(255, 205, 30, 0.2);
+    background: rgba(var(--warning-rgb), 0.2);
     border-color: var(--warning-color);
     color: var(--warning-color);
 }
 
 .status-display-info {
-    background: rgba(130, 87, 229, 0.2);
+    background: rgba(var(--accent-rgb), 0.2);
     border-color: var(--accent-color);
     color: var(--accent-color);
 }
@@ -692,7 +692,7 @@
    button is an accent *tint*, never a solid fill. The tinted bg + accent text
    is the affordance; solid fills are reserved for top-level page CTAs. */
 .switch-btn.active {
-    background: rgba(130, 87, 229, 0.18);
+    background: rgba(var(--accent-rgb), 0.18);
     color: var(--accent-hover);
 }
 
@@ -703,19 +703,19 @@
 
 /* Variant: Success (green) — active cell tints to the success hue (§7). */
 .switch-group.success .switch-btn.active {
-    background: rgba(4, 211, 97, 0.18);
+    background: rgba(var(--success-rgb), 0.18);
     color: var(--success-color);
 }
 
 /* Variant: Danger (red) */
 .switch-group.danger .switch-btn.active {
-    background: rgba(232, 63, 91, 0.18);
+    background: rgba(var(--danger-rgb), 0.18);
     color: var(--danger-color);
 }
 
 /* Variant: Warning (yellow) */
 .switch-group.warning .switch-btn.active {
-    background: rgba(255, 205, 30, 0.18);
+    background: rgba(var(--warning-rgb), 0.18);
     color: var(--warning-color);
 }
 
@@ -787,7 +787,7 @@
 }
 
 .tile-list-item:hover {
-    background-color: rgba(130, 87, 229, 0.1);
+    background-color: rgba(var(--accent-rgb), 0.1);
 }
 
 .tile-list-coords {
@@ -845,12 +845,12 @@
    an accepted value, danger for a rejected/reverted one. The global
    reduced-motion rule in base/motion.css collapses these to their end state. */
 @keyframes field-flash-ok-kf {
-    0%   { border-color: var(--accent-color); box-shadow: 0 0 0 2px rgba(130, 87, 229, 0.35); }
+    0%   { border-color: var(--accent-color); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.35); }
     100% { border-color: var(--border-color); box-shadow: none; }
 }
 
 @keyframes field-flash-err-kf {
-    0%   { border-color: var(--danger-color); box-shadow: 0 0 0 2px rgba(232, 63, 91, 0.35); }
+    0%   { border-color: var(--danger-color); box-shadow: 0 0 0 2px rgba(var(--danger-rgb), 0.35); }
     100% { border-color: var(--border-color); box-shadow: none; }
 }
 
@@ -1043,7 +1043,7 @@
 }
 
 .checkbox-input:focus + .checkbox-custom {
-    box-shadow: 0 0 0 2px rgba(130, 87, 229, 0.2);
+    box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.2);
 }
 
 .checkbox-label {

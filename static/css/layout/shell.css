@@ -200,7 +200,7 @@ textarea {
 
 .speed-btn.active {
     color: var(--accent-hover);
-    background-color: rgba(130, 87, 229, 0.18);
+    background-color: rgba(var(--accent-rgb), 0.18);
 }
 
 /* ---- Mode switch — segmented control ---- */
@@ -240,7 +240,7 @@ textarea {
 
 .mode-btn.active {
     color: var(--accent-hover);
-    background-color: rgba(130, 87, 229, 0.18);
+    background-color: rgba(var(--accent-rgb), 0.18);
 }
 
 /* Fatal-conflict halt banner — full-width alert bar between header and body.
@@ -252,7 +252,7 @@ textarea {
     align-items: center;
     gap: 12px;
     padding: 10px 16px;
-    background-color: rgba(232, 63, 91, 0.10);
+    background-color: rgba(var(--danger-rgb), 0.10);
     border-bottom: 1px solid var(--danger-color);
     color: var(--text-primary);
 }
@@ -383,7 +383,7 @@ textarea {
     align-items: center;
     gap: 8px;
     padding: 8px 12px;
-    background: linear-gradient(135deg, rgba(130, 87, 229, 0.1), rgba(130, 87, 229, 0.05));
+    background: linear-gradient(135deg, rgba(var(--accent-rgb), 0.1), rgba(var(--accent-rgb), 0.05));
     border-bottom: 1px solid var(--border-color);
 }
 
@@ -430,7 +430,7 @@ textarea {
 
 .secondary-nav-btn.active {
     color: var(--accent-hover);
-    background: rgba(130, 87, 229, 0.18);
+    background: rgba(var(--accent-rgb), 0.18);
     border-color: var(--accent-color);
 }
 
@@ -526,7 +526,7 @@ textarea {
 .secondary-tab.active {
     color: var(--accent-hover);
     border-left-color: var(--accent-color);
-    background-color: rgba(130, 87, 229, 0.08);
+    background-color: rgba(var(--accent-rgb), 0.08);
 }
 
 /* Tabler icon glyph that identifies the entity category in each tab. */
@@ -651,12 +651,12 @@ textarea {
 }
 
 .sidebar-content-section::-webkit-scrollbar-thumb {
-    background: rgba(130, 87, 229, 0.3);
+    background: rgba(var(--accent-rgb), 0.3);
     border-radius: 3px;
 }
 
 .sidebar-content-section::-webkit-scrollbar-thumb:hover {
-    background: rgba(130, 87, 229, 0.5);
+    background: rgba(var(--accent-rgb), 0.5);
 }
 
 /* Resize handle visual indicator - full edge width */

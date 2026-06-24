@@ -105,7 +105,7 @@
 }
 .tm-seg-btn.active {
     color: var(--accent-hover);
-    background-color: rgba(130, 87, 229, 0.18);
+    background-color: rgba(var(--accent-rgb), 0.18);
 }
 
 /* ---- Icon / utility buttons (JSON dump, close) ---- */
@@ -270,7 +270,7 @@
 
 .tm-banner-warn {
     color: var(--warning-color);
-    background-color: rgba(255, 205, 30, 0.10);
+    background-color: rgba(var(--warning-rgb), 0.10);
     border-left-color: var(--warning-color);
 }
 
@@ -550,17 +550,17 @@
 }
 
 .info-badge.state-free {
-    background: rgba(4, 211, 97, 0.15);
+    background: rgba(var(--success-rgb), 0.15);
     color: var(--success-color);
 }
 
 .info-badge.state-occupied {
-    background: rgba(232, 63, 91, 0.15);
+    background: rgba(var(--danger-rgb), 0.15);
     color: var(--danger-color);
 }
 
 .info-badge.state-reserved {
-    background: rgba(255, 205, 30, 0.15);
+    background: rgba(var(--warning-rgb), 0.15);
     color: var(--warning-color);
 }
 
@@ -627,7 +627,7 @@
 
 /* ============= Editor Panel Styles ============= */
 .text-track-bit-active {
-    color: #00d4ff;
+    color: var(--info-color);
 }
 
 .info-box-warning-container {

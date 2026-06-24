@@ -219,11 +219,11 @@ class App {
     if (!btn) return;
 
     if (isPlaying) {
-      btn.innerHTML = '<span class="icon">⏸</span> Pause';
+      btn.innerHTML = '<i class="ti ti-player-pause"></i> Pause';
       btn.classList.remove('btn-primary');
       btn.classList.add('btn-secondary');
     } else {
-      btn.innerHTML = '<span class="icon">▶</span> Play';
+      btn.innerHTML = '<i class="ti ti-player-play"></i> Play';
       btn.classList.remove('btn-secondary');
       btn.classList.add('btn-primary');
     }

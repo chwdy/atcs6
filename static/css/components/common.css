@@ -60,13 +60,13 @@
    (DESIGN_LANGUAGE.md §3/§12). The one sanctioned solid accent button — the
    header Play/Pause — sets its own fill via a more specific rule (shell.css). */
 .btn-primary {
-    background-color: rgba(130, 87, 229, 0.18);
+    background-color: rgba(var(--accent-rgb), 0.18);
     color: var(--accent-hover);
     border: 1px solid transparent;
 }
 
 .btn-primary:hover:not(:disabled) {
-    background-color: rgba(130, 87, 229, 0.28);
+    background-color: rgba(var(--accent-rgb), 0.28);
     border-color: var(--accent-color);
 }
 
@@ -75,13 +75,13 @@
    tint that reads as "attention" without shouting. Transparent border keeps
    the box the same height as a .btn-outline sitting beside it. */
 .btn-accent {
-    background-color: rgba(130, 87, 229, 0.18);
+    background-color: rgba(var(--accent-rgb), 0.18);
     color: var(--accent-hover);
     border: 1px solid transparent;
 }
 
 .btn-accent:hover:not(:disabled) {
-    background-color: rgba(130, 87, 229, 0.28);
+    background-color: rgba(var(--accent-rgb), 0.28);
     border-color: var(--accent-color);
 }
 
@@ -95,12 +95,12 @@
 }
 
 .btn-danger {
-    background-color: rgba(232, 63, 91, 0.1);
+    background-color: rgba(var(--danger-rgb), 0.1);
     color: var(--danger-color);
 }
 
 .btn-danger:hover {
-    background-color: rgba(232, 63, 91, 0.2);
+    background-color: rgba(var(--danger-rgb), 0.2);
 }
 
 /* Muted destructive — a flat danger ghost for a block-level Delete that sits
@@ -113,7 +113,7 @@
 }
 
 .btn-danger-ghost:hover {
-    background-color: rgba(232, 63, 91, 0.1);
+    background-color: rgba(var(--danger-rgb), 0.1);
 }
 
 /* Disabled control — e.g. a predicted-coordinate Extend button when there is
@@ -125,15 +125,15 @@
 
 /* Success action in a panel = green TINT, not a solid fill
    (DESIGN_LANGUAGE.md §3/§12). The sanctioned solid green is the driver-facing
-   hero (.tc-btn-hero), not a panel button. --success-color is #04d361. */
+   hero (.tc-btn-hero), not a panel button. --success-color is var(--success-color). */
 .btn-success {
-    background-color: rgba(4, 211, 97, 0.14);
+    background-color: rgba(var(--success-rgb), 0.14);
     color: var(--success-color);
     border: 1px solid transparent;
 }
 
 .btn-success:hover:not(:disabled) {
-    background-color: rgba(4, 211, 97, 0.24);
+    background-color: rgba(var(--success-rgb), 0.24);
     border-color: var(--success-color);
 }
 
@@ -164,7 +164,7 @@
 
 .btn-flat.active,
 .btn-flat:active {
-    background-color: rgba(130, 87, 229, 0.18);
+    background-color: rgba(var(--accent-rgb), 0.18);
     color: var(--accent-hover);
 }
 
@@ -721,7 +721,7 @@
     border: 2px solid var(--accent-color);
     min-width: 420px;
     max-width: 520px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(130, 87, 229, 0.3);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(var(--accent-rgb), 0.3);
     animation: floatIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
     pointer-events: auto;
     z-index: 1001;
@@ -807,7 +807,7 @@
 .block-modal-header {
     padding: 16px 24px;
     border-bottom: 1px solid var(--border-color);
-    background: linear-gradient(135deg, rgba(130, 87, 229, 0.1), rgba(130, 87, 229, 0.05));
+    background: linear-gradient(135deg, rgba(var(--accent-rgb), 0.1), rgba(var(--accent-rgb), 0.05));
     border-radius: 12px 12px 0 0;
     cursor: move;
 }
@@ -911,7 +911,7 @@
 
 .block-modal-blocks .block-option.selected {
     border-color: var(--accent-color);
-    background: rgba(130, 87, 229, 0.1);
+    background: rgba(var(--accent-rgb), 0.1);
 }
 
 .block-modal-blocks .block-option input[type="radio"] {
@@ -986,7 +986,7 @@
     color: var(--warning-color);
     margin-bottom: 16px;
     padding: 12px;
-    background: rgba(255, 205, 30, 0.1);
+    background: rgba(var(--warning-rgb), 0.1);
     border-radius: 6px;
     border-left: 3px solid var(--warning-color);
 }
@@ -1119,7 +1119,7 @@
 /* Modal Warning Styles */
 .warning-message {
     padding: 12px;
-    background: rgba(255, 205, 30, 0.1);
+    background: rgba(var(--warning-rgb), 0.1);
     border: 1px solid var(--warning-color);
     border-radius: 6px;
     color: var(--warning-color);

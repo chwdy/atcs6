@@ -64,7 +64,7 @@
 .tc-status.obc-power-off   { border-left-color: var(--text-secondary); }
 .tc-status.obc-power-emergency {
     border-left-color: var(--danger-color);
-    background: linear-gradient(90deg, rgba(232, 63, 91, 0.10), var(--bg-hover) 60%);
+    background: linear-gradient(90deg, rgba(var(--danger-rgb), 0.10), var(--bg-hover) 60%);
 }
 
 .tc-status-headline {
@@ -108,7 +108,7 @@
     font-weight: 700;
     font-family: var(--font-mono);
     color: var(--success-color);
-    background-color: rgba(4, 211, 97, 0.15);
+    background-color: rgba(var(--success-rgb), 0.15);
     border: 1px solid var(--success-color);
     padding: 2px 8px;
     border-radius: 999px;
@@ -119,7 +119,7 @@
     font-size: 10px;
     font-weight: 700;
     color: var(--danger-color);
-    background-color: rgba(232, 63, 91, 0.15);
+    background-color: rgba(var(--danger-rgb), 0.15);
     border: 1px solid var(--danger-color);
     padding: 2px 8px;
     border-radius: 3px;
@@ -310,7 +310,7 @@
     border: 1px solid var(--border-color);
     background-color: var(--bg-panel);
 }
-.tc-pill-success { color: var(--success-color); border-color: var(--success-color); background-color: rgba(4, 211, 97, 0.10); }
+.tc-pill-success { color: var(--success-color); border-color: var(--success-color); background-color: rgba(var(--success-rgb), 0.10); }
 .tc-pill-muted   { color: var(--text-secondary); }
 
 .tc-card-fields {
@@ -338,7 +338,7 @@
 /* Destination card — info-color accent (highlighted as JR-style "next station") */
 .tc-card-destination {
     border-left: 3px solid var(--info-color);
-    background: linear-gradient(180deg, rgba(0, 212, 255, 0.04), var(--bg-dark) 70%);
+    background: linear-gradient(180deg, rgba(var(--info-rgb), 0.04), var(--bg-dark) 70%);
 }
 
 /* Next Stop header puts label LEFT and destination name RIGHT on one line */
@@ -451,10 +451,10 @@
     color: var(--bg-dark);
     font-family: var(--font-main);
 }
-.tc-zone-power   { background-color: rgba(4, 211, 97, 0.55); color: var(--bg-dark); }
+.tc-zone-power   { background-color: rgba(var(--success-rgb), 0.55); color: var(--bg-dark); }
 .tc-zone-neutral { background-color: rgba(168, 168, 179, 0.45); color: var(--bg-dark); }
-.tc-zone-brake   { background-color: rgba(255, 205, 30, 0.50); color: var(--bg-dark); }
-.tc-zone-eb      { background-color: rgba(232, 63, 91, 0.65); color: var(--bg-panel); }
+.tc-zone-brake   { background-color: rgba(var(--warning-rgb), 0.50); color: var(--bg-dark); }
+.tc-zone-eb      { background-color: rgba(var(--danger-rgb), 0.65); color: var(--bg-panel); }
 
 .tc-handle-ticks {
     display: grid;
@@ -473,7 +473,7 @@
 .tc-handle-tick.active {
     color: var(--accent-hover);
     font-weight: 700;
-    background-color: rgba(130, 87, 229, 0.18);
+    background-color: rgba(var(--accent-rgb), 0.18);
     border-radius: 2px;
 }
 
@@ -754,7 +754,7 @@
 }
 .tc-seg-btn.active {
     color: var(--accent-hover);
-    background-color: rgba(130, 87, 229, 0.18);
+    background-color: rgba(var(--accent-rgb), 0.18);
 }
 .tc-seg-btn:disabled {
     opacity: 0.4;
@@ -826,32 +826,32 @@
 
 .tc-btn-success {
     color: var(--success-color);
-    border-color: rgba(4, 211, 97, 0.4);
+    border-color: rgba(var(--success-rgb), 0.4);
 }
 .tc-btn-success:hover:not(:disabled) {
     color: var(--success-color);
     border-color: var(--success-color);
-    background-color: rgba(4, 211, 97, 0.10);
+    background-color: rgba(var(--success-rgb), 0.10);
 }
 
 .tc-btn-danger {
     color: var(--danger-color);
-    border-color: rgba(232, 63, 91, 0.4);
+    border-color: rgba(var(--danger-rgb), 0.4);
 }
 .tc-btn-danger:hover:not(:disabled) {
     color: var(--danger-color);
     border-color: var(--danger-color);
-    background-color: rgba(232, 63, 91, 0.10);
+    background-color: rgba(var(--danger-rgb), 0.10);
 }
 
 .tc-btn-primary {
     color: var(--accent-hover);
-    border-color: rgba(130, 87, 229, 0.5);
+    border-color: rgba(var(--accent-rgb), 0.5);
 }
 .tc-btn-primary:hover:not(:disabled) {
     color: var(--accent-hover);
     border-color: var(--accent-color);
-    background-color: rgba(130, 87, 229, 0.18);
+    background-color: rgba(var(--accent-rgb), 0.18);
 }
 
 /* ---- Emergency row (full-width red CTA) ---- */
@@ -863,7 +863,7 @@
 .tc-eb-btn {
     flex: 1;
     height: 40px;
-    background-color: rgba(232, 63, 91, 0.10);
+    background-color: rgba(var(--danger-rgb), 0.10);
     color: var(--danger-color);
     border: 1px solid var(--danger-color);
     border-radius: var(--control-radius-sm);
@@ -918,7 +918,7 @@
 
 .tc-banner-warn {
     color: var(--warning-color);
-    background-color: rgba(255, 205, 30, 0.10);
+    background-color: rgba(var(--warning-rgb), 0.10);
     border-left-color: var(--warning-color);
 }
 
@@ -1025,7 +1025,7 @@
     cursor: pointer;
     text-decoration: underline;
     text-underline-offset: 2px;
-    text-decoration-color: rgba(232, 63, 91, 0.4);
+    text-decoration-color: rgba(var(--danger-rgb), 0.4);
     text-transform: uppercase;
     letter-spacing: 0.06em;
 }
@@ -1170,7 +1170,7 @@
 .tc-section-task.obc-power-off   { border-left-color: var(--text-secondary); }
 .tc-section-task.obc-power-emergency {
     border-left-color: var(--danger-color);
-    background: linear-gradient(90deg, rgba(232, 63, 91, 0.10), var(--bg-hover) 60%);
+    background: linear-gradient(90deg, rgba(var(--danger-rgb), 0.10), var(--bg-hover) 60%);
 }
 
 /* Other zones keep the default .tc-section divider rule. */

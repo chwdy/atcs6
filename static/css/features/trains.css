@@ -176,7 +176,7 @@
 /* Armed: the accent tint marks "click a track now", matching the segmented
    active state (DESIGN_LANGUAGE.md §3). */
 .at-pick-btn.active {
-    background-color: rgba(130, 87, 229, 0.18);
+    background-color: rgba(var(--accent-rgb), 0.18);
     color: var(--accent-hover);
     border-color: var(--accent-color);
 }

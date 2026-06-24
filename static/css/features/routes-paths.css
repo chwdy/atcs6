@@ -323,7 +323,7 @@
     color: var(--danger-color);
 }
 .rr-flat-btn-danger:hover {
-    background-color: rgba(232, 63, 91, 0.10);
+    background-color: rgba(var(--danger-rgb), 0.10);
     color: var(--danger-color);
 }
 
@@ -581,7 +581,7 @@
 .rr-task-pending { opacity: 0.55; }
 
 .rr-task-next {
-    background-color: rgba(0, 212, 255, 0.08);
+    background-color: rgba(var(--info-rgb), 0.08);
     color: var(--text-primary);
 }
 .rr-task-next .rr-task-mod,
@@ -635,8 +635,8 @@
     line-height: 1.4;
     justify-self: start;
 }
-.rr-task-verb-info  { color: var(--info-color);    background-color: rgba(0, 212, 255, 0.15); }
-.rr-task-verb-warn  { color: var(--warning-color); background-color: rgba(255, 205, 30, 0.15); }
+.rr-task-verb-info  { color: var(--info-color);    background-color: rgba(var(--info-rgb), 0.15); }
+.rr-task-verb-warn  { color: var(--warning-color); background-color: rgba(var(--warning-rgb), 0.15); }
 .rr-task-verb-muted { color: var(--text-secondary); background-color: var(--bg-hover); }
 
 /* Noun — the place identifier. Bright mono, the row's identity.
@@ -737,7 +737,7 @@
 /* Save with unsaved edits — subtle accent tint so the button reads as
    "needs your attention" without flipping to a full primary fill. */
 .re-toolbar-save-dirty {
-    background-color: rgba(130, 87, 229, 0.18);
+    background-color: rgba(var(--accent-rgb), 0.18);
     border-color: var(--accent-color);
 }
 
@@ -819,8 +819,8 @@
     justify-self: start;
     white-space: nowrap;
 }
-.atr-verb-info  { color: var(--info-color);    background-color: rgba(0, 212, 255, 0.15); }
-.atr-verb-warn  { color: var(--warning-color); background-color: rgba(255, 205, 30, 0.15); }
+.atr-verb-info  { color: var(--info-color);    background-color: rgba(var(--info-rgb), 0.15); }
+.atr-verb-warn  { color: var(--warning-color); background-color: rgba(var(--warning-rgb), 0.15); }
 .atr-verb-muted { color: var(--text-secondary); background-color: var(--bg-hover); }
 
 /* Target noun — bright, the row's identity within the route context.
@@ -911,7 +911,7 @@
 }
 
 .route-seg .switch-btn.active {
-    background-color: rgba(130, 87, 229, 0.18);
+    background-color: rgba(var(--accent-rgb), 0.18);
     color: var(--accent-hover);
 }
 
@@ -1433,22 +1433,22 @@
 }
 
 .train-state-dot.train-state-standby {
-    background-color: #00d4ff;
+    background-color: var(--info-color);
 }
 
 .train-state-text.train-state-standby,
 .train-state-display.train-state-standby {
-    color: #00d4ff;
+    color: var(--info-color);
     background-color: transparent;
 }
 
 .train-state-dot.train-state-running {
-    background-color: #04d361;
+    background-color: var(--success-color);
 }
 
 .train-state-text.train-state-running,
 .train-state-display.train-state-running {
-    color: #04d361;
+    color: var(--success-color);
     background-color: transparent;
 }
 
@@ -1463,22 +1463,22 @@
 }
 
 .train-state-dot.train-state-station {
-    background-color: #8257e5;
+    background-color: var(--accent-color);
 }
 
 .train-state-text.train-state-station,
 .train-state-display.train-state-station {
-    color: #8257e5;
+    color: var(--accent-color);
     background-color: transparent;
 }
 
 .train-state-dot.train-state-manual {
-    background-color: #e83f5b;
+    background-color: var(--danger-color);
 }
 
 .train-state-text.train-state-manual,
 .train-state-display.train-state-manual {
-    color: #e83f5b;
+    color: var(--danger-color);
     background-color: transparent;
 }
 
@@ -1490,20 +1490,20 @@
 }
 
 .info-box-block.obc-power-off { border-left-color: #888; }
-.info-box-block.obc-power-on { border-left-color: #04d361; }
-.info-box-block.obc-power-emergency { border-left-color: #e83f5b; }
+.info-box-block.obc-power-on { border-left-color: var(--success-color); }
+.info-box-block.obc-power-emergency { border-left-color: var(--danger-color); }
 
-.obc-power-display.power-on { color: #04d361; }
+.obc-power-display.power-on { color: var(--success-color); }
 .obc-power-display.power-off { color: #888; }
 
-.obc-mode-display.mode-ato { color: #00d4ff; }
-.obc-mode-display.mode-manual { color: #e83f5b; }
+.obc-mode-display.mode-ato { color: var(--info-color); }
+.obc-mode-display.mode-manual { color: var(--danger-color); }
 
 .obc-handle-display.handle-power,
-.handle-position-display.handle-power { color: #04d361; }
+.handle-position-display.handle-power { color: var(--success-color); }
 
 .obc-handle-display.handle-brake,
-.handle-position-display.handle-brake { color: #e83f5b; }
+.handle-position-display.handle-brake { color: var(--danger-color); }
 
 .obc-handle-display.handle-neutral,
 .handle-position-display.handle-neutral { color: #ffd93d; }
@@ -1513,7 +1513,7 @@
     padding: 12px;
 }
 
-.train-cab-status.cab-active { color: #00d4ff; }
+.train-cab-status.cab-active { color: var(--info-color); }
 .train-cab-status.cab-none { color: #ffd93d; }
 
 .train-control-debug-section {
@@ -1734,7 +1734,7 @@
 }
 
 .route-train {
-    color: #8257e5;
+    color: var(--accent-color);
     margin-bottom: 8px;
 }
 
@@ -1782,7 +1782,7 @@
     appearance: none;
     width: 18px;
     height: 18px;
-    background: #00d4ff;
+    background: var(--info-color);
     border-radius: 50%;
     cursor: pointer;
 }
@@ -1790,7 +1790,7 @@
 #route-priority-slider::-moz-range-thumb {
     width: 18px;
     height: 18px;
-    background: #00d4ff;
+    background: var(--info-color);
     border-radius: 50%;
     cursor: pointer;
     border: none;

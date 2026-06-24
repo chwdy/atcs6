@@ -4,6 +4,43 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Rail Control System</title>
+    <!-- Theme bootstrap — runs before stylesheets apply so there is no
+         flash of the wrong theme. Uses the saved preference, else the OS
+         setting. Light and dark are co-equal (see tokens.css). -->
+    <script>
+      (function () {
+        var KEY = 'atcs6-theme';
+        function osPref() {
+          return (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+        }
+        var saved;
+        try { saved = localStorage.getItem(KEY); } catch (e) {}
+        var theme = (saved === 'light' || saved === 'dark') ? saved : osPref();
+        document.documentElement.setAttribute('data-theme', theme);
+        function syncIcon() {
+          var btn = document.getElementById('btn-theme-toggle');
+          if (!btn) return;
+          var t = document.documentElement.getAttribute('data-theme');
+          var i = btn.querySelector('i');
+          if (i) i.className = (t === 'light') ? 'ti ti-moon' : 'ti ti-sun';
+          btn.title = (t === 'light') ? 'Switch to dark theme' : 'Switch to light theme';
+        }
+        window.__setTheme = function (t) {
+          document.documentElement.setAttribute('data-theme', t);
+          try { localStorage.setItem(KEY, t); } catch (e) {}
+          syncIcon();
+        };
+        window.__toggleTheme = function () {
+          var cur = document.documentElement.getAttribute('data-theme');
+          window.__setTheme(cur === 'light' ? 'dark' : 'light');
+        };
+        document.addEventListener('DOMContentLoaded', function () {
+          var btn = document.getElementById('btn-theme-toggle');
+          if (btn) btn.addEventListener('click', window.__toggleTheme);
+          syncIcon();
+        });
+      })();
+    </script>
     <link rel="stylesheet" href="css/style.css">
     <link rel="stylesheet" href="/static/vendor/tabler/tabler-icons.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
@@ -18,10 +55,10 @@
             <div class="controls">
                 <div class="simulation-controls">
                     <button id="btn-play-pause" class="btn btn-primary" title="Start/Pause Simulation">
-                        <span class="icon">▶</span> Play
+                        <i class="ti ti-player-play"></i> Play
                     </button>
                     <button id="btn-restart-server" class="btn" title="Restart Server" aria-label="Restart Server">
-                        <span class="icon">↻</span>
+                        <i class="ti ti-refresh"></i>
                     </button>
                     <div class="speed-presets" role="group" aria-label="Playback speed">
                         <button class="speed-btn" data-speed="0.5">0.5x</button>
@@ -50,6 +87,9 @@
                 </div>
                 <div class="inspector-controls">
                     <button id="btn-inspector-toggle" class="btn" title="Toggle Inspector">Inspector</button>
+                    <button id="btn-theme-toggle" class="btn btn-icon-only" title="Switch theme" aria-label="Switch light / dark theme">
+                        <i class="ti ti-sun"></i>
+                    </button>
                     <button id="btn-settings" class="btn btn-icon-only" title="Settings &amp; Debug Info" aria-label="Open settings">
                         <i class="ti ti-settings"></i>
                     </button>
@@ -58,7 +98,7 @@
         </header>
 
         <div id="fatal-banner" class="fatal-banner" hidden role="alert" aria-live="assertive">
-            <span class="fatal-banner-icon" aria-hidden="true">⛔</span>
+            <i class="ti ti-alert-octagon-filled fatal-banner-icon" aria-hidden="true"></i>
             <div class="fatal-banner-body">
                 <div class="fatal-banner-title">Simulation halted — fatal track conflict</div>
                 <div class="fatal-banner-detail" id="fatal-banner-detail"></div>

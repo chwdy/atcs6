@@ -298,7 +298,7 @@
 
 /* ---- Diff flash ---- */
 @keyframes inspector-row-flash-anim {
-    0%   { background-color: rgba(255, 205, 30, 0.45); }
+    0%   { background-color: rgba(var(--warning-rgb), 0.45); }
     100% { background-color: transparent; }
 }
 .inspector-row-flash {
@@ -309,7 +309,7 @@
 /* ---- Errored property ---- */
 .inspector-row-error {
     border-left-color: var(--danger-color);
-    background-color: rgba(232, 63, 91, 0.08);
+    background-color: rgba(var(--danger-rgb), 0.08);
 }
 .inspector-row-error .inspector-row-value {
     color: var(--danger-color);
