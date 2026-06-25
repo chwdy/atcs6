@@ -2,7 +2,9 @@
 .canvas-container {
     flex: 1;
     position: relative;
-    background-color: #0a0a0c;
+    /* Follows the layout theme (data-canvas-theme); the renderer fills the
+       same --canvas-bg on the world canvas, so container and canvas match. */
+    background-color: var(--canvas-bg);
     overflow: hidden;
     min-height: 400px;
 }

@@ -989,13 +989,15 @@ export class EditorUIHandler {
     const half = size / 2;
     const quarter = size / 4;
 
-    const segments: Record<number, { edges: [string, string]; label: string; color: string }> = {
-      1: { edges: ['N', 'S'], label: 'NS', color: '#04d361' }, // --success-color (straight)
-      2: { edges: ['E', 'W'], label: 'EW', color: '#04d361' },
-      4: { edges: ['N', 'E'], label: 'NE', color: '#00d4ff' }, // --info-color (diagonal)
-      8: { edges: ['N', 'W'], label: 'NW', color: '#00d4ff' },
-      16: { edges: ['S', 'E'], label: 'SE', color: '#00d4ff' },
-      32: { edges: ['S', 'W'], label: 'SW', color: '#00d4ff' },
+    // Segment color follows the editor (chrome) theme: straight = success,
+    // diagonal = info. Resolved from the token at draw time in drawEditor().
+    const segments: Record<number, { edges: [string, string]; label: string; token: string }> = {
+      1: { edges: ['N', 'S'], label: 'NS', token: '--success-color' }, // straight
+      2: { edges: ['E', 'W'], label: 'EW', token: '--success-color' },
+      4: { edges: ['N', 'E'], label: 'NE', token: '--info-color' }, // diagonal
+      8: { edges: ['N', 'W'], label: 'NW', token: '--info-color' },
+      16: { edges: ['S', 'E'], label: 'SE', token: '--info-color' },
+      32: { edges: ['S', 'W'], label: 'SW', token: '--info-color' },
     };
 
     const edgePositions: Record<string, { x: number; y: number }> = {
@@ -1010,10 +1012,16 @@ export class EditorUIHandler {
     const drawEditor = () => {
       ctx.clearRect(0, 0, size, size);
 
-      ctx.fillStyle = '#121214'; // --bg-dark
+      // Editor-chrome tokens, resolved at draw time so the mini-grid follows the
+      // light/dark editor theme. (#000/#fff and #10101a stay literal: legibility
+      // marks on saturated fills, correct in both themes.)
+      const cs = getComputedStyle(document.documentElement);
+      const v = (token: string, fallback: string) => cs.getPropertyValue(token).trim() || fallback;
+
+      ctx.fillStyle = v('--bg-dark', '#121214');
       ctx.fillRect(0, 0, size, size);
 
-      ctx.strokeStyle = '#333340'; // --border-color — outer diamond, the quietest line
+      ctx.strokeStyle = v('--border-color', '#333340'); // outer diamond, the quietest line
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(half, 10);
@@ -1026,7 +1034,7 @@ export class EditorUIHandler {
       // Ghost (inactive) segments are the click affordance, so they must read
       // clearly — a visible muted gray, a step brighter than the diamond above.
       ctx.setLineDash([3, 4]);
-      ctx.strokeStyle = '#5a5a66';
+      ctx.strokeStyle = v('--text-tertiary', '#5a5a66');
       ctx.lineWidth = 1.5;
       for (const seg of Object.values(segments)) {
         const [e1, e2] = seg.edges;
@@ -1045,7 +1053,7 @@ export class EditorUIHandler {
           const start = edgePositions[e1];
           const end = edgePositions[e2];
 
-          ctx.strokeStyle = seg.color;
+          ctx.strokeStyle = v(seg.token, '#04d361');
           ctx.lineWidth = 3;
           ctx.beginPath();
           ctx.moveTo(start.x, start.y);
@@ -1074,15 +1082,15 @@ export class EditorUIHandler {
           }
         }
 
-        ctx.fillStyle = isConnected ? '#04d361' : '#2a2a35'; // --success-color / --bg-hover
-        ctx.strokeStyle = isConnected ? '#e1e1e6' : '#5a5a66'; // --text-primary / muted gray
+        ctx.fillStyle = isConnected ? v('--success-color', '#04d361') : v('--bg-hover', '#2a2a35');
+        ctx.strokeStyle = isConnected ? v('--text-primary', '#e1e1e6') : v('--text-tertiary', '#5a5a66');
         ctx.lineWidth = isConnected ? 3 : 2;
         ctx.beginPath();
         ctx.arc(pos.x, pos.y, 12, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
 
-        ctx.fillStyle = isConnected ? '#10101a' : '#a8a8b3'; // dark-on-green / --text-secondary
+        ctx.fillStyle = isConnected ? '#10101a' : v('--text-secondary', '#a8a8b3'); // #10101a = dark text on the saturated success dot (both themes)
         ctx.font = 'bold 10px sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
@@ -1090,7 +1098,7 @@ export class EditorUIHandler {
       }
 
       if (FORBIDDEN_TRACK_BITS.has(currentBits) || isSquareCornerSwitch(currentBits)) {
-        ctx.fillStyle = '#e83f5b';
+        ctx.fillStyle = v('--danger-color', '#e83f5b');
         ctx.beginPath();
         ctx.arc(half, half, 8, 0, Math.PI * 2);
         ctx.fill();

@@ -12,6 +12,7 @@
 
 import { getActiveSegments, trackBitsToEdges, isCrossing, TRACK_WIDTH } from '../lib/constants';
 import { getBlockStateColor } from '../lib/helpers';
+import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
 import type { Signal } from './renderer-signals';
 
 export interface EdgePoint {
@@ -130,6 +131,7 @@ export class RendererTrackHandler {
   }
 
   drawTrack(track: Track, drawSignals = true): void {
+    const p = getCanvasPalette();
     const cellSize = this.gridSize * this.scale;
     const cx = this.gridToScreenX(track.x, track.y);
     const cy = this.gridToScreenY(track.x, track.y);
@@ -140,14 +142,14 @@ export class RendererTrackHandler {
     this.ctx.save();
     this.ctx.translate(cx, cy);
 
-    let trackColor = '#666';
+    let trackColor = p.track;
     if (track.block_section_id && this.currentBlocks) {
       const resolved = blockTrackColor(this.currentBlocks[track.block_section_id]);
       if (resolved) trackColor = resolved;
     } else if (track.occupied_by) {
-      trackColor = '#e83f5b';
+      trackColor = p.danger;
     } else if (track.reserved_by) {
-      trackColor = '#ffcd1e';
+      trackColor = p.caution;
     }
 
     const isSwitch = track.is_switch || false;
@@ -171,13 +173,13 @@ export class RendererTrackHandler {
       ));
 
       if (trainOwned) {
-        this.ctx.strokeStyle = '#8B4513'; // Brown — train-owned hold
+        this.ctx.strokeStyle = p.hold; // Brown — train-owned hold
         this.ctx.lineWidth = 2 * this.scale;
         this.ctx.beginPath();
         this.ctx.arc(0, 0, 6 * this.scale, 0, Math.PI * 2);
         this.ctx.stroke();
       } else if (switchEntity && Array.isArray(switchEntity.locks) && switchEntity.locks.length > 0) {
-        this.ctx.strokeStyle = '#ff8c00'; // Orange — path-owned future lock
+        this.ctx.strokeStyle = p.lock; // Orange — path-owned future lock
         this.ctx.lineWidth = 2 * this.scale;
         this.ctx.beginPath();
         this.ctx.arc(0, 0, 6 * this.scale, 0, Math.PI * 2);
@@ -242,6 +244,7 @@ export class RendererTrackHandler {
   }
 
   drawTrackFromBits(trackBits: number, half: number, color: string, deadEndPorts: string[] = []): void {
+    const p = getCanvasPalette();
     const edgePoints = this.getEdgePoints(half);
 
     const segments = getActiveSegments(trackBits);
@@ -278,7 +281,7 @@ export class RendererTrackHandler {
     }
 
     if (isCrossing(trackBits)) {
-      this.ctx.fillStyle = '#8257e5';
+      this.ctx.fillStyle = p.accent;
       this.ctx.beginPath();
       this.ctx.arc(0, 0, 4 * this.scale, 0, Math.PI * 2);
       this.ctx.fill();
@@ -293,6 +296,7 @@ export class RendererTrackHandler {
     isDiagonalOnly: boolean,
     switchPoints: Record<string, string[]>,
   ): void {
+    const p = getCanvasPalette();
     const edgePoints = this.getEdgePoints(half);
 
     const SEGMENTS = [
@@ -347,7 +351,7 @@ export class RendererTrackHandler {
       }
 
       if (!isActive) {
-        const segmentColor = '#444';
+        const segmentColor = p.trackDim;
         const segmentWidth = 2 * this.scale;
         this.drawGridSegment(start, end, segmentWidth, e1, e2, segmentColor);
       }
@@ -378,12 +382,12 @@ export class RendererTrackHandler {
     }
 
     const isMain = switchState === 0;
-    this.ctx.fillStyle = isMain ? '#04d361' : '#ffd93d';
+    this.ctx.fillStyle = isMain ? p.success : p.caution;
     this.ctx.beginPath();
     this.ctx.arc(0, 0, 5 * this.scale, 0, Math.PI * 2);
     this.ctx.fill();
 
-    this.ctx.fillStyle = '#000';
+    this.ctx.fillStyle = p.onAccent;
     this.ctx.font = `bold ${8 * this.scale}px sans-serif`;
     this.ctx.textAlign = 'center';
     this.ctx.textBaseline = 'middle';
@@ -391,7 +395,7 @@ export class RendererTrackHandler {
 
     if (isDiagonalOnly) {
       this.ctx.font = `${7 * this.scale}px sans-serif`;
-      this.ctx.fillStyle = '#ff9900';
+      this.ctx.fillStyle = p.warning;
       this.ctx.fillText('⟳', 9 * this.scale, -7 * this.scale);
     }
   }
@@ -399,10 +403,11 @@ export class RendererTrackHandler {
   drawPreviewPath(path: Array<{ x: number; y: number }> | null | undefined): void {
     if (!path || path.length === 0) return;
 
+    const p = getCanvasPalette();
     this.ctx.save();
 
-    this.ctx.strokeStyle = 'rgba(130, 87, 229, 0.6)';
-    this.ctx.fillStyle = 'rgba(130, 87, 229, 0.3)';
+    this.ctx.strokeStyle = withAlpha(p.accent, 0.6);
+    this.ctx.fillStyle = withAlpha(p.accent, 0.3);
     this.ctx.lineWidth = 3 * this.scale;
     this.ctx.setLineDash([5, 5]);
 
@@ -439,10 +444,11 @@ export class RendererTrackHandler {
   drawInvalidPreviewPath(path: Array<{ x: number; y: number }> | null | undefined): void {
     if (!path || path.length === 0) return;
 
+    const p = getCanvasPalette();
     this.ctx.save();
 
-    this.ctx.strokeStyle = 'rgba(229, 57, 53, 0.85)';
-    this.ctx.fillStyle = 'rgba(229, 57, 53, 0.35)';
+    this.ctx.strokeStyle = withAlpha(p.danger, 0.85);
+    this.ctx.fillStyle = withAlpha(p.danger, 0.35);
     this.ctx.lineWidth = 3 * this.scale;
     this.ctx.setLineDash([6, 4]);
 
@@ -477,9 +483,10 @@ export class RendererTrackHandler {
       return;
     }
 
+    const p = getCanvasPalette();
     const cellSize = this.gridSize * this.scale;
     const half = cellSize / 2;
-    const previewColor = 'rgba(255, 200, 50, 0.8)';
+    const previewColor = withAlpha(p.caution, 0.8);
 
     for (const track of tracks) {
       const trackBits = track.track_bits ?? 0;
@@ -509,7 +516,7 @@ export class RendererTrackHandler {
       }
 
       if (isCrossing(trackBits)) {
-        this.ctx.fillStyle = 'rgba(255, 200, 50, 0.9)';
+        this.ctx.fillStyle = withAlpha(p.caution, 0.9);
         this.ctx.beginPath();
         this.ctx.arc(0, 0, 4 * this.scale, 0, Math.PI * 2);
         this.ctx.fill();
@@ -526,14 +533,15 @@ export class RendererTrackHandler {
     signalDirection: string | null = null,
     trackBits: number | null = null,
   ): void {
+    const p = getCanvasPalette();
     const cx = this.gridToScreenX(gridPos.x, gridPos.y);
     const cy = this.gridToScreenY(gridPos.x, gridPos.y);
     const half = (this.gridSize * this.scale) / 2;
 
     this.ctx.save();
 
-    this.ctx.strokeStyle = isValid ? 'rgba(4, 211, 97, 0.8)' : 'rgba(232, 63, 91, 0.5)';
-    this.ctx.fillStyle = isValid ? 'rgba(4, 211, 97, 0.2)' : 'rgba(232, 63, 91, 0.1)';
+    this.ctx.strokeStyle = isValid ? withAlpha(p.success, 0.8) : withAlpha(p.danger, 0.5);
+    this.ctx.fillStyle = isValid ? withAlpha(p.success, 0.2) : withAlpha(p.danger, 0.1);
     this.ctx.lineWidth = 2 * this.scale;
 
     this.ctx.beginPath();
@@ -604,7 +612,7 @@ export class RendererTrackHandler {
           dirY = dirPoint.y / len;
         }
 
-        this.ctx.strokeStyle = 'rgba(153, 153, 153, 0.8)';
+        this.ctx.strokeStyle = withAlpha(p.textDim, 0.8);
         this.ctx.lineWidth = 1.5 * this.scale;
         this.ctx.beginPath();
         this.ctx.arc(sx, sy, 4 * this.scale, 0, Math.PI * 2);
@@ -614,7 +622,7 @@ export class RendererTrackHandler {
         const stickEndX = sx + dirX * stickLength;
         const stickEndY = sy + dirY * stickLength;
 
-        this.ctx.strokeStyle = 'rgba(153, 153, 153, 0.8)';
+        this.ctx.strokeStyle = withAlpha(p.textDim, 0.8);
         this.ctx.lineWidth = 2 * this.scale;
         this.ctx.beginPath();
         this.ctx.moveTo(sx, sy);
@@ -622,7 +630,7 @@ export class RendererTrackHandler {
         this.ctx.stroke();
 
         const innerRadius = 3 * this.scale;
-        this.ctx.fillStyle = 'rgba(4, 211, 97, 0.7)';
+        this.ctx.fillStyle = withAlpha(p.success, 0.7);
         this.ctx.beginPath();
         this.ctx.arc(sx, sy, innerRadius, 0, Math.PI * 2);
         this.ctx.fill();
@@ -636,7 +644,7 @@ export class RendererTrackHandler {
         this.ctx.lineTo(stickEndX + orthoX * orthoLen, stickEndY + orthoY * orthoLen);
         this.ctx.stroke();
 
-        this.ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+        this.ctx.fillStyle = withAlpha(p.text, 0.9);
         this.ctx.font = `bold ${8 * this.scale}px sans-serif`;
         this.ctx.textAlign = 'center';
         this.ctx.textBaseline = 'middle';
@@ -647,7 +655,7 @@ export class RendererTrackHandler {
         this.ctx.font = `${16 * this.scale}px sans-serif`;
         this.ctx.textAlign = 'center';
         this.ctx.textBaseline = 'middle';
-        this.ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+        this.ctx.fillStyle = withAlpha(p.text, 0.8);
         const icon = toolType === 'signal' ? '🚦' : '🚉';
         this.ctx.fillText(icon, cx, cy);
       }
@@ -659,9 +667,10 @@ export class RendererTrackHandler {
   drawEraserPreviewPath(path: Array<{ x: number; y: number }> | null | undefined): void {
     if (!path || path.length === 0) return;
 
+    const p = getCanvasPalette();
     this.ctx.save();
-    this.ctx.strokeStyle = 'rgba(232, 63, 91, 0.8)';
-    this.ctx.fillStyle = 'rgba(232, 63, 91, 0.3)';
+    this.ctx.strokeStyle = withAlpha(p.danger, 0.8);
+    this.ctx.fillStyle = withAlpha(p.danger, 0.3);
     this.ctx.lineWidth = 4 * this.scale;
     this.ctx.setLineDash([6, 4]);
 
@@ -690,7 +699,7 @@ export class RendererTrackHandler {
     }
 
     this.ctx.setLineDash([]);
-    this.ctx.strokeStyle = 'rgba(232, 63, 91, 0.6)';
+    this.ctx.strokeStyle = withAlpha(p.danger, 0.6);
     this.ctx.lineWidth = 2 * this.scale;
     this.ctx.beginPath();
     for (let i = 0; i < path.length; i++) {

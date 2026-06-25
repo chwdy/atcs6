@@ -8,6 +8,7 @@
 // its side effect — it self-bootstraps the inspector panel onto window — and app
 // registers the DOMContentLoaded handler that constructs `new App()`.
 import './lib/constants';
+import './lib/theme';
 import './lib/api';
 import './lib/state-manager';
 import './lib/helpers';

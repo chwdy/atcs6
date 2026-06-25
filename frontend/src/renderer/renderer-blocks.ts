@@ -17,6 +17,7 @@ import {
   DEBUG_BLOCK_WIDTH,
 } from '../lib/constants';
 import { getBlockStateColor } from '../lib/helpers';
+import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
 import type { TileExtentStyle } from './renderer-tracks';
 
 export interface EdgePoint {
@@ -164,6 +165,7 @@ export class RendererBlockHandler {
   }
 
   drawBlockBoundaryMarkers(tracks: BlockTrack[]): void {
+    const p = getCanvasPalette();
     const tileSize = this.gridSize * this.scale;
     const halfTile = tileSize / 2;
 
@@ -242,7 +244,7 @@ export class RendererBlockHandler {
           TRACK_WIDTH * this.scale,
           edge,
           opposite_edge,
-          '#666',
+          p.track,
         );
         this.ctx.restore();
       }
@@ -280,6 +282,7 @@ export class RendererBlockHandler {
   }
 
   drawBlockDetailLabels(tracks: BlockTrack[]): void {
+    const p = getCanvasPalette();
     const anchors = this.blockAnchors(tracks);
 
     const tileSize = this.gridSize * this.scale;
@@ -350,15 +353,15 @@ export class RendererBlockHandler {
       const boxWidth = line1Width + padding * 2;
       const boxHeight = lineHeight + padding * 2;
 
-      this.ctx.fillStyle = 'rgba(13, 16, 32, 0.7)';
-      this.ctx.strokeStyle = 'rgba(100, 100, 150, 0.4)';
+      this.ctx.fillStyle = withAlpha(p.overlayBg, 0.7);
+      this.ctx.strokeStyle = withAlpha(p.overlayBorder, 0.4);
       this.ctx.lineWidth = 1;
       this.ctx.beginPath();
       this.ctx.roundRect(boxX, boxY, boxWidth, boxHeight, 3);
       this.ctx.fill();
       this.ctx.stroke();
 
-      this.ctx.fillStyle = 'rgba(221, 221, 221, 0.7)';
+      this.ctx.fillStyle = withAlpha(p.text, 0.7);
       this.ctx.fillText(line1, cx + offsetX + neOffsetX, cy + offsetY + neOffsetY);
 
       this.ctx.restore();
@@ -446,8 +449,8 @@ export class RendererBlockHandler {
       const boxWidth = maxWidth + padding * 2;
       const boxHeight = lineHeight * 3 + padding * 2;
 
-      this.ctx.fillStyle = 'rgba(13, 16, 32, 1.0)';
-      this.ctx.strokeStyle = 'rgba(100, 100, 150, 1.0)';
+      this.ctx.fillStyle = p.overlayBg;
+      this.ctx.strokeStyle = p.overlayBorder;
       this.ctx.lineWidth = 1;
       this.ctx.beginPath();
       this.ctx.roundRect(boxX, boxY, boxWidth, boxHeight, 3);
@@ -456,7 +459,7 @@ export class RendererBlockHandler {
 
       let yPos = cy + offsetY + neOffsetY;
 
-      this.ctx.fillStyle = '#ddd';
+      this.ctx.fillStyle = p.text;
       this.ctx.fillText(line1, cx + offsetX + neOffsetX, yPos);
       yPos += lineHeight;
 
@@ -464,7 +467,7 @@ export class RendererBlockHandler {
       this.ctx.fillText(line2, cx + offsetX + neOffsetX, yPos);
       yPos += lineHeight;
 
-      this.ctx.fillStyle = '#999';
+      this.ctx.fillStyle = p.textDim;
       this.ctx.fillText(line3, cx + offsetX + neOffsetX, yPos);
 
       this.ctx.restore();
@@ -494,6 +497,7 @@ export class RendererBlockHandler {
     tracks: BlockTrack[],
     opts: { voltage?: boolean; length?: boolean; radius?: boolean; speed?: boolean },
   ): void {
+    const p = getCanvasPalette();
     const tileSize = this.gridSize * this.scale;
     const fontSize = Math.max(5, 8 * this.scale);
     const gap = 4 * this.scale;
@@ -516,25 +520,25 @@ export class RendererBlockHandler {
         rows.push({
           live: plus > 0 || minus > 0,
           segments: [
-            { text: `+${plus.toFixed(1)}`, color: plus > 0 ? '#ff6b6b' : 'rgba(255, 107, 107, 0.3)' },
-            { text: `−${minus.toFixed(1)}`, color: minus > 0 ? '#5c9cff' : 'rgba(92, 156, 255, 0.3)' },
+            { text: `+${plus.toFixed(1)}`, color: plus > 0 ? p.danger : withAlpha(p.danger, 0.3) },
+            { text: `−${minus.toFixed(1)}`, color: minus > 0 ? p.info : withAlpha(p.info, 0.3) },
           ],
         });
       }
       if (opts.length) {
         const len = info.length_cm;
         const has = len !== undefined && len !== null && len > 0;
-        rows.push({ live: has, segments: [{ text: has ? `${len}cm` : '--cm', color: has ? '#f0c060' : 'rgba(240, 192, 96, 0.3)' }] });
+        rows.push({ live: has, segments: [{ text: has ? `${len}cm` : '--cm', color: has ? p.caution : withAlpha(p.caution, 0.3) }] });
       }
       if (opts.radius) {
         const rad = info.min_radius_cm;
         const has = rad !== undefined && rad !== null && rad > 0;
-        rows.push({ live: has, segments: [{ text: has ? `R${rad}` : 'R--', color: has ? '#60d0f0' : 'rgba(96, 208, 240, 0.3)' }] });
+        rows.push({ live: has, segments: [{ text: has ? `R${rad}` : 'R--', color: has ? p.info : withAlpha(p.info, 0.3) }] });
       }
       if (opts.speed) {
         const spd = info.speed_limit_kmh;
         const has = spd !== undefined && spd !== null && spd > 0;
-        rows.push({ live: has, segments: [{ text: has ? `${spd}km/h` : '--km/h', color: has ? '#60f090' : 'rgba(96, 240, 144, 0.3)' }] });
+        rows.push({ live: has, segments: [{ text: has ? `${spd}km/h` : '--km/h', color: has ? p.success : withAlpha(p.success, 0.3) }] });
       }
 
       if (rows.length === 0) continue;
@@ -560,8 +564,8 @@ export class RendererBlockHandler {
       if (rows.some((row) => row.live)) {
         const padX = 3 * this.scale;
         const padY = 2 * this.scale;
-        this.ctx.fillStyle = 'rgba(13, 16, 32, 0.72)';
-        this.ctx.strokeStyle = 'rgba(100, 100, 150, 0.4)';
+        this.ctx.fillStyle = withAlpha(p.overlayBg, 0.72);
+        this.ctx.strokeStyle = withAlpha(p.overlayBorder, 0.4);
         this.ctx.lineWidth = 1;
         this.ctx.beginPath();
         this.ctx.roundRect(
@@ -595,12 +599,13 @@ export class RendererBlockHandler {
   // as a finished amber selection.
   drawBlockPreviewPath(path: Array<{ x: number; y: number }> | null | undefined): void {
     if (!path || path.length === 0) return;
-    const keys = new Set(path.map((p) => `${p.x},${p.y}`));
+    const p = getCanvasPalette();
+    const keys = new Set(path.map((pt) => `${pt.x},${pt.y}`));
     this.renderer.trackHandler.drawTileExtentHighlight(keys, {
-      tileFill: 'rgba(130, 87, 229, 0.16)',
-      glow: 'rgba(130, 87, 229, 0.30)',
-      core: 'rgba(190, 160, 255, 0.95)',
-      cap: 'rgba(255, 255, 255, 0.95)',
+      tileFill: withAlpha(p.accent, 0.16),
+      glow: withAlpha(p.accent, 0.3),
+      core: withAlpha(p.accentBright, 0.95),
+      cap: withAlpha(p.text, 0.95),
     });
   }
 }

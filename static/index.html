@@ -4,41 +4,25 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Rail Control System</title>
-    <!-- Theme bootstrap — runs before stylesheets apply so there is no
-         flash of the wrong theme. Uses the saved preference, else the OS
-         setting. Light and dark are co-equal (see tokens.css). -->
+    <!-- Theme pre-paint stub — the only theme code that must run before the
+         stylesheets apply, so there is no flash of the wrong theme. It sets the
+         two independent theme axes from saved preference:
+           data-theme        (editor chrome) — saved, else OS scheme, else dark
+           data-canvas-theme  (layout canvas) — saved, else dark
+         Everything else — switching, persistence, the registries, the redraw
+         on canvas change — lives in the typed ThemeManager
+         (frontend/src/lib/theme.ts), which reconciles these once the bundle
+         loads. Shares its contract: the 'atcs6-theme' / 'atcs6-canvas-theme'
+         storage keys and the defaults above. A saved name is passed through
+         as-is so new themes work here without editing this stub; the manager
+         corrects unknown values. -->
     <script>
       (function () {
-        var KEY = 'atcs6-theme';
-        function osPref() {
-          return (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
-        }
-        var saved;
-        try { saved = localStorage.getItem(KEY); } catch (e) {}
-        var theme = (saved === 'light' || saved === 'dark') ? saved : osPref();
-        document.documentElement.setAttribute('data-theme', theme);
-        function syncIcon() {
-          var btn = document.getElementById('btn-theme-toggle');
-          if (!btn) return;
-          var t = document.documentElement.getAttribute('data-theme');
-          var i = btn.querySelector('i');
-          if (i) i.className = (t === 'light') ? 'ti ti-moon' : 'ti ti-sun';
-          btn.title = (t === 'light') ? 'Switch to dark theme' : 'Switch to light theme';
-        }
-        window.__setTheme = function (t) {
-          document.documentElement.setAttribute('data-theme', t);
-          try { localStorage.setItem(KEY, t); } catch (e) {}
-          syncIcon();
-        };
-        window.__toggleTheme = function () {
-          var cur = document.documentElement.getAttribute('data-theme');
-          window.__setTheme(cur === 'light' ? 'dark' : 'light');
-        };
-        document.addEventListener('DOMContentLoaded', function () {
-          var btn = document.getElementById('btn-theme-toggle');
-          if (btn) btn.addEventListener('click', window.__toggleTheme);
-          syncIcon();
-        });
+        var el = document.documentElement;
+        function read(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+        var osLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+        el.setAttribute('data-theme', read('atcs6-theme') || (osLight ? 'light' : 'dark'));
+        el.setAttribute('data-canvas-theme', read('atcs6-canvas-theme') || 'dark');
       })();
     </script>
     <link rel="stylesheet" href="css/style.css">
@@ -92,8 +76,8 @@
                 </div>
                 <div class="inspector-controls">
                     <button id="btn-inspector-toggle" class="btn" title="Toggle Inspector"><i class="ti ti-microscope"></i> Inspector</button>
-                    <button id="btn-theme-toggle" class="btn btn-icon-only" title="Switch theme" aria-label="Switch light / dark theme">
-                        <i class="ti ti-sun"></i>
+                    <button id="btn-display" class="btn btn-icon-only" title="Display — editor &amp; layout themes" aria-label="Display settings: editor and layout themes" aria-haspopup="true" aria-expanded="false">
+                        <i class="ti ti-palette"></i>
                     </button>
                     <button id="btn-settings" class="btn btn-icon-only" title="Settings &amp; Debug Info" aria-label="Open settings">
                         <i class="ti ti-settings"></i>

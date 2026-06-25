@@ -11,6 +11,8 @@
 // Part of the Vite bundle; the Renderer constructs it directly
 // (`new RendererTunnelHandler(this)`).
 
+import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
+
 export interface EdgePoint {
   x: number;
   y: number;
@@ -86,6 +88,7 @@ export class RendererTunnelHandler {
     pendingEndpoint?: TunnelEndpoint | null,
     opts: DrawTunnelsOptions = {},
   ): void {
+    const p = getCanvasPalette();
     const pairs: TunnelPair[] = Array.isArray(tunnels) ? tunnels : [];
     const { showLinks = false, selected = null } = opts;
 
@@ -102,7 +105,7 @@ export class RendererTunnelHandler {
     pairs.forEach((pair, idx) => {
       const label = `T${idx + 1}`;
       const isSelected = selected != null && this._samePair(pair, selected);
-      const color = isSelected ? '#ffffff' : '#9b59ff';
+      const color = isSelected ? p.text : p.accent;
       this._drawMouth(pair.a, label, color, { selected: isSelected });
       this._drawMouth(pair.b, label, color, { selected: isSelected });
       // Both mouths select the same pair.
@@ -111,7 +114,7 @@ export class RendererTunnelHandler {
     });
 
     if (pendingEndpoint) {
-      this._drawMouth(pendingEndpoint, '?', '#ffd93d', { pending: true });
+      this._drawMouth(pendingEndpoint, '?', p.caution, { pending: true });
     }
   }
 
@@ -156,10 +159,11 @@ export class RendererTunnelHandler {
   }
 
   _drawLink(epA: TunnelEndpoint, epB: TunnelEndpoint): void {
+    const p = getCanvasPalette();
     const aPos = this._endpointScreenPos(epA);
     const bPos = this._endpointScreenPos(epB);
     this.ctx.save();
-    this.ctx.strokeStyle = 'rgba(155, 89, 255, 0.75)';
+    this.ctx.strokeStyle = withAlpha(p.accent, 0.75);
     this.ctx.lineWidth = Math.max(1, 1.5 * this.scale);
     this.ctx.setLineDash([6 * this.scale, 4 * this.scale]);
     this.ctx.beginPath();
@@ -187,6 +191,7 @@ export class RendererTunnelHandler {
     opts: { pending?: boolean; selected?: boolean } = {},
   ): void {
     const { pending = false, selected = false } = opts;
+    const p = getCanvasPalette();
     const cellSize = this.gridSize * this.scale;
     const half = cellSize / 2;
     const cx = this.gridToScreenX(ep.x, ep.y);
@@ -207,17 +212,17 @@ export class RendererTunnelHandler {
     this.ctx.beginPath();
     this.ctx.arc(0, 0, (selected ? 11 : 9) * this.scale, 0, Math.PI * 2);
     this.ctx.fillStyle = pending
-      ? 'rgba(255, 217, 61, 0.25)'
+      ? withAlpha(p.caution, 0.25)
       : selected
-        ? 'rgba(155, 89, 255, 0.45)'
-        : 'rgba(155, 89, 255, 0.18)';
+        ? withAlpha(p.accent, 0.45)
+        : withAlpha(p.accent, 0.18);
     this.ctx.fill();
     this.ctx.strokeStyle = color;
     this.ctx.lineWidth = selected ? Math.max(2.5, 3 * this.scale) : Math.max(1.5, 2 * this.scale);
     this.ctx.stroke();
 
     // Label.
-    this.ctx.fillStyle = '#fff';
+    this.ctx.fillStyle = p.text;
     this.ctx.font = `${Math.max(9, 10 * this.scale)}px Inter, sans-serif`;
     this.ctx.textAlign = 'center';
     this.ctx.textBaseline = 'middle';

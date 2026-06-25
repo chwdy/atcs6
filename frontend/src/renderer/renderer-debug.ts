@@ -14,6 +14,8 @@
 // Part of the Vite bundle; the Renderer constructs it directly
 // (`new RendererDebugHandler(this)`).
 
+import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
+
 /** The slice of the Renderer the debug handler reads through its back-reference. */
 export interface DebugHandlerRenderer {
   ctx: CanvasRenderingContext2D;
@@ -106,9 +108,10 @@ export class RendererDebugHandler {
     const screenY = this.gridToScreenY(x, y);
     const cellSize = this.gridSize * this.scale;
 
+    const p = getCanvasPalette();
     this.ctx.save();
     this.ctx.font = `${10 * this.scale}px monospace`;
-    this.ctx.fillStyle = '#888';
+    this.ctx.fillStyle = p.textDim;
     this.ctx.textAlign = 'right';
     this.ctx.textBaseline = 'bottom';
 
@@ -135,11 +138,12 @@ export class RendererDebugHandler {
       SW: { x: 0.3, y: 0.3, bit: 32 },
     };
 
+    const p = getCanvasPalette();
     this.ctx.save();
     for (const pos of Object.values(bitPositions)) {
       const isActive = (trackBits & pos.bit) !== 0;
 
-      this.ctx.fillStyle = isActive ? '#00ff88' : '#333';
+      this.ctx.fillStyle = isActive ? p.successBright : p.ink;
       this.ctx.beginPath();
       this.ctx.arc(
         screenX - cellSize * 0.5 + cellSize * pos.x,
@@ -157,9 +161,10 @@ export class RendererDebugHandler {
     const screenY = this.gridToScreenY(x, y);
     const cellSize = this.gridSize * this.scale;
 
+    const p = getCanvasPalette();
     this.ctx.save();
     this.ctx.font = `${8 * this.scale}px monospace`;
-    this.ctx.fillStyle = '#666';
+    this.ctx.fillStyle = p.track;
     this.ctx.textAlign = 'left';
     this.ctx.textBaseline = 'top';
     this.ctx.fillText(
@@ -202,8 +207,9 @@ export class RendererDebugHandler {
       W: { x: -quarterTile, y: -quarterTile },
     };
 
+    const p = getCanvasPalette();
     this.ctx.save();
-    this.ctx.strokeStyle = '#ff9900';
+    this.ctx.strokeStyle = p.warning;
     this.ctx.lineWidth = 3 * this.scale;
 
     for (const edge of deadEnds) {
@@ -250,6 +256,7 @@ export class RendererDebugHandler {
 
     this.ctx.save();
 
+    const p = getCanvasPalette();
     const stateText = track.switch_state === 0 ? 'MAIN' : 'DIV';
     const isDiagonalOnly = track.is_diagonal_only_switch;
 
@@ -257,8 +264,8 @@ export class RendererDebugHandler {
     this.ctx.textAlign = 'center';
     this.ctx.textBaseline = 'middle';
 
-    const bgColor = track.switch_state === 0 ? '#1a5a2a' : '#5a4a1a';
-    const textColor = track.switch_state === 0 ? '#04d361' : '#ffd93d';
+    const bgColor = track.switch_state === 0 ? withAlpha(p.success, 0.25) : withAlpha(p.caution, 0.25);
+    const textColor = track.switch_state === 0 ? p.success : p.caution;
 
     this.ctx.fillStyle = bgColor;
     this.ctx.globalAlpha = 0.9;
@@ -272,7 +279,7 @@ export class RendererDebugHandler {
 
     if (isDiagonalOnly) {
       this.ctx.font = `${8 * this.scale}px sans-serif`;
-      this.ctx.fillStyle = '#ff9900';
+      this.ctx.fillStyle = p.warning;
       this.ctx.fillText('⟳clockwise', screenX, screenY + 6 * this.scale);
     }
 
@@ -285,11 +292,12 @@ export class RendererDebugHandler {
     const tileSize = this.gridSize * this.scale;
     const quarterTile = tileSize / 4;
 
+    const p = getCanvasPalette();
     this.ctx.save();
     this.ctx.font = `bold ${9 * this.scale}px sans-serif`;
     this.ctx.textAlign = 'center';
     this.ctx.textBaseline = 'middle';
-    this.ctx.fillStyle = '#00ffff';
+    this.ctx.fillStyle = p.info;
 
     this.ctx.fillText('N', screenX + quarterTile + 8, screenY - quarterTile - 8);
     this.ctx.fillText('E', screenX + quarterTile + 8, screenY + quarterTile + 8);

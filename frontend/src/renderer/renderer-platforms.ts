@@ -10,6 +10,7 @@
 // (`new RendererPlatformHandler(this)`).
 
 import { TRACK_BITS, getLabelSpacingMultiplier } from '../lib/constants';
+import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
 
 interface Point {
   x: number;
@@ -320,7 +321,8 @@ export class RendererPlatformHandler {
     // Opaque enough that an overlapping label doesn't bleed through.
     // See the same fill rule on station and train labels.
     const bgAlpha = isHovered ? 0.92 : 0.85;
-    this.ctx.fillStyle = `rgba(15, 15, 18, ${bgAlpha})`;
+    const p = getCanvasPalette();
+    this.ctx.fillStyle = withAlpha(p.overlayBg, bgAlpha);
     this.ctx.fillRect(
       labelX - textWidth / 2 - labelPadding,
       labelY - labelHeight / 2,
@@ -328,7 +330,7 @@ export class RendererPlatformHandler {
       labelHeight,
     );
 
-    this.ctx.strokeStyle = isHovered ? 'rgba(255, 255, 255, 0.6)' : 'rgba(255, 255, 255, 0.3)';
+    this.ctx.strokeStyle = isHovered ? withAlpha(p.text, 0.6) : withAlpha(p.text, 0.3);
     this.ctx.lineWidth = 1;
     this.ctx.strokeRect(
       labelX - textWidth / 2 - labelPadding,
@@ -337,7 +339,7 @@ export class RendererPlatformHandler {
       labelHeight,
     );
 
-    this.ctx.fillStyle = '#ffffff';
+    this.ctx.fillStyle = p.text;
     this.ctx.textAlign = 'center';
     this.ctx.textBaseline = 'middle';
     this.ctx.fillText(displayText, labelX, labelY);
@@ -491,8 +493,9 @@ export class RendererPlatformHandler {
     width: number,
     half: number,
   ): void {
-    this.ctx.fillStyle = '#5a5a7a';
-    this.ctx.strokeStyle = '#3a3a5a';
+    const p = getCanvasPalette();
+    this.ctx.fillStyle = p.overlayBorder;
+    this.ctx.strokeStyle = p.ink;
     this.ctx.lineWidth = 1 * this.scale;
 
     let p1 = point1;

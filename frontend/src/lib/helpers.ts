@@ -19,6 +19,7 @@ import {
 } from './constants';
 import { anchorToTiles } from './popover-anchor';
 import { showToast } from './toast';
+import { getCanvasPalette, withAlpha } from './canvas-palette';
 
 // ---- Light shapes the helpers read off otherwise-dynamic objects ------------
 
@@ -1422,30 +1423,15 @@ export function renderTileList(sortedPositions: Coord[], options: TileListOption
 // ============================================================================
 
 export function getBlockStateColor(state?: string, alpha = 1): string {
-  const tokenMap: Record<string, string> = {
-    free: '--block-free',
-    reserved: '--block-reserved',
-    occupied: '--block-occupied',
-    caution: '--block-caution',
-    disabled: '--block-disabled',
-    manual: '--block-manual',
+  const p = getCanvasPalette();
+  const stateMap: Record<string, string> = {
+    free: p.blockFree,
+    reserved: p.blockReserved,
+    occupied: p.blockOccupied,
+    caution: p.blockCaution,
+    disabled: p.blockDisabled,
+    manual: p.blockManual,
   };
-  const token = tokenMap[(state || '').toLowerCase()];
-  const fallback = '#888';
-  let hex = fallback;
-  if (token) {
-    const value = getComputedStyle(document.documentElement).getPropertyValue(token).trim();
-    if (value) hex = value;
-  }
-  if (alpha === 1) return hex;
-  let h = hex.replace('#', '');
-  if (h.length === 3)
-    h = h
-      .split('')
-      .map((c) => c + c)
-      .join('');
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  const hex = stateMap[(state || '').toLowerCase()] || '#888';
+  return withAlpha(hex, alpha);
 }

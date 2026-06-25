@@ -1,0 +1,64 @@
+/* Display menu — the popover behind the header "Display" button. Two sections
+   (Editor theme / Layout theme), each a row of theme options, built from the
+   theme registries in frontend/src/lib/theme.ts. Styled from the chrome theme
+   tokens so the menu itself follows the editor theme. */
+
+.display-menu {
+    position: fixed;
+    z-index: var(--z-picker);
+    min-width: 200px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-12);
+    padding: var(--space-12);
+    background-color: var(--bg-panel);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.display-menu[hidden] {
+    display: none;
+}
+
+.display-menu-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-6);
+}
+
+.display-menu-label {
+    font-size: var(--font-size-label);
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.display-menu-options {
+    display: flex;
+    gap: var(--space-4);
+}
+
+.display-menu-option {
+    flex: 1;
+    padding: var(--space-6) var(--space-8);
+    background-color: var(--bg-dark);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    font-family: var(--font-main);
+    font-size: var(--font-size-body);
+    cursor: pointer;
+    transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.display-menu-option:hover {
+    background-color: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.display-menu-option[aria-pressed='true'] {
+    background-color: var(--accent-color);
+    border-color: var(--accent-color);
+    color: #fff;
+}

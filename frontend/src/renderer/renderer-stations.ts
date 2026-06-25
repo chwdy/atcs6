@@ -9,6 +9,8 @@
 // Part of the Vite bundle; the Renderer constructs it directly
 // (`new RendererStationHandler(this)`).
 
+import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
+
 export interface StationPlatform {
   platform_id?: string;
   positions?: Array<[number, number]>;
@@ -280,8 +282,9 @@ export class RendererStationHandler {
     // Default: near-opaque neutral dark. Hover: dark base mixed with
     // ~15% amber so the warning hue is perceptible without becoming an
     // alert pill.
-    const fillColor = isHovered ? 'rgba(50, 35, 5, 0.92)' : 'rgba(15, 15, 18, 0.92)';
-    const borderColor = isHovered ? 'rgba(255, 205, 30, 0.9)' : 'rgba(255, 255, 255, 0.45)';
+    const p = getCanvasPalette();
+    const fillColor = isHovered ? withAlpha(p.overlayBg, 0.92) : withAlpha(p.overlayBg, 0.92);
+    const borderColor = isHovered ? withAlpha(p.caution, 0.9) : withAlpha(p.text, 0.45);
     // Borders are screen-pixel capped so they read as hairlines at any
     // zoom — see the same pattern in _drawPlatformHighlights and the
     // train label.
@@ -298,7 +301,7 @@ export class RendererStationHandler {
     this._roundRect(bx, by, boxW, boxH, radius);
     this.ctx.stroke();
 
-    this.ctx.fillStyle = '#ffffff';
+    this.ctx.fillStyle = p.text;
     this.ctx.textAlign = 'center';
     this.ctx.textBaseline = 'middle';
     this.ctx.fillText(displayText, labelX, labelY);
@@ -315,9 +318,10 @@ export class RendererStationHandler {
     // at high zoom, and match the label's border color exactly so the eye
     // reads them as one connected gesture.
     const strokeW = Math.min(Math.max(1.5, s * 0.5), 2.5);
+    const p = getCanvasPalette();
 
     this.ctx.save();
-    this.ctx.strokeStyle = 'rgba(255, 205, 30, 0.7)';
+    this.ctx.strokeStyle = withAlpha(p.caution, 0.7);
     this.ctx.lineWidth = strokeW;
     this.ctx.lineJoin = 'round';
     this.ctx.lineCap = 'round';

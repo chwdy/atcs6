@@ -13,25 +13,24 @@
 
 import { stateManager } from '../lib/state-manager';
 import { BIT_TO_EDGES, getLabelSpacingMultiplier, DIRECTION_PREFERRED_QUADRANTS } from '../lib/constants';
+import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
 
 // Train body fill, chosen by EB / route-teardown / control-mode state. The
-// dark border (#333) is unchanged; only the inner fill is tinted so the
-// head/tail markers stay readable. EB wins over everything — an EB'd train
-// must be findable at a glance; teardown wins over manual when both apply.
-const TRAIN_BODY_DEFAULT = '#ffffff';
-const TRAIN_BODY_MANUAL = '#ffe066'; // light yellow — manual driving
-const TRAIN_BODY_TEARDOWN = '#c8a2ff'; // light purple — route abort/deactivate in progress
-const TRAIN_BODY_EB = '#8257e5'; // saturated purple — emergency brake active
-
+// dark border (the canvas ink color) is unchanged; only the inner fill is
+// tinted so the head/tail markers stay readable. EB wins over everything — an
+// EB'd train must be findable at a glance; teardown wins over manual when both
+// apply. Colors resolve at draw time from the active canvas palette so the body
+// follows the canvas theme.
 export function trainBodyFill(snap: {
   controlMode?: string | null;
   teardownPending?: boolean;
   ebActive?: boolean;
 }): string {
-  if (snap.ebActive) return TRAIN_BODY_EB;
-  if (snap.teardownPending) return TRAIN_BODY_TEARDOWN;
-  if (snap.controlMode === 'manual') return TRAIN_BODY_MANUAL;
-  return TRAIN_BODY_DEFAULT;
+  const p = getCanvasPalette();
+  if (snap.ebActive) return p.trainBodyEb;
+  if (snap.teardownPending) return p.trainBodyTeardown;
+  if (snap.controlMode === 'manual') return p.trainBodyManual;
+  return p.trainBody;
 }
 
 interface SpanEndpoint {
@@ -377,6 +376,7 @@ export class RendererTrainHandler {
    * interpolation (visually approximate but acceptable for v1).
    */
   drawTrainFromSnapshot(train: Train, trainSnap: TrainSnap): void {
+    const p = getCanvasPalette();
     const span = trainSnap.span;
     const occupiedTiles = span.occupiedTiles || [];
     if (occupiedTiles.length === 0) return;
@@ -605,7 +605,7 @@ export class RendererTrainHandler {
 
     // Draw dark border then mode-tinted fill (white in ATO/auto, light yellow
     // while manually driven, light purple while the route is being torn down).
-    drawBodySegments('#333', 5 * s);
+    drawBodySegments(p.ink, 5 * s);
     drawBodySegments(trainBodyFill(trainSnap), 3 * s);
 
     // === Draw end markers ===
@@ -644,6 +644,7 @@ export class RendererTrainHandler {
    * recorded waiting block whose tiles are present in the current network.
    */
   _drawStuckIndicator(headX: number, headY: number, waitingBlockId: string | null | undefined): void {
+    const p = getCanvasPalette();
     if (!this.renderer.debugFlags?.showStuck) return;
     if (!waitingBlockId) return;
 
@@ -670,7 +671,7 @@ export class RendererTrainHandler {
 
     const s = this.scale;
     const angle = Math.atan2(dy, dx);
-    const ORANGE = '#ff8c00';
+    const ORANGE = p.warning;
 
     this.ctx.save();
 
@@ -712,6 +713,7 @@ export class RendererTrainHandler {
    * The triangle's flat (back) edge is aligned with the precise head position.
    */
   drawHeadMarker(x: number, y: number, rotation: number): void {
+    const p = getCanvasPalette();
     const s = this.scale;
     const triHeight = 9 * s;  // 1.5x of original 6s
     const triWidth = triHeight * 0.6;  // Width at base
@@ -728,7 +730,7 @@ export class RendererTrainHandler {
     this.ctx.translate(drawX, drawY);
     this.ctx.rotate(rotation);
 
-    this.ctx.fillStyle = '#ffffff';
+    this.ctx.fillStyle = p.text;
     this.ctx.beginPath();
     // Tip at front, flat back at -triHeight/2 (centered on x,y after offset)
     this.ctx.moveTo(triHeight / 2, 0);  // Tip
@@ -737,7 +739,7 @@ export class RendererTrainHandler {
     this.ctx.closePath();
     this.ctx.fill();
 
-    this.ctx.strokeStyle = '#333';
+    this.ctx.strokeStyle = p.ink;
     this.ctx.lineWidth = 1 * s;
     this.ctx.stroke();
 
@@ -750,6 +752,7 @@ export class RendererTrainHandler {
    * so the square's back edge aligns with the tail position (x, y).
    */
   drawTailMarker(x: number, y: number, rotation = 0, train: Train | null = null): void {
+    const p = getCanvasPalette();
     const s = this.scale;
     const squareSize = 10 * s;
 
@@ -767,11 +770,11 @@ export class RendererTrainHandler {
     this.ctx.rotate(rotation);  // Rotate square to align with track direction
 
     // Draw white background square
-    this.ctx.fillStyle = '#ffffff';
+    this.ctx.fillStyle = p.text;
     this.ctx.fillRect(-squareSize / 2, -squareSize / 2, squareSize, squareSize);
 
     // Draw dark border
-    this.ctx.strokeStyle = '#333';
+    this.ctx.strokeStyle = p.ink;
     this.ctx.lineWidth = 1 * s;
     this.ctx.strokeRect(-squareSize / 2, -squareSize / 2, squareSize, squareSize);
 
@@ -780,7 +783,7 @@ export class RendererTrainHandler {
       this.ctx.save();
       // Counter-rotate both the track rotation AND the square's rotation to keep text upright
       this.ctx.rotate(-rotation);  // Cancel the square's rotation from line 621
-      this.ctx.fillStyle = '#333';
+      this.ctx.fillStyle = p.ink;
       this.ctx.font = `bold ${6 * s}px sans-serif`;
       this.ctx.textAlign = 'center';
       this.ctx.textBaseline = 'middle';
@@ -796,6 +799,7 @@ export class RendererTrainHandler {
    * Used when no cab is active to label both ends (e.g., "2A", "3B").
    */
   drawEndMarker(x: number, y: number, rotation = 0, train: Train | null = null, endId = 'A'): void {
+    const p = getCanvasPalette();
     const s = this.scale;
     const squareSize = 10 * s;
 
@@ -812,11 +816,11 @@ export class RendererTrainHandler {
     this.ctx.rotate(rotation);
 
     // Draw white background square
-    this.ctx.fillStyle = '#ffffff';
+    this.ctx.fillStyle = p.text;
     this.ctx.fillRect(-squareSize / 2, -squareSize / 2, squareSize, squareSize);
 
     // Draw dark border
-    this.ctx.strokeStyle = '#333';
+    this.ctx.strokeStyle = p.ink;
     this.ctx.lineWidth = 1 * s;
     this.ctx.strokeRect(-squareSize / 2, -squareSize / 2, squareSize, squareSize);
 
@@ -825,7 +829,7 @@ export class RendererTrainHandler {
       this.ctx.save();
       // Counter-rotate to keep text upright
       this.ctx.rotate(-rotation);
-      this.ctx.fillStyle = '#333';
+      this.ctx.fillStyle = p.ink;
       this.ctx.font = `bold ${5 * s}px sans-serif`;
       this.ctx.textAlign = 'center';
       this.ctx.textBaseline = 'middle';
@@ -851,6 +855,7 @@ export class RendererTrainHandler {
     tileY: number,
     tracks: TrainTrack[],
   ): void {
+    const p = getCanvasPalette();
     const s = this.scale;
     const tileSize = this.gridSize * s;
 
@@ -875,7 +880,7 @@ export class RendererTrainHandler {
 
     // Draw leader line
     this.ctx.save();
-    this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+    this.ctx.strokeStyle = withAlpha(p.text, 0.6);
     this.ctx.lineWidth = 1 * s;
     this.ctx.beginPath();
     this.ctx.moveTo(cx, cy);
@@ -910,16 +915,16 @@ export class RendererTrainHandler {
     // Opaque dark base mixed with ~15% purple — the categorical cast is
     // perceptible without saturating into an alert pill, and the label
     // stays legible when it overlaps a station/platform behind it.
-    this.ctx.fillStyle = 'rgba(32, 26, 50, 0.92)';
+    this.ctx.fillStyle = withAlpha(p.overlayBg, 0.92);
     this.ctx.fill();
 
-    this.ctx.strokeStyle = 'rgba(130, 87, 229, 0.9)';
+    this.ctx.strokeStyle = withAlpha(p.accent, 0.9);
     // Cap stroke at ~2px screen width — same screen-pixel cap as platform
     // highlights so canvas-label borders stay hairline at any zoom.
     this.ctx.lineWidth = Math.min(Math.max(1.0, s * 0.35), 2.0);
     this.ctx.stroke();
 
-    this.ctx.fillStyle = '#ffffff';
+    this.ctx.fillStyle = p.text;
     this.ctx.textAlign = 'center';
     this.ctx.textBaseline = 'middle';
     this.ctx.fillText(labelText, labelX, labelY);

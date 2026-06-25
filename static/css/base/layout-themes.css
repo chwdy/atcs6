@@ -1,0 +1,125 @@
+/* ── Layout (canvas) color scheme ──────────────────────────────────
+   The complete color set for the LAYOUT RENDERER — the rail-world
+   canvas: ground, grid, track, block states, signals, trains, routes.
+   This is the layout's own theme file, separate from the editor-chrome
+   themes (themes.css). The two switch independently:
+
+     data-theme         on <html>  → editor chrome  (themes.css)
+     data-canvas-theme  on <html>  → layout canvas  (this file)
+
+   The renderer reads these tokens once into a cached palette
+   (frontend/src/lib/canvas-palette.ts) and recomputes on theme change,
+   so they must be literal hex (getComputedStyle returns "var(...)"
+   unresolved). Alpha tints are derived in code via withAlpha().
+
+   To add a layout theme:
+     1. Add a `:root[data-canvas-theme="<name>"] { … }` block below with
+        the full per-theme token set.
+     2. Call themeManager.canvas.register({ name, label, icon }) in
+        theme.ts.
+   ── */
+
+/* Shared canvas tokens — these do NOT vary by layout theme. Labels and
+   info panels drawn on the canvas stay a dark "tooltip" surface in every
+   theme, so one white text color reads on all three grounds. */
+:root {
+    --canvas-text: #ffffff;          /* labels on entity fills / overlays */
+    --canvas-text-dim: #999999;      /* muted label text on overlays */
+    --canvas-ink: #333333;           /* train outline / dark stroke */
+    --canvas-on-accent: #000000;     /* text on bright fills (switch dots) */
+    --canvas-overlay-bg: #0d1020;    /* info-panel background drawn on canvas */
+    --canvas-overlay-border: #646496;/* info-panel border */
+}
+
+/* ── DARK (bare default) — the original drawing-board palette. ── */
+:root,
+:root[data-canvas-theme="dark"] {
+    --canvas-bg: #0a0a0c;
+    --canvas-grid: #2a2a34;
+    --canvas-axis: #4a4a5a;
+    --canvas-origin: #8257e5;
+    --canvas-track: #666666;
+    --canvas-track-dim: #444444;
+    --canvas-success: #04d361;
+    --canvas-success-bright: #00ff88;
+    --canvas-caution: #ffd93d;
+    --canvas-warning: #ff9500;
+    --canvas-danger: #e83f5b;
+    --canvas-accent: #8257e5;
+    --canvas-accent-bright: #c8a2ff;
+    --canvas-info: #00d4ff;
+    --canvas-hold: #8b4513;
+    --canvas-lock: #ff8c00;
+    --block-free: #00d4ff;
+    --block-reserved: #04d361;
+    --block-occupied: #ef4444;
+    --block-caution: #fde047;
+    --block-disabled: #6c6c78;
+    --block-manual: #ff9500;
+    --train-body: #ffffff;
+    --train-body-manual: #ffe066;
+    --train-body-teardown: #c8a2ff;
+    --train-body-eb: #8257e5;
+}
+
+/* ── LIGHT — light paper, dark rails, status hues darkened to hold
+   contrast on a near-white ground. ── */
+:root[data-canvas-theme="light"] {
+    --canvas-bg: #f4f4f6;
+    --canvas-grid: #dcdce2;
+    --canvas-axis: #c2c2cc;
+    --canvas-origin: #7048cf;
+    --canvas-track: #5c5c66;
+    --canvas-track-dim: #9a9aa4;
+    --canvas-success: #0a9b4b;
+    --canvas-success-bright: #07b85c;
+    --canvas-caution: #b07d00;
+    --canvas-warning: #c2570c;
+    --canvas-danger: #d62a4c;
+    --canvas-accent: #7048cf;
+    --canvas-accent-bright: #8b5cf6;
+    --canvas-info: #0e85a8;
+    --canvas-hold: #8b4513;
+    --canvas-lock: #c2570c;
+    --block-free: #0e85a8;
+    --block-reserved: #0a9b4b;
+    --block-occupied: #d62a4c;
+    --block-caution: #b07d00;
+    --block-disabled: #9a9aa4;
+    --block-manual: #c2570c;
+    --train-body: #2a2a30;
+    --train-body-manual: #b07d00;
+    --train-body-teardown: #7c3aed;
+    --train-body-eb: #7048cf;
+}
+
+/* ── BLUEPRINT — deep blue ground, pale cyan-white linework, bright
+   status hues. The classic engineering drawing look. ── */
+:root[data-canvas-theme="blueprint"] {
+    --canvas-bg: #0d2847;
+    --canvas-grid: #1c4a7a;
+    --canvas-axis: #2f6299;
+    --canvas-origin: #7fd4ff;
+    --canvas-track: #bcd8f0;
+    --canvas-track-dim: #6a92ba;
+    --canvas-success: #5effa6;
+    --canvas-success-bright: #00ff88;
+    --canvas-caution: #ffe46b;
+    --canvas-warning: #ffb454;
+    --canvas-danger: #ff6b81;
+    --canvas-accent: #7fd4ff;
+    --canvas-accent-bright: #b9e6ff;
+    --canvas-info: #00d4ff;
+    --canvas-hold: #d2a679;
+    --canvas-lock: #ffb454;
+    --block-free: #7fd4ff;
+    --block-reserved: #5effa6;
+    --block-occupied: #ff6b81;
+    --block-caution: #ffe46b;
+    --block-disabled: #5a7a9a;
+    --block-manual: #ffb454;
+    --train-body: #ffffff;
+    --train-body-manual: #ffe066;
+    --train-body-teardown: #c8a2ff;
+    --train-body-eb: #b07cff;
+}

@@ -14,6 +14,7 @@
 // (`new RendererSignalHandler(this)`).
 
 import { trackBitsToEdges } from '../lib/constants';
+import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
 
 export interface EdgePoint {
   x: number;
@@ -102,14 +103,15 @@ export class RendererSignalHandler {
       sy = 0;
     }
 
+    const p = getCanvasPalette();
     const state = (signal.state || 'green').toUpperCase();
     let signalColor;
     if (state === 'GREEN') {
-      signalColor = '#04d361';
+      signalColor = p.success;
     } else if (state === 'YELLOW') {
-      signalColor = '#ffd93d';
+      signalColor = p.caution;
     } else {
-      signalColor = '#e83f5b';
+      signalColor = p.danger;
     }
 
     let dirX, dirY;
@@ -154,13 +156,13 @@ export class RendererSignalHandler {
     const stickEndX = sx + dirX * stickLength;
     const stickEndY = sy + dirY * stickLength;
 
-    this.ctx.strokeStyle = '#999';
+    this.ctx.strokeStyle = p.textDim;
     this.ctx.lineWidth = 1.5 * this.scale;
     this.ctx.beginPath();
     this.ctx.arc(sx, sy, 4 * this.scale, 0, Math.PI * 2);
     this.ctx.stroke();
 
-    this.ctx.strokeStyle = '#999';
+    this.ctx.strokeStyle = p.textDim;
     this.ctx.lineWidth = 2 * this.scale;
     this.ctx.beginPath();
     this.ctx.moveTo(sx, sy);
@@ -187,7 +189,7 @@ export class RendererSignalHandler {
       ? showSignalDetailsElement.checked
       : false;
     if (signal.name && showSignalDetails) {
-      this.ctx.fillStyle = '#fff';
+      this.ctx.fillStyle = p.text;
       this.ctx.font = `bold ${6 * this.scale}px sans-serif`;
       this.ctx.textAlign = 'center';
       this.ctx.textBaseline = 'top';
@@ -202,7 +204,7 @@ export class RendererSignalHandler {
       const triX = sx + 6 * this.scale;
       const triY = sy - 6 * this.scale;
 
-      this.ctx.fillStyle = '#ff9500';
+      this.ctx.fillStyle = p.warning;
       this.ctx.beginPath();
       this.ctx.moveTo(triX, triY - triSize);
       this.ctx.lineTo(triX - triSize * 0.866, triY + triSize * 0.5);
@@ -210,7 +212,7 @@ export class RendererSignalHandler {
       this.ctx.closePath();
       this.ctx.fill();
 
-      this.ctx.fillStyle = '#000';
+      this.ctx.fillStyle = p.onAccent;
       this.ctx.font = `bold ${6 * this.scale}px sans-serif`;
       this.ctx.textAlign = 'center';
       this.ctx.textBaseline = 'middle';
@@ -219,6 +221,7 @@ export class RendererSignalHandler {
   }
 
   drawSignalBlockConnections(tracks: SignalTrack[]): void {
+    const p = getCanvasPalette();
     const blockTracks: Record<
       string,
       Array<{ x: number; y: number; track_bits: number | undefined; screenX: number; screenY: number }>
@@ -297,7 +300,7 @@ export class RendererSignalHandler {
 
         if (nearestEdgeX !== null && nearestEdgeY !== null) {
           this.ctx.save();
-          this.ctx.strokeStyle = 'rgba(180, 100, 255, 0.6)';
+          this.ctx.strokeStyle = withAlpha(p.accentBright, 0.6);
           this.ctx.lineWidth = 2 * this.scale;
           this.ctx.setLineDash([4 * this.scale, 4 * this.scale]);
           this.ctx.beginPath();

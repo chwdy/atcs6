@@ -8,6 +8,7 @@
 // (`new RendererRouteHandler(this)`).
 
 import type { TileExtentStyle } from './renderer-tracks';
+import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
 
 interface RedrawRequest {
   live?: boolean;
@@ -195,10 +196,11 @@ export class RendererRouteHandler {
   }
 
   drawReachableHighlights(): void {
+    const p = getCanvasPalette();
     const cellSize = this.gridSize * this.scale;
     const halfTile = cellSize / 2;
 
-    this.ctx.fillStyle = 'rgba(255, 157, 0, 0.25)';
+    this.ctx.fillStyle = withAlpha(p.warning, 0.25);
 
     for (const key of this.reachableHighlights) {
       const [x, y] = key.split(',').map(Number);
@@ -214,7 +216,7 @@ export class RendererRouteHandler {
       this.ctx.fill();
     }
 
-    this.ctx.strokeStyle = 'rgba(255, 157, 0, 0.6)';
+    this.ctx.strokeStyle = withAlpha(p.warning, 0.6);
     this.ctx.lineWidth = 2 * this.scale;
 
     for (const key of this.reachableHighlights) {
@@ -235,21 +237,22 @@ export class RendererRouteHandler {
   drawRoutePath(route: Route, emphasized = false): void {
     if (!route.path_tiles || route.path_tiles.length === 0) return;
 
+    const p = getCanvasPalette();
     const cellSize = this.gridSize * this.scale;
     const halfTile = cellSize / 2;
 
     const statusColors: Record<string, string> = {
-      pending: 'rgba(136, 136, 136, 0.3)',
-      setting: 'rgba(255, 217, 61, 0.3)',
-      set: 'rgba(4, 211, 97, 0.3)',
-      active: 'rgba(0, 255, 136, 0.4)',
-      clearing: 'rgba(255, 149, 0, 0.3)',
-      completed: 'rgba(102, 102, 102, 0.2)',
-      cancelled: 'rgba(232, 63, 91, 0.2)',
+      pending: withAlpha(p.textDim, 0.3),
+      setting: withAlpha(p.caution, 0.3),
+      set: withAlpha(p.success, 0.3),
+      active: withAlpha(p.successBright, 0.4),
+      clearing: withAlpha(p.warning, 0.3),
+      completed: withAlpha(p.track, 0.2),
+      cancelled: withAlpha(p.danger, 0.2),
     };
 
     const fillOpacity = emphasized ? 0.4 : 0.2;
-    const baseColor = statusColors[route.status ?? ''] || 'rgba(100, 100, 100, 0.2)';
+    const baseColor = statusColors[route.status ?? ''] || withAlpha(p.textDim, 0.2);
 
     let fillColor = baseColor;
     if (emphasized) {
@@ -273,16 +276,16 @@ export class RendererRouteHandler {
 
     if (emphasized) {
       const borderColors: Record<string, string> = {
-        pending: '#888',
-        setting: '#ffd93d',
-        set: '#04d361',
-        active: '#00ff88',
-        clearing: '#ff9500',
-        completed: '#666',
-        cancelled: '#e83f5b',
+        pending: p.textDim,
+        setting: p.caution,
+        set: p.success,
+        active: p.successBright,
+        clearing: p.warning,
+        completed: p.track,
+        cancelled: p.danger,
       };
 
-      this.ctx.strokeStyle = borderColors[route.status ?? ''] || '#888';
+      this.ctx.strokeStyle = borderColors[route.status ?? ''] || p.textDim;
       this.ctx.lineWidth = 2 * this.scale;
 
       for (const tile of route.path_tiles) {
@@ -305,7 +308,7 @@ export class RendererRouteHandler {
     }
 
     if (route.switch_positions && emphasized) {
-      this.ctx.fillStyle = '#8B4513';
+      this.ctx.fillStyle = p.hold;
       for (const key of Object.keys(route.switch_positions)) {
         const [x, y] = key.split(',').map(Number);
         const cx = this.gridToScreenX(x, y);
@@ -323,17 +326,18 @@ export class RendererRouteHandler {
   drawRouteDirectionArrows(route: Route, halfTile: number): void {
     if (!route.tile_directions || !route.path_tiles) return;
 
+    const p = getCanvasPalette();
     const arrowColors: Record<string, string> = {
-      pending: 'rgba(136, 136, 136, 0.8)',
-      setting: 'rgba(255, 217, 61, 0.9)',
-      set: 'rgba(4, 211, 97, 0.9)',
-      active: 'rgba(0, 255, 136, 0.9)',
-      clearing: 'rgba(255, 149, 0, 0.9)',
-      completed: 'rgba(102, 102, 102, 0.6)',
-      cancelled: 'rgba(232, 63, 91, 0.6)',
+      pending: withAlpha(p.textDim, 0.8),
+      setting: withAlpha(p.caution, 0.9),
+      set: withAlpha(p.success, 0.9),
+      active: withAlpha(p.successBright, 0.9),
+      clearing: withAlpha(p.warning, 0.9),
+      completed: withAlpha(p.track, 0.6),
+      cancelled: withAlpha(p.danger, 0.6),
     };
 
-    const arrowColor = arrowColors[route.status ?? ''] || 'rgba(100, 100, 100, 0.8)';
+    const arrowColor = arrowColors[route.status ?? ''] || withAlpha(p.textDim, 0.8);
     const arrowSize = halfTile * 0.3;
 
     this.ctx.fillStyle = arrowColor;
@@ -379,6 +383,7 @@ export class RendererRouteHandler {
   }
 
   drawConflictFlash(): void {
+    const p = getCanvasPalette();
     const cellSize = this.gridSize * this.scale;
     const halfTile = cellSize / 2;
     const style = this.flashStyle;
@@ -412,12 +417,12 @@ export class RendererRouteHandler {
         tileFill: `rgba(${style.rgb}, 0.16)`,
         glow: `rgba(${style.rgb}, 0.5)`,
         core: `rgba(${style.rgb}, 1)`,
-        cap: 'rgba(255, 255, 255, 0.95)',
+        cap: withAlpha(p.text, 0.95),
       });
     }
 
     if (style.mark === 'x') {
-      this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+      this.ctx.strokeStyle = withAlpha(p.text, 0.8);
       this.ctx.lineWidth = 3 * this.scale;
 
       for (const tile of this.conflictFlashTiles) {

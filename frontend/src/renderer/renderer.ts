@@ -24,13 +24,7 @@ import { RendererTunnelHandler, type TunnelPair } from './renderer-tunnels';
 import { RendererDebugHandler } from './renderer-debug';
 import type { NetworkPayload } from './payload-types';
 import type { OverlayPhase, RendererOverlay } from './renderer-overlay';
-
-const COLORS = {
-  BACKGROUND: '#0a0a0c',
-  GRID_LINES: '#2a2a34',
-  AXIS_LINES: '#4a4a5a',
-  ORIGIN_MARKER: '#8257e5',
-};
+import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
 
 const IsometricGeometry = {
   // Track segment orientations in screen space
@@ -631,11 +625,13 @@ class Renderer {
   }
 
   clear(): void {
-    this.ctx.fillStyle = COLORS.BACKGROUND;
+    const p = getCanvasPalette();
+    this.ctx.fillStyle = p.bg;
     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
   }
 
   drawGrid(): void {
+    const p = getCanvasPalette();
     this.ctx.save();
 
     // 1:1 square diamond tile (rotated 45 degrees)
@@ -660,7 +656,7 @@ class Renderer {
     const maxGY = Math.max(topLeft.y, topRight.y, bottomLeft.y, bottomRight.y) + 2;
 
     // Draw diamond grid lines
-    this.ctx.strokeStyle = COLORS.GRID_LINES;
+    this.ctx.strokeStyle = p.grid;
     this.ctx.lineWidth = 1;
     this.ctx.beginPath();
 
@@ -703,7 +699,7 @@ class Renderer {
     // Calculate extended range for axes (they should extend beyond visible area)
     const axisRange = Math.max(maxGX - minGX, maxGY - minGY) + 10;
 
-    this.ctx.strokeStyle = COLORS.AXIS_LINES;
+    this.ctx.strokeStyle = p.axis;
     this.ctx.lineWidth = 2;
 
     // X-axis (Y=0 line) - goes from top-left to bottom-right on screen
@@ -722,7 +718,7 @@ class Renderer {
     // Use the original formula without +1 offset to get the corner position
     const originX = this.centerX + this.panX;  // (0+0) * tileSize/2 = 0
     const originY = this.centerY + this.panY;  // (0-0) * tileSize/2 = 0
-    this.ctx.fillStyle = COLORS.ORIGIN_MARKER;
+    this.ctx.fillStyle = p.origin;
     this.ctx.beginPath();
     this.ctx.arc(originX, originY, 4, 0, Math.PI * 2);
     this.ctx.fill();
@@ -1004,8 +1000,9 @@ class Renderer {
     const g = this.trainGhost;
     if (!g || !g.tiles || g.tiles.length === 0) return;
     const ctx = this.ctx;
+    const p = getCanvasPalette();
     const s = this.scale;
-    const rgb = g.fits === false ? '232, 63, 91' : '255, 205, 30';
+    const ghostColor = g.fits === false ? p.danger : p.caution;
     // Tile-diamond corner vectors. The grid→screen map is affine, so the two
     // step vectors — and thus the diamond corners — are constant across tiles.
     // Filling each occupied tile's diamond tessellates into a clean band that
@@ -1022,7 +1019,7 @@ class Renderer {
     const v2x = (ex - nx) / 2;
     const v2y = (ey - ny) / 2;
     ctx.save();
-    ctx.fillStyle = `rgba(${rgb}, 0.32)`;
+    ctx.fillStyle = withAlpha(ghostColor, 0.32);
     for (const t of g.tiles) {
       const cx = this.gridToScreenX(t.x, t.y);
       const cy = this.gridToScreenY(t.x, t.y);
@@ -1055,7 +1052,7 @@ class Renderer {
     ctx.lineTo(hx + px * aw, hy + py * aw);
     ctx.lineTo(hx - px * aw, hy - py * aw);
     ctx.closePath();
-    ctx.fillStyle = `rgba(${rgb}, 0.9)`;
+    ctx.fillStyle = withAlpha(ghostColor, 0.9);
     ctx.fill();
     ctx.restore();
   }
@@ -1075,11 +1072,12 @@ class Renderer {
   // tiles reads as the line of track it is, not a zigzag of cells. Amber keeps
   // the selection identity distinct from the purple drag-build preview.
   drawBoxSelection(): void {
+    const p = getCanvasPalette();
     this.trackHandler.drawTileExtentHighlight(this.boxSelection, {
-      tileFill: 'rgba(255, 205, 30, 0.14)',
-      glow: 'rgba(255, 185, 55, 0.26)',
-      core: 'rgba(255, 226, 138, 0.95)',
-      cap: 'rgba(255, 255, 255, 0.95)',
+      tileFill: withAlpha(p.caution, 0.14),
+      glow: withAlpha(p.warning, 0.26),
+      core: withAlpha(p.caution, 0.95),
+      cap: withAlpha(p.text, 0.95),
     });
     this.drawSelectionEntityOutlines();
   }
@@ -1154,9 +1152,10 @@ class Renderer {
     const w = Math.abs(endX - startX);
     const h = Math.abs(endY - startY);
     if (w === 0 && h === 0) return;
+    const p = getCanvasPalette();
     this.ctx.save();
-    this.ctx.fillStyle = 'rgba(255, 205, 30, 0.10)';
-    this.ctx.strokeStyle = 'rgba(255, 165, 0, 0.90)';
+    this.ctx.fillStyle = withAlpha(p.caution, 0.10);
+    this.ctx.strokeStyle = withAlpha(p.warning, 0.90);
     this.ctx.lineWidth = 1.5;
     this.ctx.setLineDash([5, 4]);
     this.ctx.fillRect(x, y, w, h);
@@ -1168,16 +1167,17 @@ class Renderer {
   drawLassoPath(): void {
     const pts = this.lassoPath;
     if (!pts || pts.length < 2) return;
+    const p = getCanvasPalette();
     this.ctx.save();
     // Filled interior of the in-progress polygon, lightly shaded.
-    this.ctx.fillStyle = 'rgba(255, 205, 30, 0.10)';
+    this.ctx.fillStyle = withAlpha(p.caution, 0.10);
     this.ctx.beginPath();
     this.ctx.moveTo(pts[0].x, pts[0].y);
     for (let i = 1; i < pts.length; i++) this.ctx.lineTo(pts[i].x, pts[i].y);
     this.ctx.closePath();
     this.ctx.fill();
     // Outline of the drawn path.
-    this.ctx.strokeStyle = 'rgba(255, 165, 0, 0.90)';
+    this.ctx.strokeStyle = withAlpha(p.warning, 0.90);
     this.ctx.lineWidth = 1.5;
     this.ctx.beginPath();
     this.ctx.moveTo(pts[0].x, pts[0].y);
@@ -1255,6 +1255,7 @@ class Renderer {
   drawBlockDirectionOverlay(): void {
     const blocks = this.currentBlocks;
     if (!blocks || !this.trackMap) return;
+    const p = getCanvasPalette();
     let ids: string[];
     if (this.debugFlags?.showBlockDirections) {
       ids = Object.keys(blocks);
@@ -1279,14 +1280,14 @@ class Renderer {
       // on different tiles already, so they need no shift.
       const lane = ordered.length === 1 ? ((this.gridSize * this.scale) / 2) * 0.4 : 0;
       if (fwd) {
-        this._drawTileForwardArrow(fwd.x, fwd.y, fwd.entryEdge, fwd.exitEdge, '#04d361', {
+        this._drawTileForwardArrow(fwd.x, fwd.y, fwd.entryEdge, fwd.exitEdge, p.success, {
           letter: 'F',
           dimmed: !allowed.includes('forward'),
           laneOffset: lane,
         });
       }
       if (rev) {
-        this._drawTileForwardArrow(rev.x, rev.y, rev.entryEdge, rev.exitEdge, '#00d4ff', {
+        this._drawTileForwardArrow(rev.x, rev.y, rev.entryEdge, rev.exitEdge, p.info, {
           letter: 'R',
           dimmed: !allowed.includes('reverse'),
           laneOffset: lane,
@@ -1338,6 +1339,7 @@ class Renderer {
   private _drawBlockDirectionArrows(mode: 'forward' | 'oneway'): void {
     const blocks = this.currentBlocks;
     if (!blocks || !this.trackMap) return;
+    const p = getCanvasPalette();
     for (const block of Object.values(blocks) as any[]) {
       const ordered = block && block.ordered_tiles;
       if (!Array.isArray(ordered) || ordered.length === 0) continue;
@@ -1350,7 +1352,7 @@ class Renderer {
       // case) and, defensively, neither-allowed — no single direction to point.
       if (mode === 'oneway' && hasForward === hasReverse) continue;
       const dimmed = mode === 'forward' && !hasForward;
-      const color = mode === 'forward' ? '#04d361' : '#ff9500';
+      const color = mode === 'forward' ? p.success : p.warning;
       const n = ordered.length;
       for (let i = 0; i < n; i++) {
         const x = ordered[i][0];
@@ -1410,6 +1412,7 @@ class Renderer {
     const px = -uy;
     const py = ux;
 
+    const p = getCanvasPalette();
     this.ctx.save();
 
     // F / R pill box, measured up front because its size also sets the minimum
@@ -1479,7 +1482,7 @@ class Renderer {
       // metrics were set above (they also sized the lane shift).
       const lx = cx + ox;
       const ly = cy + oy;
-      this.ctx.fillStyle = 'rgba(15, 15, 18, 0.9)';
+      this.ctx.fillStyle = withAlpha(p.overlayBg, 0.9);
       if (this.ctx.roundRect) {
         this.ctx.beginPath();
         this.ctx.roundRect(lx - boxW / 2, ly - boxH / 2, boxW, boxH, 3);
@@ -1571,4 +1574,4 @@ class Renderer {
   }
 }
 
-export { Renderer, COLORS, IsometricGeometry };
+export { Renderer, IsometricGeometry };

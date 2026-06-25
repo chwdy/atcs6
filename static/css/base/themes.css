@@ -1,0 +1,73 @@
+/* ── Theme color scheme ────────────────────────────────────────────
+   This file holds the per-theme color tokens — surfaces, text, and
+   accents. Each theme is one block keyed by the data-theme attribute on
+   <html>. The two themes are co-equal: dark is the unprefixed default,
+   light wins by specificity when data-theme="light".
+
+   The active theme is chosen by the ThemeManager (frontend/src/lib/
+   theme.ts) plus a tiny pre-paint stub in index.html that sets
+   data-theme before stylesheets apply (so there is no flash of the
+   wrong theme).
+
+   To add a theme:
+     1. Add a `:root[data-theme="<name>"] { … }` block here with the
+        full token set below.
+     2. Call themeManager.register({ name, label, icon }) in theme.ts.
+   No other file needs to change — the manager cycles through every
+   registered theme and the pre-paint stub honors any saved name.
+
+   Literal-hex rule: tokens read at runtime by JS via
+   getComputedStyle().getPropertyValue() must be literal hex, never
+   var()-references — the browser returns the unresolved "var(...)"
+   string otherwise. So every theme assigns literal hex per token
+   rather than pointing at a shared ramp. Theme-agnostic tokens (scale,
+   type, z-index, the canvas block palette) live in tokens.css. ── */
+
+/* ── DARK (bare default) ───────────────────────────────────────────
+   Dark is the unprefixed default so the UI still resolves if the
+   pre-paint stub has not set data-theme yet. ── */
+:root,
+:root[data-theme="dark"] {
+    --bg-dark: #111113;
+    --bg-panel: #1c1c20;
+    --bg-hover: #29292f;
+    --border-color: #34343c;
+    --text-primary: #e6e6ea;
+    --text-secondary: #a6a6b1;
+    --text-tertiary: #82828d;
+    --accent-color: #8257e5;
+    --accent-hover: #9466ff;
+    --accent-rgb: 130, 87, 229;   /* = --accent-color #8257e5; for rgba(var(--accent-rgb), a) tints */
+    --danger-rgb: 232, 63, 91;    /* = --danger-color #e83f5b */
+    --success-rgb: 4, 211, 97;    /* = --success-color #04d361 */
+    --warning-rgb: 255, 205, 30;  /* = --warning-color #ffcd1e */
+    --info-rgb: 0, 212, 255;      /* = --info-color #00d4ff */
+    --danger-color: #e83f5b;
+    --success-color: #04d361;
+    --warning-color: #ffcd1e;
+    --info-color: #00d4ff;
+}
+
+/* ── LIGHT (co-equal; wins by specificity when the root carries
+   data-theme="light"). Accent hues are darkened from the dark values
+   to hold AA contrast on white. ── */
+:root[data-theme="light"] {
+    --bg-dark: #f4f4f6;
+    --bg-panel: #ffffff;
+    --bg-hover: #ececef;
+    --border-color: #d9d9df;
+    --text-primary: #1b1b20;
+    --text-secondary: #55555f;
+    --text-tertiary: #6e6e79;
+    --accent-color: #7048cf;
+    --accent-hover: #5a35bd;
+    --accent-rgb: 112, 72, 207;   /* = --accent-color #7048cf; tuned for rgba() tints on light surfaces */
+    --danger-rgb: 214, 42, 76;    /* = --danger-color #d62a4c */
+    --success-rgb: 10, 155, 75;   /* = --success-color #0a9b4b */
+    --warning-rgb: 151, 103, 10;  /* = --warning-color #97670a */
+    --info-rgb: 14, 133, 168;     /* = --info-color #0e85a8 */
+    --danger-color: #d62a4c;
+    --success-color: #0a9b4b;
+    --warning-color: #97670a;
+    --info-color: #0e85a8;
+}
