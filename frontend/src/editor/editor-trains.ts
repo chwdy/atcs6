@@ -11,7 +11,7 @@
 import { stateManager } from '../lib/state-manager';
 import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
-import { showConfirmModal, getTrackExits, getNeighborPosition } from '../lib/helpers';
+import { showConfirmModal, getTrackExits, getNeighborPosition, formatDuration, formatDistanceCm } from '../lib/helpers';
 
 /** Read the value of an input by id (empty string if missing). */
 function inputValue(id: string): string {
@@ -1181,6 +1181,17 @@ export class TrainEditorHandler {
                                     <span class="flex-1"></span>
                                     <button id="train-edit-profile-btn" class="rr-flat-btn" data-profile-id="${train.speed_profile_id || 'default'}">Edit profile →</button>
                                 </dd>
+                            </div>
+                        </dl>
+                        <div class="tc-section-subtitle">Maintenance</div>
+                        <dl class="tc-status-fields">
+                            <div class="tc-field">
+                                <dt class="tc-field-label">Distance</dt>
+                                <dd class="tc-field-value" id="train-status-distance-val" title="Cumulative distance travelled">${formatDistanceCm(train.total_distance_cm || 0)}</dd>
+                            </div>
+                            <div class="tc-field">
+                                <dt class="tc-field-label">Run time</dt>
+                                <dd class="tc-field-value" id="train-status-runtime-val" title="Cumulative powered-on time">${formatDuration(train.total_run_time_seconds || 0)}</dd>
                             </div>
                         </dl>
                     </div>

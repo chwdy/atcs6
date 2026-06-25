@@ -217,12 +217,6 @@ class TrainPhysics:
 
         return resolve_memoized_default_profile(self, train)
 
-    def _get_block_manager(self) -> Optional["BlockManager"]:
-        """Get the BlockManager from network."""
-        if self.network and hasattr(self.network, "block_manager"):
-            return self.network.block_manager
-        return None
-
     def _get_power_controller(self) -> Optional["BlockPowerController"]:
         """Get the BlockPowerController from network."""
         if self.network and hasattr(self.network, "power_controller"):
@@ -267,6 +261,11 @@ class TrainPhysics:
                 controller, train, event_time, current_speed_kmh
             )
             return
+
+        # Maintenance counter: accumulate powered-on run time (see design_new.md
+        # "Maintenance counters"). Reached only when powered on; the OFF branch
+        # returned above.
+        train.total_run_time_seconds += delta
 
         # 2. Read the controller-owned canonical span and build a per-tick
         # movement scratchpad. The cab-derived head end (resolved on the
@@ -322,6 +321,9 @@ class TrainPhysics:
         self._force_stop = False
         if self._work is not None and distance_cm > 0:
             self._move_train(train, distance_cm)
+            # Maintenance counter: accumulate distance actually moved (see
+            # design_new.md "Maintenance counters").
+            train.total_distance_cm += distance_cm
             logger.debug(
                 "[TrainPhysics %s] moved distance_cm=%.2f", self.train_id, distance_cm
             )
@@ -1695,18 +1697,6 @@ class TrainPhysics:
             Direction.WEST: "E",
         }
         return mapping.get(direction, "N")
-
-    def _edge_to_direction(self, edge: str):
-        """Convert edge string (N/E/S/W) to Direction enum."""
-        from enums import Direction
-
-        mapping = {
-            "N": Direction.NORTH,
-            "E": Direction.EAST,
-            "S": Direction.SOUTH,
-            "W": Direction.WEST,
-        }
-        return mapping.get(edge, Direction.NORTH)
 
     # =========================================================================
     # Serialization

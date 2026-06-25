@@ -123,6 +123,12 @@ class Switch(TrackResource):
     position: SwitchState = SwitchState.MAIN
     """Authoritative physical alignment of the switch (MAIN=0, DIVERGE=1)."""
 
+    flip_count: int = 0
+    """Maintenance counter: number of times the switch actually changed
+    alignment. Incremented by `apply_position_change(...)` only on a real
+    change. Unlike the transient runtime state below, this is persisted with
+    the layout (see design_new.md "Maintenance counters")."""
+
     route_owners: Dict[FrozenSet[str], str] = field(default_factory=dict)
     """Route-keyed physical occupancy: maps each route currently in use
     (frozenset of two edges, e.g. ``frozenset({"N","W"})``) to the
@@ -200,27 +206,6 @@ class Switch(TrackResource):
     def get_active_radius(self, state: int) -> Optional[float]:
         """Get radius for the active path based on switch state."""
         return self.main_radius_cm if state == 0 else self.diverge_radius_cm
-
-    def is_configured(self, state: Optional[int] = None) -> bool:
-        """Check if switch is configured (has non-zero length).
-
-        Args:
-            state: If provided, check specific path. If None, check if any path is configured.
-        """
-        if state is None:
-            return self.main_length_cm > 0 or self.diverge_length_cm > 0
-        elif state == 0:
-            return self.main_length_cm > 0
-        else:
-            return self.diverge_length_cm > 0
-
-    def get_current_position(self, network: "RailwayNetwork") -> int:
-        """Get current switch position.
-
-        v1: position is authoritative on the Switch entity. The `network`
-        argument is retained for signature compatibility with legacy callers.
-        """
-        return int(self.position)
 
     # ========================================================================
     # ROUTE-KEYED OCCUPANCY (v1)
@@ -606,7 +591,11 @@ class Switch(TrackResource):
                     f"Switch protected by train {claim_train_id} (source {claim_source_id})",
                 )
 
-        # Mutate authoritative position.
+        # Mutate authoritative position. Count a maintenance flip only when the
+        # alignment actually changes; re-aligning to the position the switch
+        # already holds is a no-op flip (see design_new.md "Maintenance counters").
+        if self.position != SwitchState(new_position):
+            self.flip_count += 1
         self.position = SwitchState(new_position)
 
         position_name = "MAIN" if new_position == 0 else "DIVERGE"
@@ -635,6 +624,7 @@ class Switch(TrackResource):
             "name": self.name,
             "notes": self.notes,
             "position": int(self.position),
+            "flip_count": self.flip_count,
             "occupied_by": self.occupied_by,
             "disabled": self.disabled,
             "manual": self.manual,
@@ -688,6 +678,7 @@ class Switch(TrackResource):
             "notes": self.notes,
             "disabled": self.disabled,
             "manual": self.manual,
+            "flip_count": self.flip_count,
         }
 
     @classmethod
@@ -719,6 +710,7 @@ class Switch(TrackResource):
         )
         switch.disabled = bool(data.get("disabled", False))
         switch.manual = bool(data.get("manual", False))
+        switch.flip_count = int(data.get("flip_count", 0))
         return switch
 
     def __repr__(self) -> str:

@@ -21,7 +21,7 @@ Findings as of the audit:
       (Covered by tests/test_demo_train_journey_strict.py.)
 
   F3  Phase-ownership violation: `TrainController.tick()` (Phase 2)
-      writes `state = RUNNING_AT_STATION` inside `_is_at_station()`.
+      writes `state = RUNNING_AT_STATION` from its at-station check.
       design_new.md:196,282 says only Phase 1 (`enter_station_dwell()`)
       may make that transition.
 
@@ -109,10 +109,10 @@ def test_F3_phase2_does_not_write_running_at_station_state():
     into `RUNNING_AT_STATION`, via `TrainController.enter_station_dwell()`.
 
     The current implementation writes `self.state = RUNNING_AT_STATION`
-    directly inside Phase 2's `TrainController.tick()` whenever
-    `_is_at_station()` returns True (train_controller.py:828-829). This
-    test enables a one-tick guard around `Phase 2 → Phase 3 → Phase 1`
-    and verifies the controller's state field is not written by Phase 2.
+    directly inside Phase 2's `TrainController.tick()` whenever the
+    train's at-station check passes. This test enables a one-tick guard
+    around `Phase 2 → Phase 3 → Phase 1` and verifies the controller's
+    state field is not written by Phase 2.
 
     We can't intercept the field write without monkey-patching, so we
     check the consequence: after a single tick where the train is stopped
@@ -189,7 +189,7 @@ def test_F5_at_station_implies_no_active_path():
     `received_path_plan is None`.
 
     The current implementation violates this for at least one tick — the
-    tick where Phase 2's `_is_at_station()` flips the state but Phase 3
+    tick where Phase 2's at-station check flips the state but Phase 3
     has not yet completed the path. We drive the demo to that tick and
     catch the violation.
     """

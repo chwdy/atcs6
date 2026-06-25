@@ -932,6 +932,22 @@ export function validateIntegerInput(
   return { kind: 'ok', value: n };
 }
 
+/** Format a duration in seconds as a compact human string: "2h 5m", "5m 12s", or "12s". */
+export function formatDuration(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds || 0));
+  if (total < 60) return `${total}s`;
+  const m = Math.floor(total / 60);
+  if (m < 60) return `${m}m ${total % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+/** Format a distance in centimetres as metres ("12.3 m") or kilometres ("1.42 km"). */
+export function formatDistanceCm(cm: number): string {
+  const m = (cm || 0) / 100;
+  return m < 1000 ? `${m.toFixed(1)} m` : `${(m / 1000).toFixed(2)} km`;
+}
+
 // Escape a string for safe interpolation into an HTML attribute value
 // (double-quoted). Used where user-entered text — a block/station display
 // name — is rendered back into a `value="…"` / `title="…"` attribute.

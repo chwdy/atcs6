@@ -121,6 +121,11 @@ class Block(TrackResource):
     grade_percent: Optional[float] = None  # Track gradient as percent (+ uphill / - downhill)
     speed_limit_kmh: Optional[float] = None  # Speed limit for block
 
+    # Maintenance counter: total simulated seconds a train has occupied this
+    # block. Written once per tick by SimulationController.update(...) and
+    # persisted with the layout (see design_new.md "Maintenance counters").
+    occupied_seconds: float = 0.0
+
     # Underlying primitive state fields. `state` is a computed @property
     # derived from these (see below).
     occupied_by: Optional[str] = None  # Train ID currently physically present
@@ -227,6 +232,7 @@ class Block(TrackResource):
             "min_radius_cm": self.min_radius_cm,
             "grade_percent": self.grade_percent,
             "speed_limit_kmh": self.speed_limit_kmh,
+            "occupied_seconds": self.occupied_seconds,
             "state": self.state.value,
             "occupied_by": self.occupied_by,
             "caution": (
@@ -268,6 +274,7 @@ class Block(TrackResource):
             "min_radius_cm": self.min_radius_cm,
             "grade_percent": self.grade_percent,
             "speed_limit_kmh": self.speed_limit_kmh,
+            "occupied_seconds": self.occupied_seconds,
             "disabled": self.disabled,
             "manual": self.manual,
             "allowed_travel_directions": sorted(self.allowed_travel_directions),
@@ -321,6 +328,7 @@ class Block(TrackResource):
             manual=bool(data.get("manual", False)),
             allowed_travel_directions=allowed,
             ordered_tiles=ordered_tiles,
+            occupied_seconds=float(data.get("occupied_seconds", 0.0)),
         )
 
     # ========================================================================

@@ -249,6 +249,13 @@ class SimulationController:
             # After all trains, refresh signals so they reflect every block state
             # change (including path completions) committed during the tick.
             self.network.update_signals_from_blocks()
+
+            # Maintenance counter: accrue occupied time for every block holding a
+            # train this tick (see design_new.md "Maintenance counters").
+            for _blk in self.network.blocks.values():
+                if _blk.occupied_by is not None:
+                    _blk.occupied_seconds += delta_seconds
+
             net.bump_lookahead_world_version()
         finally:
             net._lookahead_memo_active = False
@@ -573,10 +580,6 @@ class SimulationController:
         """Get controller for a train, or None if not yet created."""
         return self.controllers.get(train_id)
 
-    def get_physics(self, train_id: str) -> Optional[TrainPhysics]:
-        """Get physics instance for a train, or None if not yet created."""
-        return self.physics_instances.get(train_id)
-
     def get_or_create_controller(self, train_id: str) -> TrainController:
         """Public train-id-based accessor that returns the controller for the
         named train, creating it on first call.
@@ -606,11 +609,6 @@ class SimulationController:
         """Remove physics instance for a train (cleanup on train removal)."""
         if train_id in self.physics_instances:
             del self.physics_instances[train_id]
-
-    def remove_train_instances(self, train_id: str) -> None:
-        """Remove all simulation instances for a train."""
-        self.remove_train_controller(train_id)
-        self.remove_train_physics(train_id)
 
     # =========================================================================
     # Train lifecycle

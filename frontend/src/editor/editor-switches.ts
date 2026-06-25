@@ -12,6 +12,7 @@ import {
   bindAvailabilitySegment,
   showConfirmModal,
   escapeAttr,
+  formatDuration,
   bindFieldAutoSave,
   parseText,
   parseRequiredMmToCm,
@@ -235,6 +236,16 @@ export class SwitchEditorHandler {
                 </div>
 
                 ${renderAvailabilitySegment('switch', switchData, { idBase: 'switch-availability' })}
+            </div>
+
+            <!-- Maintenance — read-only wear counter (design_new.md "Maintenance
+                 counters"); counts real alignment changes during simulation. -->
+            <div class="control-section">
+                <div class="control-section-header">Maintenance</div>
+                <div class="input-small-row">
+                    <span class="input-small-label input-small-label-inline">Times flipped</span>
+                    <span class="font-mono" title="Number of times this switch has changed alignment">${switchData.flip_count || 0}</span>
+                </div>
             </div>
 
             <!-- Deleting the switch config is a switch-level action, not a

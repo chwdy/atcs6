@@ -233,9 +233,6 @@ class TrackSegment:
     # `RailwayNetwork` (e.g. unit tests with bare TrackSegments).
     _occupied_by_local: Optional[str] = None
     _reserved_by_local: Optional[str] = None
-    wear_level: float = 0.0
-    last_maintenance: Optional[str] = None
-    maintenance_count: int = 0
 
     # === PATH LOCKING (Dispatcher System) ===
     # Per design_new.md "Track-segment role and traversal", switch lock
@@ -647,16 +644,6 @@ class TrackSegment:
         # This ensures consistent initial state and synced multi-switch behavior
         self.switch_state = 0
 
-    # === Dead-ends ===
-    def remove_dead_end(self, edge: str) -> None:
-        norm = _normalize_edge(edge)
-        if norm:
-            self.dead_end_ports.discard(norm)
-
-    def has_dead_end(self, edge: str) -> bool:
-        norm = _normalize_edge(edge)
-        return bool(norm and norm in self.dead_end_ports)
-
     # === Switch helpers (global tile-level state) ===
     def set_switch_state(self, state: int) -> bool:
         """Set global switch state. 0=MAIN, 1=DIVERGE."""
@@ -990,10 +977,6 @@ class TrackSegment:
         edges = self.get_exits(entry_edge, use_switch_state=use_switch_state)
         return [EDGE_TO_DIR[e] for e in edges if e in EDGE_TO_DIR]
 
-    def get_active_exit(self, entry_edge: str) -> Optional[str]:
-        exits = self.get_exits(entry_edge, use_switch_state=True)
-        return exits[0] if exits else None
-
     def get_entry_for_exit(
         self, exit_edge: str, use_switch_state: bool = True
     ) -> Optional[str]:
@@ -1036,11 +1019,6 @@ class TrackSegment:
         if not entry_edge or not exit_edge:
             return None
         return ORIENTATION_GROUPS.get(frozenset({entry_edge, exit_edge}))
-
-    def is_turn(self, entry_direction: Direction, exit_direction: Direction) -> bool:
-        """True if traversal uses a diagonal group (i.e., orientation changes)."""
-        group = self.get_traversal_group(entry_direction, exit_direction)
-        return group in {"NE_SW", "NW_SE"}
 
     # === Curve detection (connection-based) ===
     def get_path_group(self, edge1: str, edge2: str) -> Optional[str]:
@@ -1106,30 +1084,6 @@ class TrackSegment:
             return False
 
         return current_group != neighbor_group
-
-    def get_curve_type_at_edge(
-        self, exit_edge: str, neighbor_segment: "TrackSegment"
-    ) -> str:
-        """Get the curve type for connection at the given edge.
-
-        Returns:
-            'STRAIGHT' if both paths are in the same orientation group
-            'CURVE' if paths are in different orientation groups
-            'UNKNOWN' if cannot determine (missing path data)
-        """
-        if self.is_curve_connection(exit_edge, neighbor_segment):
-            return "CURVE"
-
-        exit_norm = _normalize_edge(exit_edge)
-        if exit_norm:
-            current_path = self.get_path_at_edge(exit_norm)
-            neighbor_entry = OPPOSITE_EDGE.get(exit_norm)
-            if neighbor_entry:
-                neighbor_path = neighbor_segment.get_path_at_edge(neighbor_entry)
-                if current_path and neighbor_path:
-                    return "STRAIGHT"
-
-        return "UNKNOWN"
 
     # ========== Serialization ==========
     def to_dict(self) -> dict:
@@ -1206,50 +1160,6 @@ class TrackSegment:
         return segment
 
     # ========== Utility ==========
-    def get_display_symbol(self) -> str:
-        """Basic ASCII symbol for console visualization using track_bits."""
-        if self.track_type == TrackType.STATION:
-            return "🚉"
-        if self.track_type == TrackType.SIGNAL:
-            return "🚦"
-        if self.track_type == TrackType.FORBIDDEN:
-            return "✗"
-
-        # Map track_bits to symbols (single segments)
-        bit_symbols = {
-            0: "•",  # Empty
-            1: "│",  # NS
-            2: "─",  # EW
-            4: "╰",  # NE
-            8: "╯",  # NW
-            16: "╭",  # SE
-            32: "╮",  # SW
-        }
-
-        # Common multi-segment combinations
-        if self.track_bits == 3:  # NS + EW
-            return "┼"
-        if self.track_bits in bit_symbols:
-            return bit_symbols[self.track_bits]
-
-        # Multi-segment: show path count
-        n = self.num_paths
-        if n == 2:
-            return "⊕"  # Junction
-        if n >= 3:
-            return "✦"  # Complex
-        return "?"
-
-    def degrade(self, amount: float):
-        self.wear_level = min(1.0, self.wear_level + amount)
-
-    def repair(self):
-        self.wear_level = 0.0
-        self.maintenance_count += 1
-        from datetime import datetime
-
-        self.last_maintenance = datetime.now().isoformat()
-
     def is_available_for(self, train_id: str) -> bool:
         if self.occupied_by and self.occupied_by != train_id:
             return False

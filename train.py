@@ -82,6 +82,11 @@ class Train:
     # controller, not from `Train`.
     speed_profile_id: Optional[str] = None  # SpeedProfile for this train
 
+    # Maintenance counters (see design_new.md "Maintenance counters"): durable
+    # cumulative usage, written during simulation and persisted with the layout.
+    total_distance_cm: float = 0.0  # Cumulative distance travelled (cm)
+    total_run_time_seconds: float = 0.0  # Cumulative powered-on time (s)
+
     # `assigned_route_id` is not carried on `Train`. The canonical store is
     # `RouteExecutor.execution_states[train_id].route_id`; callers ask
     # `RouteExecutor.assigned_route_id_for(train_id)`.
@@ -124,6 +129,8 @@ class Train:
             "min_radius_cm": self.min_radius_cm,
             "max_slope": self.max_slope,
             "speed_profile_id": self.speed_profile_id,
+            "total_distance_cm": self.total_distance_cm,
+            "total_run_time_seconds": self.total_run_time_seconds,
         }
 
         return data
@@ -152,5 +159,8 @@ class Train:
         train.max_slope = float(data.get("max_slope", 0.0))
 
         train.speed_profile_id = data.get("speed_profile_id")
+
+        train.total_distance_cm = float(data.get("total_distance_cm", 0.0))
+        train.total_run_time_seconds = float(data.get("total_run_time_seconds", 0.0))
 
         return train

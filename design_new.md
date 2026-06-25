@@ -629,6 +629,16 @@ GET endpoints (`GET /api/blocks/<id>`, `GET /api/switches/<id>`, `GET /api/platf
 
 The UI design language for these toggles lives in [`docs/DESIGN_LANGUAGE.md`](docs/DESIGN_LANGUAGE.md), not in this document. The doc-level contract is: every entity editor panel (Block, Switch, Platform, Station) exposes a control that lets the operator read and write the entity's `disabled` and `manual` flags through the PATCH endpoints above. The Route editor exposes the per-field push-policy control for the allowlisted fields (`priority`, `acquisition_mode`); the RouteRun editor exposes per-run override write/clear for the same allowlisted fields. The visual vocabulary (segmented control, toggle, card composition) is owned by `DESIGN_LANGUAGE.md`; this document does not duplicate it.
 
+## Maintenance counters
+
+Maintenance counters record cumulative asset usage so an operator can plan upkeep — switch point-motor replacement, track service intervals, and rolling-stock service intervals. This subsection is the canonical home for the three counters; the **Switch entity**, **Block**, and **Train Entity** sections refer back here rather than restating the rules. Each counter has exactly one home entity and exactly one writer:
+
+- `Switch.flip_count: int` is the number of times the switch has actually changed alignment. Its one writer is `Switch.apply_position_change(...)` — the single `Switch.position` mutation site (see the **Switch entity** section) — which increments `flip_count` only when the requested position differs from the current one. Re-aligning a switch to the position it already holds is a no-op and does not count.
+- `Block.occupied_seconds: float` is the total simulated time a train has occupied the block. Its one writer is `SimulationController.update(...)`, which adds the tick's `delta_seconds` once per tick for every block whose `occupied_by` is set. `TrackSegment` carries no usage field of its own; a tile's usage read is the `occupied_seconds` of its owning `Block`.
+- `Train.total_distance_cm: float` and `Train.total_run_time_seconds: float` are the train's cumulative distance travelled and powered-on time. Their one writer is `TrainPhysics.tick(...)`: `total_distance_cm` adds the distance moved on every tick the train moves, and `total_run_time_seconds` adds the tick `delta` on every tick the controller is powered on (the OFF branch returns before the counter is reached).
+
+Maintenance counters are the one category of state written during simulation that is also persisted. Unlike transient runtime state — occupancy, locks, `Switch.position`, the train span — which is in-memory only per **Out of Scope** and repopulated each session, maintenance counters accumulate while the simulation runs and are saved and restored as part of the layout snapshot; they are never reset on load. `Switch.flip_count` and `Block.occupied_seconds` are written by each entity's `to_layout_dict()` and read by its `from_dict()`; the `Train` counters are written by `Train.to_dict()` and read by `Train.from_dict()`. All four counters are also included in the live frontend `to_dict()` payload (see **Data Flow To UI**) so the UI may display current usage.
+
 ## TrackSegment
 
 **Path locking**
@@ -640,7 +650,7 @@ The UI design language for these toggles lives in [`docs/DESIGN_LANGUAGE.md`](do
 **Track-segment role and traversal**
 
 - The retained `TrackSegment` schema in v1 is explicit:
-  - persistent fields kept on `TrackSegment`: `x`, `y`, `track_bits`, `dead_end_ports`, `signal_ids`, `switch_id`, `length`, `curve_radius`, `wear_level`, `last_maintenance`, `maintenance_count`
+  - persistent fields kept on `TrackSegment`: `x`, `y`, `track_bits`, `dead_end_ports`, `signal_ids`, `switch_id`, `length`, `curve_radius`
   - computed read kept on `TrackSegment`: `track_type`
   - `TrackSegment` holds no authoritative live switch state. Its `switch_state` is a derived read that resolves through `Switch.position` for the segment's `switch_id` when the segment is attached to a `RailwayNetwork`; a `_switch_state_local` value is only a fallback for a bare detached segment (e.g. a unit test with no network) and is never a second authoritative runtime copy alongside `Switch.position`. `Switch.position` is the one alignment authority everywhere.
   - the following are not stored live runtime fields on `TrackSegment`: `occupied_by`, `reserved_by`, `locked_by_path`, `locked_state`, `path_direction`

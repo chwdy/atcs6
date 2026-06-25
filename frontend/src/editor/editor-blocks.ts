@@ -15,6 +15,7 @@ import {
   detectOrientation,
   calculateNextTile,
   escapeAttr,
+  formatDuration,
   bindFieldAutoSave,
   parseText,
   parseRequiredMmToCm,
@@ -263,6 +264,16 @@ export class BlockEditorHandler {
                       label: 'Allowed travel direction',
                       help: 'Forward and reverse follow the direction arrows shown on the layout. Automatic routing obeys this; an operator route with override (Quick Route) can ignore it.',
                     })}
+                </div>
+
+                <!-- Maintenance — read-only usage counter (design_new.md
+                     "Maintenance counters"); accrues while the simulation runs. -->
+                <div class="control-section control-section-divider mt-12 pt-12">
+                    <h4 class="text-sm text-muted mb-8">Maintenance</h4>
+                    <div class="input-small-row">
+                        <span class="input-small-label input-small-label-inline">Usage time</span>
+                        <span class="font-mono" title="Total time a train has occupied this block">${formatDuration(block.occupied_seconds || 0)}</span>
+                    </div>
                 </div>
 
                 <!-- Deleting the whole block is a block-level action, not a
