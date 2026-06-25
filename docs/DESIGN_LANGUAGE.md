@@ -187,14 +187,56 @@ Reference: `.app-header` / `.header-zone` in
 All tokens live in [base/tokens.css](../static/css/base/tokens.css). Refer to
 them by variable name in CSS, never by hex literal.
 
+### Themes (light + dark)
+
+Light and dark are **co-equal first-class themes**, not a base palette plus a
+dark override. The surface, text, and accent tokens are defined as two parallel
+**literal-hex** sets — one under `:root[data-theme="dark"]`, one under
+`:root[data-theme="light"]` — and a control selects between them. An inline
+bootstrap script in `index.html` sets `data-theme` on `:root` before first
+paint (default follows the OS `prefers-color-scheme`, then persists to
+localStorage), so there is no flash. The hex columns in the tables below show
+the **dark** set; the light set sits beside each one in `tokens.css`. Refer to
+tokens by name and both themes resolve for free.
+
+Three rules keep this working:
+
+- **Literal hex per theme, not a `var()` ramp.** JS reads tokens at runtime via
+  `getComputedStyle().getPropertyValue()`, and the browser returns the
+  *unresolved* `var(...)` string — so a token whose value is `var(--other)`
+  reads back as the literal text `"var(--other)"`, not a color. Every
+  theme-varying token therefore holds a concrete hex. (Same reason the
+  `--block-*` palette is literal hex; see Block / track status below.)
+- **`--*-rgb` channel tokens for tints.** Each accent and status hue also has a
+  companion `--<name>-rgb` token holding bare `R, G, B` channels
+  (`--accent-rgb`, `--info-rgb`, `--success-rgb`, `--warning-rgb`,
+  `--danger-rgb`), so CSS can compose a themed translucent tint as
+  `rgba(var(--info-rgb), 0.08)`. Use these for alpha tints — never hardcode the
+  channels (a literal `rgba(16, 18, 24, 0.6)` is a dark band that does not
+  re-tint in light).
+- **Panel surfaces come from surface tokens only.** A panel background, well, or
+  hairline must use `--bg-dark` / `--bg-panel` / `--bg-hover` / `--border-color`,
+  never a literal dark hex. A hardcoded `#1a1a2e` reads fine in dark and then
+  paints a dark slab over a light panel. (`.control-section`, `.tile-list-container`,
+  and `.route-item` each carried one of these and broke the light editors until
+  tokenized.)
+
+**The canvas stays dark in both themes** — "dark drawing-board, themed chrome."
+The `--block-*` palette is tuned for a dark canvas and the renderer reads it as
+resolved hex; a light canvas would need the whole block palette re-tuned and is
+out of scope. So theming swaps the chrome (panels, top bar, sidebars) while the
+layout canvas is constant.
+
 ### Surfaces
 
-| Token | Hex | Use |
+The hex shown is the dark set; `tokens.css` carries the light value beside it.
+
+| Token | Hex (dark) | Use |
 |-------|-----|-----|
-| `--bg-dark` | `#121214` | App canvas, button backgrounds, count pills |
-| `--bg-panel` | `#1e1e24` | Panel shells |
-| `--bg-hover` | `#2a2a35` | Header strips, row hover |
-| `--border-color` | `#333340` | All hairline borders |
+| `--bg-dark` | `#111113` | App canvas, button backgrounds, count pills, panel wells (`.control-section`) |
+| `--bg-panel` | `#1c1c20` | Panel shells, raised inset surfaces (tile lists) |
+| `--bg-hover` | `#29292f` | Header strips, row hover |
+| `--border-color` | `#34343c` | All hairline borders |
 
 ### Text
 
@@ -2221,3 +2263,4 @@ same change.
 | Floating inspector outranks modals (z-index 9000 over 1100) | [inspector.css](../static/css/features/inspector.css) | Modal layer wins over debug panels | Next inspector or modal rework |
 | Canvas state marks hard-code hex — signal lamps, route status fills (incl. `#00ff88`), switch badges and locks, train mode tints | `renderer-{signals,routes,tracks,trains}.ts` | Consume §1 tokens / a tokenized canvas palette (§17 Rules) | When touching each renderer |
 | Passive empty states where a creation action exists | route / train / run list panels | §10 `.empty-state-action` with a `.btn-accent` CTA (§19) | When touching each panel |
+| Fixed-dark code surface in a panel — JSON viewer well + neon-green text | `.json-viewer-content` / `.json-content-view` (`#0d1020` / `#00ff88`) in [routes-paths.css](../static/css/features/routes-paths.css) | Either tokenize to surface tokens, or formally bless as a constant "code block" surface like the canvas (§1 Themes) | Next View-Full-JSON / routes-paths touch |
