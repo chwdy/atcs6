@@ -1930,6 +1930,19 @@ class PathDispatcher:
             return bool(prev.is_switch)
         return False
 
+    def _block_is_holding_point(self, block_id: str) -> bool:
+        """True when ``block_id`` is an operator-marked holding point.
+
+        Reads the static `Block.is_holding_point` config flag (design_new.md
+        "Block" field schema, line 848). Used only by the best-effort
+        truncation holding-point preference (item 11).
+        """
+        blocks = getattr(self.network, "blocks", None)
+        if not blocks:
+            return False
+        block = blocks.get(block_id)
+        return bool(getattr(block, "is_holding_point", False))
+
     def _best_effort_truncate(
         self,
         segment: PathSegment,
@@ -1966,23 +1979,41 @@ class PathDispatcher:
         )
         for prefix_block_count in range(start, 1, -1):
             prefix_blocks = segment.blocks[:prefix_block_count]
+            terminal_block_id = prefix_blocks[-1]
+            # `prefix_block_count` can exceed the block count when `start` was
+            # clamped up to the 2-block floor on a short segment; there is no
+            # dropped "next" block then, so the exclusions below do not apply.
+            dropped_a_block = prefix_block_count < len(segment.blocks)
             # Reversal-trap exclusion (design_new.md best-effort
             # `create_path()`, item 11): if the next, blocked block is occupied
             # by a stopped train whose next route move would leave it back
             # through this terminal block, parking here would trap the two
-            # trains nose-to-nose. Truncate to a shorter prefix instead.
-            # `prefix_block_count` can exceed the block count when `start` was
-            # clamped up to the 2-block floor on a short segment; there is no
-            # dropped "next" block then, so there is nothing to trap on.
+            # trains nose-to-nose. Truncate to a shorter prefix instead. This
+            # exclusion stays absolute — a holding point that traps a reversing
+            # train ahead is not an eligible terminal.
             if (
-                prefix_block_count < len(segment.blocks)
+                dropped_a_block
                 and self._terminal_traps_reversing_occupant(
                     next_block_id=segment.blocks[prefix_block_count],
-                    terminal_block_id=prefix_blocks[-1],
+                    terminal_block_id=terminal_block_id,
                     train_id=train_id,
                 )
             ):
                 continue
+            # Holding-point preference (design_new.md item 11, line 1041): a
+            # holding-point terminal is the operator's explicit safe-wait place,
+            # so choosing it overrides the switch-based junction-fouling back-off
+            # below. A holding point that is a `task_kind == "waypoint"` resolved
+            # target is not eligible here (the waypoint-target exclusion, applied
+            # after acquisition, stays absolute), so it is excluded from this
+            # check and falls through to the ordinary back-off. The loop is
+            # longest-first, so the first eligible holding point it accepts is
+            # the furthest-forward one.
+            terminal_is_holding_point = (
+                dropped_a_block
+                and self._block_is_holding_point(terminal_block_id)
+                and terminal_block_id not in waypoint_targets
+            )
             # "Stay back one switch" exclusion: never park a truncated
             # best-effort authority on a TWO-WAY block that the path enters
             # straight off a switch. Stopping there fouls the junction and
@@ -1993,13 +2024,14 @@ class PathDispatcher:
             # one-way S2<->S3 corridor). Unlike `_terminal_traps_reversing_
             # occupant`, this is occupancy-independent: it holds back from the
             # junction even before any opposing train has arrived, so it has no
-            # timing window. Only applies when a further block was dropped
-            # (`prefix_block_count < len(segment.blocks)`); the requested target
-            # itself is never reached through this truncation branch.
+            # timing window. Applies only when a further block was dropped and
+            # the terminal is not an eligible holding point (the holding-point
+            # preference above overrides it).
             if (
-                prefix_block_count < len(segment.blocks)
+                not terminal_is_holding_point
+                and dropped_a_block
                 and self._terminal_fouls_two_way_switch_block(
-                    segment, prefix_blocks[-1]
+                    segment, terminal_block_id
                 )
             ):
                 continue
@@ -2564,8 +2596,16 @@ class PathDispatcher:
             # design_new.md fix #2: do NOT return here — fall through so that
             # tail_vacated_resources for already-occupied resources still fire.
 
-        # design_new.md fix #3: skip callbacks on fatal; fix #2: always run tail-vacates.
-        if not fatal_in_this_report and not report.deviation:
+        # design_new.md step `640a` (line 427): apply ordinary active-path head
+        # progress and run the route head-advance callback for every entered
+        # block while the train has an active route run — INCLUDING entries in a
+        # `deviation == true` report and ticks where a cancel latch is pending.
+        # Only a fatal conflict (fix #3) skips this. A reported block that does
+        # not match the next task is a no-op on the route side; an entry the
+        # controller could not map (`sequence_index` is None) advances no path
+        # index but still fires the callback (handle_train_advanced no-ops when
+        # the block/direction does not match the next task).
+        if not fatal_in_this_report:
             if active_path is not None:
                 for event in list(report.entered_resources or []):
                     if event.sequence_index is not None:
@@ -2827,6 +2867,26 @@ class PathDispatcher:
         # Mark COMPLETED.
         path._set_status(PathStatus.COMPLETED, event_time)
 
+        # Event-log operational event (design_new.md "Event log"): path
+        # completed. Emitted through NotificationCenter — the one stream the
+        # event log persists — at the point completion is committed.
+        _sc = self.simulation_controller
+        _nc = getattr(_sc, "notification_center", None) if _sc else None
+        if _nc is not None:
+            from notification_center import EventKind, Severity
+
+            _nc.emit(
+                source="PathDispatcher",
+                kind=EventKind.PATH_COMPLETED,
+                severity=Severity.INFO,
+                event_time=event_time,
+                train_id=train_id,
+                path_id=path_id,
+                payload={
+                    "authority_end_block_id": path.get_authority_end_block_id(),
+                },
+            )
+
         # Notify controller.
         on_complete = getattr(controller, "on_path_complete", None)
         if callable(on_complete):
@@ -2898,6 +2958,20 @@ class PathDispatcher:
     def active_path_id_by_train(self, train_id: str) -> Optional[str]:
         path = self.get_active_path(train_id)
         return path.path_id if path else None
+
+    def waiting_for_block_id(self, train_id: str) -> Optional[str]:
+        """Public live recompute of this train's `waiting_for_block_id`.
+
+        The block on which the train's active path is currently blocked from
+        growing toward its requested target (design_new.md "Data Flow To UI"),
+        or ``None`` when it has no active path, has reached its target, or no
+        viable suffix exists. Used by the per-tick contention snapshot
+        (design_new.md "Contention snapshot").
+        """
+        path = self.get_active_path(train_id)
+        if path is None:
+            return None
+        return self._recompute_waiting_for_block_id(path)
 
     def _recompute_waiting_for_block_id(self, path: Path) -> Optional[str]:
         """Live recompute of ``waiting_for_block_id`` (the live-recompute rule

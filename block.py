@@ -120,6 +120,11 @@ class Block(TrackResource):
     min_radius_cm: Optional[float] = None  # Tightest curve radius
     grade_percent: Optional[float] = None  # Track gradient as percent (+ uphill / - downhill)
     speed_limit_kmh: Optional[float] = None  # Speed limit for block
+    # Static config flag: operator-marked safe wait place (design_new.md
+    # "Block" field schema, line 848). Never written by runtime; its only
+    # consumer is the best-effort truncation holding-point preference (item 11
+    # under "Path And PathDispatcher").
+    is_holding_point: bool = False
 
     # Maintenance counter: total simulated seconds a train has occupied this
     # block. Written once per tick by SimulationController.update(...) and
@@ -231,6 +236,7 @@ class Block(TrackResource):
             "length_cm": self.length_cm,
             "min_radius_cm": self.min_radius_cm,
             "grade_percent": self.grade_percent,
+            "is_holding_point": self.is_holding_point,
             "speed_limit_kmh": self.speed_limit_kmh,
             "occupied_seconds": self.occupied_seconds,
             "state": self.state.value,
@@ -273,6 +279,7 @@ class Block(TrackResource):
             "length_cm": self.length_cm,
             "min_radius_cm": self.min_radius_cm,
             "grade_percent": self.grade_percent,
+            "is_holding_point": self.is_holding_point,
             "speed_limit_kmh": self.speed_limit_kmh,
             "occupied_seconds": self.occupied_seconds,
             "disabled": self.disabled,
@@ -323,6 +330,7 @@ class Block(TrackResource):
             length_cm=float(data["length_cm"]),
             min_radius_cm=data.get("min_radius_cm"),
             grade_percent=data.get("grade_percent"),
+            is_holding_point=bool(data.get("is_holding_point", False)),
             speed_limit_kmh=data.get("speed_limit_kmh", data.get("max_speed_kmh")),
             disabled=bool(data.get("disabled", False)),
             manual=bool(data.get("manual", False)),

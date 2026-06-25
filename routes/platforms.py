@@ -12,6 +12,7 @@ from flask import jsonify, request
 from app_state import AppState
 from services import NotFoundError, ValidationError
 from services import platform_service
+from services.notifications import emit_command_result
 
 
 def register(app, state: AppState) -> None:
@@ -61,6 +62,12 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": "Platform not found"}), 404
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
+        # design_new.md line 658: every entity-flag PATCH emits a command_result.
+        # Platform flag toggles always succeed (no admin-reject 409).
+        emit_command_result(
+            state, source="Platform", entity_id_key="platform_id",
+            entity_id=platform_id, command_name="update_flags", success=True,
+        )
         return jsonify(platform.to_dict_with_orientation(state.network))
 
     @app.route("/api/platform/<platform_id>", methods=["DELETE"])

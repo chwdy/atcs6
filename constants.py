@@ -81,3 +81,12 @@ OCCUPANCY_OFF_THRESHOLD: int = 3
 # reachable with real hardware — the simulated detector builds current from live
 # train spans, so every confirmed block already matches a modeled train.
 UNKNOWN_TRAIN_ID: str = "__UNKNOWN_OCCUPANT__"
+
+# Speed calibration (design_new.md "Speed calibration"). A calibration pass
+# commands a fixed sweep of CALIBRATION_VOLTAGE_STEPS track-voltage steps from
+# the profile's lighting_voltage to its max_voltage and measures the speed the
+# train reaches at each, filling the SpeedProfile curves. In manual mode the
+# operator marks each lap and calibration averages CALIBRATION_MANUAL_LAPS laps
+# per step so one noisy lap does not set a point.
+CALIBRATION_VOLTAGE_STEPS: int = 8
+CALIBRATION_MANUAL_LAPS: int = 3

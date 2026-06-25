@@ -345,7 +345,7 @@ class TrainController:
     # (power_on_cmd, set_cab, set_mode, etc.). Each command is enqueued into
     # `command_inbox` and then drained by `_drain_command_inbox(...)` at the
     # very top of `tick(...)`. Commands are processed in the canonical kind
-    # order (power_on -> set_cab -> set_mode -> set_manual_mode_type ->
+    # order (power_on -> set_mode -> set_cab -> set_manual_mode_type ->
     # set_handle/set_manual_power_percent -> activate_emergency_cmd ->
     # release_emergency_cmd -> power_off), with FIFO order within each kind
     # bucket.
@@ -877,32 +877,26 @@ class TrainController:
         # `path_backed_run_active` is now a derived `@property`; no write here.
 
         # ===== 8. STATE TRANSITIONS =====
-        if self.ops.state == TrainState.RUNNING_MOVING:
-            # Per design_new.md "Per-train tick transaction" (~line 196,
-            # 282, 297): only RouteExecutor (Phase 1) writes
-            # RUNNING_AT_STATION, via TrainController.enter_station_dwell().
-            # Phase 2 must not transition to RUNNING_AT_STATION here, even
-            # when the stopped train sits in a scheduled-stop station
-            # block — the path-completion gate is_stopped_at_authority_end()
-            # requires state == RUNNING_MOVING, and Phase 3's
-            # try_complete_active_path(...) runs after this method
-            # returns. Dwell entry happens on the next eligible Phase 1
-            # tick once the dispatcher has completed the path and recorded
-            # the stop's finished_at.
-
-            if self._is_standalone_path_complete(train):
-                self.transition_to_ready()
-                logger.debug(
-                    "[TrainController %s] standalone path complete -> READY",
-                    self.train_id,
-                )
-
-            # Per design_new.md, a train at zero ATC clearance with live
-            # authority stays in RUNNING_MOVING with current_speed_kmh == 0.
-            # The reactive speed-based evaluation at the top of tick() handles
-            # the no-authority no-speed case. There is nothing to do here.
-
-        # Other states (READY, RUNNING_AT_STATION, OFF) handled by commands
+        # While RUNNING_MOVING, Phase 2 (tick()) makes no state transition here:
+        #
+        # - Only RouteExecutor (Phase 1) writes RUNNING_AT_STATION, via
+        #   TrainController.enter_station_dwell() (design_new.md "Per-train tick
+        #   transaction"). Phase 2 must not transition to RUNNING_AT_STATION
+        #   here, even when the stopped train sits in a scheduled-stop station
+        #   block — the path-completion gate is_stopped_at_authority_end()
+        #   requires state == RUNNING_MOVING, and Phase 3's
+        #   try_complete_active_path(...) runs after this method returns. Dwell
+        #   entry happens on the next eligible Phase 1 tick once the dispatcher
+        #   has completed the path and recorded the stop's finished_at.
+        # - A train at zero ATC clearance with live authority stays in
+        #   RUNNING_MOVING with current_speed_kmh == 0. The reactive speed-based
+        #   evaluation in on_physics_updated() handles the no-authority no-speed
+        #   case (RUNNING_MOVING -> READY once stopped with no live authority and
+        #   EB clear). Per design_new.md steps `89ba` / `32dd` / `90d3`, tick()
+        #   must not latch path completion or call route callbacks itself: all
+        #   completion flows through Phase 3's try_complete_active_path(...).
+        #
+        # Other states (READY, RUNNING_AT_STATION, OFF) handled by commands.
 
     def produce_physics_command(self) -> PhysicsCommand:
         """Compute the per-tick command physics will execute.
@@ -2206,19 +2200,6 @@ class TrainController:
         if self.path_projection.ato_destination_block_id:
             return True
         return False
-
-    def _is_standalone_path_complete(self, train: "Train") -> bool:
-        """Return True when a stopped running train has no remaining run context."""
-        if self.physics_sync.current_speed_kmh > STOPPED_SPEED_THRESHOLD_KMH:
-            return False
-        # ato_running=True is acceptable if there is no surviving path context —
-        # it is a stale flag left by ATC braking the train to 0.  Trust
-        # _has_path_backed_run_context() to confirm the path is truly gone.
-        if self.ato.running and self._has_path_backed_run_context(train):
-            return False
-        if self._has_path_backed_run_context(train):
-            return False
-        return self.commands.cab in ("A", "B")
 
     def _path_needs_cab_flip(self) -> bool:
         """Check if the current path requires the train to reverse direction.

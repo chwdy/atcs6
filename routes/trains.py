@@ -108,6 +108,7 @@ def register(app, state: AppState) -> None:
                 speed_profile_id=data.get("speed_profile_id"),
                 min_radius_cm=data.get("min_radius_cm"),
                 max_slope=data.get("max_slope"),
+                roster_entry_id=data.get("roster_entry_id"),
             )
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
@@ -275,6 +276,48 @@ def register(app, state: AppState) -> None:
         if result.success:
             return jsonify({"status": "success", **_train_to_dict(train, state.network)})
         return jsonify({"error": result.message}), 400
+
+    @app.route("/api/trains/<train_id>/calibrate", methods=["POST"])
+    def calibrate_train(train_id):
+        """Run a speed-calibration pass (design_new.md "Speed calibration").
+
+        Body: ``{ "mode": "auto" | "manual" }`` (default "auto"). Auto runs the
+        full voltage sweep and commits; manual begins the run and the operator
+        marks laps via ``/calibrate/record``.
+        """
+        data = request.get_json(silent=True) or {}
+        try:
+            run = train_service.calibrate_train(
+                state, train_id, mode=data.get("mode", "auto")
+            )
+        except NotFoundError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except ConflictError as exc:
+            return jsonify({"error": str(exc)}), 409
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify(
+            {
+                "status": "success",
+                "mode": run.mode,
+                "steps": len(run.commanded_voltages),
+                "samples": len(run.samples),
+                "complete": run.is_complete,
+            }
+        )
+
+    @app.route("/api/trains/<train_id>/calibrate/record", methods=["POST"])
+    def calibrate_record(train_id):
+        """Manual-mode lap marker: record one lap for the active run."""
+        try:
+            sample = train_service.calibrate_record(state, train_id)
+        except NotFoundError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except ConflictError as exc:
+            return jsonify({"error": str(exc)}), 409
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"status": "success", "committed_step": sample is not None})
 
     # ============================================================================
     # TrainController State and Monitoring

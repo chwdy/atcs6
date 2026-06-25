@@ -51,6 +51,7 @@ def register(app, state: AppState) -> None:
                 assigned_train_ids=data.get("assigned_train_ids", []),
                 priority=data.get("priority"),
                 acquisition_mode=data.get("acquisition_mode"),
+                manual_override=data.get("manual_override"),
                 start_mode=data.get("start_mode"),
                 start_task_index=data.get("start_task_index"),
                 edit_fields_present=edit_fields_present,
@@ -128,6 +129,9 @@ def register(app, state: AppState) -> None:
                     tasks=data["tasks"] if "tasks" in data else None,
                     priority=priority_value if "priority" in data else None,
                     acquisition_mode=acq_value if "acquisition_mode" in data else None,
+                    manual_override=(
+                        data["manual_override"] if "manual_override" in data else None
+                    ),
                     start_mode=data["start_mode"] if "start_mode" in data else None,
                     start_task_index=data.get("start_task_index"),
                     start_task_index_present=("start_task_index" in data),

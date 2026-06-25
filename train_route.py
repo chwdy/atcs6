@@ -356,6 +356,9 @@ class Route:
         acquisition_mode: Default route path-acquisition policy
             ("all_or_nothing" or "best_effort"). Default is ``best_effort``
             per design_new.md line 1052.
+        manual_override: Operator override for ``manual`` resources (default
+            False); route-level only, not a per-run override. See
+            design_new.md "manual_override" (Route field schema).
         start_mode: Which stop a fresh run begins at (FIRST / NEAREST /
             SPECIFIC). Default FIRST. See "Run start-mode seeding".
         start_task_index: Stop index used only when ``start_mode == SPECIFIC``.
@@ -376,6 +379,14 @@ class Route:
     # Route-level policy (v1)
     priority: int = 5
     acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT
+    # Operator override for `manual` resources (default False). Set True only on
+    # operator-initiated routes (the Quick Route tool). RouteExecutor passes this
+    # into every PathDispatcher.create_path / extend_path call for the run, and
+    # the target resolver applies it to `manual` target filtering, per
+    # design_new.md "manual_override" (Route field schema) and the `disabled` and
+    # `manual` availability flags canonical home. Route-level only — never a
+    # per-run override.
+    manual_override: bool = False
     # Start-mode default (per design_new.md "Run start-mode seeding"). Read once
     # when Phase 1 allocates a fresh RouteRun to seed its starting walk-position;
     # NOT a live RouteRun override (it has no meaning after allocation). A
@@ -480,6 +491,7 @@ class Route:
             "last_edited_at": self.last_edited_at,
             "priority": self.priority,
             "acquisition_mode": self.acquisition_mode.value,
+            "manual_override": self.manual_override,
             "start_mode": self.start_mode.value,
             "start_task_index": self.start_task_index,
         }
@@ -529,6 +541,7 @@ class Route:
             started_at=data.get("started_at"),
             priority=int(data.get("priority", 5)),
             acquisition_mode=acquisition_mode,  # type: ignore[arg-type]
+            manual_override=bool(data.get("manual_override", False)),
             start_mode=start_mode,
             start_task_index=start_task_index,
             created_at=float(data.get("created_at") or 0.0),

@@ -100,6 +100,7 @@ def create_train(
     speed_profile_id: Optional[str] = None,
     min_radius_cm: Optional[float] = None,
     max_slope: Optional[float] = None,
+    roster_entry_id: Optional[str] = None,
 ) -> Train:
     """Create a train, placing it when a position is given.
 
@@ -135,6 +136,7 @@ def create_train(
                 max_speed_kmh=max_speed_kmh,
                 length_cm=length_cm,
                 name=car_number,
+                roster_entry_id=roster_entry_id,
             )
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
@@ -553,3 +555,47 @@ def set_manual_power_percent(
     return _controller(
         state, require_train(state, train_id)
     ).commands.set_manual_power_percent(percent)
+
+
+def _calibration_profile(state: AppState, train_id: str):
+    """Resolve (train, profile) for a calibration command, enforcing the gates.
+
+    Gate (design_new.md "Speed calibration"): a train following an ATO route is
+    a controlled pass and must not be hijacked for calibration.
+    """
+    train = require_train(state, train_id)
+    sim = getattr(state, "sim_controller", None)
+    if sim is None:
+        raise ValidationError("Calibration requires a runtime")
+    executor = getattr(sim, "route_executor", None)
+    if executor is not None and executor.execution_state_for(train_id) is not None:
+        raise ConflictError("Cannot calibrate a train that is running a route")
+    profile = (
+        state.network.speed_profiles.get(train.speed_profile_id)
+        if train.speed_profile_id
+        else None
+    )
+    if profile is None:
+        raise ValidationError("Train has no SpeedProfile to calibrate")
+    return train, profile, sim
+
+
+def calibrate_train(state: AppState, train_id: str, *, mode: str = "auto"):
+    """Run a speed-calibration pass (design_new.md "Speed calibration").
+
+    Auto mode measures the full commanded voltage sweep synchronously and
+    commits the curves. Manual mode begins the run; the operator then issues
+    ``calibrate_record`` as the head passes the marker each lap. Returns the
+    `CalibrationRun`.
+    """
+    train, profile, sim = _calibration_profile(state, train_id)
+    run = sim.speed_calibration.start(train, profile, mode=mode)
+    if run.mode == "auto":
+        sim.speed_calibration.run_pass(run, profile)
+    return run
+
+
+def calibrate_record(state: AppState, train_id: str):
+    """Manual-mode lap marker: record one lap for the active calibration run."""
+    train, profile, sim = _calibration_profile(state, train_id)
+    return sim.speed_calibration.record(train_id, profile)

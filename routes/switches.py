@@ -19,6 +19,7 @@ from services import (
     ValidationError,
 )
 from services import switch_service
+from services.notifications import emit_command_result
 
 
 def register(app, state: AppState) -> None:
@@ -78,10 +79,21 @@ def register(app, state: AppState) -> None:
         except NotFoundError as exc:
             return jsonify({"error": str(exc)}), 404
         except ConflictError as exc:
+            # design_new.md line 658: the flag PATCH emits a command_result even
+            # on the 409 admin-reject, carrying the rejection reason.
+            emit_command_result(
+                state, source="Switch", entity_id_key="switch_id",
+                entity_id=switch_id, command_name="update_flags",
+                success=False, reason=str(exc),
+            )
             return jsonify({"error": str(exc)}), 409
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
 
+        emit_command_result(
+            state, source="Switch", entity_id_key="switch_id",
+            entity_id=switch_id, command_name="update_flags", success=True,
+        )
         return jsonify(switch.to_dict(state.network))
 
     @app.route("/api/switches/<switch_id>", methods=["PATCH"])

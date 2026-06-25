@@ -15,6 +15,7 @@ from flask import jsonify, request
 from app_state import AppState
 from services import ConflictError, GoneError, NotFoundError, ValidationError
 from services import block_service
+from services.notifications import emit_command_result
 from track import BIT_TO_GROUP
 
 
@@ -114,6 +115,7 @@ def register(app, state: AppState) -> None:
                 grade_percent=data.get("grade_percent"),
                 speed_limit_kmh=data.get("speed_limit_kmh"),
                 max_speed_kmh=data.get("max_speed_kmh"),
+                is_holding_point=data.get("is_holding_point"),
             )
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
@@ -177,9 +179,20 @@ def register(app, state: AppState) -> None:
         except GoneError as exc:
             return jsonify({"error": str(exc)}), 410
         except ConflictError as exc:
+            # design_new.md line 658: the flag PATCH emits a command_result even
+            # on the 409 admin-reject, carrying the rejection reason.
+            emit_command_result(
+                state, source="Block", entity_id_key="block_id",
+                entity_id=block_id, command_name="update_flags",
+                success=False, reason=str(exc),
+            )
             return jsonify({"error": str(exc)}), 409
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
+        emit_command_result(
+            state, source="Block", entity_id_key="block_id",
+            entity_id=block_id, command_name="update_flags", success=True,
+        )
         return jsonify(block.to_dict())
 
     @app.route("/api/blocks/<block_id>", methods=["DELETE"])

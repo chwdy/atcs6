@@ -193,10 +193,7 @@ class ResourceCoordinator:
             handler = getattr(self.block_manager, "on_block_tail_vacated", None)
             if not callable(handler):
                 return
-            try:
-                handler(resource_id, train_id, direction)
-            except TypeError:
-                handler(resource_id, train_id)
+            handler(resource_id, train_id, direction)
             return
         if resource_type == "switch":
             self.switch_manager.on_switch_tail_vacated(

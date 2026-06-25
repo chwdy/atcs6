@@ -281,6 +281,21 @@ class BlockManager:
             )
             return False
 
+        # Power-district intrusion (design_new.md "Power district", line 2397):
+        # a second train physically drawing power in a district already held by
+        # another train is a fatal physical-entry conflict — the power-level
+        # analogue of two trains in one block. block_id's own occupancy is clean
+        # for this train by here; this checks the rest of its district.
+        district_conflict = self._power_district_holder_other(block_id, train_id)
+        if district_conflict is not None:
+            self._report_fatal_conflict(
+                block_id=block_id,
+                train_id=train_id,
+                conflict_kind=FatalConflictKind.POWER_DISTRICT_INTRUSION,
+                prior_owner_train_id=district_conflict[1],
+            )
+            return False
+
         # Clean entry per design_new.md:717 — set physical occupancy, clear
         # stale caution, and consume any same-train reservation. The
         # reservation clear must run for every clean entry (FREE / RESERVED
@@ -332,6 +347,39 @@ class BlockManager:
         except Exception:
             # Receiver issues must not mask the underlying conflict.
             pass
+
+    def _power_district_holder_other(
+        self, block_id: str, train_id: str
+    ) -> Optional[Tuple[str, str]]:
+        """One-train-per-power-district check (design_new.md "Power district").
+
+        If `block_id`'s power district has any OTHER block held — occupied or
+        reserved — by a train other than `train_id`, return
+        ``(held_block_id, holder_train_id)``; else ``None``. `block_id`'s own
+        occupancy/reservation is checked by the caller's per-block logic, so
+        this scans only the rest of the district. Returns ``None`` for an
+        ungrouped (single-block) district and when no network is wired.
+        """
+        network = self.network
+        if network is None:
+            return None
+        district_blocks = network.district_block_ids(block_id)
+        if len(district_blocks) <= 1:
+            return None
+        for other_id in district_blocks:
+            if other_id == block_id:
+                continue
+            other = self._block_registry.get(other_id)
+            if other is None:
+                continue
+            if other.occupied_by is not None and other.occupied_by != train_id:
+                return (other_id, other.occupied_by)
+            if (
+                other.reserved_for_train is not None
+                and other.reserved_for_train != train_id
+            ):
+                return (other_id, other.reserved_for_train)
+        return None
 
     def _emit_diagnostic(self, message: str, *, block_id: str, train_id: Optional[str] = None) -> None:
         """Emit a runtime diagnostic through `NotificationCenter`.
@@ -635,6 +683,17 @@ class BlockManager:
                     success=False,
                     failed_block_id=block_id,
                     reason="reserved_by_other_path",
+                )
+            # Power-district eligibility (design_new.md "Power district", line
+            # 2396): a candidate block whose district holds — occupies or
+            # reserves — any block for a different train is not eligible, the
+            # same way an occupied or other-reserved block is not. Keeps a path
+            # from ever being reserved into a district another train holds.
+            if self._power_district_holder_other(block_id, train_id) is not None:
+                return ReserveResult(
+                    success=False,
+                    failed_block_id=block_id,
+                    reason="power_district_held_by_other_train",
                 )
 
             traversal = directions.get(block_id) if directions else None

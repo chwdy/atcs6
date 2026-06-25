@@ -222,7 +222,6 @@ class TrackSegment:
 
     # === OTHER PROPERTIES ===
     length: float = 1.0
-    curve_radius: Optional[float] = None  # Minimum curve radius (None = straight track)
     # Per design_new.md line 566, `occupied_by` and `reserved_by` are removed
     # live runtime fields on TrackSegment in v1. Physical occupancy lives on
     # the owning resource (`Block.occupied_by` / `Switch.occupied_by`) and

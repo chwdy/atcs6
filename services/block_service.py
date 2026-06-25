@@ -69,6 +69,7 @@ def create_block(
     grade_percent: Optional[Any] = None,
     speed_limit_kmh: Optional[Any] = None,
     max_speed_kmh: Optional[Any] = None,
+    is_holding_point: Optional[Any] = None,
 ):
     """Create a block and set its optional config fields.
 
@@ -91,6 +92,8 @@ def create_block(
             block.speed_limit_kmh = speed_limit_kmh
         elif max_speed_kmh is not None:
             block.speed_limit_kmh = max_speed_kmh
+        if is_holding_point is not None:
+            block.is_holding_point = bool(is_holding_point)
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
     return block
@@ -175,6 +178,11 @@ def update_block(state: AppState, block_id: str, *, data: Dict[str, Any]):
             block.disabled = new_disabled
         if "manual" in data:
             block.manual = bool(data["manual"])
+        # Holding-point config flag (design_new.md "Block" line 848). No
+        # precondition — it does not affect availability, reservation, or
+        # runtime state; it only biases best-effort truncation.
+        if "is_holding_point" in data:
+            block.is_holding_point = bool(data["is_holding_point"])
 
         # Static block-level travel policy per design_new.md
         # `Block.allowed_travel_directions`. Must be a non-empty subset of

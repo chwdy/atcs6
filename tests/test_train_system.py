@@ -14,6 +14,7 @@ from train import Train, TrainCar
 from enums import Direction, TrainState, BlockState, HandlePosition
 from network import RailwayNetwork
 from train_controller import TrainController, create_controller_for_train
+from runtime_payloads import PhysicsSpanUpdate
 from tests.train_test_helpers import set_train_span
 
 
@@ -859,11 +860,18 @@ class TestTrainStateTransitions:
 
 
     def test_path_backed_manual_run_still_completes_to_standby(self):
-        """A path-backed run should still complete after switching from ATO to manual."""
+        """A path-backed run still completes to standby (READY) after ATO->manual.
+
+        The RUNNING_MOVING -> READY transition for a stopped train with no live
+        authority is the reactive speed-based evaluation in
+        ``on_physics_updated()`` (design_new.md "Reactive speed-based state
+        evaluation"); per steps 89ba/32dd/90d3, ``tick()`` must not perform it.
+        This drives that canonical post-physics callback with a no-boundary
+        zero-speed update — the real per-tick order (tick() then physics).
+        """
         train, controller, network = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING
         )
-        controller.physics_sync.current_speed_kmh = 0.0
         train.state = TrainState.RUNNING_MOVING
         controller.ops.state = TrainState.RUNNING_MOVING
         controller.commands.control_mode = "manual"
@@ -874,9 +882,18 @@ class TestTrainStateTransitions:
         # exists for this stub controller.
         controller.ato.running = False
 
+        span = set_train_span(controller, (0, 0), facing_direction=Direction.NORTH)
         controller.tick(0.1)
+        controller.on_physics_updated(
+            event_time=0.0,
+            span_update=PhysicsSpanUpdate(
+                new_span=span,
+                current_speed_kmh=0.0,
+                added_tiles=[],
+                removed_tiles=[],
+            ),
+        )
 
-        assert controller.ops.state == TrainState.READY
         assert controller.ops.state == TrainState.READY
         assert controller.path_projection.path_backed_run_active is False
 

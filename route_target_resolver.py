@@ -293,6 +293,35 @@ class RouteTargetResolver:
             return loc.station_id in (getattr(net, "station_groups", {}) or {})
         return False
 
+    def _route_manual_override(self, train: Optional["Train"]) -> bool:
+        """Operator override flag from this train's assigned route.
+
+        design_new.md line 1208 / line 640: `RouteExecutor` applies the
+        assigned route's `manual_override` to manual target filtering. The flag
+        is route-level (default False); an automatic route never sets it, so
+        auto plans never resolve `manual` targets. Returns False when the train
+        has no resolvable assigned route.
+        """
+        if train is None:
+            return False
+        e = self._e
+        train_id = getattr(train, "train_id", None)
+        if not train_id:
+            return False
+        # Degrade to False when the executor has no route context (e.g. a
+        # minimal test stub): no resolvable route means no operator override.
+        assigned = getattr(e, "assigned_route_id_for", None)
+        if not callable(assigned):
+            return False
+        route_id = assigned(train_id)
+        if not route_id:
+            return False
+        registry = getattr(e, "route_registry", None)
+        if registry is None:
+            return False
+        route = registry.get(route_id)
+        return bool(getattr(route, "manual_override", False))
+
     def resolve_task_target_block_detailed(
         self,
         task: "RouteTask",
@@ -329,12 +358,15 @@ class RouteTargetResolver:
         if loc is None:
             return None, "task_location is missing"
 
-        # Availability filters per design_new.md "Platform And Station"
-        # and the `disabled` and `manual` availability flags canonical home
-        # under TrackResource. RouteExecutor (auto) never sets
-        # manual_override, so manual blocks/platforms/stations are treated
-        # like disabled here. Operator-initiated paths bypass these filters
-        # at the dispatcher layer; they never reach this resolver.
+        # Availability filters per design_new.md "Platform And Station" and the
+        # `disabled` and `manual` availability flags canonical home under
+        # TrackResource. The `manual` filter is relaxed when the train's
+        # assigned route carries `manual_override == True` (design_new.md line
+        # 1208 / line 640): an operator-initiated route may target `manual`
+        # blocks/platforms/stations. `disabled` is never relaxed. An automatic
+        # route leaves `manual_override == False`, so auto plans still treat
+        # `manual` targets like disabled ones.
+        manual_override = self._route_manual_override(train)
         blocks_registry = getattr(e.network, "blocks", {}) or {}
 
         def _block_unavailable_reason(block_id: str) -> Optional[str]:
@@ -344,7 +376,7 @@ class RouteTargetResolver:
                 return f"Block {block_id} is not in the network"
             if getattr(block, "disabled", False):
                 return f"Block {block_id} is disabled"
-            if getattr(block, "manual", False):
+            if getattr(block, "manual", False) and not manual_override:
                 return f"Block {block_id} is set to manual"
             return None
 
@@ -363,7 +395,7 @@ class RouteTargetResolver:
                 return None, f"Platform {loc.platform_id} is not in the network"
             if getattr(platform, "disabled", False):
                 return None, f"Platform {loc.platform_id} is disabled"
-            if getattr(platform, "manual", False):
+            if getattr(platform, "manual", False) and not manual_override:
                 return None, f"Platform {loc.platform_id} is set to manual"
             bid = self.platform_block_id(loc.platform_id, train=train)
             if not bid:
@@ -380,7 +412,7 @@ class RouteTargetResolver:
                 return None, f"Station {loc.station_id} is not in the network"
             if getattr(station, "disabled", False):
                 return None, f"Station {loc.station_id} is disabled"
-            if getattr(station, "manual", False):
+            if getattr(station, "manual", False) and not manual_override:
                 return None, f"Station {loc.station_id} is set to manual"
             platform_ids = getattr(station, "platform_ids", []) or []
             platforms = getattr(e.network, "platforms", {}) or {}
@@ -391,8 +423,11 @@ class RouteTargetResolver:
                 platform = platforms.get(pid)
                 if platform is None:
                     continue
-                # Skip platforms that are themselves unavailable for auto-routing.
-                if getattr(platform, "disabled", False) or getattr(platform, "manual", False):
+                # Skip platforms that are themselves unavailable for routing.
+                # `manual` is relaxed under an operator route's manual_override.
+                if getattr(platform, "disabled", False) or (
+                    getattr(platform, "manual", False) and not manual_override
+                ):
                     continue
                 bid = self.platform_block_id(pid, train=train)
                 if not bid or _block_unavailable_reason(bid) is not None:

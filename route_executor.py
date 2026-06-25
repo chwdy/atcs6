@@ -471,6 +471,18 @@ class RouteExecutor:
         # only by the route_deactivate consumer; abort/power-off never record it.
         self._pending_reassign: Dict[str, str] = {}
 
+        # Per-tick coordinator state (design_new.md "Contention snapshot" +
+        # "Meet coordination"). Read-only tick-start views rebuilt every tick by
+        # `build_tick_coordination(...)` (after order_runnable_trains, before the
+        # per-train loop); retained across no ticks, so they are not latches and
+        # hold no Latch-Table entry.
+        #   contention_snapshot: block_id -> (train_id, effective_priority) of the
+        #     single highest-priority train blocked on (waiting_for) that block.
+        #   meet_assignment: train_id -> MeetCeiling capping how far it may
+        #     reserve this tick when a higher-priority train needs the same track.
+        self.contention_snapshot: Dict[str, Tuple[str, int]] = {}
+        self.meet_assignment: Dict[str, "MeetCeiling"] = {}
+
         # Helper modules — lazy-init on first access. The actual logic lives
         # in `route_target_resolver.RouteTargetResolver` and
         # `train_at_target_predicates.TrainAtTargetPredicates`; this class
@@ -708,6 +720,104 @@ class RouteExecutor:
 
         ordered.sort(key=sort_key)
         return ordered
+
+    # ------------------------------------------------------------------
+    # Per-tick coordination (design_new.md "Contention snapshot" +
+    # "Meet coordination"). Built in the tick preamble after
+    # order_runnable_trains and before the first train's Phase 1.
+    # ------------------------------------------------------------------
+
+    def build_tick_coordination(self, ordered_train_ids: List[str]) -> None:
+        """Rebuild the contention snapshot and meet assignment for this tick.
+
+        design_new.md "Contention snapshot" + "Meet coordination": both are
+        read-only tick-start views — recomputed from scratch every tick and
+        retained across none. The snapshot is built first; meet coordination
+        seeds its conflict detection from the snapshot's contending pairs.
+        """
+        self.contention_snapshot = self._build_contention_snapshot(ordered_train_ids)
+        self.meet_assignment = self._build_meet_assignment(ordered_train_ids)
+
+    def _build_contention_snapshot(
+        self, ordered_train_ids: List[str]
+    ) -> Dict[str, Tuple[str, int]]:
+        """`block_id -> (train_id, effective_priority)` for every block on which
+        some train is blocked from growing its authority, recording the single
+        highest-`effective_priority` waiter (ties broken by the stable
+        `order_runnable_trains` order). design_new.md "Contention snapshot".
+        """
+        snapshot: Dict[str, Tuple[str, int]] = {}
+        for train_id in ordered_train_ids:
+            blocked_on = self._waiting_for_block_id(train_id)
+            if not blocked_on:
+                continue
+            eff_pri = self._effective_priority_for(train_id)
+            current = snapshot.get(blocked_on)
+            # Strictly-higher priority replaces; equal keeps the earlier (the
+            # stable order_runnable_trains tie-break, since we iterate in that
+            # order). So the entry is the highest-priority waiter on the block.
+            if current is None or eff_pri > current[1]:
+                snapshot[blocked_on] = (train_id, eff_pri)
+        return snapshot
+
+    def _build_meet_assignment(
+        self, ordered_train_ids: List[str]
+    ) -> Dict[str, "MeetCeiling"]:
+        """Per-tick `train_id -> MeetCeiling` (design_new.md "Meet coordination").
+
+        Delegated to `MeetCoordinator`, which reads the just-built
+        `contention_snapshot` to seed conflict detection.
+        """
+        from meet_coordination import MeetCoordinator
+
+        return MeetCoordinator(self).build(ordered_train_ids)
+
+    def _effective_priority_for(self, train_id: str) -> int:
+        """`RouteRun.effective_priority` for a train, mirroring the rule
+        `order_runnable_trains` uses: per-run override, else shared
+        `Route.priority`, else 5 for a train with no current RouteRun."""
+        run = self.execution_state_for(train_id)
+        route_id = self.assigned_route_id_for(train_id)
+        route = self.route_registry.get(route_id) if route_id else None
+        if run is not None:
+            return int(run.effective_priority(route=route, route_executor=self))
+        if route is not None:
+            return int(getattr(route, "priority", 5))
+        return 5
+
+    def _waiting_for_block_id(self, train_id: str) -> Optional[str]:
+        """The block this train's active path is blocked on (the
+        `waiting_for_block_id` live recompute), or None."""
+        if self.path_dispatcher is None:
+            return None
+        return self.path_dispatcher.waiting_for_block_id(train_id)
+
+    def _held_future_reservations(self, train_id: str) -> set:
+        """Block ids this train holds as not-yet-entered future reservations
+        (reserved-ahead, not occupied) — the set the contention-driven release
+        checks against the snapshot."""
+        bm = getattr(self.network, "block_manager", None)
+        if bm is None:
+            return set()
+        return set(bm.reserved_blocks_for_train(train_id))
+
+    def _contention_release_due(self, train_id: str) -> bool:
+        """True when a strictly-higher-priority run is blocked on a block this
+        run holds as a not-yet-entered future reservation.
+
+        design_new.md "Contention snapshot" (line 1544) — the contention-driven
+        release branch of Planning Kernel step 66aa. Reads the tick-start
+        `contention_snapshot` (highest-priority waiter per block) against this
+        run's reserved-ahead corridor.
+        """
+        if not self.contention_snapshot:
+            return False
+        my_pri = self._effective_priority_for(train_id)
+        for block_id in self._held_future_reservations(train_id):
+            entry = self.contention_snapshot.get(block_id)
+            if entry is not None and entry[0] != train_id and entry[1] > my_pri:
+                return True
+        return False
 
     # ------------------------------------------------------------------
     # Route + RouteRun override helpers (per design_new.md
@@ -1612,6 +1722,20 @@ class RouteExecutor:
         target_block = projection.resolved_target.requested_destination_block_id
         target_dir = projection.resolved_target.requested_destination_direction
 
+        # Meet-coordination ceiling cap (design_new.md "Meet coordination",
+        # line 1556): when this train carries a meet ceiling, REQUEST authority
+        # only to the ceiling block in its route direction. The recorded route
+        # target (`task_runs[...].resolved_target`, written below) stays the
+        # farther route target — the doc requires "the route target is
+        # unchanged" — so only the create/extend request is capped. The first
+        # tick the train carries no ceiling, the request resumes the full target.
+        request_block = target_block
+        request_dir = target_dir
+        ceiling = self.meet_assignment.get(train.train_id)
+        if ceiling is not None and ceiling.block_id != target_block:
+            request_block = ceiling.block_id
+            request_dir = ceiling.direction
+
         # Decide create vs extend by active authority presence.
         active_path_id = self._get_active_path_id(train.train_id)
 
@@ -1622,23 +1746,31 @@ class RouteExecutor:
             route=route, route_executor=self
         )
 
+        # design_new.md line 1208 / line 640: forward the assigned route's
+        # operator override into the acquisition chain so an operator-initiated
+        # route can serve `manual` resources. Route-level only (never a RouteRun
+        # override); an automatic route leaves this False.
+        manual_override = bool(getattr(route, "manual_override", False))
+
         success = False
         result = None
         try:
             if active_path_id is not None:
                 result = self.path_dispatcher.extend_path(
                     path_id=active_path_id,
-                    requested_destination_block_id=target_block,
-                    requested_destination_direction=target_dir,
+                    requested_destination_block_id=request_block,
+                    requested_destination_direction=request_dir,
                     acquisition_mode=acquisition_mode,
+                    manual_override=manual_override,
                 )
                 success = bool(getattr(result, "success", False))
             else:
                 result = self.path_dispatcher.create_path(
                     train_id=train.train_id,
-                    requested_destination_block_id=target_block,
-                    requested_destination_direction=target_dir,
+                    requested_destination_block_id=request_block,
+                    requested_destination_direction=request_dir,
                     acquisition_mode=acquisition_mode,
+                    manual_override=manual_override,
                 )
                 success = bool(getattr(result, "success", False))
         except Exception as exc:  # pragma: no cover — defensive
@@ -1927,6 +2059,24 @@ class RouteExecutor:
         if grew or moving:
             exec_state.idle_hold_ticks = 0
             return False
+        # Contention-driven release (design_new.md "Contention snapshot", line
+        # 1544): a stalled best-effort hold whose reserved-ahead corridor blocks
+        # a strictly-higher-priority run is released NOW, not after the idle-hold
+        # timeout — the higher-priority run is waiting on resources this run is
+        # sitting on. Same latch path as the timeout release (Phase 1 latches;
+        # Phase 3 commits the cancel once stopped), only sooner.
+        if self._contention_release_due(train_id):
+            controller.route_hooks.phase_latches.set_path_cancel_request(
+                initiator="contention_release",
+                reason=(
+                    f"best-effort authority at {path.get_authority_end_block_id()} "
+                    "released for a higher-priority run blocked on a held "
+                    "reservation"
+                ),
+            )
+            exec_state.release_cooldown_ticks = IDLE_HOLD_COOLDOWN_TICKS
+            exec_state.idle_hold_ticks = 0
+            return True
         exec_state.idle_hold_ticks += 1
         if exec_state.idle_hold_ticks < IDLE_HOLD_RELEASE_TICKS:
             return False

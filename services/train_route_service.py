@@ -44,6 +44,7 @@ EDIT_FIELDS = (
     "mode",
     "priority",
     "acquisition_mode",
+    "manual_override",
 )
 
 # Per design_new.md "RouteRun overrides" — fields that may carry per-field
@@ -156,6 +157,7 @@ def create_route(
     assigned_train_ids: Optional[Iterable[str]] = None,
     priority: Optional[int] = None,
     acquisition_mode: Optional[str] = None,
+    manual_override: Optional[bool] = None,
     start_mode: Optional[str] = None,
     start_task_index: Optional[Any] = None,
     edit_fields_present: Optional[bool] = None,
@@ -195,6 +197,9 @@ def create_route(
                 f"Invalid acquisition_mode {acquisition_mode!r}"
             )
 
+    if manual_override is not None:
+        route.manual_override = bool(manual_override)
+
     if start_mode is not None:
         route.start_mode = _coerce_start_mode(start_mode)
 
@@ -226,6 +231,7 @@ def update_route(
     tasks: Optional[Iterable[Any]] = None,
     priority: Optional[Any] = None,
     acquisition_mode: Optional[str] = None,
+    manual_override: Optional[Any] = None,
     start_mode: Optional[str] = None,
     start_task_index: Optional[Any] = None,
     start_task_index_present: bool = False,
@@ -324,6 +330,14 @@ def update_route(
             )
         definition_edit_touched = True
         changed_overridable.append("acquisition_mode")
+
+    if manual_override is not None:
+        # Route-level operator override (design_new.md line 1208). Bumps
+        # last_edited_at (it is in the EDIT_FIELDS set) but is NOT in
+        # OVERRIDE_ALLOWLIST, so it never pushes onto running RouteRuns: edits
+        # take effect on the next create/extend with no run teardown.
+        route.manual_override = bool(manual_override)
+        definition_edit_touched = True
 
     # start_mode / start_task_index are definition edits but are NOT in the
     # last_edited_at bump-set (design_new.md "Route edit timestamps": the set is

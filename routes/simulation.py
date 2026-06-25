@@ -21,6 +21,37 @@ def register(app, state: AppState) -> None:
         payload["simulation_speed"] = state.simulation_speed
         return jsonify(payload)
 
+    @app.route("/api/event-log", methods=["GET"])
+    def get_event_log():
+        """Read the operator-facing event log (design_new.md "Event log").
+
+        Returns the `NotificationCenter` stream as records the read-only viewer
+        and replay layers consume. Optional filters:
+        ``?kind=&train_id=&severity=&limit=`` (filter by kind / train / severity
+        / most-recent count).
+        """
+        sim = getattr(state, "sim_controller", None)
+        nc = getattr(sim, "notification_center", None) if sim else None
+        if nc is None:
+            return jsonify({"events": []})
+        try:
+            limit = int(request.args.get("limit", 500))
+        except (TypeError, ValueError):
+            limit = 500
+        kind = request.args.get("kind")
+        train_id = request.args.get("train_id")
+        severity = request.args.get("severity")
+        records = []
+        for e in nc.peek_recent(limit if limit > 0 else 500):
+            if kind and e.kind != kind:
+                continue
+            if train_id and e.train_id != train_id:
+                continue
+            if severity and e.severity.value != severity:
+                continue
+            records.append(e.to_dict())
+        return jsonify({"events": records})
+
     @app.route("/api/simulation/control", methods=["POST"])
     def control_simulation():
         data = request.json or {}

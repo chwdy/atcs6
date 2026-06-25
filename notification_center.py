@@ -8,6 +8,8 @@ notification queues.
 
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -20,6 +22,29 @@ class Severity(Enum):
     WARNING = "warning"
     ERROR = "error"
     FATAL = "fatal"
+
+
+class EventKind:
+    """Operational event `kind` vocabulary for the event log (design_new.md
+    "Event log"): the events that mark what each train did, extending the
+    notification `kind`s defined in "Runtime notifications". Components emit
+    these through `NotificationCenter` at the points they already report from —
+    the event log is the persisted projection of that one stream, not a second
+    sink.
+    """
+
+    TRAIN_PLACED = "train_placed"
+    TRAIN_DEPARTED = "train_departed"
+    TRAIN_ARRIVED = "train_arrived"
+    ENTERED_DWELL = "entered_dwell"
+    BLOCK_ENTERED = "block_entered"
+    BLOCK_VACATED = "block_vacated"
+    SWITCH_THROWN = "switch_thrown"
+    PATH_CREATED = "path_created"
+    PATH_COMPLETED = "path_completed"
+    PATH_CANCELLED = "path_cancellation"
+    EB_ACTIVATED = "eb_activated"
+    EB_RELEASED = "eb_released"
 
 
 @dataclass
@@ -50,6 +75,38 @@ class Notification:
     path_id: Optional[str] = None
     payload: Dict[str, Any] = field(default_factory=dict)
 
+    def to_dict(self) -> Dict[str, Any]:
+        """JSON-compatible dict for the persisted event log."""
+        return {
+            "notification_id": self.notification_id,
+            "event_time": self.event_time,
+            "source": self.source,
+            "kind": self.kind,
+            "severity": self.severity.value,
+            "train_id": self.train_id,
+            "path_id": self.path_id,
+            "payload": self.payload,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Notification":
+        """Reconstruct from a persisted event-log record."""
+        raw_sev = data.get("severity", "info")
+        try:
+            severity = Severity(raw_sev)
+        except ValueError:
+            severity = Severity.INFO
+        return cls(
+            notification_id=int(data.get("notification_id", 0)),
+            event_time=float(data.get("event_time", 0.0) or 0.0),
+            source=str(data.get("source", "")),
+            kind=str(data.get("kind", "")),
+            severity=severity,
+            train_id=data.get("train_id"),
+            path_id=data.get("path_id"),
+            payload=dict(data.get("payload") or {}),
+        )
+
 
 class NotificationCenter:
     """Sole owner of runtime notifications.
@@ -62,6 +119,11 @@ class NotificationCenter:
         self._next_id: int = 1
         self._queue: List[Notification] = []
         self._archive: List[Notification] = []
+        # Event-log disk persistence (design_new.md "Event log"): when a path is
+        # set, every emitted notification is appended as one JSON line, so a
+        # run's record outlives the session. The in-memory queue/archive are
+        # unchanged; this is the persisted projection of the same one stream.
+        self._log_path: Optional[str] = None
 
     def emit(
         self,
@@ -97,6 +159,7 @@ class NotificationCenter:
         self._next_id += 1
         self._queue.append(n)
         self._archive.append(n)
+        self._persist(n)
         return n
 
     def peek_recent(self, n: int = 50) -> List[Notification]:
@@ -104,6 +167,48 @@ class NotificationCenter:
         if n <= 0:
             return []
         return list(self._archive[-n:])
+
+    # -- event-log persistence (design_new.md "Event log") ----------------
+
+    def enable_event_log(self, path: str) -> None:
+        """Persist every subsequent emit to ``path`` as append-only JSONL."""
+        directory = os.path.dirname(path)
+        if directory:
+            try:
+                os.makedirs(directory, exist_ok=True)
+            except OSError:
+                pass
+        self._log_path = path
+
+    def _persist(self, n: Notification) -> None:
+        """Append one notification to the disk event log; never raises (a log
+        write must not affect the emitting component)."""
+        if not self._log_path:
+            return
+        try:
+            with open(self._log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(n.to_dict()) + "\n")
+        except OSError:
+            pass
+
+    @staticmethod
+    def read_event_log(path: str) -> List[Notification]:
+        """Read a persisted event log back in `notification_id` order (the
+        order the log reads back). The read-only viewer/replay layers consume
+        this; replay reconstructs the picture from these events plus the layout
+        and must not re-run the simulation engine."""
+        out: List[Notification] = []
+        if not path or not os.path.exists(path):
+            return out
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        out.append(Notification.from_dict(json.loads(line)))
+        except (OSError, ValueError):
+            pass
+        return out
 
     def __len__(self) -> int:
         """Number of notifications currently in the live (undrained) queue."""

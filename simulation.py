@@ -29,7 +29,7 @@ from typing import Any, Dict, Literal, Optional, Tuple, TYPE_CHECKING
 
 from network import RailwayNetwork
 from train import Train, TrainCar
-from enums import TrainState, Direction
+from enums import TrainState, Direction, OperationMode
 from block_power import BlockPowerController
 from switch_power import SwitchPowerController
 from block_occupancy import SimulatedInputInterface, BlockOccupancyDetector
@@ -65,10 +65,29 @@ class SimulationController:
         network: RailwayNetwork,
         path_dispatcher: Optional["PathDispatcher"] = None,
         notification_center: Optional[NotificationCenter] = None,
+        operation_mode: Any = OperationMode.SIM,
+        input_interface: Optional[Any] = None,
+        block_output_interface: Optional[Any] = None,
+        switch_output_interface: Optional[Any] = None,
     ):
         self.network = network
         self.path_dispatcher = path_dispatcher
         self.last_update_time = datetime.now()
+
+        # Run mode (design_new.md "Run modes"): the hardware backend is chosen
+        # once when the operation session is built and never switched mid-run.
+        # Sim mode (the v1 default) wires the simulated interfaces; a real
+        # backend injects real implementations of each interface behind the same
+        # contract. No code above the interfaces branches on the mode — it
+        # manifests only as which interfaces are wired below.
+        self.operation_mode: OperationMode = (
+            operation_mode
+            if isinstance(operation_mode, OperationMode)
+            else OperationMode(operation_mode)
+        )
+        self._input_interface_override = input_interface
+        self._block_output_interface_override = block_output_interface
+        self._switch_output_interface_override = switch_output_interface
 
         # Single notification owner for the whole runtime. If the caller did
         # not supply one, construct a fresh instance.
@@ -89,10 +108,25 @@ class SimulationController:
         self.controllers: Dict[str, TrainController] = {}
         self.physics_instances: Dict[str, TrainPhysics] = {}
 
-        # Initialize components with shared controllers
-        self.power_controller = BlockPowerController(network)
+        # Initialize components with shared controllers. The block/switch power
+        # output interfaces come from the session-build override (real backend)
+        # or default to the simulated interfaces (sim mode) — design_new.md
+        # "Run modes", "the backend is chosen once when the session is built".
+        self.power_controller = (
+            BlockPowerController(
+                network, output_interface=self._block_output_interface_override
+            )
+            if self._block_output_interface_override is not None
+            else BlockPowerController(network)
+        )
         network.power_controller = self.power_controller
-        self.switch_power_controller = SwitchPowerController(network)
+        self.switch_power_controller = (
+            SwitchPowerController(
+                network, output_interface=self._switch_output_interface_override
+            )
+            if self._switch_output_interface_override is not None
+            else SwitchPowerController(network)
+        )
         network.switch_power_controller = self.switch_power_controller
 
         # Block occupancy detection: the global per-block current sensor plus the
@@ -100,7 +134,11 @@ class SimulationController:
         # detection"). The simulated sensor reads the live spans of all
         # controllers; `self.controllers` is shared by reference and populated as
         # trains are added, so the detector sees every train without re-wiring.
-        self.input_interface = SimulatedInputInterface(network, self.controllers)
+        self.input_interface = (
+            self._input_interface_override
+            if self._input_interface_override is not None
+            else SimulatedInputInterface(network, self.controllers)
+        )
         network.input_interface = self.input_interface
         self.block_occupancy_detector = BlockOccupancyDetector(
             network=network,
@@ -117,6 +155,13 @@ class SimulationController:
         self.route_executor = RouteExecutor(network, path_dispatcher, self.controllers)
         self.speed_profile_registry = network.speed_profiles
         self.simulation_time: float = 0.0
+        # Speed calibration (design_new.md "Speed calibration"): measures a
+        # locomotive's response and writes it into its SpeedProfile. Wired with
+        # this controller so progress/results surface on the command_result
+        # stream owned by NotificationCenter.
+        from speed_calibration import SpeedCalibration
+
+        self.speed_calibration = SpeedCalibration(self)
 
         # Wire back-references so peer components can reach the notification
         # center, the route executor, and each other.
@@ -211,6 +256,12 @@ class SimulationController:
             ordered_train_ids = self.route_executor.order_runnable_trains(
                 candidate_train_ids
             )
+
+            # Build the per-tick contention snapshot + meet assignment before any
+            # train's Phase 1 (design_new.md "Contention snapshot" + "Meet
+            # coordination"): both read tick-start committed reservation state
+            # plus the runnable order, and Phase-1 step 66aa consumes them.
+            self.route_executor.build_tick_coordination(ordered_train_ids)
 
             for train_id in ordered_train_ids:
                 train = self.network.trains.get(train_id)
@@ -649,6 +700,7 @@ class SimulationController:
         name: Optional[str] = None,
         initial_cab: Optional[Literal["A", "B"]] = None,
         start_tile: Optional[Tuple[int, int]] = None,
+        roster_entry_id: Optional[str] = None,
     ) -> Train:
         """Sole entry point for adding a train at runtime.
 
@@ -686,6 +738,23 @@ class SimulationController:
             raise ValueError(f"Train {train_id!r} already exists")
         if starting_block_id not in self.network.blocks:
             raise ValueError(f"Unknown block: {starting_block_id!r}")
+
+        # Roster import (design_new.md "Train Roster"): when the placement names
+        # a roster entry, seed the placement defaults from it instead of blank
+        # values. The entry is a template; the placed Train is a separate
+        # runtime instance, so editing one after placement never changes the
+        # other. The span-length and max-speed defaults are applied here; the
+        # remaining config fields + the profile link are applied after the Train
+        # is constructed, below.
+        roster_entry = None
+        roster = getattr(self.network, "train_roster", None)
+        if roster_entry_id and roster is not None:
+            roster_entry = roster.get_entry(roster_entry_id)
+        if roster_entry is not None:
+            if roster_entry.max_speed is not None:
+                max_speed_kmh = float(roster_entry.max_speed)
+            if roster_entry.consist_length_cm is not None:
+                length_cm = float(roster_entry.consist_length_cm)
 
         # Resolve a starting tile inside the named block.
         start_positions = self.network.get_block_positions(starting_block_id)
@@ -725,6 +794,24 @@ class SimulationController:
             model=(train_type or ""),
             car_number=(name or ""),
         )
+
+        # Roster import: seed the remaining config fields + profile link from the
+        # entry (design_new.md "Train Roster"). Setting `speed_profile_id` here
+        # (when the linked profile exists) skips the default-profile creation
+        # below, keeping the locomotive's measured curves tied to it across
+        # placements.
+        if roster_entry is not None:
+            if roster_entry.min_radius_cm is not None:
+                train.min_radius_cm = float(roster_entry.min_radius_cm)
+            train.max_slope = float(roster_entry.max_slope)
+            if roster_entry.speed_profile_id and hasattr(
+                self.network, "speed_profiles"
+            ):
+                if (
+                    self.network.speed_profiles.get(roster_entry.speed_profile_id)
+                    is not None
+                ):
+                    train.speed_profile_id = roster_entry.speed_profile_id
 
         # Seed the train's default SpeedProfile so `power_percent` manual mode
         # has a defined power->speed mapping anchored to THIS train's max_speed

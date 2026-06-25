@@ -241,29 +241,19 @@ def _emit_command_result(
 ) -> None:
     """Emit a Switch ``command_result`` event; never raises.
 
-    Notification failure must not affect the caller, so every step is
-    guarded -- a missing NotificationCenter (pre-init window) is a no-op.
+    Delegates to the shared `command_result` emit helper (the single canonical
+    emit path, design_new.md "Runtime notifications") with
+    `command_name = "change_state"`.
     """
-    try:
-        from notification_center import Severity
+    from services.notifications import emit_command_result
 
-        sim_controller = getattr(state, "sim_controller", None)
-        notification_center = getattr(sim_controller, "notification_center", None)
-        if notification_center is None:
-            return
-        event_time = getattr(sim_controller, "simulation_time", 0.0) or 0.0
-        notification_center.emit(
-            source="Switch",
-            kind="command_result",
-            severity=Severity.INFO if success else Severity.WARNING,
-            event_time=event_time,
-            payload={
-                "command_id": command_id,
-                "command_name": "change_state",
-                "switch_id": switch_id,
-                "success": success,
-                "reason": message,
-            },
-        )
-    except Exception:
-        pass  # notification failure must not affect the command result
+    emit_command_result(
+        state,
+        source="Switch",
+        entity_id_key="switch_id",
+        entity_id=switch_id,
+        command_name="change_state",
+        success=success,
+        reason=message,
+        command_id=command_id,
+    )

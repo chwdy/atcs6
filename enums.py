@@ -11,6 +11,27 @@ from enum import Enum, IntEnum
 from typing import Any, Dict, Optional
 
 
+class OperationMode(Enum):
+    """The hardware backend an operation session runs against (design_new.md
+    "Run modes").
+
+    Operation mode runs the railway against one of two backends, chosen once
+    when the session is built and never switched mid-run. Both share one
+    identical core; the mode changes only which hardware interfaces are wired,
+    the pacing, and the occupancy-authority source — no code above the
+    interfaces branches on it.
+
+    - SIM: the in-memory run; wires the simulated interfaces and reads
+      occupancy "by calculation". What v1 ships and exercises.
+    - REAL: the same operation on real hardware; wires a real implementation of
+      each interface behind the same contract. The real implementations are not
+      part of v1 — v1 defines the contract a real backend satisfies.
+    """
+
+    SIM = "sim"
+    REAL = "real"
+
+
 class PathStatus(Enum):
     """Path lifecycle states.
 

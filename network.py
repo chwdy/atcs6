@@ -21,6 +21,8 @@ from enums import TrackType, Direction
 from constants import FLANK_PROTECTION_DISTANCE_CM
 from railway_signal import Signal, SignalType, SignalState
 from station import Station
+from power_district import PowerDistrict
+from train_roster import TrainRoster
 from railway_platform import Platform
 from speed_profile import SpeedProfileRegistry
 from signal_validation import validate_signal_placement
@@ -83,6 +85,16 @@ class RailwayNetwork:
         self.stations = self.platforms
         self.station_groups: Dict[str, Station] = {}
         self.switches: Dict[str, "Switch"] = {}  # NEW: Switch entity management
+        # Power districts: block groupings that share one power feed
+        # (design_new.md "Power district"). `_block_to_district` is the derived
+        # reverse index (block_id -> district_id) rebuilt from `power_districts`;
+        # a block absent from it is its own single-block district.
+        self.power_districts: Dict[str, PowerDistrict] = {}
+        self._block_to_district: Dict[str, str] = {}
+        # Train roster: the operator's catalog of owned locomotives (design_new.md
+        # "Train Roster"). Configuration data persisted with the layout snapshot;
+        # a placement may import an entry to seed a fresh Train's defaults.
+        self.train_roster: TrainRoster = TrainRoster()
 
         # Lookahead memo coordination (perf; see TrainController.
         # _compute_canonical_lookahead). `_lookahead_world_version` is bumped by
@@ -296,11 +308,14 @@ class RailwayNetwork:
         self.station_groups.clear()
         self.switches.clear()
         self.tunnels.clear()
+        self.power_districts.clear()
+        self.train_roster.clear()
         # Derived tile -> owner reverse indices. Not held on any entity dict,
         # so they must be cleared explicitly to avoid stale block/platform
         # membership on reused tiles.
         self._tile_to_block.clear()
         self._tile_to_platform.clear()
+        self._block_to_district.clear()
         # Drops _walk_cache + _block_index_cache.
         self.invalidate_pathfinding_cache()
 
@@ -2118,6 +2133,48 @@ class RailwayNetwork:
         for switch in self.switches.values():
             switch.flank_protection = self.compute_flank_protection_for(switch)
 
+    # ── Power districts (design_new.md "Power district") ───────────────────
+
+    def _rebuild_district_index(self) -> None:
+        """Rebuild the block_id -> district_id reverse index from
+        `power_districts`. A block may appear in at most one district; on a
+        duplicate the last district listed wins."""
+        self._block_to_district = {}
+        for district in self.power_districts.values():
+            for block_id in district.block_ids:
+                self._block_to_district[block_id] = district.district_id
+
+    def district_block_ids(self, block_id: str) -> List[str]:
+        """All block ids sharing `block_id`'s power district.
+
+        A block the operator has not grouped is its own single-block district
+        (design_new.md "Power district"), so this returns ``[block_id]`` for an
+        ungrouped block.
+        """
+        district_id = self._block_to_district.get(block_id)
+        if district_id is None:
+            return [block_id]
+        district = self.power_districts.get(district_id)
+        if district is None or not district.block_ids:
+            return [block_id]
+        return list(district.block_ids)
+
+    def set_power_districts(self, districts: List[PowerDistrict]) -> None:
+        """Replace the power-district grouping and rebuild the reverse index."""
+        self.power_districts = {d.district_id: d for d in districts}
+        self._rebuild_district_index()
+
+    def create_power_district(
+        self, district_id: str, block_ids: List[str], name: str = ""
+    ) -> PowerDistrict:
+        """Create (or replace) a power district and rebuild the reverse index."""
+        district = PowerDistrict(
+            district_id=district_id, block_ids=list(block_ids), name=name
+        )
+        self.power_districts[district_id] = district
+        self._rebuild_district_index()
+        return district
+
     def to_dict(self) -> dict:
         """Convert network to dictionary for the live frontend payload.
 
@@ -2147,6 +2204,8 @@ class RailwayNetwork:
                 p.to_dict_with_orientation(self) for p in self.platforms.values()
             ],
             "station_groups": [s.to_dict() for s in self.station_groups.values()],
+            "power_districts": [d.to_dict() for d in self.power_districts.values()],
+            "train_roster": self.train_roster.to_dict(),
             "switches": {
                 k: v.to_dict() for k, v in self.switches.items()
             },
@@ -2187,6 +2246,8 @@ class RailwayNetwork:
                 p.to_dict_with_orientation(self) for p in self.platforms.values()
             ],
             "station_groups": [s.to_dict() for s in self.station_groups.values()],
+            "power_districts": [d.to_dict() for d in self.power_districts.values()],
+            "train_roster": self.train_roster.to_dict(),
             "switches": {
                 k: v.to_layout_dict() for k, v in self.switches.items()
             },
@@ -2246,6 +2307,17 @@ class RailwayNetwork:
         for station_data in data.get("station_groups", []):
             station = Station.from_dict(station_data)
             self.station_groups[station.station_id] = station
+
+        # Rebuild power districts (optional; absent in legacy saves = every
+        # block is its own single-block district). Rebuild the reverse index
+        # once all districts are loaded.
+        for district_data in data.get("power_districts", []):
+            district = PowerDistrict.from_dict(district_data)
+            self.power_districts[district.district_id] = district
+        self._rebuild_district_index()
+
+        # Rebuild the train roster (config; absent in legacy saves = empty).
+        self.train_roster = TrainRoster.from_dict(data.get("train_roster", []))
 
         # Rebuild trains
         for train_data in data.get("trains", []):

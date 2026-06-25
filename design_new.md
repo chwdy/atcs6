@@ -684,7 +684,7 @@ Maintenance counters are the one category of per-entity state written during sim
 **Track-segment role and traversal**
 
 - The retained `TrackSegment` schema in v1 is explicit:
-  - persistent fields kept on `TrackSegment`: `x`, `y`, `track_bits`, `dead_end_ports`, `signal_ids`, `switch_id`, `length`, `curve_radius`
+  - persistent fields kept on `TrackSegment`: `x`, `y`, `track_bits`, `dead_end_ports`, `signal_ids`, `switch_id`, `length`
   - computed read kept on `TrackSegment`: `track_type`
   - `TrackSegment` holds no authoritative live switch state. Its `switch_state` is a derived read that resolves through `Switch.position` for the segment's `switch_id` when the segment is attached to a `RailwayNetwork`; a `_switch_state_local` value is only a fallback for a bare detached segment (e.g. a unit test with no network) and is never a second authoritative runtime copy alongside `Switch.position`. `Switch.position` is the one alignment authority everywhere.
   - the following are not stored live runtime fields on `TrackSegment`: `occupied_by`, `reserved_by`, `locked_by_path`, `locked_state`, `path_direction`

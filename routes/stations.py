@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 from flask import jsonify, request
 
 from app_state import AppState
+from services.notifications import emit_command_result
 
 
 def _build_station_response(network, station) -> Dict[str, Any]:
@@ -120,6 +121,12 @@ def register(app, state: AppState) -> None:
             except ValueError as e:
                 return jsonify({"error": str(e)}), 400
 
+        # design_new.md line 658: every entity-flag PATCH emits a command_result.
+        # Station flag toggles always succeed (no admin-reject 409).
+        emit_command_result(
+            state, source="Station", entity_id_key="station_id",
+            entity_id=station_id, command_name="update_flags", success=True,
+        )
         return jsonify(_build_station_response(state.network, station))
 
     @app.route("/api/station/<station_id>", methods=["DELETE"])
