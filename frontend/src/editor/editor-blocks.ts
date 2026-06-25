@@ -21,6 +21,7 @@ import {
   parseRequiredMmToCm,
   parseOptionalMmToCm,
   parseOptionalInt,
+  applyStructuralLock,
 } from '../lib/helpers';
 import { anchorToTiles } from '../lib/popover-anchor';
 
@@ -490,6 +491,11 @@ export class BlockEditorHandler {
         });
       });
     });
+
+    // In Simulation mode the physical layout is frozen: structural fields and
+    // buttons go read-only while the availability / direction segments stay
+    // live. The lock re-applies on every render and on mode flips.
+    applyStructuralLock(this.editor.$id('secondary-sidebar-content'));
   }
 
   // Auto-extend a block by one tile in the given direction.

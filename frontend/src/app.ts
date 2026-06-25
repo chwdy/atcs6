@@ -204,6 +204,10 @@ class App {
     this.editor.editorMode = mode;
     this.editor.renderToolbar();
 
+    // If an entity inspector is open, re-freeze (or release) its structural
+    // fields for the new mode — the panel itself only locks on render.
+    this.editor.reapplyStructuralLock();
+
     if (!stillAvailable) {
       const revert = () => this.editor._setSelectedTool('inspect');
       if (this.editor.activeMode) {

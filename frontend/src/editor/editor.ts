@@ -27,6 +27,7 @@ import {
   showConfirmModal,
   renderBitToggle,
   getBlockStateColor,
+  applyStructuralLock,
 } from '../lib/helpers';
 import { FORBIDDEN_TRACK_BITS, isSquareCornerSwitch } from '../lib/constants';
 import { BlockEditorHandler } from './editor-blocks';
@@ -302,6 +303,26 @@ export class Editor {
       if (this.activeMode?.toolName === 'place-train') this.exitMode();
     }
     return this.uiHandler.showSecondarySidebar(title, content);
+  }
+
+  // Re-run the structural lock on the open inspector after the editor mode
+  // flips. Each structural panel already locks itself on render; this catches
+  // the case where the user toggles Editor <-> Simulation while a panel stays
+  // open. Operational panels (path / route / train / speed profile) are not in
+  // the set — the dispatcher edits those freely while simulating.
+  reapplyStructuralLock(): void {
+    const STRUCTURAL = new Set([
+      'block',
+      'switch',
+      'signal',
+      'tunnel',
+      'platform',
+      'station-group-list',
+      'station-group-detail',
+    ]);
+    if (this._currentEditorType && STRUCTURAL.has(this._currentEditorType)) {
+      applyStructuralLock(this.$id('secondary-sidebar-content'));
+    }
   }
 
   hideSecondarySidebar(options: any = {}): any {

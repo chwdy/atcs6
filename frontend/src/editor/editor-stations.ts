@@ -17,6 +17,7 @@ import {
   parseText,
   parseRequiredMmToCm,
   parseOptionalInt,
+  applyStructuralLock,
 } from '../lib/helpers';
 
 /** Escape a string for safe use inside an HTML attribute value. */
@@ -128,7 +129,7 @@ export class PlatformEditorHandler {
                 </div>
 
                 <div class="mt-8">
-                    <button id="open-stations-panel-btn" class="btn btn-secondary btn-sm btn-full">Manage Logical Stations</button>
+                    <button id="open-stations-panel-btn" class="btn btn-secondary btn-sm btn-full" data-sim-keep>Manage Logical Stations</button>
                 </div>
 
                 <!-- Deleting the platform is a platform-level action, not a
@@ -240,6 +241,10 @@ export class PlatformEditorHandler {
     if (openStationsBtn) {
       openStationsBtn.onclick = () => this.editor.showStationsPanel();
     }
+
+    // Freeze structural fields in Simulation mode; the availability segment and
+    // the "Manage Logical Stations" link stay live (see applyStructuralLock).
+    applyStructuralLock(this.editor.$id('secondary-sidebar-content'));
   }
 
   async showModal(options?: {
@@ -456,6 +461,10 @@ export class StationGroupEditorHandler {
         }
       };
     });
+
+    // Freeze the create-station form in Simulation mode; the station rows stay
+    // click-to-open (they are not inputs/buttons, so the lock leaves them).
+    applyStructuralLock(this.editor.$id('secondary-sidebar-content'));
   }
 
   _cleanup(): void {}
@@ -552,7 +561,7 @@ export class StationGroupEditorHandler {
                 </div>
 
                 <div class="mt-16 flex justify-between">
-                    <button id="station-detail-back-btn" class="btn btn-sm btn-secondary">All Stations</button>
+                    <button id="station-detail-back-btn" class="btn btn-sm btn-secondary" data-sim-keep>All Stations</button>
                     <button id="station-detail-delete-btn" class="btn btn-sm btn-danger-ghost"><i class="ti ti-trash"></i> Delete station</button>
                 </div>
             </div>
@@ -691,6 +700,10 @@ export class StationGroupEditorHandler {
     if (backBtn) {
       backBtn.onclick = () => this.showPanel();
     }
+
+    // Freeze structural fields in Simulation mode; the availability segment and
+    // the "All Stations" back link stay live (see applyStructuralLock).
+    applyStructuralLock(this.editor.$id('secondary-sidebar-content'));
   }
 
 

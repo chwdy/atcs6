@@ -847,7 +847,7 @@ export function renderAvailabilitySegment(
             </div>`
     : `<div class="text-xxs text-muted mt-4">${help}</div>`;
   return `
-        <div class="input-large-container mb-8" data-availability-segment="${entityKind}">
+        <div class="input-large-container mb-8" data-availability-segment="${entityKind}" data-sim-keep>
             <label class="input-large-label">${label}</label>
             <div class="switch-group fluid" role="radiogroup" aria-label="${label}">
                 <button type="button"
@@ -946,6 +946,68 @@ export function formatDuration(seconds: number): string {
 export function formatDistanceCm(cm: number): string {
   const m = (cm || 0) / 100;
   return m < 1000 ? `${m.toFixed(1)} m` : `${(m / 1000).toFixed(2)} km`;
+}
+
+// ============================================================================
+// SIMULATION STRUCTURAL LOCK
+// ============================================================================
+//
+// In operation (Simulation) mode the physical layout is frozen. The entity
+// inspector panels still open — Inspect is always live — but their structural
+// controls (names, geometry, lengths, radii, and the create / extend / remove /
+// delete buttons) must be read-only. The dispatch controls stay live: the
+// availability and direction segments, the switch Toggle State, and navigation
+// buttons are marked `data-sim-keep` (on the control or an ancestor) and are
+// never frozen. Path / route / train panels are operational and simply never
+// call this, per the "full dispatcher freedom" rule.
+
+/** True when the app is in operation (Simulation) mode. */
+export function isSimMode(): boolean {
+  return (window as any).app?.editorMode === 'sim';
+}
+
+// `applyStructuralLock` is the one general mechanism every structural entity
+// panel calls after it renders (and that `setEditorMode` re-runs when the mode
+// flips with a panel open). It only manages the `disabled` state it sets itself
+// — each control it disables is tagged `data-sim-locked`, and only those are
+// re-enabled when the lock lifts — so a control already disabled for another
+// reason (a locked switch's Toggle, an un-extendable block's Extend) is left
+// exactly as the panel set it.
+export function applyStructuralLock(root: HTMLElement | null): void {
+  if (!root) return;
+  const lock = isSimMode();
+  root.classList.toggle('sim-locked', lock);
+
+  root
+    .querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement | HTMLTextAreaElement>(
+      'input, textarea, select, button'
+    )
+    .forEach((el) => {
+      // Operational / navigation controls opt out of the freeze.
+      if (el.hasAttribute('data-sim-keep') || el.closest('[data-sim-keep]')) return;
+      if (lock) {
+        if (!el.disabled) {
+          el.disabled = true;
+          el.setAttribute('data-sim-locked', '');
+        }
+      } else if (el.hasAttribute('data-sim-locked')) {
+        el.disabled = false;
+        el.removeAttribute('data-sim-locked');
+      }
+    });
+
+  // One hint at the top of the panel explains why fields are read-only. Added
+  // and removed idempotently so re-renders and mode flips never stack it.
+  const existing = root.querySelector(':scope > .sim-lock-hint');
+  if (lock && !existing) {
+    const hint = document.createElement('div');
+    hint.className = 'sim-lock-hint';
+    hint.innerHTML =
+      '<i class="ti ti-lock"></i> Layout locked while simulating — structural edits are paused.';
+    root.insertBefore(hint, root.firstChild);
+  } else if (!lock && existing) {
+    existing.remove();
+  }
 }
 
 // Escape a string for safe interpolation into an HTML attribute value
@@ -1157,7 +1219,7 @@ export function renderDirectionSegment(
     'Which way trains may travel through this block. Auto-routing obeys this; an operator can override it.';
   const dir = (s: string) => (state === s ? 'active' : '');
   return `
-        <div class="input-large-container mb-8" data-direction-segment="${entityKind}">
+        <div class="input-large-container mb-8" data-direction-segment="${entityKind}" data-sim-keep>
             <label class="input-large-label">${label}</label>
             <div class="switch-group fluid" role="radiogroup" aria-label="${label}">
                 <button type="button"

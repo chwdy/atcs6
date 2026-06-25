@@ -17,6 +17,7 @@ import {
   parseText,
   parseRequiredMmToCm,
   parseOptionalMmToCm,
+  applyStructuralLock,
 } from '../lib/helpers';
 
 export class SwitchEditorHandler {
@@ -106,7 +107,7 @@ export class SwitchEditorHandler {
         const blockLabel = Number(blockingState) === 0 ? 'MAIN' : 'DIVERGE';
         return `
                     <div class="flex gap-8 mb-8" title="Conflict if neighbour set to ${blockLabel} · held safe at ${safeLabel}">
-                        <button class="edit-btn flank-nav-btn font-mono" data-switch-id="${neighbourId}" title="Open ${neighbourId} editor">${neighbourId}</button>
+                        <button class="edit-btn flank-nav-btn font-mono" data-sim-keep data-switch-id="${neighbourId}" title="Open ${neighbourId} editor">${neighbourId}</button>
                         <span class="flex-1"></span>
                         <span class="chip chip-state ${safeChip}">${safeLabel}</span>
                     </div>`;
@@ -131,7 +132,7 @@ export class SwitchEditorHandler {
                         <span class="font-mono">${trainId}</span>
                         <span class="flex-1"></span>
                         <span class="text-muted text-xs">from</span>
-                        <button class="edit-btn flank-nav-btn font-mono" data-switch-id="${sourceId}" title="Open ${sourceId} editor">${sourceId}</button>
+                        <button class="edit-btn flank-nav-btn font-mono" data-sim-keep data-switch-id="${sourceId}" title="Open ${sourceId} editor">${sourceId}</button>
                         <span class="chip chip-state ${stateChip}">${stateLabel}</span>
                     </div>`;
       })
@@ -189,7 +190,7 @@ export class SwitchEditorHandler {
             <div class="control-section">
                 <div class="control-section-header">Controls</div>
                 <div class="flex gap-8">
-                    <button id="toggle-switch-btn" class="btn btn-secondary btn-sm flex-1" ${isLocked ? 'disabled' : ''}>
+                    <button id="toggle-switch-btn" class="btn btn-secondary btn-sm flex-1" data-sim-keep ${isLocked ? 'disabled' : ''}>
                         Toggle State
                     </button>
                 </div>
@@ -394,6 +395,10 @@ export class SwitchEditorHandler {
         (newSwitch: any, oldSwitch: any) => this._onSwitchUpdate(newSwitch, oldSwitch),
         { immediate: false }
       ) ?? null;
+
+    // Freeze structural fields in Simulation mode; Toggle State, availability,
+    // and the flank-navigation links stay live (see applyStructuralLock).
+    applyStructuralLock(this.editor.$id('secondary-sidebar-content'));
   }
 
   _onSwitchUpdate(newSwitch: any, oldSwitch: any): void {

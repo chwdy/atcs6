@@ -932,6 +932,38 @@ Disabled state across both: `opacity: 0.4`, `cursor: not-allowed`.
 Reference: `.tc-power-slider`, `.tc-handle-slider` in
 [features/train-control.css](../static/css/features/train-control.css).
 
+### Read-only in Simulation (the structural lock)
+
+The Inspect tool stays live in Simulation mode, so the entity inspectors
+(block, switch, platform, station, signal, tunnel) still open while a sim
+runs. But the physical layout is frozen once you are operating, so those
+panels go **read-only for structural edits**: names, geometry (length /
+radius / speed), the create / extend / remove / delete buttons, and signal
+and tunnel config are all disabled. A one-line hint at the top of the panel
+(`.sim-lock-hint`, info accent + lock glyph) says why, and each frozen
+control dims to `opacity: 0.55`.
+
+What stays live is the **operational** set — the controls a dispatcher uses
+while running the railroad: the availability segment (Normal / Manual /
+Disabled), the allowed-travel-direction segment, the switch **Toggle State**,
+and panel navigation links (flank cross-links, "Manage Logical Stations",
+"All Stations"). These keep full contrast, so the live dispatch controls read
+clearly against the dimmed structure. The split line is simple: **typed
+property fields and structure-mutating buttons freeze; segmented dispatch
+toggles and navigation stay live.**
+
+This is one general mechanism, not a per-panel rule: a control opts out of
+the freeze by carrying `data-sim-keep` (on itself or an ancestor), and the
+shared `applyStructuralLock` helper disables everything else. The two segment
+render helpers (`renderAvailabilitySegment`, `renderDirectionSegment`) carry
+the marker, so all four entity panels inherit it. Operational panels (path,
+route, train, speed profile) never call the lock at all — the dispatcher
+creates and runs those freely while simulating ("full dispatcher freedom").
+
+Reference: `applyStructuralLock` in
+[lib/helpers.ts](../frontend/src/lib/helpers.ts); `.sim-lock-hint` /
+`.sim-locked` in [layout/shell.css](../static/css/layout/shell.css).
+
 ---
 
 ## 5. Field rows

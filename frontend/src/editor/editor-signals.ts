@@ -4,6 +4,7 @@
 // Behavior is unchanged. Owned by the Editor (`new SignalEditorHandler(this)`).
 
 import { showToast } from '../lib/toast';
+import { applyStructuralLock } from '../lib/helpers';
 import type { EditorHost } from './types';
 
 export class SignalEditorHandler {
@@ -116,6 +117,9 @@ export class SignalEditorHandler {
 
     const title = signals.length > 1 ? `Signals (${signals.length})` : 'Signal Editor';
     this.editor.showSecondarySidebar(title, signalsContent);
+    // Signal config is layout structure — name, monitored block, and Save all
+    // freeze in Simulation mode (signals have no operational controls).
+    applyStructuralLock(this.editor.$id('secondary-sidebar-content'));
 
     for (const { signal } of signalDetails) {
       try {
@@ -276,6 +280,8 @@ export class SignalEditorHandler {
         `;
 
     this.editor.showSecondarySidebar('Signal Editor', content);
+    // Signal config is layout structure — freeze in Simulation mode.
+    applyStructuralLock(this.editor.$id('secondary-sidebar-content'));
 
     try {
       const result = await this.api.getReachableBlocks(signalId);

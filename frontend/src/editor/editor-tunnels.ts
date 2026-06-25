@@ -10,7 +10,7 @@
 // source of truth; this handler only sets/clears it.
 
 import { showToast } from '../lib/toast';
-import { showConfirmModal } from '../lib/helpers';
+import { showConfirmModal, applyStructuralLock } from '../lib/helpers';
 import type { EditorHost } from './types';
 
 interface TunnelEndpoint {
@@ -109,6 +109,9 @@ export class TunnelEditorHandler {
     if (deleteBtn) {
       deleteBtn.onclick = () => this.delete(pair, { confirm: true });
     }
+
+    // Tunnels are pure layout structure — Delete freezes in Simulation mode.
+    applyStructuralLock(this.editor.$id('secondary-sidebar-content'));
   }
 
   /** Delete a tunnel pairing. Shared by the Delete button and the Delete key. */
