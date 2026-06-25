@@ -97,35 +97,6 @@ class PersistenceManager:
             "steps_error": steps_error,
         }
 
-    def load_layout(self, name: str) -> dict:
-        """
-        Load a layout from a JSON file.
-        Tries snapshot first, falls back to steps if snapshot fails.
-
-        Returns:
-            Dictionary containing the network data.
-        """
-        safe_name = self._sanitize_filename(name)
-        file_path = self.storage_dir / f"{safe_name}.json"
-
-        if not file_path.exists():
-            raise FileNotFoundError(f"Layout not found: {name}")
-
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                wrapper = json.load(f)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON in layout file: {e}") from e
-
-        # Validate schema version
-        version = wrapper.get("version", "0.0")
-        if not self._is_compatible_version(version):
-            raise ValueError(f"Incompatible layout version: {version}")
-
-        if "snapshot" not in wrapper:
-            raise ValueError(f"Layout '{name}' has no snapshot")
-        return wrapper["snapshot"]
-
     def load_layout_with_fallback(self, name: str, network: "RailwayNetwork") -> dict:
         """
         Load a layout, falling back to step replay if snapshot fails.

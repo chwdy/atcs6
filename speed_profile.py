@@ -128,19 +128,6 @@ class SpeedProfile:
             self.voltage_power_curve, key=lambda x: x[0]
         )
 
-    def disable_air_resistance(self) -> None:
-        """Disable air resistance for real train operation.
-
-        Call this method on a train's speed profile when connecting to a real train
-        to disable simulation-only air resistance.
-
-        Example:
-            profile = network.speed_profile_registry.get("my_profile")
-            profile.disable_air_resistance()
-        """
-        self.air_resistance_enabled = False
-        self.drag_coefficient = 0.0
-
     def power_percent_to_speed(self, percent: float) -> float:
         """Convert manual power percentage (0-100) to target speed (km/h).
 
@@ -240,21 +227,6 @@ class SpeedProfile:
         # Invert power_speed_curve: speed -> power_percent
         power_percent = self._speed_to_power(speed_kmh)
         return self.power_to_voltage(power_percent)
-
-    def voltage_to_speed_two_stage(self, voltage: float) -> float:
-        """Convert track voltage to speed via the two-stage pipeline.
-
-        Stage 1: voltage -> power_percent (voltage_power_curve).
-        Stage 2: power_percent -> speed_kmh (power_speed_curve).
-
-        Args:
-            voltage: Track voltage (V).
-
-        Returns:
-            Speed in km/h.
-        """
-        power_percent = self.voltage_to_power(voltage)
-        return self.power_percent_to_speed(power_percent)
 
     def _speed_to_power(self, speed_kmh: float) -> float:
         """Invert power_speed_curve to get power_percent from speed_kmh.
@@ -418,9 +390,6 @@ class SpeedProfileRegistry:
 
     def get(self, profile_id: str) -> Optional[SpeedProfile]:
         return self._profiles.get(profile_id)
-
-    def get_default(self) -> SpeedProfile:
-        return DEFAULT_SPEED_PROFILE
 
     def list_profiles(self) -> List[str]:
         return list(self._profiles.keys())

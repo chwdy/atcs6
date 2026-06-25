@@ -99,20 +99,11 @@ class NotificationCenter:
         self._archive.append(n)
         return n
 
-    def drain(self) -> List[Notification]:
-        """Return and clear the live queue. The archive is unaffected."""
-        out, self._queue = self._queue, []
-        return out
-
     def peek_recent(self, n: int = 50) -> List[Notification]:
         """Return up to the last `n` archived notifications."""
         if n <= 0:
             return []
         return list(self._archive[-n:])
-
-    def clear_archive(self) -> None:
-        """Discard the archive (live queue is unaffected)."""
-        self._archive.clear()
 
     def __len__(self) -> int:
         """Number of notifications currently in the live (undrained) queue."""

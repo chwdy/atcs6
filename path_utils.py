@@ -564,35 +564,6 @@ def _positions_to_path_tiles(
     return result
 
 
-def assign_path_to_train_with_prepend(
-    network,
-    train,
-    path_tiles: List[Tuple[int, int, Direction]],
-    controller=None,
-) -> Tuple[bool, Optional[str]]:
-    """
-    Validate and prepare a path for a train.
-
-    `Train.current_path` and `Train.path_index` are not part of v1 — the
-    dispatcher's `Path` is the source of truth for path
-    geometry. This helper now only runs the validation logic and returns
-    its outcome; UI consumers read the active path tiles from
-    `PathDispatcher.get_active_path_progress(train_id)`.
-
-    Args:
-        network: RailwayNetwork instance
-        train: Train to validate against
-        path_tiles: Original path as List[(x, y, Direction)]
-
-    Returns:
-        (success, error_message)
-    """
-    result = prepare_path_for_train(network, train, path_tiles, controller=controller)
-    if not result.success:
-        return False, result.error
-    return True, None
-
-
 def append_destination_block_tiles(
     network,
     path_tiles: List[Tuple[int, int, Direction]],

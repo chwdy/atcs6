@@ -153,10 +153,6 @@ class SwitchPowerController:
         default_factory=SimulatedSwitchOutputInterface
     )
 
-    def set_network(self, network: "RailwayNetwork") -> None:
-        """Set the network reference."""
-        self.network = network
-
     # ------------------------------------------------------------------
     # Throw output (software -> hardware)
     # ------------------------------------------------------------------

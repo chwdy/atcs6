@@ -96,14 +96,6 @@ class SignalState(Enum):
     DOUBLE_YELLOW = "double_yellow"  # 下一个信号可能是红灯
 
 
-class SwitchPosition(Enum):
-    """Railway switch/turnout positions"""
-
-    MAIN = "main"
-    DIVERGING = "diverging"
-    LOCKED = "locked"  # 锁定状态，不可切换
-
-
 class BlockState(Enum):
     """Block section occupancy states"""
 

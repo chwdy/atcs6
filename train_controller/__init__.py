@@ -733,10 +733,9 @@ class TrainController:
             # Get block speed limit for current block
             self.atc.current_block_speed_limit = self._get_current_block_speed_limit()
 
-            # `clearance_ahead_cm` is still published for `is_safe_to_move()`,
-            # diagnostics, and as the no-curve fallback inside
-            # `_distance_zero_atc_anchor()`; refresh it first so that fallback
-            # reads a current value.
+            # `clearance_ahead_cm` is still published for diagnostics and as
+            # the no-curve fallback inside `_distance_zero_atc_anchor()`;
+            # refresh it first so that fallback reads a current value.
             self.atc.clearance_ahead_cm = self.atc.clearance_ahead()
             # Publish the ATC limit + reason from the canonical lookahead's
             # distance-0 anchor (single source of truth). Per design_new.md,
@@ -1508,89 +1507,6 @@ class TrainController:
             return loc.entry_edge
         return None
 
-    def _can_traverse_path_step(
-        self,
-        train: "Train",
-        from_tile: Tuple[int, int],
-        to_tile: Tuple[int, int],
-        entry_edge_into_from: Optional[str],
-    ) -> Tuple[bool, Optional[str]]:
-        """
-        Check whether traversal from one path tile to the next is currently usable.
-
-        Returns:
-            (is_traversable, entry_edge_into_to_tile)
-        """
-        if not self.network:
-            return False, None
-
-        from_track = self.network.get_track(from_tile[0], from_tile[1])
-        to_track = self.network.get_track(to_tile[0], to_tile[1])
-        if not from_track or not to_track:
-            return False, None
-
-        direction = self._direction_between_tiles(from_tile, to_tile)
-        if direction is None:
-            return False, None
-
-        exit_edge = self._direction_to_edge(direction)
-        if not exit_edge:
-            return False, None
-
-        to_entry_edge = OPPOSITE_EDGES.get(exit_edge)
-        if not to_entry_edge:
-            return False, None
-
-        assigned_path_id = self.path_projection.assigned_path_id
-
-        for tile_track in (from_track, to_track):
-            if not tile_track.is_switch:
-                continue
-            switch_entity = (
-                self.network.switches.get(tile_track.switch_id)
-                if self.network is not None and tile_track.switch_id is not None
-                else None
-            )
-            if switch_entity is None or not switch_entity.is_locked():
-                continue
-            # The switch holds a future lock or train-owned protection. The
-            # train may cross it only when its own assigned path holds a lock
-            # here. The canonical lock store is `Switch.locks`, keyed by
-            # `(path_id, source_switch_id)` (design_new.md:651).
-            held_by_assigned = assigned_path_id is not None and any(
-                key[0] == assigned_path_id for key in switch_entity.locks
-            )
-            if not held_by_assigned:
-                return False, None
-
-        if (
-            to_track.block_section_id
-            and self.network
-            and to_track.block_section_id in self.network.blocks
-        ):
-            target_block = self.network.blocks[to_track.block_section_id]
-            if target_block.reserved_by_path:
-                if (
-                    not assigned_path_id
-                    or target_block.reserved_by_path != assigned_path_id
-                ):
-                    return False, None
-
-        if entry_edge_into_from:
-            from_exits = from_track.get_exits(
-                entry_edge_into_from, use_switch_state=True
-            )
-            if exit_edge not in from_exits:
-                return False, None
-        elif exit_edge not in from_track.edges:
-            return False, None
-
-        to_exits = to_track.get_exits(to_entry_edge, use_switch_state=True)
-        if not to_exits:
-            return False, None
-
-        return True, to_entry_edge
-
     def _build_empty_monitor_lookahead(
         self,
         *,
@@ -1805,12 +1721,6 @@ class TrainController:
     def _get_current_block_speed_limit(self) -> float:
         """Forward to `LookaheadBuilder.current_block_speed_limit()`."""
         return self._get_lookahead_builder().current_block_speed_limit()
-
-    def is_safe_to_move(self) -> bool:
-        """
-        Check if it's safe for the train to move.
-        """
-        return self.atc.clearance_ahead_cm > ATC_MIN_CLEARANCE_CM
 
     @property
     def power_on(self) -> bool:
@@ -2213,10 +2123,6 @@ class TrainController:
         """
         return self._get_lookahead_builder().build()
 
-    def _get_signal_state_for_block(self, block_id: str) -> Optional[SignalState]:
-        """Forward to `LookaheadBuilder.signal_state_for_block(block_id)`."""
-        return self._get_lookahead_builder().signal_state_for_block(block_id)
-
     def _get_station_in_block(self, block_id: str) -> Optional[str]:
         """Forward to `LookaheadBuilder.station_in_block(block_id)`."""
         return self._get_lookahead_builder().station_in_block(block_id)
@@ -2313,29 +2219,6 @@ class TrainController:
         if self._has_path_backed_run_context(train):
             return False
         return self.commands.cab in ("A", "B")
-
-    def _align_cab_to_required_path_direction(self) -> bool:
-        """Ensure the stopped train's active cab matches the required path direction."""
-        train = self._get_train()
-        if not train:
-            return False
-
-        required_cab = self._required_cab_for_path()
-        if required_cab is None or self.commands.cab == required_cab:
-            return True
-
-        logger.info(
-            "[TrainController %s] auto-correcting cab %s -> %s for path direction",
-            self.train_id,
-            self.commands.cab,
-            required_cab,
-        )
-
-        if self.physics_sync.current_speed_kmh > 0:
-            self.physics_sync.current_speed_kmh = 0.0
-
-        result = self.commands.set_cab(required_cab, internal=True)
-        return result.success
 
     def _path_needs_cab_flip(self) -> bool:
         """Check if the current path requires the train to reverse direction.
@@ -2645,118 +2528,12 @@ class TrainController:
             return Direction.NORTH if dy > 0 else Direction.SOUTH
 
     # -------------------------------------------------------------------------
-    # Station Detection
-    # -------------------------------------------------------------------------
-
-    def _is_at_station(self) -> bool:
-        """
-        Check if the train is currently at a station (for state transition).
-
-        A train is "at station" if:
-        - It's in a block that contains a station
-        - It's stopped (speed near zero)
-        - The station is a scheduled stop on its route OR is the ATO destination
-
-        When ato_destination_block_id is set (manual path), the train should
-        only stop at the destination block, not at intermediate or departure
-        stations. This prevents a false-positive "arrival" at the departure
-        station on the first tick after depart() when speed is still 0.
-
-        Returns:
-            True if train is at a scheduled station stop
-        """
-        train = self._get_train()
-        if not train or not self.network:
-            return False
-
-        # Must be stopped or nearly stopped
-        if self.physics_sync.current_speed_kmh > STOPPED_SPEED_THRESHOLD_KMH:
-            return False
-
-        # Check if current block has a station
-        current_block_id = self._get_current_block_id()
-        if not current_block_id:
-            return False
-
-        station_id = self._get_station_in_block(current_block_id)
-        if not station_id:
-            return False
-
-        # Check if this station is a scheduled stop on the train's route.
-        # Per design_new.md "RouteTask data", v1 routes hold an ordered
-        # `tasks` list whose `stop` and `dwell` entries imply a stop at
-        # `task_location` (BlockTarget / PlatformTarget / StationTarget);
-        # `waypoint` entries are pass-through and do not imply stopping.
-        if self.route_executor is not None:
-            route_id = self.route_executor.assigned_route_id_for(self.train_id)
-            if route_id is not None:
-                route = self.route_executor.route_registry.get(route_id)
-                if route:
-                    from train_route import PlatformTarget, StationTarget
-
-                    station_group_id: Optional[str] = None
-                    if hasattr(self.network, "get_station_for_platform"):
-                        try:
-                            station_group_id = self.network.get_station_for_platform(
-                                station_id
-                            )
-                        except Exception:
-                            station_group_id = None
-                    for task in route.tasks:
-                        if task.task_kind not in ("stop", "dwell"):
-                            continue
-                        loc = task.task_location
-                        if isinstance(loc, PlatformTarget):
-                            if loc.platform_id == station_id:
-                                return True
-                        elif isinstance(loc, StationTarget):
-                            if station_group_id and loc.station_id == station_group_id:
-                                return True
-
-        # If ato_destination_block_id is set (manual path), only stop at the
-        # destination block. This prevents stopping at the departure station
-        # or at intermediate stations along the path.
-        if self.path_projection.ato_destination_block_id:
-            return current_block_id == self.path_projection.ato_destination_block_id
-
-        # If no route and no destination, consider any station as a potential stop
-        return True
-
-    # -------------------------------------------------------------------------
     # ATO (Automatic Train Operation) Logic
     # -------------------------------------------------------------------------
 
     # -------------------------------------------------------------------------
     # Future-Aware ATO Helpers
     # -------------------------------------------------------------------------
-
-    def _get_brake_level(self, handle: HandlePosition) -> int:
-        """Convert brake handle to level number (1-8)."""
-        brake_levels = {
-            HandlePosition.B1: 1,
-            HandlePosition.B2: 2,
-            HandlePosition.B3: 3,
-            HandlePosition.B4: 4,
-            HandlePosition.B5: 5,
-            HandlePosition.B6: 6,
-            HandlePosition.B7: 7,
-            HandlePosition.B8: 8,
-        }
-        return brake_levels.get(handle, 0)
-
-    def _brake_level_to_handle(self, level: int) -> HandlePosition:
-        """Convert level number (1-8) to brake handle."""
-        handles = {
-            1: HandlePosition.B1,
-            2: HandlePosition.B2,
-            3: HandlePosition.B3,
-            4: HandlePosition.B4,
-            5: HandlePosition.B5,
-            6: HandlePosition.B6,
-            7: HandlePosition.B7,
-            8: HandlePosition.B8,
-        }
-        return handles.get(level, HandlePosition.B1)
 
     # ATO curve sampling, kinematic forward-simulation, handle-selection,
     # and notch helpers live on the `ATOComputer` sub-module at `self.ato`.
@@ -3121,14 +2898,6 @@ class TrainController:
     # -------------------------------------------------------------------------
     # State Transitions
     # -------------------------------------------------------------------------
-
-    def transition_to_moving(self) -> None:
-        """Transition to RUNNING_MOVING state."""
-        self.ops.state = TrainState.RUNNING_MOVING
-
-    def transition_to_at_station(self) -> None:
-        """Transition to RUNNING_AT_STATION state."""
-        self.ops.state = TrainState.RUNNING_AT_STATION
 
     def transition_to_ready(self) -> None:
         """Transition to the READY state (powered, stopped, not dwelling).

@@ -493,11 +493,6 @@ class BlockManager:
             "terminal_heading": str(heading).upper(),
         }
 
-    def get_block_occupant(self, block_id: str) -> Optional[str]:
-        """Return the train ID currently in a block, or `None`."""
-        block = self._block_registry.get(block_id)
-        return block.occupied_by if block else None
-
     def is_block_available(
         self, block_id: str, for_train_id: Optional[str] = None
     ) -> bool:

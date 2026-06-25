@@ -735,13 +735,6 @@ class RailwayNetwork:
 
         return True
 
-    def is_track_available(self, x: int, y: int, train_id: str) -> bool:
-        """Check if track is available for specified train"""
-        track = self.get_track(x, y)
-        if not track:
-            return False
-        return track.is_available_for(train_id)
-
     # === Centralized Block Management ===
 
     def create_block(self, block_id: str, name: str = "") -> Block:
@@ -951,10 +944,6 @@ class RailwayNetwork:
                 return signal
         return None
 
-    def get_signals_at(self, x: int, y: int) -> List[Signal]:
-        """Get all signals at the specified position."""
-        return [s for s in self.signals.values() if s.position == (x, y)]
-
     def get_signal_at_direction(
         self, x: int, y: int, detection_direction: str
     ) -> Optional[Signal]:
@@ -1132,12 +1121,6 @@ class RailwayNetwork:
         """Forward to `SignalCalculator.can_reach_block(signal, target)`."""
         return self._get_signal_calculator().can_reach_block(signal, target_block_id)
 
-    def _get_distance_to_block(
-        self, signal: Signal, target_block_id: str
-    ) -> Optional[int]:
-        """Forward to `SignalCalculator.distance_to_block(signal, target)`."""
-        return self._get_signal_calculator().distance_to_block(signal, target_block_id)
-
     def get_reachable_blocks(self, signal_id: str) -> list:
         """Forward to `SignalCalculator.reachable_blocks(signal_id)`."""
         return self._get_signal_calculator().reachable_blocks(signal_id)
@@ -1146,18 +1129,6 @@ class RailwayNetwork:
         """Forward to `SignalCalculator.is_signal_on_entry_tile(signal)`."""
         return self._get_signal_calculator().is_signal_on_entry_tile(signal)
 
-    def _find_block_ahead(
-        self, x: int, y: int, direction: str, exclude_block: Optional[str] = None
-    ) -> Optional[str]:
-        """Forward to `SignalCalculator.find_block_ahead(x, y, direction, exclude_block)`."""
-        return self._get_signal_calculator().find_block_ahead(
-            x, y, direction, exclude_block
-        )
-
-    def get_all_signals(self) -> List[Signal]:
-        """Get all signals in the network."""
-        return list(self.signals.values())
-
     def update_signals_from_blocks(self) -> None:
         """Forward to `SignalCalculator.update_all()`."""
         self._get_signal_calculator().update_all()
@@ -1165,18 +1136,6 @@ class RailwayNetwork:
     def _calculate_signal_state(self, signal: Signal) -> SignalState:
         """Forward to `SignalCalculator.compute_state(signal)`."""
         return self._get_signal_calculator().compute_state(signal)
-
-    def _check_switch_routing(self, signal: Signal) -> bool:
-        """Forward to `SignalCalculator.check_switch_routing(signal)`."""
-        return self._get_signal_calculator().check_switch_routing(signal)
-
-    def _find_next_block_after(
-        self, block_id: str, detection_direction: str
-    ) -> Optional[str]:
-        """Forward to `SignalCalculator.find_next_block_after(block_id, direction)`."""
-        return self._get_signal_calculator().find_next_block_after(
-            block_id, detection_direction
-        )
 
     def add_train(self, train: Train):
         """Add a train to the network"""
@@ -1361,15 +1320,6 @@ class RailwayNetwork:
         offsets = {"N": (0, 1), "E": (1, 0), "S": (0, -1), "W": (-1, 0)}
         dx, dy = offsets.get(edge, (0, 0))
         return (x + dx, y + dy)
-
-    def _is_connected(
-        self, track1: TrackSegment, track2: TrackSegment, edge: str
-    ) -> bool:
-        """Check if two adjacent tracks are connected via the given edge."""
-        if not track1 or not track2:
-            return False
-        opposite = {"N": "S", "E": "W", "S": "N", "W": "E"}
-        return edge in track1.edges and opposite[edge] in track2.edges
 
     def _calculate_occupied_tiles(
         self,

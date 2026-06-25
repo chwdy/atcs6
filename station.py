@@ -80,10 +80,6 @@ class Station:
         self.platform_ids.remove(platform_id)
         return True
 
-    def has_platform(self, platform_id: str) -> bool:
-        """Check if Platform belongs to this Station."""
-        return platform_id in self.platform_ids
-
     def get_all_block_ids(self, network: "RailwayNetwork") -> Set[str]:
         """
         Get all block IDs across all Platforms in this Station.
@@ -128,33 +124,6 @@ class Station:
         avg_x = sum(x for x, y in all_positions) / len(all_positions)
         avg_y = sum(y for x, y in all_positions) / len(all_positions)
         return (avg_x, avg_y)
-
-    def get_platforms_with_details(
-        self, network: "RailwayNetwork"
-    ) -> List[Dict[str, Any]]:
-        """
-        Get detailed information about all Platforms in this Station.
-
-        Args:
-            network: Railway network for Platform lookup
-
-        Returns:
-            List of Platform detail dictionaries
-        """
-        platforms = []
-        for platform_id in self.platform_ids:
-            platform = network.platforms.get(platform_id)
-            if platform:
-                platforms.append(
-                    {
-                        "platform_id": platform.platform_id,
-                        "name": platform.name,
-                        "positions": [list(pos) for pos in platform.positions],
-                        "block_ids": list(platform.get_all_assigned_blocks()),
-                        "platform_side": platform.platform_side.value,
-                    }
-                )
-        return platforms
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""

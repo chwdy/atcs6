@@ -243,10 +243,6 @@ class Platform:
             return True
         return False
 
-    def contains_position(self, x: int, y: int) -> bool:
-        """Check if platform includes this tile position."""
-        return (x, y) in self.positions
-
     def get_center_position(self) -> Optional[Tuple[float, float]]:
         """Calculate the center point of all platform tiles."""
         if not self.positions:

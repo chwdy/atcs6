@@ -155,10 +155,6 @@ class BlockPowerController:
     # it asks `TrainPhysics.compute_track_voltage(...)` for the scalar.
     _sim_controller: Optional[Any] = None
 
-    def set_network(self, network: "RailwayNetwork") -> None:
-        """Set the network reference."""
-        self.network = network
-
     def enter_safe_state(self) -> None:
         """Put the block output hardware into its safe state — every block track
         voltage at 0 (design_new.md "Power", Safe state / fail-safe). Issued by
@@ -277,17 +273,6 @@ class BlockPowerController:
         """
         return self.output_interface.get_all_voltages()
 
-    def emergency_stop_all(self) -> None:
-        """Set all blocks to 0V immediately."""
-        if self.network:
-            for block_id in self.network.blocks:
-                self.set_block_voltage(block_id, 0.0)
-
-        # Also clear any voltages in the output interface
-        if isinstance(self.output_interface, SimulatedOutputInterface):
-            for block_id in list(self.output_interface._voltages.keys()):
-                self.set_block_voltage(block_id, 0.0)
-
     def release_block(self, block_id: str) -> None:
         """
         Set block to 0V (no train occupying).
@@ -321,28 +306,6 @@ class BlockPowerController:
             )
             if not held and float(getattr(block, "current_voltage", 0.0)) != 0.0:
                 self.set_block_voltage(block_id, 0.0)
-
-    def update_all_trains(
-        self, speed_profiles: Optional["SpeedProfileRegistry"] = None
-    ) -> None:
-        """
-        Update voltages for all trains in the network.
-
-        Args:
-            speed_profiles: The shared ``SpeedProfileRegistry`` (or any
-                profile_id -> SpeedProfile mapping). Looked up with ``.get()``,
-                so both a registry and a plain dict work.
-        """
-        if not self.network:
-            return
-
-        for train in self.network.trains.values():
-            # Get train's speed profile from the shared store, if assigned.
-            profile = None
-            if train.speed_profile_id and speed_profiles is not None:
-                profile = speed_profiles.get(train.speed_profile_id)
-
-            self.update_for_train(train, profile)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize current voltage state."""

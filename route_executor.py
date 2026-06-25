@@ -2454,36 +2454,6 @@ class RouteExecutor:
             task, train=train
         )
 
-    def _resolve_task_direction(
-        self,
-        train: "Train",
-        block_id: str,
-        task_direction: str,
-        signed_direction: int,
-    ) -> str:
-        """Forward to `RouteTargetResolver.resolve_task_direction(...)`.
-
-        `signed_direction` here is the local int form computed from
-        `RouteRun.direction` at the call site. The resolver helper still
-        takes a signed int because it folds it into per-block traversal
-        sign math; the canonical store is the literal string on RouteRun.
-        """
-        return self._get_route_target_resolver().resolve_task_direction(
-            train, block_id, task_direction, signed_direction
-        )
-
-    def _compute_next_task_index(
-        self,
-        route: "Route",
-        exec_state: RouteExecutionState,
-        task_count: int,
-    ) -> Optional[int]:
-        """Forward to `RouteTargetResolver.compute_next_task_index(...)`."""
-        from route_target_resolver import RouteTargetResolver
-
-        return RouteTargetResolver.compute_next_task_index(
-            route, exec_state, task_count
-        )
     def _get_active_route_train_pairs(self) -> List[Tuple["Train", "Route"]]:
         """Collect active (train, route) pairs."""
         pairs: List[Tuple["Train", "Route"]] = []
@@ -2573,14 +2543,6 @@ class RouteExecutor:
         """Forward to `TrainAtTargetPredicates.get_target_platform_tile(...)`."""
         preds = self._get_at_target_predicates()
         return preds.get_target_platform_tile(preds._facing(train), platform)
-
-    def _get_platform(self, platform_id: str) -> Optional[object]:
-        """Forward to `RouteTargetResolver.get_platform(platform_id)`."""
-        return self._get_route_target_resolver().get_platform(platform_id)
-
-    def _get_platform_block_id(self, platform_id: str) -> Optional[str]:
-        """Forward to `RouteTargetResolver.platform_block_id(platform_id)`."""
-        return self._get_route_target_resolver().platform_block_id(platform_id)
 
     def _get_current_block_id(self, train: "Train") -> Optional[str]:
         """Forward to `TrainAtTargetPredicates.current_block_id(train)`."""

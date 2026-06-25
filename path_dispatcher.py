@@ -2207,14 +2207,6 @@ class PathDispatcher:
                     return s
         return None
 
-    def _resolve_switch_entity(self, switch_id: str):
-        """Resolve a Switch entity by its switch_id."""
-        if hasattr(self.network, "switches") and isinstance(
-            self.network.switches, dict
-        ):
-            return self.network.switches.get(switch_id)
-        return None
-
     def _segment_to_resource_sequence(
         self,
         segment: PathSegment,
@@ -2491,15 +2483,6 @@ class PathDispatcher:
             if entry is not None:
                 return OPPOSITE_DIRECTIONS.get(entry)
         return None
-
-    def _flatten_resource_sequence_tiles(
-        self, sequence: List[ResourceSequenceEntry]
-    ) -> List[PathTileEntry]:
-        flat: List[PathTileEntry] = []
-        for entry in sequence:
-            for t in entry.path_tiles:
-                flat.append(t)
-        return flat
 
     def _build_path_from_segment(
         self,
@@ -3031,23 +3014,4 @@ class PathDispatcher:
             ],
         }
 
-    def get_paths_using_switch(self, position: Tuple[int, int]) -> List[Path]:
-        """Return ACTIVE paths that traverse a switch at the given tile position.
-
-        Terminal (COMPLETED/CANCELLED) rows retained in `paths_by_id` for
-        history are not returned, since they no longer hold authority over
-        the switch.
-        """
-        switch = self._resolve_switch_at_position(position)
-        if switch is None:
-            return []
-        switch_id = getattr(switch, "switch_id", None)
-        if switch_id is None:
-            return []
-        return [
-            p
-            for p in self.paths.values()
-            if p.status == PathStatus.ACTIVE
-            and switch_id in p.get_all_switches()
-        ]
 

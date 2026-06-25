@@ -402,16 +402,6 @@ class Route:
         """Append a RouteTask."""
         self.tasks.append(task)
 
-    def insert_task(self, index: int, task: RouteTask) -> None:
-        """Insert a RouteTask at a specific position."""
-        self.tasks.insert(index, task)
-
-    def remove_task(self, index: int) -> Optional[RouteTask]:
-        """Remove the RouteTask at `index` and return it."""
-        if 0 <= index < len(self.tasks):
-            return self.tasks.pop(index)
-        return None
-
     def get_task_count(self) -> int:
         """Return the number of tasks."""
         return len(self.tasks)
@@ -473,22 +463,6 @@ class Route:
             return False
         self.assigned_train_ids.remove(train_id)
         return True
-
-    def is_train_assigned(self, train_id: str) -> bool:
-        """Check whether a train is currently assigned."""
-        return train_id in self.assigned_train_ids
-
-    def get_assigned_train_count(self) -> int:
-        """Return the count of trains assigned to this route."""
-        return len(self.assigned_train_ids)
-
-    # ── Progress ───────────────────────────────────────────────────
-
-    def get_progress(self, task_index: int) -> float:
-        """Get route progress as fraction (0.0 to 1.0) for ONE_OFF mode."""
-        if self.mode != RouteMode.ONE_OFF or not self.tasks:
-            return 0.0
-        return min(1.0, task_index / len(self.tasks))
 
     # ── Serialization ──────────────────────────────────────────────
 

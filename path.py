@@ -215,55 +215,13 @@ class Path:
     def is_active(self) -> bool:
         return self.status == PathStatus.ACTIVE
 
-    def is_completed(self) -> bool:
-        return self.status == PathStatus.COMPLETED
-
-    def is_cancelled(self) -> bool:
-        return self.status == PathStatus.CANCELLED
-
     def can_be_extended(self) -> bool:
         """Only an ACTIVE path may be extended in v1."""
         return self.status == PathStatus.ACTIVE
 
-    def can_be_cancelled(self) -> bool:
-        """Only an ACTIVE path may be cancelled; COMPLETED and CANCELLED
-        are terminal."""
-        return self.status == PathStatus.ACTIVE
-
-    def has_train(self) -> bool:
-        return self.train_id is not None
-
     # ========================================================================
     # Geometry queries
     # ========================================================================
-
-    def get_current_block(self) -> Optional[str]:
-        """Return the resource_id of the block resource currently anchored
-        by current_resource_index. If the anchor is a switch, look forward
-        to the next block resource; if none exists, return None.
-        """
-        if not self.resource_sequence:
-            return None
-        if not (0 <= self.current_resource_index < len(self.resource_sequence)):
-            return None
-
-        for entry in self.resource_sequence[self.current_resource_index :]:
-            if entry.resource_type == "block":
-                return entry.resource_id
-        return None
-
-    def get_remaining_blocks(self) -> List[str]:
-        """Block resource_ids from current_resource_index forward (inclusive
-        of the anchor's containing/next block) to the authority end."""
-        if not self.resource_sequence:
-            return []
-        if not (0 <= self.current_resource_index < len(self.resource_sequence)):
-            return []
-        return [
-            entry.resource_id
-            for entry in self.resource_sequence[self.current_resource_index :]
-            if entry.resource_type == "block"
-        ]
 
     def get_all_blocks(self) -> List[str]:
         """All block resource_ids on this path in traversal order."""
@@ -280,27 +238,6 @@ class Path:
             for entry in self.resource_sequence
             if entry.resource_type == "switch"
         ]
-
-    def get_cleared_block_count(self) -> int:
-        """Number of block resources strictly behind the current
-        progress anchor (i.e. blocks the head has fully passed)."""
-        if not self.resource_sequence:
-            return 0
-        cleared = 0
-        for entry in self.resource_sequence[: self.current_resource_index]:
-            if entry.resource_type == "block":
-                cleared += 1
-        return cleared
-
-    def get_progress_percentage(self) -> float:
-        """0..100 progress through resource_sequence based on
-        current_resource_index."""
-        if not self.resource_sequence:
-            return 0.0
-        denominator = len(self.resource_sequence)
-        if denominator <= 0:
-            return 0.0
-        return (self.current_resource_index / denominator) * 100.0
 
     # ========================================================================
     # Tile-level direction queries
@@ -334,13 +271,6 @@ class Path:
         if not tiles:
             return None
         return tiles[-1].entry_edge or None
-
-    def get_all_locked_switches(self) -> List[str]:
-        """All switch resource_ids whose locks were acquired by this path
-        (including flank-protected neighbours, which the dispatcher
-        records on the switch entity itself in v1; this method returns
-        only the path-traversed switches)."""
-        return self.get_all_switches()
 
     # ========================================================================
     # Serialization
