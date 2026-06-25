@@ -1685,7 +1685,7 @@
 
 /* Individual Route Item */
 .route-item {
-    background: #1a1a2e;
+    background: var(--bg-dark);
     border: 1px solid var(--border-color);
     border-radius: 8px;
     padding: 12px;
@@ -1693,7 +1693,7 @@
 }
 
 .route-item:hover {
-    border-color: #5a5a7e;
+    border-color: var(--accent-color);
 }
 
 .route-header {
@@ -1711,12 +1711,12 @@
 }
 
 .route-priority {
-    background: #4a4a6e;
+    background: var(--bg-hover);
     padding: 2px 8px;
     border-radius: 4px;
     font-size: 10px;
     font-weight: 600;
-    color: #ccc;
+    color: var(--text-secondary);
 }
 
 .route-id {
@@ -1760,7 +1760,7 @@
 
 .route-editor-panel .block-item {
     padding: 4px 8px;
-    border-bottom: 1px solid #2a2a3e;
+    border-bottom: 1px solid var(--border-color);
 }
 
 .route-editor-panel .block-item:last-child {

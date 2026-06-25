@@ -598,7 +598,7 @@
 
 /* Secondary panel building blocks */
 .control-section {
-    background: rgba(16, 18, 24, 0.6);
+    background: var(--bg-dark);
     border: 1px solid var(--border-color);
     border-radius: 8px;
     padding: 10px;
@@ -766,8 +766,8 @@
 }
 
 .tile-list-container {
-    background: #1a1a2e;
-    border: 1px solid #2a2a3e;
+    background: var(--bg-panel);
+    border: 1px solid var(--border-color);
     border-radius: 4px;
     max-height: 200px;
     overflow-y: auto;
@@ -778,7 +778,7 @@
     align-items: center;
     justify-content: space-between;
     padding: 4px 8px;
-    border-bottom: 1px solid #2a2a3e;
+    border-bottom: 1px solid var(--border-color);
     transition: background-color 0.2s;
 }
 
