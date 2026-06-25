@@ -1,12 +1,12 @@
-/* Display menu — the popover behind the header "Display" button. Two sections
-   (Editor theme / Layout theme), each a row of theme options, built from the
-   theme registries in frontend/src/lib/theme.ts. Styled from the chrome theme
-   tokens so the menu itself follows the editor theme. */
+/* Display menu — the popover behind the header "Display" button. A grid with
+   one row per theme axis (Editor / Layout); each row is that axis's themes as
+   color-preview swatches with a check on the active one. Built from the theme
+   registries in frontend/src/lib/theme.ts. Styled from the chrome theme tokens
+   so the menu itself follows the editor theme. */
 
 .display-menu {
     position: fixed;
     z-index: var(--z-picker);
-    min-width: 200px;
     display: flex;
     flex-direction: column;
     gap: var(--space-12);
@@ -21,44 +21,94 @@
     display: none;
 }
 
-.display-menu-section {
+.display-menu-row {
     display: flex;
     flex-direction: column;
     gap: var(--space-6);
 }
 
-.display-menu-label {
+.display-menu-row-label {
     font-size: var(--font-size-label);
     color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.04em;
 }
 
-.display-menu-options {
+/* The 3-column grid. The Editor row fills 2 columns (no blueprint), the Layout
+   row fills 3 — together a 2x3 grid with aligned columns. */
+.display-menu-tiles {
+    display: grid;
+    grid-template-columns: repeat(3, 64px);
+    gap: var(--space-6);
+}
+
+.display-menu-tile {
     display: flex;
+    flex-direction: column;
+    align-items: center;
     gap: var(--space-4);
-}
-
-.display-menu-option {
-    flex: 1;
-    padding: var(--space-6) var(--space-8);
-    background-color: var(--bg-dark);
-    color: var(--text-secondary);
-    border: 1px solid var(--border-color);
+    padding: var(--space-4);
+    background: transparent;
+    border: 1px solid transparent;
     border-radius: var(--control-radius-sm);
-    font-family: var(--font-main);
-    font-size: var(--font-size-body);
     cursor: pointer;
-    transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+    font-family: var(--font-main);
 }
 
-.display-menu-option:hover {
+.display-menu-tile:hover {
     background-color: var(--bg-hover);
-    color: var(--text-primary);
 }
 
-.display-menu-option[aria-pressed='true'] {
-    background-color: var(--accent-color);
-    border-color: var(--accent-color);
+/* Each swatch is a 2x3 mini-grid of the theme's six primary colors
+   (background, accent, text, error, warning, info). */
+.display-menu-swatch {
+    position: relative;
+    width: 100%;
+    height: 34px;
+    border-radius: var(--radius-xs);
+    border: 1px solid var(--border-color);
+    overflow: hidden;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+}
+
+.display-menu-cell {
+    width: 100%;
+    height: 100%;
+}
+
+/* Check mark on the active theme — overlays the whole swatch with a scrim so it
+   reads over any mix of cell colors. */
+.display-menu-check {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     color: #fff;
+    font-size: 18px;
+    line-height: 1;
+    opacity: 0;
+    background-color: rgba(0, 0, 0, 0.32);
+    text-shadow: 0 0 3px rgba(0, 0, 0, 0.9);
+}
+
+.display-menu-tile[aria-pressed='true'] .display-menu-swatch {
+    border-color: var(--accent-color);
+    box-shadow: 0 0 0 2px var(--accent-color);
+}
+
+.display-menu-tile[aria-pressed='true'] .display-menu-check {
+    opacity: 1;
+}
+
+.display-menu-tile-label {
+    font-size: var(--font-size-body);
+    color: var(--text-secondary);
+}
+
+.display-menu-tile[aria-pressed='true'] .display-menu-tile-label {
+    color: var(--text-primary);
+    font-weight: 600;
 }
