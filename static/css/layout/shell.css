@@ -15,14 +15,14 @@ textarea {
    CTA (Play). Sections separated by hairline dividers.
    ============================================================================ */
 .app-header {
-    height: 44px;
+    height: 48px;
     background-color: var(--bg-hover);
     border-bottom: 1px solid var(--border-color);
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
     align-items: center;
-    justify-content: space-between;
     padding: 0 12px;
-    gap: 16px;
+    gap: 12px;
     flex-shrink: 0;
 }
 
@@ -53,20 +53,25 @@ textarea {
     line-height: 1;
 }
 
-/* ---- Control sections with hairline dividers ----
-   Sections sit in a flex row with a uniform gap. The divider is a 1px
-   pseudo-element centered in the gap; sections themselves carry no padding,
-   so segmented controls (which use overflow:hidden for their rounded corners)
-   don't get squeezed to zero by flex-shrink. */
-.controls {
+/* ---- Three zones ----
+   The bar reads in three zones: transport (Play / restart / speed) on the left
+   next to the wordmark, the Editor|Simulation split + file ops centred, and
+   view + settings on the right. A 1fr | auto | 1fr grid keeps the centre zone
+   optically centred no matter how wide the side zones grow. Within a zone,
+   sub-clusters are split by a 1px hairline centred in the gap — the same
+   divider the bar used before, now scoped per zone. */
+.header-zone {
     display: flex;
     align-items: center;
-    gap: 18px;
-    flex-wrap: nowrap;
+    gap: 14px;
     min-width: 0;
 }
 
-.controls > * {
+.header-zone-left   { justify-self: start; }
+.header-zone-center { justify-self: center; }
+.header-zone-right  { justify-self: end; }
+
+.header-zone > * {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -74,38 +79,46 @@ textarea {
     position: relative;
 }
 
-.controls > * + *::before {
+.header-zone > * + *::before {
     content: '';
     position: absolute;
-    left: -10px;
+    left: -7px;
     top: 50%;
     transform: translateY(-50%);
     width: 1px;
-    height: 18px;
+    height: 20px;
     background-color: var(--border-color);
 }
 
-/* ---- Ghost button (the default in the header) ---- */
+/* ---- Ghost button (the default in the header) ----
+   The top bar is the one region the 32px control height belongs to
+   (docs/DESIGN_LANGUAGE.md §1 Layout + Surfaces). Action buttons are
+   icon + label; pure utilities use the square icon-only variant below. */
 .app-header .btn {
-    height: var(--control-height-xs);
+    height: var(--control-height-sm);
     min-height: 0;
-    padding: 0 10px;
+    padding: 0 12px;
     background-color: var(--bg-dark);
     color: var(--text-primary);
     border: 1px solid var(--border-color);
     border-radius: var(--control-radius-sm);
     font-family: var(--font-main);
-    font-size: 11px;
+    font-size: var(--font-size-value);
     font-weight: 500;
     line-height: 1;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 5px;
+    gap: 6px;
     cursor: pointer;
     transition: color 0.15s, border-color 0.15s, background-color 0.15s;
     min-width: 0;
     width: auto;
+}
+
+.app-header .btn .ti {
+    font-size: 15px;
+    line-height: 1;
 }
 
 .app-header .btn:hover:not(:disabled) {
@@ -118,21 +131,22 @@ textarea {
     cursor: default;
 }
 
-/* ---- Icon-only ghost button (e.g. the Settings gear) — square, larger glyph ---- */
+/* ---- Icon-only ghost button (restart, panel toggles, theme, settings) —
+   square, slightly larger glyph ---- */
 .app-header .btn-icon-only {
-    width: var(--control-height-xs);
+    width: var(--control-height-sm);
     padding: 0;
 }
 
 .app-header .btn-icon-only .ti {
-    font-size: 15px;
+    font-size: 16px;
     line-height: 1;
 }
 
 /* ---- Primary CTA: Play / Pause (the one filled accent button) ---- */
 .app-header #btn-play-pause.btn-primary {
-    min-width: 78px;
-    padding: 0 14px;
+    min-width: 84px;
+    padding: 0 16px;
     background-color: var(--accent-color);
     color: #fff;
     border: 1px solid var(--accent-color);
@@ -145,25 +159,6 @@ textarea {
     color: #fff;
 }
 
-.app-header #btn-play-pause .icon {
-    font-size: 11px;
-    line-height: 1;
-}
-
-/* ---- Reset button — ghost, danger-on-hover ---- */
-.app-header #btn-reset {
-    width: var(--control-height-xs);
-    padding: 0;
-    color: var(--text-secondary);
-    font-family: var(--font-mono);
-    font-size: 14px;
-}
-
-.app-header #btn-reset:hover {
-    color: var(--danger-color);
-    border-color: var(--danger-color);
-}
-
 /* ---- Speed presets — segmented control ---- */
 .speed-presets {
     display: inline-flex;
@@ -171,7 +166,7 @@ textarea {
     background-color: var(--bg-dark);
     border: 1px solid var(--border-color);
     border-radius: var(--control-radius-sm);
-    height: var(--control-height-xs);
+    height: var(--control-height-sm);
     overflow: hidden;
     padding: 0;
     gap: 0;
@@ -179,13 +174,13 @@ textarea {
 
 .speed-btn {
     height: 100%;
-    padding: 0 10px;
+    padding: 0 11px;
     background: transparent;
     border: none;
     border-radius: 0;
     color: var(--text-secondary);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--font-size-value);
     font-weight: 500;
     line-height: 1;
     cursor: pointer;
@@ -210,7 +205,7 @@ textarea {
     background-color: var(--bg-dark);
     border: 1px solid var(--border-color);
     border-radius: var(--control-radius-sm);
-    height: var(--control-height-xs);
+    height: var(--control-height-sm);
     overflow: hidden;
     padding: 0;
     gap: 0;
@@ -218,14 +213,14 @@ textarea {
 
 .mode-btn {
     height: 100%;
-    min-width: 68px;
-    padding: 0 14px;
+    min-width: 80px;
+    padding: 0 16px;
     background: transparent;
     border: none;
     border-radius: 0;
     color: var(--text-secondary);
     font-family: var(--font-main);
-    font-size: 11px;
+    font-size: var(--font-size-value);
     font-weight: 500;
     line-height: 1;
     cursor: pointer;

@@ -192,19 +192,20 @@ class App {
     document.getElementById('mode-edit')!.classList.toggle('active', !isSim);
     document.getElementById('mode-sim')!.classList.toggle('active', isSim);
 
-    let activeToolDisabled = false;
-    document.querySelectorAll<HTMLButtonElement>('.tool-btn').forEach((btn) => {
-      const tool = btn.dataset.tool || '';
-      const allowedInSim = tool === 'inspect' || tool.endsWith('-panel');
-      const disabled = isSim && !allowedInSim;
-      btn.disabled = disabled;
-      if (disabled && btn.classList.contains('active')) activeToolDisabled = true;
-    });
+    if (!this.editor) return;
 
-    // If the tool we were holding just got disabled, fall back to Select and
-    // leave any active build mode so the editor is not stuck mid-build.
-    if (activeToolDisabled && this.editor) {
-      const revert = () => this.editor._setSelectedTool('select');
+    // The editor renders its palette filtered to the mode — structural layout
+    // tools are hidden in operation mode (only inspect, viewers, and the
+    // dispatch/operate tools remain). If the tool we were holding is not
+    // available in the new mode, fall back to Inspect and leave any active build
+    // mode so the editor is not stuck mid-build.
+    const current = this.editor._toolsById.get(this.editor.selectedTool);
+    const stillAvailable = current ? current.availableIn.includes(mode) : true;
+    this.editor.editorMode = mode;
+    this.editor.renderToolbar();
+
+    if (!stillAvailable) {
+      const revert = () => this.editor._setSelectedTool('inspect');
       if (this.editor.activeMode) {
         Promise.resolve(this.editor.exitMode()).then(revert);
       } else {
@@ -758,6 +759,35 @@ class App {
       metaEl.textContent = c ? this._fatalConflictMeta(c) : '';
     }
     banner.hidden = false;
+
+    // Flash the collision site on the canvas so the operator sees *where* the
+    // conflict is, not just the banner text — the "whose train, and where"
+    // forensic view. Re-asserted on every network refresh while the runtime
+    // stays halted, so the strobe persists until the conflict is cleared, then
+    // times out on its own once we stop re-asserting. Reuses the route handler's
+    // red-strobe-with-X conflict flash.
+    if (c) {
+      const tiles = this._resolveConflictTiles(network, c);
+      if (tiles.length > 0) {
+        this.renderer.flashConflictTiles(tiles, 2500);
+      }
+    }
+  }
+
+  /** Resolve a fatal-conflict resource to its tile coordinates so the canvas
+   *  can flash the collision site. A block matches every tile whose
+   *  `block_section_id` is the resource id; a switch matches the tile carrying
+   *  that `switch_id`. Returns [] when nothing matches (the banner still shows). */
+  _resolveConflictTiles(network: any, c: any): Array<[number, number]> {
+    const tiles: Array<[number, number]> = [];
+    const rid = c?.resource_id;
+    if (!rid || !network) return tiles;
+    for (const tr of network.tracks || []) {
+      if (tr.block_section_id === rid || tr.switch_id === rid) {
+        tiles.push([tr.x, tr.y]);
+      }
+    }
+    return tiles;
   }
 
   /** Plain-English description of a fatal physical-entry conflict. */

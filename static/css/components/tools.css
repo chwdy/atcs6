@@ -15,68 +15,6 @@
     color: var(--text-primary);
 }
 
-/* Tool Categories - Organized rows with labels */
-.tool-category {
-    margin-bottom: 4px;
-    border-bottom: 1px solid var(--border-color);
-    padding-bottom: 4px;
-}
-
-.tool-category:last-child {
-    margin-bottom: 0;
-    border-bottom: none;
-    padding-bottom: 0;
-}
-
-.tool-category-label {
-    font-size: 0.62rem;
-    text-transform: uppercase;
-    color: var(--text-secondary);
-    margin-bottom: 2px;
-    letter-spacing: 0.06em;
-    font-weight: 600;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 1px 4px;
-    border-radius: 3px;
-    transition: background-color 0.2s, color 0.2s;
-    user-select: none;
-}
-
-.tool-category-label:hover {
-    background-color: var(--bg-hover);
-    color: var(--text-primary);
-}
-
-.tool-category-label::after {
-    content: '▼';
-    font-size: 0.45rem;
-    transition: transform 0.2s;
-}
-
-.tool-category.collapsed .tool-category-label::after {
-    transform: rotate(-90deg);
-}
-
-.tool-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 2px;
-    overflow: hidden;
-    max-height: 200px;
-    transition: max-height 0.25s ease-out, opacity 0.2s ease-out, margin 0.2s ease-out;
-    opacity: 1;
-    margin-top: 2px;
-}
-
-.tool-category.collapsed .tool-row {
-    max-height: 0;
-    opacity: 0;
-    margin-top: 0;
-}
-
 .tool-grid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
@@ -84,9 +22,7 @@
 }
 
 /* Tool tiles per DESIGN_LANGUAGE.md §3 "Flat ghost" — no per-tile border;
-   the .bg-dark fill contrasts with the panel and gives each tile its shape,
-   and the .tool-category dividers (border-bottom between groups) carry the
-   structure that per-tile borders previously suggested. */
+   the .bg-dark fill contrasts with the popover and gives each tile its shape. */
 .tool-btn {
     display: flex;
     flex-direction: column;
@@ -111,17 +47,6 @@
     color: var(--accent-hover);
 }
 
-/* Disabled in Simulation mode: layout-editing tools are gated off. */
-.tool-btn:disabled {
-    opacity: 0.35;
-    cursor: not-allowed;
-}
-
-.tool-btn:disabled:hover {
-    background-color: var(--bg-dark);
-    color: var(--text-secondary);
-}
-
 .tool-btn.active {
     background-color: rgba(var(--accent-rgb), 0.18);
     color: var(--accent-hover);
@@ -130,4 +55,87 @@
 .tool-icon {
     font-size: 1.2rem;
     line-height: 1;
+}
+
+/* ── Tool rail (registry-rendered) ──────────────────────────────────────────
+   The palette is a vertical list of main buttons: Inspect (a direct tool) plus
+   one button per group. A group button opens a flyout popover of its tools,
+   sized to its contents. Replaces the always-open category accordion. */
+#tool-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.tool-group {
+    position: relative;
+}
+
+/* Main rail button: full-width row — icon + label (+ caret for groups). */
+.tool-launch {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 8px;
+    background-color: transparent;
+    border: none;
+    border-radius: var(--control-radius-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 0.72rem;
+    font-weight: 500;
+    text-align: left;
+    transition: color 0.15s, background-color 0.15s;
+}
+
+.tool-launch:hover {
+    background-color: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+/* Active tool, or a group that owns the active tool. */
+.tool-launch.active {
+    background-color: rgba(var(--accent-rgb), 0.18);
+    color: var(--accent-hover);
+}
+
+.tool-launch-icon {
+    font-size: 1.05rem;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+.tool-launch-label {
+    flex: 1;
+}
+
+.tool-launch-caret {
+    font-size: 0.7rem;
+    opacity: 0.55;
+    transition: transform 0.18s;
+}
+
+.tool-group.open .tool-launch-caret {
+    transform: rotate(90deg);
+}
+
+/* Flyout popover holding a group's tool tiles. position:fixed so the sidebar's
+   overflow can't clip it; the editor sets top/left on open. */
+.tool-popover {
+    position: fixed;
+    z-index: 200;
+    display: none;
+    flex-wrap: wrap;
+    gap: 3px;
+    max-width: 212px;
+    padding: 6px;
+    background-color: var(--bg-panel);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+
+.tool-group.open .tool-popover {
+    display: flex;
 }

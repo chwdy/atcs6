@@ -153,6 +153,33 @@ pattern; builds or selects structure on the map → the left sidebar;
 transient feedback → a toast; a blocking decision → a modal. If none of
 those fits, raise it as a doc question before inventing a new region.
 
+### Composing the top bar
+
+The top bar reads in three zones, laid out with
+`grid-template-columns: 1fr auto 1fr`:
+
+- **Left** — the brand wordmark and transport: Play, restart, and the
+  speed-preset segment.
+- **Center** — the `Editor | Simulation` mode split (the app's primary
+  split) followed by the file commands (New / Save / Load).
+- **Right** — view toggles (panel show/hide, Inspector) and app settings
+  (theme, settings).
+
+The `1fr auto 1fr` track set keeps the centre zone optically centred no
+matter how wide the side zones grow: the two `1fr` tracks split the spare
+space equally, which pins the `auto` centre track to the true middle.
+Within a zone, sub-clusters are separated by a 1px hairline centred in the
+gap (a `> * + *::before` pseudo-element); the zones themselves are
+separated by the grid spacing, not a drawn rule.
+
+The top bar is also the one region that uses the 32px
+`--control-height-sm` controls (§1 Layout, Surfaces) rather than the 28px
+panel height, and its action buttons follow the icon + label rule in §3
+Icons.
+
+Reference: `.app-header` / `.header-zone` in
+[layout/shell.css](../static/css/layout/shell.css).
+
 ---
 
 ## 1. Tokens
@@ -401,6 +428,18 @@ named vocabulary.
 - **No inline `<svg>` in new components.** If Tabler is missing the icon
   you need, that's a roster question — propose adding it to
   `icon-selections.json` rather than pasting raw SVG into a component file.
+- **Action gets a label; utility goes icon-only.** In the top bar and
+  other control rows, a primary action button takes icon + label (New,
+  Save, Load, Inspector, Play); a pure utility takes an icon-only square
+  (theme, settings, panel toggles, restart). Don't mix the two arbitrarily
+  on one row — icon-only for some actions and text-only for others, with no
+  rule, is the "the icons feel random" smell.
+- **Verify the glyph class actually resolves.** Before shipping a `ti-*`
+  class, confirm it exists in the vendored Tabler CSS
+  (`vendor/tabler/tabler-icons.min.css`). A typo'd or non-existent class
+  silently falls back to a system font and renders as a stray character —
+  the same low-baseline "broken glyph" symptom as a stray Unicode
+  pictograph. This is the class-name companion to the roster lookup above.
 
 ### Ghost button (the default)
 

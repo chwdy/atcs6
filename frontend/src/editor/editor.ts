@@ -45,6 +45,8 @@ import type { SpeedProfileEditorHandler } from './editor-speed-profiles';
 import { EditorUIHandler } from './editor-ui';
 import { MultiSelectActionsHandler } from './editor-multi-select';
 import { showResourcePicker, dismissResourcePicker } from './resource-picker';
+import { renderToolGroups } from './tool-registry';
+import type { ToolContribution, ToolMode } from './tool-registry';
 
 /**
  * A plugin that augments the editor with extra handlers and tools. The sim
@@ -53,6 +55,12 @@ import { showResourcePicker, dismissResourcePicker } from './resource-picker';
  */
 export interface EditorPlugin {
   register(editor: Editor): void;
+  /**
+   * Tool-palette contributions this plugin adds. Merged with the core editor's
+   * tools and rendered into the toolbar (see Editor.renderToolbar). Optional: a
+   * behavior-only plugin may register handlers without contributing any tools.
+   */
+  tools?(editor: Editor): ToolContribution[];
 }
 
 /**
@@ -118,6 +126,12 @@ export class Editor {
   uiHandler: EditorUIHandler;
   multiSelectHandler: MultiSelectActionsHandler;
   _plugins: EditorPlugin[] = [];
+  // Tool id → contribution, rebuilt on every renderToolbar(). The delegated
+  // toolbar click handler looks up the clicked tool here to dispatch by kind.
+  _toolsById: Map<string, ToolContribution> = new Map();
+  // Which mode the palette renders for. The host (app.ts) sets this on the
+  // editor/operation toggle; tools whose availableIn excludes it are hidden.
+  editorMode: ToolMode = 'edit';
   // Injected by the host (app.ts) — the editor calls these instead of reaching
   // the `window.app` / `stateManager` globals, so it is portable to any host.
   host?: HostApp;
@@ -246,6 +260,11 @@ export class Editor {
   registerPlugin(plugin: EditorPlugin): void {
     this._plugins.push(plugin);
     plugin.register(this);
+    // A plugin may contribute tools; re-render so they appear. The constructor
+    // renders the core tools first, then app.ts registers the sim plugin, which
+    // lands here and re-renders with the sim tools merged in. renderToolbar
+    // no-ops until its mount exists, so this is safe pre-construction too.
+    this.renderToolbar();
   }
 
   /** Scoped element-by-id lookup within `root` (matches document.getElementById). */
@@ -262,30 +281,10 @@ export class Editor {
     return this.uiHandler.setupSecondarySidebar();
   }
 
-  // === Collapsible Tool Categories ===
-
-  setupCollapsibleCategories(): any {
-    return this.uiHandler.setupCollapsibleCategories();
-  }
+  // === Collapsible Sidebar Sections ===
 
   setupCollapsibleSidebarSections(): any {
     return this.uiHandler.setupCollapsibleSidebarSections();
-  }
-
-  toggleCategory(category: any): any {
-    return this.uiHandler.toggleCategory(category);
-  }
-
-  expandCategoryForTool(toolName: any): any {
-    return this.uiHandler.expandCategoryForTool(toolName);
-  }
-
-  saveCategoryStates(): any {
-    return this.uiHandler.saveCategoryStates();
-  }
-
-  loadCategoryStates(): any {
-    return this.uiHandler.loadCategoryStates();
   }
 
   showSecondarySidebar(title: string, content: string): any {
@@ -679,17 +678,235 @@ export class Editor {
   }
 
   // Tools that activate a multi-step EditorMode.
-  _modeFactoriesByTool(): Record<string, () => any> {
-    return {
-      path: () => this.pathHandler?.buildRouteToolMode(),
-      'extend-path': () => this.pathHandler?.buildExtendRouteMode(),
-      'cancel-path': () => this.pathHandler?.buildCancelRouteMode(),
-      'box-select': () => this._buildBoxSelectMode(),
-      'lasso-select': () => this._buildLassoSelectMode(),
-      'paint-select': () => this._buildPaintSelectMode(),
-      'entity-select': () => this._buildEntitySelectMode(),
-      trace: () => this._buildTraceSelectMode(),
-    };
+  /**
+   * The layout tools the core editor always provides: inspect, the selection
+   * tools, and the network / platform / block build tools. Simulation tools
+   * (path, train, route) are contributed by the SimEditorPlugin, not here, so a
+   * layout-only host gets a clean palette.
+   */
+  coreTools(): ToolContribution[] {
+    return [
+      {
+        id: 'inspect', label: 'Inspect', icon: 'ti ti-pointer',
+        title: 'Inspect — click a tile to view its properties',
+        group: null, availableIn: ['edit', 'sim'], kind: { type: 'tool' },
+      },
+
+      {
+        id: 'trace', label: 'Trace', icon: 'ti ti-line',
+        title: 'Trace (click two tracks to select the connecting path. Space clears, Delete removes tracks)',
+        group: 'Selection', availableIn: ['edit'],
+        kind: { type: 'mode', factory: () => this._buildTraceSelectMode() },
+      },
+      {
+        id: 'box-select', label: 'Box', icon: 'ti ti-box-multiple',
+        title: 'Box Select (drag a rectangle to mark tracks. Shift = remove. Space clears, Delete removes tracks)',
+        group: 'Selection', availableIn: ['edit'],
+        kind: { type: 'mode', factory: () => this._buildBoxSelectMode() },
+      },
+      {
+        id: 'lasso-select', label: 'Lasso', icon: 'ti ti-lasso',
+        title: 'Lasso Select (draw a shape around tracks to mark them. Shift = remove. Space clears, Delete removes tracks)',
+        group: 'Selection', availableIn: ['edit'],
+        kind: { type: 'mode', factory: () => this._buildLassoSelectMode() },
+      },
+      {
+        id: 'paint-select', label: 'Brush', icon: 'ti ti-brush',
+        title: 'Brush Select (click or drag to paint tracks into the selection. Shift = remove. Space clears, Delete removes tracks)',
+        group: 'Selection', availableIn: ['edit'],
+        kind: { type: 'mode', factory: () => this._buildPaintSelectMode() },
+      },
+      {
+        id: 'entity-select', label: 'Entity', icon: 'ti ti-click',
+        title: 'Entity Select (click a tile, then pick a block / platform / station — or all of them — to add its tracks to the selection. Space clears, Delete removes tracks)',
+        group: 'Selection', availableIn: ['edit'],
+        kind: { type: 'mode', factory: () => this._buildEntitySelectMode() },
+      },
+
+      {
+        id: 'track', label: 'Track', icon: 'ti ti-track', title: 'Track',
+        group: 'Network', availableIn: ['edit'], kind: { type: 'tool' },
+      },
+      {
+        id: 'signal', label: 'Signal', icon: 'ti ti-traffic-lights', title: 'Signal',
+        group: 'Network', availableIn: ['edit'], kind: { type: 'tool' },
+      },
+      {
+        id: 'tunnel', label: 'Tunnel', icon: 'ti ti-arrows-join',
+        title: 'Tunnel — click two dead-end edges to pair them',
+        group: 'Network', availableIn: ['edit'], kind: { type: 'tool' },
+      },
+      {
+        id: 'switches-panel', label: 'Switches', icon: 'ti ti-arrows-split-2',
+        title: 'List All Switches',
+        group: 'Network', availableIn: ['edit', 'sim'],
+        kind: { type: 'action', run: () => this.showSwitchesPanel() },
+      },
+
+      {
+        id: 'platform', label: 'New', icon: 'ti ti-plus',
+        title: 'Place a Platform (click one tile, or drag across several to span multiple tiles)',
+        group: 'Platform', availableIn: ['edit'], kind: { type: 'tool' },
+      },
+      {
+        id: 'extend-platform', label: 'Extend', icon: 'ti ti-arrows-horizontal',
+        title: 'Extend Existing Platform',
+        group: 'Platform', availableIn: ['edit'], kind: { type: 'tool' },
+      },
+      {
+        id: 'remove-platform-tile', label: 'Remove', icon: 'ti ti-minus',
+        title: 'Remove Platform Tile',
+        group: 'Platform', availableIn: ['edit'], kind: { type: 'tool' },
+      },
+      {
+        id: 'stations-panel', label: 'Stations', icon: 'ti ti-home',
+        title: 'Logical Station Groups',
+        group: 'Platform', availableIn: ['edit', 'sim'],
+        kind: { type: 'action', run: () => this.showStationsPanel() },
+      },
+
+      {
+        id: 'block', label: 'New', icon: 'ti ti-plus', title: 'Create New Block',
+        group: 'Block', availableIn: ['edit'], kind: { type: 'tool' },
+      },
+      {
+        id: 'extend-block', label: 'Extend', icon: 'ti ti-arrows-horizontal',
+        title: 'Extend Existing Block',
+        group: 'Block', availableIn: ['edit'], kind: { type: 'tool' },
+      },
+      {
+        id: 'remove-block-tile', label: 'Remove', icon: 'ti ti-minus',
+        title: 'Remove Block Tile',
+        group: 'Block', availableIn: ['edit'], kind: { type: 'tool' },
+      },
+    ];
+  }
+
+  /** Core tools plus every registered plugin's tools, in registration order. */
+  _collectToolContributions(): ToolContribution[] {
+    return [
+      ...this.coreTools(),
+      ...this._plugins.flatMap((p) => p.tools?.(this) ?? []),
+    ];
+  }
+
+  /**
+   * (Re)render the tool palette from the registry into `#tool-groups`, filtered
+   * to the current editor mode, and rebuild the id→contribution lookup. The rail
+   * shows Inspect plus one main button per group; a group button opens a flyout
+   * popover of that group's tools. Tools whose `availableIn` excludes the current
+   * mode are not rendered, and a group with no remaining tools shows no button.
+   * Safe to call repeatedly; no-ops if the mount is absent.
+   */
+  renderToolbar(): void {
+    const mount = this.$id('tool-groups');
+    if (!mount) return;
+    const contributions = this._collectToolContributions();
+    this._toolsById = new Map(contributions.map((c) => [c.id, c]));
+    renderToolGroups(contributions, mount, {
+      activeToolId: this.selectedTool || 'inspect',
+      mode: this.editorMode,
+    });
+  }
+
+  /**
+   * Delegated click handler for the tool palette. A group button toggles its
+   * flyout popover; a tool button (in the rail or a popover) is dispatched and
+   * the popover is closed.
+   */
+  async _onToolbarClick(e: Event): Promise<void> {
+    const t = e.target as HTMLElement;
+
+    const groupBtn = t.closest<HTMLElement>('.tool-group-btn');
+    if (groupBtn) {
+      const group = groupBtn.closest<HTMLElement>('.tool-group');
+      const wasOpen = group?.classList.contains('open');
+      this._closeToolPopovers();
+      if (group && !wasOpen) this._openGroupPopover(group);
+      return;
+    }
+
+    const toolBtn = t.closest<HTMLElement>('[data-tool]');
+    if (toolBtn) {
+      await this._dispatchTool(toolBtn);
+      this._closeToolPopovers();
+    }
+  }
+
+  /**
+   * Dispatch a tool button by its contribution `kind`: action tools run and
+   * leave the active tool alone; tool/mode tools become the active tool (mode
+   * tools also enter their editor mode).
+   */
+  async _dispatchTool(btn: HTMLElement): Promise<void> {
+    const newTool = btn.dataset.tool || '';
+    const contribution = this._toolsById.get(newTool);
+    const oldTool = this.selectedTool;
+
+    // Action tools (panels/dialogs): run and leave the active tool unchanged.
+    if (contribution?.kind.type === 'action') {
+      contribution.kind.run();
+      return;
+    }
+
+    // Exit any active mode before switching tools.
+    if (this.activeMode) {
+      await this.exitMode();
+    }
+
+    // Auto-toggle block debug when entering/leaving block tools.
+    const isBlockTool = ['block', 'extend-block'].includes(newTool);
+    const wasBlockTool = ['block', 'extend-block'].includes(oldTool);
+    if (isBlockTool !== wasBlockTool) {
+      this.renderer.showBlockColorsOnly = isBlockTool;
+      this.host?.refreshNetwork();
+    }
+
+    if (contribution?.kind.type === 'mode') {
+      // enterMode sets the active tool via _setSelectedTool(mode.toolName).
+      await this.enterMode(contribution.kind.factory());
+    } else {
+      this._setSelectedTool(newTool);
+    }
+
+    this.previewPath = null;
+    this.previewTracks = null;
+    // Drop any lingering build/hover ghost from the previous tool.
+    this.renderer.setBuildPreview(null);
+    this.renderer.setHoverPreview(null);
+    this.hoverPosition = null;
+    this.hoverValid = false;
+    this.renderer.requestRedraw();
+  }
+
+  /** Open a group's flyout popover, positioned beside its button (clamped to the viewport). */
+  _openGroupPopover(group: HTMLElement): void {
+    const btn = group.querySelector<HTMLElement>('.tool-group-btn');
+    const pop = group.querySelector<HTMLElement>('.tool-popover');
+    if (!btn || !pop) return;
+    group.classList.add('open');
+    btn.setAttribute('aria-expanded', 'true');
+    // The popover is position:fixed (so the sidebar's overflow can't clip it);
+    // place it just right of the button, then nudge up if it would overflow.
+    const r = btn.getBoundingClientRect();
+    pop.style.left = `${Math.round(r.right + 6)}px`;
+    const margin = 8;
+    let top = r.top;
+    const h = pop.offsetHeight;
+    if (top + h + margin > window.innerHeight) {
+      top = Math.max(margin, window.innerHeight - h - margin);
+    }
+    pop.style.top = `${Math.round(top)}px`;
+  }
+
+  /** Close any open tool-group popover. */
+  _closeToolPopovers(): void {
+    this.$id('tool-groups')
+      ?.querySelectorAll<HTMLElement>('.tool-group.open')
+      .forEach((g) => {
+        g.classList.remove('open');
+        g.querySelector('.tool-group-btn')?.setAttribute('aria-expanded', 'false');
+      });
   }
 
   _buildBoxSelectMode(): any {
@@ -1081,20 +1298,6 @@ export class Editor {
   }
 
   // Tools that just open a panel or run a one-shot action.
-  _panelOnlyTools(): Record<string, () => any> {
-    return {
-      'paths-panel': () => this.showPathsPanel(),
-      'add-train': () => this.showAddTrainDialog(),
-      'train-panel': () => this.showTrainsPanel(),
-      'routes-panel': () => this.showRoutesPanel(),
-      'route-runs-panel': () => this.routeRunHandler?.showRouteRunsPanel(),
-      'new-route': () => this.routeHandler?.createNewRoute(),
-      'stations-panel': () => this.showStationsPanel(),
-      'switches-panel': () => this.showSwitchesPanel(),
-      'speed-profiles-panel': () => this.showSpeedProfilesPanel(),
-    };
-  }
-
   /** Sync the status-bar zoom percentage to the camera's current scale. */
   _syncZoomLabel(): void {
     const zoomLabel = this.$id('status-zoom');
@@ -1119,58 +1322,23 @@ export class Editor {
   }
 
   setupEventListeners(): void {
-    const modeFactories = this._modeFactoriesByTool();
-    const panelOnlyTools = this._panelOnlyTools();
-
-    // Tool selection
-    document.querySelectorAll<HTMLElement>('.tool-btn').forEach((btn) => {
-      btn.addEventListener('click', async (e) => {
-        const newTool = (e.currentTarget as HTMLElement).dataset.tool as string;
-        const oldTool = this.selectedTool;
-
-        // Panel-only tools: run the action, leave selectedTool alone.
-        if (newTool in panelOnlyTools) {
-          panelOnlyTools[newTool]();
-          return;
-        }
-
-        document.querySelectorAll<HTMLElement>('.tool-btn').forEach((b) => b.classList.remove('active'));
-        (e.currentTarget as HTMLElement).classList.add('active');
-
-        // Exit any active mode before switching tools.
-        if (this.activeMode) {
-          await this.exitMode();
-        }
-
-        // Auto-toggle block debug when entering/leaving block tools
-        const isBlockTool = ['block', 'extend-block'].includes(newTool);
-        const wasBlockTool = ['block', 'extend-block'].includes(oldTool);
-        if (isBlockTool !== wasBlockTool) {
-          this.renderer.showBlockColorsOnly = isBlockTool;
-          this.host?.refreshNetwork();
-        }
-
-        if (newTool in modeFactories) {
-          await this.enterMode(modeFactories[newTool]());
-        }
-
-        this.selectedTool = newTool;
-        this.previewPath = null;
-        this.previewTracks = null;
-        // Drop any lingering build/hover ghost from the previous tool.
-        this.renderer.setBuildPreview(null);
-        this.renderer.setHoverPreview(null);
-        this.hoverPosition = null;
-        this.hoverValid = false;
-        this.renderer.requestRedraw();
-
-        // Auto-expand the category containing the selected tool
-        this.expandCategoryForTool(newTool);
-      });
+    // Render the tool palette from the registry, then dispatch clicks via event
+    // delegation on the mount so a re-render (plugin registration, mode change)
+    // never drops the listener. See renderToolbar and _onToolbarClick.
+    this.renderToolbar();
+    const toolMount = this.$id('tool-groups');
+    toolMount?.addEventListener('click', (e) => {
+      void this._onToolbarClick(e);
+    });
+    // Close the open group popover on an outside click or Escape.
+    document.addEventListener('click', (e) => {
+      if (toolMount && !toolMount.contains(e.target as Node)) this._closeToolPopovers();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') this._closeToolPopovers();
     });
 
-    // Collapsible tool categories
-    this.setupCollapsibleCategories();
+    // Collapsible sidebar sections (Track Bits, etc.).
     this.setupCollapsibleSidebarSections();
 
     const canvas = this.renderer.canvas;
@@ -1758,8 +1926,23 @@ export class Editor {
   // Pure DOM + state update. Does NOT call enter/exitMode (no recursion).
   _setSelectedTool(toolName: string): void {
     this.selectedTool = toolName;
-    document.querySelectorAll<HTMLElement>('.tool-btn').forEach((b) => b.classList.remove('active'));
-    this.$q(`.tool-btn[data-tool="${toolName}"]`)?.classList.add('active');
+    this._syncToolbarActive();
+  }
+
+  /**
+   * Reflect the active tool in the palette: highlight the matching tool button
+   * (rail or popover) and the group button that contains it.
+   */
+  _syncToolbarActive(): void {
+    const root = this.$id('tool-groups');
+    if (!root) return;
+    root.querySelectorAll<HTMLElement>('[data-tool]').forEach((b) =>
+      b.classList.toggle('active', b.dataset.tool === this.selectedTool),
+    );
+    root.querySelectorAll<HTMLElement>('.tool-group').forEach((g) => {
+      const owns = !!g.querySelector(`[data-tool="${this.selectedTool}"]`);
+      g.querySelector('.tool-group-btn')?.classList.toggle('active', owns);
+    });
   }
 
   // Wrapper around renderer.setBoxSelection that also syncs the sidebar panel.

@@ -35,9 +35,21 @@
     "kind": "tabler",
     "value": "arrows-horizontal"
   },
+  "inspector": {
+    "kind": "tabler",
+    "value": "microscope"
+  },
   "json": {
     "kind": "tabler",
     "value": "braces"
+  },
+  "load-layout": {
+    "kind": "tabler",
+    "value": "folder-open"
+  },
+  "new-layout": {
+    "kind": "tabler",
+    "value": "file-plus"
   },
   "new-route": {
     "kind": "tabler",
@@ -89,7 +101,7 @@
   },
   "routes-panel": {
     "kind": "tabler",
-    "value": "map-route"
+    "value": "map-2"
   },
   "save": {
     "kind": "tabler",

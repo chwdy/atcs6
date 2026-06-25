@@ -1,5 +1,5 @@
 // editor-ui.ts — Editor UI Handler (secondary sidebar, working-set tabs,
-// collapsible categories, JSON viewer, bit/visual track editors).
+// collapsible sidebar sections, JSON viewer, bit/visual track editors).
 //
 // Owned by the Editor (`new EditorUIHandler(this)`). The sidebar chrome is
 // header (parent link · title · pin · close) + one row of entity-titled tabs;
@@ -111,24 +111,6 @@ export class EditorUIHandler {
     }, 0);
   }
 
-  setupCollapsibleCategories(): void {
-    const categories = document.querySelectorAll<HTMLElement>('.tool-category');
-
-    categories.forEach((category) => {
-      const label = category.querySelector('.tool-category-label');
-      if (!label) return;
-
-      label.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this.toggleCategory(category);
-      });
-    });
-
-    this.loadCategoryStates();
-
-    this.expandCategoryForTool(this.selectedTool);
-  }
-
   setupCollapsibleSidebarSections(): void {
     const sections = document.querySelectorAll<HTMLElement>('.collapsible-sidebar-section');
 
@@ -185,65 +167,6 @@ export class EditorUIHandler {
         const toggle = section.querySelector('.sidebar-section-toggle');
         if (toggle) {
           toggle.setAttribute('aria-expanded', (!shouldCollapse).toString());
-        }
-      });
-    } catch (e) {}
-  }
-
-  toggleCategory(category: HTMLElement): void {
-    const wasCollapsed = category.classList.contains('collapsed');
-
-    if (wasCollapsed) {
-      category.classList.remove('collapsed');
-    } else {
-      category.classList.add('collapsed');
-    }
-
-    this.saveCategoryStates();
-  }
-
-  expandCategoryForTool(toolName: any): void {
-    if (!toolName) return;
-
-    const toolBtn = this.editor.$q(`.tool-btn[data-tool="${toolName}"]`);
-    if (!toolBtn) return;
-
-    const category = toolBtn.closest('.tool-category');
-    if (category && category.classList.contains('collapsed')) {
-      category.classList.remove('collapsed');
-      this.saveCategoryStates();
-    }
-  }
-
-  saveCategoryStates(): void {
-    const categories = document.querySelectorAll<HTMLElement>('.tool-category');
-    const states: Record<string, boolean> = {};
-
-    categories.forEach((category, index) => {
-      const label = category.querySelector('.tool-category-label');
-      const categoryName = label ? (label.textContent || '').trim() : `category-${index}`;
-      states[categoryName] = category.classList.contains('collapsed');
-    });
-
-    try {
-      localStorage.setItem('toolCategoryStates', JSON.stringify(states));
-    } catch (e) {}
-  }
-
-  loadCategoryStates(): void {
-    try {
-      const saved = localStorage.getItem('toolCategoryStates');
-      if (!saved) return;
-
-      const states = JSON.parse(saved);
-      const categories = document.querySelectorAll<HTMLElement>('.tool-category');
-
-      categories.forEach((category, index) => {
-        const label = category.querySelector('.tool-category-label');
-        const categoryName = label ? (label.textContent || '').trim() : `category-${index}`;
-
-        if (states[categoryName] === true) {
-          category.classList.add('collapsed');
         }
       });
     } catch (e) {}
@@ -411,10 +334,10 @@ export class EditorUIHandler {
       'tunnel': 'ti-building-tunnel',
       'train-control': 'ti-train',
       'trains-list': 'ti-train',
-      'route-editor': 'ti-map-route',
+      'route-editor': 'ti-map-2',
       'route-run-editor': 'ti-player-play',
       'route-runs-list': 'ti-player-play',
-      'routes-list': 'ti-map-route',
+      'routes-list': 'ti-map-2',
       'path': 'ti-route',
       'path-setup': 'ti-route',
       'extend-path-setup': 'ti-arrows-horizontal',
