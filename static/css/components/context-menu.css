@@ -1,0 +1,78 @@
+/* Tile context menu — the right-click menu listing entities on a tile plus
+   inline actions (throw switch, inspect). Built by lib/context-menu.ts. */
+
+.tile-context-menu {
+    position: fixed;
+    z-index: 1000;
+    min-width: 184px;
+    max-width: 280px;
+    padding: 4px;
+    background-color: var(--bg-panel);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+    font-size: 0.8rem;
+    user-select: none;
+}
+
+.tile-context-menu-heading {
+    padding: 6px 8px 4px;
+    font-size: 0.62rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.tile-context-menu-sep {
+    height: 1px;
+    margin: 4px 6px;
+    background-color: var(--border-color);
+}
+
+.tile-context-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 8px;
+    border: 0;
+    border-radius: calc(var(--radius-md) - 3px);
+    background: transparent;
+    color: var(--text-primary);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.tile-context-menu-item:hover {
+    background-color: var(--bg-hover);
+}
+
+.tile-context-menu-icon {
+    flex-shrink: 0;
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+}
+
+.tile-context-menu-label {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tile-context-menu-detail {
+    flex-shrink: 0;
+    font-size: 0.66rem;
+    color: var(--text-muted);
+}
+
+.tile-context-menu-item--accent .tile-context-menu-icon,
+.tile-context-menu-item--accent .tile-context-menu-label {
+    color: var(--accent-color);
+}
+
+.tile-context-menu-item--danger .tile-context-menu-icon,
+.tile-context-menu-item--danger .tile-context-menu-label {
+    color: var(--danger-color);
+}

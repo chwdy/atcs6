@@ -12,6 +12,7 @@
 
 import type { StateManager } from '../lib/state-manager';
 import { showToast } from '../lib/toast';
+import { showContextMenu, type ContextMenuItem } from '../lib/context-menu';
 import type { FullDataClient } from '../lib/layout-data-client';
 import {
   ConstructionPathfinder,
@@ -1644,7 +1645,7 @@ export class Editor {
       const y = e.clientY - rect.top;
       const gridPos = this.renderer.screenToGrid(x, y);
 
-      await this.handleRightClick(gridPos);
+      await this.handleRightClick(gridPos, e.clientX, e.clientY);
     });
 
     // Zoom with mouse-centered zooming and pan compensation.
@@ -2819,7 +2820,7 @@ export class Editor {
     this.renderer.requestRedraw();
   }
 
-  async handleRightClick(gridPos: any): Promise<void> {
+  async handleRightClick(gridPos: any, clientX = 0, clientY = 0): Promise<void> {
     // Selection tools: right-click clears the current selection without leaving
     // the tool — same as the Space key (see _setupEventListeners). It does not
     // fall through to switch toggling while a selection tool is active.
@@ -2853,24 +2854,119 @@ export class Editor {
     try {
       const track = await this.api.getTrack(gridPos.x, gridPos.y);
       if (!track || track.error) return;
-
-      if (track.is_switch) {
-        const newState = track.switch_state === 0 ? 1 : 0;
-        try {
-          await this.api.updateTrack(gridPos.x, gridPos.y, {
-            switch_state: newState,
-          });
-        } catch (switchErr) {
-          const errMsg = this._parseApiError(switchErr, 'Cannot toggle switch');
-          showToast(errMsg, 'error', 5000);
-        }
-
-        await this.host?.refreshNetwork();
-        await this.selectElement(gridPos);
-      }
+      this.showTileContextMenu(gridPos, track, clientX, clientY);
     } catch (err) {
       console.error('Right-click action failed:', err);
     }
+  }
+
+  /**
+   * Build and show the right-click menu for a tile: one entry per entity on the
+   * tile (train / switch / signal / block / platform), each opening that
+   * entity's editor, plus a Throw action for switches and an "Inspect tile"
+   * fallback. Entity resolution mirrors the properties panel.
+   */
+  showTileContextMenu(gridPos: any, track: any, clientX: number, clientY: number): void {
+    const entityItems: ContextMenuItem[] = [];
+
+    const trainsAtTile = (this.cachedNetwork?.trains || []).filter((t: any) => {
+      const span = this.stateManager?.getController(t.id)?.span;
+      return span?.occupied_tiles?.some((tile: any) => tile[0] === track.x && tile[1] === track.y);
+    });
+    for (const train of trainsAtTile) {
+      entityItems.push({
+        label: train.id,
+        detail: 'Train',
+        icon: 'ti ti-train',
+        onSelect: () => {
+          (window as any).app?.selectTrain?.(train.id);
+        },
+      });
+    }
+    if (track.is_switch && track.switch_id) {
+      entityItems.push({
+        label: track.switch_id,
+        detail: 'Switch',
+        icon: 'ti ti-arrows-split-2',
+        onSelect: () => this.switchHandler.showEditor(track.switch_id),
+      });
+    }
+    for (const signal of track.signals || []) {
+      entityItems.push({
+        label: signal.signal_id,
+        detail: 'Signal',
+        icon: 'ti ti-traffic-lights',
+        onSelect: () => this.signalHandler.showSignalEditor(signal.signal_id),
+      });
+    }
+    if (track.block_section_id) {
+      entityItems.push({
+        label: track.block_section_id,
+        detail: 'Block',
+        icon: 'ti ti-square-dashed',
+        onSelect: () => this.blockHandler.showEditor(track.block_section_id),
+      });
+    }
+    if (track.station_id) {
+      entityItems.push({
+        label: track.station_id,
+        detail: 'Platform',
+        icon: 'ti ti-building',
+        onSelect: () => this.platformHandler.showEditor(track.station_id),
+      });
+    }
+
+    const actionItems: ContextMenuItem[] = [];
+    if (track.is_switch) {
+      const toDiverge = track.switch_state === 0;
+      actionItems.push({
+        label: toDiverge ? 'Throw to diverge' : 'Throw to main',
+        detail: this.editorMode === 'sim' ? 'operational' : undefined,
+        icon: 'ti ti-switch-horizontal',
+        emphasis: 'accent',
+        onSelect: () => {
+          void this.throwSwitchByMode(gridPos, track);
+        },
+      });
+    }
+    actionItems.push({
+      label: 'Inspect tile',
+      icon: 'ti ti-info-circle',
+      onSelect: () => {
+        void this.selectElement(gridPos);
+      },
+    });
+
+    showContextMenu(clientX, clientY, [
+      { heading: 'On this tile', items: entityItems },
+      { items: actionItems },
+    ]);
+  }
+
+  /**
+   * Throw the switch on a tile, routed by mode: sim mode goes through the
+   * operational SwitchManager command (validated, may be queued); edit mode is a
+   * direct tile write. Mirrors the design's edit-vs-operational split.
+   */
+  async throwSwitchByMode(gridPos: any, track: any): Promise<void> {
+    const newState = track.switch_state === 0 ? 1 : 0;
+    try {
+      if (this.editorMode === 'sim' && track.switch_id) {
+        await this.api.setSwitchState(track.switch_id, newState);
+        showToast(
+          `Switch ${track.switch_id} → ${newState === 1 ? 'diverge' : 'main'} requested`,
+          'info',
+          2500,
+        );
+      } else {
+        await this.api.updateTrack(gridPos.x, gridPos.y, { switch_state: newState });
+      }
+    } catch (switchErr) {
+      showToast(this._parseApiError(switchErr, 'Cannot throw switch'), 'error', 5000);
+      return;
+    }
+    await this.host?.refreshNetwork();
+    await this.selectElement(gridPos);
   }
 
   /** Parse API error message from exception. */

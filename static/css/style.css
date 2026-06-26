@@ -3,6 +3,7 @@
 @import url('./base/layout-themes.css');
 @import url('./layout/shell.css');
 @import url('./components/tools.css');
+@import url('./components/context-menu.css');
 @import url('./layout/canvas.css');
 @import url('./components/common.css');
 @import url('./components/modals.css');
