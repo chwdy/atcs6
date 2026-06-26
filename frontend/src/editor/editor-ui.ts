@@ -24,6 +24,23 @@ const LIST_PANEL_EDITOR_TYPES = new Set([
   'switches-list',
 ]);
 
+/** Editor types that open as a casual single-entity *preview* — the ones you
+ *  reach by inspecting a tile/entity. A preview reuses one shared tab slot (the
+ *  next inspect replaces it) until pinned. Everything else — list panels,
+ *  route/path editors, setups — opens as its own kept tab. */
+const PREVIEW_ELIGIBLE_EDITOR_TYPES = new Set([
+  'block',
+  'signal',
+  'platform',
+  'switch',
+  'train-control',
+  'tunnel',
+  'station-group-detail',
+  'speed-profile',
+  'path',
+  'route-run-editor',
+]);
+
 export class EditorUIHandler {
   editor: EditorHost;
   currentSecondaryPanel: any;
@@ -92,6 +109,18 @@ export class EditorUIHandler {
           return;
         }
 
+        const pinTabBtn = (event.target as HTMLElement).closest(
+          '.secondary-tab-pin[data-tab-id]'
+        ) as HTMLElement | null;
+        if (pinTabBtn) {
+          event.stopPropagation();
+          const tabId = pinTabBtn.dataset.tabId;
+          if (tabId) {
+            this.pinTab(tabId);
+          }
+          return;
+        }
+
         const labelBtn = (event.target as HTMLElement).closest(
           '.secondary-tab-label[data-tab-id]'
         ) as HTMLElement | null;
@@ -100,6 +129,16 @@ export class EditorUIHandler {
           if (tabId) {
             await this.activateSecondaryTab(tabId);
           }
+        }
+      });
+
+      // Double-click a preview tab to keep it (pin).
+      tabsEl.addEventListener('dblclick', (event) => {
+        const tabEl = (event.target as HTMLElement).closest(
+          '.secondary-tab[data-tab-id]'
+        ) as HTMLElement | null;
+        if (tabEl && tabEl.dataset.tabId) {
+          this.pinTab(tabEl.dataset.tabId);
         }
       });
     }
@@ -280,6 +319,9 @@ export class EditorUIHandler {
       editorType: type,
       editorId: id,
       content: panelSnapshot?.content || '',
+      // A casual single-entity inspect opens as a preview (reuses one slot);
+      // lists and editors open as their own kept tab. See pinTab to promote.
+      pinned: !PREVIEW_ELIGIBLE_EDITOR_TYPES.has(type || ''),
     };
   }
 
@@ -301,6 +343,20 @@ export class EditorUIHandler {
     }
 
     const nextTab = this.createSecondaryTabSnapshot(this.currentSecondaryPanel);
+
+    // Preview reuse: a casual inspect (unpinned) replaces the existing preview
+    // slot instead of stacking a new tab, so clicking around the layout never
+    // piles up tabs. Pinned tabs always keep their own slot.
+    if (!nextTab.pinned) {
+      const previewIndex = this.secondaryTabs.findIndex((tab) => !tab.pinned);
+      if (previewIndex >= 0) {
+        this.secondaryTabs[previewIndex] = nextTab;
+        this.activeSecondaryTabId = nextTab.tabId;
+        this.persistSecondaryInspectorState();
+        return;
+      }
+    }
+
     this.secondaryTabs.push(nextTab);
     this.activeSecondaryTabId = nextTab.tabId;
     this.persistSecondaryInspectorState();
@@ -352,6 +408,37 @@ export class EditorUIHandler {
     return iconMap[editorType || ''] ?? 'ti-file';
   }
 
+  /** Map a granular editorType to its top-level navigator group (e.g. both
+   *  'train-control' and 'trains-list' fall under Trains). The navigator stacks
+   *  open tabs under these group headers as a type → instance tree. */
+  getSecondaryTabGroup(editorType: string | null): { key: string; label: string; icon: string } {
+    const groups: Record<string, { key: string; label: string; icon: string }> = {
+      'block': { key: 'block', label: 'Blocks', icon: 'ti-square' },
+      'signal': { key: 'signal', label: 'Signals', icon: 'ti-traffic-lights' },
+      'platform': { key: 'platform', label: 'Platforms', icon: 'ti-building' },
+      'switch': { key: 'switch', label: 'Switches', icon: 'ti-git-branch' },
+      'switches-list': { key: 'switch', label: 'Switches', icon: 'ti-git-branch' },
+      'tunnel': { key: 'tunnel', label: 'Tunnels', icon: 'ti-building-tunnel' },
+      'train-control': { key: 'train', label: 'Trains', icon: 'ti-train' },
+      'trains-list': { key: 'train', label: 'Trains', icon: 'ti-train' },
+      'route-editor': { key: 'route', label: 'Routes', icon: 'ti-map-2' },
+      'route-run-editor': { key: 'route', label: 'Routes', icon: 'ti-map-2' },
+      'route-runs-list': { key: 'route', label: 'Routes', icon: 'ti-map-2' },
+      'routes-list': { key: 'route', label: 'Routes', icon: 'ti-map-2' },
+      'path': { key: 'path', label: 'Paths', icon: 'ti-route' },
+      'path-setup': { key: 'path', label: 'Paths', icon: 'ti-route' },
+      'extend-path-setup': { key: 'path', label: 'Paths', icon: 'ti-route' },
+      'paths-list': { key: 'path', label: 'Paths', icon: 'ti-route' },
+      'station-group': { key: 'station', label: 'Stations', icon: 'ti-home' },
+      'station-group-detail': { key: 'station', label: 'Stations', icon: 'ti-home' },
+      'station-group-list': { key: 'station', label: 'Stations', icon: 'ti-home' },
+      'speed-profile': { key: 'speed', label: 'Speed profiles', icon: 'ti-gauge' },
+      'speed-profiles-list': { key: 'speed', label: 'Speed profiles', icon: 'ti-gauge' },
+      'multi-select': { key: 'selection', label: 'Selection', icon: 'ti-marquee-2' },
+    };
+    return groups[editorType || ''] ?? { key: 'other', label: 'Other', icon: 'ti-file' };
+  }
+
   renderSecondaryTabs(): void {
     const tabsEl: HTMLElement | null = this.editor.$id('secondary-sidebar-tabs');
     if (!tabsEl) {
@@ -363,22 +450,52 @@ export class EditorUIHandler {
       return;
     }
 
-    tabsEl.innerHTML = this.secondaryTabs
-      .map((tab) => {
-        const { label, tooltip } = this.getSecondaryTabDisplay(tab);
-        const safeLabel = this.escapeHtml(label);
-        const safeTooltip = this.escapeHtml(tooltip);
-        const activeClass = tab.tabId === this.activeSecondaryTabId ? ' active' : '';
-        const listClass = LIST_PANEL_EDITOR_TYPES.has(tab.editorType) ? ' secondary-tab--list' : '';
-        const iconClass = this.getTabIconClass(tab.editorType);
-        return (
-          `<div class="secondary-tab${activeClass}${listClass}" title="${safeTooltip}">` +
-          `<i class="ti ${iconClass} secondary-tab-icon" aria-hidden="true"></i>` +
-          `<button class="secondary-tab-label btn-size-tight" data-tab-id="${tab.tabId}">${safeLabel}</button>` +
-          `<button class="secondary-tab-close" data-tab-id="${tab.tabId}" title="Close tab">×</button>` +
+    const renderRow = (tab: any): string => {
+      const { label, tooltip } = this.getSecondaryTabDisplay(tab);
+      const safeLabel = this.escapeHtml(label);
+      const safeTooltip = this.escapeHtml(tooltip);
+      const activeClass = tab.tabId === this.activeSecondaryTabId ? ' active' : '';
+      const listClass = LIST_PANEL_EDITOR_TYPES.has(tab.editorType) ? ' secondary-tab--list' : '';
+      const previewClass = tab.pinned ? '' : ' secondary-tab--preview';
+      const iconClass = this.getTabIconClass(tab.editorType);
+      const pinButton = tab.pinned
+        ? ''
+        : `<button class="secondary-tab-pin" data-tab-id="${tab.tabId}" title="Pin tab (keep open)" aria-label="Pin tab"><i class="ti ti-pin" aria-hidden="true"></i></button>`;
+      return (
+        `<div class="secondary-tab${activeClass}${listClass}${previewClass}" data-tab-id="${tab.tabId}" title="${safeTooltip}">` +
+        `<i class="ti ${iconClass} secondary-tab-icon" aria-hidden="true"></i>` +
+        `<button class="secondary-tab-label btn-size-tight" data-tab-id="${tab.tabId}">${safeLabel}</button>` +
+        pinButton +
+        `<button class="secondary-tab-close" data-tab-id="${tab.tabId}" title="Close tab">×</button>` +
+        `</div>`
+      );
+    };
+
+    // Group the open tabs by top-level entity type: a type → instance tree so
+    // many open entities stay legible instead of one mixed flat strip.
+    const groups = new Map<string, { label: string; icon: string; tabs: any[] }>();
+    for (const tab of this.secondaryTabs) {
+      const g = this.getSecondaryTabGroup(tab.editorType);
+      let bucket = groups.get(g.key);
+      if (!bucket) {
+        bucket = { label: g.label, icon: g.icon, tabs: [] };
+        groups.set(g.key, bucket);
+      }
+      bucket.tabs.push(tab);
+    }
+
+    tabsEl.innerHTML = Array.from(groups.values())
+      .map(
+        (bucket) =>
+          `<div class="secondary-nav-group">` +
+          `<div class="secondary-nav-group-header">` +
+          `<i class="ti ${bucket.icon} secondary-nav-group-icon" aria-hidden="true"></i>` +
+          `<span class="secondary-nav-group-label">${this.escapeHtml(bucket.label)}</span>` +
+          `<span class="secondary-nav-group-count">${bucket.tabs.length}</span>` +
+          `</div>` +
+          bucket.tabs.map(renderRow).join('') +
           `</div>`
-        );
-      })
+      )
       .join('');
 
     // Scroll the active tab into view in the vertical strip.
@@ -412,6 +529,18 @@ export class EditorUIHandler {
     this.renderSecondaryTabs();
 
     await this.restoreSecondaryTabPanel(tab);
+    this.persistSecondaryInspectorState();
+  }
+
+  /** Promote a preview tab to a kept (pinned) tab so the next inspect no longer
+   *  replaces it. Triggered by the tab's pin button or a double-click. */
+  pinTab(tabId: string): void {
+    const tab = this.secondaryTabs.find((t) => t.tabId === tabId);
+    if (!tab || tab.pinned) {
+      return;
+    }
+    tab.pinned = true;
+    this.renderSecondaryTabs();
     this.persistSecondaryInspectorState();
   }
 
@@ -479,6 +608,7 @@ export class EditorUIHandler {
       title: tab.title,
       editorType: tab.editorType,
       editorId: tab.editorId,
+      pinned: !!tab.pinned,
     }));
 
     const payload = {
@@ -512,6 +642,10 @@ export class EditorUIHandler {
           editorType: tab.editorType,
           editorId: tab.editorId || null,
           content: '',
+          // Default to kept: tabs persisted before preview/pin existed have no
+          // flag and were deliberately open, so they restore pinned rather than
+          // collapsing into the single preview slot. New state is explicit.
+          pinned: tab.pinned !== false,
         }));
 
       if (this.secondaryTabs.length > 0) {

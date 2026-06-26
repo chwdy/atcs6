@@ -520,13 +520,62 @@ textarea {
    a row; a long tab wraps alone if needed. No scrollbar: all tabs stay visible. */
 .secondary-sidebar-tabs {
     display: flex;
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-2) var(--space-4);
-    padding: var(--space-4) var(--space-8);
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    gap: 1px;
+    padding: var(--space-4);
+    max-height: 42vh;
+    overflow-y: auto;
     border-bottom: 1px solid var(--border-color);
     background: rgba(255, 255, 255, 0.02);
+}
+
+/* Navigator: open tabs grouped by entity type (Trains, Blocks, …) so a busy
+   working set reads as a type → instance tree, not one mixed flat strip. */
+.secondary-nav-group {
+    display: flex;
+    flex-direction: column;
+}
+
+.secondary-nav-group + .secondary-nav-group {
+    margin-top: var(--space-4);
+}
+
+.secondary-nav-group-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    padding: 2px 6px;
+    font-size: 0.58rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.secondary-nav-group-icon {
+    font-size: 11px;
+    opacity: 0.7;
+    line-height: 1;
+}
+
+.secondary-nav-group-label {
+    font-weight: 700;
+}
+
+.secondary-nav-group-count {
+    margin-left: auto;
+    padding: 0 6px;
+    font-size: 0.55rem;
+    text-transform: none;
+    color: var(--text-muted);
+    background: var(--bg-hover);
+    border-radius: 8px;
+}
+
+/* Instance rows indent under their group header. */
+.secondary-nav-group .secondary-tab {
+    margin-left: 8px;
 }
 
 /* Tab strip per DESIGN_LANGUAGE.md §3 — flat tabs; active state is a 2px left
@@ -607,6 +656,36 @@ textarea {
 
 .secondary-tab-close:hover {
     color: var(--danger-color);
+}
+
+/* Preview tabs (a casual inspect, not yet pinned) read italic so a throwaway
+   preview is easy to tell from a kept tab at a glance. */
+.secondary-tab--preview .secondary-tab-label {
+    font-style: italic;
+}
+
+/* Pin affordance on a preview tab — promotes it to a kept tab. Mirrors the
+   close button's footprint; hovers to accent (a keep action, not destructive). */
+.secondary-tab-pin {
+    border: none;
+    background: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 0.66rem;
+    line-height: 1;
+    width: 12px;
+    height: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    flex-shrink: 0;
+    opacity: 0.6;
+}
+
+.secondary-tab-pin:hover {
+    color: var(--accent-color);
+    opacity: 1;
 }
 
 /* Resize handle for secondary sidebar - on RIGHT edge */
