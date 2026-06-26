@@ -94,6 +94,12 @@ export class EditorUIHandler {
       });
     }
 
+    const tearoffBtn = this.editor.$id('secondary-nav-tearoff');
+    if (tearoffBtn) {
+      tearoffBtn.addEventListener('click', () => this.toggleInspectorFloat());
+    }
+    this.setupInspectorFloatDrag();
+
     const tabsEl: HTMLElement | null = this.editor.$id('secondary-sidebar-tabs');
     if (tabsEl) {
       tabsEl.addEventListener('click', async (event) => {
@@ -240,6 +246,90 @@ export class EditorUIHandler {
       this.renderSecondaryTabs();
       this.updateSecondaryNavigationState();
       this.persistSecondaryInspectorState();
+    }
+  }
+
+  /** Toggle the whole inspector between docked (left) and a floating, draggable
+   *  window. It stays the same live, editable panel either way — only its
+   *  position changes, so every editor and subscription keeps working. */
+  toggleInspectorFloat(): void {
+    const sidebar = this.editor.$id('secondary-sidebar');
+    if (!sidebar) {
+      return;
+    }
+    const floating = sidebar.classList.toggle('secondary-sidebar--floating');
+    if (floating) {
+      if (!sidebar.style.left) {
+        sidebar.style.left = '140px';
+        sidebar.style.top = '84px';
+      }
+      this._clampInspectorFloat();
+    } else {
+      sidebar.style.left = '';
+      sidebar.style.top = '';
+    }
+    this._updateTearoffButton(floating);
+    this.persistSecondaryInspectorState();
+  }
+
+  /** Drag the floating inspector by its header. No-op while docked. Bound once. */
+  setupInspectorFloatDrag(): void {
+    const sidebar = this.editor.$id('secondary-sidebar');
+    const header = sidebar?.querySelector('.secondary-sidebar-header') as HTMLElement | null;
+    if (!sidebar || !header) {
+      return;
+    }
+    let offset: { x: number; y: number } | null = null;
+    header.addEventListener('pointerdown', (e: PointerEvent) => {
+      if (!sidebar.classList.contains('secondary-sidebar--floating')) return;
+      if ((e.target as HTMLElement).closest('button')) return;
+      header.setPointerCapture(e.pointerId);
+      const r = sidebar.getBoundingClientRect();
+      offset = { x: e.clientX - r.left, y: e.clientY - r.top };
+    });
+    header.addEventListener('pointermove', (e: PointerEvent) => {
+      if (!offset) return;
+      const x = Math.max(0, Math.min(window.innerWidth - 80, e.clientX - offset.x));
+      const y = Math.max(0, Math.min(window.innerHeight - 40, e.clientY - offset.y));
+      sidebar.style.left = `${x}px`;
+      sidebar.style.top = `${y}px`;
+    });
+    const end = () => {
+      if (offset) {
+        offset = null;
+        this.persistSecondaryInspectorState();
+      }
+    };
+    header.addEventListener('pointerup', end);
+    header.addEventListener('pointercancel', end);
+  }
+
+  _clampInspectorFloat(): void {
+    const sidebar = this.editor.$id('secondary-sidebar');
+    if (!sidebar || !sidebar.classList.contains('secondary-sidebar--floating')) {
+      return;
+    }
+    const margin = 8;
+    const r = sidebar.getBoundingClientRect();
+    let x = parseFloat(sidebar.style.left) || r.left;
+    let y = parseFloat(sidebar.style.top) || r.top;
+    if (x + r.width > window.innerWidth - margin) x = Math.max(margin, window.innerWidth - r.width - margin);
+    if (y + r.height > window.innerHeight - margin) y = Math.max(margin, window.innerHeight - r.height - margin);
+    sidebar.style.left = `${x}px`;
+    sidebar.style.top = `${y}px`;
+  }
+
+  _updateTearoffButton(floating: boolean): void {
+    const btn = this.editor.$id('secondary-nav-tearoff');
+    if (!btn) {
+      return;
+    }
+    const label = floating ? 'Dock the inspector' : 'Float the inspector';
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+    const icon = btn.querySelector('i');
+    if (icon) {
+      icon.className = floating ? 'ti ti-layout-sidebar-left' : 'ti ti-external-link';
     }
   }
 
@@ -611,10 +701,15 @@ export class EditorUIHandler {
       pinned: !!tab.pinned,
     }));
 
+    const sidebar = this.editor.$id('secondary-sidebar');
+    const isFloating = !!(sidebar && sidebar.classList.contains('secondary-sidebar--floating'));
     const payload = {
       pinned: this.secondaryPanelPinned,
       activeTabId: this.activeSecondaryTabId,
       tabs,
+      floating: isFloating,
+      floatX: isFloating && sidebar ? sidebar.style.left : '',
+      floatY: isFloating && sidebar ? sidebar.style.top : '',
     };
 
     try {
@@ -658,6 +753,16 @@ export class EditorUIHandler {
 
       this.renderSecondaryTabs();
       this.updateSecondaryNavigationState();
+
+      if (parsed?.floating) {
+        const sidebar = this.editor.$id('secondary-sidebar');
+        if (sidebar) {
+          sidebar.classList.add('secondary-sidebar--floating');
+          if (parsed.floatX) sidebar.style.left = parsed.floatX;
+          if (parsed.floatY) sidebar.style.top = parsed.floatY;
+          this._updateTearoffButton(true);
+        }
+      }
     } catch (e) {}
   }
 

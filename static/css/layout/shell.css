@@ -373,6 +373,26 @@ textarea {
     max-width: 520px;
 }
 
+/* Undocked: the whole inspector floats as one live, draggable window — same
+   panel and same single live editor, only its position changes. Drag by header;
+   the right-edge handle still resizes width. */
+.secondary-sidebar.secondary-sidebar--floating {
+    position: fixed;
+    z-index: 850;
+    max-height: 82vh;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
+}
+
+.secondary-sidebar.secondary-sidebar--floating .secondary-sidebar-header {
+    cursor: move;
+}
+
+.secondary-sidebar.secondary-sidebar--floating .secondary-sidebar-content {
+    overflow: auto;
+}
+
 .secondary-sidebar-header {
     display: flex;
     align-items: center;
