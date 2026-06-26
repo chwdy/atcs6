@@ -64,7 +64,7 @@
 #tool-groups {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 6px;
 }
 
 .tool-group {
@@ -72,21 +72,27 @@
 }
 
 /* Main rail button: full-width row — icon + label (+ caret for groups). */
+/* Big "object" tile: a number badge, a large icon, and a label below. A group
+   tile adds a small caret and opens a flyout of its tools. */
 .tool-launch {
+    position: relative;
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 8px;
+    justify-content: center;
+    gap: 4px;
     width: 100%;
-    padding: 6px 8px;
+    min-height: 52px;
+    padding: 8px 6px;
     background-color: transparent;
-    border: none;
-    border-radius: var(--control-radius-sm);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
     color: var(--text-secondary);
     cursor: pointer;
-    font-size: 0.72rem;
-    font-weight: 500;
-    text-align: left;
-    transition: color 0.15s, background-color 0.15s;
+    font-size: 0.6rem;
+    font-weight: 600;
+    text-align: center;
+    transition: color 0.15s, background-color 0.15s, border-color 0.15s;
 }
 
 .tool-launch:hover {
@@ -94,25 +100,45 @@
     color: var(--text-primary);
 }
 
-/* Active tool, or a group that owns the active tool. */
+/* Active tool, or a group that owns the active tool — a solid filled tile. */
 .tool-launch.active {
-    background-color: rgba(var(--accent-rgb), 0.18);
-    color: var(--accent-hover);
+    background-color: var(--accent-color);
+    border-color: var(--accent-color);
+    color: #fff;
 }
 
 .tool-launch-icon {
-    font-size: 1.05rem;
+    font-size: 1.4rem;
     line-height: 1;
-    flex-shrink: 0;
 }
 
 .tool-launch-label {
-    flex: 1;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
 }
 
+/* The 1-9 shortcut number, top-right corner. */
+.tool-launch-num {
+    position: absolute;
+    top: 5px;
+    right: 7px;
+    font-size: 0.58rem;
+    font-weight: 700;
+    line-height: 1;
+    opacity: 0.45;
+}
+
+.tool-launch.active .tool-launch-num {
+    opacity: 0.85;
+}
+
+/* Group flyout affordance — small caret, bottom-right. */
 .tool-launch-caret {
-    font-size: 0.7rem;
-    opacity: 0.55;
+    position: absolute;
+    bottom: 5px;
+    right: 6px;
+    font-size: 0.6rem;
+    opacity: 0.5;
     transition: transform 0.18s;
 }
 

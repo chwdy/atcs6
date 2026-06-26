@@ -85,30 +85,39 @@ export function renderToolGroups(
   }
 
   mount.replaceChildren();
+  let railIndex = 0;
   for (const group of order) {
     const tools = byGroup.get(group)!;
     if (group === null) {
       // Ungrouped (the default Inspect tool): a direct rail button.
-      for (const c of tools) mount.appendChild(buildRailButton(c, activeToolId));
+      for (const c of tools) mount.appendChild(buildRailButton(c, activeToolId, (railIndex += 1)));
       continue;
     }
-    mount.appendChild(buildGroup(group, tools, activeToolId));
+    mount.appendChild(buildGroup(group, tools, activeToolId, (railIndex += 1)));
   }
 }
 
 /** A full-width rail button for a single tool (e.g. Inspect). */
-function buildRailButton(c: ToolContribution, activeToolId: string): HTMLButtonElement {
+function buildRailButton(
+  c: ToolContribution,
+  activeToolId: string,
+  num: number,
+): HTMLButtonElement {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = c.id === activeToolId ? 'tool-launch active' : 'tool-launch';
   btn.dataset.tool = c.id;
   btn.title = c.title;
+  const numEl = document.createElement('span');
+  numEl.className = 'tool-launch-num';
+  numEl.textContent = String(num);
+  numEl.setAttribute('aria-hidden', 'true');
   const icon = document.createElement('i');
   icon.className = `${c.icon} tool-launch-icon`;
   const label = document.createElement('span');
   label.className = 'tool-launch-label';
   label.textContent = c.label;
-  btn.append(icon, label);
+  btn.append(numEl, icon, label);
   return btn;
 }
 
@@ -117,6 +126,7 @@ function buildGroup(
   group: string,
   tools: ToolContribution[],
   activeToolId: string,
+  num: number,
 ): HTMLDivElement {
   const groupEl = document.createElement('div');
   groupEl.className = 'tool-group';
@@ -137,7 +147,11 @@ function buildGroup(
   label.textContent = group;
   const caret = document.createElement('i');
   caret.className = 'ti ti-chevron-right tool-launch-caret';
-  trigger.append(icon, label, caret);
+  const numEl = document.createElement('span');
+  numEl.className = 'tool-launch-num';
+  numEl.textContent = String(num);
+  numEl.setAttribute('aria-hidden', 'true');
+  trigger.append(numEl, icon, label, caret);
 
   const popover = document.createElement('div');
   popover.className = 'tool-popover';
