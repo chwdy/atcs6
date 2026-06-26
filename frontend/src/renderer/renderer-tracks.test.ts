@@ -18,7 +18,7 @@ vi.mock('../lib/helpers', () => ({
   getBlockStateColor: (state: string) => `token:${state}`,
 }));
 
-import { RendererTrackHandler, blockTrackColor, type TrackHandlerRenderer } from './renderer-tracks';
+import { RendererTrackHandler, blockTrackColor, type TrackHandlerRenderer, type Track } from './renderer-tracks';
 
 // renderer-tracks.js had no test before the migration; this is fresh coverage
 // for the shared geometry (getEdgePoints/drawGridSegment) and bit-driven draw.
@@ -119,17 +119,19 @@ describe('RendererTrackHandler', () => {
     });
   });
 
-  it('drawTrackFromBits fills each segment, plus a crossing dot when applicable', () => {
+  it('drawTrackFromBits strokes a grey bed + colored band, plus a crossing dot fill when applicable', () => {
     mocks.getActiveSegments.mockReturnValue([['N', 'S']]);
     mocks.isCrossing.mockReturnValue(false);
     const ctx = makeCtx();
     new RendererTrackHandler(makeRenderer(ctx)).drawTrackFromBits(1, 40, '#666', []);
-    expect(ctx.fill).toHaveBeenCalledTimes(1);
+    expect(ctx.stroke).toHaveBeenCalledTimes(2); // grey bed pass + colored band pass
+    expect(ctx.fill).not.toHaveBeenCalled();
 
     mocks.isCrossing.mockReturnValue(true);
     const ctx2 = makeCtx();
     new RendererTrackHandler(makeRenderer(ctx2)).drawTrackFromBits(3, 40, '#666', []);
-    expect(ctx2.fill).toHaveBeenCalledTimes(2); // segment quad + crossing dot
+    expect(ctx2.stroke).toHaveBeenCalledTimes(2); // still bed + band
+    expect(ctx2.fill).toHaveBeenCalledTimes(1); // crossing dot only
   });
 });
 

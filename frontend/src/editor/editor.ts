@@ -1653,8 +1653,16 @@ export class Editor {
       const rect = canvas.getBoundingClientRect();
       const mouseScreenX = e.clientX - rect.left;
       const mouseScreenY = e.clientY - rect.top;
-      const delta = e.deltaY < 0 ? 0.1 : -0.1;
-      this._zoomAt(mouseScreenX, mouseScreenY, this.renderer.scale + delta);
+      // Zoom multiplicatively so each notch changes the scale by a fixed
+      // percentage (feels even at every zoom level). ZOOM_SENSITIVITY tunes
+      // the speed; deltaMode!=0 (line/page scrolls) report far larger deltas,
+      // so normalize those down. Clamp per-event so a fast flick or trackpad
+      // burst can't jump several steps at once.
+      const ZOOM_SENSITIVITY = 0.001;
+      const unit = e.deltaMode === 0 ? 1 : 16; // pixels vs lines/pages
+      const step = Math.max(-0.2, Math.min(0.2, (-e.deltaY / unit) * ZOOM_SENSITIVITY));
+      const targetScale = this.renderer.scale * (1 + step);
+      this._zoomAt(mouseScreenX, mouseScreenY, targetScale);
     });
 
     // Click to select element for properties panel

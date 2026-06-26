@@ -243,17 +243,79 @@ export class RendererTrackHandler {
     this.ctx.fill();
   }
 
+  /**
+   * Paint the grey rail bed for one (non-switch) track tile: a round-capped
+   * stroke of the tile's segments, a little wider than the block-status band
+   * laid on top by drawTrackFromBits.
+   *
+   * The renderer runs this for every tile in one pass BEFORE any colored band
+   * (see _drawWorld). Done per-tile interleaved with the color, each tile's
+   * wider bed would paint over its neighbour's color at the shared seam and
+   * leave grey ticks; running all beds first lets the colored bands cover every
+   * seam from both sides, so only a thin, even grey edge shows.
+   */
+  drawTrackBed(track: Track): void {
+    if (track.is_switch) return;
+    const trackBits = track.track_bits ?? 0;
+    if (trackBits === 0) return;
+    const segments = getActiveSegments(trackBits);
+    if (segments.length === 0) return;
+
+    const p = getCanvasPalette();
+    const half = (this.gridSize * this.scale) / 2;
+    const cx = this.gridToScreenX(track.x, track.y);
+    const cy = this.gridToScreenY(track.x, track.y);
+    const edgePoints = this.getEdgePoints(half);
+
+    this.ctx.save();
+    this.ctx.translate(cx, cy);
+    this.ctx.strokeStyle = p.track;
+    this.ctx.lineWidth = TRACK_WIDTH * Math.SQRT2 * this.scale;
+    this.ctx.lineCap = 'round';
+    this.ctx.lineJoin = 'round';
+    this.ctx.beginPath();
+    for (const [e1, e2] of segments) {
+      const start = edgePoints[e1];
+      const end = edgePoints[e2];
+      if (start && end) {
+        this.ctx.moveTo(start.x, start.y);
+        this.ctx.lineTo(end.x, end.y);
+      }
+    }
+    this.ctx.stroke();
+    this.ctx.restore();
+  }
+
   drawTrackFromBits(trackBits: number, half: number, color: string, deadEndPorts: string[] = []): void {
     const p = getCanvasPalette();
     const edgePoints = this.getEdgePoints(half);
 
     const segments = getActiveSegments(trackBits);
-    for (const [e1, e2] of segments) {
-      const start = edgePoints[e1];
-      const end = edgePoints[e2];
-      if (start && end) {
-        this.drawGridSegment(start, end, TRACK_WIDTH * this.scale, e1, e2, color);
+    const railWidth = TRACK_WIDTH * this.scale;
+
+    // The grey rail bed under this tile is painted earlier, in one network-wide
+    // pass (renderer _drawWorld -> drawTrackBed), so the colored bands here can
+    // cover each shared seam from both sides. Lay the block-status color on top
+    // as a round-capped stroke: a uniform perpendicular width whose ends overlap
+    // the neighbouring tile at the shared corner, so a diagonal turn reads the
+    // same thickness as a straight run and the joints close cleanly. (The old
+    // per-edge diagonal offset, drawGridSegment, made turns ~1/√2 thinner and
+    // left skewed, mismatched ends at the tile border.)
+    if (segments.length > 0) {
+      this.ctx.strokeStyle = color;
+      this.ctx.lineWidth = railWidth;
+      this.ctx.lineCap = 'round';
+      this.ctx.lineJoin = 'round';
+      this.ctx.beginPath();
+      for (const [e1, e2] of segments) {
+        const start = edgePoints[e1];
+        const end = edgePoints[e2];
+        if (start && end) {
+          this.ctx.moveTo(start.x, start.y);
+          this.ctx.lineTo(end.x, end.y);
+        }
       }
+      this.ctx.stroke();
     }
 
     for (const port of deadEndPorts) {
