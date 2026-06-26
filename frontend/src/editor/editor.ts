@@ -1352,6 +1352,46 @@ export class Editor {
     toolMount?.addEventListener('click', (e) => {
       void this._onToolbarClick(e);
     });
+    // Hover-intent: open a group's popover on hover (after a short delay so a
+    // mouse merely crossing the rail doesn't pop menus), keeping click working
+    // for touch. The popover is a DOM child of its .tool-group, so moving from
+    // the button onto the popover stays "inside" the group and won't close it.
+    if (toolMount) {
+      let openTimer: ReturnType<typeof setTimeout> | null = null;
+      let closeTimer: ReturnType<typeof setTimeout> | null = null;
+      const HOVER_OPEN_MS = 130;
+      const HOVER_CLOSE_MS = 220;
+      toolMount.addEventListener('mouseover', (e) => {
+        const group = (e.target as HTMLElement).closest<HTMLElement>('.tool-group');
+        if (!group) return;
+        if (closeTimer) {
+          clearTimeout(closeTimer);
+          closeTimer = null;
+        }
+        if (group.classList.contains('open')) return;
+        if (openTimer) clearTimeout(openTimer);
+        openTimer = setTimeout(() => {
+          openTimer = null;
+          this._closeToolPopovers();
+          this._openGroupPopover(group);
+        }, HOVER_OPEN_MS);
+      });
+      toolMount.addEventListener('mouseout', (e) => {
+        const group = (e.target as HTMLElement).closest<HTMLElement>('.tool-group');
+        if (!group) return;
+        const related = e.relatedTarget as Node | null;
+        if (related && group.contains(related)) return;
+        if (openTimer) {
+          clearTimeout(openTimer);
+          openTimer = null;
+        }
+        if (closeTimer) clearTimeout(closeTimer);
+        closeTimer = setTimeout(() => {
+          closeTimer = null;
+          this._closeToolPopovers();
+        }, HOVER_CLOSE_MS);
+      });
+    }
     // Close the open group popover on an outside click or Escape.
     document.addEventListener('click', (e) => {
       if (toolMount && !toolMount.contains(e.target as Node)) this._closeToolPopovers();
