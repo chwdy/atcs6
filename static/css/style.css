@@ -13,6 +13,6 @@
 @import url('./features/trains.css');
 @import url('./features/train-control.css');
 @import url('./features/train-monitor.css');
-@import url('./features/inspector.css');
+@import url('./features/diagnostics.css');
 @import url('./features/speed-profiles.css');
 @import url('./base/motion.css');

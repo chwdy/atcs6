@@ -5,8 +5,8 @@
 //   - window.app — the App instance (app.ts sets it on DOMContentLoaded); the
 //     editor handlers and panels call app methods (refreshNetwork, selectTrain,
 //     showFullJSONViewer, …).
-//   - window.inspectorPanel — the inspector panel singleton, which
-//     self-bootstraps (panels/inspector) so the toolbar toggle can reach it.
+//   - window.diagnosticsPanel — the diagnostics panel singleton, which
+//     self-bootstraps (panels/diagnostics) so the toolbar toggle can reach it.
 // Loosely typed — only the members the consumers touch.
 interface Window {
   app?: {
@@ -15,7 +15,7 @@ interface Window {
     [key: string]: any;
   };
 
-  // The singleton inspector panel (inspector.ts) self-bootstraps onto window so
-  // the toolbar inspector toggle can reach it.
-  inspectorPanel?: { init(): void; toggle(): void; show(): void; hide(): void };
+  // The singleton diagnostics panel (diagnostics.ts) self-bootstraps onto window
+  // so the toolbar diagnostics toggle can reach it.
+  diagnosticsPanel?: { init(): void; toggle(): void; show(): void; hide(): void };
 }

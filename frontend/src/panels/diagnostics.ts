@@ -1,5 +1,5 @@
 /**
- * InspectorPanel — Phase 1 (Train + TrainController only).
+ * DiagnosticsPanel — Phase 1 (Train + TrainController only).
  *
  * Floating, draggable, read-only debug panel that polls
  * GET /api/inspector/entity/train/<train_id> on a configurable cadence
@@ -43,7 +43,7 @@ interface InspectorSnapshot {
 (function () {
     "use strict";
 
-    const STATE_KEY = "inspectorPanelStateV1";
+    const STATE_KEY = "diagnosticsPanelStateV1";
     const FLASH_MS = 1000;
     const REFRESH_OPTIONS = [
         { label: "4 Hz", hz: 4 },
@@ -113,9 +113,9 @@ interface InspectorSnapshot {
         return `{${keys.length}} ${preview}${tail}`;
     }
 
-    class InspectorPanel {
+    class DiagnosticsPanel {
         // DOM handles — all assigned by _buildDom(), which init() calls before
-        // any other method runs (see bootstrap: `new InspectorPanel(); .init()`).
+        // any other method runs (see bootstrap: `new DiagnosticsPanel(); .init()`).
         // Declared definite (!) per the renderer.ts migration idiom.
         _panelEl!: HTMLElement;
         _bodyEl!: HTMLElement;
@@ -191,34 +191,34 @@ interface InspectorSnapshot {
 
         _buildDom() {
             const panel = document.createElement("div");
-            panel.className = "inspector-panel hidden";
-            panel.id = "inspector-panel";
+            panel.className = "diagnostics-panel hidden";
+            panel.id = "diagnostics-panel";
             panel.innerHTML = `
-                <div class="inspector-panel-header" data-role="drag-handle">
-                    <span class="inspector-panel-title">Inspector</span>
-                    <button class="inspector-panel-close" type="button" title="Close">×</button>
+                <div class="diagnostics-panel-header" data-role="drag-handle">
+                    <span class="diagnostics-panel-title">Diagnostics</span>
+                    <button class="diagnostics-panel-close" type="button" title="Close">×</button>
                 </div>
-                <div class="inspector-panel-toolbar">
-                    <label class="inspector-panel-field">
+                <div class="diagnostics-panel-toolbar">
+                    <label class="diagnostics-panel-field">
                         Train
-                        <select class="inspector-panel-train-select" data-role="train-select"></select>
+                        <select class="diagnostics-panel-train-select" data-role="train-select"></select>
                     </label>
-                    <label class="inspector-panel-field">
+                    <label class="diagnostics-panel-field">
                         Refresh
-                        <select class="inspector-panel-rate-select" data-role="rate-select"></select>
+                        <select class="diagnostics-panel-rate-select" data-role="rate-select"></select>
                     </label>
-                    <div class="inspector-panel-tools">
-                        <button class="inspector-panel-refresh-btn" type="button" data-role="refresh" title="Refresh now">↻</button>
-                        <button class="inspector-panel-tree-btn" type="button" data-role="expand-all" title="Expand all values">⊞</button>
-                        <button class="inspector-panel-tree-btn" type="button" data-role="collapse-all" title="Collapse all values">⊟</button>
-                        <button class="inspector-panel-sort-btn" type="button" data-role="sort">⇅</button>
+                    <div class="diagnostics-panel-tools">
+                        <button class="diagnostics-panel-refresh-btn" type="button" data-role="refresh" title="Refresh now">↻</button>
+                        <button class="diagnostics-panel-tree-btn" type="button" data-role="expand-all" title="Expand all values">⊞</button>
+                        <button class="diagnostics-panel-tree-btn" type="button" data-role="collapse-all" title="Collapse all values">⊟</button>
+                        <button class="diagnostics-panel-sort-btn" type="button" data-role="sort">⇅</button>
                     </div>
                 </div>
-                <div class="inspector-panel-body" data-role="body">
+                <div class="diagnostics-panel-body" data-role="body">
                     <div class="empty-state">Select a train to begin.</div>
                 </div>
-                <div class="inspector-panel-footer" data-role="footer"></div>
-                <div class="inspector-resize-handle" data-role="resize-handle"></div>
+                <div class="diagnostics-panel-footer" data-role="footer"></div>
+                <div class="diagnostics-resize-handle" data-role="resize-handle"></div>
             `;
             document.body.appendChild(panel);
 
@@ -227,7 +227,7 @@ interface InspectorSnapshot {
             this._trainSelectEl = panel.querySelector('[data-role="train-select"]') as HTMLSelectElement;
             this._rateSelectEl = panel.querySelector('[data-role="rate-select"]') as HTMLSelectElement;
             this._refreshBtnEl = panel.querySelector('[data-role="refresh"]') as HTMLElement;
-            this._closeBtnEl = panel.querySelector('.inspector-panel-close') as HTMLElement;
+            this._closeBtnEl = panel.querySelector('.diagnostics-panel-close') as HTMLElement;
             this._footerEl = panel.querySelector('[data-role="footer"]') as HTMLElement;
             this._expandAllBtnEl = panel.querySelector('[data-role="expand-all"]') as HTMLElement;
             this._collapseAllBtnEl = panel.querySelector('[data-role="collapse-all"]') as HTMLElement;
@@ -235,7 +235,7 @@ interface InspectorSnapshot {
             this._resizeHandleEl = panel.querySelector('[data-role="resize-handle"]') as HTMLElement;
 
             const tooltip = document.createElement("div");
-            tooltip.className = "inspector-name-tooltip";
+            tooltip.className = "diagnostics-name-tooltip";
             tooltip.style.display = "none";
             document.body.appendChild(tooltip);
             this._nameTooltipEl = tooltip;
@@ -247,7 +247,7 @@ interface InspectorSnapshot {
         }
 
         _wireToggleButton() {
-            const btn = document.getElementById("btn-inspector-toggle");
+            const btn = document.getElementById("btn-diagnostics-toggle");
             if (btn) {
                 btn.addEventListener("click", () => this.toggle());
             }
@@ -280,7 +280,7 @@ interface InspectorSnapshot {
                 handle.setPointerCapture(e.pointerId);
                 const rect = this._panelEl.getBoundingClientRect();
                 this._dragOffset = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-                this._panelEl.classList.add("inspector-panel-dragging");
+                this._panelEl.classList.add("diagnostics-panel-dragging");
             });
 
             handle.addEventListener("pointermove", (e: PointerEvent) => {
@@ -298,7 +298,7 @@ interface InspectorSnapshot {
             const endDrag = () => {
                 if (!this._dragOffset) return;
                 this._dragOffset = null;
-                this._panelEl.classList.remove("inspector-panel-dragging");
+                this._panelEl.classList.remove("diagnostics-panel-dragging");
                 this._persistState();
             };
             handle.addEventListener("pointerup", endDrag);
@@ -320,7 +320,7 @@ interface InspectorSnapshot {
                 this._resizing = true;
                 startX = e.clientX;
                 startWidth = this._panelEl.getBoundingClientRect().width;
-                this._panelEl.classList.add("inspector-panel-resizing");
+                this._panelEl.classList.add("diagnostics-panel-resizing");
             });
 
             handle.addEventListener("pointermove", (e: PointerEvent) => {
@@ -333,7 +333,7 @@ interface InspectorSnapshot {
             const endResize = () => {
                 if (!this._resizing) return;
                 this._resizing = false;
-                this._panelEl.classList.remove("inspector-panel-resizing");
+                this._panelEl.classList.remove("diagnostics-panel-resizing");
                 this._persistState();
             };
             handle.addEventListener("pointerup", endResize);
@@ -377,21 +377,21 @@ interface InspectorSnapshot {
             // Click on a name → copy to clipboard + toast.
             this._bodyEl.addEventListener("click", (e) => {
                 const t = e.target as HTMLElement;
-                const expandBtn = t.closest(".inspector-row-expand-btn") as HTMLElement | null;
+                const expandBtn = t.closest(".diagnostics-row-expand-btn") as HTMLElement | null;
                 if (expandBtn) {
                     const rowKey = expandBtn.dataset.rowKey;
                     if (rowKey) this._expandRow(rowKey);
                     e.stopPropagation();
                     return;
                 }
-                const collapseBtn = t.closest(".inspector-row-collapse-btn") as HTMLElement | null;
+                const collapseBtn = t.closest(".diagnostics-row-collapse-btn") as HTMLElement | null;
                 if (collapseBtn) {
                     const rowKey = collapseBtn.dataset.rowKey;
                     if (rowKey) this._collapseRow(rowKey);
                     e.stopPropagation();
                     return;
                 }
-                const caret = t.closest(".inspector-json-caret") as HTMLElement | null;
+                const caret = t.closest(".diagnostics-json-caret") as HTMLElement | null;
                 if (caret) {
                     const pathKey = caret.dataset.pathKey;
                     if (pathKey) {
@@ -401,7 +401,7 @@ interface InspectorSnapshot {
                     e.stopPropagation();
                     return;
                 }
-                const nameEl = t.closest(".inspector-row-name") as HTMLElement | null;
+                const nameEl = t.closest(".diagnostics-row-name") as HTMLElement | null;
                 if (!nameEl) return;
                 const name = nameEl.dataset.name;
                 if (!name) return;
@@ -418,7 +418,7 @@ interface InspectorSnapshot {
             // Hover on a truncated scalar value → tooltip with the full value.
             this._bodyEl.addEventListener("pointerover", (e: PointerEvent) => {
                 const t = e.target as HTMLElement;
-                const nameEl = t.closest(".inspector-row-name") as HTMLElement | null;
+                const nameEl = t.closest(".diagnostics-row-name") as HTMLElement | null;
                 if (nameEl) {
                     const truncated = nameEl.scrollWidth > nameEl.clientWidth;
                     const meta = nameEl.dataset.meta || "";
@@ -429,7 +429,7 @@ interface InspectorSnapshot {
                     this._showNameTooltip(nameEl, e);
                     return;
                 }
-                const valueEl = t.closest(".inspector-row-value[data-full]") as HTMLElement | null;
+                const valueEl = t.closest(".diagnostics-row-value[data-full]") as HTMLElement | null;
                 if (valueEl) {
                     const full = valueEl.dataset.full || "";
                     const cssTrunc = valueEl.scrollWidth > valueEl.clientWidth;
@@ -444,7 +444,7 @@ interface InspectorSnapshot {
 
             this._bodyEl.addEventListener("pointerout", (e: PointerEvent) => {
                 const t = e.target as HTMLElement;
-                const target = t.closest(".inspector-row-name, .inspector-row-value[data-full]");
+                const target = t.closest(".diagnostics-row-name, .diagnostics-row-value[data-full]");
                 if (!target) return;
                 const related = e.relatedTarget as Node | null;
                 if (related && target.contains(related)) return;
@@ -453,7 +453,7 @@ interface InspectorSnapshot {
 
             this._bodyEl.addEventListener("pointermove", (e: PointerEvent) => {
                 if (!this._nameTooltipEl || this._nameTooltipEl.style.display === "none") return;
-                if (!(e.target as HTMLElement).closest(".inspector-row-name, .inspector-row-value[data-full]")) return;
+                if (!(e.target as HTMLElement).closest(".diagnostics-row-name, .diagnostics-row-value[data-full]")) return;
                 this._positionNameTooltip(e);
             });
         }
@@ -463,9 +463,9 @@ interface InspectorSnapshot {
             if (!tt) return;
             const name = nameEl.dataset.name || nameEl.textContent;
             const meta = nameEl.dataset.meta || "";
-            let html = `<div class="inspector-name-tooltip-name">${escapeHtml(name)}</div>`;
+            let html = `<div class="diagnostics-name-tooltip-name">${escapeHtml(name)}</div>`;
             if (meta) {
-                html += `<div class="inspector-name-tooltip-meta">${escapeHtml(meta)}</div>`;
+                html += `<div class="diagnostics-name-tooltip-meta">${escapeHtml(meta)}</div>`;
             }
             tt.innerHTML = html;
             tt.style.display = "block";
@@ -477,7 +477,7 @@ interface InspectorSnapshot {
             if (!tt) return;
             const full = scalarEl.dataset.full || "";
             if (!full) return;
-            tt.innerHTML = `<div class="inspector-name-tooltip-value">${escapeHtml(full)}</div>`;
+            tt.innerHTML = `<div class="diagnostics-name-tooltip-value">${escapeHtml(full)}</div>`;
             tt.style.display = "block";
             this._positionNameTooltip(evt);
         }
@@ -605,7 +605,7 @@ interface InspectorSnapshot {
                     this._trainSelectEl.value = "";
                 }
             } catch (e) {
-                console.warn("[Inspector] failed to load train list:", e);
+                console.warn("[Diagnostics] failed to load train list:", e);
             }
         }
 
@@ -719,7 +719,7 @@ interface InspectorSnapshot {
             this._bodyEl.innerHTML = fragments.join("");
 
             // Wire group collapse/expand.
-            this._bodyEl.querySelectorAll(".inspector-group-header").forEach((hdr) => {
+            this._bodyEl.querySelectorAll(".diagnostics-group-header").forEach((hdr) => {
                 hdr.addEventListener("click", () => {
                     const groupName = (hdr as HTMLElement).dataset.groupName!;
                     if (this._collapsedGroups.has(groupName)) {
@@ -763,13 +763,13 @@ interface InspectorSnapshot {
                     return this._renderItem(it, group, prev);
                 }).join("");
             return `
-                <div class="inspector-group ${collapsed ? "collapsed" : ""}">
-                    <div class="inspector-group-header" data-group-name="${escapeHtml(group.name)}">
-                        <span class="inspector-group-caret">${collapsed ? "▸" : "▾"}</span>
-                        <span class="inspector-group-name">${escapeHtml(group.name)}</span>
+                <div class="diagnostics-group ${collapsed ? "collapsed" : ""}">
+                    <div class="diagnostics-group-header" data-group-name="${escapeHtml(group.name)}">
+                        <span class="diagnostics-group-caret">${collapsed ? "▸" : "▾"}</span>
+                        <span class="diagnostics-group-name">${escapeHtml(group.name)}</span>
                         <span class="chip">${items.length}</span>
                     </div>
-                    <div class="inspector-group-items">${rows}</div>
+                    <div class="diagnostics-group-items">${rows}</div>
                 </div>
             `;
         }
@@ -782,8 +782,8 @@ interface InspectorSnapshot {
             const structured = !errored && isContainer(item.value);
             const rowKey = `${group.name}::${item.name}`;
             const treeBtns = structured
-                ? `<button class="inspector-row-expand-btn" type="button" data-row-key="${escapeHtml(rowKey)}" title="Expand all in this field">⊞</button>` +
-                  `<button class="inspector-row-collapse-btn" type="button" data-row-key="${escapeHtml(rowKey)}" title="Collapse all in this field">⊟</button>`
+                ? `<button class="diagnostics-row-expand-btn" type="button" data-row-key="${escapeHtml(rowKey)}" title="Expand all in this field">⊞</button>` +
+                  `<button class="diagnostics-row-collapse-btn" type="button" data-row-key="${escapeHtml(rowKey)}" title="Collapse all in this field">⊟</button>`
                 : "";
 
             let valueHtml;
@@ -795,7 +795,7 @@ interface InspectorSnapshot {
             } else {
                 const full = fmtValue(item.value);
                 const short = shortValue(item.value);
-                valueHtml = `<span class="inspector-json-scalar">${escapeHtml(short)}</span>`;
+                valueHtml = `<span class="diagnostics-json-scalar">${escapeHtml(short)}</span>`;
                 rowValueAttrs = ` data-full="${escapeHtml(full)}"`;
             }
 
@@ -810,18 +810,18 @@ interface InspectorSnapshot {
             if (item.type) metaParts.push("type: " + item.type);
             const meta = metaParts.join("\n");
 
-            const classes = ["inspector-row"];
-            if (errored) classes.push("inspector-row-error");
-            if (valueChanged) classes.push("inspector-row-flash");
-            if (structured) classes.push("inspector-row-structured");
+            const classes = ["diagnostics-row"];
+            if (errored) classes.push("diagnostics-row-error");
+            if (valueChanged) classes.push("diagnostics-row-flash");
+            if (structured) classes.push("diagnostics-row-structured");
 
             return `
                 <div class="${classes.join(" ")}" data-source="${escapeHtml(item.source || "")}">
-                    <span class="inspector-row-name"
+                    <span class="diagnostics-row-name"
                           data-name="${escapeHtml(item.name)}"
                           ${meta ? `data-meta="${escapeHtml(meta)}"` : ""}>${escapeHtml(item.name)}</span>
-                    <span class="inspector-row-source-badge" data-source="${escapeHtml(item.source || "")}">${escapeHtml(item.source || "")}</span>
-                    <span class="inspector-row-value"${rowValueAttrs}>${valueHtml}</span>
+                    <span class="diagnostics-row-source-badge" data-source="${escapeHtml(item.source || "")}">${escapeHtml(item.source || "")}</span>
+                    <span class="diagnostics-row-value"${rowValueAttrs}>${valueHtml}</span>
                 </div>
             `;
         }
@@ -830,20 +830,20 @@ interface InspectorSnapshot {
 
         _renderJsonValue(value: unknown, rowKey: string, path: string): string {
             if (value === null) {
-                return `<span class="inspector-json-null">null</span>`;
+                return `<span class="diagnostics-json-null">null</span>`;
             }
             if (value === undefined) {
-                return `<span class="inspector-json-null">undefined</span>`;
+                return `<span class="diagnostics-json-null">undefined</span>`;
             }
             const t = typeof value;
             if (t === "string") {
-                return `<span class="inspector-json-string">"${escapeHtml(value)}"</span>`;
+                return `<span class="diagnostics-json-string">"${escapeHtml(value)}"</span>`;
             }
             if (t === "number") {
-                return `<span class="inspector-json-number">${escapeHtml(String(value))}</span>`;
+                return `<span class="diagnostics-json-number">${escapeHtml(String(value))}</span>`;
             }
             if (t === "boolean") {
-                return `<span class="inspector-json-bool">${value}</span>`;
+                return `<span class="diagnostics-json-bool">${value}</span>`;
             }
             if (Array.isArray(value)) {
                 return this._renderJsonContainer(value, rowKey, path, true);
@@ -851,7 +851,7 @@ interface InspectorSnapshot {
             if (t === "object") {
                 return this._renderJsonContainer(value, rowKey, path, false);
             }
-            return `<span class="inspector-json-scalar">${escapeHtml(String(value))}</span>`;
+            return `<span class="diagnostics-json-scalar">${escapeHtml(String(value))}</span>`;
         }
 
         _renderJsonContainer(value: object, rowKey: string, path: string, isArray: boolean): string {
@@ -860,16 +860,16 @@ interface InspectorSnapshot {
                 : Object.entries(value);
             const len = entries.length;
             if (len === 0) {
-                return `<span class="inspector-json-empty">${isArray ? "[]" : "{}"}</span>`;
+                return `<span class="diagnostics-json-empty">${isArray ? "[]" : "{}"}</span>`;
             }
 
             const pathKey = `${rowKey}::${path}`;
             const expanded = !!this._jsonExpansion.get(pathKey);
-            const caret = `<span class="inspector-json-caret" data-path-key="${escapeHtml(pathKey)}">${expanded ? "▾" : "▸"}</span>`;
+            const caret = `<span class="diagnostics-json-caret" data-path-key="${escapeHtml(pathKey)}">${expanded ? "▾" : "▸"}</span>`;
 
             if (!expanded) {
                 const summary = containerSummary(value);
-                return `<span class="inspector-json-node">${caret}<span class="inspector-json-summary">${escapeHtml(summary)}</span></span>`;
+                return `<span class="diagnostics-json-node">${caret}<span class="diagnostics-json-summary">${escapeHtml(summary)}</span></span>`;
             }
 
             const open = isArray ? "[" : "{";
@@ -877,12 +877,12 @@ interface InspectorSnapshot {
             const childPath = (k: string | number) => isArray ? `${path}[${k}]` : `${path}.${k}`;
             const rows = entries.map(([k, v]: [string | number, unknown]) => {
                 const keyHtml = isArray
-                    ? `<span class="inspector-json-index">${k}:</span>`
-                    : `<span class="inspector-json-key">"${escapeHtml(String(k))}":</span>`;
-                return `<div class="inspector-json-child">${keyHtml} ${this._renderJsonValue(v, rowKey, childPath(k))}</div>`;
+                    ? `<span class="diagnostics-json-index">${k}:</span>`
+                    : `<span class="diagnostics-json-key">"${escapeHtml(String(k))}":</span>`;
+                return `<div class="diagnostics-json-child">${keyHtml} ${this._renderJsonValue(v, rowKey, childPath(k))}</div>`;
             }).join("");
 
-            return `<span class="inspector-json-node inspector-json-node-expanded">${caret}<span class="inspector-json-bracket">${open}</span><div class="inspector-json-children">${rows}</div><span class="inspector-json-bracket">${close}</span></span>`;
+            return `<span class="diagnostics-json-node diagnostics-json-node-expanded">${caret}<span class="diagnostics-json-bracket">${open}</span><div class="diagnostics-json-children">${rows}</div><span class="diagnostics-json-bracket">${close}</span></span>`;
         }
 
         _walkContainerPaths(value: unknown, rowKey: string, path: string, callback: (pathKey: string) => void) {
@@ -1007,9 +1007,9 @@ interface InspectorSnapshot {
     }
 
     function bootstrap() {
-        if (window.inspectorPanel) return; // idempotent
-        window.inspectorPanel = new InspectorPanel();
-        window.inspectorPanel.init();
+        if (window.diagnosticsPanel) return; // idempotent
+        window.diagnosticsPanel = new DiagnosticsPanel();
+        window.diagnosticsPanel.init();
     }
 
     if (document.readyState === "loading") {
@@ -1020,5 +1020,5 @@ interface InspectorSnapshot {
 })();
 
 // Marks this file as an ES module so Vite can `import` it for the bootstrap
-// side effect above (the IIFE self-installs window.inspectorPanel).
+// side effect above (the IIFE self-installs window.diagnosticsPanel).
 export {};

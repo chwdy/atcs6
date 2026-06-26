@@ -1,8 +1,8 @@
-/* Inspector Phase 1 — floating, draggable debug panel.
+/* Diagnostics — floating, draggable debug panel.
    Shows a live snapshot of one Train + its TrainController organized into
    four collapsible groups (config / live / derived / latches). */
 
-.inspector-panel {
+.diagnostics-panel {
     position: fixed;
     top: 80px;
     right: 20px;
@@ -23,20 +23,20 @@
     user-select: none;
 }
 
-.inspector-panel.inspector-panel-resizing {
+.diagnostics-panel.diagnostics-panel-resizing {
     cursor: ew-resize;
 }
 
-.inspector-panel.hidden {
+.diagnostics-panel.hidden {
     display: none;
 }
 
-.inspector-panel.inspector-panel-dragging {
+.diagnostics-panel.diagnostics-panel-dragging {
     opacity: 0.92;
 }
 
 /* ---- Header / drag handle ---- */
-.inspector-panel-header {
+.diagnostics-panel-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -47,13 +47,13 @@
     border-top-right-radius: var(--control-radius-sm);
 }
 
-.inspector-panel-title {
+.diagnostics-panel-title {
     font-weight: 600;
     color: var(--text-primary);
     letter-spacing: 0.02em;
 }
 
-.inspector-panel-close {
+.diagnostics-panel-close {
     background: transparent;
     border: none;
     color: var(--text-secondary);
@@ -63,13 +63,13 @@
     padding: 0 4px;
     border-radius: 3px;
 }
-.inspector-panel-close:hover {
+.diagnostics-panel-close:hover {
     color: var(--text-primary);
     background-color: var(--bg-panel);
 }
 
 /* ---- Toolbar (train + rate + refresh) ---- */
-.inspector-panel-toolbar {
+.diagnostics-panel-toolbar {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -77,7 +77,7 @@
     border-bottom: 1px solid var(--border-color);
 }
 
-.inspector-panel-field {
+.diagnostics-panel-field {
     display: flex;
     flex-direction: column;
     gap: 2px;
@@ -88,7 +88,7 @@
     color: var(--text-secondary);
 }
 
-.inspector-panel-field select {
+.diagnostics-panel-field select {
     height: var(--control-height-xs);
     background-color: var(--bg-dark);
     color: var(--text-primary);
@@ -101,16 +101,16 @@
     letter-spacing: 0;
 }
 
-.inspector-panel-tools {
+.diagnostics-panel-tools {
     display: flex;
     align-items: center;
     gap: 4px;
     align-self: flex-end;
 }
 
-.inspector-panel-refresh-btn,
-.inspector-panel-tree-btn,
-.inspector-panel-sort-btn {
+.diagnostics-panel-refresh-btn,
+.diagnostics-panel-tree-btn,
+.diagnostics-panel-sort-btn {
     height: var(--control-height-xs);
     min-width: var(--control-height-xs);
     background-color: var(--bg-dark);
@@ -125,28 +125,28 @@
     align-items: center;
     justify-content: center;
 }
-.inspector-panel-refresh-btn,
-.inspector-panel-tree-btn {
+.diagnostics-panel-refresh-btn,
+.diagnostics-panel-tree-btn {
     width: var(--control-height-xs);
     padding: 0;
 }
-.inspector-panel-sort-btn {
+.diagnostics-panel-sort-btn {
     font-size: 11px;
     font-family: var(--font-main);
 }
-.inspector-panel-sort-btn.active {
+.diagnostics-panel-sort-btn.active {
     color: var(--accent-hover, var(--text-primary));
     border-color: var(--accent-color);
 }
-.inspector-panel-refresh-btn:hover,
-.inspector-panel-tree-btn:hover,
-.inspector-panel-sort-btn:hover {
+.diagnostics-panel-refresh-btn:hover,
+.diagnostics-panel-tree-btn:hover,
+.diagnostics-panel-sort-btn:hover {
     border-color: var(--accent-color);
     color: var(--accent-hover);
 }
 
 /* ---- Body ---- */
-.inspector-panel-body {
+.diagnostics-panel-body {
     flex: 1 1 auto;
     overflow-y: auto;
     padding: 4px 0;
@@ -154,7 +154,7 @@
 
 
 /* ---- Footer ---- */
-.inspector-panel-footer {
+.diagnostics-panel-footer {
     padding: 4px 10px 6px;
     border-top: 1px solid var(--border-color);
     color: var(--text-secondary);
@@ -163,15 +163,15 @@
 }
 
 /* ---- Group ---- */
-.inspector-group {
+.diagnostics-group {
     border-bottom: 1px solid var(--border-color);
 }
 
-.inspector-group:last-child {
+.diagnostics-group:last-child {
     border-bottom: none;
 }
 
-.inspector-group-header {
+.diagnostics-group-header {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -180,17 +180,17 @@
     background-color: rgba(255, 255, 255, 0.02);
     user-select: none;
 }
-.inspector-group-header:hover {
+.diagnostics-group-header:hover {
     background-color: var(--bg-hover);
 }
 
-.inspector-group-caret {
+.diagnostics-group-caret {
     width: 10px;
     color: var(--text-secondary);
     font-size: 10px;
 }
 
-.inspector-group-name {
+.diagnostics-group-name {
     flex: 1 1 auto;
     font-weight: 600;
     color: var(--text-primary);
@@ -198,16 +198,16 @@
     letter-spacing: 0.02em;
 }
 
-.inspector-group.collapsed .inspector-group-items {
+.diagnostics-group.collapsed .diagnostics-group-items {
     display: none;
 }
 
-.inspector-group-items {
+.diagnostics-group-items {
     padding: 2px 0 4px;
 }
 
 /* ---- Row ---- */
-.inspector-row {
+.diagnostics-row {
     display: grid;
     grid-template-columns: 11em 4.5em 1fr;
     align-items: start;
@@ -216,11 +216,11 @@
     line-height: 1.4;
     border-left: 3px solid transparent;
 }
-.inspector-row:hover {
+.diagnostics-row:hover {
     background-color: var(--bg-hover);
 }
 
-.inspector-row-name {
+.diagnostics-row-name {
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--text-primary);
@@ -229,12 +229,12 @@
     white-space: nowrap;
     cursor: pointer;
 }
-.inspector-row-name:hover {
+.diagnostics-row-name:hover {
     color: var(--accent-hover, var(--text-primary));
     text-decoration: underline;
 }
 
-.inspector-row-value {
+.diagnostics-row-value {
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--text-secondary);
@@ -244,15 +244,15 @@
     min-width: 0;
 }
 
-.inspector-row-structured .inspector-row-value {
+.diagnostics-row-structured .diagnostics-row-value {
     white-space: normal;
     overflow: visible;
     text-overflow: clip;
     word-break: break-word;
 }
 
-.inspector-row-expand-btn,
-.inspector-row-collapse-btn {
+.diagnostics-row-expand-btn,
+.diagnostics-row-collapse-btn {
     background: transparent;
     border: 1px solid var(--border-color);
     color: var(--text-secondary);
@@ -264,17 +264,17 @@
     cursor: pointer;
     vertical-align: middle;
 }
-.inspector-row-collapse-btn {
+.diagnostics-row-collapse-btn {
     margin-right: 4px;
 }
-.inspector-row-expand-btn:hover,
-.inspector-row-collapse-btn:hover {
+.diagnostics-row-expand-btn:hover,
+.diagnostics-row-collapse-btn:hover {
     color: var(--accent-hover, var(--text-primary));
     border-color: var(--accent-color);
 }
 
 /* ---- Source badge ---- */
-.inspector-row-source-badge {
+.diagnostics-row-source-badge {
     display: inline-block;
     text-align: center;
     font-size: 8.5px;
@@ -291,33 +291,33 @@
     white-space: nowrap;
     min-width: 0;
 }
-.inspector-row-source-badge[data-source="stored"] { background-color: #555560; }
-.inspector-row-source-badge[data-source="property"] { background-color: var(--info-color); color: #001a22; }
-.inspector-row-source-badge[data-source="latch"] { background-color: var(--warning-color); color: #2a1f00; }
-.inspector-row-source-badge[data-source="external"] { background-color: var(--success-color); color: #00200d; }
+.diagnostics-row-source-badge[data-source="stored"] { background-color: #555560; }
+.diagnostics-row-source-badge[data-source="property"] { background-color: var(--info-color); color: #001a22; }
+.diagnostics-row-source-badge[data-source="latch"] { background-color: var(--warning-color); color: #2a1f00; }
+.diagnostics-row-source-badge[data-source="external"] { background-color: var(--success-color); color: #00200d; }
 
 /* ---- Diff flash ---- */
-@keyframes inspector-row-flash-anim {
+@keyframes diagnostics-row-flash-anim {
     0%   { background-color: rgba(var(--warning-rgb), 0.45); }
     100% { background-color: transparent; }
 }
-.inspector-row-flash {
-    animation: inspector-row-flash-anim 1s ease-out 1;
+.diagnostics-row-flash {
+    animation: diagnostics-row-flash-anim 1s ease-out 1;
     border-left-color: var(--warning-color);
 }
 
 /* ---- Errored property ---- */
-.inspector-row-error {
+.diagnostics-row-error {
     border-left-color: var(--danger-color);
     background-color: rgba(var(--danger-rgb), 0.08);
 }
-.inspector-row-error .inspector-row-value {
+.diagnostics-row-error .diagnostics-row-value {
     color: var(--danger-color);
     white-space: pre-wrap;
 }
 
 /* ---- Resize handle ---- */
-.inspector-resize-handle {
+.diagnostics-resize-handle {
     position: absolute;
     top: 0;
     right: 0;
@@ -328,12 +328,12 @@
     transition: background-color 0.15s;
     z-index: 1;
 }
-.inspector-resize-handle:hover {
+.diagnostics-resize-handle:hover {
     background-color: var(--accent-color);
 }
 
 /* ---- Name tooltip (custom, replaces native title) ---- */
-.inspector-name-tooltip {
+.diagnostics-name-tooltip {
     position: fixed;
     z-index: 9100;
     max-width: 360px;
@@ -349,13 +349,13 @@
     pointer-events: none;
     user-select: none;
 }
-.inspector-name-tooltip-name {
+.diagnostics-name-tooltip-name {
     font-family: var(--font-mono);
     font-weight: 600;
     color: var(--text-primary);
     word-break: break-all;
 }
-.inspector-name-tooltip-meta {
+.diagnostics-name-tooltip-meta {
     margin-top: 4px;
     color: var(--text-secondary);
     font-size: 10px;
@@ -364,7 +364,7 @@
     border-top: 1px solid var(--border-color);
     padding-top: 4px;
 }
-.inspector-name-tooltip-value {
+.diagnostics-name-tooltip-value {
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--text-primary);
@@ -375,32 +375,32 @@
 }
 
 /* ---- JSON tree ---- */
-.inspector-json-scalar,
-.inspector-json-string,
-.inspector-json-number,
-.inspector-json-bool,
-.inspector-json-null,
-.inspector-json-empty {
+.diagnostics-json-scalar,
+.diagnostics-json-string,
+.diagnostics-json-number,
+.diagnostics-json-bool,
+.diagnostics-json-null,
+.diagnostics-json-empty {
     font-family: var(--font-mono);
     font-size: 11px;
 }
-.inspector-json-scalar { color: var(--text-secondary); }
-.inspector-json-string { color: var(--success-color, #6abf69); }
-.inspector-json-number { color: var(--info-color, #6cb9d6); }
-.inspector-json-bool { color: var(--warning-color, #d49a2c); }
-.inspector-json-null { color: var(--text-secondary); font-style: italic; }
-.inspector-json-empty { color: var(--text-secondary); }
+.diagnostics-json-scalar { color: var(--text-secondary); }
+.diagnostics-json-string { color: var(--success-color, #6abf69); }
+.diagnostics-json-number { color: var(--info-color, #6cb9d6); }
+.diagnostics-json-bool { color: var(--warning-color, #d49a2c); }
+.diagnostics-json-null { color: var(--text-secondary); font-style: italic; }
+.diagnostics-json-empty { color: var(--text-secondary); }
 
-.inspector-json-node {
+.diagnostics-json-node {
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--text-secondary);
     display: inline;
 }
-.inspector-json-node-expanded {
+.diagnostics-json-node-expanded {
     display: block;
 }
-.inspector-json-caret {
+.diagnostics-json-caret {
     display: inline-block;
     width: 12px;
     text-align: center;
@@ -410,28 +410,28 @@
     font-size: 10px;
     margin-right: 1px;
 }
-.inspector-json-caret:hover {
+.diagnostics-json-caret:hover {
     color: var(--accent-hover, var(--text-primary));
 }
-.inspector-json-summary {
+.diagnostics-json-summary {
     color: var(--text-secondary);
     font-style: italic;
 }
-.inspector-json-bracket {
+.diagnostics-json-bracket {
     color: var(--text-primary);
 }
-.inspector-json-children {
+.diagnostics-json-children {
     margin-left: 14px;
     border-left: 1px dotted var(--border-color);
     padding-left: 6px;
 }
-.inspector-json-child {
+.diagnostics-json-child {
     line-height: 1.4;
 }
-.inspector-json-key {
+.diagnostics-json-key {
     color: var(--text-primary);
     font-weight: 500;
 }
-.inspector-json-index {
+.diagnostics-json-index {
     color: var(--text-secondary);
 }
