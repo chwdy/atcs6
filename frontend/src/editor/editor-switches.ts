@@ -24,7 +24,6 @@ export class SwitchEditorHandler {
   editor: EditorHost;
   _switchId: string | null;
   _unsubscribe: (() => void) | null;
-  _localState: any;
   // Switches-list panel (showSwitchesPanel): the last-fetched list plus its
   // background poller, mirroring the routes-list panel in editor-routes.ts.
   switches: any[];
@@ -35,7 +34,6 @@ export class SwitchEditorHandler {
     this.editor = editor;
     this._switchId = null;
     this._unsubscribe = null;
-    this._localState = null;
     this.switches = [];
     this._switchesListInterval = null;
     this._switchesListIntervalMs = 1500;
@@ -386,7 +384,6 @@ export class SwitchEditorHandler {
 
     this._cleanup();
     this._switchId = switchData.switch_id;
-    this._localState = JSON.parse(JSON.stringify(switchData));
 
     this._unsubscribe =
       this.editor.stateManager?.subscribe(
@@ -418,7 +415,6 @@ export class SwitchEditorHandler {
       return;
     }
 
-    this._localState = JSON.parse(JSON.stringify(newSwitch));
     this._updateSwitchDisplay(newSwitch);
   }
 
@@ -626,6 +622,5 @@ export class SwitchEditorHandler {
       this._unsubscribe = null;
     }
     this._switchId = null;
-    this._localState = null;
   }
 }

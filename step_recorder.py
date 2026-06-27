@@ -8,8 +8,6 @@ This format records the construction steps used to build a layout, making it:
 - Human-readable: Easy to understand and manually edit
 """
 
-import hashlib
-from datetime import datetime
 from typing import Dict, List, Optional, Set
 
 from track import TrackSegment
@@ -19,37 +17,6 @@ class StepRecorder:
     """Generates step-based layout files from network state."""
 
     SCHEMA_VERSION = "1.0"
-
-    def generate_steps(
-        self, network: "RailwayNetwork", name: str = "", description: str = ""
-    ) -> dict:
-        """
-        Analyze network and generate ordered construction steps.
-
-        Args:
-            network: The RailwayNetwork instance to analyze.
-            name: Name for the layout.
-            description: Description of the layout.
-
-        Returns:
-            A dictionary containing the step-based layout format.
-        """
-        steps = self._collect_all_steps(network)
-
-        # Build the full document
-        now = datetime.now().isoformat()
-        result = {
-            "version": self.SCHEMA_VERSION,
-            "format": "steps",
-            "name": name,
-            "description": description,
-            "created": now,
-            "modified": now,
-            "steps": steps,
-            "verification": self._generate_verification(network),
-        }
-
-        return result
 
     def generate_steps_list(self, network: "RailwayNetwork") -> List[dict]:
         """
@@ -410,43 +377,3 @@ class StepRecorder:
             )
 
         return steps
-
-    def _generate_verification(self, network: "RailwayNetwork") -> dict:
-        """
-        Generate verification data for detecting replay mismatches.
-
-        Includes counts and a checksum of the network state.
-        """
-        # Collect key data for checksum
-        data_parts = []
-
-        # Track positions and bits
-        for pos in sorted(network.tracks.keys()):
-            track = network.tracks[pos]
-            data_parts.append(f"T:{pos[0]},{pos[1]}:{track.track_bits}")
-
-        # Block IDs
-        for block_id in sorted(network.blocks.keys()):
-            data_parts.append(f"B:{block_id}")
-
-        # Signal positions
-        for signal_id in sorted(network.signals.keys()):
-            signal = network.signals[signal_id]
-            data_parts.append(f"S:{signal.position[0]},{signal.position[1]}")
-
-        # Platform IDs
-        for platform_id in sorted(network.platforms.keys()):
-            data_parts.append(f"PL:{platform_id}")
-
-        # Compute checksum
-        data_string = "|".join(data_parts)
-        checksum = hashlib.sha256(data_string.encode()).hexdigest()[:16]
-
-        return {
-            "track_count": len(network.tracks),
-            "block_count": len(network.blocks),
-            "signal_count": len(network.signals),
-            "platform_count": len(network.platforms),
-            "train_count": len(network.trains),
-            "checksum": f"sha256:{checksum}",
-        }

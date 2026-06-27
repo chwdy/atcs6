@@ -11,7 +11,6 @@ import {
   renderAvailabilitySegment,
   bindAvailabilitySegment,
   showFormModal,
-  showPromptModal,
   showConfirmModal,
   bindFieldAutoSave,
   parseText,
@@ -320,24 +319,6 @@ export class PlatformEditorHandler {
       platformSide: String(values.platformSide || 'both').toLowerCase(),
       topSpeedKmh: values.topSpeedKmh === '' ? null : Number(values.topSpeedKmh),
     };
-  }
-
-  async showBlockAssignmentDialog(platformId: string, x: number, y: number): Promise<void> {
-    const blockId = await showPromptModal({
-      title: 'Assign Block to Platform Tile',
-      label: `Block ID for tile (${x}, ${y})`,
-      defaultValue: '',
-      required: true,
-      confirmText: 'Assign',
-      confirmVariant: 'primary',
-    });
-    const normalizedBlockId = String(blockId || '').trim();
-    if (!normalizedBlockId) {
-      return;
-    }
-    await this.api.assignPlatformTileToBlock(platformId, x, y, normalizedBlockId);
-    await this.editor.host?.refreshNetwork();
-    await this.showEditor(platformId);
   }
 
   _cleanup(): void {}

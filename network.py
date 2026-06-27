@@ -2159,11 +2159,6 @@ class RailwayNetwork:
             return [block_id]
         return list(district.block_ids)
 
-    def set_power_districts(self, districts: List[PowerDistrict]) -> None:
-        """Replace the power-district grouping and rebuild the reverse index."""
-        self.power_districts = {d.district_id: d for d in districts}
-        self._rebuild_district_index()
-
     def create_power_district(
         self, district_id: str, block_ids: List[str], name: str = ""
     ) -> PowerDistrict:

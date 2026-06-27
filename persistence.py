@@ -231,11 +231,3 @@ class PersistenceManager:
         result = result.strip("_")
         return result[:100] if result else ""
 
-    def _is_compatible_version(self, version: str) -> bool:
-        """Check if a schema version is compatible."""
-        try:
-            file_major = int(version.split(".")[0])
-            current_major = int(self.SCHEMA_VERSION.split(".")[0])
-            return file_major == current_major
-        except (ValueError, IndexError):
-            return False

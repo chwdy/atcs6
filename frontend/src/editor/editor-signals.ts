@@ -9,15 +9,11 @@ import type { EditorHost } from './types';
 
 export class SignalEditorHandler {
   editor: EditorHost;
-  _signalId: string | null;
   _unsubscribe: (() => void) | null;
-  _localState: any;
 
   constructor(editor: EditorHost) {
     this.editor = editor;
-    this._signalId = null; // Currently displayed signal ID
     this._unsubscribe = null; // Unsubscribe function for StateManager
-    this._localState = null; // Local copy for editing
   }
 
   get api(): any {
@@ -366,10 +362,6 @@ export class SignalEditorHandler {
     // Cleanup previous subscription
     this._cleanup();
 
-    // Store current signal ID and initial state
-    this._signalId = signalId;
-    this._localState = JSON.parse(JSON.stringify(signal));
-
     // Subscribe to signal updates
     this._unsubscribe =
       this.editor.stateManager?.subscribe(
@@ -401,8 +393,7 @@ export class SignalEditorHandler {
       return;
     }
 
-    // Update local state and refresh display
-    this._localState = JSON.parse(JSON.stringify(newSignal));
+    // Refresh display
     this._updateSignalDisplay(newSignal);
   }
 
@@ -442,8 +433,6 @@ export class SignalEditorHandler {
       this._unsubscribe();
       this._unsubscribe = null;
     }
-    this._signalId = null;
-    this._localState = null;
   }
 
   renderSignalList(signals: any[]): string {

@@ -231,14 +231,6 @@ class Path:
             if entry.resource_type == "block"
         ]
 
-    def get_all_switches(self) -> List[str]:
-        """All switch resource_ids on this path in traversal order."""
-        return [
-            entry.resource_id
-            for entry in self.resource_sequence
-            if entry.resource_type == "switch"
-        ]
-
     # ========================================================================
     # Tile-level direction queries
     # ========================================================================

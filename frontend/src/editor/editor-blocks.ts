@@ -27,16 +27,12 @@ import { anchorToTiles } from '../lib/popover-anchor';
 
 export class BlockEditorHandler {
   editor: EditorHost;
-  _blockId: string | null;
   _unsubscribe: (() => void) | null;
-  _localState: any;
   _isUserInteracting: boolean;
 
   constructor(editor: EditorHost) {
     this.editor = editor;
-    this._blockId = null;
     this._unsubscribe = null;
-    this._localState = null;
     this._isUserInteracting = false; // For tile picker drag operations
   }
 
@@ -76,12 +72,6 @@ export class BlockEditorHandler {
     } catch (err) {
       console.error('[BlockEditorHandler] Failed to refresh blocks:', err);
     }
-  }
-
-  select(blockId: string): void {
-    this.selectedBlockId = blockId;
-    // Block selection now only highlights tracks on canvas
-    // UI list no longer exists
   }
 
   getColor(blockId: string): string {
@@ -296,7 +286,7 @@ export class BlockEditorHandler {
     }
 
     // Setup subscription before handlers
-    this._setupSubscription(blockId, block);
+    this._setupSubscription(blockId);
 
     // Initialize event handlers after content is rendered
     setTimeout(() => this.initEditorHandlers(blockId), 0);
@@ -535,33 +525,6 @@ export class BlockEditorHandler {
     } catch (err: any) {
       console.error('Failed to auto-extend block:', err);
       showToast(`Failed to extend block: ${err.message}`, 'error', 5000);
-    }
-  }
-
-  // === Block Dialog Methods ===
-
-  async editDialog(blockId: string): Promise<void> {
-    try {
-      const blockData = await this.api.getBlock(blockId);
-      if (blockData.error) {
-        showToast(blockData.error, 'error', 5000);
-        return;
-      }
-
-      // Show block properties modal
-      const result = await this.showPropertiesModal({
-        blockId: blockId,
-        blockData: blockData,
-      });
-
-      if (!result) return; // User cancelled
-
-      // Update block with new values
-      await this.api.updateBlock(blockId, result);
-      await this.refreshList();
-    } catch (err: any) {
-      console.error('[BlockEditorHandler] Failed to update block:', err);
-      showToast('Failed to update block: ' + err.message, 'error', 5000);
     }
   }
 
@@ -818,148 +781,12 @@ export class BlockEditorHandler {
     });
   }
 
-  /** Show a modal dialog for editing block properties. */
-  showPropertiesModal(options: { blockId: string; blockData: any }): Promise<any> {
-    return new Promise((resolve) => {
-      const { blockId, blockData } = options;
-
-      // Create modal overlay
-      const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay';
-
-      const modal = document.createElement('div');
-      modal.className = 'modal';
-      modal.innerHTML = `
-                <h3>Edit Block Properties</h3>
-
-                <!-- Info Display Group -->
-                <div class="info-display-group">
-                    <div class="info-display-header">Block Information</div>
-                    <div class="info-display-item">
-                        <span class="info-display-label">Block ID</span>
-                        <span class="info-display-value">${blockId}</span>
-                    </div>
-                    <div class="info-display-item">
-                        <span class="info-display-label">Current State</span>
-                        <span class="info-badge state-${blockData.state || 'free'}">
-                            ${(blockData.state || 'free').toUpperCase()}
-                        </span>
-                    </div>
-                    ${
-                      blockData.monitoring_signals && blockData.monitoring_signals.length > 0
-                        ? `
-                    <div class="info-display-item info-display-item-stacked">
-                        <span class="info-display-label">Monitoring Signals</span>
-                        <div class="signal-list signal-list-compact" id="monitoring-signals-list">
-                            ${this.editor.renderSignalList ? this.editor.renderSignalList(blockData.monitoring_signals) : ''}
-                        </div>
-                    </div>
-                    `
-                        : ''
-                    }
-                </div>
-
-                <!-- User Input Fields (Horizontal Layout) -->
-                <div class="form-row-horizontal">
-                    <label for="modal-block-name">Name</label>
-                    <input type="text" id="modal-block-name" value="${blockData.name || ''}"
-                           placeholder="Block name">
-                </div>
-                <div class="form-row-horizontal">
-                    <label for="modal-block-length">Length (cm)</label>
-                    <input type="number" id="modal-block-length" value="${blockData.length_cm || 0}"
-                           min="0" step="0.1" placeholder="0.0">
-                </div>
-                <div class="form-row-horizontal">
-                    <label for="modal-block-speed">Max Speed (km/h)</label>
-                    <input type="number" id="modal-block-speed" value="${blockData.speed_limit_kmh || ''}"
-                           min="0" step="1" placeholder="Optional">
-                </div>
-
-                <div class="button-group">
-                    <button class="btn btn-primary" id="save-block-btn">Save</button>
-                    <button class="btn btn-secondary" id="cancel-block-btn">Cancel</button>
-                </div>
-            `;
-
-      overlay.appendChild(modal);
-      document.body.appendChild(overlay);
-
-      const nameInput = modal.querySelector<HTMLInputElement>('#modal-block-name')!;
-      const lengthInput = modal.querySelector<HTMLInputElement>('#modal-block-length')!;
-      const speedInput = modal.querySelector<HTMLInputElement>('#modal-block-speed')!;
-      const saveBtn = modal.querySelector<HTMLButtonElement>('#save-block-btn')!;
-      const cancelBtn = modal.querySelector<HTMLButtonElement>('#cancel-block-btn')!;
-
-      // Focus first input
-      setTimeout(() => nameInput.focus(), 50);
-
-      // Handle save
-      saveBtn.addEventListener('click', () => {
-        const name = nameInput.value.trim();
-        const lengthCm = parseFloat(lengthInput.value) || 0;
-        const speedLimitKmh = speedInput.value.trim() ? parseFloat(speedInput.value) : null;
-
-        if (lengthCm < 0) {
-          showToast('Length cannot be negative', 'error', 5000);
-          return;
-        }
-
-        if (speedLimitKmh !== null && speedLimitKmh <= 0) {
-          showToast('Max speed must be positive', 'error', 5000);
-          return;
-        }
-
-        document.body.removeChild(overlay);
-        resolve({
-          name,
-          length_cm: lengthCm,
-          speed_limit_kmh: speedLimitKmh,
-        });
-      });
-
-      // Handle cancel
-      cancelBtn.addEventListener('click', () => {
-        document.body.removeChild(overlay);
-        resolve(null);
-      });
-
-      // Handle Enter key
-      const handleEnter = (e: KeyboardEvent) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-          saveBtn.click();
-        }
-      };
-      modal.addEventListener('keydown', handleEnter);
-
-      // Handle Escape key
-      const handleEscape = (e: KeyboardEvent) => {
-        if (e.key === 'Escape') {
-          document.body.removeChild(overlay);
-          document.removeEventListener('keydown', handleEscape);
-          resolve(null);
-        }
-      };
-      document.addEventListener('keydown', handleEscape);
-
-      // Handle overlay click
-      overlay.addEventListener('click', (e) => {
-        if (e.target === overlay) {
-          document.body.removeChild(overlay);
-          resolve(null);
-        }
-      });
-    });
-  }
-
   // ═══════════════════════════════════════════════════════════════
   // SUBSCRIPTION METHODS (Phase 4)
   // ═══════════════════════════════════════════════════════════════
 
-  _setupSubscription(blockId: string, blockData: any): void {
+  _setupSubscription(blockId: string): void {
     this._cleanup();
-    this._blockId = blockId;
-    this._localState = JSON.parse(JSON.stringify(blockData));
 
     this._unsubscribe =
       this.editor.stateManager?.subscribe(
@@ -988,8 +815,6 @@ export class BlockEditorHandler {
     ) {
       return;
     }
-
-    this._localState = JSON.parse(JSON.stringify(newBlock));
   }
 
   _cleanup(): void {
@@ -997,8 +822,6 @@ export class BlockEditorHandler {
       this._unsubscribe();
       this._unsubscribe = null;
     }
-    this._blockId = null;
-    this._localState = null;
     this._isUserInteracting = false;
   }
 }

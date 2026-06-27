@@ -61,7 +61,6 @@ export interface RouteHandlerRenderer {
 export class RendererRouteHandler {
   renderer: RouteHandlerRenderer;
   reachableHighlights: Set<string>;
-  activeRoutes: Route[];
   highlightedRouteId: string | null | undefined;
   conflictFlashTiles: Array<[number, number]>;
   conflictFlashEnd: number;
@@ -71,7 +70,6 @@ export class RendererRouteHandler {
     this.renderer = renderer;
 
     this.reachableHighlights = new Set();
-    this.activeRoutes = [];
     this.highlightedRouteId = null;
     this.conflictFlashTiles = [];
     this.conflictFlashEnd = 0;
@@ -174,18 +172,6 @@ export class RendererRouteHandler {
 
     if (this.reachableHighlights.size > 0) {
       this.drawReachableHighlights();
-    }
-
-    if (this.activeRoutes.length > 0) {
-      for (const route of this.activeRoutes) {
-        const isHighlighted = route.route_id === this.highlightedRouteId;
-        this.drawRoutePath(route, isHighlighted);
-      }
-    }
-
-    if (this.highlightedRouteId && !this.activeRoutes.some((r) => r.route_id === this.highlightedRouteId)) {
-      // Vestigial no-op branch preserved from the classic source (it had no
-      // body there either); kept as-is to stay behavior-identical.
     }
 
     if (Date.now() < this.conflictFlashEnd && this.conflictFlashTiles.length > 0) {

@@ -651,16 +651,6 @@ class SimulationController:
             raise KeyError(f"Unknown train: {train_id}")
         return self._get_or_create_physics(train)
 
-    def remove_train_controller(self, train_id: str) -> None:
-        """Remove controller instance for a train (cleanup on train removal)."""
-        if train_id in self.controllers:
-            del self.controllers[train_id]
-
-    def remove_train_physics(self, train_id: str) -> None:
-        """Remove physics instance for a train (cleanup on train removal)."""
-        if train_id in self.physics_instances:
-            del self.physics_instances[train_id]
-
     # =========================================================================
     # Train lifecycle
     # =========================================================================

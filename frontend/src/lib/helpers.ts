@@ -101,18 +101,6 @@ export function formatBlockDirection(
 }
 
 // ============================================================================
-// INTERNAL HELPERS
-// ============================================================================
-
-/** Generate an HTML data-attributes string from an object. */
-export function renderAttributes(attrs?: Record<string, unknown> | null): string {
-  if (!attrs) return '';
-  return Object.entries(attrs)
-    .map(([key, val]) => `data-${key}="${val}"`)
-    .join(' ');
-}
-
-// ============================================================================
 // TRACK & ORIENTATION LOGIC
 // ============================================================================
 

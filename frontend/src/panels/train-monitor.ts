@@ -120,15 +120,6 @@ interface MonitorView {
     visibleEndCm: number;
 }
 
-type ConfigWarning = {
-    type: string;
-    position?: [number, number];
-    block_id?: string | number;
-    station_id?: string | number;
-    state?: string;
-    message?: string;
-};
-
 class TrainMonitor {
     bar!: HTMLElement;
     canvas!: HTMLCanvasElement;
@@ -163,7 +154,6 @@ class TrainMonitor {
     mouseY: number | null = null;
     pinnedCm: number | null = null;
     signalColors!: Record<string, string>;
-    lastWarningKey?: string;
 
     // View transform exposed by render() for the mouse/click handlers.
     _cmToX?: (cm: number) => number;
@@ -543,58 +533,6 @@ class TrainMonitor {
         this.render();
     }
 
-    _displayConfigurationWarnings(warnings: ConfigWarning[], trainId: string) {
-        // Display configuration warnings via toast notifications.
-        // Track which warnings we've already shown to avoid spam
-        const warningKey = warnings.map((w: ConfigWarning) => `${w.type}_${w.position || w.block_id || w.station_id}`).join('|');
-        
-        // Only show warnings once per unique set (avoid repeated toasts)
-        if (this.lastWarningKey === warningKey) {
-            return;
-        }
-        this.lastWarningKey = warningKey;
-        
-        for (const warning of warnings) {
-            let message = '';
-            switch (warning.type) {
-                case 'block_length_not_configured':
-                    message = `⚠️ Block ${warning.block_id} has no length configured. Please set length in Block Editor.`;
-                    break;
-                case 'station_length_not_configured':
-                    message = `⚠️ Platform ${warning.station_id} has no length configured. Please set length in Platform Editor.`;
-                    break;
-                case 'switch_not_configured':
-                    message = `⚠️ Switch at (${warning.position?.[0]}, ${warning.position?.[1]}) [${warning.state}] has no length configured.`;
-                    break;
-                case 'switch_entity_missing':
-                    message = `⚠️ Switch at (${warning.position?.[0]}, ${warning.position?.[1]}) has no configuration entity.`;
-                    break;
-                case 'block_not_found':
-                    message = `⚠️ Block ${warning.block_id} not found in network.`;
-                    break;
-                case 'station_not_found':
-                    message = `⚠️ Platform ${warning.station_id} not found in network.`;
-                    break;
-                default:
-                    message = warning.message || 'Unknown configuration warning';
-            }
-            
-            // Show warning toast (auto-dismiss after 8 seconds)
-            if (showToast) {
-                showToast(message, 'warning', 8000);
-            }
-        }
-        
-        // Show summary warning
-        if (showToast) {
-            showToast(
-                `Train ${trainId}: ${warnings.length} configuration warning(s). Operation allowed but physics may be inaccurate.`,
-                'warning',
-                6000
-            );
-        }
-    }
-    
     updateUpcomingElements(data: LookaheadData) {
         if (!this.upcomingEl) return;
 

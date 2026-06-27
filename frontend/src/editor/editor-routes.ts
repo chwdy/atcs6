@@ -1202,10 +1202,6 @@ export class RouteEditorHandler {
     }
   }
 
-  highlightPlatformLocations(platformIds: any[], autoClearMs = 0): void {
-    this._applyHighlight(this.getPlatformPositionSet(platformIds), autoClearMs);
-  }
-
   /** Highlight (and briefly flash) the map geometry for a task's target. */
   focusTaskLocation(index: number): void {
     const task = this.currentRoute?.tasks?.[index];

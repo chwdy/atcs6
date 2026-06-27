@@ -82,7 +82,6 @@ async function fetchBlockHistory(limit = 30): Promise<any> {
 // ── State ─────────────────────────────────────────────────────────────────
 
 let autoRefreshInterval: ReturnType<typeof setInterval> | null = null;
-const expandedPaths = new Set<string>();
 
 // ── Summary panel ─────────────────────────────────────────────────────────
 
@@ -255,12 +254,10 @@ function createTreeNode(key: string, val: DebugValue, parentPath: string, indent
             if (children.style.display === 'none') {
                 toggle.textContent = '\u25BC';
                 children.style.display = 'block';
-                expandedPaths.add(fullPath);
                 await loadChildren(fullPath, children, indentLevel + 1);
             } else {
                 toggle.textContent = '\u25B6';
                 children.style.display = 'none';
-                expandedPaths.delete(fullPath);
                 children.innerHTML = '';
             }
         };
@@ -340,7 +337,6 @@ function getChildEntries(data: DebugValue): Array<[string, DebugValue]> {
 async function loadTree(path: string) {
     const container = $('tree-container');
     container.innerHTML = '<div class="tree-loading">Loading...</div>';
-    expandedPaths.clear();
 
     try {
         const resp = await fetchInspect(path, 1);
@@ -398,8 +394,6 @@ function startAutoRefresh() {
     autoRefreshInterval = setInterval(() => {
         refreshSummary();
         refreshHistory();
-        // Re-fetch expanded tree nodes
-        refreshExpandedNodes();
     }, 2000);
     $('status-indicator').className = 'status-dot status-on';
 }
@@ -410,12 +404,6 @@ function stopAutoRefresh() {
         autoRefreshInterval = null;
     }
     $('status-indicator').className = 'status-dot status-off';
-}
-
-function refreshExpandedNodes() {
-    // Refresh the root tree at whatever path is currently displayed.
-    // Only refresh top-level, don't disturb expanded children
-    // (a full re-render would lose expand state; for now just refresh summary/history)
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────

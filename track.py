@@ -575,16 +575,6 @@ class TrackSegment:
         return TrackType.COMPLEX
 
     @property
-    def connections(self) -> Dict[Direction, List[Direction]]:
-        """Get possible exit directions from entry direction (respects switch state)."""
-        conn: Dict[Direction, List[Direction]] = {}
-        for d in Direction:
-            exits = self.get_exit_directions(d)
-            if exits:
-                conn[d] = exits
-        return conn
-
-    @property
     def is_valid(self) -> bool:
         """Return True if geometry is allowed."""
         return (
@@ -1008,17 +998,6 @@ class TrackSegment:
 
         return None
 
-    # === Traversal helpers ===
-    def get_traversal_group(
-        self, entry_direction: Direction, exit_direction: Direction
-    ) -> Optional[str]:
-        """Return orientation group for a traversal through this tile."""
-        entry_edge = DIR_TO_EDGE.get(entry_direction)
-        exit_edge = DIR_TO_EDGE.get(exit_direction)
-        if not entry_edge or not exit_edge:
-            return None
-        return ORIENTATION_GROUPS.get(frozenset({entry_edge, exit_edge}))
-
     # === Curve detection (connection-based) ===
     def get_path_group(self, edge1: str, edge2: str) -> Optional[str]:
         """Get orientation group for a path between two edges."""
@@ -1159,13 +1138,6 @@ class TrackSegment:
         return segment
 
     # ========== Utility ==========
-    def is_available_for(self, train_id: str) -> bool:
-        if self.occupied_by and self.occupied_by != train_id:
-            return False
-        if self.reserved_by and self.reserved_by != train_id:
-            return False
-        return True
-
     def get_required_switch_state(
         self, entry_edge: str, exit_edge: str
     ) -> Optional[int]:

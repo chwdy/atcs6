@@ -164,33 +164,6 @@ class BlockPowerController:
         """
         self.output_interface.enter_safe_state()
 
-    def update_for_train(
-        self, train: "Train", speed_profile: Optional["SpeedProfile"] = None
-    ) -> None:
-        """
-        Update voltage for all blocks occupied by a train.
-
-        Determines voltage based on train state:
-        - OFF: 0V
-        - READY/RUNNING_AT_STATION: lighting_voltage
-        - RUNNING_MOVING: voltage based on target speed
-
-        Args:
-            train: Train to update voltage for
-            speed_profile: Optional speed profile (uses default if None)
-        """
-        # Get blocks occupied by train
-        occupied_blocks = self._get_train_occupied_blocks(train)
-
-        if not occupied_blocks:
-            return
-
-        # All occupied blocks take the same voltage, resolved by TrainPhysics
-        # (the canonical owner of `track_voltage`).
-        voltage = self._calculate_voltage_for_train(train, speed_profile)
-        for block_id in occupied_blocks:
-            self.set_block_voltage(block_id, voltage)
-
     def _calculate_voltage_for_train(
         self, train: "Train", speed_profile: Optional["SpeedProfile"] = None
     ) -> float:

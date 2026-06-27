@@ -89,19 +89,6 @@ export function isSquareCornerSwitch(bits: number): boolean {
 }
 
 // ============================================================================
-// Quadrant System (for signal/label placement)
-// ============================================================================
-
-export const SEGMENT_QUADRANTS: Record<number, string[]> = {
-  0: ['NE', 'SW'], // NS segment occupies NE and SW quadrants
-  1: ['SE', 'NW'], // EW segment occupies SE and NW quadrants
-  2: ['NE', 'SE'], // NE segment (vertical on screen)
-  3: ['NE', 'NW'], // NW segment (horizontal on screen)
-  4: ['SE', 'SW'], // SE segment (horizontal on screen)
-  5: ['NW', 'SW'], // SW segment (vertical on screen)
-};
-
-// ============================================================================
 // Label Spacing System
 // ============================================================================
 

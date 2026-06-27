@@ -1465,23 +1465,6 @@ class TrainController:
                 return i
         return -1
 
-    def _direction_between_tiles(
-        self, from_tile: Tuple[int, int], to_tile: Tuple[int, int]
-    ) -> Optional[Direction]:
-        """Convert an adjacent tile-to-tile delta into a Direction."""
-        dx = to_tile[0] - from_tile[0]
-        dy = to_tile[1] - from_tile[1]
-
-        if dx == 1 and dy == 0:
-            return Direction.EAST
-        if dx == -1 and dy == 0:
-            return Direction.WEST
-        if dx == 0 and dy == 1:
-            return Direction.NORTH
-        if dx == 0 and dy == -1:
-            return Direction.SOUTH
-        return None
-
     def _direction_to_edge(self, direction: Direction) -> Optional[str]:
         """Convert Direction enum to edge token (N/E/S/W)."""
         if direction == Direction.NORTH:
