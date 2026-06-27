@@ -604,6 +604,17 @@ export class Editor {
         if (!id) return;
         itemExists = true;
         break;
+      default:
+        // Any panel that is not one of the delete-by-id entity editors above
+        // (tile, multi-select, tunnel, the *-list panels, …) has no entity that
+        // a refresh could have deleted, so keep it open. Treating an
+        // unrecognized type as "gone" hid the whole sidebar on every
+        // refreshNetwork() and the follow-up re-select reopened it — a visible
+        // flash of the panel (and, while docked, a layout reflow as the canvas
+        // widened then narrowed). Throwing a switch hit this directly:
+        // throwSwitchByMode() calls refreshNetwork() then selectElement(). These
+        // panels close only through their explicit close paths.
+        return;
     }
 
     if (!itemExists) {
@@ -1466,7 +1477,7 @@ export class Editor {
       }
       // Left click with signal/tunnel = single click placement
       else if (e.button === 0 && ['signal', 'tunnel'].includes(this.selectedTool)) {
-        this.handleSingleClickPlace(gridPos);
+        this.handleSingleClickPlace(gridPos, e);
       }
     });
 
@@ -1742,9 +1753,19 @@ export class Editor {
 
       // Tunnel mouths are overlay glyphs sitting on a tile's edge — give them
       // first shot before tile selection, mirroring station labels above.
-      const tunnelPair = this.renderer.tunnelHandler?.tunnelAt?.(x, y);
-      if (tunnelPair) {
-        await this.tunnelEditorHandler.showEditor(tunnelPair);
+      const tunnelHit = this.renderer.tunnelHandler?.tunnelMouthAt?.(x, y);
+      if (tunnelHit) {
+        const current = this.renderer.selectedTunnel;
+        if (current && this.tunnelEditorHandler._samePair(current, tunnelHit.pair)) {
+          // Clicking the already-selected tunnel toggles it off — no re-flash.
+          this.tunnelEditorHandler.clearSelection();
+          this.hideSecondarySidebar();
+          return;
+        }
+        await this.tunnelEditorHandler.showEditor(tunnelHit.pair);
+        // Reveal where this mouth connects: flash the far end (and pan to it if
+        // it's off-screen) so you can find the partner among many tunnels.
+        this._revealTunnelPartner(tunnelHit.partner);
         return;
       }
 
@@ -2653,7 +2674,7 @@ export class Editor {
   }
 
   // Single click placement for signal/platform/tunnel tools
-  async handleSingleClickPlace(gridPos: any): Promise<void> {
+  async handleSingleClickPlace(gridPos: any, ev?: MouseEvent): Promise<void> {
     const existingTrack = this.cachedNetwork?.tracks?.find(
       (t: any) => t.x === gridPos.x && t.y === gridPos.y
     );
@@ -2664,7 +2685,7 @@ export class Editor {
     }
 
     if (this.selectedTool === 'tunnel') {
-      await this.handleTunnelClick(gridPos, existingTrack);
+      await this.handleTunnelClick(gridPos, existingTrack, ev);
       return;
     }
 
@@ -3596,7 +3617,7 @@ export class Editor {
 
   // === Tunnel Tool ===
 
-  async handleTunnelClick(gridPos: any, existingTrack: any): Promise<void> {
+  async handleTunnelClick(gridPos: any, existingTrack: any, ev?: MouseEvent): Promise<void> {
     const deadEndPorts = Array.isArray(existingTrack.dead_end_ports)
       ? existingTrack.dead_end_ports.map((p: any) => String(p).toUpperCase())
       : [];
@@ -3609,9 +3630,47 @@ export class Editor {
       return;
     }
 
-    const edge = deadEndPorts.slice().sort()[0];
-    const endpoint = { x: gridPos.x, y: gridPos.y, edge };
+    // A single dead-end is unambiguous — take it. An isolated segment has a
+    // dead-end at each end, so two (or more) ports means the tool can't know
+    // which end the user wants: pop up a menu and let them choose by where the
+    // end sits on screen.
+    if (deadEndPorts.length === 1) {
+      await this._commitTunnelEndpoint({ x: gridPos.x, y: gridPos.y, edge: deadEndPorts[0] });
+      return;
+    }
 
+    // Screen-space description of each tile edge in the fixed isometric
+    // projection, mirroring getEdgePoints() in renderer-tracks.ts: N/W sit above
+    // the tile centre and E/S below it; N/E to the right, S/W to the left.
+    const EDGE_CHOICE: Record<string, { label: string; icon: string; up: boolean }> = {
+      N: { label: 'Top-right end', icon: 'ti ti-arrow-up-right', up: true },
+      W: { label: 'Top-left end', icon: 'ti ti-arrow-up-left', up: true },
+      E: { label: 'Bottom-right end', icon: 'ti ti-arrow-down-right', up: false },
+      S: { label: 'Bottom-left end', icon: 'ti ti-arrow-down-left', up: false },
+    };
+
+    const items: ContextMenuItem[] = deadEndPorts
+      .slice()
+      // Topmost end first, matching how the two ends read on screen.
+      .sort((a: string, b: string) => Number(EDGE_CHOICE[b]?.up ?? false) - Number(EDGE_CHOICE[a]?.up ?? false))
+      .map((edge: string) => ({
+        label: EDGE_CHOICE[edge]?.label ?? `${edge} end`,
+        detail: edge,
+        icon: EDGE_CHOICE[edge]?.icon ?? 'ti ti-arrow-ramp-right',
+        onSelect: () => this._commitTunnelEndpoint({ x: gridPos.x, y: gridPos.y, edge }),
+      }));
+
+    const rect = this.renderer.canvas.getBoundingClientRect();
+    const clientX = ev?.clientX ?? rect.left + this.renderer.gridToScreenX(gridPos.x, gridPos.y);
+    const clientY = ev?.clientY ?? rect.top + this.renderer.gridToScreenY(gridPos.x, gridPos.y);
+    showContextMenu(clientX, clientY, [{ heading: 'Tunnel — which end?', items }]);
+  }
+
+  /**
+   * Commit one chosen tunnel endpoint: arm it as the pending first endpoint, or,
+   * when one is already pending, pair the two and create the tunnel.
+   */
+  async _commitTunnelEndpoint(endpoint: { x: number; y: number; edge: string }): Promise<void> {
     if (!this._pendingTunnelEndpoint) {
       this._pendingTunnelEndpoint = endpoint;
       this.renderer.setPendingTunnelEndpoint(endpoint);
@@ -3637,5 +3696,31 @@ export class Editor {
     } catch (err: any) {
       showToast(`Failed to create tunnel: ${err.message}`, 'error', 6000);
     }
+  }
+
+  /**
+   * Reveal where a tunnel mouth connects: flash the partner end so the eye
+   * catches it, and pan to it first when it sits off-screen. The selected pair's
+   * connecting line is drawn by the renderer once the tunnel is selected.
+   */
+  _revealTunnelPartner(partner: { x: number; y: number; edge: string }): void {
+    const r = this.renderer;
+    const rect = r.canvas.getBoundingClientRect();
+    const sx = r.gridToScreenX(partner.x, partner.y);
+    const sy = r.gridToScreenY(partner.x, partner.y);
+    const margin = 60;
+    const onScreen =
+      sx >= margin && sx <= rect.width - margin && sy >= margin && sy <= rect.height - margin;
+    if (!onScreen) {
+      r.camera.panToWorld(partner.x, partner.y);
+    }
+    r.requestRedraw({ world: true, live: true, reason: 'tunnel-locate' });
+    // Yellow "locate" flash, matching the editor list "find on map" affordance.
+    r.flashTiles?.([[partner.x, partner.y]], {
+      rgb: '255, 217, 61',
+      fillAlpha: 0.4,
+      durationMs: 900,
+      highlightTrack: true,
+    });
   }
 }

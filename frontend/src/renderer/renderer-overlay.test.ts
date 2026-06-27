@@ -35,6 +35,7 @@ describe('renderer overlay hook', () => {
       _clearLiveCanvas: vi.fn(),
       platformHandler: { drawPlatforms: vi.fn() },
       stationHandler: { drawStations: vi.fn(), drawHoverOverlay: vi.fn() },
+      tunnelHandler: { drawTunnels: vi.fn() },
       drawBlockDirectionOverlay: vi.fn(),
       drawTileDirectionDebug: vi.fn(),
       drawOneWayDirectionDebug: vi.fn(),

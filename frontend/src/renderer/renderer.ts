@@ -258,8 +258,8 @@ class Renderer {
   trackMap!: Record<string, Track>;
   currentSnapshot?: { trains?: Record<string, TrainSnap> };
   _pendingTunnelEndpoint?: { x: number; y: number; edge: string } | null;
-  // The tunnel pair selected with the Inspect tool, drawn highlighted by the
-  // tunnel handler. Set via setSelectedTunnel(); null when nothing is selected.
+  // The tunnel pair selected with the Inspect tool, drawn highlighted (wider,
+  // brighter stud) with its connecting line. Set via setSelectedTunnel().
   selectedTunnel?: TunnelPair | null;
   _blockDirectionFocusId?: string | null;
 
@@ -815,14 +815,8 @@ class Renderer {
       }
     });
 
-    // Tunnel mouths at paired dead-ends, plus the pending first
-    // endpoint indicator when the tunnel tool is mid-pair. Dotted
-    // pairing lines are gated behind the Tunnel links debug toggle.
-    this.tunnelHandler.drawTunnels(
-      network.tunnels,
-      this._pendingTunnelEndpoint || null,
-      { showLinks: !!this.debugFlags?.showTunnelLinks, selected: this.selectedTunnel || null },
-    );
+    // Tunnel mouths are NOT drawn here — they live on the live layer (see
+    // _drawLive) so platforms and stations can't paint over them.
 
     // Other debug overlays.
     this.debugHandler.drawDebugOverlays(tracks);
@@ -870,6 +864,15 @@ class Renderer {
     // non-hovered labels. drawHoverOverlay then layers the hovered
     // label + platform highlights on top.
     this.stationHandler.drawStations();
+
+    // Tunnel mouths (stud + label) and, for the selected pair, its connecting
+    // line. On the live layer above platforms/stations so they can't be covered;
+    // the debug toggle shows every pairing line, otherwise only the selected
+    // one (clicking a mouth is what reveals where it goes).
+    this.tunnelHandler.drawTunnels(network.tunnels, this._pendingTunnelEndpoint || null, {
+      showLinks: !!this.debugFlags?.showTunnelLinks,
+      selected: this.selectedTunnel || null,
+    });
 
     // Sim overlay: route overlays (reachable highlights, active routes, conflict
     // flash). Drawn above stations, below the block-direction overlay and trains.
@@ -1043,7 +1046,13 @@ class Renderer {
 
   setSelectedTunnel(pair: TunnelPair | null): void {
     this.selectedTunnel = pair || null;
-    this.requestRedraw({ world: true, live: true, reason: 'tunnel-select' });
+    // Tunnels draw on the live layer, so only that needs repainting.
+    this.requestRedraw({ world: false, live: true, reason: 'tunnel-select' });
+  }
+
+  /** track_bits of the tile at (x,y), or 0 — used to orient the tunnel stud. */
+  trackBitsAt(x: number, y: number): number {
+    return this.trackMap[`${x},${y}`]?.track_bits ?? 0;
   }
 
   // Committed box/lasso/paint selection. Dims each tile and lights the real

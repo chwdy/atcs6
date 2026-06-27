@@ -15,6 +15,7 @@
 // (`new RendererDebugHandler(this)`).
 
 import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
+import { studBar } from '../lib/track-stud';
 
 /** The slice of the Renderer the debug handler reads through its back-reference. */
 export interface DebugHandlerRenderer {
@@ -179,72 +180,40 @@ export class RendererDebugHandler {
     const screenX = this.gridToScreenX(x, y);
     const screenY = this.gridToScreenY(x, y);
     const tileSize = this.gridSize * this.scale;
-    const quarterTile = tileSize / 4;
     const markerLen = 6 * this.scale;
-
-    const TRACK_NS = 1, TRACK_EW = 2, TRACK_NE = 4, TRACK_NW = 8, TRACK_SE = 16, TRACK_SW = 32;
-
-    const portToPaths: Record<string, number[]> = {
-      N: [TRACK_NS, TRACK_NE, TRACK_NW],
-      S: [TRACK_NS, TRACK_SE, TRACK_SW],
-      E: [TRACK_EW, TRACK_NE, TRACK_SE],
-      W: [TRACK_EW, TRACK_NW, TRACK_SW],
-    };
-
-    const pathPerpendicular: Record<number, { dx: number; dy: number }> = {
-      [TRACK_NS]: { dx: 1, dy: 1 },
-      [TRACK_EW]: { dx: 1, dy: -1 },
-      [TRACK_NE]: { dx: 1, dy: 0 },
-      [TRACK_NW]: { dx: 0, dy: 1 },
-      [TRACK_SE]: { dx: 0, dy: 1 },
-      [TRACK_SW]: { dx: 1, dy: 0 },
-    };
-
-    const edgePositions: Record<string, { x: number; y: number }> = {
-      N: { x: quarterTile, y: -quarterTile },
-      E: { x: quarterTile, y: quarterTile },
-      S: { x: -quarterTile, y: quarterTile },
-      W: { x: -quarterTile, y: -quarterTile },
-    };
 
     const p = getCanvasPalette();
     this.ctx.save();
     this.ctx.strokeStyle = p.warning;
-    this.ctx.lineWidth = 3 * this.scale;
+    // The stud thickens only on the OUTER side of the rail end, never onto the
+    // track. At a diagonal dead-end the bed's mitred corner pokes past a thin
+    // centred bar, so we keep the inboard (track-side) face at its original
+    // 1.5*scale and push the outboard face out to ~3.5*scale to cap the bed
+    // (its diagonal bed is TRACK_WIDTH·√2 ≈ 5.7 wide). We get the asymmetry by
+    // shifting the centred bar outboard by half the extra width before stroking.
+    const inboardHalf = 1.5 * this.scale;
+    const outboardReach = 3.5 * this.scale;
+    this.ctx.lineWidth = inboardHalf + outboardReach;
+    const shift = (outboardReach - inboardHalf) / 2;
 
     for (const edge of deadEnds) {
-      const port = edge.length > 1 ? edge[0] : edge;
-      const paths = portToPaths[port];
-      if (!paths) continue;
-
-      let activePath: number | null = null;
-      for (const pathBit of paths) {
-        if (trackBits & pathBit) {
-          activePath = pathBit;
-          if (pathBit === TRACK_NS || pathBit === TRACK_EW) break;
-        }
+      // The tunnel stud reuses this same bar shape (wider, accent-colored) — see
+      // studBar / renderer-tunnels.ts.
+      const bar = studBar(edge, trackBits, screenX, screenY, tileSize, markerLen);
+      // Outboard direction: perpendicular to the bar (i.e. along the rail),
+      // pointed away from the tile centre.
+      const ux = bar.b.x - bar.a.x;
+      const uy = bar.b.y - bar.a.y;
+      const ulen = Math.hypot(ux, uy) || 1;
+      let ox = -uy / ulen;
+      let oy = ux / ulen;
+      if (ox * (bar.center.x - screenX) + oy * (bar.center.y - screenY) < 0) {
+        ox = -ox;
+        oy = -oy;
       }
-
-      let dx, dy;
-      if (activePath && pathPerpendicular[activePath]) {
-        dx = pathPerpendicular[activePath].dx;
-        dy = pathPerpendicular[activePath].dy;
-      } else {
-        dx = (port === 'N' || port === 'S') ? 1 : -1;
-        dy = 1;
-      }
-
-      const len = Math.sqrt(dx * dx + dy * dy);
-      dx = (dx / len) * markerLen;
-      dy = (dy / len) * markerLen;
-
-      const pos = edgePositions[port];
-      const cx = screenX + pos.x;
-      const cy = screenY + pos.y;
-
       this.ctx.beginPath();
-      this.ctx.moveTo(cx - dx, cy - dy);
-      this.ctx.lineTo(cx + dx, cy + dy);
+      this.ctx.moveTo(bar.a.x + ox * shift, bar.a.y + oy * shift);
+      this.ctx.lineTo(bar.b.x + ox * shift, bar.b.y + oy * shift);
       this.ctx.stroke();
     }
     this.ctx.restore();

@@ -42,6 +42,61 @@ const PREVIEW_ELIGIBLE_EDITOR_TYPES = new Set([
   'route-run-editor',
 ]);
 
+/** The floating inspector's current edges, in viewport pixels. */
+export interface FloatRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/** New inline dimensions for a float resize. Only the fields the drag direction
+ *  changes are present — a pure-horizontal drag returns no top/height, etc. */
+export interface FloatResizeResult {
+  left?: number;
+  top?: number;
+  width?: number;
+  height?: number;
+}
+
+/** Pure resize math for the floating inspector's edge/corner handles. Given the
+ *  grabbed direction, the window's edges at drag start, and the pointer delta,
+ *  return the new inline dimensions. East/south move the right/bottom edge so
+ *  the window grows from a fixed left/top; west/north move left/top so the
+ *  opposite edge stays put. The window is clamped to at least minW × minH and to
+ *  stay within the viewport (a `margin` gap from each side). */
+export function computeFloatResize(
+  dir: string,
+  start: FloatRect,
+  dx: number,
+  dy: number,
+  viewport: { width: number; height: number },
+  limits: { minW: number; minH: number; margin: number }
+): FloatResizeResult {
+  const { minW, minH, margin } = limits;
+  const out: FloatResizeResult = {};
+
+  if (dir.includes('e')) {
+    const right = Math.min(viewport.width - margin, Math.max(start.left + minW, start.right + dx));
+    out.width = Math.round(right - start.left);
+  } else if (dir.includes('w')) {
+    const left = Math.max(margin, Math.min(start.right - minW, start.left + dx));
+    out.left = Math.round(left);
+    out.width = Math.round(start.right - left);
+  }
+
+  if (dir.includes('s')) {
+    const bottom = Math.min(viewport.height - margin, Math.max(start.top + minH, start.bottom + dy));
+    out.height = Math.round(bottom - start.top);
+  } else if (dir.includes('n')) {
+    const top = Math.max(margin, Math.min(start.bottom - minH, start.top + dy));
+    out.top = Math.round(top);
+    out.height = Math.round(start.bottom - top);
+  }
+
+  return out;
+}
+
 export class EditorUIHandler {
   editor: EditorHost;
   currentSecondaryPanel: any;
@@ -100,6 +155,7 @@ export class EditorUIHandler {
       tearoffBtn.addEventListener('click', () => this.toggleInspectorFloat());
     }
     this.setupInspectorFloatDrag();
+    this.setupInspectorFloatResize();
 
     const tabsEl: HTMLElement | null = this.editor.$id('secondary-sidebar-tabs');
     if (tabsEl) {
@@ -269,6 +325,10 @@ export class EditorUIHandler {
     } else {
       sidebar.style.left = '';
       sidebar.style.top = '';
+      // Drop the floating height so the docked panel flows in the column again;
+      // width is left intact (it is shared with the docked width bar).
+      sidebar.style.height = '';
+      sidebar.style.maxHeight = '';
     }
     this._updateTearoffButton(floating);
     this.persistSecondaryInspectorState();
@@ -306,6 +366,89 @@ export class EditorUIHandler {
     header.addEventListener('pointercancel', end);
   }
 
+  /** Build the eight edge/corner resize handles for the floating inspector and
+   *  wire their drag-to-resize. The handles only act while floating (docked mode
+   *  keeps its single right-edge width bar and the handles are hidden by CSS).
+   *  East/south grow width/height; west/north also move the left/top edge so the
+   *  opposite edge stays put. The window is clamped to stay on screen. Bound once. */
+  setupInspectorFloatResize(): void {
+    const sidebar = this.editor.$id('secondary-sidebar');
+    if (!sidebar) {
+      return;
+    }
+    const DIRECTIONS = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
+    const MARGIN = 6;
+    const MIN_W = 260;
+    const MIN_H = 180;
+
+    let active: {
+      dir: string;
+      startX: number;
+      startY: number;
+      left: number;
+      top: number;
+      right: number;
+      bottom: number;
+    } | null = null;
+
+    const onMove = (e: PointerEvent): void => {
+      if (!active) return;
+      const res = computeFloatResize(
+        active.dir,
+        active,
+        e.clientX - active.startX,
+        e.clientY - active.startY,
+        { width: window.innerWidth, height: window.innerHeight },
+        { minW: MIN_W, minH: MIN_H, margin: MARGIN }
+      );
+      if (res.left !== undefined) sidebar.style.left = `${res.left}px`;
+      if (res.top !== undefined) sidebar.style.top = `${res.top}px`;
+      if (res.width !== undefined) sidebar.style.width = `${res.width}px`;
+      if (res.height !== undefined) sidebar.style.height = `${res.height}px`;
+    };
+
+    const onEnd = (): void => {
+      if (!active) return;
+      active = null;
+      sidebar.classList.remove('resizing');
+      document.body.style.userSelect = '';
+      this.persistSecondaryInspectorState();
+    };
+
+    for (const dir of DIRECTIONS) {
+      const handle = document.createElement('div');
+      handle.className = 'secondary-sidebar-resizer';
+      handle.dataset.resizeDir = dir;
+      handle.addEventListener('pointerdown', (e: PointerEvent) => {
+        if (!sidebar.classList.contains('secondary-sidebar--floating')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        handle.setPointerCapture(e.pointerId);
+        const r = sidebar.getBoundingClientRect();
+        active = {
+          dir,
+          startX: e.clientX,
+          startY: e.clientY,
+          left: r.left,
+          top: r.top,
+          right: r.right,
+          bottom: r.bottom,
+        };
+        // A vertical drag sets an explicit height; lift the auto-height cap so
+        // that height — not the CSS max-height — governs from here on.
+        if (dir.includes('n') || dir.includes('s')) {
+          sidebar.style.maxHeight = 'none';
+        }
+        sidebar.classList.add('resizing');
+        document.body.style.userSelect = 'none';
+      });
+      handle.addEventListener('pointermove', onMove);
+      handle.addEventListener('pointerup', onEnd);
+      handle.addEventListener('pointercancel', onEnd);
+      sidebar.appendChild(handle);
+    }
+  }
+
   _clampInspectorFloat(): void {
     const sidebar = this.editor.$id('secondary-sidebar');
     if (!sidebar || !sidebar.classList.contains('secondary-sidebar--floating')) {
@@ -331,7 +474,7 @@ export class EditorUIHandler {
     btn.setAttribute('aria-label', label);
     const icon = btn.querySelector('i');
     if (icon) {
-      icon.className = floating ? 'ti ti-layout-sidebar-left' : 'ti ti-external-link';
+      icon.className = floating ? 'ti ti-layout-sidebar' : 'ti ti-external-link';
     }
   }
 
@@ -714,6 +857,8 @@ export class EditorUIHandler {
       floating: isFloating,
       floatX: isFloating && sidebar ? sidebar.style.left : '',
       floatY: isFloating && sidebar ? sidebar.style.top : '',
+      floatW: isFloating && sidebar ? sidebar.style.width : '',
+      floatH: isFloating && sidebar ? sidebar.style.height : '',
     };
 
     try {
@@ -764,6 +909,13 @@ export class EditorUIHandler {
           sidebar.classList.add('secondary-sidebar--floating');
           if (parsed.floatX) sidebar.style.left = parsed.floatX;
           if (parsed.floatY) sidebar.style.top = parsed.floatY;
+          if (parsed.floatW) sidebar.style.width = parsed.floatW;
+          if (parsed.floatH) {
+            // Restoring an explicit height means the same auto-height cap lift
+            // the live resize applies (see setupInspectorFloatResize).
+            sidebar.style.height = parsed.floatH;
+            sidebar.style.maxHeight = 'none';
+          }
           this._updateTearoffButton(true);
         }
       }

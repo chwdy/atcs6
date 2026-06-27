@@ -1624,6 +1624,11 @@ class App {
     if (!sidebar) return;
 
     sidebar.addEventListener('mousedown', (e: MouseEvent) => {
+      // The floating inspector resizes via its own edge/corner handles
+      // (setupInspectorFloatResize); the docked right-edge bar is suppressed
+      // while floating, so don't start a width-only drag here.
+      if (sidebar.classList.contains('secondary-sidebar--floating')) return;
+
       const rect = sidebar.getBoundingClientRect();
       const isNearRightEdge = e.clientX > rect.right - 8;
 
