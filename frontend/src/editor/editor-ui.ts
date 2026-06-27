@@ -261,7 +261,8 @@ export class EditorUIHandler {
     const floating = sidebar.classList.toggle('secondary-sidebar--floating');
     if (floating) {
       if (!sidebar.style.left) {
-        sidebar.style.left = '140px';
+        // Open clear of the floating tool capsule on the left (right edge ~152).
+        sidebar.style.left = '168px';
         sidebar.style.top = '84px';
       }
       this._clampInspectorFloat();

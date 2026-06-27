@@ -1674,14 +1674,10 @@ class App {
     }
   });
 
-  // Initialize both sidebars
+  // The primary tool rail is a fixed-width floating capsule — no width resize.
+  // Only the docked secondary inspector resizes (via its right edge).
   document.addEventListener('DOMContentLoaded', () => {
-    const mainSidebar = document.querySelector('.sidebar') as HTMLElement | null;
     const secondarySidebar = document.getElementById('secondary-sidebar');
-
-    if (mainSidebar) {
-      initSidebarResize(mainSidebar, 200, 600);
-    }
     if (secondarySidebar) {
       initSidebarResize(secondarySidebar, 280, 500);
     }

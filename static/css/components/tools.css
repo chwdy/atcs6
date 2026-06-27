@@ -72,8 +72,10 @@
 }
 
 /* Main rail button: full-width row — icon + label (+ caret for groups). */
-/* Big "object" tile: a number badge, a large icon, and a label below. A group
-   tile adds a small caret and opens a flyout of its tools. */
+/* Square tool tile: a number badge, an icon, and a small label beneath, kept
+   square via aspect-ratio. The capsule width is sized so the longest label fits
+   on one line without breaking the square. A group tile adds a caret and opens
+   a flyout of its tools. */
 .tool-launch {
     position: relative;
     display: flex;
@@ -82,8 +84,10 @@
     justify-content: center;
     gap: 4px;
     width: 100%;
-    min-height: 52px;
-    padding: 8px 6px;
+    aspect-ratio: 1;
+    box-sizing: border-box;
+    flex-shrink: 0;
+    padding: 6px;
     background-color: transparent;
     border: 1px solid var(--border-color);
     border-radius: var(--radius-md);
@@ -112,9 +116,13 @@
     line-height: 1;
 }
 
+/* Small single-line label under the icon. The capsule width is sized to fit the
+   longest one ("SELECTION") so the tile stays square without the text wrapping. */
 .tool-launch-label {
-    letter-spacing: 0.05em;
+    font-size: 0.55rem;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
+    white-space: nowrap;
 }
 
 /* The 1-9 shortcut number, top-right corner. */
@@ -146,11 +154,13 @@
     transform: rotate(90deg);
 }
 
-/* Flyout popover holding a group's tool tiles. position:fixed so the sidebar's
-   overflow can't clip it; the editor sets top/left on open. */
+/* Flyout popover holding a group's tool tiles. position:fixed so the capsule's
+   overflow can't clip it (the editor sets top/left on open from the button's
+   viewport rect). The capsule (`.sidebar`) is a stacking context at the picker
+   layer, so this whole flyout renders above the floating inspector (z 850). */
 .tool-popover {
     position: fixed;
-    z-index: 200;
+    z-index: var(--z-picker);
     display: none;
     flex-wrap: wrap;
     gap: 3px;

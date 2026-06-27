@@ -349,6 +349,13 @@ textarea {
     z-index: 10;
 }
 
+/* Docked inspector makes room on the left for the floating tool capsule
+   (capsule = left 12 + width 88 + 12 gap). Floating mode is fixed-positioned
+   and carries its own left/top, so the offset applies only while docked. */
+.secondary-sidebar:not(.secondary-sidebar--floating) {
+    margin-left: 112px;
+}
+
 .secondary-sidebar.visible {
     display: flex;
 }
@@ -730,18 +737,32 @@ textarea {
     background-color: var(--accent-color);
 }
 
-/* Sidebar */
+/* Primary tool rail — a fixed-width capsule that floats over the canvas,
+   vertically centred on the left, instead of a docked full-height column. It is
+   absolutely positioned inside `.app-body`, so `.content-area` (and the canvas)
+   reclaim the full width behind it. `top/bottom:0 + margin:auto + height:fit-content`
+   centres it vertically WITHOUT a transform — a transform would re-root the fixed
+   `.tool-popover` flyout to the capsule and break its viewport positioning. The
+   capsule sits at the picker layer so its flyouts (fixed children, trapped in
+   this stacking context) render above the floating inspector (z 850). */
 .sidebar {
-    width: 150px; /* Thin tool rail — the tile inspector lives in the Tile Editor */
-    min-width: 120px;
-    max-width: 600px;
-    background-color: var(--bg-panel);
-    border-right: 1px solid var(--border-color);
+    position: absolute;
+    left: 12px;
+    top: 0;
+    bottom: 0;
+    margin-top: auto;
+    margin-bottom: auto;
+    width: 88px;
+    height: fit-content;
+    max-height: calc(100% - 24px);
+    z-index: var(--z-picker);
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    position: relative;
-    flex-shrink: 0;
+    background-color: var(--bg-panel);
+    border: 1px solid var(--border-color);
+    border-radius: 20px;
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
 }
 
 /* Collapsed via the header toggle — drops out of the flex flow so the canvas
@@ -752,13 +773,16 @@ textarea {
 }
 
 /* The left rail is tools only — it fills the sidebar and scrolls if the tool
-   list outgrows the height (e.g. with sim-mode tools added). */
+   list outgrows the height (e.g. with sim-mode tools added). The top/bottom
+   padding is the gap between the capsule corner (radius 20) and the first/last
+   tile corner (radius 8); set to 20 - 8 = 12px so the corner arcs are
+   concentric (their centres line up at the same height). */
 .sidebar-tools-section {
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 6px 8px;
+    padding: 12px 8px;
     background-color: var(--bg-panel);
 }
 
@@ -780,27 +804,7 @@ textarea {
     background: rgba(var(--accent-rgb), 0.5);
 }
 
-/* Resize handle visual indicator - full edge width */
-.sidebar::after {
-    content: '';
-    position: absolute;
-    right: 0;
-    top: 0;
-    bottom: 0;
-    width: 6px;
-    cursor: ew-resize;
-    background-color: transparent;
-    transition: background-color 0.15s;
-    z-index: 1000;
-}
-
-.sidebar:hover::after {
-    background-color: var(--accent-color);
-}
-
-.sidebar.resizing::after {
-    background-color: var(--accent-color);
-}
+/* The primary rail is a fixed-width floating capsule — no width-resize handle. */
 
 .sidebar-section {
     padding: 6px 8px; /* Tighter padding to edge */
