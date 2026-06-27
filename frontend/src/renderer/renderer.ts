@@ -26,38 +26,6 @@ import type { NetworkPayload } from './payload-types';
 import type { OverlayPhase, RendererOverlay } from './renderer-overlay';
 import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
 
-const IsometricGeometry = {
-  // Track segment orientations in screen space
-  //
-  // Edge midpoints (from getEdgePoints):
-  //   N: (h/2, -h/2)    E: (h/2, h/2)
-  //   S: (-h/2, h/2)    W: (-h/2, -h/2)
-  //
-  // Segment angles in screen space:
-  //   NS: (h/2,-h/2) → (-h/2,h/2)   slope=-1  angle=-45° (or 135°)
-  //   EW: (h/2,h/2) → (-h/2,-h/2)   slope=1   angle=+45°
-  //   NE: (h/2,-h/2) → (h/2,h/2)    slope=∞   angle=90° (vertical)
-  //   NW: (h/2,-h/2) → (-h/2,-h/2)  slope=0   angle=0° (horizontal)
-  //   SE: (-h/2,h/2) → (h/2,h/2)    slope=0   angle=0° (horizontal)
-  //   SW: (-h/2,h/2) → (-h/2,-h/2)  slope=∞   angle=90° (vertical)
-
-  /**
-   * Get the rotation angle for a track segment in screen space.
-   */
-  getSegmentAngle(e1: string, e2: string): number {
-    const segment = [e1, e2].sort().join('');
-    const angles: Record<string, number> = {
-      NS: -Math.PI / 4,   // -45° (135°)
-      EW: Math.PI / 4,    // +45°
-      EN: Math.PI / 2,    // 90° (vertical) - NE
-      NW: 0,              // 0° (horizontal)
-      ES: 0,              // 0° (horizontal) - SE
-      SW: Math.PI / 2,    // 90° (vertical)
-    };
-    return angles[segment] || 0;
-  },
-};
-
 // Compass heading of one grid step. Matches block.py `_compass_from_delta`
 // (Y positive is north): a +Y step reads N, +X reads E.
 function compassFromDelta(dx: number, dy: number): string | null {
@@ -283,8 +251,7 @@ class Renderer {
   _pendingResizeFrame!: number | null;
   _pendingFlush!: { world: boolean; live: boolean; reason: string } | null;
   _flushFrame!: number | null;
-  _lastFlushReason!: string;
-  debugFlags!: { showBlocks: boolean; showSignals: boolean; showTunnelLinks: boolean; showStuck?: boolean; showTileDirections?: boolean; showBlockDirections?: boolean; showOneWayDirections?: boolean; showBlockVoltage?: boolean; showBlockLength?: boolean; showBlockRadius?: boolean; showBlockSpeedLimit?: boolean };
+  debugFlags!: { showBlocks: boolean; showSignals: boolean; showTunnelLinks: boolean; showSwitches?: boolean; showStuck?: boolean; showTileDirections?: boolean; showBlockDirections?: boolean; showOneWayDirections?: boolean; showBlockVoltage?: boolean; showBlockLength?: boolean; showBlockRadius?: boolean; showBlockSpeedLimit?: boolean };
   _resizeObserver?: ResizeObserver;
   // Derived per-network state, set by _updateNetworkState.
   currentPlatforms!: Platform[];
@@ -428,7 +395,6 @@ class Renderer {
     // the OR of all requested layer flags until the next animation frame.
     this._pendingFlush = null;
     this._flushFrame = null;
-    this._lastFlushReason = '';
     // Refreshed once per flush from DOM debug checkboxes; hot paths
     // read this instead of querying the DOM per draw.
     this.debugFlags = { showBlocks: false, showSignals: false, showTunnelLinks: false };
@@ -533,7 +499,6 @@ class Renderer {
     const pending = this._pendingFlush;
     this._pendingFlush = null;
     if (pending === null) return;
-    this._lastFlushReason = pending.reason || '';
     // Phase 5: honor world/live flags by routing to _drawWorld / _drawLive.
     // World layer only repaints when its flag is set, so hover and other
     // live-only updates skip the static map repaint.
@@ -560,6 +525,7 @@ class Renderer {
     const showBlocks = document.getElementById('debug-show-blocks') as HTMLInputElement | null;
     const showSignals = document.getElementById('debug-show-signals') as HTMLInputElement | null;
     const showTunnelLinks = document.getElementById('debug-show-tunnel-links') as HTMLInputElement | null;
+    const showSwitches = document.getElementById('debug-show-switches') as HTMLInputElement | null;
     const showStuck = document.getElementById('debug-show-stuck') as HTMLInputElement | null;
     const showTileDirections = document.getElementById('debug-show-tile-directions') as HTMLInputElement | null;
     const showBlockDirections = document.getElementById('debug-show-block-dir') as HTMLInputElement | null;
@@ -572,6 +538,8 @@ class Renderer {
       showBlocks: showBlocks ? !!showBlocks.checked : false,
       showSignals: showSignals ? !!showSignals.checked : false,
       showTunnelLinks: showTunnelLinks ? !!showTunnelLinks.checked : false,
+      // Switch M/D badges; default OFF (opt-in via the "Switch States" toggle).
+      showSwitches: showSwitches ? !!showSwitches.checked : false,
       showStuck: showStuck ? !!showStuck.checked : false,
       // Default ON when the checkbox is absent so painted marks are visible
       // immediately; the checkbox (default checked) lets the operator hide them.
@@ -797,10 +765,21 @@ class Renderer {
       this.blockHandler.drawBlockIdColors(tracks);
     }
 
-    // Tracks (with state-driven coloring).
+    // Tracks (with state-driven coloring). Each tile draws its own grey
+    // trapezoid bed then the block-status rectangle on top, both clipped to the
+    // tile diamond (see trackHandler.drawTrack / drawTrackBed).
     tracks.forEach((track) => {
       this.trackHandler.drawTrack(track, false);
     });
+
+    // Switch M/D indicators, gated behind the "Switch States" debug toggle
+    // (default off). Drawn in a pass on TOP of every tile's rails so a
+    // neighbouring tile's rail or bed can never paint over a badge.
+    if (this.debugFlags?.showSwitches) {
+      tracks.forEach((track) => {
+        if (track.is_switch) this.trackHandler.drawSwitchBadgeAt(track);
+      });
+    }
 
     // Grey dots at block boundaries (gaps between different blocks).
     if (network.blocks) {
@@ -1574,4 +1553,4 @@ class Renderer {
   }
 }
 
-export { Renderer, IsometricGeometry };
+export { Renderer };

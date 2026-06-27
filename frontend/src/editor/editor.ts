@@ -346,6 +346,25 @@ export class Editor {
     const id = snapshot?.editorId;
 
     switch (type) {
+      case 'tile': {
+        if (!id) return false;
+        const [xs, ys] = String(id).split(',');
+        const x = parseInt(xs, 10);
+        const y = parseInt(ys, 10);
+        if (Number.isNaN(x) || Number.isNaN(y)) return false;
+        let tile: any;
+        try {
+          const fetched = await this.api.getTrack(x, y);
+          tile =
+            fetched && !fetched.error
+              ? fetched
+              : { x, y, track_bits: 0, directed_paths: [], edges: [], isVirtual: true };
+        } catch {
+          tile = { x, y, track_bits: 0, directed_paths: [], edges: [], isVirtual: true };
+        }
+        this.showTileEditor(tile);
+        return true;
+      }
       case 'block':
         if (!id) return false;
         await this.showBlockEditor(id);
@@ -592,35 +611,6 @@ export class Editor {
     }
   }
 
-  /** Refresh the secondary editor if it matches the given type and id. */
-  refreshEditorIfNeeded(type: string, id: string): void {
-    if (this._currentEditorType !== type || this._currentEditorId !== id) {
-      return;
-    }
-
-    const activeElement = document.activeElement;
-    if (
-      activeElement &&
-      (activeElement.tagName === 'INPUT' ||
-        activeElement.tagName === 'TEXTAREA' ||
-        activeElement.tagName === 'SELECT')
-    ) {
-      return;
-    }
-
-    switch (type) {
-      case 'block':
-        this.showBlockEditor(id);
-        break;
-      case 'signal':
-        this.showSignalEditor(id);
-        break;
-      case 'platform':
-        this.showPlatformEditor(id);
-        break;
-    }
-  }
-
   /** Force refresh the currently open secondary editor. */
   refreshCurrentEditor(): void {
     if (!this._currentEditorType || !this._currentEditorId) {
@@ -669,10 +659,6 @@ export class Editor {
 
   async showStationsPanel(): Promise<any> {
     return this.stationGroupHandler.showPanel();
-  }
-
-  async initTrainEditorHandlers(trainId: any): Promise<any> {
-    return this.trainHandler?.initTrainControlHandlers(trainId);
   }
 
   showAddTrainDialog(): any {
@@ -1414,7 +1400,7 @@ export class Editor {
       }
     });
 
-    // Collapsible sidebar sections (Track Bits, etc.).
+    // Collapsible sidebar sections, if any are present.
     this.setupCollapsibleSidebarSections();
 
     const canvas = this.renderer.canvas;
@@ -3055,7 +3041,6 @@ export class Editor {
         }
 
         this.selectedElement = track;
-        this.updatePropertiesPanel(track);
 
         if (!this.uiHandler.isSecondaryPanelPinned()) {
           this.updateSecondaryEditorForTile(track);
@@ -3069,7 +3054,6 @@ export class Editor {
           edges: [],
           isVirtual: true,
         };
-        this.updatePropertiesPanel(this.selectedElement);
 
         if (!this.uiHandler.isSecondaryPanelPinned()) {
           this.updateSecondaryEditorForTile(this.selectedElement);
@@ -3084,7 +3068,6 @@ export class Editor {
         edges: [],
         isVirtual: true,
       };
-      this.updatePropertiesPanel(this.selectedElement);
 
       if (!this.uiHandler.isSecondaryPanelPinned()) {
         this.updateSecondaryEditorForTile(this.selectedElement);
@@ -3092,29 +3075,26 @@ export class Editor {
     }
   }
 
-  updatePropertiesPanel(track: any): void {
-    const panel = this.$q('.properties-panel');
-    if (!panel) return;
-
+  /** Open the Tile Editor for a tile in the secondary inspector: the visual bit
+   *  compass + the segment checkbox grid + a live bits readout and shape line.
+   *  This is the one place track bits are edited; both the compass and the grid
+   *  route every change through the validated commit path (_commitTrackBits). */
+  showTileEditor(track: any): void {
     const trackBits: number = track.track_bits ?? 0;
-    const edges = track.edges || [];
+    const isForbidden = FORBIDDEN_TRACK_BITS.has(trackBits) || isSquareCornerSwitch(trackBits);
+    const editorId = `track-editor-${Date.now()}`;
 
     const SEGMENT_NAMES: Record<number, string> = {
       1: 'NS', 2: 'EW', 4: 'NE', 8: 'NW', 16: 'SE', 32: 'SW',
     };
-
-    const activeSegments = [];
+    const activeSegments: string[] = [];
     for (const [bit, name] of Object.entries(SEGMENT_NAMES)) {
-      if (trackBits & parseInt(bit)) {
-        activeSegments.push(name);
-      }
+      if (trackBits & parseInt(bit)) activeSegments.push(name);
     }
-
     const numSegments = activeSegments.length;
     let shapeDesc = 'Empty';
     if (numSegments === 1) {
-      if (trackBits === 1 || trackBits === 2) shapeDesc = 'Straight';
-      else shapeDesc = 'Diagonal';
+      shapeDesc = trackBits === 1 || trackBits === 2 ? 'Straight' : 'Diagonal';
     } else if (numSegments === 2) {
       if (trackBits === 3) shapeDesc = 'Crossing (NS+EW)';
       else if (trackBits === 36) shapeDesc = 'Diamond (NE+SW)';
@@ -3124,37 +3104,62 @@ export class Editor {
       shapeDesc = 'Complex Junction';
     }
 
-    const isForbidden = FORBIDDEN_TRACK_BITS.has(trackBits) || isSquareCornerSwitch(trackBits);
+    const edges = track.edges || [];
+    const binary = trackBits.toString(2).padStart(6, '0');
 
-    // Binary string for the read-only Track Bits summary in the Properties
-    // panel below (active bits get an accent span). The Track Bits editor panel
-    // computes its own plain binary independently.
-    const binaryHTML = trackBits
-      .toString(2)
-      .padStart(6, '0')
-      .split('')
-      .map((bit) => (bit === '1' ? `<span class="text-track-bit-active">${bit}</span>` : bit))
-      .join('');
-
-    const editorId = `track-editor-${Date.now()}`;
-
-    panel.innerHTML = `
-            <h3>Properties</h3>
-
-            <div class="compact-header info-display-medium">
-                <span>(${track.x}, ${track.y}) - ${track.isVirtual ? 'Empty' : track.type}</span>
-                ${track.isVirtual ? '<span class="badge badge-new">NEW</span>' : ''}
+    const content = `
+      <div class="tile-editor">
+        <div class="compact-header info-display-medium">
+          <span>(${track.x}, ${track.y}) — ${track.isVirtual ? 'Empty' : track.type}</span>
+          ${track.isVirtual ? '<span class="badge badge-new">NEW</span>' : ''}
+        </div>
+        <div class="track-bits-editor">
+          <div class="track-bits-main">
+            <canvas id="${editorId}" class="track-bits-canvas" width="200" height="200"></canvas>
+            <div class="track-bits-grid">
+              ${renderBitToggle(1, 'NS', trackBits)}
+              ${renderBitToggle(2, 'EW', trackBits)}
+              ${renderBitToggle(4, 'NE', trackBits)}
+              ${renderBitToggle(8, 'NW', trackBits)}
+              ${renderBitToggle(16, 'SE', trackBits)}
+              ${renderBitToggle(32, 'SW', trackBits)}
             </div>
+          </div>
+          <div class="track-bits-readout">
+            <span class="tb-raw">bits <b id="bit-total">${trackBits}</b> · 0b<span id="bit-binary">${binary}</span></span>
+            <span class="track-bits-forbidden" id="bit-forbidden" style="display: ${isForbidden ? 'inline' : 'none'};">forbidden</span>
+          </div>
+        </div>
+        <div class="tile-bits-shape info-meta text-muted text-base">
+          ${shapeDesc} • ${numSegments} segment${numSegments !== 1 ? 's' : ''} • ${activeSegments.length > 0 ? activeSegments.join(', ') : 'No segments'}${edges.length > 0 ? ' • Edges: ' + edges.join(', ') : ''}
+        </div>
 
-            <div class="info-box info-display-large">
-                <label class="text-secondary font-bold block mb-4">Track Bits</label>
-                <div class="text-2xl font-bold mb-2 text-primary font-mono">${trackBits} <span class="text-lg text-muted">(0b${binaryHTML})</span></div>
-                <div class="text-muted text-base mb-8 info-meta">
-                    ${shapeDesc} • ${numSegments} segment${numSegments !== 1 ? 's' : ''} • ${activeSegments.length > 0 ? activeSegments.join(', ') : 'No segments'} ${edges.length > 0 ? '• Edges: ' + edges.join(', ') : ''}
-                </div>
-                ${isForbidden ? '<div class="text-xs text-danger mt-8 font-bold">⚠ FORBIDDEN CONFIGURATION</div>' : ''}
-            </div>
+        <h3 class="tile-properties-header"><i class="ti ti-square panel-title-icon" aria-hidden="true"></i>Properties</h3>
+        ${this._tilePropertiesHTML(track)}
+      </div>
+    `;
 
+    this._currentEditorType = 'tile';
+    this._currentEditorId = `${track.x},${track.y}`;
+    this.showSecondarySidebar('Tile Editor', content);
+
+    setTimeout(() => this.initBitEditor(track), 0);
+    setTimeout(() => this.initVisualTrackEditor(editorId, track), 0);
+    setTimeout(() => this.initSignalEditor(track), 0);
+    setTimeout(() => this.initBlockEditor(track), 0);
+    setTimeout(() => this.initSwitchEditor(track), 0);
+    setTimeout(() => this.initStationCardButton(), 0);
+    setTimeout(() => this.initPlatformButtonHandlers(), 0);
+    setTimeout(() => this.initTrainEditor(track), 0);
+    setTimeout(() => this.initViewFullJSONButton(track), 0);
+  }
+
+  /** The entity cards for a tile — train, switch, signals, block, platform,
+   *  station, plus occupancy / dead-end notes and the View Full JSON button.
+   *  Rendered inside the Tile Editor; the per-card Edit buttons are wired by the
+   *  init*Editor handlers that showTileEditor schedules. */
+  _tilePropertiesHTML(track: any): string {
+    return `
             ${(() => {
               const trainsAtTile =
                 this.cachedNetwork && this.cachedNetwork.trains
@@ -3356,19 +3361,6 @@ export class Editor {
                 <i class="ti ti-braces"></i> View Full JSON
             </button>
         `;
-
-    // Render bit editor into its dedicated sidebar section
-    this.updateTrackBitsPanel(track, editorId, trackBits, isForbidden);
-
-    setTimeout(() => this.initBitEditor(track), 0);
-    setTimeout(() => this.initVisualTrackEditor(editorId, track), 0);
-    setTimeout(() => this.initSignalEditor(track), 0);
-    setTimeout(() => this.initBlockEditor(track), 0);
-    setTimeout(() => this.initSwitchEditor(track), 0);
-    setTimeout(() => this.initStationCardButton(), 0);
-    setTimeout(() => this.initPlatformButtonHandlers(), 0);
-    setTimeout(() => this.initTrainEditor(track), 0);
-    setTimeout(() => this.initViewFullJSONButton(track), 0);
   }
 
   initViewFullJSONButton(track: any): any {
@@ -3426,45 +3418,6 @@ export class Editor {
     });
   }
 
-  // Populate the dedicated Track Bits sidebar section.
-  updateTrackBitsPanel(track: any, editorId: string, trackBits: number, isForbidden: boolean): void {
-    const body = this.$id('track-bits-panel-body');
-    if (!body) return;
-
-    // Two views of one 6-bit value: the clickable compass and a single vertical
-    // column of segment checkboxes beside it, with the readout full-width below.
-    // The Track Bits section is the only container — no sub-boxes, no sub-headings,
-    // no Apply button (every toggle/click auto-applies).
-    const binary = trackBits.toString(2).padStart(6, '0');
-    body.innerHTML = `
-            <div class="track-bits-editor">
-                <div class="track-bits-main">
-                    <canvas id="${editorId}" class="track-bits-canvas" width="200" height="200"></canvas>
-                    <div class="track-bits-grid">
-                        ${renderBitToggle(1, 'NS', trackBits)}
-                        ${renderBitToggle(2, 'EW', trackBits)}
-                        ${renderBitToggle(4, 'NE', trackBits)}
-                        ${renderBitToggle(8, 'NW', trackBits)}
-                        ${renderBitToggle(16, 'SE', trackBits)}
-                        ${renderBitToggle(32, 'SW', trackBits)}
-                    </div>
-                </div>
-                <div class="track-bits-readout">
-                    <span class="tb-raw">bits <b id="bit-total">${trackBits}</b> · 0b<span id="bit-binary">${binary}</span></span>
-                    <span class="track-bits-forbidden" id="bit-forbidden" style="display: ${isForbidden ? 'inline' : 'none'};">forbidden</span>
-                </div>
-            </div>
-        `;
-  }
-
-  // Reset the Track Bits sidebar section to the empty placeholder.
-  clearTrackBitsPanel(): void {
-    const body = this.$id('track-bits-panel-body');
-    if (body) {
-      body.innerHTML = `<p class="properties-empty">Select a track to edit bits</p>`;
-    }
-  }
-
   // Initialize train summary edit button handler
   initTrainEditor(track: any): void {
     const trainsAtTile =
@@ -3502,10 +3455,6 @@ export class Editor {
 
   pointToSegmentDistance(px: number, py: number, x1: number, y1: number, x2: number, y2: number): any {
     return this.uiHandler.pointToSegmentDistance(px, py, x1, y1, x2, y2);
-  }
-
-  clearPropertiesPanel(): any {
-    return this.uiHandler.clearPropertiesPanel();
   }
 
   setCachedNetwork(network: any): void {

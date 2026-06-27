@@ -1,9 +1,9 @@
 /* Tools panel header — header strip matching the train editor (secondary
    sidebar): mixed-case title on a subtle purple gradient, flush to the
    section edges. See docs/DESIGN_LANGUAGE.md §2.
-   Scoped to the direct child h3 so nested collapsible-section headers
-   (e.g. #track-bits-panel) fall through to standard .sidebar-section h3
-   styling and match other sidebar section titles. */
+   Scoped to the direct child h3 so any nested collapsible-section headers
+   fall through to standard .sidebar-section h3 styling and match other
+   sidebar section titles. */
 .sidebar-tools-section > h3 {
     margin: -6px -8px 8px;
     padding: 8px 10px;
@@ -164,4 +164,28 @@
 
 .tool-group.open .tool-popover {
     display: flex;
+}
+
+/* Popover title row: the group's icon + name. flex-basis 100% puts it on its
+   own line above the wrapped tool tiles. The icon size is shared with the
+   primary-editor panel headers (--panel-title-icon-size) so the two match. */
+.tool-popover-header {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex: 0 0 100%;
+    padding: 1px 2px 5px;
+    margin-bottom: 2px;
+    border-bottom: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    font-size: 0.62rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.tool-popover-header-icon {
+    font-size: var(--panel-title-icon-size);
+    line-height: 1;
+    color: var(--accent-color);
 }

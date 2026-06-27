@@ -98,9 +98,11 @@
 
         <div class="app-body">
             <aside class="sidebar">
+                <!-- Left rail = tools only. The tile inspector (coordinates,
+                     track bits, and the entity cards: block / switch / signal /
+                     platform / station) lives in the Tile Editor secondary
+                     panel — see Editor.showTileEditor. -->
                 <div class="sidebar-tools-section" id="tools-panel">
-                    <h3>Tools</h3>
-                    
                     <!-- Tool palette — rendered from the tool registry, not
                          hardcoded. The core editor contributes the layout tools
                          (inspect, selection, network, platform, block); plugins
@@ -108,23 +110,6 @@
                          route). See frontend/src/editor/tool-registry.ts and
                          Editor.renderToolbar(). -->
                     <div id="tool-groups"></div>
-
-                    <!-- Track Bits editor: folded by default; populated when a track is selected -->
-                    <div class="sidebar-section track-bits-panel collapsible-sidebar-section collapsed" id="track-bits-panel" data-section="track-bits">
-                        <button class="sidebar-section-toggle" type="button" aria-expanded="false" aria-controls="track-bits-panel-body">
-                            <h3>Track Bits</h3>
-                        </button>
-                        <div class="sidebar-section-body" id="track-bits-panel-body">
-                            <p class="properties-empty">Select a track to edit bits</p>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="sidebar-content-section">
-                    <div class="sidebar-section properties-panel" id="properties-panel">
-                        <h3>Properties</h3>
-                        <p class="properties-empty">Select an element to view properties</p>
-                    </div>
                 </div>
             </aside>
 

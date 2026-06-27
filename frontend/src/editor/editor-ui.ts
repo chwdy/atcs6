@@ -29,6 +29,7 @@ const LIST_PANEL_EDITOR_TYPES = new Set([
  *  next inspect replaces it) until pinned. Everything else — list panels,
  *  route/path editors, setups — opens as its own kept tab. */
 const PREVIEW_ELIGIBLE_EDITOR_TYPES = new Set([
+  'tile',
   'block',
   'signal',
   'platform',
@@ -472,6 +473,7 @@ export class EditorUIHandler {
    *  Icon values are registered in static/icon-selections.json. */
   getTabIconClass(editorType: string | null): string {
     const iconMap: Record<string, string> = {
+      'tile': 'ti-square',
       'block': 'ti-square',
       'signal': 'ti-traffic-lights',
       'platform': 'ti-building',
@@ -503,6 +505,7 @@ export class EditorUIHandler {
    *  open tabs under these group headers as a type → instance tree. */
   getSecondaryTabGroup(editorType: string | null): { key: string; label: string; icon: string } {
     const groups: Record<string, { key: string; label: string; icon: string }> = {
+      'tile': { key: 'tile', label: 'Tiles', icon: 'ti-square' },
       'block': { key: 'block', label: 'Blocks', icon: 'ti-square' },
       'signal': { key: 'signal', label: 'Signals', icon: 'ti-traffic-lights' },
       'platform': { key: 'platform', label: 'Platforms', icon: 'ti-building' },
@@ -865,16 +868,6 @@ export class EditorUIHandler {
     }
   }
 
-  clearSecondaryInspectorState(): void {
-    this.secondaryTabs = [];
-    this.activeSecondaryTabId = null;
-    this.currentSecondaryPanel = null;
-    try {
-      localStorage.removeItem(this.secondaryInspectorStorageKey);
-    } catch (e) {}
-    this.hideSecondarySidebar();
-  }
-
   cleanupSecondaryPanelSubscriptions(): void {
     // Phase 3-4: Cleanup subscriptions for all handlers
     if (this.editor.trainHandler?._cleanup) this.editor.trainHandler._cleanup();
@@ -1007,32 +1000,41 @@ export class EditorUIHandler {
       );
   }
 
+  /** Keep the secondary inspector in step with the newly selected tile. A
+   *  signal / platform / station editor that is already open follows the tile
+   *  (or steps aside to the Tile Editor when the tile no longer carries that
+   *  entity). When nothing more specific is open — or the Tile Editor itself is
+   *  showing — the tile's own bits show in the Tile Editor. Any other entity
+   *  editor (block, switch, train, path, …) is left in place; those are reached
+   *  through their own Edit affordances. */
   updateSecondaryEditorForTile(track: any): void {
-    if (!this.editor._currentEditorType) {
-      return;
-    }
+    const type = this.editor._currentEditorType;
 
-    switch (this.editor._currentEditorType) {
+    switch (type) {
       case 'signal':
         if (track.signals && track.signals.length > 0) {
           this.editor.showSignalsEditorForTile(track);
         } else {
-          this.hideSecondarySidebar();
+          this.editor.showTileEditor(track);
         }
-        break;
+        return;
 
       case 'platform':
         if (track.station_id) {
           this.editor.showPlatformEditor(track.station_id);
         } else {
-          this.hideSecondarySidebar();
+          this.editor.showTileEditor(track);
         }
-        break;
+        return;
 
       case 'station-group':
       case 'station-group-list':
         this.editor.showStationsPanel();
-        break;
+        return;
+    }
+
+    if (!type || type === 'tile') {
+      this.editor.showTileEditor(track);
     }
   }
 
@@ -1058,7 +1060,8 @@ export class EditorUIHandler {
   }
 
   initBitEditor(track: any): void {
-    const body: HTMLElement | null = this.editor.$id('track-bits-panel-body');
+    // The bit grid lives in the Tile Editor (secondary sidebar) now.
+    const body: HTMLElement | null = this.editor.$id('secondary-sidebar-content');
     if (!body) return;
 
     const checkboxes = body.querySelectorAll<HTMLInputElement>('input[type="checkbox"][data-bit]');
@@ -1407,17 +1410,5 @@ export class EditorUIHandler {
     const nearY = y1 + t * dy;
 
     return Math.sqrt((px - nearX) * (px - nearX) + (py - nearY) * (py - nearY));
-  }
-
-  clearPropertiesPanel(): void {
-    const panel = this.editor.$q('.properties-panel');
-    if (panel) {
-      panel.innerHTML = `
-                <h3>Properties</h3>
-                <p class="properties-empty">Select an element to view properties</p>
-            `;
-    }
-    // Also reset the dedicated Track Bits sidebar section.
-    this.editor.clearTrackBitsPanel?.();
   }
 }

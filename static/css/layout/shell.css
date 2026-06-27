@@ -732,8 +732,8 @@ textarea {
 
 /* Sidebar */
 .sidebar {
-    width: 280px; /* Reduced from 370px */
-    min-width: 200px;
+    width: 150px; /* Thin tool rail — the tile inspector lives in the Tile Editor */
+    min-width: 120px;
     max-width: 600px;
     background-color: var(--bg-panel);
     border-right: 1px solid var(--border-color);
@@ -751,35 +751,32 @@ textarea {
     display: none;
 }
 
-/* Split sidebar: Fixed tools at top, scrollable content below */
+/* The left rail is tools only — it fills the sidebar and scrolls if the tool
+   list outgrows the height (e.g. with sim-mode tools added). */
 .sidebar-tools-section {
-    flex-shrink: 0;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
     padding: 6px 8px;
-    border-bottom: 2px solid var(--border-color);
     background-color: var(--bg-panel);
 }
 
-.sidebar-content-section {
-    flex: 1;
-    overflow-y: auto;
-    overflow-x: hidden;
-}
-
-/* Thinner, more transparent scrollbar for sidebar content */
-.sidebar-content-section::-webkit-scrollbar {
+/* Thinner, more transparent scrollbar for the tool rail */
+.sidebar-tools-section::-webkit-scrollbar {
     width: 6px;
 }
 
-.sidebar-content-section::-webkit-scrollbar-track {
+.sidebar-tools-section::-webkit-scrollbar-track {
     background: rgba(0, 0, 0, 0.1);
 }
 
-.sidebar-content-section::-webkit-scrollbar-thumb {
+.sidebar-tools-section::-webkit-scrollbar-thumb {
     background: rgba(var(--accent-rgb), 0.3);
     border-radius: 3px;
 }
 
-.sidebar-content-section::-webkit-scrollbar-thumb:hover {
+.sidebar-tools-section::-webkit-scrollbar-thumb:hover {
     background: rgba(var(--accent-rgb), 0.5);
 }
 
@@ -816,6 +813,35 @@ textarea {
     color: var(--text-secondary);
     margin-bottom: 4px;
     letter-spacing: 0.05em;
+}
+
+/* Square glyph that marks a panel header — the Tile Editor's Properties
+   section and the tool flyout ("popup window"). --panel-title-icon-size is the
+   one source of truth for its size so the two stay matched. */
+:root {
+    --panel-title-icon-size: 13px;
+}
+
+.panel-title-icon {
+    font-size: var(--panel-title-icon-size);
+    line-height: 1;
+    color: var(--accent-color);
+    margin-right: 5px;
+    vertical-align: -1px;
+}
+
+/* "Properties" divider inside the Tile Editor, above the entity cards. */
+.tile-properties-header {
+    display: flex;
+    align-items: center;
+    margin: 14px 0 6px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-color);
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
 }
 
 .properties-empty {

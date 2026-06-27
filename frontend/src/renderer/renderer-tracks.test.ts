@@ -18,7 +18,7 @@ vi.mock('../lib/helpers', () => ({
   getBlockStateColor: (state: string) => `token:${state}`,
 }));
 
-import { RendererTrackHandler, blockTrackColor, type TrackHandlerRenderer, type Track } from './renderer-tracks';
+import { RendererTrackHandler, blockTrackColor, darkenColor, type TrackHandlerRenderer, type Track } from './renderer-tracks';
 
 // renderer-tracks.js had no test before the migration; this is fresh coverage
 // for the shared geometry (getEdgePoints/drawGridSegment) and bit-driven draw.
@@ -32,6 +32,7 @@ function makeCtx() {
     moveTo: vi.fn(),
     lineTo: vi.fn(),
     closePath: vi.fn(),
+    clip: vi.fn(),
     fill: vi.fn(),
     stroke: vi.fn(),
     arc: vi.fn(),
@@ -119,19 +120,47 @@ describe('RendererTrackHandler', () => {
     });
   });
 
-  it('drawTrackFromBits strokes a grey bed + colored band, plus a crossing dot fill when applicable', () => {
+  it('drawTrackFromBits strokes a mitered band per segment, plus a crossing dot fill when applicable', () => {
     mocks.getActiveSegments.mockReturnValue([['N', 'S']]);
     mocks.isCrossing.mockReturnValue(false);
     const ctx = makeCtx();
     new RendererTrackHandler(makeRenderer(ctx)).drawTrackFromBits(1, 40, '#666', []);
-    expect(ctx.stroke).toHaveBeenCalledTimes(2); // grey bed pass + colored band pass
+    expect(ctx.stroke).toHaveBeenCalledTimes(1); // one mitered colored band
     expect(ctx.fill).not.toHaveBeenCalled();
 
     mocks.isCrossing.mockReturnValue(true);
     const ctx2 = makeCtx();
     new RendererTrackHandler(makeRenderer(ctx2)).drawTrackFromBits(3, 40, '#666', []);
-    expect(ctx2.stroke).toHaveBeenCalledTimes(2); // still bed + band
-    expect(ctx2.fill).toHaveBeenCalledTimes(1); // crossing dot only
+    expect(ctx2.stroke).toHaveBeenCalledTimes(1); // still one band stroke (mock returns 1 segment)
+    expect(ctx2.fill).toHaveBeenCalledTimes(1); // crossing dot
+  });
+
+  it('darkenColor scales hex and rgb colors toward black by the factor', () => {
+    expect(darkenColor('#444444', 0.5)).toBe('rgb(34, 34, 34)');
+    expect(darkenColor('rgb(68, 68, 68)', 0.5)).toBe('rgb(34, 34, 34)');
+    expect(darkenColor('weird', 0.5)).toBe('weird'); // unparseable → returned unchanged
+  });
+
+  it('drawCenterlineBand fills one rectangle, offset perpendicular to the path', () => {
+    const ctx = makeCtx();
+    // Horizontal path (0,0)->(10,0): the true normal is vertical, so the first
+    // corner is the start point offset by +halfWidth in y (NOT a diagonal offset).
+    new RendererTrackHandler(makeRenderer(ctx)).drawCenterlineBand({ x: 0, y: 0 }, { x: 10, y: 0 }, 4, '#666');
+    expect(ctx.fill).toHaveBeenCalledTimes(1);
+    expect(ctx.lineTo).toHaveBeenCalledTimes(3);
+    expect(ctx.moveTo).toHaveBeenCalledWith(0, 2);
+  });
+
+  it('drawTrackBed fills a grey trapezoid band per segment (empty tile draws nothing)', () => {
+    mocks.getActiveSegments.mockReturnValue([['N', 'S']]);
+    const ctx = makeCtx();
+    new RendererTrackHandler(makeRenderer(ctx)).drawTrackBed(1, 40);
+    expect(ctx.fill).toHaveBeenCalledTimes(1); // one grey trapezoid (drawCenterlineBand)
+
+    mocks.getActiveSegments.mockReturnValue([]);
+    const ctxEmpty = makeCtx();
+    new RendererTrackHandler(makeRenderer(ctxEmpty)).drawTrackBed(0, 40);
+    expect(ctxEmpty.fill).not.toHaveBeenCalled();
   });
 });
 

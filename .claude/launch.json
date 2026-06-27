@@ -6,6 +6,12 @@
       "runtimeExecutable": "/opt/homebrew/anaconda3/envs/general/bin/python",
       "runtimeArgs": ["server.py", "--skip-startup-tests", "--port", "5007"],
       "port": 5007
+    },
+    {
+      "name": "atcs6-preview",
+      "runtimeExecutable": "/opt/homebrew/anaconda3/envs/general/bin/python",
+      "runtimeArgs": ["server.py", "--skip-startup-tests", "--port", "5011"],
+      "port": 5011
     }
   ]
 }

@@ -157,6 +157,19 @@ function buildGroup(
   popover.className = 'tool-popover';
   popover.setAttribute('role', 'menu');
   popover.setAttribute('aria-label', group);
+
+  // Header row: the group's icon + name. The icon shares its size with the
+  // primary-editor panel headers via the --panel-title-icon-size variable.
+  const popoverHeader = document.createElement('div');
+  popoverHeader.className = 'tool-popover-header';
+  const headerIcon = document.createElement('i');
+  headerIcon.className = `${GROUP_ICONS[group] ?? 'ti ti-folder'} tool-popover-header-icon`;
+  headerIcon.setAttribute('aria-hidden', 'true');
+  const headerLabel = document.createElement('span');
+  headerLabel.textContent = group;
+  popoverHeader.append(headerIcon, headerLabel);
+  popover.appendChild(popoverHeader);
+
   for (const c of tools) popover.appendChild(buildTile(c, activeToolId));
 
   groupEl.append(trigger, popover);

@@ -151,7 +151,7 @@ def is_square_corner_switch(bits: int) -> bool:
     unintuitive. A turnout that carries a diagonal NS/EW bit eases the branch
     (the swap rides a 45° rail, like the scissors crossovers) and is allowed.
 
-    Screen angles per renderer IsometricGeometry.getSegmentAngle:
+    Screen angles on the rotated isometric projection:
         NW, SE -> 0° (horizontal)   NE, SW -> 90° (vertical)   NS, EW -> 45°.
     Mirror of the client check in static/js/constants.js (isSquareCornerSwitch).
     """

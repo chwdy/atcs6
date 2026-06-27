@@ -10,7 +10,7 @@
 // Part of the Vite bundle; the Renderer constructs it directly
 // (`new RendererTrackHandler(this)`).
 
-import { getActiveSegments, trackBitsToEdges, isCrossing, TRACK_WIDTH } from '../lib/constants';
+import { getActiveSegments, trackBitsToEdges, isCrossing, TRACK_WIDTH, EDGE_MASKS, OPPOSITE_EDGE } from '../lib/constants';
 import { getBlockStateColor } from '../lib/helpers';
 import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
 import type { Signal } from './renderer-signals';
@@ -67,7 +67,7 @@ export interface TrackHandlerRenderer {
   currentNetwork?: { switches?: Record<string, SwitchEntity | undefined> } | null;
   // "x,y" -> track, used by drawTileExtentHighlight to read each selected
   // tile's track_bits so it can light the real stroke (not just the cell).
-  trackMap?: Record<string, { track_bits?: number } | undefined>;
+  trackMap?: Record<string, { track_bits?: number; block_section_id?: string | null } | undefined>;
   gridToScreenX(x: number, y: number): number;
   gridToScreenY(x: number, y: number): number;
   signalHandler: { drawSingleSignal(signal: unknown, trackBits: number | undefined, half: number): void };
@@ -98,6 +98,30 @@ export function blockTrackColor(
     return getBlockStateColor(state);
   }
   return null;
+}
+
+/**
+ * Darken a resolved CSS color (hex `#rrggbb` or `rgb()/rgba()`) toward black by
+ * `factor` (0 = black, 1 = unchanged). Used to push the unselected switch branch
+ * a step darker than the already-dim `trackDim` token, theme-awarely.
+ */
+export function darkenColor(color: string, factor: number): string {
+  let r: number;
+  let g: number;
+  let b: number;
+  const hex = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(color.trim());
+  if (hex) {
+    r = parseInt(hex[1], 16);
+    g = parseInt(hex[2], 16);
+    b = parseInt(hex[3], 16);
+  } else {
+    const rgb = /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(color);
+    if (!rgb) return color;
+    r = +rgb[1];
+    g = +rgb[2];
+    b = +rgb[3];
+  }
+  return `rgb(${Math.round(r * factor)}, ${Math.round(g * factor)}, ${Math.round(b * factor)})`;
 }
 
 export class RendererTrackHandler {
@@ -142,6 +166,21 @@ export class RendererTrackHandler {
     this.ctx.save();
     this.ctx.translate(cx, cy);
 
+    // Clip everything this tile draws to the tile's own diamond (its four corner
+    // coordinates). A perpendicular-capped band reaches the edge points exactly,
+    // but at a diagonal segment its cap corners would still poke past the border
+    // into the neighbour tile — which is a different block, so its color would
+    // bleed in. The clip keeps each tile's color strictly inside its own
+    // diamond; the neighbour draws its own half of any rail that sits on the
+    // shared border, so the rail still reads continuous across the seam.
+    this.ctx.beginPath();
+    this.ctx.moveTo(0, -half);
+    this.ctx.lineTo(half, 0);
+    this.ctx.lineTo(0, half);
+    this.ctx.lineTo(-half, 0);
+    this.ctx.closePath();
+    this.ctx.clip();
+
     let trackColor = p.track;
     if (track.block_section_id && this.currentBlocks) {
       const resolved = blockTrackColor(this.currentBlocks[track.block_section_id]);
@@ -156,6 +195,48 @@ export class RendererTrackHandler {
     const switchState = track.switch_state || 0;
     const isDiagonalOnly = track.is_diagonal_only_switch || false;
     const switchPoints = track.switch_points || {};
+
+    // For each edge that opens onto a SAME-block neighbour whose rail meets it,
+    // record the neighbour's outgoing direction (the way its rail leaves the
+    // shared border). drawTrackFromBits uses this to MITER the colored rail
+    // across the seam: a straight run stays seamless, and a bend turns a clean
+    // solid corner — the neighbour mitres the matching half. Every other edge (a
+    // different block, or empty) gets a square cap, so one block's color never
+    // merges into the next.
+    const connectDirs = new Map<string, { x: number; y: number }>();
+    const myBlock = track.block_section_id;
+    const tileMap = this.renderer.trackMap;
+    if (myBlock != null && tileMap) {
+      const NEIGHBOR_OFFSET: Record<string, [number, number]> = { N: [0, 1], E: [1, 0], S: [0, -1], W: [-1, 0] };
+      const ep = this.getEdgePoints(half);
+      for (const edge of ['N', 'E', 'S', 'W']) {
+        if (!(trackBits & EDGE_MASKS[edge])) continue; // no rail leaves this edge
+        const [dx, dy] = NEIGHBOR_OFFSET[edge];
+        const nb = tileMap[`${track.x + dx},${track.y + dy}`];
+        if (!nb || nb.block_section_id !== myBlock) continue;
+        const oppE = OPPOSITE_EDGE[edge];
+        const nbBits = nb.track_bits ?? 0;
+        if (!(nbBits & EDGE_MASKS[oppE])) continue; // neighbour rail doesn't meet this border
+        let nbOther: string | null = null;
+        for (const [s1, s2] of getActiveSegments(nbBits)) {
+          if (s1 === oppE) { nbOther = s2; break; }
+          if (s2 === oppE) { nbOther = s1; break; }
+        }
+        if (!nbOther) continue;
+        const from = ep[oppE];
+        const to = ep[nbOther];
+        const vx = to.x - from.x;
+        const vy = to.y - from.y;
+        const vl = Math.hypot(vx, vy) || 1;
+        connectDirs.set(edge, { x: vx / vl, y: vy / vl });
+      }
+    }
+
+    // Grey trapezoid track bed (the rail clipped to this tile's diamond). It
+    // tiles seamlessly with neighbours, so the track itself always reads
+    // continuous; the block-status color is then laid on top as a narrower
+    // rectangle inside this trapezoid.
+    this.drawTrackBed(trackBits, half);
 
     if (isSwitch) {
       this.drawTrackWithSwitches(trackBits, half, trackColor, switchState, isDiagonalOnly, switchPoints);
@@ -186,7 +267,7 @@ export class RendererTrackHandler {
         this.ctx.stroke();
       }
     } else {
-      this.drawTrackFromBits(trackBits, half, trackColor, track.dead_end_ports || []);
+      this.drawTrackFromBits(trackBits, half, trackColor, track.dead_end_ports || [], connectDirs);
     }
 
     if (drawSignals && track.signals && track.signals.length > 0) {
@@ -196,6 +277,11 @@ export class RendererTrackHandler {
     }
 
     this.ctx.restore();
+
+    // NOTE: the switch M/D indicator is NOT drawn here. It's drawn in a separate
+    // pass after every tile's rails (renderer _drawWorld -> drawSwitchBadgeAt),
+    // so a neighbouring tile's rail or bed can't paint over it, and it's
+    // unclipped so it can sit flush against the entry edge.
 
     if (track.dead_end_ports && track.dead_end_ports.length > 0) {
       this.renderer.debugHandler.highlightDeadEnds(track.x, track.y, track.dead_end_ports, track.track_bits || 0);
@@ -244,77 +330,133 @@ export class RendererTrackHandler {
   }
 
   /**
-   * Paint the grey rail bed for one (non-switch) track tile: a round-capped
-   * stroke of the tile's segments, a little wider than the block-status band
-   * laid on top by drawTrackFromBits.
+   * Draw a rail segment as a constant-width rectangle centered on the line from
+   * `start` to `end`, with its end caps PERPENDICULAR to that line (the true
+   * normal) — not parallel to the tile border the way drawGridSegment's fixed
+   * diagonal offset cuts them.
    *
-   * The renderer runs this for every tile in one pass BEFORE any colored band
-   * (see _drawWorld). Done per-tile interleaved with the color, each tile's
-   * wider bed would paint over its neighbour's color at the shared seam and
-   * leave grey ticks; running all beds first lets the colored bands cover every
-   * seam from both sides, so only a thin, even grey edge shows.
+   * Two properties the rail rendering relies on:
+   *  - Every segment is the same `width` (a diagonal "turn" is as thick as a
+   *    straight) and the caps are square to the path: the rectangle the
+   *    block-status color wants.
+   *  - The caps land exactly on the tile's edge points, so the color stops at
+   *    the tile border instead of bulging past it into the neighbour tile the
+   *    way a round cap would (which bleeds one block's color into the next).
+   * The grey bed (drawTrackBed) fills the small wedge two rectangles leave where
+   * the path bends.
    */
-  drawTrackBed(track: Track): void {
-    if (track.is_switch) return;
-    const trackBits = track.track_bits ?? 0;
-    if (trackBits === 0) return;
-    const segments = getActiveSegments(trackBits);
-    if (segments.length === 0) return;
+  drawCenterlineBand(start: EdgePoint, end: EdgePoint, width: number, fillColor: string): void {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const len = Math.hypot(dx, dy);
+    if (len === 0) return;
+    const halfWidth = width / 2;
+    const ox = (-dy / len) * halfWidth;
+    const oy = (dx / len) * halfWidth;
 
-    const p = getCanvasPalette();
-    const half = (this.gridSize * this.scale) / 2;
-    const cx = this.gridToScreenX(track.x, track.y);
-    const cy = this.gridToScreenY(track.x, track.y);
-    const edgePoints = this.getEdgePoints(half);
-
-    this.ctx.save();
-    this.ctx.translate(cx, cy);
-    this.ctx.strokeStyle = p.track;
-    this.ctx.lineWidth = TRACK_WIDTH * Math.SQRT2 * this.scale;
-    this.ctx.lineCap = 'round';
-    this.ctx.lineJoin = 'round';
+    this.ctx.fillStyle = fillColor;
     this.ctx.beginPath();
-    for (const [e1, e2] of segments) {
-      const start = edgePoints[e1];
-      const end = edgePoints[e2];
-      if (start && end) {
-        this.ctx.moveTo(start.x, start.y);
-        this.ctx.lineTo(end.x, end.y);
-      }
-    }
-    this.ctx.stroke();
-    this.ctx.restore();
+    this.ctx.moveTo(start.x + ox, start.y + oy);
+    this.ctx.lineTo(start.x - ox, start.y - oy);
+    this.ctx.lineTo(end.x - ox, end.y - oy);
+    this.ctx.lineTo(end.x + ox, end.y + oy);
+    this.ctx.closePath();
+    this.ctx.fill();
   }
 
-  drawTrackFromBits(trackBits: number, half: number, color: string, deadEndPorts: string[] = []): void {
+  /**
+   * Grey trapezoid track bed for one tile, drawn under drawTrack's diamond clip
+   * (it does NOT translate/clip itself — the caller has). Each segment is drawn
+   * as a band EXTENDED past its edge points, so the clip trims it to the tile
+   * diamond: a trapezoid whose slanted ends ARE the tile borders. Neighbouring
+   * tiles' trapezoids meet along those borders, so the grey track reads
+   * continuous. The block-status color is laid on top (drawTrackFromBits) as a
+   * narrower rectangle inside this trapezoid.
+   */
+  drawTrackBed(trackBits: number, half: number): void {
+    const segments = getActiveSegments(trackBits);
+    if (segments.length === 0) return;
+    const p = getCanvasPalette();
+    const edgePoints = this.getEdgePoints(half);
+    // A segment's footprint along a tile border is width / sin(angle it crosses).
+    // An axial segment (N-S, E-W) crosses head-on (footprint = width); a diagonal
+    // (N-E etc.) crosses at 45° (footprint = width·√2, i.e. √2 wider). At the same
+    // perpendicular width the diagonal's grey would spike past the axial's where
+    // they meet, so widen the axial grey by √2 — then every segment's border
+    // footprint is the same (TRACK_WIDTH·2) and the trapezoids tile with no spike.
+    const obliqueWidth = TRACK_WIDTH * Math.SQRT2 * this.scale;
+    const axialWidth = TRACK_WIDTH * 2 * this.scale;
+    for (const [e1, e2] of segments) {
+      const a = edgePoints[e1];
+      const b = edgePoints[e2];
+      if (!a || !b) continue;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const ux = (dx / len) * half;
+      const uy = (dy / len) * half;
+      const bedWidth = OPPOSITE_EDGE[e1] === e2 ? axialWidth : obliqueWidth;
+      this.drawCenterlineBand({ x: a.x - ux, y: a.y - uy }, { x: b.x + ux, y: b.y + uy }, bedWidth, p.track);
+    }
+  }
+
+  drawTrackFromBits(
+    trackBits: number,
+    half: number,
+    color: string,
+    deadEndPorts: string[] = [],
+    connectDirs: Map<string, { x: number; y: number }> = new Map(),
+  ): void {
     const p = getCanvasPalette();
     const edgePoints = this.getEdgePoints(half);
 
     const segments = getActiveSegments(trackBits);
     const railWidth = TRACK_WIDTH * this.scale;
 
-    // The grey rail bed under this tile is painted earlier, in one network-wide
-    // pass (renderer _drawWorld -> drawTrackBed), so the colored bands here can
-    // cover each shared seam from both sides. Lay the block-status color on top
-    // as a round-capped stroke: a uniform perpendicular width whose ends overlap
-    // the neighbouring tile at the shared corner, so a diagonal turn reads the
-    // same thickness as a straight run and the joints close cleanly. (The old
-    // per-edge diagonal offset, drawGridSegment, made turns ~1/√2 thinner and
-    // left skewed, mismatched ends at the tile border.)
-    if (segments.length > 0) {
-      this.ctx.strokeStyle = color;
-      this.ctx.lineWidth = railWidth;
-      this.ctx.lineCap = 'round';
-      this.ctx.lineJoin = 'round';
-      this.ctx.beginPath();
-      for (const [e1, e2] of segments) {
-        const start = edgePoints[e1];
-        const end = edgePoints[e2];
-        if (start && end) {
-          this.ctx.moveTo(start.x, start.y);
-          this.ctx.lineTo(end.x, end.y);
-        }
+    // Lay the block-status color on top of the grey bed, clipped (by drawTrack)
+    // to the tile diamond so it can never bleed into a neighbour. Each segment is
+    // a stroked, miter-joined polyline of uniform width:
+    //   - A same-block edge (in connectDirs) runs a short STUB in the neighbour's
+    //     outgoing direction, through the edge point, into the segment. The miter
+    //     join makes a straight run seamless and a bend a clean solid corner; the
+    //     neighbour mitres the matching half, and the stub is clipped off.
+    //   - Every other edge gets a square (butt) cap pulled `capInset` inside, so
+    //     it shows a clean square end (no clip chamfer); the grey trapezoid fills
+    //     out to the tile border.
+    const capInset = railWidth;
+    const stubLen = half; // only sets the miter direction; the stub is clipped off
+    this.ctx.strokeStyle = color;
+    this.ctx.lineWidth = railWidth;
+    this.ctx.lineJoin = 'miter';
+    this.ctx.lineCap = 'butt';
+    this.ctx.miterLimit = 8;
+    for (const [e1, e2] of segments) {
+      const a = edgePoints[e1];
+      const b = edgePoints[e2];
+      if (!a || !b) continue;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const ux = dx / len;
+      const uy = dy / len;
+      const d1 = connectDirs.get(e1);
+      const d2 = connectDirs.get(e2);
+      const pts: Array<{ x: number; y: number }> = [];
+      if (d1) {
+        pts.push({ x: a.x + d1.x * stubLen, y: a.y + d1.y * stubLen });
+        pts.push(a);
+      } else {
+        pts.push({ x: a.x + ux * capInset, y: a.y + uy * capInset });
       }
+      if (d2) {
+        pts.push(b);
+        pts.push({ x: b.x + d2.x * stubLen, y: b.y + d2.y * stubLen });
+      } else {
+        pts.push({ x: b.x - ux * capInset, y: b.y - uy * capInset });
+      }
+      this.ctx.beginPath();
+      this.ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) this.ctx.lineTo(pts[i].x, pts[i].y);
       this.ctx.stroke();
     }
 
@@ -413,9 +555,25 @@ export class RendererTrackHandler {
       }
 
       if (!isActive) {
-        const segmentColor = p.trackDim;
-        const segmentWidth = 2 * this.scale;
-        this.drawGridSegment(start, end, segmentWidth, e1, e2, segmentColor);
+        // The unselected branch: a wide, very dark arm drawn with the SAME
+        // geometry as the grey bed — extended past the edge points (the tile clip
+        // trims it to the diamond) and footprint-matched (axial √2 wider). It
+        // covers the bed for this branch, so it reads as one solid dark arm with
+        // no spike where the diverge route meets an unconnected tile.
+        const segmentColor = darkenColor(p.trackDim, 0.5);
+        const isAxial = OPPOSITE_EDGE[e1] === e2;
+        const segmentWidth = (isAxial ? TRACK_WIDTH * 2 : TRACK_WIDTH * Math.SQRT2) * this.scale;
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const ux = (dx / len) * half;
+        const uy = (dy / len) * half;
+        this.drawCenterlineBand(
+          { x: start.x - ux, y: start.y - uy },
+          { x: end.x + ux, y: end.y + uy },
+          segmentWidth,
+          segmentColor,
+        );
       }
     }
 
@@ -439,27 +597,72 @@ export class RendererTrackHandler {
       if (isActive) {
         const segmentColor = color;
         const segmentWidth = TRACK_WIDTH * this.scale;
-        this.drawGridSegment(start, end, segmentWidth, e1, e2, segmentColor);
+        this.drawCenterlineBand(start, end, segmentWidth, segmentColor);
       }
     }
+
+    // The M/D indicator is drawn separately (drawSwitchBadge), UNCLIPPED, so it
+    // can stick right to the entry edge without the tile clip cutting it.
+  }
+
+  /**
+   * Draw the switch's M/D indicator at the root of its two branches — right at
+   * the entry edge (the switch_points key). The caller has translated to the
+   * tile centre and must NOT have the tile clip active, so the badge can sit
+   * flush against the edge instead of being trimmed by the diamond.
+   */
+  drawSwitchBadge(
+    half: number,
+    switchState: number,
+    isDiagonalOnly: boolean,
+    switchPoints: Record<string, string[]>,
+  ): void {
+    const p = getCanvasPalette();
+    const edgePoints = this.getEdgePoints(half);
+    const entryEdge = Object.keys(switchPoints)[0];
+    const entryPt = entryEdge ? edgePoints[entryEdge] : null;
+    const f = 0.9; // stick to the entry edge (root of the branches)
+    const bx = entryPt ? entryPt.x * f : 0;
+    const by = entryPt ? entryPt.y * f : 0;
 
     const isMain = switchState === 0;
     this.ctx.fillStyle = isMain ? p.success : p.caution;
     this.ctx.beginPath();
-    this.ctx.arc(0, 0, 5 * this.scale, 0, Math.PI * 2);
+    this.ctx.arc(bx, by, 5 * this.scale, 0, Math.PI * 2);
     this.ctx.fill();
 
     this.ctx.fillStyle = p.onAccent;
     this.ctx.font = `bold ${8 * this.scale}px sans-serif`;
     this.ctx.textAlign = 'center';
     this.ctx.textBaseline = 'middle';
-    this.ctx.fillText(isMain ? 'M' : 'D', 0, 0);
+    this.ctx.fillText(isMain ? 'M' : 'D', bx, by);
 
     if (isDiagonalOnly) {
       this.ctx.font = `${7 * this.scale}px sans-serif`;
       this.ctx.fillStyle = p.warning;
-      this.ctx.fillText('⟳', 9 * this.scale, -7 * this.scale);
+      this.ctx.fillText('⟳', bx + 9 * this.scale, by - 7 * this.scale);
     }
+  }
+
+  /**
+   * Draw one switch tile's M/D indicator, translated to the tile centre and
+   * unclipped. The renderer calls this in a pass AFTER every tile's rails so a
+   * neighbouring tile can't paint over the badge.
+   */
+  drawSwitchBadgeAt(track: Track): void {
+    if (!track.is_switch) return;
+    const half = (this.gridSize * this.scale) / 2;
+    const cx = this.gridToScreenX(track.x, track.y);
+    const cy = this.gridToScreenY(track.x, track.y);
+    this.ctx.save();
+    this.ctx.translate(cx, cy);
+    this.drawSwitchBadge(
+      half,
+      track.switch_state || 0,
+      track.is_diagonal_only_switch || false,
+      track.switch_points || {},
+    );
+    this.ctx.restore();
   }
 
   drawPreviewPath(path: Array<{ x: number; y: number }> | null | undefined): void {
