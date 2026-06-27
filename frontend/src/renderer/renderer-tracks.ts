@@ -100,30 +100,6 @@ export function blockTrackColor(
   return null;
 }
 
-/**
- * Darken a resolved CSS color (hex `#rrggbb` or `rgb()/rgba()`) toward black by
- * `factor` (0 = black, 1 = unchanged). Used to push the unselected switch branch
- * a step darker than the already-dim `trackDim` token, theme-awarely.
- */
-export function darkenColor(color: string, factor: number): string {
-  let r: number;
-  let g: number;
-  let b: number;
-  const hex = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(color.trim());
-  if (hex) {
-    r = parseInt(hex[1], 16);
-    g = parseInt(hex[2], 16);
-    b = parseInt(hex[3], 16);
-  } else {
-    const rgb = /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(color);
-    if (!rgb) return color;
-    r = +rgb[1];
-    g = +rgb[2];
-    b = +rgb[3];
-  }
-  return `rgb(${Math.round(r * factor)}, ${Math.round(g * factor)}, ${Math.round(b * factor)})`;
-}
-
 export class RendererTrackHandler {
   renderer: TrackHandlerRenderer;
 

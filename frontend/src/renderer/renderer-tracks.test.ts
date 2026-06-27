@@ -18,7 +18,7 @@ vi.mock('../lib/helpers', () => ({
   getBlockStateColor: (state: string) => `token:${state}`,
 }));
 
-import { RendererTrackHandler, blockTrackColor, darkenColor, type TrackHandlerRenderer, type Track } from './renderer-tracks';
+import { RendererTrackHandler, blockTrackColor, type TrackHandlerRenderer, type Track } from './renderer-tracks';
 
 // renderer-tracks.js had no test before the migration; this is fresh coverage
 // for the shared geometry (getEdgePoints/drawGridSegment) and bit-driven draw.
@@ -135,12 +135,6 @@ describe('RendererTrackHandler', () => {
     expect(ctx2.stroke).not.toHaveBeenCalled();
   });
 
-  it('darkenColor scales hex and rgb colors toward black by the factor', () => {
-    expect(darkenColor('#444444', 0.5)).toBe('rgb(34, 34, 34)');
-    expect(darkenColor('rgb(68, 68, 68)', 0.5)).toBe('rgb(34, 34, 34)');
-    expect(darkenColor('weird', 0.5)).toBe('weird'); // unparseable → returned unchanged
-  });
-
   it('drawCenterlineBand fills one rectangle, offset perpendicular to the path', () => {
     const ctx = makeCtx();
     // Horizontal path (0,0)->(10,0): the true normal is vertical, so the first
@@ -179,7 +173,6 @@ describe('RendererTrackHandler', () => {
     // Two grey beds: the selected arm's full bed + the unselected arm's stub.
     expect(fills.filter((f) => f === '#666666')).toHaveLength(2);
     expect(fills).not.toContain('#0a0a0c'); // not erased to the background
-    expect(fills).not.toContain('rgb(34, 34, 34)'); // not dim-tinted (darkenColor)
   });
 });
 
