@@ -120,19 +120,19 @@ describe('RendererTrackHandler', () => {
     });
   });
 
-  it('drawTrackFromBits strokes a mitered band per segment, plus a crossing dot fill when applicable', () => {
+  it('drawTrackFromBits fills an extended band per segment, plus a crossing dot fill when applicable', () => {
     mocks.getActiveSegments.mockReturnValue([['N', 'S']]);
     mocks.isCrossing.mockReturnValue(false);
     const ctx = makeCtx();
     new RendererTrackHandler(makeRenderer(ctx)).drawTrackFromBits(1, 40, '#666', []);
-    expect(ctx.stroke).toHaveBeenCalledTimes(1); // one mitered colored band
-    expect(ctx.fill).not.toHaveBeenCalled();
+    expect(ctx.fill).toHaveBeenCalledTimes(1); // one filled colored band (no stroke)
+    expect(ctx.stroke).not.toHaveBeenCalled();
 
     mocks.isCrossing.mockReturnValue(true);
     const ctx2 = makeCtx();
     new RendererTrackHandler(makeRenderer(ctx2)).drawTrackFromBits(3, 40, '#666', []);
-    expect(ctx2.stroke).toHaveBeenCalledTimes(1); // still one band stroke (mock returns 1 segment)
-    expect(ctx2.fill).toHaveBeenCalledTimes(1); // crossing dot
+    expect(ctx2.fill).toHaveBeenCalledTimes(2); // one band fill (mock returns 1 segment) + crossing dot
+    expect(ctx2.stroke).not.toHaveBeenCalled();
   });
 
   it('darkenColor scales hex and rgb colors toward black by the factor', () => {
@@ -161,6 +161,25 @@ describe('RendererTrackHandler', () => {
     const ctxEmpty = makeCtx();
     new RendererTrackHandler(makeRenderer(ctxEmpty)).drawTrackBed(0, 40);
     expect(ctxEmpty.fill).not.toHaveBeenCalled();
+  });
+
+  it('drawTrackWithSwitches lays the selected arm full + coloured and cuts the unselected arm to a short grey stub', () => {
+    // Regular turnout EW(2) | NE(4): at switch_state 0 the long EW arm is the
+    // selected (MAIN) route and the NE diagonal is unselected. The unselected arm
+    // is CUT to a short bed stub — not painted over / erased, not dim-tinted — so
+    // it reads as not connected at the switch with no stray triangles.
+    const fills: string[] = [];
+    const ctx = makeCtx();
+    let fillStyle = '';
+    Object.defineProperty(ctx, 'fillStyle', { get: () => fillStyle, set: (v) => { fillStyle = v; } });
+    ctx.fill = vi.fn(() => { fills.push(fillStyle); });
+    new RendererTrackHandler(makeRenderer(ctx))
+      .drawTrackWithSwitches(6, 40, '#abcdef', 0, false, { E: ['N', 'W'] });
+    expect(fills).toContain('#abcdef'); // selected EW arm in the route colour
+    // Two grey beds: the selected arm's full bed + the unselected arm's stub.
+    expect(fills.filter((f) => f === '#666666')).toHaveLength(2);
+    expect(fills).not.toContain('#0a0a0c'); // not erased to the background
+    expect(fills).not.toContain('rgb(34, 34, 34)'); // not dim-tinted (darkenColor)
   });
 });
 
