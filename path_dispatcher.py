@@ -707,6 +707,38 @@ class PathDispatcher:
     # v1 Public API: create_path / extend_path / cancel_path
     # ========================================================================
 
+    def _reject(
+        self,
+        failure_kind: PathAcquisitionFailureKind,
+        reason: str,
+        requested_destination_direction: str,
+        requested_destination_block_id: Optional[str] = None,
+        path_id: Optional[str] = None,
+        authority_end_block_id: Optional[str] = None,
+    ) -> PathAcquisitionResult:
+        """Build a `success=False` PathAcquisitionResult for create_path /
+        extend_path validation guards.
+
+        Fills the fields every rejection shares (`success=False`, the caller's
+        requested direction, the structured `failure_kind`, and the `reason`
+        text) from the arguments; the per-guard fields that some rejections
+        omit (`requested_destination_block_id`, `path_id`,
+        `authority_end_block_id`) default to `None`, which matches the
+        `PathAcquisitionResult` field defaults, so a guard that did not set one
+        gets exactly the same value as before. Each call site passes its block
+        id with the same expression it used inline (plain pass-through vs
+        `... or None`), so an empty-string block id renders identically.
+        """
+        return PathAcquisitionResult(
+            success=False,
+            failure_kind=failure_kind,
+            path_id=path_id,
+            requested_destination_block_id=requested_destination_block_id,
+            requested_destination_direction=requested_destination_direction,
+            authority_end_block_id=authority_end_block_id,
+            reason=reason,
+        )
+
     def create_path(
         self,
         train_id: str = "",
@@ -734,8 +766,7 @@ class PathDispatcher:
         """
         # Validate direction.
         if requested_destination_direction not in ("forward", "reverse"):
-            return PathAcquisitionResult(
-                success=False,
+            return self._reject(
                 failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
                 requested_destination_block_id=requested_destination_block_id or None,
                 requested_destination_direction=requested_destination_direction,
@@ -743,8 +774,7 @@ class PathDispatcher:
             )
 
         if not train_id:
-            return PathAcquisitionResult(
-                success=False,
+            return self._reject(
                 failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
                 requested_destination_block_id=requested_destination_block_id or None,
                 requested_destination_direction=requested_destination_direction,
@@ -753,8 +783,7 @@ class PathDispatcher:
 
         train = self._get_train(train_id)
         if train is None:
-            return PathAcquisitionResult(
-                success=False,
+            return self._reject(
                 failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
                 requested_destination_block_id=requested_destination_block_id or None,
                 requested_destination_direction=requested_destination_direction,
@@ -762,15 +791,13 @@ class PathDispatcher:
             )
 
         if not requested_destination_block_id:
-            return PathAcquisitionResult(
-                success=False,
+            return self._reject(
                 failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
                 requested_destination_direction=requested_destination_direction,
                 reason="requested_destination_block_id required",
             )
         if requested_destination_block_id not in self.network.blocks:
-            return PathAcquisitionResult(
-                success=False,
+            return self._reject(
                 failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
@@ -784,8 +811,7 @@ class PathDispatcher:
         # failure kind.
         existing = self.get_active_path(train_id)
         if existing is not None:
-            return PathAcquisitionResult(
-                success=False,
+            return self._reject(
                 failure_kind=PathAcquisitionFailureKind.TRAIN_ALREADY_HAS_ACTIVE_PATH,
                 path_id=existing.path_id,
                 requested_destination_block_id=requested_destination_block_id,
@@ -797,8 +823,7 @@ class PathDispatcher:
         # cab-selected train, and the same-block rejection key below).
         head_block = self._get_current_block_id_for_train(train)
         if not head_block:
-            return PathAcquisitionResult(
-                success=False,
+            return self._reject(
                 failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
@@ -814,8 +839,7 @@ class PathDispatcher:
         # spanned block (the tail) is a turnaround and still falls through to the
         # normal cab-flip candidate search below.
         if head_block == requested_destination_block_id:
-            return PathAcquisitionResult(
-                success=False,
+            return self._reject(
                 failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
@@ -848,8 +872,7 @@ class PathDispatcher:
             manual_override=manual_override,
         )
         if not candidates:
-            return PathAcquisitionResult(
-                success=False,
+            return self._reject(
                 failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
@@ -873,8 +896,7 @@ class PathDispatcher:
             )
         ]
         if not non_revisit_candidates:
-            return PathAcquisitionResult(
-                success=False,
+            return self._reject(
                 failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
@@ -1056,8 +1078,7 @@ class PathDispatcher:
             head_switch_reason = "cannot create best-effort authority while head is on a switch"
             if last_failed_resource_id:
                 head_switch_reason += f" (blocked at {last_failed_resource_id})"
-            return PathAcquisitionResult(
-                success=False,
+            return self._reject(
                 failure_kind=PathAcquisitionFailureKind.HEAD_ON_SWITCH_NO_BLOCK_AUTHORITY,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
@@ -1066,8 +1087,7 @@ class PathDispatcher:
         blocked_reason = last_reason or "All candidate paths blocked"
         if last_failed_resource_id and last_failed_resource_id not in blocked_reason:
             blocked_reason = f"{blocked_reason} (blocked at {last_failed_resource_id})"
-        return PathAcquisitionResult(
-            success=False,
+        return self._reject(
             failure_kind=PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET,
             requested_destination_block_id=requested_destination_block_id,
             requested_destination_direction=requested_destination_direction,
@@ -1091,8 +1111,7 @@ class PathDispatcher:
         explicitly chose to use manual resources.
         """
         if requested_destination_direction not in ("forward", "reverse"):
-            return PathAcquisitionResult(
-                success=False,
+            return self._reject(
                 failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
                 path_id=path_id or None,
                 requested_destination_block_id=requested_destination_block_id or None,
@@ -1102,8 +1121,7 @@ class PathDispatcher:
 
         path = self.paths.get(path_id)
         if path is None or path.status != PathStatus.ACTIVE:
-            return PathAcquisitionResult(
-                success=False,
+            return self._reject(
                 failure_kind=PathAcquisitionFailureKind.MISSING_OR_INACTIVE_PATH,
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id or None,
@@ -1112,8 +1130,7 @@ class PathDispatcher:
             )
 
         if not requested_destination_block_id:
-            return PathAcquisitionResult(
-                success=False,
+            return self._reject(
                 failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
                 path_id=path_id,
                 requested_destination_direction=requested_destination_direction,
@@ -1123,8 +1140,7 @@ class PathDispatcher:
 
         existing_blocks = path.get_all_blocks()
         if requested_destination_block_id in existing_blocks:
-            return PathAcquisitionResult(
-                success=False,
+            return self._reject(
                 failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
@@ -1136,8 +1152,7 @@ class PathDispatcher:
         train_id = path.train_id
         train = self._get_train(train_id) if train_id else None
         if train is None:
-            return PathAcquisitionResult(
-                success=False,
+            return self._reject(
                 failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
@@ -1160,8 +1175,7 @@ class PathDispatcher:
             manual_override=manual_override,
         )
         if not candidates:
-            return PathAcquisitionResult(
-                success=False,
+            return self._reject(
                 failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
@@ -1182,8 +1196,7 @@ class PathDispatcher:
             if self._segment_continues_forward(path, cand.walk)
         ]
         if not forward_candidates:
-            return PathAcquisitionResult(
-                success=False,
+            return self._reject(
                 failure_kind=PathAcquisitionFailureKind.INVALID_REVERSE,
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
@@ -1215,8 +1228,7 @@ class PathDispatcher:
             )
         ]
         if not non_revisit_candidates:
-            return PathAcquisitionResult(
-                success=False,
+            return self._reject(
                 failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
@@ -1409,8 +1421,7 @@ class PathDispatcher:
         # not stored — `get_active_path_progress` recomputes it live (the
         # `waiting_for_block_id` live-recompute rule in design_new.md "Data Flow
         # To UI", API payload ownership).
-        return PathAcquisitionResult(
-            success=False,
+        return self._reject(
             failure_kind=PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET,
             path_id=path_id,
             requested_destination_block_id=requested_destination_block_id,
