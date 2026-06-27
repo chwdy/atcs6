@@ -525,7 +525,7 @@ class RouteExecutor:
         """Return the train's currently-RUNNING `RouteRun`, or ``None``.
 
         Per design_new.md: a derived read keyed on
-        ``current_route_status.state == RUNNING``. Phases 1, 2, 3, and route
+        ``current_route_status == RUNNING``. Phases 1, 2, 3, and route
         callbacks all use this accessor (rather than reading the underlying
         dict slot directly) so a stale DEACTIVATED/FINISHED row in the
         registry is never observed as the active run.
@@ -2219,7 +2219,7 @@ class RouteExecutor:
             return
         # Per design_new.md: deviation is purely the `path_cancelled` latch
         # plus the derived `display_state` projection. The stored
-        # `current_route_status.state` does not transition to DEVIATED.
+        # `current_route_status` does not transition to DEVIATED.
         exec_state.path_cancelled = True
         # Per design_new.md (fix #17): record cancellation reason on last_error.
         now = self._now()
@@ -2444,7 +2444,7 @@ class RouteExecutor:
           1. If the controller is in `RUNNING_AT_STATION`, call
              `TrainController.finish_dwell()` to exit dwell into READY first.
           2. Call `Route.unassign_train(train_id)` on the run's `route_id`.
-          3. Set `current_route_status.state = DEACTIVATED` and archive the
+          3. Set `current_route_status = DEACTIVATED` and archive the
              row as a historical run (visible to `history_for_train(...)`).
              The derived `execution_state_for(train_id)` no longer returns it.
 

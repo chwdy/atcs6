@@ -154,7 +154,7 @@ class RouteStartMode(Enum):
 class RouteRunStatus(Enum):
     """Per-run lifecycle state.
 
-    Per design_new.md `current_route_status.state` enum. v1 stores exactly
+    Per design_new.md `current_route_status` enum. v1 stores exactly
     these three states; deviation is expressed via the `path_cancelled`
     latch on `RouteRun` and surfaced through the derived `display_state`
     projection. Runtime branching keys on controller state, latches, and
