@@ -148,122 +148,7 @@ class SwitchManager:
         On any failure, release the locks recorded in this call and return a
         failure result.
         """
-        # Fix #12: expand primary requests to include flank-protection requests.
-        # Per design_new.md line 938 — for each main switch claim, enumerate
-        # `switch.flank_protection` and append a flank request with
-        # `source_switch_id = main_switch.switch_id`. The existing
-        # `acquire_locks_for_segment` already handles flank claims
-        # (source_switch_id != None); only the producer was missing.
-        #
-        # A switch the path traverses as a primary (a route point) is set and
-        # locked by its own main claim; it must NOT also be flank-locked by a
-        # sibling switch on the same path. When two switches sit in series on a
-        # route (e.g. the demo throat SW_XOVER_N -> SW_LEAD onto the depot
-        # lead), each is in the other's flank_protection list, so without this
-        # guard one switch's flank claim pins the other to the opposite state
-        # and `Switch.acquire_lock` then rejects that switch's own primary
-        # claim — the whole path acquisition fails and no route through the
-        # throat can ever form. A route point provides its own flank protection
-        # by being correctly thrown, so skip flank claims that target another
-        # primary on this same request set (design_new.md "Flank Protection
-        # Computation").
-        primary_switch_ids = {
-            req.switch_id for req in requests if req.source_switch_id is None
-        }
-
-        # Same-path conflict exemption (the switch-"triangle" case). Pre-compute
-        # the safe_state that each primary's flank protection would demand of
-        # each non-route-point neighbour. When two primaries on THIS path demand
-        # opposite states of the same neighbour, no single position aims that
-        # neighbour away from both route points: it sits at the apex of a switch
-        # triangle with one route point on each of its two diverging legs (e.g.
-        # the depot-lead crossover apex, whose legs reach SW_LEAD on the
-        # mainline and SW_8_10 on the N track). It therefore cannot flank-protect
-        # this path at all, and locking it to either state would reject one
-        # route point's own primary. Leave it unlocked rather than fail the
-        # segment — the path's own block and switch reservations still keep a
-        # second train from intruding through it. This generalises the
-        # route-point exemption below (design_new.md "switch-first acquisition
-        # step"): a path is never blocked by its own flank protection.
-        flank_demands: Dict[str, Set[int]] = {}
-        for req in requests:
-            if req.source_switch_id is not None:
-                continue
-            main_switch = self._switch_registry.get(req.switch_id)
-            if main_switch is None:
-                continue
-            for neighbour_switch_id, blocking_state in main_switch.flank_protection:
-                if neighbour_switch_id in primary_switch_ids:
-                    continue
-                flank_demands.setdefault(neighbour_switch_id, set()).add(
-                    1 - blocking_state
-                )
-
-        # The two route points whose flank claims conflict at the apex need not
-        # arrive in the same call. In best_effort the switch-first probe
-        # truncates a path into separately-acquired segments (design_new.md
-        # "switch-first acquisition step"), so the earlier route point may
-        # already be committed, with its flank claim recorded on the apex — as
-        # a future flank lock keyed (path_id, earlier_route_point) before the
-        # train reaches it, or as a train_protection_claim owned by this train
-        # once the train has physically entered it. Fold those already-held
-        # opposite-state demands in so a later segment recognises the apex
-        # conflict and exempts it, exactly as the single-call case does.
-        # Without this, segment 1's flank lock pins the apex and segment 2's
-        # route point is rejected on it — a depot-lead return leg that
-        # truncates between its two crossover route points could never
-        # traverse the second one.
-        for neighbour_switch_id in list(flank_demands.keys()):
-            neighbour = self._switch_registry.get(neighbour_switch_id)
-            if neighbour is None:
-                continue
-            for (lock_path_id, lock_source), (_lt, lock_state) in (
-                neighbour.locks.items()
-            ):
-                if lock_path_id == path_id and lock_source is not None:
-                    flank_demands[neighbour_switch_id].add(int(lock_state))
-            for (claim_train_id, _src, claim_state) in (
-                neighbour.train_protection_claims
-            ):
-                if claim_train_id == train_id:
-                    flank_demands[neighbour_switch_id].add(int(claim_state))
-        conflicted_neighbours = {
-            nid for nid, states in flank_demands.items() if len(states) > 1
-        }
-
-        expanded: List[SwitchLockRequest] = []
-        for req in requests:
-            expanded.append(req)
-            if req.source_switch_id is not None:
-                # Already a flank request; don't double-expand.
-                continue
-            main_switch = self._switch_registry.get(req.switch_id)
-            if main_switch is None:
-                continue
-            for neighbour_switch_id, blocking_state in main_switch.flank_protection:
-                if neighbour_switch_id in primary_switch_ids:
-                    # Route-point exemption: this neighbour is a route point on
-                    # the same path; its own main claim governs its state.
-                    # Flank-locking it here would make the path self-conflict.
-                    continue
-                if neighbour_switch_id in conflicted_neighbours:
-                    # Same-path conflict exemption (triangle apex): two route
-                    # points on this path demand opposite states of this
-                    # neighbour, so it cannot protect the path. Leave it
-                    # unlocked rather than fail the segment (see above).
-                    continue
-                # design_new.md:687/990: lock the neighbour to the SAFE state,
-                # which is the binary complement of the blocking_state (the
-                # state that would aim the neighbour's branch toward this
-                # switch). v1 switches are binary, so safe_state = 1 - blocking.
-                safe_state = 1 - blocking_state
-                expanded.append(
-                    SwitchLockRequest(
-                        switch_id=neighbour_switch_id,
-                        locked_state=safe_state,
-                        source_switch_id=req.switch_id,
-                    )
-                )
+        expanded = self._expand_flank_requests(requests, path_id, train_id)
 
         recorded: List[SwitchLockRequest] = []
         for req in expanded:
@@ -365,6 +250,96 @@ class SwitchManager:
             success=True,
             locked_switch_ids=[r.switch_id for r in recorded],
         )
+
+    def _expand_flank_requests(
+        self,
+        requests: List[SwitchLockRequest],
+        path_id: str,
+        train_id: str,
+    ) -> List[SwitchLockRequest]:
+        """Expand primary switch claims with their flank-protection claims.
+
+        For each primary (route-point) claim, append a flank request locking
+        every `switch.flank_protection` neighbour to its safe state (the binary
+        complement of the blocking state). Two exemptions keep a path from
+        flank-locking a switch against itself (design_new.md "Flank Protection
+        Computation"):
+
+        - Route-point exemption: a neighbour that is itself a primary on this
+          same path is governed by its own main claim; flank-locking it would
+          make the path self-conflict.
+        - Triangle-apex exemption: when two primaries on this path demand
+          opposite states of one neighbour, it sits at the apex of a switch
+          triangle and cannot protect the path at all — leave it unlocked
+          rather than fail the segment (the path's own block/switch
+          reservations still keep a second train out). The two primaries may
+          arrive in separate best-effort segments, so states already pinned by
+          an earlier segment (its flank locks for this path, or this train's
+          protection claims on the neighbour) are folded into the conflict
+          test.
+        """
+        primary_switch_ids = {
+            req.switch_id for req in requests if req.source_switch_id is None
+        }
+
+        # Per-neighbour safe states this path's primaries demand, including any
+        # already pinned by an earlier best-effort segment; >1 distinct state
+        # marks a conflicted triangle apex.
+        flank_demands: Dict[str, Set[int]] = {}
+        for req in requests:
+            if req.source_switch_id is not None:
+                continue
+            main_switch = self._switch_registry.get(req.switch_id)
+            if main_switch is None:
+                continue
+            for neighbour_switch_id, blocking_state in main_switch.flank_protection:
+                if neighbour_switch_id in primary_switch_ids:
+                    continue
+                flank_demands.setdefault(neighbour_switch_id, set()).add(
+                    1 - blocking_state
+                )
+        for neighbour_switch_id in list(flank_demands.keys()):
+            neighbour = self._switch_registry.get(neighbour_switch_id)
+            if neighbour is None:
+                continue
+            for (lock_path_id, lock_source), (_lt, lock_state) in (
+                neighbour.locks.items()
+            ):
+                if lock_path_id == path_id and lock_source is not None:
+                    flank_demands[neighbour_switch_id].add(int(lock_state))
+            for (claim_train_id, _src, claim_state) in (
+                neighbour.train_protection_claims
+            ):
+                if claim_train_id == train_id:
+                    flank_demands[neighbour_switch_id].add(int(claim_state))
+        conflicted_neighbours = {
+            nid for nid, states in flank_demands.items() if len(states) > 1
+        }
+
+        expanded: List[SwitchLockRequest] = []
+        for req in requests:
+            expanded.append(req)
+            if req.source_switch_id is not None:
+                # Already a flank request; don't double-expand.
+                continue
+            main_switch = self._switch_registry.get(req.switch_id)
+            if main_switch is None:
+                continue
+            for neighbour_switch_id, blocking_state in main_switch.flank_protection:
+                if neighbour_switch_id in primary_switch_ids:
+                    continue  # route-point exemption (see docstring)
+                if neighbour_switch_id in conflicted_neighbours:
+                    continue  # triangle-apex exemption (see docstring)
+                # v1 switches are binary, so safe_state = 1 - blocking_state.
+                safe_state = 1 - blocking_state
+                expanded.append(
+                    SwitchLockRequest(
+                        switch_id=neighbour_switch_id,
+                        locked_state=safe_state,
+                        source_switch_id=req.switch_id,
+                    )
+                )
+        return expanded
 
     def _rollback(
         self, recorded: List[SwitchLockRequest], path_id: str
