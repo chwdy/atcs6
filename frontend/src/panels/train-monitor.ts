@@ -178,7 +178,7 @@ class TrainMonitor {
         this.upcomingEl = document.getElementById('monitor-upcoming')!;
         this.upcomingContainer = document.getElementById('monitor-upcoming-container')!;
         this.upcomingCountEl = document.getElementById('monitor-upcoming-count')!;
-        this.monitorContent = document.querySelector('.train-monitor-content')!;
+        this.monitorContent = document.querySelector('.tm-content')!;
         this.resizerEl = document.getElementById('train-monitor-resizer')!;
         this.closeBtn = document.getElementById('train-monitor-close')!;
         
