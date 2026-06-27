@@ -3559,6 +3559,56 @@ class TrainController:
             safety_margin_cm=safety_margin_cm,
         )
 
+    def _sum_matching_back_walk(
+        self,
+        resource_sequence: List[Any],
+        head_resource_index: int,
+        head_tile_index: int,
+        match_id: Optional[str],
+        key_fn,
+    ) -> Tuple[float, int]:
+        """Sum tile lengths walking backward from the head while a tile's id
+        (via `key_fn`) stays equal to `match_id`; stop at the first mismatch.
+
+        Returns `(length_cm, tile_count)`. Used for both the head block's tail
+        (`key_fn = block_section_id`) and the head station's tail (`key_fn =
+        station_id`): the tiles before the head that share its block / platform,
+        so the chart frame can sit behind the train marker instead of pinned to
+        it. Walks the head resource's pre-head tiles first, then earlier
+        resources, stopping as soon as a tile's id differs.
+        """
+        length_cm = 0.0
+        tile_count = 0
+        if not match_id:
+            return length_cm, tile_count
+        stop = False
+        for prev_tile in reversed(
+            resource_sequence[head_resource_index].path_tiles[:head_tile_index]
+        ):
+            prev_track = self.network.get_track(prev_tile.x, prev_tile.y)
+            if (key_fn(prev_track) if prev_track else None) != match_id:
+                stop = True
+                break
+            length_cm += self.network._get_tile_length_cm(
+                prev_tile.x, prev_tile.y
+            )
+            tile_count += 1
+        if not stop:
+            for r_idx in range(head_resource_index - 1, -1, -1):
+                earlier = resource_sequence[r_idx]
+                for prev_tile in reversed(earlier.path_tiles):
+                    prev_track = self.network.get_track(prev_tile.x, prev_tile.y)
+                    if (key_fn(prev_track) if prev_track else None) != match_id:
+                        stop = True
+                        break
+                    length_cm += self.network._get_tile_length_cm(
+                        prev_tile.x, prev_tile.y
+                    )
+                    tile_count += 1
+                if stop:
+                    break
+        return length_cm, tile_count
+
     def _compute_canonical_lookahead_impl(self) -> Dict[str, Any]:
         train = self._get_train()
         if not train or not self.network:
@@ -3757,39 +3807,13 @@ class TrainController:
         # same block_id and lie before the head in tail→authority order. The
         # walk extends backward through the head resource, then through any
         # earlier resources that still belong to the same block.
-        block_back_length_cm = 0.0
-        block_back_tile_count = 0
-        if current_block_id:
-            stop = False
-            for prev_tile in reversed(
-                resource_sequence[head_resource_index].path_tiles[:head_tile_index]
-            ):
-                prev_track = self.network.get_track(prev_tile.x, prev_tile.y)
-                prev_block_id = prev_track.block_section_id if prev_track else None
-                if prev_block_id != current_block_id:
-                    stop = True
-                    break
-                block_back_length_cm += self.network._get_tile_length_cm(
-                    prev_tile.x, prev_tile.y
-                )
-                block_back_tile_count += 1
-            if not stop:
-                for r_idx in range(head_resource_index - 1, -1, -1):
-                    earlier = resource_sequence[r_idx]
-                    for prev_tile in reversed(earlier.path_tiles):
-                        prev_track = self.network.get_track(prev_tile.x, prev_tile.y)
-                        prev_block_id = (
-                            prev_track.block_section_id if prev_track else None
-                        )
-                        if prev_block_id != current_block_id:
-                            stop = True
-                            break
-                        block_back_length_cm += self.network._get_tile_length_cm(
-                            prev_tile.x, prev_tile.y
-                        )
-                        block_back_tile_count += 1
-                    if stop:
-                        break
+        block_back_length_cm, block_back_tile_count = self._sum_matching_back_walk(
+            resource_sequence,
+            head_resource_index,
+            head_tile_index,
+            current_block_id,
+            lambda t: t.block_section_id,
+        )
 
         # When recovery picked up a same-block prefix that the path doesn't
         # enumerate (head sits behind path[0] in the same block), fold that
@@ -3807,45 +3831,13 @@ class TrainController:
         head_platform_id: Optional[str] = (
             head_track.station_id if head_track else None
         )
-        station_back_length_cm = 0.0
-        station_back_tile_count = 0
-        if head_platform_id:
-            stop = False
-            for prev_tile in reversed(
-                resource_sequence[head_resource_index].path_tiles[:head_tile_index]
-            ):
-                prev_track = self.network.get_track(prev_tile.x, prev_tile.y)
-                prev_platform_id = (
-                    prev_track.station_id if prev_track else None
-                )
-                if prev_platform_id != head_platform_id:
-                    stop = True
-                    break
-                station_back_length_cm += self.network._get_tile_length_cm(
-                    prev_tile.x, prev_tile.y
-                )
-                station_back_tile_count += 1
-            if not stop:
-                for r_idx in range(head_resource_index - 1, -1, -1):
-                    earlier = resource_sequence[r_idx]
-                    for prev_tile in reversed(earlier.path_tiles):
-                        prev_track = self.network.get_track(
-                            prev_tile.x, prev_tile.y
-                        )
-                        prev_platform_id = (
-                            prev_track.station_id if prev_track else None
-                        )
-                        if prev_platform_id != head_platform_id:
-                            stop = True
-                            break
-                        station_back_length_cm += (
-                            self.network._get_tile_length_cm(
-                                prev_tile.x, prev_tile.y
-                            )
-                        )
-                        station_back_tile_count += 1
-                    if stop:
-                        break
+        station_back_length_cm, station_back_tile_count = self._sum_matching_back_walk(
+            resource_sequence,
+            head_resource_index,
+            head_tile_index,
+            head_platform_id,
+            lambda t: t.station_id,
+        )
 
         current_block_start_cm = (
             cumulative_distance_cm - block_back_length_cm
