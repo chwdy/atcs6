@@ -1979,108 +1979,13 @@ class PathDispatcher:
         )
         for prefix_block_count in range(start, 1, -1):
             prefix_blocks = segment.blocks[:prefix_block_count]
-            terminal_block_id = prefix_blocks[-1]
-            # `prefix_block_count` can exceed the block count when `start` was
-            # clamped up to the 2-block floor on a short segment; there is no
-            # dropped "next" block then, so the exclusions below do not apply.
-            dropped_a_block = prefix_block_count < len(segment.blocks)
-            # Reversal-trap exclusion (design_new.md best-effort
-            # `create_path()`, item 11): if the next, blocked block is occupied
-            # by a stopped train whose next route move would leave it back
-            # through this terminal block, parking here would trap the two
-            # trains nose-to-nose. Truncate to a shorter prefix instead. This
-            # exclusion stays absolute — a holding point that traps a reversing
-            # train ahead is not an eligible terminal.
-            if (
-                dropped_a_block
-                and self._terminal_traps_reversing_occupant(
-                    next_block_id=segment.blocks[prefix_block_count],
-                    terminal_block_id=terminal_block_id,
-                    train_id=train_id,
-                )
+            if not self._prefix_terminal_is_eligible(
+                segment, prefix_blocks, train_id, waypoint_targets
             ):
                 continue
-            # Holding-point preference (design_new.md item 11, line 1041): a
-            # holding-point terminal is the operator's explicit safe-wait place,
-            # so choosing it overrides the switch-based junction-fouling back-off
-            # below. A holding point that is a `task_kind == "waypoint"` resolved
-            # target is not eligible here (the waypoint-target exclusion, applied
-            # after acquisition, stays absolute), so it is excluded from this
-            # check and falls through to the ordinary back-off. The loop is
-            # longest-first, so the first eligible holding point it accepts is
-            # the furthest-forward one.
-            terminal_is_holding_point = (
-                dropped_a_block
-                and self._block_is_holding_point(terminal_block_id)
-                and terminal_block_id not in waypoint_targets
+            cutoff_tiles = self._compute_prefix_cutoff_tiles(
+                segment, prefix_blocks
             )
-            # "Stay back one switch" exclusion: never park a truncated
-            # best-effort authority on a TWO-WAY block that the path enters
-            # straight off a switch. Stopping there fouls the junction and
-            # invites a head-on (an opposing move can still come through that
-            # switch). A ONE-WAY block (`allowed_travel_directions` restricted
-            # to a single direction) is exempt — no opposing traversal is
-            # allowed, so trains may pack tight right up to it (e.g. the
-            # one-way S2<->S3 corridor). Unlike `_terminal_traps_reversing_
-            # occupant`, this is occupancy-independent: it holds back from the
-            # junction even before any opposing train has arrived, so it has no
-            # timing window. Applies only when a further block was dropped and
-            # the terminal is not an eligible holding point (the holding-point
-            # preference above overrides it).
-            if (
-                not terminal_is_holding_point
-                and dropped_a_block
-                and self._terminal_fouls_two_way_switch_block(
-                    segment, terminal_block_id
-                )
-            ):
-                continue
-            # Compute prefix tile cutoff. Block tiles are kept while their
-            # block_section_id is in `prefix_blocks`. A switch tile is kept
-            # only when the next non-switch tile in path order belongs to a
-            # kept block — i.e. the switch sits inside the prefix, not at
-            # the boundary to a dropped block. Per design_new.md ":891" the
-            # stored live authority is always block-terminated, and per
-            # ":938" truncation must land "before that failed switch", so a
-            # boundary switch must not appear in the truncated segment.
-            cutoff_tiles: List[Tuple[int, int]] = []
-            n_tiles = len(segment.tiles)
-            i = 0
-            while i < n_tiles:
-                tile = segment.tiles[i]
-                track = self.network.get_track(*tile)
-                if track is None:
-                    i += 1
-                    continue
-                if track.is_switch:
-                    # Look ahead to the next non-switch tile; include this
-                    # switch only if that tile belongs to a kept block.
-                    next_in_prefix = False
-                    j = i + 1
-                    while j < n_tiles:
-                        next_track = self.network.get_track(*segment.tiles[j])
-                        if next_track is None:
-                            j += 1
-                            continue
-                        if next_track.is_switch:
-                            j += 1
-                            continue
-                        next_in_prefix = (
-                            next_track.block_section_id in prefix_blocks
-                        )
-                        break
-                    if next_in_prefix:
-                        cutoff_tiles.append(tile)
-                        i += 1
-                        continue
-                    # Boundary switch to a dropped block: truncate here.
-                    break
-                if track.block_section_id in prefix_blocks:
-                    cutoff_tiles.append(tile)
-                    i += 1
-                else:
-                    # Stop at first tile of an excluded block.
-                    break
             cutoff_switches: Dict[Tuple[int, int], int] = {}
             for pos, st in segment.required_switches.items():
                 if pos in cutoff_tiles:
@@ -2110,6 +2015,116 @@ class PathDispatcher:
                 return truncated
             self._rollback_segment(truncated, path_id)
         return None
+
+    def _prefix_terminal_is_eligible(
+        self,
+        segment: PathSegment,
+        prefix_blocks: List[str],
+        train_id: str,
+        waypoint_targets: Set[str],
+    ) -> bool:
+        """Whether a best-effort prefix may terminate on its last block.
+
+        Returns False when this prefix must be skipped in favour of a shorter
+        one. Two absolute exclusions apply, but only when a further block was
+        dropped — a full-length prefix drops nothing, so neither applies:
+
+        - Reversal trap (design_new.md best-effort ``create_path()``, item
+          11): the next, blocked block holds a stopped train whose next route
+          move would come back through this terminal, trapping both
+          nose-to-nose.
+        - Two-way-switch foul ("stay back one switch"): never park on a
+          TWO-WAY block entered straight off a switch — stopping there fouls
+          the junction and invites a head-on. A ONE-WAY block
+          (``allowed_travel_directions`` restricted to one direction) is
+          exempt; it is occupancy-independent, so unlike the reversal trap it
+          has no timing window.
+
+        A holding-point terminal is the operator's explicit safe-wait place,
+        so it overrides the two-way-switch foul — except a holding point that
+        is a resolved ``waypoint`` target, which falls through to the ordinary
+        back-off (the waypoint-target exclusion stays absolute and is applied
+        after acquisition).
+        """
+        prefix_block_count = len(prefix_blocks)
+        # `prefix_block_count` can equal the block count when `start` was
+        # clamped up to the 2-block floor on a short segment; nothing is
+        # dropped then, so the exclusions below do not apply.
+        if prefix_block_count >= len(segment.blocks):
+            return True
+        terminal_block_id = prefix_blocks[-1]
+        if self._terminal_traps_reversing_occupant(
+            next_block_id=segment.blocks[prefix_block_count],
+            terminal_block_id=terminal_block_id,
+            train_id=train_id,
+        ):
+            return False
+        terminal_is_holding_point = (
+            self._block_is_holding_point(terminal_block_id)
+            and terminal_block_id not in waypoint_targets
+        )
+        if (
+            not terminal_is_holding_point
+            and self._terminal_fouls_two_way_switch_block(
+                segment, terminal_block_id
+            )
+        ):
+            return False
+        return True
+
+    def _compute_prefix_cutoff_tiles(
+        self, segment: PathSegment, prefix_blocks: List[str]
+    ) -> List[Tuple[int, int]]:
+        """Tiles of `segment` that fall inside `prefix_blocks`, in path order.
+
+        A block tile is kept while its `block_section_id` is in
+        `prefix_blocks`. A switch tile is kept only when the next non-switch
+        tile in path order belongs to a kept block — i.e. the switch sits
+        inside the prefix, not at the boundary to a dropped block. Per
+        design_new.md ":891" the stored live authority is always
+        block-terminated, and per ":938" truncation must land "before that
+        failed switch", so a boundary switch must not appear in the truncated
+        segment.
+        """
+        cutoff_tiles: List[Tuple[int, int]] = []
+        n_tiles = len(segment.tiles)
+        i = 0
+        while i < n_tiles:
+            tile = segment.tiles[i]
+            track = self.network.get_track(*tile)
+            if track is None:
+                i += 1
+                continue
+            if track.is_switch:
+                # Look ahead to the next non-switch tile; include this
+                # switch only if that tile belongs to a kept block.
+                next_in_prefix = False
+                j = i + 1
+                while j < n_tiles:
+                    next_track = self.network.get_track(*segment.tiles[j])
+                    if next_track is None:
+                        j += 1
+                        continue
+                    if next_track.is_switch:
+                        j += 1
+                        continue
+                    next_in_prefix = (
+                        next_track.block_section_id in prefix_blocks
+                    )
+                    break
+                if next_in_prefix:
+                    cutoff_tiles.append(tile)
+                    i += 1
+                    continue
+                # Boundary switch to a dropped block: truncate here.
+                break
+            if track.block_section_id in prefix_blocks:
+                cutoff_tiles.append(tile)
+                i += 1
+            else:
+                # Stop at first tile of an excluded block.
+                break
+        return cutoff_tiles
 
     def _compute_block_traversals(
         self,
