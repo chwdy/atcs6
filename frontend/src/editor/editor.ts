@@ -20,10 +20,7 @@ import {
   tileSkipsSegment,
   validateBlockPath,
   getValidSignalDirections,
-  traceNodeKey,
-  type TraceNode,
 } from '../lib/pathfinders';
-import { graphSearch } from '../lib/graph-search';
 import {
   showConfirmModal,
   renderBitToggle,
@@ -46,8 +43,8 @@ import { TunnelEditorHandler } from './editor-tunnels';
 import type { SpeedProfileEditorHandler } from './editor-speed-profiles';
 import { EditorUIHandler } from './editor-ui';
 import { MultiSelectActionsHandler } from './editor-multi-select';
+import { SelectModesHandler } from './editor-select-modes';
 import { DragBuildHandler } from './editor-drag-build';
-import { showResourcePicker, dismissResourcePicker } from './resource-picker';
 import { renderToolGroups } from './tool-registry';
 import type { ToolContribution, ToolMode } from './tool-registry';
 
@@ -128,6 +125,7 @@ export class Editor {
   speedProfileHandler?: SpeedProfileEditorHandler;
   uiHandler: EditorUIHandler;
   multiSelectHandler: MultiSelectActionsHandler;
+  selectModesHandler: SelectModesHandler;
   dragBuildHandler: DragBuildHandler;
   _plugins: EditorPlugin[] = [];
   // Tool id → contribution, rebuilt on every renderToolbar(). The delegated
@@ -241,6 +239,7 @@ export class Editor {
     this.tunnelEditorHandler = new TunnelEditorHandler(this);
     this.uiHandler = new EditorUIHandler(this);
     this.multiSelectHandler = new MultiSelectActionsHandler(this);
+    this.selectModesHandler = new SelectModesHandler(this);
     this.dragBuildHandler = new DragBuildHandler(this);
 
     this.setupEventListeners();
@@ -718,31 +717,31 @@ export class Editor {
         id: 'trace', label: 'Trace', icon: 'ti ti-line',
         title: 'Trace (click two tracks to select the connecting path. Space clears, Delete removes tracks)',
         group: 'Selection', availableIn: ['edit'],
-        kind: { type: 'mode', factory: () => this._buildTraceSelectMode() },
+        kind: { type: 'mode', factory: () => this.selectModesHandler._buildTraceSelectMode() },
       },
       {
         id: 'box-select', label: 'Box', icon: 'ti ti-box-multiple',
         title: 'Box Select (drag a rectangle to mark tracks. Shift = remove. Space clears, Delete removes tracks)',
         group: 'Selection', availableIn: ['edit'],
-        kind: { type: 'mode', factory: () => this._buildBoxSelectMode() },
+        kind: { type: 'mode', factory: () => this.selectModesHandler._buildBoxSelectMode() },
       },
       {
         id: 'lasso-select', label: 'Lasso', icon: 'ti ti-lasso',
         title: 'Lasso Select (draw a shape around tracks to mark them. Shift = remove. Space clears, Delete removes tracks)',
         group: 'Selection', availableIn: ['edit'],
-        kind: { type: 'mode', factory: () => this._buildLassoSelectMode() },
+        kind: { type: 'mode', factory: () => this.selectModesHandler._buildLassoSelectMode() },
       },
       {
         id: 'paint-select', label: 'Brush', icon: 'ti ti-brush',
         title: 'Brush Select (click or drag to paint tracks into the selection. Shift = remove. Space clears, Delete removes tracks)',
         group: 'Selection', availableIn: ['edit'],
-        kind: { type: 'mode', factory: () => this._buildPaintSelectMode() },
+        kind: { type: 'mode', factory: () => this.selectModesHandler._buildPaintSelectMode() },
       },
       {
         id: 'entity-select', label: 'Entity', icon: 'ti ti-click',
         title: 'Entity Select (click a tile, then pick a block / platform / station — or all of them — to add its tracks to the selection. Space clears, Delete removes tracks)',
         group: 'Selection', availableIn: ['edit'],
-        kind: { type: 'mode', factory: () => this._buildEntitySelectMode() },
+        kind: { type: 'mode', factory: () => this.selectModesHandler._buildEntitySelectMode() },
       },
 
       {
@@ -931,37 +930,6 @@ export class Editor {
       });
   }
 
-  _buildBoxSelectMode(): any {
-    const resetState = () => {
-      this.boxSelectState.selectedKeys = new Set();
-      this.boxSelectState.dragScreenStart = null;
-      this.boxSelectState.dragScreenEnd = null;
-      this.boxSelectState.isDragging = false;
-      this.boxSelectState.shiftRemoving = false;
-      this._applyBoxSelection(new Set());
-      this.renderer.setBoxSelectRect(null);
-    };
-    return {
-      name: 'Box select',
-      toolName: 'box-select',
-      cancelMessage: 'Box select cancelled',
-      onEnter: () => {
-        resetState();
-        const status = this.$id('status-state');
-        if (status)
-          status.textContent =
-            'Box: drag to add, Shift+drag to remove, Space/right-click clears, Delete removes tracks';
-      },
-      onClick: () => true,
-      onExit: () => {
-        resetState();
-        const status = this.$id('status-state');
-        if (status) status.textContent = 'Ready';
-        this.renderer.requestRedraw();
-      },
-    };
-  }
-
   // Even-odd ray cast: returns true when (px, py) is inside the polygon.
   _pointInPolygon(px: number, py: number, polygon: any[]): boolean {
     let inside = false;
@@ -975,259 +943,6 @@ export class Editor {
       if (intersects) inside = !inside;
     }
     return inside;
-  }
-
-  _buildLassoSelectMode(): any {
-    const resetState = () => {
-      this.boxSelectState.selectedKeys = new Set();
-      this.lassoSelectState.screenPoints = [];
-      this.lassoSelectState.isDrawing = false;
-      this.lassoSelectState.shiftRemoving = false;
-      this._applyBoxSelection(new Set());
-      this.renderer.setLassoPath(null);
-    };
-    return {
-      name: 'Lasso select',
-      toolName: 'lasso-select',
-      cancelMessage: 'Lasso select cancelled',
-      onEnter: () => {
-        resetState();
-        const status = this.$id('status-state');
-        if (status)
-          status.textContent =
-            'Lasso: draw a shape to add, Shift to remove, Space/right-click clears, Delete removes tracks';
-      },
-      onClick: () => true,
-      onExit: () => {
-        resetState();
-        const status = this.$id('status-state');
-        if (status) status.textContent = 'Ready';
-        this.renderer.requestRedraw();
-      },
-    };
-  }
-
-  _buildPaintSelectMode(): any {
-    const resetState = () => {
-      this.boxSelectState.selectedKeys = new Set();
-      this.paintSelectState.isPainting = false;
-      this.paintSelectState.shiftRemoving = false;
-      this.paintSelectState.lastKey = null;
-      this._applyBoxSelection(new Set());
-    };
-    return {
-      name: 'Brush select',
-      toolName: 'paint-select',
-      cancelMessage: 'Brush select cancelled',
-      onEnter: () => {
-        resetState();
-        const status = this.$id('status-state');
-        if (status)
-          status.textContent =
-            'Brush: click or drag to add, Shift to remove, Space/right-click clears, Delete removes tracks';
-      },
-      onClick: () => true,
-      onExit: () => {
-        resetState();
-        const status = this.$id('status-state');
-        if (status) status.textContent = 'Ready';
-        this.renderer.requestRedraw();
-      },
-    };
-  }
-
-  // Entity select: click a tile, then choose which entity there — a block,
-  // platform, or station — to add ALL of that entity's tiles to the shared
-  // selection set. A tile with one entity selects it directly; a tile carrying
-  // several opens the resource picker (the same menu the route waypoint flow
-  // uses) with an extra "select all of them" row. Delete / Space / ESC act on
-  // the selection exactly as they do for box / lasso / brush / trace.
-  _buildEntitySelectMode(): any {
-    const resetState = () => {
-      this.boxSelectState.selectedKeys = new Set();
-      this._applyBoxSelection(new Set());
-    };
-    const setStatus = (text: string) => {
-      const status = this.$id('status-state');
-      if (status) status.textContent = text;
-    };
-    // Union a set of tiles into the selection and repaint.
-    const addTiles = (tiles: Set<string>) => {
-      tiles.forEach((k) => this.boxSelectState.selectedKeys.add(k));
-      this._applyBoxSelection(this.boxSelectState.selectedKeys);
-      this.renderer.requestRedraw();
-    };
-    return {
-      name: 'Entity select',
-      toolName: 'entity-select',
-      cancelMessage: 'Entity select cancelled',
-      onEnter: () => {
-        resetState();
-        setStatus(
-          'Entity: click a tile, then pick a block / platform / station — or all. Space/right-click clears, Delete removes tracks'
-        );
-      },
-      onClick: ({ gridPos, screenX, screenY }: any) => {
-        const track = this.cachedNetwork?.tracks?.find(
-          (t: any) => t.x === gridPos.x && t.y === gridPos.y
-        );
-        // _resourceOptionsAtTile resolves the block/platform/station at a tile —
-        // a layout op that currently lives on the route handler. Without the sim
-        // plugin there are no resolvable options (helper relocation is a follow-up).
-        const options = this.routeHandler?._resourceOptionsAtTile(gridPos, track) ?? [];
-        if (options.length === 0) {
-          setStatus('Entity: nothing here — click a track, platform, or station tile');
-          return true;
-        }
-        const selectOne = (opt: any) => {
-          const tiles = this._entityTileSet(opt);
-          addTiles(tiles);
-          showToast(
-            `Selected ${opt.label} — ${tiles.size} tile${tiles.size === 1 ? '' : 's'}`,
-            'success',
-            1800
-          );
-        };
-        // One entity on the tile: take it directly. Several: open the picker
-        // with each entity plus a "select all of them" row.
-        if (options.length === 1) {
-          selectOne(options[0]);
-          return true;
-        }
-        const pickerOptions = [
-          ...options,
-          { type: '__all__', label: 'Select all of them', variant: 'all' },
-        ];
-        showResourcePicker(screenX, screenY, pickerOptions, (opt: any) => {
-          if (opt.type !== '__all__') {
-            selectOne(opt);
-            return;
-          }
-          const union = new Set<string>();
-          options.forEach((o: any) => this._entityTileSet(o).forEach((k) => union.add(k)));
-          addTiles(union);
-          showToast(
-            `Selected all here — ${union.size} tile${union.size === 1 ? '' : 's'}`,
-            'success',
-            1800
-          );
-        });
-        return true;
-      },
-      onExit: () => {
-        dismissResourcePicker();
-        resetState();
-        setStatus('Ready');
-        this.renderer.requestRedraw();
-      },
-    };
-  }
-
-  // All "x,y" tiles that belong to a {type,id} resource, for entity-select.
-  // Reuses the route handler's position-set helpers so there is one source of
-  // truth for what a block / platform / station covers.
-  _entityTileSet(opt: any): Set<string> {
-    const rh = this.routeHandler;
-    if (!rh) return new Set();
-    if (opt.type === 'block') return rh.getBlockPositionSet(opt.id);
-    if (opt.type === 'platform') return rh.getPlatformPositionSet([opt.id]);
-    if (opt.type === 'station') {
-      const group = rh.getStationGroups().find((g: any) => g.station_id === opt.id);
-      return rh.getPlatformPositionSet(group?.platform_ids || []);
-    }
-    return new Set();
-  }
-
-  // Trace select: click a first track, then a second; selects every existing
-  // track on the path between them (found via the construction pathfinder) and
-  // adds them to the shared box-select selection set. Delete / Space / ESC act
-  // on that set exactly as they do for box / lasso / brush.
-  _buildTraceSelectMode(): any {
-    const resetState = () => {
-      this.boxSelectState.selectedKeys = new Set();
-      this._resetTraceAnchor();
-      this._applyBoxSelection(new Set());
-    };
-    const setStatus = (text: string) => {
-      const status = this.$id('status-state');
-      if (status) status.textContent = text;
-    };
-    return {
-      name: 'Trace select',
-      toolName: 'trace',
-      cancelMessage: 'Trace select cancelled',
-      onEnter: () => {
-        resetState();
-        setStatus('Trace: click the first track, then the second. Space/right-click clears, Delete removes tracks');
-      },
-      onClick: ({ gridPos }: any) => {
-        // If the selection was cleared (Space / ESC), the pending anchor is stale.
-        if (this.boxSelectState.selectedKeys.size === 0) {
-          this._resetTraceAnchor();
-        }
-        const tracks = this.cachedNetwork?.tracks || [];
-        const trackKeys = new Set(tracks.map((t: any) => `${t.x},${t.y}`));
-        const here = `${gridPos.x},${gridPos.y}`;
-
-        // Both endpoints must sit on an existing track.
-        if (!trackKeys.has(here)) {
-          setStatus(
-            this.traceSelectState.firstPoint
-              ? 'Trace: click the second track (must be on a track)'
-              : 'Trace: click a track to start'
-          );
-          return true;
-        }
-
-        if (!this.traceSelectState.firstPoint) {
-          // First endpoint: anchor it (yellow box-select) and light up every
-          // track tile reachable from it (orange) so the operator can see which
-          // tiles are valid second endpoints — the same "reachable" cue the
-          // Create / Extend Path tools paint via setReachableHighlights.
-          this.traceSelectState.firstPoint = { x: gridPos.x, y: gridPos.y };
-          this.boxSelectState.selectedKeys.add(here);
-          this._applyBoxSelection(this.boxSelectState.selectedKeys);
-          const reachable = this._traceReachableTiles(this.traceSelectState.firstPoint);
-          if (this.renderer.setReachableHighlights) {
-            this.renderer.setReachableHighlights(reachable);
-          }
-          this.renderer.requestRedraw();
-          setStatus(
-            reachable.size === 0
-              ? 'Trace: this track has no connected neighbours — Space to pick another'
-              : `Trace: click a highlighted track to select the path (${reachable.size} reachable)`
-          );
-          return true;
-        }
-
-        // Second endpoint: trace the path and add every existing track on it.
-        const a = this.traceSelectState.firstPoint;
-        const path = this._traceTrackPath(a, { x: gridPos.x, y: gridPos.y });
-        this.traceSelectState.firstPoint = null;
-        // The pick is resolved — drop the orange reachable overlay either way.
-        if (this.renderer.setReachableHighlights) {
-          this.renderer.setReachableHighlights(new Set());
-        }
-        if (path && path.length) {
-          for (const p of path) {
-            // Every tile on the path is an existing track by construction.
-            this.boxSelectState.selectedKeys.add(`${p.x},${p.y}`);
-          }
-          this._applyBoxSelection(this.boxSelectState.selectedKeys);
-          this.renderer.requestRedraw();
-          setStatus('Trace: click the first track, then the second');
-        } else {
-          showToast('No track path between those two tiles', 'info', 2500);
-          setStatus('Trace: no path found — click a new first track');
-        }
-        return true;
-      },
-      onExit: () => {
-        resetState();
-        setStatus('Ready');
-        this.renderer.requestRedraw();
-      },
-    };
   }
 
   // "x,y" → track map over cachedNetwork.tracks, rebuilt only when the tracks
@@ -1246,51 +961,6 @@ export class Editor {
     this._tracksByKeyCache = byKey;
     this._tracksByKeySource = tracks;
     return byKey;
-  }
-
-  // Walk the existing-track network from `start` to `goal`, following real
-  // segment connectivity (switch-aware), and return the ordered list of track
-  // tiles on the shortest connecting path — or null if they are not connected.
-  // Directed BFS keyed on (tile, entry edge): a tile is left only through the
-  // exits its track bits actually bind for the edge it was entered by, so the
-  // path cannot cheat across the disconnected segments of a switch.
-  _traceTrackPath(start: any, goal: any): Array<{ x: number; y: number }> | null {
-    const byKey = this._tracksByKey();
-    if (!byKey.has(`${start.x},${start.y}`) || !byKey.has(`${goal.x},${goal.y}`)) return null;
-
-    const { path } = graphSearch<TraceNode>({
-      seeds: [{ x: start.x, y: start.y, entry: '' }],
-      key: traceNodeKey,
-      neighbors: this.pathfinder.followExistingNeighbors(byKey),
-      goal: (n) => n.x === goal.x && n.y === goal.y,
-    });
-    return path ? path.map((n) => ({ x: n.x, y: n.y })) : null;
-  }
-
-  // Flood the existing-track network from `start` — same switch-aware directed
-  // BFS as _traceTrackPath, but without a goal — and return the set of "x,y"
-  // keys for every track tile reachable from it. These are exactly the valid
-  // second endpoints of a trace; the start tile is excluded since it already
-  // carries the yellow anchor highlight.
-  _traceReachableTiles(start: any): Set<string> {
-    const byKey = this._tracksByKey();
-    const startKey = `${start.x},${start.y}`;
-    const reachable = new Set<string>();
-    if (!byKey.has(startKey)) return reachable;
-
-    // No goal → graphSearch floods, settling every reachable (tile, entry)
-    // node. Collapse those to tile keys; the start tile is excluded since it
-    // already carries the yellow anchor highlight.
-    const { visited } = graphSearch<TraceNode>({
-      seeds: [{ x: start.x, y: start.y, entry: '' }],
-      key: traceNodeKey,
-      neighbors: this.pathfinder.followExistingNeighbors(byKey),
-    });
-    for (const node of visited.values()) {
-      const k = `${node.x},${node.y}`;
-      if (k !== startKey) reachable.add(k);
-    }
-    return reachable;
   }
 
   // Drop the pending trace anchor and clear the orange reachable-tile overlay.
