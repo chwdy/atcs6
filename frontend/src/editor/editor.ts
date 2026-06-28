@@ -45,7 +45,7 @@ import { EditorUIHandler } from './editor-ui';
 import { MultiSelectActionsHandler } from './editor-multi-select';
 import { SelectModesHandler } from './editor-select-modes';
 import { DragBuildHandler } from './editor-drag-build';
-import { renderToolGroups } from './tool-registry';
+import { ToolbarHandler } from './editor-toolbar';
 import type { ToolContribution, ToolMode } from './tool-registry';
 
 /**
@@ -127,6 +127,7 @@ export class Editor {
   multiSelectHandler: MultiSelectActionsHandler;
   selectModesHandler: SelectModesHandler;
   dragBuildHandler: DragBuildHandler;
+  toolbarHandler: ToolbarHandler;
   _plugins: EditorPlugin[] = [];
   // Tool id → contribution, rebuilt on every renderToolbar(). The delegated
   // toolbar click handler looks up the clicked tool here to dispatch by kind.
@@ -241,6 +242,7 @@ export class Editor {
     this.multiSelectHandler = new MultiSelectActionsHandler(this);
     this.selectModesHandler = new SelectModesHandler(this);
     this.dragBuildHandler = new DragBuildHandler(this);
+    this.toolbarHandler = new ToolbarHandler(this);
 
     this.setupEventListeners();
     // Keep the status-bar zoom % in sync with the camera no matter who changes
@@ -811,123 +813,24 @@ export class Editor {
     ];
   }
 
-  /**
-   * (Re)render the tool palette from the registry into `#tool-groups`, filtered
-   * to the current editor mode, and rebuild the id→contribution lookup. The rail
-   * shows Inspect plus one main button per group; a group button opens a flyout
-   * popover of that group's tools. Tools whose `availableIn` excludes the current
-   * mode are not rendered, and a group with no remaining tools shows no button.
-   * Safe to call repeatedly; no-ops if the mount is absent.
-   */
+  // The tool-rail controller (rendering, click dispatch, group popovers) lives
+  // on ToolbarHandler (editor-toolbar.ts). These shims keep the external call
+  // sites (app.ts, setupEventListeners) working.
+
   renderToolbar(): void {
-    const mount = this.$id('tool-groups');
-    if (!mount) return;
-    const contributions = this._collectToolContributions();
-    this._toolsById = new Map(contributions.map((c) => [c.id, c]));
-    renderToolGroups(contributions, mount, {
-      activeToolId: this.selectedTool || 'inspect',
-      mode: this.editorMode,
-    });
+    this.toolbarHandler.renderToolbar();
   }
 
-  /**
-   * Delegated click handler for the tool palette. A group button toggles its
-   * flyout popover; a tool button (in the rail or a popover) is dispatched and
-   * the popover is closed.
-   */
   async _onToolbarClick(e: Event): Promise<void> {
-    const t = e.target as HTMLElement;
-
-    const groupBtn = t.closest<HTMLElement>('.tool-group-btn');
-    if (groupBtn) {
-      const group = groupBtn.closest<HTMLElement>('.tool-group');
-      const wasOpen = group?.classList.contains('open');
-      this._closeToolPopovers();
-      if (group && !wasOpen) this._openGroupPopover(group);
-      return;
-    }
-
-    const toolBtn = t.closest<HTMLElement>('[data-tool]');
-    if (toolBtn) {
-      await this._dispatchTool(toolBtn);
-      this._closeToolPopovers();
-    }
+    return this.toolbarHandler._onToolbarClick(e);
   }
 
-  /**
-   * Dispatch a tool button by its contribution `kind`: action tools run and
-   * leave the active tool alone; tool/mode tools become the active tool (mode
-   * tools also enter their editor mode).
-   */
-  async _dispatchTool(btn: HTMLElement): Promise<void> {
-    const newTool = btn.dataset.tool || '';
-    const contribution = this._toolsById.get(newTool);
-    const oldTool = this.selectedTool;
-
-    // Action tools (panels/dialogs): run and leave the active tool unchanged.
-    if (contribution?.kind.type === 'action') {
-      contribution.kind.run();
-      return;
-    }
-
-    // Exit any active mode before switching tools.
-    if (this.activeMode) {
-      await this.exitMode();
-    }
-
-    // Auto-toggle block debug when entering/leaving block tools.
-    const isBlockTool = ['block', 'extend-block'].includes(newTool);
-    const wasBlockTool = ['block', 'extend-block'].includes(oldTool);
-    if (isBlockTool !== wasBlockTool) {
-      this.renderer.showBlockColorsOnly = isBlockTool;
-      this.host?.refreshNetwork();
-    }
-
-    if (contribution?.kind.type === 'mode') {
-      // enterMode sets the active tool via _setSelectedTool(mode.toolName).
-      await this.enterMode(contribution.kind.factory());
-    } else {
-      this._setSelectedTool(newTool);
-    }
-
-    this.previewPath = null;
-    this.previewTracks = null;
-    // Drop any lingering build/hover ghost from the previous tool.
-    this.renderer.setBuildPreview(null);
-    this.renderer.setHoverPreview(null);
-    this.hoverPosition = null;
-    this.hoverValid = false;
-    this.renderer.requestRedraw();
-  }
-
-  /** Open a group's flyout popover, positioned beside its button (clamped to the viewport). */
   _openGroupPopover(group: HTMLElement): void {
-    const btn = group.querySelector<HTMLElement>('.tool-group-btn');
-    const pop = group.querySelector<HTMLElement>('.tool-popover');
-    if (!btn || !pop) return;
-    group.classList.add('open');
-    btn.setAttribute('aria-expanded', 'true');
-    // The popover is position:fixed (so the sidebar's overflow can't clip it);
-    // place it just right of the button, then nudge up if it would overflow.
-    const r = btn.getBoundingClientRect();
-    pop.style.left = `${Math.round(r.right + 6)}px`;
-    const margin = 8;
-    let top = r.top;
-    const h = pop.offsetHeight;
-    if (top + h + margin > window.innerHeight) {
-      top = Math.max(margin, window.innerHeight - h - margin);
-    }
-    pop.style.top = `${Math.round(top)}px`;
+    this.toolbarHandler._openGroupPopover(group);
   }
 
-  /** Close any open tool-group popover. */
   _closeToolPopovers(): void {
-    this.$id('tool-groups')
-      ?.querySelectorAll<HTMLElement>('.tool-group.open')
-      .forEach((g) => {
-        g.classList.remove('open');
-        g.querySelector('.tool-group-btn')?.setAttribute('aria-expanded', 'false');
-      });
+    this.toolbarHandler._closeToolPopovers();
   }
 
   // Even-odd ray cast: returns true when (px, py) is inside the polygon.
