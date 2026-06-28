@@ -855,7 +855,9 @@ export class Editor {
   // reuse this map instead of rebuilding it over all tracks each call.
   private _tracksByKeyCache: Map<string, any> | null = null;
   private _tracksByKeySource: any[] | null = null;
-  private _tracksByKey(): Map<string, any> {
+  // Public because the drag-build and select-mode handlers depend on it (it is
+  // part of their host surface — see DragBuildHost / SelectModesHost in types.ts).
+  _tracksByKey(): Map<string, any> {
     const tracks = this.cachedNetwork?.tracks || [];
     if (this._tracksByKeyCache && this._tracksByKeySource === tracks) {
       return this._tracksByKeyCache;
