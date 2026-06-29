@@ -746,6 +746,7 @@ class PathDispatcher:
         requested_destination_direction: str = "forward",
         acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT,
         manual_override: bool = False,
+        acquisition_cap_block_id: Optional[str] = None,
     ) -> PathAcquisitionResult:
         """v1 create_path: build authority for a train to a destination block.
 
@@ -760,6 +761,14 @@ class PathDispatcher:
                 including `RouteExecutor`); True only for operator-initiated
                 API/UI/admin calls that explicitly chose to use manual
                 resources. Disabled resources are always excluded regardless.
+            acquisition_cap_block_id: Meet-coordination acquisition cap per the
+                `Acquisition-cap rule` (design_new.md:1025). Default None (no
+                cap). When set short of the requested target, authority is
+                acquired toward the requested target but never stored past the
+                cap block, so `authority_end_block_id` lands on the cap and the
+                result is TRUNCATED_GREW (never REACHED_REQUESTED_TARGET) — the
+                train holds at the cap without completing. The requested target
+                is unchanged.
 
         Returns:
             PathAcquisitionResult.
@@ -830,14 +839,16 @@ class PathDispatcher:
                 reason=f"Cannot resolve current block for train {train_id}",
             )
 
-        # A same-block target is a covered stop, finished by Phase 1's
+        # A same-HEAD-block target is a covered stop, finished by Phase 1's
         # covered-task index advance — never by dispatcher authority. Per the
-        # create_path flow (design_new.md item 8, lines 982 and 1012) and
-        # invariant 9 (line 983: dispatcher "never synthesizes an in-place frame
-        # from the train's own covered tiles"), reject a destination already
-        # covered by the train's head block with `invalid_request`. A non-head
-        # spanned block (the tail) is a turnaround and still falls through to the
-        # normal cab-flip candidate search below.
+        # create_path flow (design_new.md item 8) and invariant 9 (dispatcher
+        # "never synthesizes an in-place frame from the train's own covered
+        # tiles"), reject a destination already covered by the train's HEAD block
+        # with `invalid_request`. A non-head spanned block (the tail) is a
+        # legitimate turnaround target (e.g. a station turnaround route whose
+        # next stop is the block the train's tail still occupies) and still falls
+        # through to the normal cab-flip candidate search below — so the
+        # rejection is head-keyed, NOT full-span.
         if head_block == requested_destination_block_id:
             return self._reject(
                 failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
@@ -932,6 +943,25 @@ class PathDispatcher:
             # into resource_sequence / traversal building.
             segment = cand.walk
             ordered_walk = cand.ordered_walk
+
+            # Meet-coordination acquisition cap (design_new.md:1025): never store
+            # authority past the cap block. Raw-slice the candidate walk at the
+            # cap, then let the ordinary validate/acquire path below handle any
+            # within-cap conflict (best-effort truncation pulls it back further)
+            # and report TRUNCATED_GREW via the cap-aware success return.
+            cap_status, capped_segment, capped_walk = self._truncate_segment_to_cap(
+                segment, ordered_walk,
+                acquisition_cap_block_id, requested_destination_block_id,
+            )
+            if cap_status == "hold":
+                # The cap is the train's current block: no forward authority can
+                # be created past it. Skip the candidate so the train holds.
+                last_reason = "held at meet ceiling (acquisition cap)"
+                continue
+            if cap_status == "capped":
+                segment = capped_segment
+                ordered_walk = capped_walk
+
             validation = self.validate_path(
                 segment, path_id, train_id, manual_override=manual_override
             )
@@ -1052,15 +1082,25 @@ class PathDispatcher:
                 ordered_walk=ordered_walk,
             )
             self.paths[path_id] = path
+            # When a meet acquisition cap left the stored authority short of the
+            # requested target, report TRUNCATED_GREW so the path never satisfies
+            # try_complete_active_path — the train holds at the cap
+            # (design_new.md:1025).
+            if path.get_authority_end_block_id() == requested_destination_block_id:
+                created_kind = PathAcquisitionResultKind.REACHED_REQUESTED_TARGET
+                created_reason = "created"
+            else:
+                created_kind = PathAcquisitionResultKind.TRUNCATED_GREW
+                created_reason = "created (capped short of requested target)"
             return PathAcquisitionResult(
                 success=True,
-                result_kind=PathAcquisitionResultKind.REACHED_REQUESTED_TARGET,
+                result_kind=created_kind,
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
                 authority_end_block_id=path.get_authority_end_block_id(),
                 resource_sequence=list(path.resource_sequence),
-                reason="created",
+                reason=created_reason,
             )
 
         # All candidates failed. In best_effort mode, when the train head
@@ -1101,6 +1141,7 @@ class PathDispatcher:
         requested_destination_direction: str = "forward",
         acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT,
         manual_override: bool = False,
+        acquisition_cap_block_id: Optional[str] = None,
     ) -> PathAcquisitionResult:
         """v1 extend_path: append more authority to an existing ACTIVE path.
 
@@ -1109,6 +1150,14 @@ class PathDispatcher:
         design_new.md (under TrackResource). Default for every automatic
         caller; True only for operator-initiated API/UI/admin calls that
         explicitly chose to use manual resources.
+
+        `acquisition_cap_block_id` (default None) is the Meet-coordination
+        acquisition cap per the `Acquisition-cap rule` (design_new.md:1025).
+        When set short of the requested target, the append is truncated so
+        authority never extends past the cap block; when the next forward
+        resource lies beyond the cap, the extend returns BLOCKED_NO_GROWTH (a
+        valid prefix held back by the cap) and the train holds there. The
+        requested target is unchanged.
         """
         if requested_destination_direction not in ("forward", "reverse"):
             return self._reject(
@@ -1259,6 +1308,23 @@ class PathDispatcher:
             # into resource_sequence / traversal building (Step 3+).
             segment = cand.walk
             ordered_walk = cand.ordered_walk
+
+            # Meet-coordination acquisition cap (design_new.md:1025): never append
+            # authority past the cap block. The forward suffix's first block is
+            # the current authority end; a cap there (or off this suffix) means
+            # the train already holds at the cap -> no growth (BLOCKED_NO_GROWTH).
+            cap_status, capped_segment, capped_walk = self._truncate_segment_to_cap(
+                segment, ordered_walk,
+                acquisition_cap_block_id, requested_destination_block_id,
+            )
+            if cap_status == "hold":
+                had_occupancy_blocker = True
+                last_reason = "held at meet ceiling (acquisition cap)"
+                continue
+            if cap_status == "capped":
+                segment = capped_segment
+                ordered_walk = capped_walk
+
             # Validate (pretend the extension uses the same path_id).
             validation = self.validate_path(
                 segment, path_id, train_id, manual_override=manual_override
@@ -1513,7 +1579,17 @@ class PathDispatcher:
         if train_id:
             route_executor = self._get_route_executor()
             if route_executor is not None:
-                route_executor.handle_path_cancellation(train_id, path_id)
+                # design_new.md "route path-event callback schema" (1700, 1730):
+                # forward the optional `reason` and the single classification bit
+                # `was_deviation = initiator == "deviation"` so the route side
+                # projects DEVIATED vs CANCELLED. The free-form `initiator` stays
+                # on the notification emitted below.
+                route_executor.handle_path_cancellation(
+                    train_id,
+                    path_id,
+                    reason=reason,
+                    was_deviation=(initiator == "deviation"),
+                )
 
         # Emit the canonical `path_cancellation` notification.
         sc = self.simulation_controller
@@ -1953,6 +2029,68 @@ class PathDispatcher:
             return False
         block = blocks.get(block_id)
         return bool(getattr(block, "is_holding_point", False))
+
+    def _truncate_segment_to_cap(
+        self,
+        segment: PathSegment,
+        ordered_walk: Optional[List[GraphWalkStep]],
+        acquisition_cap_block_id: Optional[str],
+        requested_destination_block_id: str,
+    ) -> Tuple[str, Optional[PathSegment], Optional[List[GraphWalkStep]]]:
+        """Apply the Meet-coordination acquisition cap to a candidate walk.
+
+        Per design_new.md "Acquisition-cap rule" (line 1025): when a cap short
+        of the requested target lies on this walk, authority must not be stored
+        past the cap block. Returns one of:
+
+        - ``("none", segment, ordered_walk)`` — no cap applies (cap unset, cap
+          equals the requested target, or the cap is not on this walk); acquire
+          toward the requested target normally.
+        - ``("hold", None, None)`` — the cap is the walk's start block, so no
+          resource may be acquired/appended past it. The caller holds without
+          growth (``create_path`` skips the candidate; ``extend_path`` returns
+          ``BLOCKED_NO_GROWTH``).
+        - ``("capped", truncated_segment, sliced_ordered_walk)`` — acquire only
+          up to the cap block. The truncated segment is fed through the ordinary
+          validate/acquire path, so any conflict within the cap truncates it
+          further and ``authority_end_block_id`` lands on the cap (or earlier).
+
+        The cap never changes ``requested_destination_block_id``; the success
+        path reports ``TRUNCATED_GREW`` because ``authority_end != requested``.
+        """
+        if (
+            not acquisition_cap_block_id
+            or acquisition_cap_block_id == requested_destination_block_id
+        ):
+            return ("none", segment, ordered_walk)
+        try:
+            cap_count = segment.blocks.index(acquisition_cap_block_id) + 1
+        except ValueError:
+            return ("none", segment, ordered_walk)
+        if cap_count <= 1:
+            return ("hold", None, None)
+        if cap_count >= len(segment.blocks):
+            # The cap is the walk terminal (the requested target is reached at or
+            # before it) — no truncation needed.
+            return ("none", segment, ordered_walk)
+        prefix_blocks = segment.blocks[:cap_count]
+        cutoff_tiles = self._compute_prefix_cutoff_tiles(segment, prefix_blocks)
+        cutoff_switches: Dict[Tuple[int, int], int] = {
+            pos: st
+            for pos, st in segment.required_switches.items()
+            if pos in cutoff_tiles
+        }
+        truncated = PathSegment(
+            tiles=cutoff_tiles,
+            distance_cm=0.0,  # not recomputed
+            required_switches=cutoff_switches,
+            blocks=prefix_blocks,
+        )
+        return (
+            "capped",
+            truncated,
+            self._slice_ordered_walk(ordered_walk, cutoff_tiles),
+        )
 
     def _best_effort_truncate(
         self,

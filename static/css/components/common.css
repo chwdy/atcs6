@@ -23,39 +23,6 @@
     gap: 2px;
 }
 
-.btn-size-sm {
-    min-height: 0;
-    padding: 2px 8px;
-    font-size: 11px;
-    border-radius: var(--control-radius-sm);
-}
-
-.btn-size-md {
-    min-height: 0;
-    padding: 4px 12px;
-    font-size: 12px;
-    border-radius: var(--control-radius-sm);
-}
-
-.btn-size-lg {
-    min-height: 40px;
-    padding: 0 16px;
-    font-size: 13px;
-    font-weight: 700;
-    border-radius: 8px;
-    letter-spacing: 0.04em;
-}
-
-/* Property Groups */
-.prop-group {
-    gap: 4px; /* Reduced gap between label and input */
-}
-
-/* Input Group */
-.input-group {
-    gap: 2px; /* Reduced gap */
-}
-
 /* Primary action in a panel = accent TINT, never a solid fill
    (DESIGN_LANGUAGE.md §3/§12). The one sanctioned solid accent button — the
    header Play/Pause — sets its own fill via a more specific rule (shell.css). */
@@ -174,67 +141,6 @@
     font-size: 11px;
     border-radius: var(--control-radius-sm);
 }
-
-.placeholder-text {
-    color: var(--text-secondary);
-    font-style: italic;
-    font-size: 0.9rem;
-    text-align: center;
-    padding: 20px 0;
-}
-
-/* Properties Form */
-.prop-group {
-    margin-bottom: 4px; /* Reduced vertical spacing */
-    display: flex; 
-    align-items: center; 
-    justify-content: space-between; 
-    gap: 4px; /* Reduced gap */
-}
-
-.prop-label {
-    display: block;
-    font-size: 10px; /* text-s */
-    color: var(--text-secondary);
-    margin-bottom: 0;
-    flex: 0 0 auto;
-    max-width: 40%;
-    font-weight: 300; /* Light */
-}
-
-.prop-value {
-    font-family: var(--font-mono);
-    font-size: 13px; /* text-m */
-    color: var(--text-primary);
-    flex: 1;
-    text-align: right;
-    font-weight: 400; /* Normal */
-}
-
-.prop-input {
-    /* ... previous input styles ... */
-    flex: 1; /* Input takes remaining space */
-    text-align: left; /* Keep input left-aligned or right if preferred */
-}
-
-.prop-input {
-    width: 100%;
-    background-color: transparent;
-    border: none;
-    border-bottom: 1px solid var(--border-color);
-    color: var(--text-primary);
-    padding: 2px 4px; /* Reduced vertical padding */
-    border-radius: 0; /* No radius for underline style */
-    font-family: var(--font-mono);
-    line-height: 1.5; /* 1.5x text height */
-    height: auto;
-}
-
-.prop-input:focus {
-    outline: none;
-    border-bottom-color: var(--accent-color);
-}
-
 
 /* Property Groups */
 .property-group-header {
@@ -390,10 +296,6 @@
     margin-bottom: 10px;
 }
 
-.train-item:hover {
-    background-color: var(--bg-hover);
-}
-
 /* Scrollbar Styling */
 ::-webkit-scrollbar {
     width: 8px;
@@ -411,22 +313,6 @@
 
 ::-webkit-scrollbar-thumb:hover {
     background: var(--text-secondary);
-}
-
-/* ============= Debug Panel Styles ============= */
-.debug-panel {
-    background: var(--bg-panel);
-    border-radius: 8px;
-    padding: 8px;
-    margin-top: 8px;
-}
-
-/* ============= Settings Panel Styles ============= */
-.settings-panel {
-    background: var(--bg-panel);
-    border-radius: 8px;
-    padding: 12px;
-    margin-top: 12px;
 }
 
 .settings-controls {
@@ -460,24 +346,6 @@
     color: var(--text-primary);
 }
 
-.input-group {
-    display: flex;
-    gap: 2px; /* Reduced gap */
-    flex: 1;
-}
-
-.input-group input {
-    flex: 1;
-    min-width: 0; /* Allows input to shrink below default width */
-}
-
-.input-group .btn {
-    padding: 0 8px;
-    height: 24px;
-    font-size: 11px;
-    flex-shrink: 0;
-}
-
 .setting-select {
     flex: 1;
     background: var(--bg-dark);
@@ -490,17 +358,6 @@
 .setting-input-compact:focus {
     outline: none;
     border-color: var(--accent-color);
-}
-
-.setting-info-compact {
-    font-size: 11px;
-    color: var(--text-secondary);
-    padding: 4px 8px;
-    background: var(--bg-dark);
-    border-radius: 4px;
-    text-align: center;
-    margin-top: 4px;
-    border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 #scale-current-display {
@@ -587,13 +444,6 @@
     display: none;
 }
 
-.debug-section-header {
-    margin: 0 0 4px 0;
-    font-size: 11px;
-    font-weight: bold;
-    color: var(--accent-color);
-}
-
 .train-debug-row {
     display: flex;
     justify-content: space-between;
@@ -618,14 +468,6 @@
     font-family: var(--font-mono);
     text-align: right;
     flex: 0 0 55%;
-}
-
-.train-debug-value.text-track {
-    color: var(--success-color);
-}
-
-.train-debug-value.text-block {
-    color: var(--accent-color);
 }
 
 .train-debug-value.text-warning {
@@ -804,152 +646,6 @@
     padding: 12px 18px 14px;
 }
 
-.block-modal-header {
-    padding: 16px 24px;
-    border-bottom: 1px solid var(--border-color);
-    background: linear-gradient(135deg, rgba(var(--accent-rgb), 0.1), rgba(var(--accent-rgb), 0.05));
-    border-radius: 12px 12px 0 0;
-    cursor: move;
-}
-
-.block-modal-header h3 {
-    margin: 0;
-    font-size: 16px;
-    color: var(--text-primary);
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-weight: 600;
-    letter-spacing: 0.3px;
-}
-
-.block-modal-header h3::before {
-    content: '⬡';
-    color: var(--accent-color);
-    font-size: 14px;
-}
-
-.block-modal-body {
-    padding: 20px 24px;
-}
-
-.block-modal-field {
-    margin-bottom: 16px;
-}
-
-.block-modal-field label {
-    display: block;
-    font-size: 12px;
-    color: var(--text-secondary);
-    margin-bottom: 8px;
-    font-weight: 500;
-}
-
-.block-modal-field input,
-.block-modal-field select {
-    width: 100%;
-    padding: 10px 12px;
-    background: var(--bg-dark);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    color: var(--text-primary);
-    font-size: 14px;
-    font-family: var(--font-main);
-    transition: border-color 0.2s;
-}
-
-.block-modal-field input:focus,
-.block-modal-field select:focus {
-    outline: none;
-    border-color: var(--accent-color);
-}
-
-.block-modal-field input::placeholder {
-    color: var(--text-secondary);
-}
-
-.block-modal-info {
-    background: var(--bg-dark);
-    border-radius: 8px;
-    padding: 12px 16px;
-    margin-bottom: 16px;
-    border-left: 4px solid var(--accent-color);
-}
-
-.block-modal-info p {
-    margin: 0;
-    font-size: 13px;
-    color: var(--text-secondary);
-}
-
-.block-modal-info strong {
-    color: var(--text-primary);
-}
-
-.block-modal-blocks {
-    max-height: 200px;
-    overflow-y: auto;
-    margin-bottom: 16px;
-}
-
-.block-modal-blocks .block-option {
-    padding: 12px;
-    background: var(--bg-dark);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    margin-bottom: 8px;
-    cursor: pointer;
-    transition: all 0.2s;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-}
-
-.block-modal-blocks .block-option:hover {
-    border-color: var(--accent-color);
-}
-
-.block-modal-blocks .block-option.selected {
-    border-color: var(--accent-color);
-    background: rgba(var(--accent-rgb), 0.1);
-}
-
-.block-modal-blocks .block-option input[type="radio"] {
-    width: auto;
-    margin: 0;
-}
-
-.block-modal-blocks .block-color {
-    width: 16px;
-    height: 16px;
-    border-radius: 4px;
-}
-
-.block-modal-blocks .block-name {
-    flex: 1;
-    font-weight: bold;
-    color: var(--text-primary);
-}
-
-.block-modal-blocks .block-tracks {
-    font-size: 12px;
-    color: var(--text-secondary);
-}
-
-.block-modal-footer {
-    padding: 16px 24px 20px;
-    display: flex;
-    gap: 12px;
-    justify-content: flex-end;
-    border-top: 1px solid var(--border-color);
-}
-
-.block-modal-footer .btn {
-    min-width: 100px;
-    padding: 10px 20px;
-    font-size: 14px;
-}
-
 /* Additional modal classes used by JavaScript */
 .block-modal h3 {
     margin: 0 0 16px 0;
@@ -1114,24 +810,6 @@
 
 .signal-item:last-child {
     margin-bottom: 0;
-}
-
-/* Modal Warning Styles */
-.warning-message {
-    padding: 12px;
-    background: rgba(var(--warning-rgb), 0.1);
-    border: 1px solid var(--warning-color);
-    border-radius: 6px;
-    color: var(--warning-color);
-    margin: 12px 0;
-    font-size: 13px;
-    line-height: 1.5;
-}
-
-.warning-message strong {
-    display: block;
-    margin-bottom: 4px;
-    font-size: 14px;
 }
 
 /* Toast Notification System */

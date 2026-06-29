@@ -203,15 +203,34 @@ export class Camera {
    * to mostly-empty space and leave the layout floating small and off-centre.
    * Instead we project every tile corner (at scale=1, pan=0 — those are uniform
    * offsets that don't affect the span or the centre), take the real screen box,
-   * fit each axis independently into the matching canvas dimension (times
+   * fit each axis independently into the matching visible dimension (times
    * `margin` for breathing room), use the smaller scale so both axes fit, clamp
-   * to the zoom range, then pan the footprint's centre to the canvas centre.
+   * to the zoom range, then pan the footprint's centre to the visible centre.
+   *
+   * `insets` are pixels along each edge that floating chrome (the primary tool
+   * rail on the left, etc.) covers over the canvas. The fit frames into the
+   * region INSIDE those insets so the layout is not hidden behind the chrome.
+   * They default to 0, i.e. the whole canvas. The caller measures live chrome
+   * geometry and passes it in — Camera stays free of any DOM/UI knowledge.
    */
-  fitToContent(tracks: ReadonlyArray<GridPoint>, margin = 0.9): void {
+  fitToContent(
+    tracks: ReadonlyArray<GridPoint>,
+    margin = 0.9,
+    insets: { left?: number; right?: number; top?: number; bottom?: number } = {},
+  ): void {
     if (!tracks || tracks.length === 0) return;
     const canvasW = this.canvas?.width ?? 0;
     const canvasH = this.canvas?.height ?? 0;
     if (canvasW <= 0 || canvasH <= 0) return;
+
+    // Clamp each inset so even a bogus/oversized value can never collapse the
+    // visible region to zero (which would make the fit scale blow up).
+    const insetL = Math.max(0, Math.min(insets.left ?? 0, canvasW - 1));
+    const insetR = Math.max(0, Math.min(insets.right ?? 0, canvasW - 1 - insetL));
+    const insetT = Math.max(0, Math.min(insets.top ?? 0, canvasH - 1));
+    const insetB = Math.max(0, Math.min(insets.bottom ?? 0, canvasH - 1 - insetT));
+    const availW = canvasW - insetL - insetR;
+    const availH = canvasH - insetT - insetB;
 
     let minSX = Infinity;
     let maxSX = -Infinity;
@@ -233,14 +252,16 @@ export class Camera {
     const footW = maxSX - minSX; // footprint width  in tileSize units
     const footH = maxSY - minSY; // footprint height in tileSize units
     if (footW > 0 && footH > 0) {
-      const tileSize = Math.min((canvasW * margin) / footW, (canvasH * margin) / footH);
+      const tileSize = Math.min((availW * margin) / footW, (availH * margin) / footH);
       this.scale = Math.max(0.1, Math.min(5, tileSize / this.gridSize));
     }
-    // Pan so the footprint's centre lands at the canvas centre. screenX =
-    // centerX + panX + px * tileSize, so panX = -(footprint centre px) * tileSize.
+    // Pan so the footprint's centre lands at the centre of the visible region.
+    // screenX = centerX + panX + px * ts lands the footprint centre at the
+    // canvas centre when panX = -(footprint centre px) * ts; shifting the
+    // viewport centre by the inset asymmetry moves it by (insetL - insetR)/2.
     const ts = this.gridSize * this.scale;
-    this.panX = -((minSX + maxSX) / 2) * ts;
-    this.panY = -((minSY + maxSY) / 2) * ts;
+    this.panX = -((minSX + maxSX) / 2) * ts + (insetL - insetR) / 2;
+    this.panY = -((minSY + maxSY) / 2) * ts + (insetT - insetB) / 2;
     this._emit();
   }
 

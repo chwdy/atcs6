@@ -143,7 +143,7 @@ Simulation.
 | **Left sidebar** | Build tools (the §3 tool-tile grid) and the Properties pane for the current selection ([tools.css](../static/css/components/tools.css)). |
 | **Secondary sidebar** | The working set: every open editor and list panel as a tab (§3 working-set tab strip; [shell.css](../static/css/layout/shell.css)). Detail editing and list browsing happen here. |
 | **Bottom dock** | Continuous monitoring across many entities at once ([train-monitor.css](../static/css/features/train-monitor.css)). |
-| **Floating panels** | Spot-check diagnostics that overlay anything; draggable, resizable ([inspector.css](../static/css/features/inspector.css)). |
+| **Floating panels** | Spot-check diagnostics that overlay anything; draggable, resizable ([diagnostics.css](../static/css/features/diagnostics.css)). |
 | **Overlay layer** | Modals, toasts, floating pickers (§13). |
 
 Placement rule for a new feature: edits one record at a time → a
@@ -221,11 +221,22 @@ Three rules keep this working:
   and `.route-item` each carried one of these and broke the light editors until
   tokenized.)
 
-**The canvas stays dark in both themes** — "dark drawing-board, themed chrome."
-The `--block-*` palette is tuned for a dark canvas and the renderer reads it as
-resolved hex; a light canvas would need the whole block palette re-tuned and is
-out of scope. So theming swaps the chrome (panels, top bar, sidebars) while the
-layout canvas is constant.
+**The canvas is themed on its own axis.** The chrome and the layout canvas
+carry two independent theme attributes on `:root`: `data-theme` selects the
+chrome palette — dark / light, [themes.css](../static/css/base/themes.css) — and
+`data-canvas-theme` selects the canvas palette — dark / light / blueprint,
+[layout-themes.css](../static/css/base/layout-themes.css). The two switch
+independently, so a light chrome over a blueprint canvas is a valid combination;
+the canvas is not pinned to the chrome's light/dark choice. The canvas keeps its
+own full token set — `--canvas-*` (ground, grid, track) and the `--block-*` state
+palette — re-tuned per canvas theme to hold contrast on that theme's ground. The
+renderer reads those tokens once into a cached palette
+([canvas-palette.ts](../frontend/src/lib/canvas-palette.ts)) and repaints when the
+canvas theme changes (CSS custom properties read back from JS as the unresolved
+`var(...)` string, so the palette must hold concrete hex — the same literal-hex
+rule as the chrome tokens above). Both axes are driven from the Display popover
+(§13); the chrome default follows the OS `prefers-color-scheme`, and the canvas
+defaults to dark — the original drawing-board.
 
 ### Surfaces
 
@@ -306,7 +317,11 @@ MANUAL is the only orange in the system.
 The tokens are declared as literal hex (not `var(--info-color)`
 references) so `getComputedStyle().getPropertyValue('--block-…')` reads
 the resolved color directly. CSS custom properties are not substituted
-when read from JS, so `var()` chains return the unresolved string.
+when read from JS, so `var()` chains return the unresolved string. The hex
+above is the dark canvas-theme set; the light and blueprint canvas themes
+([layout-themes.css](../static/css/base/layout-themes.css)) re-tune the whole
+`--block-*` palette to hold contrast on their grounds, just as the chrome themes
+re-tune the surface tokens.
 
 Canonical consumer: `getBlockStateColor(state, alpha)` in
 [frontend/src/lib/helpers.ts](../frontend/src/lib/helpers.ts). Pass `alpha` < 1
@@ -656,20 +671,38 @@ control."
 - **Hover** — `background-color: var(--bg-hover)`, `color: var(--text-primary)`.
 - **Active** — `color: var(--accent-hover)`, plus a 2px `border-bottom: var(--accent-color)` with `margin-bottom: -1px` so the active underline overlaps the strip's bottom rule (the active tab "owns" that segment of the divider). Inactive tabs carry a 2px transparent `border-bottom` so the active underline doesn't shift heights between tabs.
 
-**Working-set variant (editor sidebar).** The secondary sidebar's strip
-holds an open-ended, data-driven set of open panels, not a fixed pane
-set, so it relaxes two rules: each tab carries a close `×`, and the row
-never wraps — it stays one line and scrolls horizontally, so every open
-tab stays reachable and the strip never eats the panel. Tabs are titled
-by the record they hold (`BLK_588D28`, `#1000001`), never by the
-editor's name — two open blocks must read apart at a glance. List tabs
-(all trains, all routes) keep their list name, in bold, so collections
-read apart from instances. Labels clamp with ellipsis (opaque
-identifiers, §5 Overflow); the tab tooltip carries the full lineage
+**Working-set variant (the editor navigator).** The secondary sidebar's tab
+strip holds an open-ended, data-driven set of open panels, so it relaxes the
+fixed-pane rules and becomes a vertical **navigator**: open tabs group under
+collapsible type headers — Trains, Routes, Blocks, Switches, Signals, Platforms,
+Stations, Paths, Tiles, Speed profiles — as a type → instance tree, so many open
+entities stay legible instead of crowding one flat row. Each group header carries
+its type icon, label, and a count of the tabs under it; a granular editor type
+maps to its group through `getSecondaryTabGroup`.
+
+Two kinds of tab live in the tree:
+
+- **Preview tab** — opening an entity by inspecting it on the canvas (a tile,
+  block, switch, signal, platform, train, tunnel, station, or speed profile)
+  opens a *preview* that reuses one shared slot: the next inspect replaces it, so
+  casual looking never piles up tabs. A preview shows a pin affordance
+  (`ti-pin`); pinning it — the pin button or a double-click — promotes it to a
+  kept tab the next inspect won't replace.
+- **Kept tab** — list panels, route / path editors, and setups open as their own
+  kept tab from the start, and pinned previews join them.
+
+Every tab carries a close `×`. Tabs are titled by the record they hold
+(`BLK_588D28`, `#1000001`), never by the editor's name — two open blocks must
+read apart at a glance. List tabs (all trains, all routes) keep their list name
+in bold, so collections read apart from instances. Labels clamp with ellipsis
+(opaque identifiers, §5 Overflow); the tab tooltip carries the full lineage
 (`Blocks › BLK_588D28`).
 
-Reference: `.secondary-sidebar-tabs` / `.secondary-tab` in
-[layout/shell.css](../static/css/layout/shell.css).
+Reference: `.secondary-nav-group` (+ `-header`, `-icon`, `-label`, `-count`) and
+`.secondary-tab` (+ `--preview`, `--list`, `.secondary-tab-pin`) in
+[layout/shell.css](../static/css/layout/shell.css); `renderSecondaryTabs` /
+`getSecondaryTabGroup` / `pinTab` in
+[editor-ui.ts](../frontend/src/editor/editor-ui.ts).
 
 ### Accent-tint CTA (the panel-safe "primary")
 
@@ -856,8 +889,8 @@ label-beside-input row — not from `.form-group`. `.form-group` is the
 panel that reaches for it falls back to the browser's default oversized
 inputs instead of the 28px control language.
 
-Reference: `.inspector-panel-field select` in
-[features/inspector.css](../static/css/features/inspector.css).
+Reference: `.diagnostics-panel-field select` in
+[features/diagnostics.css](../static/css/features/diagnostics.css).
 
 ### Seamless inline edit
 
@@ -958,9 +991,39 @@ rules keep the pairing clean:
 
 Reference: the Track Bits editor — `.track-bits-*` in
 [components/design-system.css](../static/css/components/design-system.css);
-`updateTrackBitsPanel`, `initBitEditor` + `_commitTrackBits` (the shared
+`updateSecondaryEditorForTile`, `initBitEditor` + `_commitTrackBits` (the shared
 commit path), and `initVisualTrackEditor` (canvas) in
 [frontend/src/editor/](../frontend/src/editor/).
+
+### Curve editor (continuous draggable plot)
+
+The continuous sibling of "Two views of one value" above. Where the track-bits
+editor pairs a clickable diagram with discrete checkboxes over a 6-bit value, the
+speed-profile editor pairs a **draggable curve plot** with a **numeric point
+list** over a continuous curve — both views write the same array of points. The
+same container rule holds: the narrow numeric column hands the plot the rest of
+the row width (`.sp-plot-block` is `minmax(108px, 30%) 1fr`), and the two views
+sit straight in the section body, not in nested cards.
+
+The plot's direct-manipulation grammar:
+
+- **Drag a point** to move it. Endpoints are X-locked; an interior point stays
+  strictly between its neighbours; Y clamps to the axis and keeps the curve
+  ascending. The cursor reads the affordance — `grab` over a point, `grabbing`
+  while dragging.
+- **Left-click the line** between points inserts a new point there (cursor
+  `copy`).
+- **Right-click an interior point** removes it; the two endpoints are locked
+  against removal.
+
+Every edit auto-saves silently (§5C) — no Save button, no save banner, so nothing
+shifts as a save settles — and the list and the plot stay in sync because they
+are two views of the one points array. Render the plot at device resolution, as
+the bit editor's canvas does (the "in-panel editor canvas" rule above).
+Reference: the curve editor (`handleDown` / `handleMove` / `handleContext`) in
+[editor-speed-profiles.ts](../frontend/src/editor/editor-speed-profiles.ts);
+`.sp-plot-block`, `.sp-canvas`, `.sp-point-*`, `.sp-converter*` in
+[features/speed-profiles.css](../static/css/features/speed-profiles.css).
 
 ### Slider / handle
 
@@ -1043,7 +1106,7 @@ entity, not the database key.
 
 Used for tabular data where each row has a categorical badge. Color-code
 the badge background using the accent palette. Reference:
-[`.inspector-row`](../static/css/features/inspector.css).
+[`.diagnostics-row`](../static/css/features/diagnostics.css).
 
 ### C. Multi-column form section
 
@@ -1194,9 +1257,7 @@ Three patterns for showing a row's status:
 1. **3px left-border** on the row (most common). Color matches the accent
    palette: green=ok, purple=selected/reserved, red=fault, yellow=warn,
    info=informational. This is the canonical status accent for new dense
-   list rows. The older status-column pattern used by `.route-row` and
-   `.path-row` predates this rule and is not the template for new work
-   (see Known divergences).
+   list rows.
 
 2. **Banner**: full-width strip with a 3px left-border accent + ~10% opacity
    background tint of the same color. Use for one-line diagnostics
@@ -1319,8 +1380,7 @@ border-radius: var(--control-radius-sm);
 For grouped info readouts (Route Plan, Next Stop) and list rows (route
 list, path list). The default `--bg-dark` fill against the body's
 `--bg-panel` gives the card its definition; the 1px border gives the
-rounded shape its hard edge. References: `.tc-card`, `.route-row`,
-`.path-row`.
+rounded shape its hard edge. References: `.rr-card`, `.path-row`.
 
 ### Status-accented card
 
@@ -1334,7 +1394,7 @@ border-left: 3px solid var(--info-color);
 background: linear-gradient(180deg, rgba(0, 212, 255, 0.04), var(--bg-dark) 70%);
 ```
 
-References: `.tc-card-destination` (full card), and the **`.entity-card`
+References: the **`.entity-card`
 family** in [components/common.css](../static/css/components/common.css) —
 the compact (4–6px padding) card used for every entity readout in the
 Properties pane (block / signal / switch / station / train) and the
@@ -1373,7 +1433,7 @@ indistinguishable from a standard card border and defeats the callout intent.
 For an alert state, layer a horizontal gradient wash over the bg:
 `linear-gradient(90deg, rgba(232, 63, 91, 0.10), var(--bg-hover) 60%)`
 turns the emergency state into a tinted but still readable block.
-References: `.tc-status`, `.tc-section-task`.
+References: `.tc-status-headline`, `.tc-section-task`.
 
 ### Disclosure (collapsible card)
 
@@ -1643,7 +1703,10 @@ panel's body:
 
 ```
 [← Routes]  Route Editor                    [pin] [×]
-[Trains][T_NWY_1][Routes][RT_4F2A]   ← one tab row, scrolls
+▾ Trains 1            ← navigator: type groups, each with a count
+   T_NWY_1
+▾ Routes 1
+   RT_4F2A
 ```
 
 - **Parent link** — when the open panel is the detail view of a record
@@ -1655,9 +1718,10 @@ panel's body:
   Alt+Left.
 - **Pin** — freezes the panel on its current record so canvas clicks
   don't retarget it. Tabler `ti-pin`, icon-only.
-- **Tabs** — the working-set tab strip (§3) sits directly under the
-  header. No breadcrumb row: the parent link covers "go up," the tab
-  label names the record, and the tab tooltip carries the lineage.
+- **Tabs** — the working-set navigator (§3) sits directly under the
+  header, grouping open tabs under collapsible type headers. No breadcrumb
+  row: the parent link covers "go up," the tab label names the record, and
+  the tab tooltip carries the lineage.
 
 A long editor panel (Route Editor, Path Editor) also shouldn't bury
 Save in the bottom section. Sections describe what they edit; Save
@@ -1702,7 +1766,7 @@ border-radius: var(--radius-lg);
 box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8);
 min-width: 420px;
 max-width: 520px;
-z-index: 1001;
+z-index: var(--z-modal);
 ```
 
 The header strip uses the same purple gradient as `.secondary-sidebar-header`
@@ -1740,7 +1804,7 @@ border on hover.
 
 ```css
 position: fixed;
-z-index: 1000;
+z-index: var(--z-picker);
 padding: 4px;
 background: var(--bg-panel);
 border: 1px solid var(--border-color);
@@ -1748,8 +1812,51 @@ border-radius: var(--control-radius-sm);
 box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
 ```
 
-Reference: `.route-resource-picker` in
-[features/routes-paths.css](../static/css/features/routes-paths.css).
+Reference: `.resource-picker` in
+[components/common.css](../static/css/components/common.css).
+
+### Context menu
+
+A small menu shown at the cursor on **right-click**, listing the actions or
+targets under the pointer. Distinct from the Floating picker above: the picker
+disambiguates a *left*-click that landed on overlapping targets, while the
+context menu is the *right*-click action menu. Same panel-language shell —
+`--bg-panel` bg, hairline border, drop shadow — with three inner parts: an
+optional small uppercase section heading, a hairline separator between sections,
+and flat-ghost item rows (icon · label · right-aligned muted detail). An item
+may carry an `accent` or `danger` emphasis for a primary or destructive action;
+otherwise it reads as a plain flat ghost.
+
+One menu exists at a time — opening another closes it — and it closes on outside
+pointer-down, Escape, window blur, or after an item is chosen. It opens at the
+cursor and nudges back inside the viewport when it would overflow an edge.
+
+The mechanism is generic: callers pass sections of `{ label, icon, detail,
+onSelect, emphasis }` items and nothing in the menu knows about tiles. The
+editor's per-tile menu — every train / switch / block / signal / platform on the
+clicked tile, plus inline actions like throwing a switch — is one caller.
+Reference: `showContextMenu` in
+[lib/context-menu.ts](../frontend/src/lib/context-menu.ts); `.tile-context-menu`
+(+ `-heading`, `-sep`, `-item`, `-item--accent`, `-item--danger`) in
+[components/context-menu.css](../static/css/components/context-menu.css).
+
+### Header-anchored menu
+
+A popover that drops from a top-bar button instead of the cursor — the Display
+menu behind the header's Display button is the one instance. Same panel-language
+shell as the floating picker, but anchored under its trigger: pinned to the
+button's bottom edge and right-aligned to it, re-placed on window resize. It
+toggles on its button and closes on outside click or Escape.
+
+Its body is the two-axis theme control (§1 Themes): one row per theme axis
+(`Editor theme`, `Layout theme`), each row a set of theme tiles. A tile is a 2×3
+grid of that theme's six primary colors — sampled live from the stylesheet so a
+swatch always matches the theme — with a check on the active one and the theme
+name beneath. Clicking a tile switches that one axis; a newly registered theme
+appears here with no extra wiring. Reference: `wireDisplayMenu` in
+[lib/theme.ts](../frontend/src/lib/theme.ts); `.display-menu` (+ `-row`,
+`-row-label`, `-tiles`, `-tile`, `-swatch`, `-cell`, `-check`) in
+[components/display-menu.css](../static/css/components/display-menu.css).
 
 ---
 
@@ -1777,10 +1884,17 @@ When in doubt, copy the structure of one of these:
 - **Shared compositional primitives** → [components/status-blocks.css](../static/css/components/status-blocks.css) — the §6 banner, §7 chip, §11 status header, and §6 accent helpers. Editor panels consume these classes directly (`.status-header`, `.chip`, `.banner`, `.accent-*`) instead of redefining the shapes per feature.
 - **Detail-page editor** → [editor-route-runs.ts](../frontend/src/editor/editor-route-runs.ts) + [features/routes-paths.css](../static/css/features/routes-paths.css) — the worked reference for composing a `status-header` + stats block + list of rows inside an editor sidebar. Route-run-specific bits (`.rr-card`, `.rr-summary`, `.rr-task-*`) layer on top of the shared primitives.
 - **Long edit-and-act panel** → [editor-routes.ts](../frontend/src/editor/editor-routes.ts) + the `.re-toolbar` / `.atr-*` rules in `features/routes-paths.css` — the worked reference for a panel that mixes editing (tasks, mode, policy) with live monitoring (assigned trains, history). Demonstrates: sticky top toolbar with Save + dirty indicator + Refresh; assigned-trains list as a row-shaped second consumer of the `.rr-task-*` skeleton; history default-visible with per-entity cap; Force checkbox adjacent to the Assign button it modifies.
-- **Floating debug panel** → [inspector.css](../static/css/features/inspector.css) — header + toolbar + scrolling body + footer, draggable, resizable. Header has no border; relies on `--bg-hover` against `--bg-panel`. Toolbar keeps `border-bottom` because it shares `--bg-panel` with the body (per the §2 toolbar rule: same surface → hairline separator needed).
+- **Floating debug panel** → [diagnostics.css](../static/css/features/diagnostics.css) — header + toolbar + scrolling body + footer, draggable, resizable. Header has no border; relies on `--bg-hover` against `--bg-panel`. Toolbar keeps `border-bottom` because it shares `--bg-panel` with the body (per the §2 toolbar rule: same surface → hairline separator needed).
 - **Bottom dock** → [train-monitor.css](../static/css/features/train-monitor.css) — header + multi-column body + status footer, full-width, fixed height. Header has no border; the segmented view-distance control inside the header is a bordered container of flat ghosts (no internal dividers).
 - **Sidebar form** → [train-control.css](../static/css/features/train-control.css) — sectioned vertical stack inside a secondary sidebar. Status rows use the 3px left-border accent only, no surrounding 1px box.
-- **Tab strip** → [layout/shell.css](../static/css/layout/shell.css) `.secondary-sidebar-tabs` — the row has one `border-bottom`; tabs themselves are flat with an accent underline on active.
+- **Working-set navigator** → [layout/shell.css](../static/css/layout/shell.css) `.secondary-sidebar-tabs` › `.secondary-nav-group` › `.secondary-tab` — open tabs grouped under collapsible type headers (icon · label · count) as a type → instance tree; a preview tab reuses one slot until pinned (§3 Working-set variant).
+
+**Not a reference — outside this doc.** The standalone debug page
+([static/debug.html](../static/debug.html), styled by
+[debug.css](../static/css/debug.css)) is a developer diagnostic surface with its
+own dark code-tool palette (a GitHub-dark `#0d1117` ground and a JSON tree
+viewer). It is intentionally not governed by the design language — don't copy its
+chrome into the product UI, and don't tokenize it to match.
 
 ---
 
@@ -2107,6 +2221,18 @@ clears when the panel closes or the placement commits. Reference:
 `_computeGhostTiles` in
 [editor-trains.ts](../frontend/src/editor/editor-trains.ts).
 
+### Debug overlays
+
+A separate, toggle-gated layer of diagnostic marks drawn over the world layer
+when the debug display toggles are on (the §4 `.debug-controls` checkbox grid):
+per-tile track-bit dots and a numeric bits readout, `(x, y)` coordinate labels,
+N/E/S/W edge labels, switch-state badges, and dead-end markers. These are
+developer aids, not production state — off by default, and they never carry
+safety meaning. They read the cached canvas palette (`canvas-palette.ts`), so
+they re-tint with the canvas theme, and draw on each world-layer flush.
+Reference: `RendererDebugHandler` (`drawDebugOverlays`, `highlightDeadEnds`) in
+[renderer-debug.ts](../frontend/src/renderer/renderer-debug.ts).
+
 ### Rules
 
 - **State marks consume tokens.** New marks pick from §1. The existing
@@ -2257,10 +2383,9 @@ same change.
 
 | What | Where | Target | Trigger |
 |------|-------|--------|---------|
-| Leading status-column rows (~50px colored dot + label column) | `.route-row`, `.path-row` in [routes-paths.css](../static/css/features/routes-paths.css) | §6 3px left-border accent | Next rework of the route / path lists |
 | Private copies of the segmented control | `.tc-seg-btn` in [train-control.css](../static/css/features/train-control.css), `.tm-seg-btn` in [train-monitor.css](../static/css/features/train-monitor.css) | Fold onto `.switch-btn` (§3) | Next touch of either panel |
 | Pre-token literals — spacing, type sizes, radii, z-index written as raw values | all of `static/css` | Compose from the §1 scale tokens (`--space-*`, `--font-size-*`, `--radius-*`, `--z-*`); consolidate off-ramp values (13px type, 5/7/9px gaps, 3px small radii) to the nearest step | When touching the declaration |
-| Floating inspector outranks modals (z-index 9000 over 1100) | [inspector.css](../static/css/features/inspector.css) | Modal layer wins over debug panels | Next inspector or modal rework |
+| Floating inspector outranks modals (z-index 9000 over 1100) | [diagnostics.css](../static/css/features/diagnostics.css) | Modal layer wins over debug panels | Next inspector or modal rework |
 | Canvas state marks hard-code hex — signal lamps, route status fills (incl. `#00ff88`), switch badges and locks, train mode tints | `renderer-{signals,routes,tracks,trains}.ts` | Consume §1 tokens / a tokenized canvas palette (§17 Rules) | When touching each renderer |
 | Passive empty states where a creation action exists | route / train / run list panels | §10 `.empty-state-action` with a `.btn-accent` CTA (§19) | When touching each panel |
 | Fixed-dark code surface in a panel — JSON viewer well + neon-green text | `.json-viewer-content` / `.json-content-view` (`#0d1020` / `#00ff88`) in [routes-paths.css](../static/css/features/routes-paths.css) | Either tokenize to surface tokens, or formally bless as a constant "code block" surface like the canvas (§1 Themes) | Next View-Full-JSON / routes-paths touch |

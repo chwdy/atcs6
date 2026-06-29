@@ -19,6 +19,8 @@ from path_utils import assign_complete_path_to_train, convert_tiles_to_train_pat
 from runtime_payloads import (
     AcquisitionMode,
 )
+from services import train_route_service, train_service
+from services.exceptions import NotFoundError, ValidationError, ConflictError
 
 
 def register(app, state: AppState) -> None:
@@ -48,6 +50,45 @@ def register(app, state: AppState) -> None:
             return AcquisitionMode(raw)
         except ValueError:
             return AcquisitionMode.BEST_EFFORT
+
+    def _assign_one_off_route(
+        train_id,
+        destination_block_id,
+        destination_direction,
+        acquisition_mode,
+        manual_override,
+    ):
+        """Build a one-off operator route toward `destination_block_id` and
+        assign the train to it (design_new.md:655-656, Quick Route / operator
+        retarget).
+
+        The handler never calls PathDispatcher.create_path / extend_path
+        directly. It creates a RouteMode.ONE_OFF route with a single stop task,
+        activates it, and assigns the train through
+        `train_service.assign_route(force=True)` — which writes the Phase-3
+        route-abort latch for any current run so Phase 3 tears it down, and the
+        next eligible Phase 1 builds the path, passing the route's
+        `manual_override` down the acquisition chain. Returns the new route_id.
+        """
+        route = train_route_service.create_route(
+            state,
+            name=f"Quick: {train_id} -> {destination_block_id}",
+            mode="one_off",
+            tasks=[
+                {
+                    "task_kind": "stop",
+                    "task_location": {"block_id": destination_block_id},
+                    "task_direction": destination_direction,
+                }
+            ],
+            acquisition_mode=acquisition_mode.value,
+            manual_override=manual_override,
+        )
+        train_route_service.activate_route(state, route.route_id)
+        train_service.assign_route(
+            state, train_id, route_id=route.route_id, force=True
+        )
+        return route.route_id
 
     @app.route("/api/paths", methods=["POST"])
     def create_path():
@@ -110,36 +151,34 @@ def register(app, state: AppState) -> None:
                         404,
                     )
 
-                result = state.path_dispatcher.create_path(
-                    train_id=train_id,
-                    requested_destination_block_id=requested_destination_block_id,
-                    requested_destination_direction=requested_destination_direction,
-                    acquisition_mode=acquisition_mode,
-                    manual_override=manual_override,
+                # design_new.md:655 (Quick Route): construct a one-off route and
+                # assign the train; Phase 1 builds the path. The handler must NOT
+                # call PathDispatcher.create_path inline (request handlers do not
+                # change dispatcher path records — see "Layered responsibilities").
+                route_id = _assign_one_off_route(
+                    train_id,
+                    requested_destination_block_id,
+                    requested_destination_direction,
+                    acquisition_mode,
+                    manual_override,
                 )
-
-                if result.success and result.path_id:
-                    state.network.update_signals_from_blocks()
-                    path = state.path_dispatcher.get_path(result.path_id)
-                    train = state.network.trains[train_id]
-                    if path is not None:
-                        # Bring the train onto a path-consistent layout.
-                        # Per design_new.md ~line 1292 the dispatcher
-                        # owns `assigned_path_id` and the controller derives
-                        # `ato_destination_block_id` from `received_path_plan`,
-                        # so we no longer mirror those fields back onto Train.
-                        raw_path = _convert_path_tiles_to_train_path(path.get_path_tiles())
-                        controller = (
-                            state.sim_controller.get_or_create_controller(train_id)
-                            if state.sim_controller is not None
-                            else None
-                        )
-                        assign_complete_path_to_train(
-                            state.network, train, raw_path, controller=controller
-                        )
-            return jsonify(result.to_dict()), 200 if result.success else 400
+            return (
+                jsonify(
+                    {
+                        "success": True,
+                        "status": "accepted",
+                        "route_id": route_id,
+                        "train_id": train_id,
+                    }
+                ),
+                202,
+            )
+        except (ValidationError, ConflictError) as e:
+            return jsonify({"success": False, "error": str(e)}), 400
+        except NotFoundError as e:
+            return jsonify({"success": False, "error": str(e)}), 404
         except Exception as e:
-            return jsonify({"error": str(e)}), 500
+            return jsonify({"success": False, "error": str(e)}), 500
 
     def _enrich_path_with_direction(payload: dict) -> dict:
         """Add `terminal_tile` + `terminal_heading` to a path payload.
@@ -319,30 +358,47 @@ def register(app, state: AppState) -> None:
                 400,
             )
 
-        with state.simulation_lock:
-            path = state.path_dispatcher.get_path(path_id)
-            if not path:
-                return jsonify({"error": f"Path {path_id} not found"}), 404
+        try:
+            with state.simulation_lock:
+                path = state.path_dispatcher.get_path(path_id)
+                if not path:
+                    return jsonify({"error": f"Path {path_id} not found"}), 404
 
-            result = state.path_dispatcher.extend_path(
-                path_id=path_id,
-                requested_destination_block_id=requested_destination_block_id,
-                requested_destination_direction=requested_destination_direction,
-                acquisition_mode=acquisition_mode,
-                manual_override=manual_override,
+                # design_new.md:656 — operator retarget: abort the current run and
+                # assign a fresh one-off route toward the new destination. The
+                # handler must NOT call PathDispatcher.extend_path inline;
+                # `assign_route(force=True)` writes the route-abort latch and the
+                # next eligible Phase 1 grows the path toward the new target.
+                train_id = path.train_id
+                if not train_id:
+                    return (
+                        jsonify({"error": f"Path {path_id} has no train"}),
+                        400,
+                    )
+                route_id = _assign_one_off_route(
+                    train_id,
+                    requested_destination_block_id,
+                    requested_destination_direction,
+                    acquisition_mode,
+                    manual_override,
+                )
+            return (
+                jsonify(
+                    {
+                        "success": True,
+                        "status": "accepted",
+                        "route_id": route_id,
+                        "train_id": train_id,
+                    }
+                ),
+                202,
             )
-
-            # Sync train state after successful extension. The controller
-            # derives ato_destination_block_id from received_path_plan
-            # (now a property over Path.authority_end_block_id), so no
-            # Per design_new.md ~line 1292, the dispatcher's `Path` is the
-            # source of truth for path tiles; UI consumers read tiles via
-            # `PathDispatcher.get_active_path_progress(train_id)` rather than
-            # from a Train-side mirror.
-            if result.success:
-                state.network.update_signals_from_blocks()
-
-        return jsonify(result.to_dict()), 200 if result.success else 400
+        except (ValidationError, ConflictError) as e:
+            return jsonify({"success": False, "error": str(e)}), 400
+        except NotFoundError as e:
+            return jsonify({"success": False, "error": str(e)}), 404
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
 
     @app.route("/api/paths/<path_id>/reachable-extensions", methods=["GET"])
     def get_path_reachable_extensions(path_id):

@@ -595,7 +595,7 @@ class TrainMonitor {
         }
 
         if (upcoming.length === 0) {
-            this.upcomingEl.innerHTML = '<div class="tm-upcoming-empty">No elements ahead</div>';
+            this.upcomingEl.innerHTML = '<div class="empty-state">No elements ahead</div>';
             return;
         }
 

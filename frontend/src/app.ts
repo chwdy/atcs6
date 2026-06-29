@@ -448,7 +448,7 @@ class App {
       const filteredLayouts = layouts.filter((l: any) => !l.name.endsWith('_steps'));
 
       if (filteredLayouts.length === 0) {
-        listEl.innerHTML = '<p class="empty-text">No existing layouts</p>';
+        listEl.innerHTML = '<p class="empty-state">No existing layouts</p>';
         return;
       }
 
@@ -472,7 +472,7 @@ class App {
         });
       });
     } catch (e: any) {
-      listEl.innerHTML = '<p class="empty-text">Failed to load layouts</p>';
+      listEl.innerHTML = '<p class="empty-state empty-state-error">Failed to load layouts</p>';
     }
   }
 
@@ -486,7 +486,7 @@ class App {
       const filteredLayouts = layouts.filter((l: any) => !l.name.endsWith('_steps'));
 
       if (filteredLayouts.length === 0) {
-        listEl.innerHTML = '<p class="empty-text">No saved layouts yet</p>';
+        listEl.innerHTML = '<p class="empty-state">No saved layouts yet</p>';
         return;
       }
 
@@ -542,7 +542,7 @@ class App {
       });
 
     } catch (e: any) {
-      listEl.innerHTML = `<p class="empty-text">Error loading layouts: ${e.message}</p>`;
+      listEl.innerHTML = `<p class="empty-state empty-state-error">Error loading layouts: ${e.message}</p>`;
     }
   }
 
@@ -693,7 +693,7 @@ class App {
 
       this.editor.setCachedNetwork(network);
       if (!this.hasInitiallyCentered && network.tracks && network.tracks.length > 0) {
-        this.renderer.fitToContent(network.tracks);
+        this.renderer.fitToContent(network.tracks, undefined, this._canvasChromeInsets());
         this.hasInitiallyCentered = true;
       }
       // Fresh network arrived: hand it to the renderer and let the
@@ -869,6 +869,27 @@ class App {
     this.renderer.requestRedraw({ reason: 'follow-train' });
   }
 
+  /**
+   * Pixels of each canvas edge currently hidden behind floating chrome, for
+   * fitToContent to frame the layout into the visible region instead of behind
+   * it. Only the primary tool rail (.sidebar) overlaps the canvas today; it
+   * floats at the left, so we measure how far its right edge reaches past the
+   * canvas's left edge and add a small gap. Returns 0 when the rail is
+   * collapsed/absent. The canvas backing store is sized in CSS pixels
+   * (Renderer.resize uses parent.clientWidth), so getBoundingClientRect values
+   * are already in the same units fitToContent works in.
+   */
+  _canvasChromeInsets(): { left: number } {
+    const rail = document.querySelector('.sidebar:not(.collapsed)') as HTMLElement | null;
+    const canvas = this.renderer.canvas;
+    if (!rail || !canvas) return { left: 0 };
+    const railRect = rail.getBoundingClientRect();
+    if (railRect.width === 0) return { left: 0 };
+    const GAP = 12; // breathing room between the rail and the framed layout
+    const left = Math.max(0, railRect.right - canvas.getBoundingClientRect().left + GAP);
+    return { left };
+  }
+
   setupViewControls(): void {
     // Multiplicative zoom step for + / − buttons. Wheel zoom keeps its
     // existing additive feel; the buttons want even relative steps.
@@ -906,7 +927,7 @@ class App {
     if (fitBtn) {
       fitBtn.addEventListener('click', () => {
         if (!this.currentNetwork?.tracks?.length) return;
-        this.renderer.fitToContent(this.currentNetwork.tracks);
+        this.renderer.fitToContent(this.currentNetwork.tracks, undefined, this._canvasChromeInsets());
         this.renderer.requestRedraw({ reason: 'fit-view' });
       });
     }
@@ -1516,7 +1537,7 @@ class App {
       await this.refreshNetwork();
 
       // Phase 4 COMPLETE: All panels now use StateManager subscriptions
-      // No need for refreshCurrentEditor() - subscriptions handle all updates
+      // No manual editor refresh needed - subscriptions handle all updates
 
       if (this.selectedTrainId) {
         const train = stateManager.get('trains', this.selectedTrainId);
@@ -1614,80 +1635,6 @@ class App {
   }
 }
 
-
-// Sidebar resize functionality
-(function() {
-  let isResizing = false;
-  let currentSidebar: HTMLElement | null = null;
-
-  function initSidebarResize(sidebar: HTMLElement | null, _minWidth: number, _maxWidth: number): void {
-    if (!sidebar) return;
-
-    sidebar.addEventListener('mousedown', (e: MouseEvent) => {
-      // The floating inspector resizes via its own edge/corner handles
-      // (setupInspectorFloatResize); the docked right-edge bar is suppressed
-      // while floating, so don't start a width-only drag here.
-      if (sidebar.classList.contains('secondary-sidebar--floating')) return;
-
-      const rect = sidebar.getBoundingClientRect();
-      const isNearRightEdge = e.clientX > rect.right - 8;
-
-      // Both sidebars: resize on right edge
-      if (isNearRightEdge) {
-        isResizing = true;
-        currentSidebar = sidebar;
-        sidebar.classList.add('resizing');
-        document.body.style.cursor = 'ew-resize';
-        document.body.style.userSelect = 'none';
-        e.preventDefault();
-      }
-    });
-  }
-
-  document.addEventListener('mousemove', (e: MouseEvent) => {
-    if (!isResizing || !currentSidebar) return;
-
-    const rect = currentSidebar.getBoundingClientRect();
-    const isSecondarySidebar = currentSidebar.id === 'secondary-sidebar';
-
-    let newWidth;
-    if (isSecondarySidebar) {
-      // For secondary sidebar, resize from right edge (normal behavior)
-      newWidth = e.clientX - rect.left;
-    } else {
-      // For main sidebar, resize from right edge
-      newWidth = e.clientX - rect.left;
-    }
-
-    const minWidth = parseInt(getComputedStyle(currentSidebar).minWidth) || 200;
-    const maxWidth = parseInt(getComputedStyle(currentSidebar).maxWidth) || 600;
-
-    if (newWidth >= minWidth && newWidth <= maxWidth) {
-      currentSidebar.style.width = newWidth + 'px';
-
-      // Secondary sidebar position is now handled by flexbox layout
-    }
-  });
-
-  document.addEventListener('mouseup', () => {
-    if (isResizing && currentSidebar) {
-      currentSidebar.classList.remove('resizing');
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      isResizing = false;
-      currentSidebar = null;
-    }
-  });
-
-  // The primary tool rail is a fixed-width floating capsule — no width resize.
-  // Only the docked secondary inspector resizes (via its right edge).
-  document.addEventListener('DOMContentLoaded', () => {
-    const secondarySidebar = document.getElementById('secondary-sidebar');
-    if (secondarySidebar) {
-      initSidebarResize(secondarySidebar, 280, 500);
-    }
-  });
-})();
 
 // Initialize app when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {

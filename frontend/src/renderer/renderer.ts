@@ -715,7 +715,11 @@ class Renderer {
   screenToGridX(screenX: number, screenY: number): number { return this.camera.screenToGridX(screenX, screenY); }
   screenToGridY(screenX: number, screenY: number): number { return this.camera.screenToGridY(screenX, screenY); }
   screenToGrid(screenX: number, screenY: number): { x: number; y: number } { return this.camera.screenToGrid(screenX, screenY); }
-  fitToContent(tracks: ReadonlyArray<{ x: number; y: number }>): void { this.camera.fitToContent(tracks); }
+  fitToContent(
+    tracks: ReadonlyArray<{ x: number; y: number }>,
+    margin?: number,
+    insets?: { left?: number; right?: number; top?: number; bottom?: number },
+  ): void { this.camera.fitToContent(tracks, margin, insets); }
 
   /**
    * Public entry point for a full repaint (both layers). Used by callers
@@ -813,6 +817,14 @@ class Renderer {
         }
         this.ctx.restore();
       }
+    });
+
+    // Switch lock/occupied dots: a solid circle at the branch root, always on
+    // (operational state, not a debug view). Drawn LAST of the world-layer
+    // marks — after the rails, block-boundary dots, and signals — so nothing on
+    // this layer paints over it.
+    tracks.forEach((track) => {
+      if (track.is_switch) this.trackHandler.drawSwitchLockAt(track);
     });
 
     // Tunnel mouths are NOT drawn here — they live on the live layer (see

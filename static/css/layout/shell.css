@@ -333,13 +333,13 @@ textarea {
     position: relative;
 }
 
-/* Secondary Sidebar (Block/Signal Editor) - Left of Canvas */
+/* Secondary Sidebar (Block/Signal Editor) - Right of Canvas */
 .secondary-sidebar {
     width: 350px;
     min-width: 280px;
     max-width: 500px;
     background-color: var(--bg-panel);
-    border-right: 1px solid var(--border-color);
+    border-left: 1px solid var(--border-color);
     display: none;  /* Hidden by default */
     flex-direction: column;
     overflow: hidden;
@@ -349,11 +349,13 @@ textarea {
     z-index: 10;
 }
 
-/* Docked inspector makes room on the left for the floating tool capsule
-   (capsule = left 12 + width 88 + 12 gap). Floating mode is fixed-positioned
-   and carries its own left/top, so the offset applies only while docked. */
+/* Docked inspector sits on the RIGHT of the canvas: order pushes it after the
+   canvas-container (default order 0) in the .workspace flex row. The canvas
+   keeps the left edge, where the floating tool capsule overlays it, so the
+   docked panel needs no margin to clear the capsule. Floating mode is
+   fixed-positioned, so order has no effect there. */
 .secondary-sidebar:not(.secondary-sidebar--floating) {
-    margin-left: 112px;
+    order: 1;
 }
 
 .secondary-sidebar.visible {
@@ -721,34 +723,10 @@ textarea {
     opacity: 1;
 }
 
-/* Width adjust bar — docked (attached) mode only. The right edge is the single
-   resize affordance while the inspector is docked. When floating, the eight
-   edge/corner handles below take over, so this bar is suppressed there. */
-.secondary-sidebar:not(.secondary-sidebar--floating)::before {
-    content: '';
-    position: absolute;
-    right: 0;
-    top: 0;
-    bottom: 0;
-    width: 6px;
-    cursor: ew-resize;
-    background-color: transparent;
-    transition: background-color 0.15s;
-    z-index: 1000;
-}
-
-.secondary-sidebar:not(.secondary-sidebar--floating):hover::before {
-    background-color: var(--accent-color);
-}
-
-.secondary-sidebar:not(.secondary-sidebar--floating).resizing::before {
-    background-color: var(--accent-color);
-}
-
 /* Floating-window resize handles — the undocked inspector behaves like a desktop
    window: all four edges and corners resize it (width + height). The handles are
    inert and hidden while docked; they only show when floating. Built once in JS
-   (setupInspectorFloatResize); the docked panel keeps its single width bar above. */
+   (setupInspectorFloatResize). The docked panel sits at a fixed width. */
 .secondary-sidebar-resizer {
     display: none;
     position: absolute;
@@ -824,40 +802,18 @@ textarea {
     overflow-x: hidden;
     padding: 12px 8px;
     background-color: var(--bg-panel);
+    scrollbar-width: none;  /* Firefox: no scrollbar gutter */
 }
 
-/* Thinner, more transparent scrollbar for the tool rail */
+/* Hide the scrollbar on the tool rail. The capsule is a compact floating
+   palette, and a tall accent-tinted thumb on its right edge reads like a resize
+   handle on the capsule. The rail still scrolls by wheel/trackpad when the tool
+   list outgrows the capsule height (e.g. with sim-mode tools added). */
 .sidebar-tools-section::-webkit-scrollbar {
-    width: 6px;
-}
-
-.sidebar-tools-section::-webkit-scrollbar-track {
-    background: rgba(0, 0, 0, 0.1);
-}
-
-.sidebar-tools-section::-webkit-scrollbar-thumb {
-    background: rgba(var(--accent-rgb), 0.3);
-    border-radius: 3px;
-}
-
-.sidebar-tools-section::-webkit-scrollbar-thumb:hover {
-    background: rgba(var(--accent-rgb), 0.5);
+    display: none;
 }
 
 /* The primary rail is a fixed-width floating capsule — no width-resize handle. */
-
-.sidebar-section {
-    padding: 6px 8px; /* Tighter padding to edge */
-    border-bottom: 1px solid var(--border-color);
-}
-
-.sidebar-section h3 {
-    font-size: 0.7rem; /* Smaller section header */
-    text-transform: uppercase;
-    color: var(--text-secondary);
-    margin-bottom: 4px;
-    letter-spacing: 0.05em;
-}
 
 /* Square glyph that marks a panel header — the Tile Editor's Properties
    section and the tool flyout ("popup window"). --panel-title-icon-size is the
@@ -886,12 +842,6 @@ textarea {
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--text-secondary);
-}
-
-.properties-empty {
-    color: var(--text-secondary);
-    font-size: 11px;
-    font-style: italic;
 }
 
 /* ============================================================================

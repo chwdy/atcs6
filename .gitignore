@@ -43,3 +43,6 @@ AGENTS.md
 node_modules/
 /static/dist/
 .vite/
+
+# Persisted runtime event log (design_new.md Event log)
+event_log.jsonl

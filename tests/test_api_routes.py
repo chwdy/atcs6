@@ -116,6 +116,36 @@ class TestTrackRoutes:
         response = client.patch("/api/track/99/99", json={"track_bits": 1})
         assert response.status_code == 404
 
+    def test_update_track_switch_change_rejected_returns_409(
+        self, client, app_state, network_with_tracks
+    ):
+        """A locked switch must surface a 409 with an error, not a 500.
+
+        When a runtime SwitchManager is wired, a rejected throw (e.g. the
+        switch is locked by a live path) returns the tagged
+        `switch_change_rejected` result. The route must map it to 409 with
+        an `error` field the UI can show -- not fall through and KeyError.
+        """
+        from runtime_payloads import SwitchLockClaim
+
+        network = network_with_tracks
+        track = network.get_track(1, 0)
+        track.track_bits = 6  # EW main + NE diverge => a switch tile (is_switch)
+        track.switch_id = "SW_test"
+        network.add_switch(Switch(switch_id="SW_test", x=1, y=0))
+
+        # Lock the switch to MAIN (0) so a DIVERGE (1) request conflicts.
+        switch = network.switches["SW_test"]
+        assert switch.acquire_lock(
+            SwitchLockClaim(path_id="P_test", train_id="T1", locked_state=0)
+        )
+
+        response = client.patch("/api/track/1/0", json={"switch_state": 1})
+        assert response.status_code == 409
+        data = response.get_json()
+        assert "error" in data
+        assert "locked" in data["error"].lower()
+
     def test_delete_track_success(self, client, network_with_tracks):
         """DELETE /api/track/<x>/<y> should remove track."""
         response = client.delete("/api/track/0/0")
@@ -648,7 +678,9 @@ class TestTrainRoutes:
         app_state.network.add_train(train)
         app_state.network.place_train(train, 0, 0, Direction.EAST)
         response = client.post("/api/trains/TRAIN_001/power-off")
-        assert response.status_code in [200, 400]
+        # A freshly-placed train is stopped, so power-off (any state -> OFF when
+        # stopped) succeeds deterministically -- mirror of test_train_power_on.
+        assert response.status_code == 200
 
     def test_train_depart_rejection_returns_400(self, client, app_state):
         """POST /depart must return 400 when the controller rejects depart.
@@ -738,40 +770,39 @@ class TestTrainRoutes:
 class TestPathRoutes:
     """Test path management and dispatcher endpoints."""
 
-    def test_create_path(self, client, app_state, network_with_tracks):
-        """POST /api/paths should create path."""
+    def test_create_path_rejects_v0_payload(self, client, app_state, network_with_tracks):
+        """POST /api/paths rejects the v0 wire format. The legacy
+        `{start_block_id, end_block_id}` keys are no longer accepted; the handler
+        returns 400 with a message naming the v1 fields (routes/paths.py:111).
+        The success path is covered by `test_create_path_assigns_one_off_route`."""
         app_state.network.create_block_with_tracks("BLK_001", [(0, 0)])
         app_state.network.create_block_with_tracks("BLK_002", [(2, 0)])
         response = client.post(
             "/api/paths", json={"start_block_id": "BLK_001", "end_block_id": "BLK_002"}
         )
-        # May succeed or fail depending on pathfinding
-        assert response.status_code in [200, 400]
+        assert response.status_code == 400
+        data = response.get_json()
+        assert data["success"] is False
+        assert "start_block_id/end_block_id" in data["error"]
 
-    def test_create_path_conflicts_when_train_already_has_active_path(
+    def test_create_path_assigns_one_off_route(
         self, client, app_state, network_with_tracks
     ):
-        """POST /api/paths should not silently assign a second path to one train."""
+        """POST /api/paths constructs a one-off operator route and assigns the
+        train (design_new.md:655 Quick Route). It returns 202 accepted and does
+        NOT create dispatcher authority inline — Phase 1 builds the path. The
+        "one active path per train" invariant is enforced by the dispatcher in
+        Phase 1 (create_path rejects a second active path), not by this handler.
+        """
         app_state.network.create_block_with_tracks("BLK_001", [(0, 0), (1, 0)])
         app_state.network.create_block_with_tracks("BLK_002", [(2, 0), (3, 0)])
-        app_state.network.create_block_with_tracks("BLK_003", [(4, 0)])
 
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0, max_speed=100.0)
         train = Train("TRAIN_001", consist=[car])
         app_state.network.add_train(train)
         app_state.network.place_train(train, 0, 0, Direction.EAST)
 
-        # The dispatcher resolves the train's head block via its controller
-        # span (head/tail live on the controller in v1, not on Train). Seed the
-        # span at the placement tile so create_path can resolve BLK_001 as the
-        # current block instead of failing with "Cannot resolve current block".
-        controller = app_state.sim_controller.get_or_create_controller("TRAIN_001")
-        set_train_span(
-            controller, (0, 0), facing_direction=Direction.EAST,
-            occupied_blocks=["BLK_001"],
-        )
-
-        first_response = client.post(
+        response = client.post(
             "/api/paths",
             json={
                 "requested_destination_block_id": "BLK_002",
@@ -779,40 +810,21 @@ class TestPathRoutes:
                 "train_id": "TRAIN_001",
             },
         )
-        # With the controller span seeded above, the dispatcher resolves the
-        # head block and the 2-block A->B path is acquired (status 200). The
-        # conflict-on-second-create contract is what's being verified; a non-200
-        # here would mean create_path regressed, so fail loudly rather than skip.
-        assert first_response.status_code == 200, (
-            f"create_path should succeed once the controller span is seeded; "
-            f"got {first_response.status_code}: {first_response.get_json()}"
-        )
-        first_data = first_response.get_json()
-        assert first_data["success"] is True
-        first_path_id = first_data.get("path_id") or first_data.get("path", {}).get(
-            "path_id"
-        )
-        # Per design_new.md, the dispatcher owns active-path lookup; Train no
-        # longer carries `assigned_path_id`.
-        assert app_state.path_dispatcher.active_path_id_by_train("TRAIN_001") == first_path_id
+        assert response.status_code == 202, response.get_json()
+        data = response.get_json()
+        assert data["success"] is True
+        route_id = data["route_id"]
 
-        second_response = client.post(
-            "/api/paths",
-            json={
-                "requested_destination_block_id": "BLK_003",
-                "requested_destination_direction": "forward",
-                "train_id": "TRAIN_001",
-            },
-        )
-        # v1 routes/paths.py returns the dispatcher's PathAcquisitionResult
-        # which includes a failure_kind=="invalid_request" when the train
-        # already holds a path. The HTTP layer doesn't promote this to 409,
-        # so we assert on the result kind, not the legacy 409 status code.
-        assert second_response.status_code in (200, 400, 409)
-        second_data = second_response.get_json()
-        assert second_data["success"] is False
-        # Train should still hold the original path.
-        assert app_state.path_dispatcher.active_path_id_by_train("TRAIN_001") == first_path_id
+        # A one-off route toward BLK_002 was created and the train assigned to it.
+        registry = app_state.sim_controller.route_executor.route_registry
+        assert route_id in registry
+        route = registry[route_id]
+        assert route.mode.value == "one_off"
+        assert "TRAIN_001" in route.assigned_train_ids
+
+        # The handler did NOT create dispatcher authority inline; the path is
+        # built later in Phase 1.
+        assert app_state.path_dispatcher.active_path_id_by_train("TRAIN_001") is None
 
     def test_list_paths(self, client):
         """GET /api/paths should list all paths."""

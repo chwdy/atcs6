@@ -326,7 +326,7 @@ export class EditorUIHandler {
       sidebar.style.left = '';
       sidebar.style.top = '';
       // Drop the floating height so the docked panel flows in the column again;
-      // width is left intact (it is shared with the docked width bar).
+      // width is left intact (carried over from the floating window's last size).
       sidebar.style.height = '';
       sidebar.style.maxHeight = '';
     }
@@ -368,7 +368,7 @@ export class EditorUIHandler {
 
   /** Build the eight edge/corner resize handles for the floating inspector and
    *  wire their drag-to-resize. The handles only act while floating (docked mode
-   *  keeps its single right-edge width bar and the handles are hidden by CSS).
+   *  has a fixed width and the handles are hidden by CSS).
    *  East/south grow width/height; west/north also move the left/top edge so the
    *  opposite edge stays put. The window is clamped to stay on screen. Bound once. */
   setupInspectorFloatResize(): void {

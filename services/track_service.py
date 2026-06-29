@@ -17,7 +17,8 @@ knowing any status codes:
 
     {"status": "bits_rejected", "message": str}     # invalid bit shape
     {"status": "needs_confirmation", "impact": ...}  # orphans; retry w/ force
-    {"status": "switch_locked", "holder_path", "holder_state"}
+    {"status": "switch_locked", "holder_path", "holder_state"}  # pure editor
+    {"status": "switch_change_rejected", "reason": str}  # runtime refused throw
     {"status": "removed"}                            # tile became empty
     {"status": "updated", "track": <TrackSegment>}
 """

@@ -995,7 +995,7 @@ export class TrainEditorHandler {
                             <dd class="tc-field-value train-ato-destination-display" title="${destinationName || ''}">${destinationName}</dd>
                         </div>
                     </dl>
-                    <div id="train-path-error-banner" class="tc-banner tc-banner-danger ${pathError && pathError.text ? '' : 'hidden'}">${pathError && pathError.text ? `⚠ No path: ${pathError.text}` : ''}</div>
+                    <div id="train-path-error-banner" class="banner banner-danger tc-banner ${pathError && pathError.text ? '' : 'hidden'}">${pathError && pathError.text ? `⚠ No path: ${pathError.text}` : ''}</div>
                 </section>
 
                 <!-- ZONE 2: TRAIN STATUS — HMI (cab-style display) -->

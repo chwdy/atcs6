@@ -400,17 +400,5 @@ class TestPositionsToPathTilesDirections:
         assert result[1] == (4, 5, Direction.WEST)
 
 
-class TestTrainPathTiles:
-    """Tests for train path tile operations."""
-
-    def test_train_path_queue_initialization(self):
-        """Test train path initialization (placeholder - module not available)."""
-        pass
-
-    def test_train_path_serialization(self):
-        """Test train path serialization (placeholder - module not available)."""
-        pass
-
-
 if __name__ == "__main__":
     print("Run tests with: pytest tests/test_interlocking.py -v")

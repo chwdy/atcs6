@@ -1,5 +1,5 @@
 // renderer-tracks.ts — draws track tiles (straight/diagonal segments, switches
-// with their state badge + lock rings, dead-ends, crossings) and the editor
+// with their state badge + lock/occupied dot, dead-ends, crossings) and the editor
 // preview overlays. Owns the shared getEdgePoints() / drawGridSegment() geometry
 // that the other renderer handlers reach for through the renderer.
 //
@@ -204,32 +204,9 @@ export class RendererTrackHandler {
     // below is only for plain (non-switch) track.
     if (isSwitch) {
       this.drawTrackWithSwitches(trackBits, half, trackColor, switchState, isDiagonalOnly, switchPoints);
-
-      // Two distinct lock states per design/120-switch.md:32 — path-owned
-      // future authority (Switch.locks) vs train-owned physical hold
-      // (Switch.occupied_by / train_protection_claims) after head-entry
-      // consumes the primary lock. Train-owned wins when both present.
-      const switchEntity = (track.switch_id && this.currentNetwork && this.currentNetwork.switches)
-        ? this.currentNetwork.switches[track.switch_id]
-        : null;
-      const trainOwned = !!(switchEntity && (
-        switchEntity.occupied_by ||
-        (Array.isArray(switchEntity.train_protection_claims) && switchEntity.train_protection_claims.length > 0)
-      ));
-
-      if (trainOwned) {
-        this.ctx.strokeStyle = p.hold; // Brown — train-owned hold
-        this.ctx.lineWidth = 2 * this.scale;
-        this.ctx.beginPath();
-        this.ctx.arc(0, 0, 6 * this.scale, 0, Math.PI * 2);
-        this.ctx.stroke();
-      } else if (switchEntity && Array.isArray(switchEntity.locks) && switchEntity.locks.length > 0) {
-        this.ctx.strokeStyle = p.lock; // Orange — path-owned future lock
-        this.ctx.lineWidth = 2 * this.scale;
-        this.ctx.beginPath();
-        this.ctx.arc(0, 0, 6 * this.scale, 0, Math.PI * 2);
-        this.ctx.stroke();
-      }
+      // The lock/occupied dot is NOT drawn here. Like the M/D badge it's drawn
+      // unclipped in a later pass (drawSwitchLockAt) so it can sit flush at the
+      // branch root without the tile diamond clipping it.
     } else {
       this.drawTrackBed(trackBits, half);
       this.drawTrackFromBits(trackBits, half, trackColor, track.dead_end_ports || [], connectedEdges);
@@ -243,10 +220,11 @@ export class RendererTrackHandler {
 
     this.ctx.restore();
 
-    // NOTE: the switch M/D indicator is NOT drawn here. It's drawn in a separate
-    // pass after every tile's rails (renderer _drawWorld -> drawSwitchBadgeAt),
-    // so a neighbouring tile's rail or bed can't paint over it, and it's
-    // unclipped so it can sit flush against the entry edge.
+    // NOTE: the switch M/D badge and the lock/occupied dot are NOT drawn here.
+    // Each is drawn in a separate pass after every tile's rails (renderer
+    // _drawWorld -> drawSwitchLockAt / drawSwitchBadgeAt), so a neighbouring
+    // tile's rail or bed can't paint over them, and both are unclipped so they
+    // sit flush against the branch root (the switch entry edge).
 
     if (track.dead_end_ports && track.dead_end_ports.length > 0) {
       this.renderer.debugHandler.highlightDeadEnds(track.x, track.y, track.dead_end_ports, track.track_bits || 0);
@@ -596,6 +574,67 @@ export class RendererTrackHandler {
    * tile centre and must NOT have the tile clip active, so the badge can sit
    * flush against the edge instead of being trimmed by the diamond.
    */
+  /**
+   * The edge the selected route leaves by, for the current switch_state. A
+   * regular switch's MAIN route (state 0) runs straight through to the edge
+   * opposite the entry; its DIVERGE route (state 1) takes the other listed exit.
+   * A diagonal-only switch has no straight-through, so it picks the first or
+   * second exit in clockwise order (matching drawTrackWithSwitches). Returns
+   * null when the switch lists no exits.
+   */
+  selectedExitEdge(entryEdge: string, exits: string[], switchState: number, isDiagonalOnly: boolean): string | null {
+    if (!exits || exits.length === 0) return null;
+    if (isDiagonalOnly) {
+      const CLOCKWISE = ['N', 'E', 'S', 'W'];
+      const sorted = [...exits].sort((a, b) => CLOCKWISE.indexOf(a) - CLOCKWISE.indexOf(b));
+      return switchState === 0 ? sorted[0] : (sorted[1] ?? sorted[0]);
+    }
+    const mainExit = OPPOSITE_EDGE[entryEdge];
+    if (switchState === 0 && exits.includes(mainExit)) return mainExit;
+    return exits.find((e) => e !== mainExit) ?? exits[0];
+  }
+
+  /**
+   * The screen point at the root of a switch's branches, ON the selected
+   * route's rail. The entry edge (first switch_points key) is the trunk corner
+   * where the two arms split and the short stub peels off — the branch root. The
+   * dot sits a FIXED step in from that corner, ALONG the selected route. A fixed
+   * distance (not a fraction of the route) keeps every dot the same distance
+   * from its root, whether the route is a long axial run or a short diagonal
+   * arm. Going along the route (rather than toward the tile centre) keeps it on
+   * the rail's centreline: an axial route runs through the tile centre, but a
+   * diagonal route runs along a tile-box edge that does NOT, so pulling the
+   * anchor toward the centre would drift it off a diagonal rail. The M/D badge
+   * and the lock/occupied dot share this anchor.
+   */
+  switchRootAnchor(
+    half: number,
+    switchState: number,
+    isDiagonalOnly: boolean,
+    switchPoints: Record<string, string[]>,
+  ): EdgePoint {
+    const edgePoints = this.getEdgePoints(half);
+    const entryEdge = Object.keys(switchPoints)[0];
+    const entryPt = entryEdge ? edgePoints[entryEdge] : null;
+    if (!entryPt || !entryEdge) return { x: 0, y: 0 };
+    const exitEdge = this.selectedExitEdge(entryEdge, switchPoints[entryEdge] || [], switchState, isDiagonalOnly);
+    const exitPt = exitEdge ? edgePoints[exitEdge] : null;
+    if (!exitPt) return { x: entryPt.x * 0.7, y: entryPt.y * 0.7 };
+    const dx = exitPt.x - entryPt.x;
+    const dy = exitPt.y - entryPt.y;
+    const len = Math.hypot(dx, dy) || 1;
+    // Step in from the root corner by exactly one dot radius, along the rail.
+    // That keeps the dot at the trunk mouth, but far enough from the tile edge
+    // that two switches facing each other across a shared edge end up two radii
+    // apart — touching at most, never overlapping into a peanut. Fixed (not a
+    // fraction of the route) so every dot sits the same distance from its root.
+    const rootInset = TRACK_WIDTH * 1.25 * this.scale; // = the dot radius
+    return {
+      x: entryPt.x + (dx / len) * rootInset,
+      y: entryPt.y + (dy / len) * rootInset,
+    };
+  }
+
   drawSwitchBadge(
     half: number,
     switchState: number,
@@ -603,12 +642,7 @@ export class RendererTrackHandler {
     switchPoints: Record<string, string[]>,
   ): void {
     const p = getCanvasPalette();
-    const edgePoints = this.getEdgePoints(half);
-    const entryEdge = Object.keys(switchPoints)[0];
-    const entryPt = entryEdge ? edgePoints[entryEdge] : null;
-    const f = 0.9; // stick to the entry edge (root of the branches)
-    const bx = entryPt ? entryPt.x * f : 0;
-    const by = entryPt ? entryPt.y * f : 0;
+    const { x: bx, y: by } = this.switchRootAnchor(half, switchState, isDiagonalOnly, switchPoints);
 
     const isMain = switchState === 0;
     this.ctx.fillStyle = isMain ? p.success : p.caution;
@@ -647,6 +681,48 @@ export class RendererTrackHandler {
       track.is_diagonal_only_switch || false,
       track.switch_points || {},
     );
+    this.ctx.restore();
+  }
+
+  /**
+   * Draw a switch's lock/occupied dot: a solid circle at the root of its
+   * branches, a little wider than the rail, in a pass AFTER every tile's rails
+   * so a neighbour can't paint over it (the M/D badge follows the same rule).
+   * Two states per design/120-switch.md:32 — a train-owned physical hold
+   * (occupied_by / train_protection_claims, brown) wins over a path-owned
+   * future lock (Switch.locks, orange). Nothing is drawn when the switch is
+   * neither locked nor occupied.
+   */
+  drawSwitchLockAt(track: Track): void {
+    if (!track.is_switch || !track.switch_id) return;
+    const switches = this.currentNetwork?.switches;
+    const switchEntity = switches ? switches[track.switch_id] : null;
+    if (!switchEntity) return;
+
+    const trainOwned = !!(
+      switchEntity.occupied_by ||
+      (Array.isArray(switchEntity.train_protection_claims) && switchEntity.train_protection_claims.length > 0)
+    );
+    const pathLocked = Array.isArray(switchEntity.locks) && switchEntity.locks.length > 0;
+    if (!trainOwned && !pathLocked) return;
+
+    const p = getCanvasPalette();
+    const half = (this.gridSize * this.scale) / 2;
+    const cx = this.gridToScreenX(track.x, track.y);
+    const cy = this.gridToScreenY(track.x, track.y);
+    const { x: bx, y: by } = this.switchRootAnchor(
+      half,
+      track.switch_state || 0,
+      track.is_diagonal_only_switch || false,
+      track.switch_points || {},
+    );
+
+    this.ctx.save();
+    this.ctx.translate(cx, cy);
+    this.ctx.fillStyle = trainOwned ? p.hold : p.lock; // brown hold wins over orange lock
+    this.ctx.beginPath();
+    this.ctx.arc(bx, by, TRACK_WIDTH * 1.25 * this.scale, 0, Math.PI * 2); // a little wider than the rail
+    this.ctx.fill();
     this.ctx.restore();
   }
 

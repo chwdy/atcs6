@@ -68,6 +68,9 @@ class EBWorkflow:
         ):
             c.route_hooks.phase_latches.set_path_cancel_request("eb", "operator EB")
 
+        from notification_center import EventKind, Severity
+
+        c._emit_event(EventKind.EB_ACTIVATED, severity=Severity.WARNING)
         return CommandResult(True, "Emergency stop activated")
 
     def release(self) -> CommandResult:
@@ -113,4 +116,17 @@ class EBWorkflow:
         # (RUNNING_AT_STATION) where the dwell is preserved.
         if c.ops.state != TrainState.RUNNING_AT_STATION:
             c.ops.state = TrainState.READY
+        from notification_center import EventKind, Severity
+
+        c._emit_event(EventKind.EB_RELEASED, severity=Severity.WARNING)
         return CommandResult(True, "Emergency stop released")
+
+    def clear(self) -> None:
+        """Ungated EB-latch clear (design_new.md:1767, 1895).
+
+        The EB Workflow is the single writer of ``active`` (module-boundary
+        rule), so OFF-cleanup (``TrainController.complete_power_off()``) clears
+        the latch through this method rather than assigning ``eb.active``
+        directly. Unlike ``release()`` this has no preconditions — it is the
+        unconditional teardown clear used when the controller powers off."""
+        self.active = False

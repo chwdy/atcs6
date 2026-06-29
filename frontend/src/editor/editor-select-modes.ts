@@ -8,15 +8,15 @@
 // `this.editor`.
 //
 // Owned by the Editor (`new SelectModesHandler(this)`).
-import type { EditorHost } from './types';
+import type { SelectModesHost } from './types';
 import { showToast } from '../lib/toast';
 import { graphSearch } from '../lib/graph-search';
 import { traceNodeKey, type TraceNode } from '../lib/pathfinders';
 import { showResourcePicker, dismissResourcePicker } from './resource-picker';
 
 export class SelectModesHandler {
-  editor: EditorHost;
-  constructor(editor: EditorHost) {
+  editor: SelectModesHost;
+  constructor(editor: SelectModesHost) {
     this.editor = editor;
   }
 

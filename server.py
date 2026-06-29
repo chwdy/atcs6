@@ -269,6 +269,10 @@ def main() -> None:
     network, path_dispatcher, sim_controller, persistence_manager = bootstrap_runtime(
         demo=not args.no_demo,
         setup_train=not args.no_demo,
+        # design_new.md "Event log" (Persistence): the real server persists the
+        # NotificationCenter stream to an append-only JSONL on disk so an
+        # operator can review an earlier run's incidents later.
+        event_log_path="event_log.jsonl",
     )
 
     # design_new.md Power, Hardware interface boundary — loss-of-control

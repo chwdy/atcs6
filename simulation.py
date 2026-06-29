@@ -33,7 +33,7 @@ from enums import TrainState, Direction, OperationMode
 from block_power import BlockPowerController
 from switch_power import SwitchPowerController
 from block_occupancy import SimulatedInputInterface, BlockOccupancyDetector
-from notification_center import NotificationCenter, Severity
+from notification_center import EventKind, NotificationCenter, Severity
 from route_executor import RouteExecutor
 
 from train_controller import TrainController, create_controller_for_train
@@ -283,6 +283,16 @@ class SimulationController:
                 # Phase 2/3 moved the head and may have completed/cancelled the
                 # path — invalidate before the next train (and next tick) reads.
                 net.bump_lookahead_world_version()
+
+                # A fatal physical-entry conflict during this train's Phase 3
+                # freezes the runtime "at the moment of detection"
+                # (design_new.md:459 `b9a2`): abort the rest of this tick — no
+                # further trains, and none of the post-loop voltage drain /
+                # signal refresh / maintenance-counter writes below — so all
+                # state is left exactly as it was for inspection until the
+                # operator manually cleans up and releases the runtime failure.
+                if self.failed_runtime:
+                    return
 
             # After every train has emitted its held-block voltages, drop any block
             # whose holder cleared this tick (tail vacate / reservation release) to
@@ -559,13 +569,20 @@ class SimulationController:
         if controller.route_hooks.phase_latches.path_cancel_request is not None:
             return
 
+        # Per design_new.md:1461 ("Shared-route edit teardown"): a held
+        # re-assignment is applied only when THIS consumer owned the run teardown
+        # — i.e. its own remove_train_route_run cleared a still-RUNNING run. If an
+        # earlier abort/power-off consumer (or a natural finish) already ended the
+        # run, the operator/admin teardown wins and the stash is discarded, so a
+        # powered-off or aborted train is never silently re-assigned to the route.
+        owned_teardown = (
+            self.route_executor.execution_state_for(train.train_id) is not None
+        )
         self.route_executor.remove_train_route_run(train.train_id)
-        # A same-route structural Route.tasks edit holds its re-assignment until
-        # this clear is done (remove_train_route_run unassigns the train), then
-        # re-applies it so the next eligible Phase 1 allocates a fresh RouteRun.
-        # No-op for admin deactivate / abort / power-off (they record nothing).
-        # Per design_new.md "Shared-route edit teardown".
-        self.route_executor.apply_pending_reassign(train.train_id)
+        if owned_teardown:
+            self.route_executor.apply_pending_reassign(train.train_id)
+        else:
+            self.route_executor.discard_pending_reassign(train.train_id)
         controller.route_hooks.phase_latches.consume_route_deactivate()
 
     # =========================================================================
@@ -697,7 +714,7 @@ class SimulationController:
         Synchronous all-or-nothing. Constructs the Train, places it on a tile
         of ``starting_block_id`` facing ``initial_direction``, registers the
         controller and physics instances, wires back-references, and emits a
-        ``train_added`` notification.
+        ``train_placed`` event-log notification (design_new.md "Event log").
 
         Args:
             train_id: Identifier for the new train.
@@ -871,10 +888,11 @@ class SimulationController:
         if initial_cab is not None:
             controller.commands.cab = initial_cab
 
-        # Emit notification.
+        # Emit the TRAIN_PLACED event-log event (design_new.md "Event log";
+        # the canonical kind is `train_placed`, the operational vocab name).
         self.notification_center.emit(
             source="SimulationController",
-            kind="train_added",
+            kind=EventKind.TRAIN_PLACED,
             severity=Severity.INFO,
             event_time=time.time(),
             train_id=train_id,

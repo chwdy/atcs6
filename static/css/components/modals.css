@@ -139,17 +139,6 @@
     box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.2);
 }
 
-.modal-info-box {
-    background: rgba(var(--accent-rgb), 0.1);
-    border: 1px solid rgba(var(--accent-rgb), 0.2);
-    border-radius: 6px;
-    padding: 12px 16px;
-    margin-bottom: 20px;
-    color: var(--text-primary);
-    font-size: 13px;
-    line-height: 1.5;
-}
-
 /* Settings modal — sections that host the moved Display + Debug Info controls.
    Each section is a titled block; consecutive sections get a hairline divider. */
 .settings-section + .settings-section {
@@ -373,8 +362,7 @@
     overflow-y: auto;
 }
 
-.layouts-list .loading-text,
-.layouts-list .empty-text {
+.layouts-list .loading-text {
     color: var(--text-secondary);
     text-align: center;
     padding: 20px;
@@ -424,45 +412,6 @@
 .layout-item-actions .btn {
     padding: 4px 10px;
     font-size: 0.8rem;
-}
-
-/* Format Selector in Save Dialog */
-.format-selector {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.format-option {
-    display: flex;
-    align-items: flex-start;
-    padding: 10px 12px;
-    background-color: var(--bg-panel);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    cursor: pointer;
-    transition: all 0.2s;
-}
-
-.format-option:hover {
-    border-color: var(--accent-color);
-    background-color: var(--bg-hover);
-}
-
-.format-option input[type="radio"] {
-    margin-right: 10px;
-    margin-top: 2px;
-}
-
-.format-option .format-label {
-    font-weight: 600;
-    color: var(--text-primary);
-    margin-right: 8px;
-}
-
-.format-option .format-desc {
-    color: var(--text-secondary);
-    font-size: 0.85rem;
 }
 
 /* Layout format badge */
@@ -519,11 +468,4 @@
 .layouts-list-compact .layout-item-name {
     margin-bottom: 0;
     font-size: 0.9rem;
-}
-
-.layouts-list-compact .empty-text {
-    color: var(--text-secondary);
-    font-size: 0.85rem;
-    text-align: center;
-    padding: 8px;
 }

@@ -10,10 +10,11 @@ deterministic function of `RouteRun.effective_priority` and the stable
 admitted contender stays admitted until it clears the zone, and each held
 contender keeps the same ceiling until then.
 
-The assignment only caps requested targets (`meet_ceiling_block_id`); it never
-reserves a resource. All acquisition still runs through the interlocked
-`BlockManager` / `SwitchManager` path, so a stale or wrong ceiling costs at most
-one tick of a train aiming one block short. Meet coordination is the proactive
+The assignment only caps how far authority is acquired (it feeds
+`acquisition_cap_block_id` per the "Acquisition-cap rule", keeping the route
+target unchanged); it never reserves a resource. All acquisition still runs
+through the interlocked `BlockManager` / `SwitchManager` path, so a stale or
+wrong ceiling costs at most one tick of a train aiming one block short. Meet coordination is the proactive
 layer above the reactive guards (best-effort truncation, contention-driven
 release, the reversal-trap exclusion), which stay the safety floor — including
 for trains the assignment never governs, such as manual or unrouted trains.
@@ -40,12 +41,13 @@ from typing import Dict, List, Optional, Tuple
 
 @dataclass(frozen=True)
 class MeetCeiling:
-    """A cap on how far a train may reserve authority this tick.
+    """A cap on how far a train may acquire authority this tick.
 
-    `block_id` is the ceiling block (the train requests authority only to it,
-    not its farther route target); `direction` is the block-relative
-    `"forward"` / `"reverse"` the train traverses the ceiling block in, so
-    Phase-1 `create_path` / `extend_path` get a unique terminal frame.
+    `block_id` is the ceiling block: Phase 1 passes it as the
+    `acquisition_cap_block_id` so authority is acquired toward the real route
+    target but stored no further than this block. `direction` is the
+    block-relative `"forward"` / `"reverse"` the train traverses the ceiling
+    block in, so the capped terminal frame is unique.
     """
 
     block_id: str

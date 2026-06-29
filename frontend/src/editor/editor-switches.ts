@@ -81,12 +81,11 @@ export class SwitchEditorHandler {
     const accentClass = currentState === 0 ? 'accent-success' : 'accent-warn';
     const chipClass = currentState === 0 ? 'chip-success' : 'chip-warn';
     // Switch lock ownership lives on the Switch entity's `locks` array
-    // (design_new.md:651); read the lock owner directly from it. The
-    // first entry's `path_id` is the representative "locked by" path for
-    // the banner.
+    // (design_new.md:651). `isLocked` gates the Toggle control below; the
+    // individual lock entries render as rows in the Train Protection section
+    // (a route lock is the pre-occupancy half of holding the switch).
     const lockEntries = Array.isArray(switchData.locks) ? switchData.locks : [];
-    const lockedByPath = lockEntries.length > 0 ? lockEntries[0].path_id || null : null;
-    const isLocked = lockedByPath !== null;
+    const isLocked = lockEntries.length > 0;
     const switchType = switchData.switch_type || 'standard';
 
     // Flank protection — read-only, topology-derived (design_new.md:686). Each
@@ -127,11 +126,37 @@ export class SwitchEditorHandler {
         const stateChip = Number(lockedState) === 0 ? 'chip-success' : 'chip-warn';
         return `
                     <div class="flex gap-8 mb-8" title="Train ${trainId} holds this switch at ${stateLabel}, sourced from ${sourceId}">
-                        <span class="font-mono">${trainId}</span>
+                        <span class="font-mono text-sm">${trainId}</span>
                         <span class="flex-1"></span>
                         <span class="text-muted text-xs">from</span>
                         <button class="edit-btn flank-nav-btn font-mono" data-sim-keep data-switch-id="${sourceId}" title="Open ${sourceId} editor">${sourceId}</button>
                         <span class="chip chip-state ${stateChip}">${stateLabel}</span>
+                    </div>`;
+      })
+      .join('');
+
+    // Route locks — a path holds this switch at `locked_state` for `train_id`
+    // before the train arrives. This is the pre-occupancy half of the same
+    // "what is holding this switch" story as train_protection_claims, so the two
+    // render together in the Train Protection section rather than as a separate
+    // top-of-panel banner. Each entry:
+    // { path_id, source_switch_id, train_id, locked_state, claim_role }.
+    const lockRows = lockEntries
+      .map((lock: any) => {
+        const lockedState = Number(lock.locked_state);
+        const stateLabel = lockedState === 0 ? 'MAIN' : 'DIVERGE';
+        const stateChip = lockedState === 0 ? 'chip-success' : 'chip-warn';
+        const trainId = lock.train_id || '—';
+        const pathId = lock.path_id || '';
+        const roleNote = lock.claim_role === 'flank' ? ' as flank protection' : '';
+        return `
+                    <div class="mb-8" title="Route ${pathId} holds this switch at ${stateLabel} for train ${trainId}${roleNote}">
+                        <div class="flex gap-8">
+                            <span class="font-mono text-sm">${trainId}</span>
+                            <span class="flex-1"></span>
+                            <span class="chip chip-state ${stateChip}">${stateLabel}</span>
+                        </div>
+                        <div class="banner-value text-muted text-xs">${pathId}</div>
                     </div>`;
       })
       .join('');
@@ -152,18 +177,6 @@ export class SwitchEditorHandler {
                 </div>
             </div>
 
-            <!-- §6 banner — surfaces the lock owner when locked. Hidden when free. -->
-            ${
-              isLocked
-                ? `
-            <div class="banner banner-danger">
-                <div class="banner-label">Locked by</div>
-                <div class="banner-value banner-text">${lockedByPath}</div>
-            </div>
-            `
-                : ''
-            }
-
             <!-- Flank Protection — read-only: neighbouring switches this one mutually flank-protects. -->
             <div class="control-section">
                 <div class="control-section-header">Flank Protection${flankEntries.length ? ` (${flankEntries.length})` : ''}</div>
@@ -174,13 +187,21 @@ export class SwitchEditorHandler {
                 }
             </div>
 
-            <!-- Train Protection — read-only, runtime: train-owned protection currently held on this switch. -->
+            <!-- Train Protection — read-only: everything currently holding this
+                 switch for a train. A route lock (a path holding the switch ahead
+                 of its train) and train-owned protection (held once the train
+                 occupies the source switch) are two phases of the same hold, so
+                 they share this section rather than a separate lock banner. -->
             <div class="control-section">
-                <div class="control-section-header">Train Protection${protectionClaims.length ? ` (${protectionClaims.length})` : ''}</div>
+                <div class="control-section-header">Train Protection${
+                  lockEntries.length + protectionClaims.length
+                    ? ` (${lockEntries.length + protectionClaims.length})`
+                    : ''
+                }</div>
                 ${
-                  protectionClaims.length
-                    ? `<div class="text-muted text-xs mb-8">Active train-owned protection held while a train occupies the source switch.</div>${protectionRows}`
-                    : `<div class="text-muted text-xs">None — no train is currently protecting this switch.</div>`
+                  lockEntries.length || protectionClaims.length
+                    ? `<div class="text-muted text-xs mb-8">Routes and trains currently holding this switch.</div>${lockRows}${protectionRows}`
+                    : `<div class="text-muted text-xs">None — no train is currently holding this switch.</div>`
                 }
             </div>
 

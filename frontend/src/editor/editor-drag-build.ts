@@ -19,12 +19,12 @@ import {
   type TraceNode,
 } from '../lib/pathfinders';
 import { graphSearch } from '../lib/graph-search';
-import type { EditorHost } from './types';
+import type { DragBuildHost } from './types';
 
 export class DragBuildHandler {
-  editor: EditorHost;
+  editor: DragBuildHost;
 
-  constructor(editor: EditorHost) {
+  constructor(editor: DragBuildHost) {
     this.editor = editor;
   }
 

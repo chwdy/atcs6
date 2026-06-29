@@ -15,12 +15,6 @@
     color: var(--text-primary);
 }
 
-.tool-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 4px;
-}
-
 /* Tool tiles per DESIGN_LANGUAGE.md §3 "Flat ghost" — no per-tile border;
    the .bg-dark fill contrasts with the popover and gives each tile its shape. */
 .tool-btn {
@@ -28,10 +22,10 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 1px;
-    padding: 2px;
-    width: 45px;
-    height: 45px;
+    gap: 2px;
+    padding: 4px;
+    width: 60px;
+    height: 60px;
     background-color: var(--bg-dark);
     border: none;
     border-radius: var(--control-radius-sm);
@@ -53,7 +47,7 @@
 }
 
 .tool-icon {
-    font-size: 1.2rem;
+    font-size: 1.7rem;
     line-height: 1;
 }
 
@@ -157,14 +151,20 @@
 /* Flyout popover holding a group's tool tiles. position:fixed so the capsule's
    overflow can't clip it (the editor sets top/left on open from the button's
    viewport rect). The capsule (`.sidebar`) is a stacking context at the picker
-   layer, so this whole flyout renders above the floating inspector (z 850). */
+   layer, so this whole flyout renders above the floating inspector (z 850).
+
+   Width auto-fits the tiles: `width: max-content` would lay every tile on one
+   line, but `max-width` caps the row at four 60px tiles (4×60 + 3×4 gap + 2×6
+   padding = 264px, +4px slack), so a group with five or more tools wraps onto a
+   second row while a two-tool group stays just two tiles wide. */
 .tool-popover {
     position: fixed;
     z-index: var(--z-picker);
     display: none;
     flex-wrap: wrap;
-    gap: 3px;
-    max-width: 212px;
+    gap: 4px;
+    width: max-content;
+    max-width: 268px;
     padding: 6px;
     background-color: var(--bg-panel);
     border: 1px solid var(--border-color);
@@ -174,28 +174,4 @@
 
 .tool-group.open .tool-popover {
     display: flex;
-}
-
-/* Popover title row: the group's icon + name. flex-basis 100% puts it on its
-   own line above the wrapped tool tiles. The icon size is shared with the
-   primary-editor panel headers (--panel-title-icon-size) so the two match. */
-.tool-popover-header {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    flex: 0 0 100%;
-    padding: 1px 2px 5px;
-    margin-bottom: 2px;
-    border-bottom: 1px solid var(--border-color);
-    color: var(--text-secondary);
-    font-size: 0.62rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-}
-
-.tool-popover-header-icon {
-    font-size: var(--panel-title-icon-size);
-    line-height: 1;
-    color: var(--accent-color);
 }

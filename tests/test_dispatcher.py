@@ -1945,7 +1945,9 @@ class TestSameBlockRejected:
         """A multi-block-span request targeting the TAIL block (head != dest)
         must NOT hit the head-keyed same-block rejection: only the head block is
         a covered stop, so a spanned tail block is a turnaround that falls
-        through to the normal candidate search (design_new.md item 8)."""
+        through to the normal candidate search (design_new.md item 8). This is
+        load-bearing for station turnaround routes (see the North Station
+        caution-turnaround journey), so the rejection stays head-keyed."""
         dispatcher.network = simple_linear_network
         self._rebuild_geometry(simple_linear_network)
         # Span covers BLOCK_A (tail, tile (0,0)) and BLOCK_B (head, tiles
