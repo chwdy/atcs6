@@ -176,6 +176,7 @@ def bootstrap_runtime(
     demo: bool = True,
     setup_train: bool = True,
     scene: str | None = None,
+    event_log_path: str | None = None,
 ) -> tuple[RailwayNetwork, PathDispatcher, SimulationController, PersistenceManager]:
     """Bootstrap the full runtime environment.
 
@@ -184,6 +185,10 @@ def bootstrap_runtime(
         setup_train: If True and demo is True, set up demo train.
         scene: Scene ID to build when `demo=True`. `None` uses
             `CURRENT_SCENE`. Ignored when `demo=False`.
+        event_log_path: When set, persist the NotificationCenter event-log
+            stream to this append-only JSONL file so a run's record outlives
+            the session (design_new.md "Event log", Persistence). `None` (the
+            default, used by unit tests) keeps the stream in memory only.
 
     Returns:
         Tuple of (network, path_dispatcher, sim_controller, persistence_manager).
@@ -199,6 +204,12 @@ def bootstrap_runtime(
     # the scene module can configure controller state directly via the
     # canonical controller registry (design_new.md ~line 1292).
     notification_center = NotificationCenter()
+    # design_new.md "Event log" (Persistence): persist the NotificationCenter
+    # stream to disk so a run's record outlives the session. Opt-in via
+    # `event_log_path` — the real server passes a path; unit tests leave it None
+    # to keep the stream in memory only.
+    if event_log_path:
+        notification_center.enable_event_log(event_log_path)
     sim_controller = SimulationController(
         network,
         path_dispatcher,

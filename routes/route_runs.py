@@ -41,6 +41,7 @@ def _route_run_summary(route, run) -> dict:
         "state": run.current_route_status.value,
         "display_state": run.display_state,
         "path_cancelled": run.path_cancelled,
+        "path_cancel_was_deviation": run.path_cancel_was_deviation,
         "current_waypoint_index": run.current_waypoint_index,
         "next_planning_index": run.next_planning_index,
         "task_count": len(run.task_runs),
@@ -143,9 +144,10 @@ def register(app, state: AppState) -> None:
                     ),
                     "task_direction": task.task_direction if task else None,
                     "task_time": task.task_time if task else None,
-                    "target_time": (
-                        task.target_time if task and task.task_kind == "stop" else None
-                    ),
+                    # target_time applies to every task kind (load-bearing on
+                    # `dwell`, whose scheduled departure is target_time + task_time
+                    # per RouteTask.should_depart) — not stop-only.
+                    "target_time": task.target_time if task else None,
                     "started_at": target_run.task_started_at(i),
                     "finished_at": task_run.finished_at,
                     "delay_class": task_run.delay_class,
@@ -170,7 +172,7 @@ def register(app, state: AppState) -> None:
         """Locate the train_id of a currently-RUNNING RouteRun by run_number.
 
         Returns ``None`` for any run that exists in the registry but is not
-        currently RUNNING (FINISHED / DEACTIVATED / PLANNING). Caller maps
+        currently RUNNING (FINISHED / DEACTIVATED). Caller maps
         ``None`` to HTTP 409 per design_new.md "RouteRun overrides" canonical
         home: historical runs reject override edits.
         """

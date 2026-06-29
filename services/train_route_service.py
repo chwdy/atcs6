@@ -110,6 +110,20 @@ def _registry(state: AppState) -> dict:
     return state.sim_controller.route_executor.route_registry
 
 
+def _unassign_train_from_other_routes(
+    state: AppState, keep_route_id: str, train_id: str
+) -> None:
+    """Enforce the single-assignment rule (design_new.md:1219-1227): a train is
+    assigned to at most one route at a time. Before assigning `train_id` to
+    `keep_route_id`, unassign it from every other route that currently lists it,
+    so a route create/update never leaves a train in two routes' assignment
+    sets at once.
+    """
+    for other in _registry(state).values():
+        if other.route_id != keep_route_id and train_id in other.assigned_train_ids:
+            other.unassign_train(train_id)
+
+
 def _require_route(state: AppState, route_id: str) -> Route:
     route = _registry(state).get(route_id)
     if route is None:
@@ -213,6 +227,7 @@ def create_route(
 
     for train_id in assigned_train_ids or ():
         if train_id in state.network.trains:
+            _unassign_train_from_other_routes(state, route.route_id, train_id)
             route.assign_train(train_id)
 
     if edit_fields_present:
@@ -377,6 +392,7 @@ def update_route(
 
         for train_id in requested_train_ids - current_train_ids:
             if train_id in state.network.trains:
+                _unassign_train_from_other_routes(state, route.route_id, train_id)
                 route.assign_train(train_id)
 
     # Per design_new.md "Shared-route edit teardown": a structural Route.tasks

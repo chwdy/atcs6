@@ -206,4 +206,57 @@ describe('RendererTrackHandler.drawTileExtentHighlight', () => {
     expect(ctx.fill).not.toHaveBeenCalled();
     expect(ctx.stroke).not.toHaveBeenCalled();
   });
+
+  // drawSwitchLockAt — solid lock/occupied dot one radius in from the entry
+  // (trunk) corner, ALONG the selected rail — at the branch root but far enough
+  // from the edge that facing switches don't overlap. gridSize 40 / scale 1 ->
+  // half 20; the dot radius is TRACK_WIDTH(4)*1.25 = 5, so rootInset = 5. Entry
+  // edge N is (10,-10). The tile (1,1) translates to (10,10) via the mock
+  // grid->screen. State 0 picks the MAIN exit (opposite the entry): N->S, so the
+  // dot steps 5 from (10,-10) toward (-10,10) = (6.46,-6.46).
+  const lockTrack: Track = { x: 1, y: 1, is_switch: true, switch_id: 'SW1', switch_points: { N: ['S', 'E'] } };
+
+  it('drawSwitchLockAt fills an orange dot at the branch root for a path-locked switch', () => {
+    const ctx = makeCtx();
+    const r = makeRenderer(ctx);
+    r.currentNetwork = { switches: { SW1: { locks: ['r1'] } } };
+    new RendererTrackHandler(r).drawSwitchLockAt(lockTrack);
+    expect(ctx.translate).toHaveBeenCalledWith(10, 10);
+    const [ax, ay, ar, a0, a1] = ctx.arc.mock.calls[0];
+    expect(ax).toBeCloseTo(6.464, 2);
+    expect(ay).toBeCloseTo(-6.464, 2);
+    expect([ar, a0, a1]).toEqual([5, 0, Math.PI * 2]);
+    expect(ctx.fill).toHaveBeenCalledTimes(1);
+    expect(ctx.stroke).not.toHaveBeenCalled(); // solid fill, not a ring
+    expect(ctx.fillStyle).toBe('#ff8c00'); // lock / orange
+  });
+
+  it('drawSwitchLockAt anchors on the DIVERGE rail in state 1 (stays on the box-edge rail)', () => {
+    // State 1 picks the non-opposite exit (E): the N-E arm is the right box edge
+    // (x=10). Stepping 5 from (10,-10) toward (10,10) = (10,-5) — on x=10, one
+    // radius in from the root corner (not pulled toward the tile centre).
+    const ctx = makeCtx();
+    const r = makeRenderer(ctx);
+    r.currentNetwork = { switches: { SW1: { locks: ['r1'] } } };
+    new RendererTrackHandler(r).drawSwitchLockAt({ ...lockTrack, switch_state: 1 });
+    expect(ctx.arc).toHaveBeenCalledWith(10, -5, 5, 0, Math.PI * 2);
+  });
+
+  it('drawSwitchLockAt draws a brown dot when occupied, and brown wins over a lock', () => {
+    const ctx = makeCtx();
+    const r = makeRenderer(ctx);
+    r.currentNetwork = { switches: { SW1: { occupied_by: 'T1', locks: ['r1'] } } };
+    new RendererTrackHandler(r).drawSwitchLockAt(lockTrack);
+    expect(ctx.fill).toHaveBeenCalledTimes(1);
+    expect(ctx.fillStyle).toBe('#8b4513'); // hold / brown
+  });
+
+  it('drawSwitchLockAt draws nothing when the switch is neither locked nor occupied', () => {
+    const ctx = makeCtx();
+    const r = makeRenderer(ctx);
+    r.currentNetwork = { switches: { SW1: {} } };
+    new RendererTrackHandler(r).drawSwitchLockAt(lockTrack);
+    expect(ctx.arc).not.toHaveBeenCalled();
+    expect(ctx.fill).not.toHaveBeenCalled();
+  });
 });

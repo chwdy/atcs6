@@ -57,14 +57,14 @@ class PathProjection:
 
     def received_path_plan_dict(self) -> Optional[Dict[str, Any]]:
         """Serialize the active authority as the canonical
-        **received_path_plan schema** (design_new.md:1740): exactly
+        **received_path_plan schema** (design_new.md:1924): exactly
         ``path_id``, ``resource_sequence``, and ``authority_end_block_id``.
 
         Dispatcher-only fields (``requested_destination_block_id`` /
         ``requested_destination_direction`` / ``status`` /
         ``current_resource_index`` / ``last_status_updated_time``) stay on
         the ``Path`` record and are deliberately not exposed here — the
-        controller projection must not surface them (design_new.md:1740,
+        controller projection must not surface them (design_new.md:1924,
         2187). ``resource_sequence`` uses each entry's own ``to_dict()`` so
         the nested ``path_tiles`` keep the canonical entry schema.
 

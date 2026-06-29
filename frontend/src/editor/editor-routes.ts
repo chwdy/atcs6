@@ -578,7 +578,7 @@ export class RouteEditorHandler {
       this._historyData = await this.api.getRouteHistory(this.currentRoute.route_id);
     } catch (err) {
       console.error('[RouteEditor] history auto-load failed:', err);
-      body.innerHTML = '<div class="route-history-empty">Failed to load history</div>';
+      body.innerHTML = '<div class="empty-state">Failed to load history</div>';
       return;
     }
     body.innerHTML = this.renderHistoryBody();
@@ -595,12 +595,12 @@ export class RouteEditorHandler {
       body.innerHTML = '';
       return;
     }
-    body.innerHTML = '<div class="route-history-empty">Loading…</div>';
+    body.innerHTML = '<div class="empty-state">Loading…</div>';
     try {
       this._historyData = await this.api.getRouteHistory(this.currentRoute.route_id);
     } catch (err) {
       console.error('[RouteEditor] history load failed:', err);
-      body.innerHTML = '<div class="route-history-empty">Failed to load history</div>';
+      body.innerHTML = '<div class="empty-state">Failed to load history</div>';
       return;
     }
     body.innerHTML = this.renderHistoryBody();
@@ -608,7 +608,7 @@ export class RouteEditorHandler {
 
   renderHistoryBody(): string {
     const data = this._historyData;
-    if (!data) return '<div class="route-history-empty">Loading…</div>';
+    if (!data) return '<div class="empty-state">Loading…</div>';
 
     const metaRows = [];
     if (data.created_at != null) {
@@ -643,11 +643,11 @@ export class RouteEditorHandler {
     const runs = capped;
     const truncatedHtml =
       truncatedCount > 0
-        ? `<div class="route-history-empty">+ ${truncatedCount} older run${truncatedCount === 1 ? '' : 's'} hidden (top ${perTrainCap} shown per train)</div>`
+        ? `<div class="empty-state">+ ${truncatedCount} older run${truncatedCount === 1 ? '' : 's'} hidden (top ${perTrainCap} shown per train)</div>`
         : '';
     const runsHtml =
       runs.length === 0
-        ? '<div class="route-history-empty">No runs yet</div>'
+        ? '<div class="empty-state">No runs yet</div>'
         : runs.map((run) => this.renderHistoryRun(run)).join('');
     return `
             <div class="route-history-activated">${metaRows.join('')}</div>

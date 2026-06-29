@@ -133,9 +133,18 @@ class RouteExecutionState:
     task_runs: List[RouteTaskRun] = field(default_factory=list)
     # Composite run-instance number assigned by RouteExecutor (diagnostic only).
     run_number: int = 0
-    # v1 latch consumed by Phase-1 route-deviation cleanup. Also drives the
-    # derived `display_state` projection (DEVIATED while True).
+    # v1 latch consumed by Phase-1 route-deviation cleanup. With
+    # `path_cancel_was_deviation` it drives the derived `display_state`
+    # projection (DEVIATED / CANCELLED while True).
     path_cancelled: bool = False
+    # Classification of the active `path_cancelled` latch (design_new.md:1456):
+    # True when the cancellation was a movement-derived deviation, False for
+    # every other authority cancellation (operator cancel, revoke, EB,
+    # power-off). Written by `handle_path_cancellation(...)` from its
+    # `was_deviation` argument; cleared together with `path_cancelled` by
+    # Phase-1 deviation cleanup. Drives the `display_state`
+    # DEVIATED-vs-CANCELLED split.
+    path_cancel_was_deviation: bool = False
     # Phase-1-maintained flag (NOT a latch): set when every task on a
     # CIRCULAR / ROUND_TRIP walk is broken (target ID missing from the
     # network), cleared by the next Phase 1 pass that finds a valid task.
@@ -267,14 +276,23 @@ class RouteExecutionState:
     def display_state(self) -> str:
         """UI-only diagnostic projection.
 
-        Per design_new.md ``current_route_status`` schema, in priority
-        order: ``"DEVIATED"`` whenever ``path_cancelled`` is true; else
-        ``"STALLED"`` whenever ``no_reachable_task`` is true; otherwise the
-        stored ``current_route_status.value``. Not a stored field; no
-        writers. Runtime branching never keys on this value.
+        Per design_new.md ``current_route_status`` schema (the ``display_state``
+        row), in priority order: (1) when ``current_route_status`` is terminal
+        (``FINISHED`` / ``DEACTIVATED``), the terminal state — even if
+        ``path_cancelled`` is still set on the historical row; (2) else
+        ``"DEVIATED"`` when ``path_cancelled`` and ``path_cancel_was_deviation``,
+        ``"CANCELLED"`` when ``path_cancelled`` and not; (3) else ``"STALLED"``
+        when ``no_reachable_task``; (4) otherwise the stored
+        ``current_route_status.value``. Not a stored field; no writers. Runtime
+        branching never keys on this value.
         """
+        if self.current_route_status in (
+            RouteRunStatus.FINISHED,
+            RouteRunStatus.DEACTIVATED,
+        ):
+            return self.current_route_status.value
         if self.path_cancelled:
-            return "DEVIATED"
+            return "DEVIATED" if self.path_cancel_was_deviation else "CANCELLED"
         if self.no_reachable_task:
             return "STALLED"
         return self.current_route_status.value
@@ -546,8 +564,8 @@ class RouteExecutor:
         carries the field.
 
         Resolution order:
-          1. Prefer the live RouteRun in `execution_states[train_id]` (covers
-             PLANNING and RUNNING; terminal runs are archived out of the slot
+          1. Prefer the live RouteRun in `execution_states[train_id]` (the live
+             RUNNING run; terminal runs are archived out of the slot
              by `_archive_run` so they correctly read as ``None``).
           2. Otherwise scan `route_registry` for the first route whose
              `assigned_train_ids` contains the train. This covers the
@@ -570,7 +588,7 @@ class RouteExecutor:
         network/train snapshot exposes `route_runs_by_train_id` mapping
         `train_id -> {route_id, run_number, state, display_state, last_error}`
         for the RUNNING run. The live run lives in `execution_states[train_id]`
-        (PLANNING/RUNNING; terminal runs are archived out of the slot); only a
+        (the live RUNNING run; terminal runs are archived out of the slot); only a
         run whose stored `current_route_status` is `RUNNING` is reported here.
         """
         run = self.execution_states.get(train_id)
@@ -1132,7 +1150,9 @@ class RouteExecutor:
         if exec_state.path_cancelled and self._deviation_cleanup_eligible(
             controller
         ):
+            # Clear the latch and its classification together (design_new.md:1457).
             exec_state.path_cancelled = False
+            exec_state.path_cancel_was_deviation = False
 
         # ---------- 70c3: dwell-complete timer check -------------------------
         # Per design_new.md lines 1826/1828 (EB-while-dwelling rows `0a8e`/`9f74`
@@ -1182,6 +1202,47 @@ class RouteExecutor:
         # ---------- 66aa: authority acquisition (create_path / extend_path) -
         if not self._eligible_for_authority_acquisition(controller, exec_state):
             return
+
+        # Live-path target re-resolution invalidation (design_new.md:1716, 1735,
+        # case `162a`): when a live path exists and a fresh resolve of the CURRENT
+        # walk-position now yields a different target than the path was built
+        # toward — e.g. a StationTarget re-resolving to a different platform — the
+        # already-acquired authority toward the old target is potentially stale.
+        # Latch a `revoked` cancel and wait for the ordinary Phase 3 cancel /
+        # replan flow instead of extending toward a different (block, direction);
+        # the same RouteRun is kept (this is NOT a structural Route.tasks edit).
+        # Normal waypoint-chaining advances to a fresh walk-position whose stored
+        # `resolved_target` is still None, so it never trips this check.
+        active_path_id = self._get_active_path_id(train_id)
+        if active_path_id is not None and 0 <= projection.walk_position < len(
+            exec_state.task_runs
+        ):
+            stored_target = exec_state.task_runs[
+                projection.walk_position
+            ].resolved_target
+            new_target = projection.resolved_target
+            if (
+                stored_target is not None
+                and new_target is not None
+                and (
+                    stored_target.requested_destination_block_id
+                    != new_target.requested_destination_block_id
+                    or stored_target.requested_destination_direction
+                    != new_target.requested_destination_direction
+                )
+            ):
+                controller.route_hooks.phase_latches.set_path_cancel_request(
+                    initiator="revoked",
+                    reason=(
+                        "live-path target re-resolved for walk-position "
+                        f"{projection.walk_position} "
+                        f"({stored_target.requested_destination_block_id} -> "
+                        f"{new_target.requested_destination_block_id}); "
+                        "cancelling stale authority so the next pass replans "
+                        "toward the new target"
+                    ),
+                )
+                return
 
         # Idle-hold release cooldown (design_new.md "Idle-hold maintenance and
         # release"): while cooling down after a release, skip acquisition so the
@@ -1722,19 +1783,20 @@ class RouteExecutor:
         target_block = projection.resolved_target.requested_destination_block_id
         target_dir = projection.resolved_target.requested_destination_direction
 
-        # Meet-coordination ceiling cap (design_new.md "Meet coordination",
-        # line 1556): when this train carries a meet ceiling, REQUEST authority
-        # only to the ceiling block in its route direction. The recorded route
-        # target (`task_runs[...].resolved_target`, written below) stays the
-        # farther route target — the doc requires "the route target is
-        # unchanged" — so only the create/extend request is capped. The first
-        # tick the train carries no ceiling, the request resumes the full target.
-        request_block = target_block
-        request_dir = target_dir
+        # Meet-coordination ceiling (design_new.md "Meet coordination" line 1558
+        # + "Acquisition-cap rule" line 1025): when this train carries a meet
+        # ceiling, keep the request at the real route target and pass the ceiling
+        # as the acquisition cap. The dispatcher acquires toward the real target
+        # but stores no authority past the cap, so `authority_end_block_id` lands
+        # on the ceiling while `requested_destination_block_id` (and the
+        # `task_runs[...].resolved_target` written on success below) stay the
+        # farther route target. The capped authority never completes, so the
+        # train holds at the ceiling. The first tick the train carries no
+        # ceiling, no cap is passed and the full route target is requested.
+        acquisition_cap_block_id: Optional[str] = None
         ceiling = self.meet_assignment.get(train.train_id)
         if ceiling is not None and ceiling.block_id != target_block:
-            request_block = ceiling.block_id
-            request_dir = ceiling.direction
+            acquisition_cap_block_id = ceiling.block_id
 
         # Decide create vs extend by active authority presence.
         active_path_id = self._get_active_path_id(train.train_id)
@@ -1758,19 +1820,21 @@ class RouteExecutor:
             if active_path_id is not None:
                 result = self.path_dispatcher.extend_path(
                     path_id=active_path_id,
-                    requested_destination_block_id=request_block,
-                    requested_destination_direction=request_dir,
+                    requested_destination_block_id=target_block,
+                    requested_destination_direction=target_dir,
                     acquisition_mode=acquisition_mode,
                     manual_override=manual_override,
+                    acquisition_cap_block_id=acquisition_cap_block_id,
                 )
                 success = bool(getattr(result, "success", False))
             else:
                 result = self.path_dispatcher.create_path(
                     train_id=train.train_id,
-                    requested_destination_block_id=request_block,
-                    requested_destination_direction=request_dir,
+                    requested_destination_block_id=target_block,
+                    requested_destination_direction=target_dir,
                     acquisition_mode=acquisition_mode,
                     manual_override=manual_override,
+                    acquisition_cap_block_id=acquisition_cap_block_id,
                 )
                 success = bool(getattr(result, "success", False))
         except Exception as exc:  # pragma: no cover — defensive
@@ -1970,6 +2034,18 @@ class RouteExecutor:
                 requested_destination_direction=target_dir,
             )
 
+        # design_new.md "Event log": a fresh create (no prior active path) is a
+        # PATH_CREATED event; an extend grows an existing path and is not.
+        if active_path_id is None:
+            from notification_center import EventKind
+
+            self._emit_event(
+                EventKind.PATH_CREATED,
+                train_id=train.train_id,
+                path_id=getattr(result, "path_id", None),
+                payload={"requested_destination_block_id": target_block},
+            )
+
         # Update direction if projection says so. The canonical store is
         # the literal string; no signed-int translation is needed here.
         if projection.direction in ("forward", "reverse"):
@@ -2077,6 +2153,14 @@ class RouteExecutor:
             exec_state.release_cooldown_ticks = IDLE_HOLD_COOLDOWN_TICKS
             exec_state.idle_hold_ticks = 0
             return True
+        # A meet-ceiling-governed hold is deliberate, not hoarding: it must not
+        # time out and release (design_new.md:1582 — "a meet ceiling capping
+        # this tick's acquisition ... must not time out and release"). Reset the
+        # no-progress count, but only after the contention-release safety floor
+        # above (design_new.md:1560), which still applies to a meet-held run.
+        if self.meet_assignment.get(train_id) is not None:
+            exec_state.idle_hold_ticks = 0
+            return False
         exec_state.idle_hold_ticks += 1
         if exec_state.idle_hold_ticks < IDLE_HOLD_RELEASE_TICKS:
             return False
@@ -2203,24 +2287,31 @@ class RouteExecutor:
         train_id: str,
         path_id: str,
         reason: Optional[str] = None,
+        was_deviation: bool = False,
     ) -> None:
         """Phase-3 cancellation callback.
 
-        Per design_new.md line 1559, the v1 callback signature is
-        ``(train_id, path_id, reason=None)`` — every cancellation kind shares the
-        same body and no other parameter is accepted. The callback is
-        bookkeeping only: it must not choose a fresh target or create fresh
-        authority. The diagnostic `initiator` is surfaced only on the
-        `path_cancellation` notification and does not cross this callback
-        boundary.
+        Per design_new.md "route path-event callback schema" (lines 1700,
+        1730), the v1 callback signature is
+        ``(train_id, path_id, reason=None, was_deviation=False)``. Every
+        cancellation kind shares the same body; ``was_deviation`` is the single
+        classification bit ``PathDispatcher.cancel_path(...)`` derives as
+        ``initiator == "deviation"`` and is the only cancellation-kind detail
+        that crosses this callback boundary. The callback is bookkeeping only:
+        it must not choose a fresh target or create fresh authority. The
+        free-form diagnostic `initiator` stays on the `path_cancellation`
+        notification.
         """
         exec_state = self.execution_states.get(train_id)
         if exec_state is None:
             return
-        # Per design_new.md: deviation is purely the `path_cancelled` latch
-        # plus the derived `display_state` projection. The stored
-        # `current_route_status` does not transition to DEVIATED.
+        # Per design_new.md: deviation is purely the `path_cancelled` latch plus
+        # its `path_cancel_was_deviation` classification, surfaced through the
+        # derived `display_state` projection (DEVIATED for a movement deviation,
+        # CANCELLED for every other authority cancellation). The stored
+        # `current_route_status` does not transition.
         exec_state.path_cancelled = True
+        exec_state.path_cancel_was_deviation = was_deviation
         # Per design_new.md (fix #17): record cancellation reason on last_error.
         now = self._now()
         exec_state.last_error = ErrorRecord(
@@ -2361,6 +2452,15 @@ class RouteExecutor:
                 if task is None or task.task_kind != "waypoint":
                     continue
             self.advance_walk_position(exec_state, route, pos, event_time)
+        # design_new.md "Event log": the train reached its stop target.
+        from notification_center import EventKind
+
+        self._emit_event(
+            EventKind.TRAIN_ARRIVED,
+            train_id=train_id,
+            path_id=path_id,
+            payload={"block_id": authority_end_block_id},
+        )
         # Phase 3 must NOT call enter_station_dwell — that fires from the next
         # eligible Phase 1 dwell-entry step.
         return True
@@ -2542,6 +2642,42 @@ class RouteExecutor:
             return None
         route.assign_train(train_id)
         return route_id
+
+    def discard_pending_reassign(self, train_id: str) -> None:
+        """Drop any held re-assignment for `train_id` WITHOUT applying it.
+
+        Per design_new.md "Shared-route edit teardown" (line 1461): when an
+        earlier Phase-3 consumer (abort / power-off) or a natural finish ended
+        the run before the deactivate consumer ran, the operator/admin teardown
+        wins — the held re-assignment is discarded so a powered-off or aborted
+        train is never silently re-assigned to the edited route.
+        """
+        self._pending_reassign.pop(train_id, None)
+
+    def _emit_event(
+        self, kind, train_id=None, payload=None, path_id=None, severity=None
+    ) -> None:
+        """Emit an operational event-log notification through NotificationCenter
+        (design_new.md "Event log"). Best-effort: resolves the sink defensively,
+        no-ops when none is wired, and never raises into the caller."""
+        try:
+            sc = getattr(self, "simulation_controller", None)
+            nc = getattr(sc, "notification_center", None) if sc is not None else None
+            if nc is None:
+                return
+            from notification_center import Severity as _Severity
+
+            nc.emit(
+                source="RouteExecutor",
+                kind=kind,
+                severity=severity if severity is not None else _Severity.INFO,
+                event_time=self._now(),
+                train_id=train_id,
+                path_id=path_id,
+                payload=payload or {},
+            )
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ helper
     def _find_next_task_target(

@@ -492,6 +492,24 @@ class SwitchManager:
             fail_reason = self._throw_and_verify(switch, int(new_position))
             if fail_reason is not None:
                 return (False, fail_reason)
+            # design_new.md "Event log": a confirmed operator alignment change is
+            # a SWITCH_THROWN event.
+            sc = self.simulation_controller
+            nc = getattr(sc, "notification_center", None) if sc is not None else None
+            if nc is not None:
+                from notification_center import EventKind, Severity
+
+                nc.emit(
+                    source="SwitchManager",
+                    kind=EventKind.SWITCH_THROWN,
+                    severity=Severity.INFO,
+                    event_time=time.time(),
+                    payload={
+                        "switch_id": switch_id,
+                        "from_position": old_position,
+                        "to_position": int(new_position),
+                    },
+                )
         return (True, message)
 
     def _resolve_block_manager(self):
@@ -654,8 +672,17 @@ class SwitchManager:
         already_occupant = any(
             owner == train_id for owner in switch.route_owners.values()
         )
-        holds_main_lock = path_id is not None and (path_id, None) in switch.locks
-        if not holds_main_lock and not already_occupant:
+        # The held main lock must GRANT the route the train physically occupies
+        # (design_new.md:741 — "if the entering train holds no lock granting
+        # `route`, the entry is a fatal intrusion"). A lock recorded for a
+        # *different* route does not protect this traversal; holding the
+        # `(path_id, None)` key alone is not enough. Only a lock with no recorded
+        # route (a legacy / routeless main claim) is treated as a generic grant.
+        holds_granting_lock = False
+        if path_id is not None and (path_id, None) in switch.locks:
+            locked_route = switch.lock_routes.get((path_id, None))
+            holds_granting_lock = locked_route is None or locked_route == route
+        if not holds_granting_lock and not already_occupant:
             self._report_fatal_conflict(
                 switch_id=switch_id,
                 train_id=train_id,

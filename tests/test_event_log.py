@@ -60,3 +60,25 @@ def test_in_memory_unaffected_when_no_disk_log(tmp_path):
 
 def test_read_missing_log_is_empty():
     assert NotificationCenter.read_event_log("/nonexistent/path/events.jsonl") == []
+
+
+def test_bootstrap_persists_operational_events(tmp_path):
+    """bootstrap_runtime(event_log_path=...) wires NotificationCenter persistence
+    at boot, and demo placement emits TRAIN_PLACED operational events to the
+    on-disk log (design_new.md "Event log": persistence + operational kinds).
+    Also pins the canonical `train_placed` kind (not legacy `train_added`)."""
+    import bootstrap
+
+    path = str(tmp_path / "event_log.jsonl")
+    _network, _pd, sim, _pm = bootstrap.bootstrap_runtime(
+        demo=True, setup_train=True, event_log_path=path,
+    )
+    # Persistence was wired at boot (opt-in via event_log_path).
+    assert sim.notification_center._log_path == path
+    # Demo train placement emitted TRAIN_PLACED events, persisted to disk.
+    events = NotificationCenter.read_event_log(path)
+    placed = [e for e in events if e.kind == EventKind.TRAIN_PLACED]
+    assert placed, "expected TRAIN_PLACED events from demo train placement"
+    assert all(e.kind != "train_added" for e in events), (
+        "train placement must use the canonical 'train_placed' kind"
+    )

@@ -211,4 +211,50 @@ describe('Camera projection + viewport math', () => {
     expect(cam.scale).toBeGreaterThanOrEqual(0.1);
     expect(cam.scale).toBeLessThanOrEqual(5);
   });
+
+  it('fitToContent frames into the visible region, clear of a left chrome inset', () => {
+    const canvas = makeCanvas(1200, 800);
+    const cam = new Camera(canvas);
+    cam.resizeToCanvas();
+
+    // A diagonal bar (width-limited on screen), so the available WIDTH is the
+    // limiting axis — that makes the inset's effect on scale observable.
+    const tiles: Array<{ x: number; y: number }> = [];
+    for (let i = 0; i <= 10; i++) tiles.push({ x: i, y: i });
+
+    const insetL = 200; // pretend the tool rail covers the left 200px
+    cam.fitToContent(tiles, 0.9, { left: insetL });
+
+    let minSx = Infinity;
+    let maxSx = -Infinity;
+    let minSy = Infinity;
+    let maxSy = -Infinity;
+    for (const t of tiles) {
+      for (const [dx, dy] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
+        const sx = cam.gridToScreenX(t.x + dx, t.y + dy);
+        const sy = cam.gridToScreenY(t.x + dx, t.y + dy);
+        if (sx < minSx) minSx = sx;
+        if (sx > maxSx) maxSx = sx;
+        if (sy < minSy) minSy = sy;
+        if (sy > maxSy) maxSy = sy;
+      }
+    }
+
+    // The whole footprint clears the inset and stays on-canvas.
+    expect(minSx).toBeGreaterThanOrEqual(insetL);
+    expect(maxSx).toBeLessThanOrEqual(canvas.width);
+    expect(minSy).toBeGreaterThanOrEqual(0);
+    expect(maxSy).toBeLessThanOrEqual(canvas.height);
+
+    // The footprint is centred in the VISIBLE region (canvas minus the inset),
+    // not on the raw canvas.
+    const availW = canvas.width - insetL;
+    expect((minSx + maxSx) / 2).toBeCloseTo(insetL + availW / 2, 6);
+    expect((minSy + maxSy) / 2).toBeCloseTo(cam.centerY, 6);
+
+    // The limiting axis fills the AVAILABLE width to the margin — the inset
+    // shrank the usable space, so the layout is scaled smaller than a full-canvas
+    // fit would have produced.
+    expect((maxSx - minSx) / availW).toBeCloseTo(0.9, 6);
+  });
 });

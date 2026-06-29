@@ -146,7 +146,6 @@ export class Editor {
   _currentEditorId: string | null;
   // Assigned lazily by event handlers.
   hasPanned = false;
-  panStart: any = null;
   signalValidationTimeout: any = null;
   _lastValidatedPosition: any = null;
   _pendingTunnelEndpoint: any = null;
@@ -626,40 +625,6 @@ export class Editor {
     }
   }
 
-  /** Force refresh the currently open secondary editor. */
-  refreshCurrentEditor(): void {
-    if (!this._currentEditorType || !this._currentEditorId) {
-      return;
-    }
-
-    const activeElement = document.activeElement;
-    if (
-      activeElement &&
-      (activeElement.tagName === 'INPUT' ||
-        activeElement.tagName === 'TEXTAREA' ||
-        activeElement.tagName === 'SELECT')
-    ) {
-      return;
-    }
-
-    if (this._currentEditorType === 'train-control') {
-      if (this.host?.isSimulationRunning) return;
-      this.trainHandler?.updateTrainControlPanelValues(this._currentEditorId);
-      return;
-    }
-
-    if (
-      this._currentEditorType === 'signal' ||
-      this._currentEditorType === 'switch' ||
-      this._currentEditorType === 'block' ||
-      this._currentEditorType === 'platform' ||
-      this._currentEditorType === 'station-group' ||
-      this._currentEditorType === 'station-group-detail'
-    ) {
-      return;
-    }
-  }
-
   async showBlockEditor(blockId: any): Promise<any> {
     return this.blockHandler.showEditor(blockId);
   }
@@ -1009,7 +974,6 @@ export class Editor {
         (e.button === 0 && pathTools.includes(this.selectedTool))
       ) {
         this.isPanning = true;
-        this.panStart = { x, y };
         this.hasPanned = false;
         this.lastMouseX = e.clientX;
         this.lastMouseY = e.clientY;

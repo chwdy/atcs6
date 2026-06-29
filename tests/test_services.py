@@ -107,6 +107,31 @@ class TestTrainRouteService:
         registry = state_with_train.sim_controller.route_executor.route_registry
         assert "ROUTE_T2" not in registry
 
+    def test_assigning_train_to_new_route_unassigns_previous(self, state_with_train):
+        """design_new.md:1219-1227 — a train is assigned to at most one route. A
+        route create/update that assigns an already-assigned train unassigns it
+        from its previous route first (no double-assignment across routes)."""
+        r1 = train_route_service.create_route(
+            state_with_train, route_id="ROUTE_R1", name="r1",
+            assigned_train_ids=["TRAIN_A"],
+        )
+        assert "TRAIN_A" in r1.assigned_train_ids
+
+        # Creating a second route assigned to the same train moves the assignment.
+        r2 = train_route_service.create_route(
+            state_with_train, route_id="ROUTE_R2", name="r2",
+            assigned_train_ids=["TRAIN_A"],
+        )
+        assert "TRAIN_A" in r2.assigned_train_ids
+        assert "TRAIN_A" not in r1.assigned_train_ids
+
+        # Updating R1 to re-add the train moves it back (and off R2).
+        train_route_service.update_route(
+            state_with_train, "ROUTE_R1", assigned_train_ids=["TRAIN_A"],
+        )
+        assert "TRAIN_A" in r1.assigned_train_ids
+        assert "TRAIN_A" not in r2.assigned_train_ids
+
     def test_require_route_raises_not_found(self, state):
         """`require_route` raises NotFoundError; `get_route` returns None."""
         assert train_route_service.get_route(state, "MISSING") is None

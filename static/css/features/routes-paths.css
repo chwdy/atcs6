@@ -110,35 +110,7 @@
     color: var(--text-tertiary);
 }
 
-.route-status-trains {
-    margin-top: 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-
-.route-status-train {
-    display: flex;
-    justify-content: space-between;
-    gap: 8px;
-    font-size: 11px;
-    padding: 3px 0;
-    border-bottom: 1px dotted var(--border-color);
-}
-
-.route-status-train:last-child {
-    border-bottom: none;
-}
-
 /* Route run-history timeline. */
-.route-history-empty {
-    padding: 12px;
-    text-align: center;
-    font-style: italic;
-    font-size: 11px;
-    color: var(--text-secondary);
-}
-
 .route-history-activated {
     font-size: 11px;
     color: var(--text-secondary);
@@ -330,16 +302,6 @@
 /* ---- Single-run editor ---- */
 
 .rr-editor { padding: 0; }
-
-/* Chip-row grouping used at the foot of an .rr-card. Same shape as the
-   generic .chip-row from components/status-blocks.css — kept here for
-   the route-runs list's back-compat. */
-.rr-status-meta {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 4px 6px;
-}
 
 /* Timestamp annotation appended below a .banner in the route-runs editor
    (e.g. "started 1:23 PM" under the error text). */
@@ -930,14 +892,6 @@
 /* Compact variant — for the direction control inside a waypoint card row,
    the glyph alone is enough; label is hidden via not rendering it. */
 
-/* Stack the target type + target dropdown vertically since the segmented
-   control consumes the full row width. */
-.waypoint-target-stack {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-}
-
 /* Compact form controls inside the route editor sidebar.
 
    The shared --control-height-sm (32px) and .property-input default
@@ -954,13 +908,6 @@
     min-height: var(--control-height-xs);
     padding: 0 8px;
     font-size: 12px;
-}
-
-.route-editor .property-input.route-number-input,
-.route-editor .property-input.input-tiny {
-    /* keep their tighter width override but inherit the 28px height */
-    height: var(--control-height-xs);
-    padding: 0 6px;
 }
 
 .route-editor .btn:not(.btn-icon-only):not(.btn-size-lg) {
@@ -1052,10 +999,6 @@
     font-weight: 700;
     color: var(--info-color);
     min-width: 16px;
-}
-
-.waypoint-actions {
-    flex-shrink: 0;
 }
 
 /* ----------------------------------------------------------------------------
@@ -1272,70 +1215,9 @@
     gap: 4px;
 }
 
-/* Legacy 2-col field grid kept around for any callers that still rely on
-   .waypoint-fields. New code uses .task-tier instead. */
-.waypoint-fields {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px 12px;
-    margin-top: 10px;
-    padding-top: 10px;
-    border-top: 1px solid var(--border-color);
-}
-
-.waypoint-field {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 0;
-}
-
-.waypoint-field.waypoint-field-wide {
-    grid-column: 1 / -1;
-}
-
-.waypoint-field > label {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    font-weight: 500;
-    color: var(--text-tertiary);
-}
-
-.waypoint-target-row {
-    display: flex;
-    gap: 6px;
-}
-
-.waypoint-target-row .task-target-type-select {
-    flex: 0 0 38%;
-}
-
-.waypoint-target-row .task-target-id-select {
-    flex: 1 1 auto;
-    min-width: 0;
-}
-
-.waypoint-flex-toggle {
-    height: var(--control-height-sm);
-    padding: 0 10px;
-}
-
-.waypoint-flex-toggle input[type="checkbox"] {
-    margin: 0;
-}
-
-.waypoint-flex-label {
-    font-size: 11px;
-}
-
 /* Shared compact panel states */
 .control-section-divider {
     border-top: 1px solid var(--border-color);
-}
-
-.panel-subsection-divider {
-    border-bottom: 1px solid var(--border-color);
 }
 
 .property-input-warning {
@@ -1358,8 +1240,7 @@
 .signal-state-yellow { --signal-state-color: var(--warning-color); }
 .signal-state-red { --signal-state-color: var(--danger-color); }
 
-.signal-state-row,
-.switch-state-row {
+.signal-state-row {
     display: flex;
     align-items: center;
     gap: 10px;
@@ -1374,8 +1255,7 @@
     box-shadow: 0 0 8px var(--signal-state-color);
 }
 
-.signal-state-title,
-.switch-state-title {
+.signal-state-title {
     font-size: 24px;
     font-weight: 700;
     color: var(--signal-state-color, var(--switch-state-color));
@@ -1390,108 +1270,40 @@
     color: var(--text-tertiary);
 }
 
-.switch-state-header {
-    text-align: center;
-    margin-bottom: 12px;
-}
-
-.switch-state-dot {
-    background: var(--switch-state-color);
-    box-shadow: 0 0 8px var(--switch-state-color);
-}
-
-.switch-state-main { --switch-state-color: var(--success-color); }
-.switch-state-diverge { --switch-state-color: var(--warning-color); }
-
-.switch-action-row {
-    display: flex;
-    gap: 8px;
-}
-
-.switch-state-inline {
-    color: var(--switch-state-color);
-}
-
-.train-state-dot.train-state-off {
-    background-color: #888;
-}
-
-.train-state-text.train-state-off,
 .train-state-display.train-state-off {
     color: #888;
     background-color: transparent;
 }
 
-.train-state-dot.train-state-idle {
-    background-color: #ffd93d;
-}
-
-.train-state-text.train-state-idle,
 .train-state-display.train-state-idle {
     color: #ffd93d;
     background-color: transparent;
 }
 
-.train-state-dot.train-state-standby {
-    background-color: var(--info-color);
-}
-
-.train-state-text.train-state-standby,
 .train-state-display.train-state-standby {
     color: var(--info-color);
     background-color: transparent;
 }
 
-.train-state-dot.train-state-running {
-    background-color: var(--success-color);
-}
-
-.train-state-text.train-state-running,
 .train-state-display.train-state-running {
     color: var(--success-color);
     background-color: transparent;
 }
 
-.train-state-dot.train-state-waiting {
-    background-color: #ff9500;
-}
-
-.train-state-text.train-state-waiting,
 .train-state-display.train-state-waiting {
     color: #ff9500;
     background-color: transparent;
 }
 
-.train-state-dot.train-state-station {
-    background-color: var(--accent-color);
-}
-
-.train-state-text.train-state-station,
 .train-state-display.train-state-station {
     color: var(--accent-color);
     background-color: transparent;
 }
 
-.train-state-dot.train-state-manual {
-    background-color: var(--danger-color);
-}
-
-.train-state-text.train-state-manual,
 .train-state-display.train-state-manual {
     color: var(--danger-color);
     background-color: transparent;
 }
-
-.info-box-block {
-    background: var(--bg-dark);
-    border-left: 4px solid #888;
-    border-radius: 6px;
-    padding: 12px;
-}
-
-.info-box-block.obc-power-off { border-left-color: #888; }
-.info-box-block.obc-power-on { border-left-color: var(--success-color); }
-.info-box-block.obc-power-emergency { border-left-color: var(--danger-color); }
 
 .obc-power-display.power-on { color: var(--success-color); }
 .obc-power-display.power-off { color: #888; }
@@ -1508,36 +1320,14 @@
 .obc-handle-display.handle-neutral,
 .handle-position-display.handle-neutral { color: #ffd93d; }
 
-.btn-emergency-lg {
-    font-size: 14px;
-    padding: 12px;
-}
-
-.train-cab-status.cab-active { color: var(--info-color); }
-.train-cab-status.cab-none { color: #ffd93d; }
-
 .train-control-debug-section {
     border-top: 1px solid var(--border-color);
     padding-top: 12px;
 }
 
-.block-state-display.block-state-free { color: var(--block-free); }
-.block-state-display.block-state-reserved { color: var(--block-reserved); }
-.block-state-display.block-state-occupied { color: var(--block-occupied); }
-.block-state-display.block-state-caution { color: var(--block-caution); }
-.block-state-display.block-state-disabled { color: var(--block-disabled); }
-.block-state-display.block-state-manual { color: var(--block-manual); }
-.block-state-display.block-state-unknown { color: var(--text-tertiary); }
-
 .block-station-names {
     color: var(--warning-color);
     margin-left: 5px;
-}
-
-.info-display-item-stacked {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
 }
 
 .signal-list-compact {
@@ -1681,90 +1471,6 @@
     line-height: 1.4;
     white-space: pre-wrap;
     word-wrap: break-word;
-}
-
-/* Individual Route Item */
-.route-item {
-    background: var(--bg-dark);
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    padding: 12px;
-    transition: border-color 0.2s ease;
-}
-
-.route-item:hover {
-    border-color: var(--accent-color);
-}
-
-.route-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 6px;
-}
-
-.route-status {
-    font-weight: bold;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}
-
-.route-priority {
-    background: var(--bg-hover);
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--text-secondary);
-}
-
-.route-id {
-    margin-bottom: 4px;
-    font-size: 12px;
-    color: #aaa;
-    word-break: break-all;
-    white-space: normal;
-    line-height: 1.4;
-}
-
-.route-endpoints {
-    color: #888;
-    margin-bottom: 4px;
-}
-
-.route-train {
-    color: var(--accent-color);
-    margin-bottom: 8px;
-}
-
-.route-actions {
-    display: flex;
-    gap: 8px;
-    margin-top: 8px;
-}
-
-/* Route Setup Panel (during route creation) */
-.route-setup-panel {
-    padding: 0;
-}
-
-.route-setup-panel .property-item {
-    margin-bottom: 16px;
-}
-
-/* Route Editor Panel */
-.route-editor-panel {
-    padding: 0;
-}
-
-.route-editor-panel .block-item {
-    padding: 4px 8px;
-    border-bottom: 1px solid var(--border-color);
-}
-
-.route-editor-panel .block-item:last-child {
-    border-bottom: none;
 }
 
 /* Route priority slider styling */

@@ -246,7 +246,6 @@
 .tm-val-success     { color: var(--success-color); }
 .tm-val-danger      { color: var(--danger-color); }
 .tm-val-warn        { color: var(--warning-color); }
-.tm-val-info        { color: var(--info-color); }
 .tm-val-unit {
     font-family: var(--font-main);
     font-size: 10px;
@@ -254,31 +253,13 @@
     color: var(--text-secondary);
 }
 
-/* ---- Speed-limit reason banner (rendered inside the info column) ---- */
+/* ---- Speed-limit reason banner: consumes the canonical .banner / .banner-warn
+   (§6 status accents); only the info-column overflow handling layers on top. ---- */
 .tm-banner {
-    font-size: 11px;
-    padding: 5px 12px;
-    border-top: 1px solid var(--border-color);
-    border-left: 3px solid transparent;
-    line-height: 1.4;
     overflow: hidden;
     text-overflow: ellipsis;
     word-break: break-word;
     flex-shrink: 0;
-}
-.tm-banner.hidden { display: none; }
-
-.tm-banner-warn {
-    color: var(--warning-color);
-    background-color: rgba(var(--warning-rgb), 0.10);
-    border-left-color: var(--warning-color);
-}
-
-.tm-banner-muted {
-    color: var(--text-secondary);
-    background-color: rgba(255, 255, 255, 0.03);
-    border-left-color: var(--border-color);
-    font-style: italic;
 }
 
 /* ---- Canvas wrap (scrollable container around the fixed-height canvas) ---- */
@@ -344,16 +325,6 @@
     letter-spacing: 0.06em;
 }
 
-.tm-upcoming-count {
-    background-color: var(--bg-dark);
-    color: var(--text-secondary);
-    border-radius: 999px;
-    padding: 1px 8px;
-    font-size: 10px;
-    font-family: var(--font-mono);
-    border: 1px solid var(--border-color);
-}
-
 .tm-upcoming-list {
     flex: 1 1 auto;
     overflow-y: auto;
@@ -361,14 +332,6 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
-}
-
-.tm-upcoming-empty {
-    padding: 16px 12px;
-    text-align: center;
-    color: var(--text-secondary);
-    font-style: italic;
-    font-size: 11px;
 }
 
 /* ---- Upcoming row (mirrors inspector-row pattern) ---- */
@@ -452,130 +415,9 @@
 .tm-up-row.kind-station      { border-left-color: var(--info-color); }
 .tm-up-row.kind-switch       { border-left-color: var(--accent-color); }
 
-/* Adjust row borders for grid layout - maybe make them less prominent or remove */
-
-/* Horizontal form layout: label and input on same line */
-.form-row-horizontal {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 12px;
-}
-
-.form-row-horizontal label {
-    flex: 0 0 120px;
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--text-secondary);
-    text-align: right;
-    margin: 0;
-}
-
-.form-row-horizontal input,
-.form-row-horizontal select {
-    flex: 1;
-    min-width: 0;
-    padding: 8px 12px;
-    background: var(--bg-dark);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    color: var(--text-primary);
-    font-size: 13px;
-    box-sizing: border-box;
-}
-
-.form-row-horizontal input:focus,
-.form-row-horizontal select:focus {
-    outline: none;
-    border-color: var(--accent-color);
-}
-
-/* Info display group: compact style like track bits */
-.info-display-group {
-    background: var(--bg-section);
-    border-radius: 4px;
-    padding: 8px;
-    margin-bottom: 8px;
-    border: 1px solid var(--border-color);
-}
-
-.info-display-header {
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin-bottom: 6px;
-}
-
-.info-display-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 4px 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-.info-display-item:last-child {
-    border-bottom: none;
-    padding-bottom: 0;
-}
-
-.info-display-item:first-child {
-    padding-top: 0;
-}
-
-.info-display-label {
-    font-size: 10px;
-    color: var(--text-secondary);
-    font-weight: 500;
-}
-
-.info-display-value {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--text-primary);
-    font-weight: 600;
-}
-
-/* Compact badge for info displays */
-.info-badge {
-    display: inline-block;
-    padding: 4px 8px;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.3px;
-}
-
-.info-badge.state-free {
-    background: rgba(var(--success-rgb), 0.15);
-    color: var(--success-color);
-}
-
-.info-badge.state-occupied {
-    background: rgba(var(--danger-rgb), 0.15);
-    color: var(--danger-color);
-}
-
-.info-badge.state-reserved {
-    background: rgba(var(--warning-rgb), 0.15);
-    color: var(--warning-color);
-}
-
-.info-badge.state-caution {
-    background: rgba(255, 149, 0, 0.15);
-    color: #ff9500;
-}
-
 /* ============= Helper Classes ============= */
 .font-mono {
     font-family: var(--font-mono);
-}
-
-.text-light-gray {
-    color: #ccc;
 }
 
 /* ============= App Debug Panel Styles ============= */
@@ -623,38 +465,4 @@
 .debug-value-switches {
     color: var(--warning-color);
     font-family: var(--font-mono);
-}
-
-/* ============= Editor Panel Styles ============= */
-.text-track-bit-active {
-    color: var(--info-color);
-}
-
-.info-box-warning-container {
-    margin: 4px 0;
-    padding: 4px 8px;
-}
-
-.switch-state-box {
-    margin: 6px 0;
-    /* background is dynamic */
-}
-
-.switch-state-text {
-    font-size: 1.125rem;
-    font-weight: bold;
-    /* color is dynamic */
-}
-
-.switch-helper-text {
-    font-size: 0.65rem;
-    color: var(--text-secondary);
-    margin-top: 4px;
-}
-
-.switch-points-pre {
-    font-size: 0.65rem;
-    margin-top: 4px;
-    margin-bottom: 0;
-    color: #ccc;
 }

@@ -17,8 +17,8 @@ from simulation import SimulationController, build_network_payload
 
 def test_route_run_summary_for_running_deviated_finished_missing():
     """`RouteExecutor.route_run_summary_for` returns the 5 doc fields for a
-    RUNNING run, reflects `display_state` (DEVIATED via path_cancelled), and is
-    None for non-RUNNING or absent runs."""
+    RUNNING run, reflects `display_state` (DEVIATED / CANCELLED split by
+    path_cancel_was_deviation), and is None for non-RUNNING or absent runs."""
     ex = RouteExecutor(RailwayNetwork())
 
     run = RouteExecutionState(
@@ -36,12 +36,20 @@ def test_route_run_summary_for_running_deviated_finished_missing():
         "last_error": None,
     }
 
-    # display_state projects DEVIATED while path_cancelled, but state stays
-    # RUNNING (deviation is not a stored state).
+    # display_state projects DEVIATED / CANCELLED while path_cancelled, split by
+    # path_cancel_was_deviation, but state stays RUNNING (cancellation is not a
+    # stored state) — design_new.md:1449.
     run.path_cancelled = True
+    run.path_cancel_was_deviation = True
     deviated = ex.route_run_summary_for("T1")
     assert deviated["display_state"] == "DEVIATED"
     assert deviated["state"] == "RUNNING"
+    # A non-deviation authority cancellation (operator cancel / revoke / EB /
+    # power-off) projects CANCELLED, not DEVIATED.
+    run.path_cancel_was_deviation = False
+    cancelled = ex.route_run_summary_for("T1")
+    assert cancelled["display_state"] == "CANCELLED"
+    assert cancelled["state"] == "RUNNING"
     run.path_cancelled = False
 
     # A terminal (FINISHED) run is not reported as a RUNNING summary.
@@ -89,3 +97,31 @@ def test_build_network_payload_emits_route_runs_sibling():
 
     # The pre-existing assigned-routes map is still emitted (frontend reads it).
     assert "assigned_routes_by_train_id" in payload
+
+
+def test_handle_path_cancellation_records_was_deviation_for_display_split():
+    """`handle_path_cancellation` stores its `was_deviation` argument on the run
+    so `display_state` projects DEVIATED for a movement deviation and CANCELLED
+    for every other authority cancellation (design_new.md:1456, 1700, 1730)."""
+    ex = RouteExecutor(RailwayNetwork())
+    run = RouteExecutionState(train_id="T1", route_id="R1", started_at=0.0)
+    run.current_route_status = RouteRunStatus.RUNNING
+    ex.execution_states["T1"] = run
+
+    # Movement-derived deviation -> DEVIATED.
+    ex.handle_path_cancellation("T1", "P1", reason="off-sequence", was_deviation=True)
+    assert run.path_cancelled is True
+    assert run.path_cancel_was_deviation is True
+    assert run.display_state == "DEVIATED"
+
+    # A non-deviation cancellation (operator / revoke / EB / power-off)
+    # re-classifies the latch to CANCELLED.
+    ex.handle_path_cancellation("T1", "P1", reason="operator stop", was_deviation=False)
+    assert run.path_cancel_was_deviation is False
+    assert run.display_state == "CANCELLED"
+
+    # The signature default is non-deviation, so an unclassified cancel is CANCELLED.
+    run.path_cancel_was_deviation = True
+    ex.handle_path_cancellation("T1", "P1")
+    assert run.path_cancel_was_deviation is False
+    assert run.display_state == "CANCELLED"

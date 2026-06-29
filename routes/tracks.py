@@ -51,6 +51,8 @@ def register(app, state: AppState) -> None:
                     "locked_state": result["holder_state"],
                 }
             ), 409
+        if status == "switch_change_rejected":
+            return jsonify({"error": result["reason"]}), 409
         if status == "removed":
             return jsonify(
                 {"status": "success", "message": f"Track at ({x}, {y}) removed (empty)"}

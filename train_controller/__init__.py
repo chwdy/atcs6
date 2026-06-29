@@ -2489,12 +2489,21 @@ class TrainController:
         if self.ops.state not in (TrainState.READY, TrainState.RUNNING_MOVING):
             return (False, f"invalid state: {self.ops.state.value}")
 
+        # design_new.md "Event log": a TRAIN_DEPARTED event marks the
+        # READY -> RUNNING_MOVING transition only, not the idempotent re-calls
+        # depart() accepts while already moving.
+        from notification_center import EventKind as _EventKind
+
+        _was_ready = self.ops.state == TrainState.READY
+
         # ATO mode: delegate to ato_go() which is the canonical writer of
         # ato_running and handles both READY (full path) and RUNNING_MOVING
         # (idempotent) entries.
         if self.commands.control_mode == "ato":
             result = self.ato.go()
             if result.success:
+                if _was_ready:
+                    self._emit_event(_EventKind.TRAIN_DEPARTED)
                 return (True, None)
             return (False, result.reason if hasattr(result, "reason") else "ato_go rejected")
 
@@ -2508,6 +2517,7 @@ class TrainController:
             return (False, "facing direction not set")
         if self.ops.state == TrainState.READY:
             self.ops.state = TrainState.RUNNING_MOVING
+            self._emit_event(_EventKind.TRAIN_DEPARTED)
         return (True, None)
 
     def _emit_dwell_diagnostic(self, message: str) -> None:
@@ -2530,6 +2540,30 @@ class TrainController:
                 event_time=self.commands._estimate_event_time(),
                 train_id=self.train_id,
                 payload={"message": message},
+            )
+        except Exception:
+            pass
+
+    def _emit_event(self, kind: str, payload=None, severity=None, path_id=None) -> None:
+        """Emit an operational event-log notification through NotificationCenter
+        (design_new.md "Event log"). Best-effort: resolves the sink defensively,
+        no-ops when none is wired (isolated unit-test controllers), and never
+        raises into the caller."""
+        try:
+            sc = getattr(self.path_dispatcher, "simulation_controller", None)
+            nc = getattr(sc, "notification_center", None) if sc is not None else None
+            if nc is None:
+                return
+            from notification_center import Severity as _Severity
+
+            nc.emit(
+                source="TrainController",
+                kind=kind,
+                severity=severity if severity is not None else _Severity.INFO,
+                event_time=self.commands._estimate_event_time(),
+                train_id=self.train_id,
+                path_id=path_id,
+                payload=payload or {},
             )
         except Exception:
             pass
@@ -2558,6 +2592,9 @@ class TrainController:
             return (False, reason)
         self.ops.state = TrainState.RUNNING_AT_STATION
         self.ato.running = False
+        from notification_center import EventKind
+
+        self._emit_event(EventKind.ENTERED_DWELL)
         return (True, None)
 
     def finish_dwell(self) -> Tuple[bool, Optional[str]]:
@@ -2612,7 +2649,9 @@ class TrainController:
             return
         self.ops.state = TrainState.OFF
         self.commands.cab = None
-        self.eb.active = False
+        # design_new.md:1895 — clear the EB latch through the EB-owned helper so
+        # the EB Workflow stays the single writer of `eb.active`.
+        self.eb.clear()
         self.ato.running = False
         self.route_hooks.phase_latches.consume_power_off()
 
