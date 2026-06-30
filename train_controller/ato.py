@@ -316,7 +316,7 @@ class ATOComputer:
         path_heading = "a"
         required_cab = c.commands.cab or "A"
 
-        connectivity_cab = c._required_cab_for_path()
+        connectivity_cab = c.cab_policy.required_cab_for_path()
         if connectivity_cab is not None:
             required_cab = connectivity_cab
 
