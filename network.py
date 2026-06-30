@@ -164,6 +164,7 @@ class RailwayNetwork:
         self._signal_calculator = None
         self._block_geometry_manager = None
         self._station_registry = None
+        self._power_district_registry = None
 
     def _ensure_block_manager(self):
         if self.block_manager is None:
@@ -201,6 +202,17 @@ class RailwayNetwork:
 
             self._station_registry = StationRegistry(self)
         return self._station_registry
+
+    def _get_power_district_registry(self):
+        """Lazy-init `PowerDistrictRegistry`. Power-district CRUD lives there;
+        the `power_districts` dict and `_block_to_district` index stay on the
+        network; the registry reads / writes them through its back-reference.
+        """
+        if self._power_district_registry is None:
+            from power_district_registry import PowerDistrictRegistry
+
+            self._power_district_registry = PowerDistrictRegistry(self)
+        return self._power_district_registry
 
     def _ensure_resource_managers(self):
         """Construct BlockManager, SwitchManager, and ResourceCoordinator if not
@@ -2111,158 +2123,41 @@ class RailwayNetwork:
 
     # ── Power districts (design_new.md "Power district") ───────────────────
 
-    def _rebuild_district_index(self) -> None:
-        """Rebuild the block_id -> district_id reverse index from
-        `power_districts`. A block may appear in at most one district; on a
-        duplicate the last district listed wins."""
-        self._block_to_district = {}
-        for district in self.power_districts.values():
-            for block_id in district.block_ids:
-                self._block_to_district[block_id] = district.district_id
-
     def district_block_ids(self, block_id: str) -> List[str]:
-        """All block ids sharing `block_id`'s power district.
-
-        A block the operator has not grouped is its own single-block district
-        (design_new.md "Power district"), so this returns ``[block_id]`` for an
-        ungrouped block.
-        """
-        district_id = self._block_to_district.get(block_id)
-        if district_id is None:
-            return [block_id]
-        district = self.power_districts.get(district_id)
-        if district is None or not district.block_ids:
-            return [block_id]
-        return list(district.block_ids)
+        """Forward to `PowerDistrictRegistry.district_block_ids(block_id)`."""
+        return self._get_power_district_registry().district_block_ids(block_id)
 
     def create_power_district(
         self, district_id: str, block_ids: List[str], name: str = ""
-    ) -> PowerDistrict:
-        """Create (or replace) a power district and rebuild the reverse index.
-
-        Each listed block is detached from any other district first, so every
-        block stays in exactly one district (design_new.md "Power district").
-        A prior district left empty by that detach is dropped: an ungrouped
-        block is its own single-block district and needs no stored record.
-        """
-        block_ids = list(block_ids)
-        for block_id in block_ids:
-            self._detach_block_from_its_district(block_id, except_id=district_id)
-        district = PowerDistrict(
-            district_id=district_id, block_ids=block_ids, name=name
+    ) -> "PowerDistrict":
+        """Forward to `PowerDistrictRegistry.create_power_district(...)`."""
+        return self._get_power_district_registry().create_power_district(
+            district_id, block_ids, name
         )
-        self.power_districts[district_id] = district
-        self._prune_empty_districts(keep=district_id)
-        self._rebuild_district_index()
-        return district
-
-    def _detach_block_from_its_district(
-        self, block_id: str, except_id: Optional[str] = None
-    ) -> None:
-        """Remove `block_id` from whatever district currently holds it, unless
-        that district is `except_id`. Leaves index rebuild / empty pruning to the
-        caller so a batch detach rebuilds once."""
-        prior_id = self._block_to_district.get(block_id)
-        if prior_id is None or prior_id == except_id:
-            return
-        prior = self.power_districts.get(prior_id)
-        if prior is not None:
-            prior.block_ids = [b for b in prior.block_ids if b != block_id]
-
-    def _prune_empty_districts(self, keep: Optional[str] = None) -> None:
-        """Drop districts with no member blocks. An empty district is just a set
-        of ungrouped single-block districts, so it carries no information. `keep`
-        is never pruned, so a district created empty in the same call survives."""
-        self.power_districts = {
-            did: d
-            for did, d in self.power_districts.items()
-            if d.block_ids or did == keep
-        }
 
     def delete_power_district(self, district_id: str) -> bool:
-        """Delete a power district; its member blocks become ungrouped (each its
-        own single-block district per design_new.md "Power district"). Returns
-        False when the id is unknown."""
-        if district_id not in self.power_districts:
-            return False
-        del self.power_districts[district_id]
-        self._rebuild_district_index()
-        return True
+        """Forward to `PowerDistrictRegistry.delete_power_district(district_id)`."""
+        return self._get_power_district_registry().delete_power_district(district_id)
 
     def add_block_to_power_district(self, district_id: str, block_id: str) -> bool:
-        """Add `block_id` to `district_id`, detaching it from any other district
-        first so every block stays in exactly one district. A prior district left
-        empty is dropped. Raises ValueError if the district or block is unknown.
-        Returns True when added, False when the block was already a member."""
-        district = self.power_districts.get(district_id)
-        if district is None:
-            raise ValueError(f"Power district {district_id} not found")
-        if block_id not in self.blocks:
-            raise ValueError(f"Block {block_id} not found")
-        if block_id in district.block_ids:
-            return False
-        self._detach_block_from_its_district(block_id, except_id=district_id)
-        district.block_ids.append(block_id)
-        self._prune_empty_districts(keep=district_id)
-        self._rebuild_district_index()
-        return True
+        """Forward to `PowerDistrictRegistry.add_block_to_power_district(...)`."""
+        return self._get_power_district_registry().add_block_to_power_district(
+            district_id, block_id
+        )
 
     def remove_block_from_power_district(
         self, district_id: str, block_id: str
     ) -> bool:
-        """Remove `block_id` from `district_id`; the block becomes its own
-        single-block district. The district is deleted if it becomes empty
-        (non-empty parent rule, mirroring station groups). Raises ValueError if
-        the district is unknown. Returns True when removed, False when the block
-        was not a member."""
-        district = self.power_districts.get(district_id)
-        if district is None:
-            raise ValueError(f"Power district {district_id} not found")
-        if block_id not in district.block_ids:
-            return False
-        district.block_ids = [b for b in district.block_ids if b != block_id]
-        self._prune_empty_districts()
-        self._rebuild_district_index()
-        return True
+        """Forward to `PowerDistrictRegistry.remove_block_from_power_district(...)`."""
+        return self._get_power_district_registry().remove_block_from_power_district(
+            district_id, block_id
+        )
 
     def power_district_blocks_connected(self, block_ids: List[str]) -> bool:
-        """True if `block_ids` form ONE connected region under direct block
-        adjacency (no switch between members) — the district analogue of a
-        block's contiguous tiles. A single existing block is trivially connected;
-        an unknown block, or a set split by a switch or a gap, is not."""
-        ids = list(dict.fromkeys(block_ids))
-        if any(b not in self.blocks for b in ids):
-            return False
-        if len(ids) <= 1:
-            return True
-        # Map each candidate block's tiles to its id, then link candidates whose
-        # tiles share a track edge. An edge into a switch tile or a non-candidate
-        # block is not a within-set link, so a switch between two members leaves
-        # them in separate components (the strict "no switch between" rule).
-        tile_owner: Dict[Tuple[int, int], str] = {}
-        for b in ids:
-            for pos in self.get_block_positions(b):
-                tile_owner[tuple(pos)] = b
-        adjacency: Dict[str, Set[str]] = {b: set() for b in ids}
-        for b in ids:
-            for pos in self.get_block_positions(b):
-                track = self.get_track(*pos)
-                if track is None:
-                    continue
-                for npos in self._get_block_connected_neighbors(track):
-                    owner = tile_owner.get(npos)
-                    if owner is not None and owner != b:
-                        adjacency[b].add(owner)
-                        adjacency[owner].add(b)
-        seen: Set[str] = set()
-        stack = [ids[0]]
-        while stack:
-            cur = stack.pop()
-            if cur in seen:
-                continue
-            seen.add(cur)
-            stack.extend(adjacency[cur] - seen)
-        return seen == set(ids)
+        """Forward to `PowerDistrictRegistry.power_district_blocks_connected(...)`."""
+        return self._get_power_district_registry().power_district_blocks_connected(
+            block_ids
+        )
 
     def to_dict(self) -> dict:
         """Convert network to dictionary for the live frontend payload.
@@ -2403,7 +2298,7 @@ class RailwayNetwork:
         for district_data in data.get("power_districts", []):
             district = PowerDistrict.from_dict(district_data)
             self.power_districts[district.district_id] = district
-        self._rebuild_district_index()
+        self._get_power_district_registry()._rebuild_district_index()
 
         # Rebuild the train roster (config; absent in legacy saves = empty).
         self.train_roster = TrainRoster.from_dict(data.get("train_roster", []))
