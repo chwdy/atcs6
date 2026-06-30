@@ -998,6 +998,25 @@ class RouteExecutor:
             exec_state.task_runs.append(RouteTaskRun(task_index=i))
 
     # ------------------------------------------------------------------ start mode
+    def set_pending_start_override(
+        self,
+        train_id: str,
+        start_mode: RouteStartMode,
+        start_task_index: Optional[int],
+    ) -> None:
+        """Stash a one-shot start-mode override consumed by `train_id`'s next
+        fresh `RouteRun` (design_new.md "Run start-mode seeding"). Canonical
+        writer for the pending start-override bundle."""
+        self._pending_start_overrides[train_id] = {
+            "start_mode": start_mode,
+            "start_task_index": start_task_index,
+        }
+
+    def clear_pending_start_override(self, train_id: str) -> None:
+        """Drop any stashed start-mode override for `train_id` (no-op if none),
+        so an assign/retarget/unassign never reuses an earlier choice."""
+        self._pending_start_overrides.pop(train_id, None)
+
     def _resolve_start_policy(
         self, train_id: str, route: "Route"
     ) -> Tuple[RouteStartMode, Optional[int]]:
@@ -1651,7 +1670,7 @@ class RouteExecutor:
             if task.task_kind == "dwell":
                 break
 
-            target_block = self._resolve_task_target_block(task, train=train)
+            target_block = self.resolve_task_target_block(task, train=train)
             if not target_block:
                 break
 
@@ -2736,12 +2755,12 @@ class RouteExecutor:
         for task in route.tasks:
             if getattr(task, "task_kind", None) != "waypoint":
                 continue
-            block_id = self._resolve_task_target_block(task, train=train)
+            block_id = self.resolve_task_target_block(task, train=train)
             if block_id:
                 targets.add(block_id)
         return targets
 
-    def _resolve_task_target_block(
+    def resolve_task_target_block(
         self,
         task: RouteTask,
         train: Optional["Train"] = None,

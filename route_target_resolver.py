@@ -9,7 +9,7 @@ keeps the resolution logic structurally separate so the executor's tick
 loop can stay focused on state-machine transitions.
 
 `RouteExecutor` keeps the doc-canonical method names
-(`_find_next_task_target`, `_resolve_task_target_block`,
+(`_find_next_task_target`, `resolve_task_target_block`,
 `_resolve_task_direction`, `_compute_next_task_index`, `_get_platform`,
 `_get_platform_block_id`) as thin forwarders that delegate here.
 """

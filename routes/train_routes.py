@@ -343,7 +343,7 @@ def register(app, state: AppState) -> None:
         except (ValueError, TypeError):
             return jsonify({"error": "Invalid target"}), 400
 
-        block_id = route_executor._resolve_task_target_block(task)
+        block_id = route_executor.resolve_task_target_block(task)
         if not block_id:
             return jsonify({"error": "Could not resolve target to a block"}), 404
 
@@ -401,7 +401,7 @@ def register(app, state: AppState) -> None:
                 task = RouteTask(task_kind="waypoint", task_location=elem)
             except (ValueError, TypeError):
                 return None
-            return route_executor._resolve_task_target_block(task)
+            return route_executor.resolve_task_target_block(task)
 
         def parse_pair(pair):
             """Accept both legacy list form and new dict form."""

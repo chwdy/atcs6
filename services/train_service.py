@@ -332,7 +332,7 @@ def assign_route(
     ``start_mode`` / ``start_task_index`` are an optional per-assignment
     one-shot start-mode input (per design_new.md "Run start-mode seeding").
     When provided on a genuine assign/retarget, they are stashed on
-    ``RouteExecutor._pending_start_overrides[train_id]`` and consumed by the
+    ``RouteExecutor.set_pending_start_override(...)`` and consumed by the
     next fresh ``RouteRun`` allocation; ``None`` means "use the route default."
     The pending bundle is cleared at the top of every call so a stale choice
     can never leak onto a different route's run.
@@ -354,12 +354,12 @@ def assign_route(
     # made for an earlier assignment (per design_new.md "Run start-mode
     # seeding").
     if route_executor is not None:
-        route_executor._pending_start_overrides.pop(train_id, None)
+        route_executor.clear_pending_start_override(train_id)
         # Also drop any held structural-edit re-assignment for this train: an
         # explicit assign/retarget/unassign supersedes a pending same-route
         # re-allocation, so it must not fire on a later deactivate of this train
         # (per design_new.md "Shared-route edit teardown").
-        route_executor._pending_reassign.pop(train_id, None)
+        route_executor.discard_pending_reassign(train_id)
     route_registry = route_executor.route_registry if route_executor else {}
     current_route_id = (
         route_executor.assigned_route_id_for(train_id) if route_executor else None
@@ -438,10 +438,9 @@ def assign_route(
             )
         except (TypeError, ValueError):
             raise ValidationError("start_task_index must be an integer or null")
-        route_executor._pending_start_overrides[train_id] = {
-            "start_mode": resolved_start_mode,
-            "start_task_index": resolved_start_index,
-        }
+        route_executor.set_pending_start_override(
+            train_id, resolved_start_mode, resolved_start_index
+        )
 
     route.assign_train(train_id)
     return train
