@@ -18,6 +18,14 @@ function makeRenderer(): TrainHandlerRenderer {
     gridToScreenX: (x) => x * 10,
     gridToScreenY: (_x, y) => y * 10,
     getNearbyTrackSegments: () => [],
+    trackHandler: {
+      getEdgePoints: (half: number) => ({
+        N: { x: half / 2, y: -half / 2 },
+        E: { x: half / 2, y: half / 2 },
+        S: { x: -half / 2, y: half / 2 },
+        W: { x: -half / 2, y: -half / 2 },
+      }),
+    },
     platformHandler: { getPlatformBodySegments: () => [] },
     labelBounds: [],
     distRectToSegments: () => 100,
@@ -58,9 +66,8 @@ describe('RendererTrainHandler pure helpers', () => {
     expect(h().getTrackExits(sw, 'N')).toEqual(['E']);
   });
 
-  it('getEdgeCenterOffset and getEdgePoints place the tile corners', () => {
+  it('getEdgeCenterOffset places the tile corner via the track handler', () => {
     expect(h().getEdgeCenterOffset('N')).toEqual({ x: 10, y: -10 });
-    expect(h().getEdgePoints(40).S).toEqual({ x: -20, y: 20 });
   });
 
   it('getTilePathPosition interpolates entry→exit by progress', () => {

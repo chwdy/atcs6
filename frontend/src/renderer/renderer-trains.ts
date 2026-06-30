@@ -12,7 +12,18 @@
 // (`new RendererTrainHandler(this)`).
 
 import { stateManager } from '../lib/state-manager';
-import { BIT_TO_EDGES, getLabelSpacingMultiplier, DIRECTION_PREFERRED_QUADRANTS } from '../lib/constants';
+import {
+  BIT_TO_EDGES,
+  OPPOSITE_EDGE,
+  TRACK_NS,
+  TRACK_EW,
+  TRACK_NE,
+  TRACK_NW,
+  TRACK_SE,
+  TRACK_SW,
+  getLabelSpacingMultiplier,
+  DIRECTION_PREFERRED_QUADRANTS,
+} from '../lib/constants';
 import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
 
 // Train body fill, chosen by EB / route-teardown / control-mode state. The
@@ -118,6 +129,7 @@ export interface TrainHandlerRenderer {
   mouseY: number;
   gridToScreenX(x: number, y: number): number;
   gridToScreenY(x: number, y: number): number;
+  trackHandler: { getEdgePoints(half: number): Record<string, Point> };
   getNearbyTrackSegments(cx: number, cy: number, radius: number): unknown[];
   platformHandler?: { getPlatformBodySegments?(): unknown[] };
   labelBounds: LabelBound[];
@@ -191,19 +203,6 @@ export class RendererTrainHandler {
   }
 
   /**
-   * Get edge points for isometric tile positioning.
-   */
-  getEdgePoints(half: number): Record<string, Point> {
-    const h = half;
-    return {
-      N: { x: h / 2, y: -h / 2 },
-      E: { x: h / 2, y: h / 2 },
-      S: { x: -h / 2, y: h / 2 },
-      W: { x: -h / 2, y: -h / 2 },
-    };
-  }
-
-  /**
    * Get possible exit edges for a track given an entry edge.
    * Mirrors the backend TrackSegment.get_exits() logic.
    */
@@ -214,7 +213,6 @@ export class RendererTrainHandler {
     if (!track || !entryEdge) return [];
 
     const bits = track.track_bits || 0;
-    const TRACK_NS = 1, TRACK_EW = 2, TRACK_NE = 4, TRACK_NW = 8, TRACK_SE = 16, TRACK_SW = 32;
 
     const exits: string[] = [];
 
@@ -259,23 +257,16 @@ export class RendererTrainHandler {
    * Get edge center point in isometric screen coordinates relative to tile center.
    */
   getEdgeCenterOffset(edge: string): Point {
+    // Canonical iso-tile corner geometry lives on the track handler.
     const h = this.gridSize * this.scale / 2;
-    // Isometric: N = up-right, E = down-right, S = down-left, W = up-left
-    const edgeOffsets: Record<string, Point> = {
-      N: { x: h / 2, y: -h / 2 },   // up-right
-      E: { x: h / 2, y: h / 2 },    // down-right
-      S: { x: -h / 2, y: h / 2 },   // down-left
-      W: { x: -h / 2, y: -h / 2 },   // up-left
-    };
-    return edgeOffsets[edge] || { x: 0, y: 0 };
+    return this.renderer.trackHandler.getEdgePoints(h)[edge] || { x: 0, y: 0 };
   }
 
   /**
    * Get the opposite edge.
    */
   getOppositeEdge(edge: string): string {
-    const opposites: Record<string, string> = { N: 'S', S: 'N', E: 'W', W: 'E' };
-    return opposites[edge] || edge;
+    return OPPOSITE_EDGE[edge] || edge;
   }
 
   /**
@@ -294,9 +285,6 @@ export class RendererTrainHandler {
   ): string | null {
     if (!track) return null;
     const bits = track.track_bits || 0;
-    const BIT_TO_EDGES: Array<[string, string]> = [
-      ['N', 'S'], ['E', 'W'], ['N', 'E'], ['N', 'W'], ['S', 'E'], ['S', 'W'],
-    ];
     const candidates: Array<{ exit: string; bit: number }> = [];
     for (let bit = 0; bit < 6; bit++) {
       if (!(bits & (1 << bit))) continue;
