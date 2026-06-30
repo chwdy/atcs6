@@ -89,6 +89,7 @@ export interface LayoutDataClient {
   updatePowerDistrict(districtId: string, patch: unknown): Promise<any>;
   deletePowerDistrict(districtId: string): Promise<any>;
   addBlockToDistrict(districtId: string, blockId: string): Promise<any>;
+  addBlocksToDistrict(districtId: string, blockIds: string[]): Promise<any>;
   removeBlockFromDistrict(districtId: string, blockId: string): Promise<any>;
 
   // --- Switches (geometry / config) ---

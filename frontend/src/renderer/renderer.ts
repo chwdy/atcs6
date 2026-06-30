@@ -25,6 +25,7 @@ import { RendererDebugHandler } from './renderer-debug';
 import type { NetworkPayload } from './payload-types';
 import type { OverlayPhase, RendererOverlay } from './renderer-overlay';
 import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
+import { gridPreference } from '../lib/grid-preference';
 
 // Compass heading of one grid step. Matches block.py `_compass_from_delta`
 // (Y positive is north): a +Y step reads N, +X reads E.
@@ -611,6 +612,11 @@ class Renderer {
   }
 
   drawGrid(): void {
+    // The whole grid layer hides together via the Display popover's "Show grid"
+    // toggle: the repeating diamond lines, the origin axes, and the origin
+    // marker (the coordinate reference). A no-op when hidden — the background
+    // fill comes from clear(), not from here.
+    if (!gridPreference.visible()) return;
     const p = getCanvasPalette();
     this.ctx.save();
 

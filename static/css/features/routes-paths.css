@@ -1348,6 +1348,26 @@
    (DESIGN_LANGUAGE.md §11–12). No hex literals — all colors are tokens.
    ---------------------------------------------------------------------------- */
 
+/* Sort + filter controls above the list. Two equal-width selects reusing the
+   shared .setting-select skin, sized down to the panel's 28px control height. */
+.paths-toolbar {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.paths-toolbar .setting-select {
+    height: var(--control-height-xs, 28px);
+    padding: 3px 6px;
+    font-size: 11px;
+}
+
+/* Muted "Showing N of M paths" caption, shown only when a filter hides rows. */
+.paths-count {
+    margin-bottom: 8px;
+    color: var(--text-tertiary);
+}
+
 .paths-list {
     display: flex;
     flex-direction: column;
@@ -1403,8 +1423,8 @@
 .path-status-set        { --path-status-accent: var(--info-color); }
 .path-status-active      { --path-status-accent: var(--success-color); }
 .path-status-clearing   { --path-status-accent: var(--warning-color); }
-.path-status-completed  { --path-status-accent: var(--text-tertiary); }
-.path-status-cancelled  { --path-status-accent: var(--danger-color); }
+.path-status-completed  { --path-status-accent: var(--info-color); }
+.path-status-cancelled  { --path-status-accent: var(--text-tertiary); }
 
 /* Detail-view status title (showPathEditor) — colored by the same accent. */
 .path-status-title {

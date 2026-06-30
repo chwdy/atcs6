@@ -19,15 +19,54 @@ function setStatusState(text: string): void {
   if (el) el.textContent = text;
 }
 
+/** Paths-list view controls. The list payload retains terminal paths
+ *  (completed / cancelled) for history, so the panel lets the user reorder
+ *  and trim it. */
+export type PathSortMode = 'active-first' | 'path-id';
+export type PathFilterMode = 'all' | 'active' | 'hide-cancelled';
+
+/** Sort rank for "active first" — live paths float above terminal ones. */
+const PATH_STATUS_RANK: Record<string, number> = { active: 0, completed: 1, cancelled: 2 };
+
+/** Filter then sort the paths list for display. Pure, so it drives both the
+ *  first render and the background poller's re-render — the user's sort /
+ *  filter choice survives a live refresh. Ties (and the whole `path-id` mode)
+ *  fall back to path_id order so the list is stable across polls. */
+export function orderPathsForList(
+  paths: any[],
+  sortMode: PathSortMode,
+  filterMode: PathFilterMode
+): any[] {
+  let out = (paths || []).slice();
+  if (filterMode === 'active') {
+    out = out.filter((p) => p.status === 'active');
+  } else if (filterMode === 'hide-cancelled') {
+    out = out.filter((p) => p.status !== 'cancelled');
+  }
+  out.sort((a, b) => {
+    if (sortMode === 'active-first') {
+      const ra = PATH_STATUS_RANK[a.status] ?? 99;
+      const rb = PATH_STATUS_RANK[b.status] ?? 99;
+      if (ra !== rb) return ra - rb;
+    }
+    return String(a.path_id || '').localeCompare(String(b.path_id || ''));
+  });
+  return out;
+}
+
 export class PathEditorHandler {
   editor: EditorHost;
   _pathsListInterval: ReturnType<typeof setInterval> | null;
   _pathsListIntervalMs: number;
+  _pathsSortMode: PathSortMode;
+  _pathsFilterMode: PathFilterMode;
 
   constructor(editor: EditorHost) {
     this.editor = editor;
     this._pathsListInterval = null;
     this._pathsListIntervalMs = 1500;
+    this._pathsSortMode = 'active-first';
+    this._pathsFilterMode = 'all';
   }
 
   get api(): any {
@@ -99,9 +138,7 @@ export class PathEditorHandler {
       reachablePositions: new Set(),
       trainId: null,
     };
-    if (this.renderer.setReachableHighlights) {
-      this.renderer.setReachableHighlights(new Set());
-    }
+    this.editor.highlighter.clear('reachable');
     if (this.renderer.clearRoutePreview) {
       this.renderer.clearRoutePreview();
     }
@@ -164,9 +201,10 @@ export class PathEditorHandler {
       const count = this.pathToolState.reachableEndpoints.length;
       setStatusState(`Path: Click destination (${count} reachable)`);
 
-      if (this.renderer.setReachableHighlights) {
-        this.renderer.setReachableHighlights(this.pathToolState.reachablePositions);
-      }
+      this.editor.highlighter.show(
+        { keys: this.pathToolState.reachablePositions },
+        { channel: 'reachable' },
+      );
 
       this.showRoutePrioritySelector();
 
@@ -392,25 +430,55 @@ export class PathEditorHandler {
    *  re-fetching. Shared by showPathsPanel and the background poller so
    *  the list stays live without a manual refresh button. */
   _renderPathsListSidebar(): void {
+    const all = this.cachedPaths || [];
+    const visible = orderPathsForList(all, this._pathsSortMode, this._pathsFilterMode);
+
     let content = `
             <div class="paths-panel">
         `;
 
-    if (this.cachedPaths.length === 0) {
-      content += '<div class="empty-state">No active paths</div>';
+    if (all.length === 0) {
+      content += '<div class="empty-state">No paths yet</div>';
     } else {
-      content += '<div class="paths-list">';
-      for (const path of this.cachedPaths) {
-        content += this.renderPathListItem(path);
+      content += this._renderPathsToolbar();
+      if (visible.length !== all.length) {
+        content += `<div class="paths-count text-xs">Showing ${visible.length} of ${all.length} paths</div>`;
       }
-      content += '</div>';
+      if (visible.length === 0) {
+        content += '<div class="empty-state">No paths match this filter.</div>';
+      } else {
+        content += '<div class="paths-list">';
+        for (const path of visible) {
+          content += this.renderPathListItem(path);
+        }
+        content += '</div>';
+      }
     }
 
     content += '</div>';
 
-    this.editor.showSecondarySidebar('Active Paths', content);
+    this.editor.showSecondarySidebar('Paths', content);
 
     setTimeout(() => this.initRoutesPanelHandlers(), 0);
+  }
+
+  /** Sort + filter controls for the paths list. The current choice is read
+   *  from handler state (not the DOM) so it survives the poller re-render. */
+  _renderPathsToolbar(): string {
+    const opt = (value: string, label: string, current: string): string =>
+      `<option value="${value}"${value === current ? ' selected' : ''}>${label}</option>`;
+    return `
+            <div class="paths-toolbar">
+                <select class="setting-select paths-sort-select" aria-label="Sort paths" title="Sort order">
+                    ${opt('active-first', 'Active first', this._pathsSortMode)}
+                    ${opt('path-id', 'Path ID', this._pathsSortMode)}
+                </select>
+                <select class="setting-select paths-filter-select" aria-label="Filter paths" title="Which paths to show">
+                    ${opt('all', 'All', this._pathsFilterMode)}
+                    ${opt('active', 'Active only', this._pathsFilterMode)}
+                    ${opt('hide-cancelled', 'Hide cancelled', this._pathsFilterMode)}
+                </select>
+            </div>`;
   }
 
   /** Start the active-paths-list background poller. */
@@ -489,9 +557,7 @@ export class PathEditorHandler {
   _cleanup(): void {
     this._stopPathsListPoller();
     // The highlight belongs to the open path panel; drop it when leaving.
-    if (this.renderer.clearPathHighlight) {
-      this.renderer.clearPathHighlight();
-    }
+    this.editor.highlighter.clear('path');
   }
 
   renderPathListItem(path: any): string {
@@ -525,7 +591,7 @@ export class PathEditorHandler {
                     </div>
                     <div class="path-card-actions">
                         <button class="rr-flat-btn view-path-btn" data-path-id="${path.path_id}">View</button>
-                        <button class="rr-flat-btn rr-flat-btn-danger cancel-path-btn" data-path-id="${path.path_id}">Cancel</button>
+                        ${isActive ? `<button class="rr-flat-btn rr-flat-btn-danger cancel-path-btn" data-path-id="${path.path_id}">Cancel</button>` : ''}
                     </div>
                 </div>
                 <div class="chip-row">
@@ -549,8 +615,8 @@ export class PathEditorHandler {
       set: 'var(--info-color)',
       active: 'var(--success-color)',
       clearing: 'var(--warning-color)',
-      completed: 'var(--text-tertiary)',
-      cancelled: 'var(--danger-color)',
+      completed: 'var(--info-color)',
+      cancelled: 'var(--text-tertiary)',
     };
     return colors[status] || 'var(--text-tertiary)';
   }
@@ -578,13 +644,28 @@ export class PathEditorHandler {
       set: 'info',
       active: 'success',
       clearing: 'warn',
-      completed: 'muted',
-      cancelled: 'danger',
+      completed: 'info',
+      cancelled: 'muted',
     };
     return map[status] || 'muted';
   }
 
   initRoutesPanelHandlers(): void {
+    const sortSel = document.querySelector<HTMLSelectElement>('.paths-sort-select');
+    if (sortSel) {
+      sortSel.onchange = () => {
+        this._pathsSortMode = sortSel.value as PathSortMode;
+        this._renderPathsListSidebar();
+      };
+    }
+    const filterSel = document.querySelector<HTMLSelectElement>('.paths-filter-select');
+    if (filterSel) {
+      filterSel.onchange = () => {
+        this._pathsFilterMode = filterSel.value as PathFilterMode;
+        this._renderPathsListSidebar();
+      };
+    }
+
     const viewBtns = document.querySelectorAll<HTMLElement>('.view-path-btn');
     viewBtns.forEach((btn) => {
       btn.onclick = async () => {
@@ -764,9 +845,7 @@ export class PathEditorHandler {
 
     setTimeout(() => this.initPathEditorHandlers(pathId, path), 0);
 
-    if (this.renderer.highlightPath) {
-      this.renderer.highlightPath(path);
-    }
+    this.editor.highlighter.show({ path }, { channel: 'path' });
   }
 
   initPathEditorHandlers(pathId: any, path: any): void {
@@ -803,9 +882,7 @@ export class PathEditorHandler {
             }
             showToast(message, 'success', 5000);
             await window.app?.refreshNetwork();
-            if (this.renderer.clearPathHighlight) {
-              this.renderer.clearPathHighlight();
-            }
+            this.editor.highlighter.clear('path');
             await this.showPathsPanel();
             if (queued) {
               setTimeout(async () => {
@@ -878,12 +955,8 @@ export class PathEditorHandler {
       reachableEndpoints: [],
       reachablePositions: new Set(),
     };
-    if (this.renderer.setReachableHighlights) {
-      this.renderer.setReachableHighlights(new Set());
-    }
-    if (this.renderer.clearPathHighlight) {
-      this.renderer.clearPathHighlight();
-    }
+    this.editor.highlighter.clear('reachable');
+    this.editor.highlighter.clear('path');
     if (this.editor._currentEditorType === 'extend-path-setup') {
       // Leaving extend mode closes its setup tab; the next open tab takes
       // over, and the sidebar hides when none is left.
@@ -950,9 +1023,7 @@ export class PathEditorHandler {
       this.extendPathState.selectedPath = selectedPath;
       this.extendPathState.active = true;
 
-      if (this.renderer.highlightPath) {
-        this.renderer.highlightPath(selectedPath);
-      }
+      this.editor.highlighter.show({ path: selectedPath }, { channel: 'path' });
 
       setStatusState('Extend Path: Loading destinations...');
       const endpointsResult = await this.api.getPathReachableExtensions(selectedPath.path_id);
@@ -971,9 +1042,10 @@ export class PathEditorHandler {
       const count = this.extendPathState.reachableEndpoints.length;
       setStatusState(`Extend Path: Click new destination (${count} reachable)`);
 
-      if (this.renderer.setReachableHighlights) {
-        this.renderer.setReachableHighlights(this.extendPathState.reachablePositions);
-      }
+      this.editor.highlighter.show(
+        { keys: this.extendPathState.reachablePositions },
+        { channel: 'reachable' },
+      );
 
       this.showExtendRoutePanel();
 

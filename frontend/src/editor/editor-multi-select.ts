@@ -533,33 +533,21 @@ export class MultiSelectActionsHandler {
     }
     const proceed = await this._confirm({
       title: `Add ${blockIds.length} block${blockIds.length !== 1 ? 's' : ''} to ${targetDistrictId}?`,
-      message: 'Blocks already in another district will be moved here.',
+      message:
+        'Blocks already in another district will be moved here. They must stay one connected run with the district (no switch between them).',
       confirmText: 'Add',
       confirmVariant: 'primary',
     });
     if (!proceed) return;
 
-    const tasks = blockIds.map((bid) =>
-      this.api
-        .addBlockToDistrict(targetDistrictId, bid)
-        .then((resp: any) => ({ bid, resp, err: null }))
-        .catch((err: any) => ({ bid, resp: null, err }))
+    // One atomic call: the backend validates the whole union stays connected, so
+    // a multi-block add is order-independent and rejects a switch/gap as a unit.
+    await this.api.addBlocksToDistrict(targetDistrictId, blockIds);
+    showToast(
+      `Added ${blockIds.length} block${blockIds.length !== 1 ? 's' : ''} to ${targetDistrictId}`,
+      'success',
+      3000
     );
-    const results = await Promise.all(tasks);
-    const failed = results.filter((r) => r.err);
-    if (failed.length === 0) {
-      showToast(
-        `Added ${blockIds.length} block${blockIds.length !== 1 ? 's' : ''} to ${targetDistrictId}`,
-        'success',
-        3000
-      );
-    } else {
-      showToast(
-        `Added ${results.length - failed.length}, ${failed.length} failed`,
-        'warning',
-        5000
-      );
-    }
     await this._afterMutation();
     await this.editor.powerDistrictHandler?.showDetail(targetDistrictId);
   }

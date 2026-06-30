@@ -685,6 +685,18 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
+  /** Add several blocks at once; the whole union must stay one connected run. */
+  async addBlocksToDistrict(districtId: string, blockIds: string[]): Promise<any> {
+    return this._request(
+      `/power-districts/${encodeURIComponent(districtId)}/add-block`,
+      {
+        method: 'POST',
+        body: { block_ids: blockIds },
+      },
+      'addBlocksToDistrict'
+    );
+  }
+
   async removeBlockFromDistrict(districtId: string, blockId: string): Promise<any> {
     return this._request(
       `/power-districts/${encodeURIComponent(districtId)}/remove-block`,

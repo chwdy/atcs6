@@ -112,3 +112,10 @@
     color: var(--text-primary);
     font-weight: 600;
 }
+
+/* Single-toggle display options below the theme pickers (e.g. the background
+   grid). The hairline separates these on/off preferences from the swatches. */
+.display-menu-options {
+    border-top: 1px solid var(--border-color);
+    padding-top: var(--space-12);
+}

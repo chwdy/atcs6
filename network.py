@@ -2249,6 +2249,45 @@ class RailwayNetwork:
         self._rebuild_district_index()
         return True
 
+    def power_district_blocks_connected(self, block_ids: List[str]) -> bool:
+        """True if `block_ids` form ONE connected region under direct block
+        adjacency (no switch between members) — the district analogue of a
+        block's contiguous tiles. A single existing block is trivially connected;
+        an unknown block, or a set split by a switch or a gap, is not."""
+        ids = list(dict.fromkeys(block_ids))
+        if any(b not in self.blocks for b in ids):
+            return False
+        if len(ids) <= 1:
+            return True
+        # Map each candidate block's tiles to its id, then link candidates whose
+        # tiles share a track edge. An edge into a switch tile or a non-candidate
+        # block is not a within-set link, so a switch between two members leaves
+        # them in separate components (the strict "no switch between" rule).
+        tile_owner: Dict[Tuple[int, int], str] = {}
+        for b in ids:
+            for pos in self.get_block_positions(b):
+                tile_owner[tuple(pos)] = b
+        adjacency: Dict[str, Set[str]] = {b: set() for b in ids}
+        for b in ids:
+            for pos in self.get_block_positions(b):
+                track = self.get_track(*pos)
+                if track is None:
+                    continue
+                for npos in self._get_block_connected_neighbors(track):
+                    owner = tile_owner.get(npos)
+                    if owner is not None and owner != b:
+                        adjacency[b].add(owner)
+                        adjacency[owner].add(b)
+        seen: Set[str] = set()
+        stack = [ids[0]]
+        while stack:
+            cur = stack.pop()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            stack.extend(adjacency[cur] - seen)
+        return seen == set(ids)
+
     def to_dict(self) -> dict:
         """Convert network to dictionary for the live frontend payload.
 

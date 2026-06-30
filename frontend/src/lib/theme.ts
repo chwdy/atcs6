@@ -21,6 +21,7 @@
 // themes.css or layout-themes.css), then register it on the matching channel.
 
 import { invalidateCanvasPalette } from './canvas-palette';
+import { gridPreference } from './grid-preference';
 
 const CHROME_ATTR = 'data-theme';
 const CHROME_KEY = 'atcs6-theme';
@@ -223,6 +224,9 @@ export class ThemeManager {
       invalidateCanvasPalette();
       redrawLayout();
     });
+    // Toggling the background grid changes no colors, so no palette invalidation
+    // — just repaint the world layer so the grid appears / disappears at once.
+    gridPreference.subscribe(() => redrawLayout());
   }
 }
 
@@ -239,7 +243,8 @@ const CANVAS_PREVIEW_TOKENS = ['--canvas-bg', '--canvas-accent', '--canvas-text'
  *  registered themes. Each theme is a 2x3 grid of its six primary colors (see
  *  the *_PREVIEW_TOKENS above), with a check on the active one. A newly
  *  registered theme appears here with no extra wiring. Clicking a swatch
- *  switches that channel only. */
+ *  switches that channel only. Below the theme rows, a "Show grid" checkbox
+ *  toggles the layout's background grid (see grid-preference.ts). */
 function wireDisplayMenu(mgr: ThemeManager): void {
   const btn = document.getElementById(DISPLAY_BUTTON_ID);
   if (!btn) return;
@@ -321,6 +326,32 @@ function wireDisplayMenu(mgr: ThemeManager): void {
       row.appendChild(tiles);
       el.appendChild(row);
     }
+
+    // Background-grid toggle. A single boolean, so a checkbox row (reusing the
+    // shared .checkbox-wrapper control) rather than a swatch grid. Checked =
+    // grid shown. Flipping it persists + repaints via the gridPreference
+    // subscription wired in ThemeManager.init().
+    const gridRow = document.createElement('div');
+    gridRow.className = 'display-menu-row display-menu-options';
+    const gridToggle = document.createElement('label');
+    gridToggle.className = 'checkbox-wrapper';
+    gridToggle.title = 'Show the background grid, axes, and origin marker on the layout canvas';
+    const gridInput = document.createElement('input');
+    gridInput.type = 'checkbox';
+    gridInput.className = 'checkbox-input';
+    gridInput.checked = gridPreference.visible();
+    gridInput.addEventListener('change', () => gridPreference.set(gridInput.checked));
+    const gridCustom = document.createElement('span');
+    gridCustom.className = 'checkbox-custom';
+    const gridLabel = document.createElement('span');
+    gridLabel.className = 'checkbox-label';
+    gridLabel.textContent = 'Show grid';
+    gridToggle.appendChild(gridInput);
+    gridToggle.appendChild(gridCustom);
+    gridToggle.appendChild(gridLabel);
+    gridRow.appendChild(gridToggle);
+    el.appendChild(gridRow);
+
     document.body.appendChild(el);
     menu = el;
     mgr.chrome.subscribe(syncActive);

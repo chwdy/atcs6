@@ -47,7 +47,7 @@ export class SimEditorPlugin implements EditorPlugin {
         kind: { type: 'mode', factory: () => editor.pathHandler?.buildCancelRouteMode() },
       },
       {
-        id: 'paths-panel', label: 'Paths', icon: 'ti ti-route', title: 'View Active Paths',
+        id: 'paths-panel', label: 'Paths', icon: 'ti ti-route', title: 'View Paths',
         group: 'Path', availableIn: ['edit', 'sim'],
         kind: { type: 'action', run: () => editor.showPathsPanel() },
       },

@@ -78,6 +78,21 @@ def register(app, state: AppState) -> None:
             if block_id not in state.network.blocks:
                 return jsonify({"error": f"Block {block_id} not found"}), 400
 
+        # Connected-region rule (design_new.md "Power district" — the electrical
+        # counterpart of a block's contiguous tiles): the blocks must form one
+        # run directly joined to each other, with no switch between them.
+        if not state.network.power_district_blocks_connected(block_ids):
+            return (
+                jsonify(
+                    {
+                        "error": "A power district must be one connected run of "
+                        "blocks with no switch between them. The selected blocks "
+                        "are not all directly adjacent."
+                    }
+                ),
+                400,
+            )
+
         district_id = data.get("district_id") or _gen_district_id(state.network)
         if district_id in state.network.power_districts:
             return (
@@ -126,20 +141,47 @@ def register(app, state: AppState) -> None:
     @app.route("/api/power-districts/<district_id>/add-block", methods=["POST"])
     def add_block_to_power_district(district_id: str):
         data = request.get_json() or {}
-        block_id = data.get("block_id")
-        if not block_id:
+        # Accept one block (`block_id`) or several (`block_ids`) in one call.
+        block_ids = data.get("block_ids")
+        if block_ids is None:
+            block_ids = [data["block_id"]] if data.get("block_id") else []
+        block_ids = [str(b) for b in block_ids]
+        if not block_ids:
             return jsonify({"error": "Missing block_id"}), 400
-        try:
-            added = state.network.add_block_to_power_district(
-                district_id, str(block_id)
+
+        district = state.network.power_districts.get(district_id)
+        if district is None:
+            return jsonify({"error": "Power district not found"}), 404
+        for block_id in block_ids:
+            if block_id not in state.network.blocks:
+                return jsonify({"error": f"Block {block_id} not found"}), 404
+
+        # Keep the district one connected run with no switch between members:
+        # the existing members plus the new blocks must still form one connected
+        # region (see the create rule). Validating the whole union is order-
+        # independent, so a multi-block add can join blocks that are only reached
+        # through one another.
+        union = list(dict.fromkeys(list(district.block_ids) + block_ids))
+        if not state.network.power_district_blocks_connected(union):
+            return (
+                jsonify(
+                    {
+                        "error": "Those blocks would not keep the district one "
+                        "connected run. Every block must stay directly joined "
+                        "with no switch between them."
+                    }
+                ),
+                400,
             )
-        except ValueError as e:
-            code = 404 if "not found" in str(e).lower() else 400
-            return jsonify({"error": str(e)}), code
+
+        added_any = False
+        for block_id in block_ids:
+            if state.network.add_block_to_power_district(district_id, block_id):
+                added_any = True
         response = _build_district_response(
             state.network, state.network.power_districts[district_id]
         )
-        response["added"] = added
+        response["added"] = added_any
         return jsonify(response)
 
     @app.route("/api/power-districts/<district_id>/remove-block", methods=["POST"])
@@ -148,6 +190,27 @@ def register(app, state: AppState) -> None:
         block_id = data.get("block_id")
         if not block_id:
             return jsonify({"error": "Missing block_id"}), 400
+
+        # Keep the district one connected run: a removal that would strand the
+        # remaining members in two pieces is rejected (remove an end block, or
+        # delete the district). Removing the block itself is always fine — it
+        # just becomes its own single-block feed.
+        district = state.network.power_districts.get(district_id)
+        if district is not None and str(block_id) in district.block_ids:
+            remaining = [b for b in district.block_ids if b != str(block_id)]
+            if len(remaining) >= 2 and not state.network.power_district_blocks_connected(
+                remaining
+            ):
+                return (
+                    jsonify(
+                        {
+                            "error": f"Removing {block_id} would split this district "
+                            "into disconnected pieces. Remove an end block, or "
+                            "delete the district."
+                        }
+                    ),
+                    400,
+                )
         try:
             removed = state.network.remove_block_from_power_district(
                 district_id, str(block_id)
