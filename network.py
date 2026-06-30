@@ -2162,13 +2162,92 @@ class RailwayNetwork:
     def create_power_district(
         self, district_id: str, block_ids: List[str], name: str = ""
     ) -> PowerDistrict:
-        """Create (or replace) a power district and rebuild the reverse index."""
+        """Create (or replace) a power district and rebuild the reverse index.
+
+        Each listed block is detached from any other district first, so every
+        block stays in exactly one district (design_new.md "Power district").
+        A prior district left empty by that detach is dropped: an ungrouped
+        block is its own single-block district and needs no stored record.
+        """
+        block_ids = list(block_ids)
+        for block_id in block_ids:
+            self._detach_block_from_its_district(block_id, except_id=district_id)
         district = PowerDistrict(
-            district_id=district_id, block_ids=list(block_ids), name=name
+            district_id=district_id, block_ids=block_ids, name=name
         )
         self.power_districts[district_id] = district
+        self._prune_empty_districts(keep=district_id)
         self._rebuild_district_index()
         return district
+
+    def _detach_block_from_its_district(
+        self, block_id: str, except_id: Optional[str] = None
+    ) -> None:
+        """Remove `block_id` from whatever district currently holds it, unless
+        that district is `except_id`. Leaves index rebuild / empty pruning to the
+        caller so a batch detach rebuilds once."""
+        prior_id = self._block_to_district.get(block_id)
+        if prior_id is None or prior_id == except_id:
+            return
+        prior = self.power_districts.get(prior_id)
+        if prior is not None:
+            prior.block_ids = [b for b in prior.block_ids if b != block_id]
+
+    def _prune_empty_districts(self, keep: Optional[str] = None) -> None:
+        """Drop districts with no member blocks. An empty district is just a set
+        of ungrouped single-block districts, so it carries no information. `keep`
+        is never pruned, so a district created empty in the same call survives."""
+        self.power_districts = {
+            did: d
+            for did, d in self.power_districts.items()
+            if d.block_ids or did == keep
+        }
+
+    def delete_power_district(self, district_id: str) -> bool:
+        """Delete a power district; its member blocks become ungrouped (each its
+        own single-block district per design_new.md "Power district"). Returns
+        False when the id is unknown."""
+        if district_id not in self.power_districts:
+            return False
+        del self.power_districts[district_id]
+        self._rebuild_district_index()
+        return True
+
+    def add_block_to_power_district(self, district_id: str, block_id: str) -> bool:
+        """Add `block_id` to `district_id`, detaching it from any other district
+        first so every block stays in exactly one district. A prior district left
+        empty is dropped. Raises ValueError if the district or block is unknown.
+        Returns True when added, False when the block was already a member."""
+        district = self.power_districts.get(district_id)
+        if district is None:
+            raise ValueError(f"Power district {district_id} not found")
+        if block_id not in self.blocks:
+            raise ValueError(f"Block {block_id} not found")
+        if block_id in district.block_ids:
+            return False
+        self._detach_block_from_its_district(block_id, except_id=district_id)
+        district.block_ids.append(block_id)
+        self._prune_empty_districts(keep=district_id)
+        self._rebuild_district_index()
+        return True
+
+    def remove_block_from_power_district(
+        self, district_id: str, block_id: str
+    ) -> bool:
+        """Remove `block_id` from `district_id`; the block becomes its own
+        single-block district. The district is deleted if it becomes empty
+        (non-empty parent rule, mirroring station groups). Raises ValueError if
+        the district is unknown. Returns True when removed, False when the block
+        was not a member."""
+        district = self.power_districts.get(district_id)
+        if district is None:
+            raise ValueError(f"Power district {district_id} not found")
+        if block_id not in district.block_ids:
+            return False
+        district.block_ids = [b for b in district.block_ids if b != block_id]
+        self._prune_empty_districts()
+        self._rebuild_district_index()
+        return True
 
     def to_dict(self) -> dict:
         """Convert network to dictionary for the live frontend payload.

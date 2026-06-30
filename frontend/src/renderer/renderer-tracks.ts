@@ -604,8 +604,13 @@ export class RendererTrackHandler {
    * arm. Going along the route (rather than toward the tile centre) keeps it on
    * the rail's centreline: an axial route runs through the tile centre, but a
    * diagonal route runs along a tile-box edge that does NOT, so pulling the
-   * anchor toward the centre would drift it off a diagonal rail. The M/D badge
-   * and the lock/occupied dot share this anchor.
+   * anchor toward the centre would drift it off a diagonal rail.
+   *
+   * Exception: a crossover/crossing switch connects every edge (more than one
+   * entry in switch_points). Its routes cross at the tile centre and there is no
+   * single trunk corner, so the dot belongs at the centre.
+   *
+   * The M/D badge and the lock/occupied dot share this anchor.
    */
   switchRootAnchor(
     half: number,
@@ -614,7 +619,9 @@ export class RendererTrackHandler {
     switchPoints: Record<string, string[]>,
   ): EdgePoint {
     const edgePoints = this.getEdgePoints(half);
-    const entryEdge = Object.keys(switchPoints)[0];
+    const entryEdges = Object.keys(switchPoints);
+    if (entryEdges.length > 1) return { x: 0, y: 0 }; // crossover/crossing: centre of the tile
+    const entryEdge = entryEdges[0];
     const entryPt = entryEdge ? edgePoints[entryEdge] : null;
     if (!entryPt || !entryEdge) return { x: 0, y: 0 };
     const exitEdge = this.selectedExitEdge(entryEdge, switchPoints[entryEdge] || [], switchState, isDiagonalOnly);
@@ -982,7 +989,10 @@ export class RendererTrackHandler {
         this.ctx.textAlign = 'center';
         this.ctx.textBaseline = 'middle';
         this.ctx.fillStyle = withAlpha(p.text, 0.8);
-        const icon = toolType === 'signal' ? '🚦' : '🚉';
+        // Monochrome glyphs, not color emoji (DESIGN_LANGUAGE §14): an emoji
+        // ignores fillStyle and paints its own colors, fighting the canvas
+        // palette; these geometric glyphs honor the token color set above.
+        const icon = toolType === 'signal' ? '◉' : '⌂';
         this.ctx.fillText(icon, cx, cy);
       }
     }

@@ -10,6 +10,7 @@
 @import url('./components/display-menu.css');
 @import url('./components/design-system.css');
 @import url('./components/status-blocks.css');
+@import url('./features/inspector.css');
 @import url('./features/routes-paths.css');
 @import url('./features/trains.css');
 @import url('./features/train-control.css');

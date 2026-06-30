@@ -35,8 +35,13 @@
     gap: 4px 6px;
 }
 
-/* §7 base pill — small mono numeric/short-text chips for header/toolbar. */
+/* §7 base pill — small mono numeric/short-text chips for header/toolbar.
+   inline-flex + center so the (often uppercase, no-descender) label sits
+   optically centred in the pill instead of riding high off the baseline. */
 .chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     background-color: var(--bg-dark);
     color: var(--text-secondary);
     border: 1px solid var(--border-color);
@@ -44,7 +49,7 @@
     padding: 1px 8px;
     font-size: 10px;
     font-family: var(--font-mono);
-    line-height: 1.4;
+    line-height: 1;
     white-space: nowrap;
 }
 

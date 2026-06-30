@@ -569,10 +569,11 @@ class TrainController:
             import traceback as _tb
 
             event_time = self.commands._estimate_event_time()
-            # TrainController has no `simulation_controller` field; reach the
-            # NotificationCenter via the dispatcher's sim back-reference,
-            # fully guarded so the error handler never raises a second error.
-            sc = getattr(self.path_dispatcher, "simulation_controller", None)
+            # Reach the NotificationCenter through the controller's own
+            # `simulation_controller` back-reference (wired by the runtime in
+            # SimulationController._get_or_create_controller); fully guarded so
+            # this error handler never raises a second error.
+            sc = getattr(self, "simulation_controller", None)
             nc = (
                 getattr(sc, "notification_center", None) if sc is not None else None
             )
@@ -2037,23 +2038,15 @@ class TrainController:
         self._effective_path_tiles_cache = (path_tiles, result)
         return result
 
-    def _has_active_route_context(self, train: "Train") -> bool:
-        """Return True when the train still belongs to an active route."""
-        route_id = getattr(train, "assigned_route_id", None)
-        if not route_id:
-            return False
-
-        routes = getattr(self.network, "routes", None)
-        if not routes:
-            return False
-
-        route = routes.get(route_id)
-        return bool(route and route.is_active)
-
     def _has_active_path_authority(self, train: "Train") -> bool:
-        """Return True while the train still has movement authority to follow."""
-        if getattr(train, "assigned_path_id", None):
-            return True
+        """Return True while the train still has movement authority to follow.
+
+        Live path authority surfaces through the controller-owned projections
+        (`_get_effective_path_tiles()` / `path_projection.ato_path_id`). There is
+        no `Train.assigned_path_id` to read — `assigned_path_id` is a read-only
+        derived property of `received_path_plan.path_id` on the controller
+        (design_new.md "Train Entity"), already reflected by those projections.
+        """
         if self._get_effective_path_tiles():
             return True
         if self.path_projection.ato_path_id:
@@ -2061,10 +2054,18 @@ class TrainController:
         return False
 
     def _has_path_backed_run_context(self, train: "Train") -> bool:
-        """Return True when the current run is tied to a path, route, or destination."""
+        """Return True when the current run is tied to live path authority or an
+        ATO destination.
+
+        This projection means "has live authority" for its consumers — the
+        `path_error` badge suppresses while it is True, so a bare route
+        assignment with no live path must NOT make it True (or a stuck,
+        no-path train would hide its own error). There is correspondingly no
+        active-route branch here: `assigned_route_id` is not a `Train` field
+        (the canonical store is `RouteExecutor.assigned_route_id_for(...)`,
+        design_new.md "Train Entity").
+        """
         if self._has_active_path_authority(train):
-            return True
-        if self._has_active_route_context(train):
             return True
         if self.path_projection.ato_destination_block_id:
             return True
@@ -2527,7 +2528,7 @@ class TrainController:
         defensively and no-ops when no NotificationCenter is wired (isolated
         unit-test controllers), and never raises into the caller."""
         try:
-            sc = getattr(self.path_dispatcher, "simulation_controller", None)
+            sc = getattr(self, "simulation_controller", None)
             nc = getattr(sc, "notification_center", None) if sc is not None else None
             if nc is None:
                 return
@@ -2550,7 +2551,7 @@ class TrainController:
         no-ops when none is wired (isolated unit-test controllers), and never
         raises into the caller."""
         try:
-            sc = getattr(self.path_dispatcher, "simulation_controller", None)
+            sc = getattr(self, "simulation_controller", None)
             nc = getattr(sc, "notification_center", None) if sc is not None else None
             if nc is None:
                 return

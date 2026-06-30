@@ -14,6 +14,7 @@ Module map:
 - signals: /api/signal/* CRUD and validation
 - stations: /api/stations/*
 - platforms: /api/platforms/*
+- power_districts: /api/power-districts/* CRUD + add/remove block
 - trains: /api/trains/* CRUD and control
 - paths: /api/paths/* pathfinding and management
 - train_routes: /api/train-routes/* route definitions + lifecycle + viability
@@ -32,6 +33,7 @@ from routes import (
     signals,
     stations,
     platforms,
+    power_districts,
     trains,
     paths,
     train_routes,
@@ -60,6 +62,7 @@ def register_all(app, state) -> None:
     signals.register(app, state)
     stations.register(app, state)
     platforms.register(app, state)
+    power_districts.register(app, state)
     trains.register(app, state)
     paths.register(app, state)
     train_routes.register(app, state)

@@ -31,6 +31,7 @@ import { FORBIDDEN_TRACK_BITS, isSquareCornerSwitch } from '../lib/constants';
 import { BlockEditorHandler } from './editor-blocks';
 import { SignalEditorHandler } from './editor-signals';
 import { PlatformEditorHandler, StationGroupEditorHandler } from './editor-stations';
+import { PowerDistrictEditorHandler } from './editor-power-districts';
 // Sim-editor handlers are provided by the SimEditorPlugin (sim-plugin.ts), not
 // instantiated by the core editor — imported as types only so a layout-only
 // build does not pull in their code.
@@ -115,6 +116,9 @@ export class Editor {
   signalHandler: SignalEditorHandler;
   platformHandler: PlatformEditorHandler;
   stationGroupHandler: StationGroupEditorHandler;
+  powerDistrictHandler: PowerDistrictEditorHandler;
+  // The district the assign tool targets (set when a district detail is open).
+  _activeDistrictId: string | null = null;
   // Sim handlers — present only when the SimEditorPlugin is registered.
   trainHandler?: TrainEditorHandler;
   pathHandler?: PathEditorHandler;
@@ -233,6 +237,7 @@ export class Editor {
     this.signalHandler = new SignalEditorHandler(this);
     this.platformHandler = new PlatformEditorHandler(this);
     this.stationGroupHandler = new StationGroupEditorHandler(this);
+    this.powerDistrictHandler = new PowerDistrictEditorHandler(this);
     // Sim handlers (train/path/route/routeRun/speedProfile) are instantiated by
     // the SimEditorPlugin via registerPlugin(), not here — see sim-plugin.ts.
     this.switchHandler = new SwitchEditorHandler(this);
@@ -300,6 +305,8 @@ export class Editor {
       this.renderer.clearBlockDirectionFocus();
     }
     this.renderer?.setSelectedTunnel?.(null);
+    // A new panel means the old panel's inspect peek highlight is stale.
+    this.clearInspectHighlight();
     // Opening any panel other than Add Train drops a lingering train-placement
     // ghost and exits the place-train mode, so neither can outlive its panel.
     if (title !== 'Add Train') {
@@ -323,6 +330,8 @@ export class Editor {
       'platform',
       'station-group-list',
       'station-group-detail',
+      'power-district-list',
+      'power-district-detail',
     ]);
     if (this._currentEditorType && STRUCTURAL.has(this._currentEditorType)) {
       applyStructuralLock(this.$id('secondary-sidebar-content'));
@@ -333,6 +342,7 @@ export class Editor {
     // uiHandler.hideSecondarySidebar() takes no args (it ignored `options` in
     // the classic code too); keep the param on the facade for callers.
     this.renderer?.setSelectedTunnel?.(null);
+    this.clearInspectHighlight();
     return this.uiHandler.hideSecondarySidebar();
   }
 
@@ -414,6 +424,13 @@ export class Editor {
       case 'station-group':
       case 'station-group-list':
         await this.showStationsPanel();
+        return true;
+      case 'power-district-detail':
+        if (!id) return false;
+        await this.powerDistrictHandler.showDetail(id);
+        return true;
+      case 'power-district-list':
+        await this.showPowerDistrictsPanel();
         return true;
       case 'routes-list':
         await this.showRoutesPanel();
@@ -579,6 +596,12 @@ export class Editor {
           Array.isArray(this.cachedNetwork?.station_groups) &&
           this.cachedNetwork.station_groups.some((s: any) => s.station_id === id);
         break;
+      case 'power-district-detail':
+        if (!id) return;
+        itemExists =
+          Array.isArray(this.cachedNetwork?.power_districts) &&
+          this.cachedNetwork.power_districts.some((d: any) => d.district_id === id);
+        break;
       case 'train':
       case 'train-control':
         if (!id) return;
@@ -639,6 +662,10 @@ export class Editor {
 
   async showStationsPanel(): Promise<any> {
     return this.stationGroupHandler.showPanel();
+  }
+
+  async showPowerDistrictsPanel(): Promise<any> {
+    return this.powerDistrictHandler.showPanel();
   }
 
   showAddTrainDialog(): any {
@@ -766,6 +793,18 @@ export class Editor {
         id: 'remove-block-tile', label: 'Remove', icon: 'ti ti-minus',
         title: 'Remove Block Tile',
         group: 'Block', availableIn: ['edit'], kind: { type: 'tool' },
+      },
+
+      {
+        id: 'power-districts-panel', label: 'Districts', icon: 'ti ti-bolt',
+        title: 'Power Districts — group blocks onto one power feed',
+        group: 'Power', availableIn: ['edit', 'sim'],
+        kind: { type: 'action', run: () => this.showPowerDistrictsPanel() },
+      },
+      {
+        id: 'power-district-assign', label: 'Assign', icon: 'ti ti-click',
+        title: 'Assign blocks to the open power district (click a block to add it, click a member again to remove it)',
+        group: 'Power', availableIn: ['edit'], kind: { type: 'tool' },
       },
     ];
   }
@@ -1290,6 +1329,13 @@ export class Editor {
         if (handled) return;
       }
 
+      // Power-district assign tool: click a block to toggle its membership in
+      // the district open in the detail panel.
+      if (this.selectedTool === 'power-district-assign') {
+        await this.powerDistrictHandler.handleAssignClick(gridPos);
+        return;
+      }
+
       // Only handle selection with select tool
       if (this.selectedTool !== 'inspect') return;
 
@@ -1559,6 +1605,9 @@ export class Editor {
   // Pure DOM + state update. Does NOT call enter/exitMode (no recursion).
   _setSelectedTool(toolName: string): void {
     this.selectedTool = toolName;
+    // A tool change is a fresh gesture — drop any inspect peek highlight so it
+    // can't linger over a new selection/build.
+    this.clearInspectHighlight();
     this._syncToolbarActive();
   }
 
@@ -1583,6 +1632,22 @@ export class Editor {
     this.renderer.setBoxSelection(keys);
     this.renderer.setSelectionGroups(this._buildSelectionOutlineGroups(keys));
     this.multiSelectHandler?.update(this.boxSelectState.selectedKeys);
+  }
+
+  // Inspect "peek" highlight — outline a single entity's tiles on the canvas
+  // without touching the drag-select state or opening the multi-select panel.
+  // Entity editors use it to point at the switch a cross-link row refers to
+  // ("show me where this is") while the user stays on the current editor. It is
+  // cleared on any panel swap (showSecondarySidebar / hideSecondarySidebar) or
+  // tool change, so a peek never outlives the moment.
+  highlightInspectTiles(keys: Set<string>): void {
+    this.renderer.setInspectHighlight(this._buildSelectionOutlineGroups(keys));
+  }
+
+  clearInspectHighlight(): void {
+    if (this.renderer.inspectHighlightGroups?.length) {
+      this.renderer.setInspectHighlight([]);
+    }
   }
 
   // Group the selected tiles by the entity each belongs to, so the renderer can

@@ -1,16 +1,16 @@
 // renderer-platforms.ts — resolves each platform's oriented body geometry,
-// draws the body parallelograms, and places a collapsed/hover label that
-// avoids nearby tracks and other platform bodies.
+// draws the body parallelograms, and stamps the platform name directly on
+// each body bar (one per side, so a both-sides platform reads on both bars).
 //
 // Migrated from static/js/renderer-platforms.js (longterm_todo.md item #7,
-// renderer cluster). Behavior is unchanged; covered by renderer-platforms.test.ts.
+// renderer cluster). Covered by renderer-platforms.test.ts.
 //
-// Imports TRACK_BITS and getLabelSpacingMultiplier from ../lib/constants.
+// Imports TRACK_BITS from ../lib/constants.
 // Part of the Vite bundle; the Renderer constructs it directly
 // (`new RendererPlatformHandler(this)`).
 
-import { TRACK_BITS, getLabelSpacingMultiplier } from '../lib/constants';
-import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
+import { TRACK_BITS } from '../lib/constants';
+import { getCanvasPalette } from '../lib/canvas-palette';
 
 interface Point {
   x: number;
@@ -139,17 +139,15 @@ export class RendererPlatformHandler {
       segments: this._computeBodySegments(m, half, width),
     }));
 
-    // Pass 2: draw bodies then labels.
+    // Pass 2: draw each platform body and stamp its name on the body. The
+    // name is drawn once per side, so a both-sides platform reads on both bars.
     for (const m of meta) {
       this.ctx.save();
       if (m.orientation && m.platformSides.length > 0) {
         this.drawOrientedPlatform(
-          m.point1, m.point2, m.orientation, m.platformSides, width, half,
+          m.name, m.point1, m.point2, m.orientation, m.platformSides, width, half,
         );
       }
-      this.drawPlatformLabel(
-        m.name, m.point1, m.point2, m.orientation, m.platformSides[0], half, m.id,
-      );
       this.ctx.restore();
     }
   }
@@ -264,149 +262,6 @@ export class RendererPlatformHandler {
     return String(name).slice(0, 4).toUpperCase();
   }
 
-  drawPlatformLabel(
-    fullName: string,
-    point1: Point,
-    point2: Point,
-    orientation: string | undefined,
-    side: string,
-    half: number,
-    selfId: string,
-  ): void {
-    const abbrev = this.abbreviatePlatformName(fullName);
-
-    const centerX = (point1.x + point2.x) / 2;
-    const centerY = (point1.y + point2.y) / 2;
-
-    const dx = point2.x - point1.x;
-    const dy = point2.y - point1.y;
-    const length = Math.sqrt(dx * dx + dy * dy);
-    if (length === 0) return;
-
-    const perpX = -dy / length;
-    const perpY = dx / length;
-    const dirX = dx / length;
-    const dirY = dy / length;
-
-    const sideMultiplier = this.getSideMultiplier(side, orientation);
-    const spacingMultiplier = getLabelSpacingMultiplier();
-    const labelOffset = half * spacingMultiplier + 18 * this.scale;
-    const labelPadding = 3 * this.scale;
-
-    // Pick position using the collapsed (abbrev) box so placement is stable
-    // even when hover expands the text.
-    this.ctx.font = `bold ${7 * this.scale}px sans-serif`;
-    const abbrevWidth = this.ctx.measureText(abbrev).width;
-    const collapsedW = abbrevWidth + labelPadding * 2;
-    const collapsedH = 10 * this.scale;
-
-    const { labelX, labelY } = this._pickPlatformLabelPosition(
-      centerX, centerY, perpX, perpY, dirX, dirY, length,
-      sideMultiplier, labelOffset, collapsedW, collapsedH, selfId,
-    );
-
-    // Hover hit-test: mouse must be inside the (collapsed) label rect itself.
-    const collapsedBoxX = labelX - collapsedW / 2;
-    const collapsedBoxY = labelY - collapsedH / 2;
-    const isHovered =
-      this.mouseX >= collapsedBoxX && this.mouseX <= collapsedBoxX + collapsedW &&
-      this.mouseY >= collapsedBoxY && this.mouseY <= collapsedBoxY + collapsedH;
-
-    const displayText = isHovered ? fullName : abbrev;
-    const fontSize = isHovered ? 9 * this.scale : 7 * this.scale;
-    this.ctx.font = `bold ${fontSize}px sans-serif`;
-    const textWidth = this.ctx.measureText(displayText).width;
-    const labelHeight = (isHovered ? 12 : 10) * this.scale;
-
-    // Opaque enough that an overlapping label doesn't bleed through.
-    // See the same fill rule on station and train labels.
-    const bgAlpha = isHovered ? 0.92 : 0.85;
-    const p = getCanvasPalette();
-    this.ctx.fillStyle = withAlpha(p.overlayBg, bgAlpha);
-    this.ctx.fillRect(
-      labelX - textWidth / 2 - labelPadding,
-      labelY - labelHeight / 2,
-      textWidth + labelPadding * 2,
-      labelHeight,
-    );
-
-    this.ctx.strokeStyle = isHovered ? withAlpha(p.text, 0.6) : withAlpha(p.text, 0.3);
-    this.ctx.lineWidth = 1;
-    this.ctx.strokeRect(
-      labelX - textWidth / 2 - labelPadding,
-      labelY - labelHeight / 2,
-      textWidth + labelPadding * 2,
-      labelHeight,
-    );
-
-    this.ctx.fillStyle = p.text;
-    this.ctx.textAlign = 'center';
-    this.ctx.textBaseline = 'middle';
-    this.ctx.fillText(displayText, labelX, labelY);
-
-    this.renderer.platformBounds.push({
-      x: labelX,
-      y: labelY,
-      r: Math.max(collapsedW, collapsedH) / 2,
-      name: fullName,
-      abbrev,
-    });
-
-    // Register the collapsed (non-hover) rect into the shared label
-    // registry so train labels can avoid overlapping. Use collapsed
-    // dimensions for stability — hover expansion is transient and
-    // shouldn't shift train placement.
-    this.renderer.labelBounds.push({
-      x: labelX - collapsedW / 2,
-      y: labelY - collapsedH / 2,
-      w: collapsedW,
-      h: collapsedH,
-      tier: 'platform',
-    });
-  }
-
-  _pickPlatformLabelPosition(
-    cx: number, cy: number, perpX: number, perpY: number, dirX: number, dirY: number,
-    length: number, defaultSm: number, off: number, boxW: number, boxH: number, selfId: string,
-  ): { labelX: number; labelY: number } {
-    // Candidates: current side / opposite side, each at center and at +/- shift along the platform.
-    const along = length * 0.35;
-    const candidates = [
-      { sm: defaultSm, alongT: 0 },  // default
-      { sm: -defaultSm, alongT: 0 },  // flip side
-      { sm: defaultSm, alongT: -along },
-      { sm: defaultSm, alongT: along },
-      { sm: -defaultSm, alongT: -along },
-      { sm: -defaultSm, alongT: along },
-    ];
-
-    const obstacles = this.renderer.getNearbyTrackSegments(cx, cy, off * 3)
-      .concat(this.getPlatformBodySegments(selfId));
-
-    let bestX = cx, bestY = cy, bestScore = -Infinity;
-    for (let i = 0; i < candidates.length; i++) {
-      const c = candidates[i];
-      const lx = cx + perpX * off * c.sm + dirX * c.alongT;
-      const ly = cy + perpY * off * c.sm + dirY * c.alongT;
-      const bx = lx - boxW / 2;
-      const by = ly - boxH / 2;
-
-      const dist = this.renderer.distRectToSegments(bx, by, boxW, boxH, obstacles);
-      const distScore = Math.min(dist, 20);
-      // Strongly prefer the default (matches existing platform_side semantics);
-      // the picker only deviates when the default clearly overlaps.
-      const preferenceBonus = (candidates.length - i) * 1.5;
-      const score = distScore + preferenceBonus;
-
-      if (score > bestScore) {
-        bestScore = score;
-        bestX = lx;
-        bestY = ly;
-      }
-    }
-    return { labelX: bestX, labelY: bestY };
-  }
-
   findEndpointTiles(positions: Array<[number, number]>): Array<[number, number]> | null {
     if (positions.length === 0) return null;
     if (positions.length === 1) return [positions[0], positions[0]];
@@ -486,6 +341,7 @@ export class RendererPlatformHandler {
   }
 
   drawOrientedPlatform(
+    name: string,
     point1: Point,
     point2: Point,
     orientation: string | undefined,
@@ -494,9 +350,9 @@ export class RendererPlatformHandler {
     half: number,
   ): void {
     const p = getCanvasPalette();
+    // Body fill only — no outline. The name sits on the body, so a border
+    // would just box in text that already reads against the fill.
     this.ctx.fillStyle = p.overlayBorder;
-    this.ctx.strokeStyle = p.ink;
-    this.ctx.lineWidth = 1 * this.scale;
 
     let p1 = point1;
     let p2 = point2;
@@ -540,6 +396,11 @@ export class RendererPlatformHandler {
         outerEndX, outerEndY,
         innerEndX, innerEndY,
       );
+
+      // Stamp the name on this side's bar, centered on the parallelogram.
+      const cx = (innerStartX + innerEndX + outerStartX + outerEndX) / 4;
+      const cy = (innerStartY + innerEndY + outerStartY + outerEndY) / 4;
+      this.drawPlatformNameOnBody(name, cx, cy, dirX, dirY, width, length);
     }
   }
 
@@ -583,6 +444,66 @@ export class RendererPlatformHandler {
     this.ctx.lineTo(x4, y4);
     this.ctx.closePath();
     this.ctx.fill();
-    this.ctx.stroke();
+  }
+
+  // Stamp the platform name onto one body bar, rotated to run along the
+  // platform and sized to the bar thickness (≈ the §16 7px-at-scale-1 size
+  // family). Full name when it fits the bar's length, else the abbreviation
+  // shrunk to fit. Registers the text's screen rect so train labels — which
+  // share labelBounds — steer around it.
+  drawPlatformNameOnBody(
+    name: string,
+    cx: number,
+    cy: number,
+    dirX: number,
+    dirY: number,
+    bandThickness: number,
+    bandLength: number,
+  ): void {
+    if (!name) return;
+
+    // Text runs along the platform; flip past vertical so it's never upside down.
+    let angle = Math.atan2(dirY, dirX);
+    if (angle > Math.PI / 2) angle -= Math.PI;
+    else if (angle < -Math.PI / 2) angle += Math.PI;
+
+    let fontSize = bandThickness * 0.7;
+    const maxTextW = bandLength * 0.9;
+
+    this.ctx.save();
+    this.ctx.font = `bold ${fontSize}px sans-serif`;
+    let text = name;
+    let textW = this.ctx.measureText(text).width;
+    if (textW > maxTextW) {
+      text = this.abbreviatePlatformName(name);
+      textW = this.ctx.measureText(text).width;
+      if (textW > maxTextW && textW > 0) {
+        fontSize *= maxTextW / textW;
+        this.ctx.font = `bold ${fontSize}px sans-serif`;
+        textW = this.ctx.measureText(text).width;
+      }
+    }
+
+    const p = getCanvasPalette();
+    this.ctx.translate(cx, cy);
+    this.ctx.rotate(angle);
+    this.ctx.fillStyle = p.text;
+    this.ctx.textAlign = 'center';
+    this.ctx.textBaseline = 'middle';
+    this.ctx.fillText(text, 0, 0);
+    this.ctx.restore();
+
+    // Reserve the text's axis-aligned screen box for train-label avoidance.
+    const cos = Math.abs(Math.cos(angle));
+    const sin = Math.abs(Math.sin(angle));
+    const hx = (textW / 2) * cos + (fontSize / 2) * sin;
+    const hy = (textW / 2) * sin + (fontSize / 2) * cos;
+    this.renderer.labelBounds.push({
+      x: cx - hx,
+      y: cy - hy,
+      w: hx * 2,
+      h: hy * 2,
+      tier: 'platform',
+    });
   }
 }

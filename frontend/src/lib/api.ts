@@ -628,6 +628,74 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
+  // === Power District API Methods ===
+
+  async createPowerDistrict(data: unknown): Promise<any> {
+    return this._request(
+      '/power-districts',
+      {
+        method: 'POST',
+        body: data,
+      },
+      'createPowerDistrict'
+    );
+  }
+
+  async listPowerDistricts(): Promise<any> {
+    return this._request('/power-districts', {}, 'listPowerDistricts');
+  }
+
+  async getPowerDistrict(districtId: string): Promise<any> {
+    return this._request(
+      `/power-districts/${encodeURIComponent(districtId)}`,
+      {},
+      'getPowerDistrict'
+    );
+  }
+
+  async updatePowerDistrict(districtId: string, patch: unknown): Promise<any> {
+    return this._request(
+      `/power-districts/${encodeURIComponent(districtId)}`,
+      {
+        method: 'PATCH',
+        body: patch,
+      },
+      'updatePowerDistrict'
+    );
+  }
+
+  async deletePowerDistrict(districtId: string): Promise<any> {
+    return this._request(
+      `/power-districts/${encodeURIComponent(districtId)}`,
+      {
+        method: 'DELETE',
+      },
+      'deletePowerDistrict'
+    );
+  }
+
+  async addBlockToDistrict(districtId: string, blockId: string): Promise<any> {
+    return this._request(
+      `/power-districts/${encodeURIComponent(districtId)}/add-block`,
+      {
+        method: 'POST',
+        body: { block_id: blockId },
+      },
+      'addBlockToDistrict'
+    );
+  }
+
+  async removeBlockFromDistrict(districtId: string, blockId: string): Promise<any> {
+    return this._request(
+      `/power-districts/${encodeURIComponent(districtId)}/remove-block`,
+      {
+        method: 'POST',
+        body: { block_id: blockId },
+      },
+      'removeBlockFromDistrict'
+    );
+  }
+
   /** Remove tiles from a block. */
   async removeBlockTiles(blockId: string, positions: unknown): Promise<any> {
     return this._request(

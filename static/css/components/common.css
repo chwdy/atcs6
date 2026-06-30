@@ -290,6 +290,60 @@
 }
 
 
+/* Power Districts panel — same .rr-card list shell as the stations/switches
+   lists (DESIGN_LANGUAGE.md §11/§12). The only district-specific mark is the
+   color swatch in each row's title, which matches that district's canvas
+   overlay color (see frontend/src/lib/district-color.ts). */
+.pd-create-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 16px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.pd-create-form .control-section-header {
+    margin-bottom: 0;
+}
+
+.pd-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.pd-row {
+    cursor: pointer;
+}
+
+.pd-row-name {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.25;
+    color: var(--text-primary);
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+/* Color key dot: the district's overlay color, so the list reads as a legend. */
+.pd-swatch {
+    flex: 0 0 auto;
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+    border: 1px solid var(--border-color);
+}
+
+.pd-row-meta {
+    margin-top: 4px;
+}
+
+
 /* Trains Panel — fills the panel; the .secondary-sidebar-content wrapper owns
    the scroll, so the list itself is not a capped inner scrollbox. */
 .trains-list {

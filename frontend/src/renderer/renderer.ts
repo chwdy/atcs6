@@ -225,12 +225,21 @@ class Renderer {
   platformBounds!: PlatformBound[];
   labelBounds!: LabelBound[];
   showBlockColorsOnly!: boolean;
+  // When set, the world layer tints each block by its power district instead of
+  // the per-block id colors. Driven by the power-district tool / panel.
+  showPowerDistrictColors!: boolean;
   currentBlocks!: Record<string, BlockInfo>;
   blockColorCache!: Record<string, number | undefined>;
   blockColorCounter!: number;
   currentNetwork!: NetworkPayload | null;
   boxSelection!: Set<string>;
   selectionGroups!: SelectionOutlineGroup[];
+  // Per-entity outline groups for the inspect "peek" highlight — a single entity
+  // pointed at from a panel cross-link (the switch editor's flank / train-
+  // protection links). Drawn with the same dashed rail as the committed
+  // selection outline but with no "selected tile" amber fill, and independent of
+  // the box-select state, so a peek never reads as a drag-selection.
+  inspectHighlightGroups!: SelectionOutlineGroup[];
   boxSelectRect!: { startX: number; startY: number; endX: number; endY: number } | null;
   lassoPath!: Array<{ x: number; y: number }> | null;
   buildPreview!: BuildPreview | null;
@@ -305,6 +314,8 @@ class Renderer {
     // - false: only show when debug checkbox is checked (full debug info)
     // - true: show block colors only (for block tools)
     this.showBlockColorsOnly = false;
+    // Power-district color overlay (on while a power-district tool/panel is open).
+    this.showPowerDistrictColors = false;
 
     // Current blocks data for track coloring
     this.currentBlocks = {};
@@ -322,6 +333,7 @@ class Renderer {
     // Per-entity outline groups for the committed selection (block / platform /
     // switch / signal footprints), supplied by the editor alongside boxSelection.
     this.selectionGroups = [];
+    this.inspectHighlightGroups = [];   // peek highlight from a panel cross-link
     this.boxSelectRect = null;       // {startX, startY, endX, endY} screen coords, or null
     // Lasso-select overlay state (driven by the lasso-select editor tool).
     // Array of {x, y} screen-space points being drawn, or null when idle.
@@ -762,10 +774,13 @@ class Renderer {
 
     const tracks = network.tracks || [];
 
-    // Draw block ID colors BEFORE tracks (so they appear underneath).
-    // Show if: debug checkbox is checked OR showBlockColorsOnly is set.
+    // Draw block ID colors BEFORE tracks (so they appear underneath). The
+    // power-district overlay takes precedence: while it is on, blocks read by
+    // district color instead of per-block id color.
     const showBlockDebug = this.debugFlags?.showBlocks || false;
-    if (showBlockDebug || this.showBlockColorsOnly) {
+    if (this.showPowerDistrictColors) {
+      this.blockHandler.drawPowerDistrictColors(tracks, network.power_districts);
+    } else if (showBlockDebug || this.showBlockColorsOnly) {
       this.blockHandler.drawBlockIdColors(tracks);
     }
 
@@ -913,7 +928,7 @@ class Renderer {
     // Hovered station overlay (full name + platform highlights).
     this.stationHandler.drawHoverOverlay();
 
-    // Box/lasso-select overlay.
+    // Box/lasso-select overlay (also paints the inspect "peek" highlight).
     this.drawBoxSelection();
     this.drawBoxSelectRect();
     this.drawLassoPath();
@@ -933,6 +948,13 @@ class Renderer {
 
   setSelectionGroups(groups: SelectionOutlineGroup[] | null): void {
     this.selectionGroups = groups || [];
+  }
+
+  // Set (or clear, with []) the inspect peek highlight. Only the live layer
+  // needs repainting — the outline draws on top of the world.
+  setInspectHighlight(groups: SelectionOutlineGroup[] | null): void {
+    this.inspectHighlightGroups = groups || [];
+    this.requestRedraw({ world: false, live: true, reason: 'inspect-highlight' });
   }
 
   setBoxSelectRect(rect: { startX: number; startY: number; endX: number; endY: number } | null): void {
@@ -1080,6 +1102,11 @@ class Renderer {
       cap: withAlpha(p.text, 0.95),
     });
     this.drawSelectionEntityOutlines();
+    // Inspect "peek" highlight — a single entity outlined from a panel
+    // cross-link (switch editor flank / train-protection links). Same dashed
+    // rail as the committed selection above, but no "selected tile" amber fill,
+    // and driven by its own group set so it shows even with nothing selected.
+    this.drawSelectionEntityOutlines(this.inspectHighlightGroups);
   }
 
   // Per-entity rail tint for the committed selection, painted over the amber
@@ -1091,8 +1118,7 @@ class Renderer {
   // _buildSelectionOutlineGroups: later groups paint on top (the block is drawn
   // last as a thin, light line so it stays a delicate marker over the wider
   // dashed platform / switch / signal beneath it).
-  drawSelectionEntityOutlines(): void {
-    const groups = this.selectionGroups;
+  drawSelectionEntityOutlines(groups: SelectionOutlineGroup[] = this.selectionGroups): void {
     if (!groups || groups.length === 0) return;
     const half = (this.gridSize * this.scale) / 2;
     const trackMap = this.trackMap || {};

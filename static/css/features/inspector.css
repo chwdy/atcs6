@@ -1,0 +1,133 @@
+/* ============================================================================
+   features/inspector.css
+
+   Feature CSS for the entity inspector panels (switch / block / platform /
+   signal editors in the secondary sidebar). Layers on the shared primitives —
+   §7 chip and §6 accents in status-blocks.css, .control-section in
+   design-system.css — without redefining them (docs/DESIGN_LANGUAGE.md §15).
+   ============================================================================ */
+
+/* ---- Protection rows ----
+   The read-only relationship lists in the switch editor (Occupancy, Flank
+   Protection, Train Protection). One row shape for every list so the sections
+   read alike: a mono identity on the left, the state chip pinned to the right
+   edge (so the state scans down a column), and an optional muted sub-line for
+   the supporting detail (the source switch, or the path id holding the switch).
+   The sub-line clips to one line — opaque ids ellipsise with the full string on
+   hover, per §5 "Overflow: identifiers vs names". */
+.protection-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-bottom: 8px;
+}
+.protection-row:last-child {
+    margin-bottom: 0;
+}
+
+/* Identity … state chip on one line. justify-content pins the chip to the right
+   edge; align-items centres it against the identity. The identity may clip if a
+   row narrows; the chip never shrinks. */
+.protection-row-main {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 0;
+}
+.protection-row-main > :first-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.protection-row-main > .chip {
+    flex: 0 0 auto;
+}
+
+/* Muted supporting line (source switch, or the path id holding the switch),
+   clipped to one line so a long opaque id can't sprawl across the panel. */
+.protection-row-sub {
+    color: var(--text-secondary);
+    font-size: var(--font-size-body);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+/* A clickable switch reference that outlines the switch on the canvas (a "show
+   me where this is" peek). Reads as a bright mono identity at rest — in the
+   flank list it IS the row's subject — and brightens to the accent on hover to
+   show it is interactive. Inside a sub-line it inherits that line's smaller,
+   muted type so it reads as supporting detail, not a second identity. */
+.switch-peek-link {
+    display: inline;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-value);
+    color: var(--text-primary);
+    cursor: pointer;
+}
+.switch-peek-link:hover {
+    color: var(--accent-hover);
+    text-decoration: underline;
+}
+.protection-row-sub .switch-peek-link {
+    font-size: inherit;
+    color: var(--text-secondary);
+}
+.protection-row-sub .switch-peek-link:hover {
+    color: var(--accent-hover);
+}
+
+/* ---- Section help ----
+   The explanatory line under a section header (Flank / Train Protection),
+   tucked behind a small info glyph so it doesn't take a permanent row. The
+   title carries the glyph as the affordance; hovering the title shows the help
+   as an anchored popover (no layout shift, so the rows below never jump), and
+   clicking the title pins it open (.help-open, toggled in editor-switches.ts).
+   It is a floating layer, so it earns the one sanctioned drop-shadow (§14). */
+.section-help-host {
+    position: relative;   /* positioning context for the popover */
+    display: flex;
+    align-items: center;
+}
+.section-help-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    cursor: help;
+}
+.section-help-icon {
+    font-size: 12px;
+    color: var(--text-tertiary);
+}
+.section-help {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: var(--z-picker);
+    margin-top: 2px;
+    padding: 6px 8px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+    /* The header is uppercase weight-600; the help is plain muted prose. */
+    color: var(--text-secondary);
+    font-size: var(--font-size-body);
+    font-weight: 400;
+    line-height: 1.4;
+    letter-spacing: normal;
+    text-transform: none;
+}
+.section-help-toggle:hover ~ .section-help,
+.section-help-host.help-open .section-help {
+    display: block;
+}

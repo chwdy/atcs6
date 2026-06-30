@@ -96,6 +96,10 @@ export interface SelectModesHost {
   };
 
   _applyBoxSelection(keys: Set<string>): void;
+  // Outline a single entity's tiles on the canvas as a "show me where this is"
+  // peek, without disturbing the drag-select state. Cleared on panel/tool swap.
+  highlightInspectTiles(keys: Set<string>): void;
+  clearInspectHighlight(): void;
   _resetTraceAnchor(): void;
   _tracksByKey(): Map<string, any>;
   $id(id: string): any;

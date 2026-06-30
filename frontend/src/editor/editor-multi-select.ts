@@ -163,6 +163,25 @@ export class MultiSelectActionsHandler {
     const removeDisabled = blockCount === 0 ? 'disabled' : '';
     const addDisabled = cachedBlocks.length === 0 ? 'disabled' : '';
 
+    // Power-district actions operate on the selection's distinct blocks (a
+    // district groups whole blocks, design_new.md "Power district").
+    const districts = this.editor.cachedNetwork?.power_districts || [];
+    const districtOptions =
+      districts.length === 0
+        ? '<option value="" disabled>No districts yet</option>'
+        : '<option value="" disabled selected>Pick a district…</option>' +
+          districts
+            .slice()
+            .sort((a: any, b: any) => (a.district_id || '').localeCompare(b.district_id || ''))
+            .map((d: any) => {
+              const id = this._escape(d.district_id);
+              const label = d.name ? `${id} — ${this._escape(d.name)}` : id;
+              return `<option value="${id}">${label}</option>`;
+            })
+            .join('');
+    const pdCreateDisabled = blockCount === 0 ? 'disabled' : '';
+    const pdAddDisabled = blockCount === 0 || districts.length === 0 ? 'disabled' : '';
+
     const affectedBlocks = this._affectedBlocks(summary.blockIds);
     const propertiesSection =
       affectedBlocks.length === 0 ? '' : this._renderPropertiesSection(affectedBlocks);
@@ -195,6 +214,21 @@ export class MultiSelectActionsHandler {
                     <button type="button" class="btn btn-outline ms-btn-block" data-action="remove-from-blocks" ${removeDisabled}>
                         Remove from ${blockCount === 1 ? 'block' : 'blocks'}
                     </button>
+                </div>
+
+                <div class="ms-group">
+                    <div class="ms-group-label">Power district</div>
+                    <button type="button" class="btn btn-outline ms-btn-block" data-action="create-power-district" ${pdCreateDisabled}>
+                        New district from ${blockCount} ${blockWord}
+                    </button>
+                    <div class="ms-row">
+                        <select class="ms-input" data-field="add-target-district" ${pdAddDisabled}>
+                            ${districtOptions}
+                        </select>
+                        <button type="button" class="btn btn-outline" data-action="add-to-power-district" ${pdAddDisabled}>
+                            Add
+                        </button>
+                    </div>
                 </div>
 
                 <div class="ms-group">
@@ -353,6 +387,22 @@ export class MultiSelectActionsHandler {
     panel.querySelector('[data-action="remove-from-blocks"]')?.addEventListener('click', () => {
       this._removeSelectionFromBlocks().catch((err) => this._reportError('remove from blocks', err));
     });
+    panel.querySelector('[data-action="create-power-district"]')?.addEventListener('click', () => {
+      this._createPowerDistrictFromSelection().catch((err) =>
+        this._reportError('create power district', err)
+      );
+    });
+    panel.querySelector('[data-action="add-to-power-district"]')?.addEventListener('click', () => {
+      const sel = panel.querySelector<HTMLSelectElement>('[data-field="add-target-district"]');
+      const targetId = sel?.value;
+      if (!targetId) {
+        showToast('Pick a district first', 'info', 2000);
+        return;
+      }
+      this._addSelectionToPowerDistrict(targetId).catch((err) =>
+        this._reportError('add to power district', err)
+      );
+    });
     panel.querySelector('[data-action="delete-tiles"]')?.addEventListener('click', () => {
       this._deleteSelectedTiles().catch((err) => this._reportError('delete tiles', err));
     });
@@ -444,6 +494,74 @@ export class MultiSelectActionsHandler {
     if (reassigned) parts.push(`(${reassigned} reassigned)`);
     showToast(parts.join(' '), 'success', 3000);
     await this._afterMutation();
+  }
+
+  // === Power-district actions ===
+
+  /** Distinct blocks the current selection touches (a district groups whole
+   *  blocks, so selecting any tile of a block selects that whole block). */
+  _selectedBlockIds(): string[] {
+    return [...this._summarize(this.editor.boxSelectState.selectedKeys).blockIds];
+  }
+
+  async _createPowerDistrictFromSelection(): Promise<void> {
+    const blockIds = this._selectedBlockIds();
+    if (blockIds.length === 0) {
+      showToast('Select tiles that belong to blocks first', 'info', 3000);
+      return;
+    }
+    const resp = await this.api.createPowerDistrict({ block_ids: blockIds });
+    if (resp?.error) {
+      showToast(`Failed to create district: ${resp.error}`, 'error', 5000);
+      return;
+    }
+    showToast(
+      `Created power district ${resp.district_id} from ${blockIds.length} block${blockIds.length !== 1 ? 's' : ''}`,
+      'success',
+      3000
+    );
+    await this._afterMutation();
+    // Open the new district so the user can name it / keep editing.
+    await this.editor.powerDistrictHandler?.showDetail(resp.district_id);
+  }
+
+  async _addSelectionToPowerDistrict(targetDistrictId: string): Promise<void> {
+    const blockIds = this._selectedBlockIds();
+    if (blockIds.length === 0) {
+      showToast('Select tiles that belong to blocks first', 'info', 3000);
+      return;
+    }
+    const proceed = await this._confirm({
+      title: `Add ${blockIds.length} block${blockIds.length !== 1 ? 's' : ''} to ${targetDistrictId}?`,
+      message: 'Blocks already in another district will be moved here.',
+      confirmText: 'Add',
+      confirmVariant: 'primary',
+    });
+    if (!proceed) return;
+
+    const tasks = blockIds.map((bid) =>
+      this.api
+        .addBlockToDistrict(targetDistrictId, bid)
+        .then((resp: any) => ({ bid, resp, err: null }))
+        .catch((err: any) => ({ bid, resp: null, err }))
+    );
+    const results = await Promise.all(tasks);
+    const failed = results.filter((r) => r.err);
+    if (failed.length === 0) {
+      showToast(
+        `Added ${blockIds.length} block${blockIds.length !== 1 ? 's' : ''} to ${targetDistrictId}`,
+        'success',
+        3000
+      );
+    } else {
+      showToast(
+        `Added ${results.length - failed.length}, ${failed.length} failed`,
+        'warning',
+        5000
+      );
+    }
+    await this._afterMutation();
+    await this.editor.powerDistrictHandler?.showDetail(targetDistrictId);
   }
 
   async _removeSelectionFromBlocks(): Promise<void> {

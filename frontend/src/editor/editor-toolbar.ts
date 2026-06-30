@@ -89,6 +89,19 @@ export class ToolbarHandler {
       this.editor.host?.refreshNetwork();
     }
 
+    // Auto-toggle the power-district color overlay with the assign tool. It also
+    // stays on while a power-district panel is open (those set it themselves), so
+    // leaving the assign tool clears it only when no such panel is open.
+    const isPowerTool = newTool === 'power-district-assign';
+    const wasPowerTool = oldTool === 'power-district-assign';
+    if (isPowerTool !== wasPowerTool) {
+      const panelOpen =
+        this.editor._currentEditorType === 'power-district-list' ||
+        this.editor._currentEditorType === 'power-district-detail';
+      this.editor.renderer.showPowerDistrictColors = isPowerTool || panelOpen;
+      this.editor.renderer.requestRedraw({ world: true, live: true, reason: 'power-district-layer' });
+    }
+
     if (contribution?.kind.type === 'mode') {
       // enterMode sets the active tool via _setSelectedTool(mode.toolName).
       await this.editor.enterMode(contribution.kind.factory());

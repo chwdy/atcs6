@@ -47,6 +47,7 @@ const GROUP_ICONS: Record<string, string> = {
   Path: 'ti ti-route',
   Train: 'ti ti-train',
   Route: 'ti ti-map-2',
+  Power: 'ti ti-bolt',
 };
 
 export interface RenderToolbarOptions {

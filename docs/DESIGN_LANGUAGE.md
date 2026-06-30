@@ -554,9 +554,10 @@ ghost too — see §11 "Action buttons inside a card go flat."
 
 ### Tool button (icon grid tile)
 
-A specialised flat ghost for the icon grid in the left tool sidebar. Used
-when the page needs a dense, scannable palette of single-glyph tools
-rather than a labelled control row.
+A specialised flat ghost for the dense, single-glyph icon-grid of tools
+inside a tool group's flyout popover. The left tool rail itself is the
+labelled `.tool-launch` capsule; a group capsule on the rail opens a flyout
+whose tools are these `.tool-btn` tiles rather than labelled control rows.
 
 ```css
 /* tile */
@@ -1910,10 +1911,15 @@ moving things, opaque fills that survive overlap.
 
 Pick the tier by liveness:
 
-- **Static identity** (platform, station) — quietest. Opaque dark fill +
-  thin neutral outline + white text. Size carries hierarchy within the tier
-  (station 9px / platform 7px). The two share chrome so they read as one
-  family at different scales.
+- **Static identity** — quietest, two forms:
+  - **Platform name** — stamped directly on the platform body bar: white
+    text, no box, no border, rotated to run along the bar and sized to the
+    bar thickness (≈ 7px at scale 1). The bar is its own label surface, so a
+    both-sides platform shows the name on both bars.
+  - **Station name** — a small chip (opaque dark fill + thin neutral outline
+    + white text, 9px) at the centre of the platform group. It slides to
+    clear space just outside the group when the centre would sit on a bar, so
+    it never covers a platform's on-bar name.
 - **Live identity** (train ID) — one tier up. Opaque dark base mixed with
   ~15% accent + thin accent border + white text. The train's motion is what
   reads as "alive"; the label just carries the categorical color, restrained.
@@ -1929,9 +1935,14 @@ in §12 "Color channels".
 
 ### Fills are opaque; color lives in the border
 
-**Permanent canvas labels use a near-opaque dark base** (alpha ≥ 0.85) so an
-overlapping label doesn't bleed through and read as visual mush. The
-categorical color comes from:
+The platform name has no fill of its own — it rides on the opaque platform
+body bar (the muted structural fill, not a state hue), which already blocks
+what's behind it. The rest of this rule is about the label *chips* (station,
+train).
+
+**Label chips use a near-opaque dark base** (alpha ≥ 0.85) so an overlapping
+chip doesn't bleed through and read as visual mush. The categorical color
+comes from:
 
 1. The **border** — saturated accent (`rgba(R, G, B, 0.9)`).
 2. A **subtle mix into the dark base** — e.g., the train label fill is
@@ -1949,16 +1960,15 @@ Concrete fills currently in use:
 
 | Label             | Fill                          |
 |-------------------|-------------------------------|
-| Platform default  | `rgba(15, 15, 18, 0.85)`      |
-| Platform hover    | `rgba(15, 15, 18, 0.92)`      |
 | Station default   | `rgba(15, 15, 18, 0.92)`      |
 | Station hover     | `rgba(50, 35, 5, 0.92)`       |
 | Train             | `rgba(32, 26, 50, 0.92)`      |
 
-References: `_drawLabel` in
+References: `_drawLabel` and `_placeLabel` in
 [renderer-stations.ts](../frontend/src/renderer/renderer-stations.ts); `drawTrainLabel`
-in [renderer-trains.ts](../frontend/src/renderer/renderer-trains.ts); `drawPlatformLabel`
-in [renderer-platforms.ts](../frontend/src/renderer/renderer-platforms.ts).
+in [renderer-trains.ts](../frontend/src/renderer/renderer-trains.ts);
+`drawPlatformNameOnBody` in
+[renderer-platforms.ts](../frontend/src/renderer/renderer-platforms.ts).
 
 ### Borders are screen-pixel-capped
 
@@ -1984,7 +1994,7 @@ highlight strokes (below).
 Draw order in [renderer.ts](../frontend/src/renderer/renderer.ts) `drawNetwork`:
 
 1. Track chassis + block colors (bottom)
-2. Platform bodies + platform labels (identity tier)
+2. Platform bodies + on-bar names (identity tier)
 3. **Station labels — default, non-hovered** (identity tier)
 4. Signals, debug overlays, block detail labels (state)
 5. Route overlays
@@ -2007,9 +2017,10 @@ hovered one.
 two stacked canvases (see [canvas.css](../static/css/layout/canvas.css)): a
 `#rail-world-canvas` (z-index 1, purely visual) painted by `_drawWorld` — track,
 blocks, platform bodies, signals, debug overlays, block-detail labels — and a
-`#rail-live-canvas` (z-index 2, owns the pointer) painted on top by `_drawLive`
-— the platform/station identity labels (which re-evaluate on every mousemove for
-hover), route overlays, trains + train labels, and the select overlay.
+`#rail-canvas` (z-index 2, owns the pointer) painted on top by `_drawLive`
+— the platform/station identity labels (the station chip re-evaluates on every
+mousemove for its hover state), route overlays, trains + train labels, and the
+select overlay.
 `drawNetwork` runs `_drawWorld` then `_drawLive`. Within-canvas order keeps the
 rule above (a train paints over a station name; the hovered label gets its top
 pass). The one consequence of the split: the interactive identity labels on the
@@ -2057,7 +2068,7 @@ into the registry right after placement:
 
 | Pushed by | Reads registry? | Tier label |
 |-----------|-----------------|------------|
-| Platform labels (first) | no | `'platform'` |
+| Platform names (first) | no | `'platform'` |
 | Station labels (second, non-hovered only) | no | `'station'` |
 | Train labels (third) | **yes** | `'train'` |
 
@@ -2087,11 +2098,15 @@ across frames.
   shift train placement on every cursor move, which is the wrong
   trade. The hover state is meant to win z-order; that's the documented
   exception.
-- **Station / platform label collision with each other.** Neither has
-  positional freedom (stations sit at platform centroid, platforms hug
-  their side), and their default positions rarely collide in current
-  layouts. If they did, the answer would be to give one of them
-  candidates, not to invent a fourth tier.
+- **Station chip over a platform name.** The platform name lives on the bar,
+  so the station chip — which anchors at the platform-group centre — would
+  cover the nearer bar's name whenever two platforms sit close together. The
+  fix gives the *station* chip the positional freedom: it keeps the centre
+  when that's clear of every bar, else slides to the nearest clear slot just
+  outside the group (`_placeLabel`, candidates = centre + four around the
+  group bounding box). The platform name has no candidates — the bar is a
+  fixed surface — so only one of the two needs to move. This is its own
+  geometry check, separate from the train-label registry above.
 
 References: `_drawLive` reset in [renderer.ts](../frontend/src/renderer/renderer.ts);
 `aabbOverlapArea` utility in the same file;

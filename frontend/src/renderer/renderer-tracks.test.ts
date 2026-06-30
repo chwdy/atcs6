@@ -242,6 +242,21 @@ describe('RendererTrackHandler.drawTileExtentHighlight', () => {
     expect(ctx.arc).toHaveBeenCalledWith(10, -5, 5, 0, Math.PI * 2);
   });
 
+  it('drawSwitchLockAt centres the dot on a crossover (multi-entry switch_points)', () => {
+    // A crossover connects every edge — its routes cross at the tile centre with
+    // no single trunk corner, so the dot anchors at (0,0), not a root corner.
+    const ctx = makeCtx();
+    const r = makeRenderer(ctx);
+    r.currentNetwork = { switches: { SW1: { locks: ['r1'] } } };
+    const crossover: Track = {
+      x: 1, y: 1, is_switch: true, switch_id: 'SW1',
+      switch_points: { E: ['S', 'W'], N: ['S', 'W'], S: ['E', 'N'], W: ['E', 'N'] },
+    };
+    new RendererTrackHandler(r).drawSwitchLockAt(crossover);
+    expect(ctx.translate).toHaveBeenCalledWith(10, 10);
+    expect(ctx.arc).toHaveBeenCalledWith(0, 0, 5, 0, Math.PI * 2);
+  });
+
   it('drawSwitchLockAt draws a brown dot when occupied, and brown wins over a lock', () => {
     const ctx = makeCtx();
     const r = makeRenderer(ctx);

@@ -618,7 +618,7 @@ class TrainMonitor {
             let typeLabel: string = el.type;
 
             if (el.type === 'station') {
-                icon = '🚉';
+                icon = '<i class="ti ti-building"></i>';
                 kindClass = 'kind-station';
                 typeLabel = totalLength > 0 ? `station · ${fmtLength.val}${fmtLength.unit}` : 'station';
             } else if (el.type === 'switch') {
@@ -626,7 +626,7 @@ class TrainMonitor {
                 kindClass = 'kind-switch';
                 typeLabel = el.position ? `switch · ${el.position}` : 'switch';
             } else if (el.type === 'signal') {
-                icon = '🚦';
+                icon = '<i class="ti ti-traffic-lights"></i>';
                 kindClass = `signal-${el.state || 'unknown'}`;
                 typeLabel = el.state ? `signal · ${el.state}` : 'signal';
             } else if (el.type === 'block') {

@@ -18,6 +18,7 @@ import {
 } from '../lib/constants';
 import { getBlockStateColor } from '../lib/helpers';
 import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
+import { districtColorCss } from '../lib/district-color';
 import type { TileExtentStyle } from './renderer-tracks';
 
 export interface EdgePoint {
@@ -144,6 +145,53 @@ export class RendererBlockHandler {
       const cx = this.gridToScreenX(track.x, track.y);
       const cy = this.gridToScreenY(track.x, track.y);
       const color = this.getBlockColor(track.block_section_id);
+
+      this.ctx.save();
+      this.ctx.translate(cx, cy);
+
+      const trackBits = track.track_bits || 0;
+      const segments = getActiveSegments(trackBits);
+      const edgePoints = this.renderer.trackHandler.getEdgePoints(halfTile);
+
+      for (const [e1, e2] of segments) {
+        const start = edgePoints[e1];
+        const end = edgePoints[e2];
+        if (start && end) {
+          this.renderer.trackHandler.drawGridSegment(start, end, DEBUG_BLOCK_WIDTH * this.scale, e1, e2, color);
+        }
+      }
+
+      this.ctx.restore();
+    }
+  }
+
+  /**
+   * Color each block by its power district (design_new.md "Power district").
+   * Members of a stored district share that district's deterministic color; an
+   * ungrouped block — its own single-block feed — reads faint grey. Same band
+   * geometry as drawBlockIdColors, only the color source differs.
+   */
+  drawPowerDistrictColors(
+    tracks: BlockTrack[],
+    districts: Array<{ district_id: string; block_ids?: string[] }> | undefined,
+  ): void {
+    const blockToDistrict: Record<string, string> = {};
+    for (const d of districts || []) {
+      for (const bid of d.block_ids || []) blockToDistrict[bid] = d.district_id;
+    }
+
+    const tileSize = this.gridSize * this.scale;
+    const halfTile = tileSize / 2;
+    const UNGROUPED = 'hsla(0, 0%, 55%, 0.22)';
+
+    for (const track of tracks) {
+      if (!track.block_section_id) continue;
+
+      const districtId = blockToDistrict[track.block_section_id];
+      const color = districtId ? districtColorCss(districtId) : UNGROUPED;
+
+      const cx = this.gridToScreenX(track.x, track.y);
+      const cy = this.gridToScreenY(track.x, track.y);
 
       this.ctx.save();
       this.ctx.translate(cx, cy);

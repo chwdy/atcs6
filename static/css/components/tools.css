@@ -98,11 +98,14 @@
     color: var(--text-primary);
 }
 
-/* Active tool, or a group that owns the active tool — a solid filled tile. */
+/* Active tool, or a group that owns the active tool. Ghost + accent-tint
+   (DESIGN_LANGUAGE §3: panels never use a solid-filled button — solid accent is
+   reserved for top-level page CTAs). Mirrors the `.tool-btn.active` flyout tile;
+   the accent border is the second, non-hue channel (§14). */
 .tool-launch.active {
-    background-color: var(--accent-color);
+    background-color: rgba(var(--accent-rgb), 0.18);
     border-color: var(--accent-color);
-    color: #fff;
+    color: var(--accent-hover);
 }
 
 .tool-launch-icon {

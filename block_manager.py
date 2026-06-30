@@ -25,7 +25,7 @@ from datetime import datetime
 from typing import Any, Optional, Dict, List, Mapping, Set, Tuple, TYPE_CHECKING
 
 from block import Block, BlockState, CautionState
-from notification_center import Severity
+from notification_center import EventKind, Severity
 from runtime_payloads import (
     FatalPhysicalEntryConflict,
     FatalConflictKind,
@@ -203,13 +203,18 @@ class BlockManager:
         self._blocks_pending_deenergize.add(block_id)
 
     def take_blocks_to_deenergize(self) -> List[str]:
-        """Return and clear the block ids queued this tick that are *still*
-        unheld (no occupant and no reservation), so the caller drives them to 0V.
+        """Return and clear the block ids queued this tick whose whole power
+        district is *still* unheld, so the caller drives them to 0V.
 
-        Re-checking the live block fields here — not the queued snapshot — means
-        a block vacated and then re-reserved within the same tick stays
-        energized. This is the event-driven replacement for the former
-        all-blocks de-energize sweep.
+        A power district shares one feed, so it stays energized while any of its
+        blocks is held — occupied or reserved by any train — and is powered off
+        only when no train holds it (design_new.md "Power"). A queued block is
+        therefore returned for zeroing only when its entire district is unheld;
+        for an ungrouped block the district is the block itself, so this reduces
+        to the block's own occupancy/reservation. Re-checking the live block
+        fields here — not the queued snapshot — means a district vacated and
+        then re-held within the same tick stays energized. This is the
+        event-driven replacement for the former all-blocks de-energize sweep.
         """
         pending = self._blocks_pending_deenergize
         self._blocks_pending_deenergize = set()
@@ -218,7 +223,7 @@ class BlockManager:
             block = self._block_registry.get(block_id)
             if block is None:
                 continue
-            if block.occupied_by is None and block.reserved_for_train is None:
+            if not self._power_district_is_held(block_id):
                 unheld.append(block_id)
         return unheld
 
@@ -381,6 +386,34 @@ class BlockManager:
                 return (other_id, other.reserved_for_train)
         return None
 
+    def _power_district_is_held(self, block_id: str) -> bool:
+        """True when any block in `block_id`'s power district is still held —
+        occupied or reserved by any train.
+
+        A power district stays energized while any member is held and is powered
+        off only when the whole district is unheld (design_new.md "Power"). For
+        an ungrouped (single-block) district, or when no network is wired, this
+        reduces to the block's own occupancy/reservation. Shares the canonical
+        `RailwayNetwork.district_block_ids(...)` lookup with the one-train-per-
+        district intrusion check.
+        """
+        network = self.network
+        district_blocks = (
+            network.district_block_ids(block_id)
+            if network is not None
+            else [block_id]
+        )
+        for member_id in district_blocks:
+            member = self._block_registry.get(member_id)
+            if member is None:
+                continue
+            if (
+                member.occupied_by is not None
+                or member.reserved_for_train is not None
+            ):
+                return True
+        return False
+
     def _emit_diagnostic(self, message: str, *, block_id: str, train_id: Optional[str] = None) -> None:
         """Emit a runtime diagnostic through `NotificationCenter`.
 
@@ -403,6 +436,39 @@ class BlockManager:
                 event_time=time.time(),
                 train_id=train_id,
                 payload={"message": message, "block_id": block_id},
+            )
+        except Exception:
+            pass
+
+    def _emit_event(
+        self, kind, *, block_id: str, train_id: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Emit an operational event-log notification through
+        `NotificationCenter` (design_new.md "Event log": the log records
+        `block_entered` / `block_vacated` among the operational kinds).
+
+        Best-effort, mirroring `_emit_diagnostic`: resolves the sink
+        defensively, no-ops when no `simulation_controller` /
+        `notification_center` is wired (early bootstrap / isolated unit
+        tests), and never raises into the caller. `block_id` always rides on
+        the payload; callers may add more fields (e.g. the vacate `exit_edge`).
+        """
+        sc = self.simulation_controller
+        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        if nc is None:
+            return
+        body: Dict[str, Any] = {"block_id": block_id}
+        if payload:
+            body.update(payload)
+        try:
+            nc.emit(
+                source="BlockManager",
+                kind=kind,
+                severity=Severity.INFO,
+                event_time=time.time(),
+                train_id=train_id,
+                payload=body,
             )
         except Exception:
             pass
@@ -599,6 +665,13 @@ class BlockManager:
             occupied.append(block_id)
             if prior != BlockState.OCCUPIED:
                 any_transition = True
+                # design_new.md "Event log": the train entered (occupied) a
+                # block. Emit once per real (FREE/RESERVED/CAUTION) -> OCCUPIED
+                # transition, not on an idempotent re-occupy of a block the
+                # train already holds.
+                self._emit_event(
+                    EventKind.BLOCK_ENTERED, block_id=block_id, train_id=train_id
+                )
 
         if not any_transition:
             return OccupyResult(outcome="idempotent_noop")
@@ -830,6 +903,14 @@ class BlockManager:
         block.occupied_by = None
         block.caution = CautionState(exit_edge=direction)
         self._mark_for_deenergize(block_id)
+        # design_new.md "Event log": the train vacated a block (tail cleared).
+        # Carries the exit edge so the log / replay can render direction.
+        self._emit_event(
+            EventKind.BLOCK_VACATED,
+            block_id=block_id,
+            train_id=train_id,
+            payload={"exit_edge": direction},
+        )
         self._record_history(
             block_id,
             "tail_vacated",

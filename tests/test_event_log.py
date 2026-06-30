@@ -82,3 +82,57 @@ def test_bootstrap_persists_operational_events(tmp_path):
     assert all(e.kind != "train_added" for e in events), (
         "train placement must use the canonical 'train_placed' kind"
     )
+
+
+class _SimWithNotifications:
+    """Minimal back-reference exposing only `notification_center`, which is
+    all `BlockManager._emit_event` resolves through."""
+
+    def __init__(self, nc):
+        self.notification_center = nc
+
+
+def test_block_manager_emits_block_entered_and_vacated():
+    """design_new.md "Event log": entering and vacating a block are
+    operational events. The *live* BlockManager — not just a hand-built
+    Notification — must emit BLOCK_ENTERED on a real occupation transition
+    and BLOCK_VACATED on a clean tail-vacate, with the exit edge on the
+    vacate payload."""
+    from block import Block
+    from block_manager import BlockManager
+
+    nc = NotificationCenter()
+    blocks = {"B1": Block("B1", ordered_tiles=[(0, 0, "W")])}
+    manager = BlockManager(blocks, simulation_controller=_SimWithNotifications(nc))
+
+    result = manager.occupy_blocks(["B1"], "T1")
+    assert bool(result)
+    entered = [n for n in nc.peek_recent(20) if n.kind == EventKind.BLOCK_ENTERED]
+    assert entered, "occupy_blocks must emit BLOCK_ENTERED"
+    assert entered[-1].payload.get("block_id") == "B1"
+    assert entered[-1].train_id == "T1"
+
+    ok = manager.on_block_tail_vacated("B1", "T1", "E")
+    assert ok is True
+    vacated = [n for n in nc.peek_recent(20) if n.kind == EventKind.BLOCK_VACATED]
+    assert vacated, "on_block_tail_vacated must emit BLOCK_VACATED"
+    assert vacated[-1].payload.get("block_id") == "B1"
+    assert vacated[-1].payload.get("exit_edge") == "E"
+
+
+def test_block_reoccupy_does_not_re_emit_block_entered():
+    """An idempotent re-occupy of a block the train already holds must NOT
+    emit a second BLOCK_ENTERED — the event fires only on a real transition
+    into OCCUPIED."""
+    from block import Block
+    from block_manager import BlockManager
+
+    nc = NotificationCenter()
+    blocks = {"B1": Block("B1", ordered_tiles=[(0, 0, "W")])}
+    manager = BlockManager(blocks, simulation_controller=_SimWithNotifications(nc))
+
+    manager.occupy_blocks(["B1"], "T1")
+    manager.occupy_blocks(["B1"], "T1")  # idempotent re-occupy
+
+    entered = [n for n in nc.peek_recent(20) if n.kind == EventKind.BLOCK_ENTERED]
+    assert len(entered) == 1

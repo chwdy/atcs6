@@ -2435,6 +2435,10 @@ class RouteExecutor:
         # index are list positions in `task_runs`, not `Route.tasks` indices, so
         # this loop targets the current walk's rows even after CIRCULAR /
         # ROUND_TRIP wrap-around.
+        matched_row_was_open = (
+            0 <= match_pos < len(exec_state.task_runs)
+            and exec_state.task_runs[match_pos].finished_at is None
+        )
         for pos in range(start_pos, match_pos + 1):
             if not (0 <= pos < len(exec_state.task_runs)):
                 continue
@@ -2452,6 +2456,18 @@ class RouteExecutor:
                 if task is None or task.task_kind != "waypoint":
                     continue
             self.advance_walk_position(exec_state, route, pos, event_time)
+        # ROUND_TRIP / CIRCULAR walks reflect or wrap at route ends by
+        # flipping `RouteRun.direction` so the next `_append_next_walk_task`
+        # appends the reflected walk-position. Every other advance site
+        # (dwell-complete, head-advance, covered-task advance) pairs the
+        # `advance_walk_position(...)` writer with this flip; the
+        # dispatcher-stop-completion path must too, or a ROUND_TRIP whose
+        # forward apex is a bare `stop` with no trailing dwell oscillates at
+        # the apex instead of reflecting (design_new.md:1281-1288, 1312).
+        # Guarded on the matched row having been open so an idempotent
+        # re-entry cannot double-flip the direction.
+        if matched_row_was_open:
+            self._advance_to_next_task(route, exec_state)
         # design_new.md "Event log": the train reached its stop target.
         from notification_center import EventKind
 

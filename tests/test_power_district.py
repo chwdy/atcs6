@@ -116,3 +116,80 @@ def test_no_intrusion_for_ungrouped_blocks():
     assert bm.occupy_block("BLK_A", "T1") is True
     assert bm.occupy_block("BLK_B", "T2") is True
     assert sim.failed == []
+
+
+# --- whole-district voltage energization (design_new.md "Power") -----------
+
+
+def _fwd(exit_edge="N"):
+    return ReservedBlockTraversal(exit_edge=exit_edge, block_direction="forward")
+
+
+def test_energized_set_expands_to_whole_district():
+    """A train holding one block of a multi-block district energizes the WHOLE
+    district, not only the held block (design_new.md "Power": because a district
+    shares one feed, the whole district carries the voltage)."""
+    from train import Train
+    from train_physics import TrainPhysics
+
+    net = _net_with_district()  # district D = {BLK_A, BLK_B}
+    train = Train(train_id="T1")
+    net.trains["T1"] = train
+    # T1 reserves BLK_A ahead; BLK_B is unheld but shares the district feed.
+    net.block_manager.reserve_blocks_for_path(
+        ["BLK_A"], "P1", "T1", directions={"BLK_A": _fwd()}
+    )
+    physics = TrainPhysics(train_id="T1", network=net)
+    assert physics._energized_blocks_for_train(train) == {"BLK_A", "BLK_B"}
+
+
+def test_energized_set_is_held_set_when_ungrouped():
+    """With no grouping, the energized set is exactly the held (occupied +
+    reserved-ahead) set — one feed per block, unchanged from legacy behavior."""
+    from train import Train
+    from train_physics import TrainPhysics
+
+    net = RailwayNetwork()
+    net.create_block("BLK_X", "X")  # ungrouped -> its own single-block district
+    train = Train(train_id="T1")
+    net.trains["T1"] = train
+    net.block_manager.reserve_blocks_for_path(
+        ["BLK_X"], "P1", "T1", directions={"BLK_X": _fwd()}
+    )
+    physics = TrainPhysics(train_id="T1", network=net)
+    assert physics._energized_blocks_for_train(train) == {"BLK_X"}
+
+
+# --- whole-district de-energize (take_blocks_to_deenergize) -----------------
+
+
+def test_deenergize_keeps_district_energized_while_a_member_is_held():
+    """A queued block whose district another member still holds is NOT zeroed —
+    the shared feed stays energized until the whole district is unheld."""
+    net = _net_with_district()  # D = {BLK_A, BLK_B}
+    bm = net.block_manager
+    bm.occupy_block("BLK_A", "T1")     # district D held via BLK_A
+    bm._mark_for_deenergize("BLK_B")   # BLK_B queued (e.g. its reservation released)
+    assert bm.take_blocks_to_deenergize() == []
+
+
+def test_deenergize_zeroes_blocks_once_whole_district_unheld():
+    """Once no block in the district is held, every queued district block is
+    returned for zeroing."""
+    net = _net_with_district()
+    bm = net.block_manager
+    bm.occupy_block("BLK_A", "T1")
+    bm.clear_block("BLK_A")            # district D now fully unheld
+    bm._mark_for_deenergize("BLK_A")
+    bm._mark_for_deenergize("BLK_B")
+    assert sorted(bm.take_blocks_to_deenergize()) == ["BLK_A", "BLK_B"]
+
+
+def test_deenergize_ungrouped_block_unchanged():
+    """Ungrouped blocks behave as before: a queued block with no own occupant
+    or reservation is zeroed (its district is just itself)."""
+    net = RailwayNetwork()
+    net.create_block("BLK_X", "X")
+    bm = net.block_manager
+    bm._mark_for_deenergize("BLK_X")
+    assert bm.take_blocks_to_deenergize() == ["BLK_X"]

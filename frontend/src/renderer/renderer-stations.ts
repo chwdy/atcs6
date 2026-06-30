@@ -204,46 +204,67 @@ export class RendererStationHandler {
     const boxH = 12 * s;
     this.ctx.restore();
 
-    // The station label sits AT the centroid so it visually anchors to
-    // the platform group's middle. We only allow tiny perturbations
-    // (half a tile) when the centroid lands directly on a platform body
-    // — the label is meant to be "between" the platforms, not on one.
-    const tileSize = this.gridSize * s;
-    const platformBodies = this.renderer.platformHandler?.getPlatformBodySegments?.() || [];
-    const step = tileSize * 0.5;
-    const candidates = [
-      { dx: 0, dy: 0 },   // centroid — strongly preferred
-      { dx: 0, dy: -step }, // small nudges if centroid sits on a body
-      { dx: 0, dy: step },
-      { dx: -step, dy: 0 },
-      { dx: step, dy: 0 },
-    ];
+    // The station chip anchors to the platform group's middle, but the
+    // platform names now sit ON the bars — so the chip must not land on a
+    // bar and cover that text. Keep the centroid when it is genuinely clear
+    // (platforms far apart); otherwise move the chip just outside the
+    // group's bounding box, to the clear side nearest the centroid.
+    const platformIds: Array<string | undefined> = Array.isArray(station.platform_ids)
+      ? station.platform_ids
+      : (station.platforms || []).map((pf) => pf.platform_id);
 
+    // Only platform BODIES count as obstacles; tracks are thin and a chip
+    // sitting on a track is acceptable. The bars carry the platform names,
+    // so clearing the bars also clears that text.
+    const allBodies = this.renderer.platformHandler?.getPlatformBodySegments?.() || [];
+
+    // Bounding box of THIS station's bars (screen coords) — the group we
+    // place the chip beside.
+    const bodySegs = this.renderer.platformHandler?._platformBodySegments || [];
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const body of bodySegs) {
+      if (!platformIds.includes(body.id)) continue;
+      for (const seg of body.segments) {
+        minX = Math.min(minX, seg.x1, seg.x2);
+        minY = Math.min(minY, seg.y1, seg.y2);
+        maxX = Math.max(maxX, seg.x1, seg.x2);
+        maxY = Math.max(maxY, seg.y1, seg.y2);
+      }
+    }
+    const haveBox = minX !== Infinity;
+    const gap = 6 * s;
+
+    // Centroid first (kept when clear), then just-outside-the-group slots.
+    const candidates = [{ x: cx, y: cy }];
+    if (haveBox) {
+      candidates.push(
+        { x: cx, y: minY - gap - boxH / 2 },  // above the group
+        { x: cx, y: maxY + gap + boxH / 2 },  // below the group
+        { x: minX - gap - boxW / 2, y: cy },  // left of the group
+        { x: maxX + gap + boxW / 2, y: cy },  // right of the group
+      );
+    }
+
+    const clearWanted = 2 * s;
     let bestX = cx, bestY = cy, bestScore = -Infinity;
     for (let i = 0; i < candidates.length; i++) {
-      const c = candidates[i];
-      const lx = cx + c.dx;
-      const ly = cy + c.dy;
-      const bx = lx - boxW / 2;
-      const by = ly - boxH / 2;
-      // Only platform BODIES count as obstacles; tracks are thin and
-      // the label sitting on a track is acceptable + matches user intent.
-      const dist = this.renderer.distRectToSegments(bx, by, boxW, boxH, platformBodies);
-      // Heavy preference for the centroid (i=0). Only nudge if the
-      // centroid badly overlaps a body (dist near 0).
-      const distScore = Math.min(dist, 12);
-      const centroidBias = i === 0 ? 8 : 0;
-      const score = distScore + centroidBias - i * 0.1;
+      const { x: lx, y: ly } = candidates[i];
+      const dist = this.renderer.distRectToSegments(
+        lx - boxW / 2, ly - boxH / 2, boxW, boxH, allBodies,
+      );
+      const clear = dist >= clearWanted;
+      // Centroid wins outright when clear. Otherwise the clear outside slot
+      // closest to the centroid wins; proximity breaks ties between slots.
+      const proximity = -Math.hypot(lx - cx, ly - cy) * 0.02;
+      const score = i === 0
+        ? (clear ? 1000 : dist)
+        : (clear ? 100 : dist) + proximity;
       if (score > bestScore) {
         bestScore = score;
         bestX = lx;
         bestY = ly;
       }
     }
-
-    const platformIds: Array<string | undefined> = Array.isArray(station.platform_ids)
-      ? station.platform_ids
-      : (station.platforms || []).map((pf) => pf.platform_id);
 
     return {
       stationId: station.station_id,

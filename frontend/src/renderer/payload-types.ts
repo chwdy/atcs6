@@ -29,6 +29,13 @@ export interface SwitchPayloadEntry {
   diverge_length_cm?: number;
 }
 
+/** A power district in the network payload: an id + name + member block ids. */
+export interface PowerDistrictPayloadEntry {
+  district_id: string;
+  name?: string;
+  block_ids?: string[];
+}
+
 /** The layout half: geometry + config the reusable component draws and edits. */
 export interface LayoutPayload {
   tracks?: Track[];
@@ -37,6 +44,7 @@ export interface LayoutPayload {
   stations?: Station[];
   switches?: Record<string, SwitchPayloadEntry | undefined>;
   tunnels?: TunnelPayloadEntry[];
+  power_districts?: PowerDistrictPayloadEntry[];
 }
 
 /** The simulation half: the runtime overlay the sim plugin draws on top. */

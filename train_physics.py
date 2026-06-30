@@ -1547,23 +1547,25 @@ class TrainPhysics:
         self._set_voltage_for_blocks(train, voltage)
 
     def _set_voltage_for_blocks(self, train: "Train", voltage: float) -> None:
-        """Energize every block this train holds at the same `track_voltage`.
+        """Energize every power district this train holds at the same
+        `track_voltage`.
 
         The held set is the train's occupied blocks plus its reserved-ahead
-        authority corridor (`Block.reserved_for_train`). Pre-energizing the
-        reserved corridor at the same voltage as the occupied blocks means the
-        loco crosses each block boundary without a power gap — the block it is
-        about to enter is already at running voltage rather than dead (see
-        design_new.md "Power", Block power-controller role). This method drives
-        only this train's held blocks; a block whose holder clears (tail vacate /
-        reservation release) is returned to 0V by SimulationController draining
+        authority corridor (`Block.reserved_for_train`). Because a power district
+        shares one feed, the *whole* district carries the voltage, not only the
+        held blocks (design_new.md "Power", Block power-controller role), so the
+        emission set is the held set expanded to each held block's full district
+        (`_energized_blocks_for_train`). Pre-energizing the reserved corridor at
+        the same voltage as the occupied blocks means the loco crosses each block
+        boundary without a power gap. A district whose holder clears (tail vacate
+        / reservation release) is returned to 0V by SimulationController draining
         `BlockManager.take_blocks_to_deenergize()` after every train has emitted.
         """
         power_controller = self._get_power_controller()
         if not power_controller:
             return
 
-        for block_id in self._held_blocks_for_train(train):
+        for block_id in self._energized_blocks_for_train(train):
             power_controller.set_block_voltage(block_id, voltage)
 
     def _held_blocks_for_train(self, train: "Train") -> Set[str]:
@@ -1589,6 +1591,28 @@ class TrainPhysics:
                 if getattr(block, "reserved_for_train", None) == tid:
                     held.add(block_id)
         return held
+
+    def _energized_blocks_for_train(self, train: "Train") -> Set[str]:
+        """Every block that carries this train's `track_voltage` this tick.
+
+        Per design_new.md "Power", Block power-controller role: the train drives
+        its one voltage onto every power district it holds, and because a
+        district shares one feed the whole district carries that voltage — not
+        only the held blocks. So this is the held set (`_held_blocks_for_train`:
+        occupied + reserved-ahead) expanded to each held block's full power
+        district through the canonical `RailwayNetwork.district_block_ids(...)`
+        lookup. With no grouping applied every block is its own single-block
+        district, so this is exactly the held set — the same blocks the runtime
+        drives today.
+        """
+        held = self._held_blocks_for_train(train)
+        district_lookup = getattr(self.network, "district_block_ids", None)
+        if district_lookup is None:
+            return held
+        energized: Set[str] = set()
+        for block_id in held:
+            energized.update(district_lookup(block_id))
+        return energized
 
     # =========================================================================
     # Track Geometry Helpers

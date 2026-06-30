@@ -82,6 +82,15 @@ export interface LayoutDataClient {
   addPlatformToStation(stationId: string, platformId: string, force?: boolean): Promise<any>;
   removePlatformFromStation(stationId: string, platformId: string): Promise<any>;
 
+  // --- Power districts ---
+  createPowerDistrict(data: unknown): Promise<any>;
+  listPowerDistricts(): Promise<any>;
+  getPowerDistrict(districtId: string): Promise<any>;
+  updatePowerDistrict(districtId: string, patch: unknown): Promise<any>;
+  deletePowerDistrict(districtId: string): Promise<any>;
+  addBlockToDistrict(districtId: string, blockId: string): Promise<any>;
+  removeBlockFromDistrict(districtId: string, blockId: string): Promise<any>;
+
   // --- Switches (geometry / config) ---
   getSwitches(): Promise<any>;
   getSwitch(switchId: string): Promise<any>;
