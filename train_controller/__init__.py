@@ -2194,160 +2194,13 @@ class TrainController:
     # -------------------------------------------------------------------------
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert controller state to dictionary for JSON serialization.
+        """Convert controller state to a JSON-serializable dict.
 
-        Live runtime state for JSON output (per design_new.md).
-        Persistent/configuration data lives on `Train.to_dict()`.
+        Delegates to ``train_controller.serialization.controller_to_dict``.
         """
-        # Helper to convert infinity to None for JSON serialization
-        def safe_float(value: float) -> Optional[float]:
-            if value == float("inf") or value == float("-inf"):
-                return None
-            return value
+        from train_controller.serialization import controller_to_dict
 
-        # Live snapshot of the derived lookahead (computed once for this dict)
-        live_lookahead = self._calculate_lookahead()
-
-        span_dict = self._span_to_dict()
-
-        return {
-            "train_id": self.train_id,
-            "power_on": self.power_on,
-            "eb_active": self.eb.active,
-            "pending_notifications": self.notifications.pending.copy(),
-            "cab": self.commands.cab,
-            "control_mode": self.commands.control_mode,
-            "manual_mode_type": self.manual.manual_mode_type,
-            "manual_power_percent": self.manual.manual_power_percent,
-            "travel_direction": self.travel_direction,
-            # Train facing (a `Direction` name) derived from (cab, current_span);
-            # replaces the removed `Train.facing_direction` on the wire so the
-            # client reads facing from the controller payload.
-            "facing_direction": (lambda d: d.name if d is not None else None)(
-                self._facing_direction()
-            ),
-            "state": self.ops.state.value,
-            "target_speed": self.target_speed,
-            "handle_position": self.ops.handle_position.value,
-            "ato_running": self.ato.running,
-            "ato_destination_block_id": self.path_projection.ato_destination_block_id,
-            "ato_path_id": self.path_projection.ato_path_id,
-            "assigned_path_id": self.path_projection.assigned_path_id,
-            "path_backed_run_active": self.path_projection.path_backed_run_active,
-            # Export the live received_path_plan using the canonical
-            # received_path_plan schema (design_new.md:1740, 2187): exactly
-            # path_id, resource_sequence, authority_end_block_id. Dispatcher-
-            # only requested-target / lifecycle / progress fields stay on the
-            # Path record and must not leak into the controller projection.
-            "received_path_plan": self.path_projection.received_path_plan_dict(),
-            "clearance_ahead_cm": safe_float(self.atc.clearance_ahead_cm),
-            "atc_speed_limit": safe_float(self.atc.speed_limit),
-            "current_block_speed_limit": safe_float(self.atc.current_block_speed_limit),
-            "speed_limit_reason": self.speed_limit_reason,
-            # Current physical span
-            "span": span_dict,
-            # Include lookahead for display (live computed here)
-            "lookahead": [
-                {
-                    "distance_cm": lp.distance_cm,
-                    "speed_limit_kmh": safe_float(lp.speed_limit_kmh),
-                    "block_id": lp.block_id,
-                    "signal_state": lp.signal_state.value if lp.signal_state else None,
-                    "station_id": lp.station_id,
-                    "is_path_end": lp.is_path_end,
-                }
-                for lp in live_lookahead
-            ],
-            # Include ATO info
-            "ato_info": {
-                "path_id": self.ato.info.path_id,
-                "destination_block_id": self.ato.info.destination_block_id,
-                "destination_station_name": self.ato.info.destination_station_name,
-                "path_heading": self.ato.info.path_heading,
-                "required_cab": self.ato.info.required_cab,
-            }
-            if self.ato.info
-            else None,
-            # Live speed and stopped predicate are controller-owned per
-            # design_new.md "Units contract".
-            "current_speed": float(getattr(self.physics_sync, "current_speed_kmh", 0.0) or 0.0),
-            "is_stopped": self.is_stopped(),
-            # Diagnostic: reason for current handle position
-            "handle_reason": self.ops.handle_reason,
-            # ATO ETA: integrates the operational_limit speed curve to the
-            # current target stop. None when no path/target/curves.
-            "time_to_target_sec": self._calculate_time_to_target_sec(),
-            # Model-scale factor (model cm/s per prototype km/h). Clients use
-            # this to convert lookahead distances (model cm) and prototype
-            # speeds (km/h) into ETA seconds when time_to_target_sec is None.
-            "speed_conversion_factor": get_speed_conversion_factor(),
-            # Run instance identifier — populated when a RouteRun is active.
-            # Composed as `${route_id}#${run_number}` so the cab display can
-            # tell apart multiple runs of the same route.
-            "route_run_id": (
-                f"{self.route_executor.execution_state_for(self.train_id).route_id}"
-                f"#{self.route_executor.execution_state_for(self.train_id).run_number}"
-                if self.route_executor is not None
-                and self.route_executor.execution_state_for(self.train_id) is not None
-                else None
-            ),
-            # UI projection: True while an operator route teardown (abort or
-            # deactivate) is latched but not yet consumed in Phase 3. The layout
-            # renderer tints the train light purple during this window. Excludes
-            # power_off (ends in OFF, not a route teardown).
-            "route_teardown_pending": (
-                self.route_hooks.phase_latches.is_route_teardown_pending()
-            ),
-            # Live "current path error" projection for the train panel badge
-            # and the Quick Route no-path toast. Surfaces the active
-            # RouteRun.last_error ONLY while the train currently has no live
-            # authority (path_backed_run_active is False). A successful
-            # acquisition clears last_error (RouteExecutor), and a live path
-            # suppresses it here, so this reflects a CURRENT inability to route
-            # rather than a stale historical error.
-            "path_error": (
-                (lambda es: (
-                    es.last_error.to_dict()
-                    if es is not None
-                    and getattr(es, "last_error", None) is not None
-                    and not self.path_projection.path_backed_run_active
-                    else None
-                ))(
-                    self.route_executor.execution_state_for(self.train_id)
-                    if self.route_executor is not None
-                    else None
-                )
-            ),
-        }
-
-    def _span_to_dict(self) -> Optional[Dict[str, Any]]:
-        """Serialize `current_span` into the live-position payload, or None."""
-        span = getattr(self.physics_sync, "current_span", None)
-        if span is None:
-            return None
-        return {
-            "end_a": {
-                "tile": list(span.end_a.tile),
-                "distance_cm": span.end_a.distance_cm,
-                "entry_edge": span.end_a.entry_edge,
-            },
-            "end_b": {
-                "tile": list(span.end_b.tile),
-                "distance_cm": span.end_b.distance_cm,
-                "entry_edge": span.end_b.entry_edge,
-            },
-            "occupied_tiles": [list(t) for t in span.occupied_tiles],
-            "occupied_blocks": list(span.occupied_blocks),
-            # leading_end is the cab-derived head end ("a"/"b"), or None when no
-            # cab is selected (a no-cab train has no designated head; the span
-            # itself carries no head/tail label per the design_new.md TrainSpan
-            # schema). Clients render dual end-markers when it is null.
-            "leading_end": (
-                None
-                if self.commands.cab is None
-                else ("a" if self._head_end_label() == "end_a" else "b")
-            ),
-        }
+        return controller_to_dict(self)
 
     def _calculate_time_to_target_sec(self) -> Optional[float]:
         """Estimate seconds until the train reaches its current ATO stop target.
@@ -2592,46 +2445,10 @@ class TrainController:
     def from_dict(
         cls, data: Dict[str, Any], network: "RailwayNetwork"
     ) -> "TrainController":
-        """Reconstruct from dictionary after deserialization."""
-        handle_str = data.get("handle_position", "N")
-        try:
-            handle = HandlePosition(handle_str)
-        except ValueError:
-            handle = HandlePosition.N
+        """Reconstruct from a dict; delegates to serialization.controller_from_dict."""
+        from train_controller.serialization import controller_from_dict
 
-        state_str = data.get("state", "off")
-        try:
-            state = TrainState(state_str)
-        except ValueError:
-            state = TrainState.OFF
-
-        # Per design_new.md, travel_direction / target_speed / speed_limit_reason
-        # / ato_destination_block_id / ato_path_id are derived properties; we
-        # do not seed them on construction. ato_destination_block_id / ato_path_id
-        # come back through `received_path_plan` once a path is registered with
-        # the dispatcher.
-        controller = cls(
-            train_id=data["train_id"],
-            network=network,
-            ato_running=data.get("ato_running", False),
-            # path_backed_run_active is now a derived @property; no
-            # constructor arg accepted. Any persisted value is ignored
-            # because the property recomputes from path/route context.
-        )
-        # `state` and `handle_position` live on the `OperationalStateMachine`
-        # sub-module; restore after construction.
-        controller.ops.state = state
-        controller.ops.handle_position = handle
-        # Sub-module fields are created in `__post_init__`; restore
-        # persisted values after construction.
-        controller.eb.active = data.get("eb_active", False)
-        controller.manual.manual_mode_type = data.get("manual_mode_type", "simulation")
-        controller.manual.manual_power_percent = int(
-            data.get("manual_power_percent", 0) or 0
-        )
-        controller.commands.cab = data.get("cab")
-        controller.commands.control_mode = data.get("control_mode", "ato")
-        return controller
+        return controller_from_dict(data, network)
 
 
 # =============================================================================
