@@ -383,24 +383,6 @@ class RailwayNetwork:
             return None
         return self.tracks.get((tunnel_far[0], tunnel_far[1]))
 
-    def _get_neighbor_coords(
-        self, x: int, y: int, edge: str
-    ) -> Optional[Tuple[int, int]]:
-        """Get neighbor coordinates in the specified direction.
-
-        Args:
-            x, y: Current tile coordinates
-            edge: Direction to look ('N', 'E', 'S', 'W')
-
-        Returns:
-            (nx, ny) tuple if valid direction, None otherwise
-        """
-        if edge not in _EDGE_OFFSETS:
-            return None
-
-        dx, dy = _EDGE_OFFSETS[edge]
-        return (x + dx, y + dy)
-
     def get_connection_edges(
         self, tile_a: Tuple[int, int], tile_b: Tuple[int, int]
     ) -> Optional[Tuple[str, str]]:
@@ -741,9 +723,7 @@ class RailwayNetwork:
         # grid neighbour exists.
         self._sweep_stale_tunnels()
 
-        # N=Y+, E=X+, S=Y-, W=X-
-        offsets = {"N": (0, 1), "E": (1, 0), "S": (0, -1), "W": (-1, 0)}
-        for edge, (dx, dy) in offsets.items():
+        for edge, (dx, dy) in _EDGE_OFFSETS.items():
             neighbor_key = (x + dx, y + dy)
             if neighbor_key in self.tracks:
                 self.propagate_from_tile(x + dx, y + dy)
@@ -818,17 +798,15 @@ class RailwayNetwork:
         and the neighbor has the opposite edge pointing back.
         """
         neighbors = []
-        edge_offsets = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
-        opposite_edge = {"N": "S", "S": "N", "E": "W", "W": "E"}
 
         for edge in sorted(track.edges):
-            if edge not in edge_offsets:
+            if edge not in _EDGE_OFFSETS:
                 continue
-            dx, dy = edge_offsets[edge]
+            dx, dy = _EDGE_OFFSETS[edge]
             neighbor_pos = (track.x + dx, track.y + dy)
             neighbor = self.get_track(*neighbor_pos)
             if neighbor:
-                opp = opposite_edge[edge]
+                opp = _OPPOSITE_EDGE[edge]
                 if opp in neighbor.edges:
                     neighbors.append(neighbor_pos)
         return neighbors
@@ -1332,8 +1310,7 @@ class RailwayNetwork:
 
     def _get_neighbor_coords(self, x: int, y: int, edge: str) -> Tuple[int, int]:
         """Get coordinates of neighbor tile in given direction."""
-        offsets = {"N": (0, 1), "E": (1, 0), "S": (0, -1), "W": (-1, 0)}
-        dx, dy = offsets.get(edge, (0, 0))
+        dx, dy = _EDGE_OFFSETS.get(edge, (0, 0))
         return (x + dx, y + dy)
 
     def _calculate_occupied_tiles(
@@ -1369,7 +1346,6 @@ class RailwayNetwork:
         Raises:
             ValueError: If train is too long for available track
         """
-        OPPOSITE_EDGE = {"N": "S", "E": "W", "S": "N", "W": "E"}
         DIR_TO_EDGE = {
             Direction.NORTH: "N",
             Direction.SOUTH: "S",
@@ -1385,7 +1361,7 @@ class RailwayNetwork:
                 if pdir and i <= path_index:
                     # Exit direction -> entry is opposite
                     exit_edge = DIR_TO_EDGE.get(pdir, "N")
-                    entry_edge = OPPOSITE_EDGE.get(exit_edge, "S")
+                    entry_edge = _OPPOSITE_EDGE.get(exit_edge, "S")
                     path_lookup[(px, py)] = entry_edge
 
         occupied = []
@@ -1426,7 +1402,7 @@ class RailwayNetwork:
             prev_coords = (prev_track.x, prev_track.y)
 
             # Check connectivity
-            opposite_edge = OPPOSITE_EDGE[backward_edge]
+            opposite_edge = _OPPOSITE_EDGE[backward_edge]
             current_track = self.get_track(*current_tile)
             if not (
                 backward_edge in current_track.edges
