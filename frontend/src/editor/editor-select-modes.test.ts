@@ -41,9 +41,9 @@ function makeSelectEditor(overrides: any = {}): any {
       setBoxSelectRect: vi.fn(),
       setLassoPath: vi.fn(),
       requestRedraw: vi.fn(),
-      setReachableHighlights: vi.fn(),
       ...rendererOverrides,
     },
+    highlighter: { show: vi.fn(), clear: vi.fn() },
     ...rest,
   };
 }
@@ -136,7 +136,10 @@ describe('trace-select onClick', () => {
 
     expect(handled).toBe(true);
     expect(ed.traceSelectState.firstPoint).toEqual({ x: 2, y: 3 });
-    expect(ed.renderer.setReachableHighlights).toHaveBeenCalled();
+    expect(ed.highlighter.show).toHaveBeenCalledWith(
+      { keys: expect.any(Set) },
+      { channel: 'reachable' },
+    );
   });
 
   it('a click off any track sets no anchor', () => {
@@ -147,7 +150,7 @@ describe('trace-select onClick', () => {
 
     expect(handled).toBe(true);
     expect(ed.traceSelectState.firstPoint).toBeNull();
-    expect(ed.renderer.setReachableHighlights).not.toHaveBeenCalled();
+    expect(ed.highlighter.show).not.toHaveBeenCalled();
   });
 });
 

@@ -167,13 +167,16 @@ export class LayoutHighlighter {
     }
   }
 
-  /** Clear one channel, or — with no argument — every persistent channel. The
-   *  `locate` channel is self-expiring, so it has nothing to clear. */
-  clear(channel?: HighlightChannel): void {
+  /** Clear one channel, several channels, or — with no argument — every
+   *  persistent channel. The `locate` channel is self-expiring, so it has
+   *  nothing to clear. */
+  clear(channel?: HighlightChannel | HighlightChannel[]): void {
     const r = this.renderer;
     if (!r) return;
     const targets: HighlightChannel[] = channel
-      ? [channel]
+      ? Array.isArray(channel)
+        ? channel
+        : [channel]
       : ['selection', 'peek', 'reachable', 'path', 'pair'];
     for (const c of targets) {
       switch (c) {

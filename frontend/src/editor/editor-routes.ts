@@ -19,7 +19,6 @@ export class RouteEditorHandler {
   currentRoute: any;
   currentRouteStatus: any;
   viabilityResults: Map<number, any>;
-  locationHighlightTimeout: ReturnType<typeof setTimeout> | null;
   _waypointReachablePositions: Set<string> | null;
   _assignForce: boolean;
   _assignTileTrainMap: Map<string, any> | null;
@@ -39,7 +38,6 @@ export class RouteEditorHandler {
     this.currentRoute = null;
     this.currentRouteStatus = null;
     this.viabilityResults = new Map(); // row index -> viability result
-    this.locationHighlightTimeout = null;
     this._waypointReachablePositions = null;
     this._assignForce = false;
     this._assignTileTrainMap = null;
@@ -1171,32 +1169,15 @@ export class RouteEditorHandler {
     return positions;
   }
 
-  _applyHighlight(positions: Set<string>, autoClearMs = 0): void {
-    if (this.renderer.setReachableHighlights) {
-      this.renderer.setReachableHighlights(positions);
-    }
+  _applyHighlight(positions: Set<string>): void {
+    this.editor.highlighter.show({ keys: positions }, { channel: 'reachable' });
     if (this.cachedNetwork) {
       this.renderer.requestRedraw();
-    }
-    if (this.locationHighlightTimeout) {
-      clearTimeout(this.locationHighlightTimeout);
-      this.locationHighlightTimeout = null;
-    }
-    if (autoClearMs > 0) {
-      this.locationHighlightTimeout = setTimeout(() => {
-        this.clearLocationHighlight();
-      }, autoClearMs);
     }
   }
 
   clearLocationHighlight(): void {
-    if (this.locationHighlightTimeout) {
-      clearTimeout(this.locationHighlightTimeout);
-      this.locationHighlightTimeout = null;
-    }
-    if (this.renderer.setReachableHighlights) {
-      this.renderer.setReachableHighlights(new Set());
-    }
+    this.editor.highlighter.clear('reachable');
     if (this.cachedNetwork) {
       this.renderer.requestRedraw();
     }
@@ -1230,7 +1211,7 @@ export class RouteEditorHandler {
 
     // A task locate is its own momentary flash (the `locate` channel), not a
     // reachable region — so it no longer wipes the persistent waypoint
-    // feasibility highlight, which keeps using setReachableHighlights below.
+    // feasibility highlight, which keeps using the `reachable` channel below.
     this.editor.highlighter.show({ keys: positions }, { channel: 'locate', durationMs: 5000 });
     this._setStatus(`Route Editor: Highlighting task ${index + 1} (${label})`);
   }

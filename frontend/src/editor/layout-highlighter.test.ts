@@ -173,6 +173,16 @@ describe('LayoutHighlighter — clear', () => {
     expect(r.clearPathHighlight).toHaveBeenCalled();
     expect(r.setSelectedTunnel).toHaveBeenCalledWith(null);
   });
+
+  it('clear([...]) clears exactly the listed channels (panel swap clears peek+pair)', () => {
+    r.inspectHighlightGroups = [{ keys: new Set(['1,1']) }];
+    hi.clear(['peek', 'pair']);
+    expect(r.setInspectHighlight).toHaveBeenCalledWith([]);
+    expect(r.setSelectedTunnel).toHaveBeenCalledWith(null);
+    expect(r.setReachableHighlights).not.toHaveBeenCalled();
+    expect(r.setBoxSelection).not.toHaveBeenCalled();
+    expect(r.clearPathHighlight).not.toHaveBeenCalled();
+  });
 });
 
 describe('LayoutHighlighter — reveal (camera)', () => {

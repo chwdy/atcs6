@@ -1,3 +1,5 @@
+import type { LayoutHighlighter } from './layout-highlighter';
+
 // Host interfaces for the editor handler cluster.
 //
 // Each editor-*.ts handler takes a back-reference to the Editor instance that
@@ -86,8 +88,10 @@ export interface SelectModesHost {
     setBoxSelectRect(rect: any): void;
     setLassoPath(path: any): void;
     requestRedraw(): void;
-    setReachableHighlights?(keys: Set<string>): void;
   };
+  // The unified highlighter — the trace tool's reachable cue and its committed
+  // selection outline both go through it.
+  highlighter: LayoutHighlighter;
   routeHandler?: {
     _resourceOptionsAtTile(gridPos: any, track: any): any[];
     getBlockPositionSet(id: any): Set<string>;

@@ -257,14 +257,12 @@ export class SelectModesHandler {
           // First endpoint: anchor it (yellow box-select) and light up every
           // track tile reachable from it (orange) so the operator can see which
           // tiles are valid second endpoints — the same "reachable" cue the
-          // Create / Extend Path tools paint via setReachableHighlights.
+          // Create / Extend Path tools paint via the highlighter's reachable channel.
           this.editor.traceSelectState.firstPoint = { x: gridPos.x, y: gridPos.y };
           this.editor.boxSelectState.selectedKeys.add(here);
           this.editor._applyBoxSelection(this.editor.boxSelectState.selectedKeys);
           const reachable = this._traceReachableTiles(this.editor.traceSelectState.firstPoint);
-          if (this.editor.renderer.setReachableHighlights) {
-            this.editor.renderer.setReachableHighlights(reachable);
-          }
+          this.editor.highlighter.show({ keys: reachable }, { channel: 'reachable' });
           this.editor.renderer.requestRedraw();
           setStatus(
             reachable.size === 0
@@ -279,9 +277,7 @@ export class SelectModesHandler {
         const path = this._traceTrackPath(a, { x: gridPos.x, y: gridPos.y });
         this.editor.traceSelectState.firstPoint = null;
         // The pick is resolved — drop the orange reachable overlay either way.
-        if (this.editor.renderer.setReachableHighlights) {
-          this.editor.renderer.setReachableHighlights(new Set());
-        }
+        this.editor.highlighter.clear('reachable');
         if (path && path.length) {
           for (const p of path) {
             // Every tile on the path is an existing track by construction.

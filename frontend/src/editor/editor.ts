@@ -319,9 +319,9 @@ export class Editor {
     if (this.renderer?.clearBlockDirectionFocus) {
       this.renderer.clearBlockDirectionFocus();
     }
-    this.highlighter.clear('pair');
-    // A new panel means the old panel's inspect peek highlight is stale.
-    this.clearInspectHighlight();
+    // A new panel makes the old panel's pointer highlights stale — the inspect
+    // peek and the selected tunnel pair both go.
+    this.highlighter.clear(['peek', 'pair']);
     // Opening any panel other than Add Train drops a lingering train-placement
     // ghost and exits the place-train mode, so neither can outlive its panel.
     if (title !== 'Add Train') {
@@ -356,8 +356,7 @@ export class Editor {
   hideSecondarySidebar(options: any = {}): any {
     // uiHandler.hideSecondarySidebar() takes no args (it ignored `options` in
     // the classic code too); keep the param on the facade for callers.
-    this.highlighter.clear('pair');
-    this.clearInspectHighlight();
+    this.highlighter.clear(['peek', 'pair']);
     return this.uiHandler.hideSecondarySidebar();
   }
 
@@ -892,9 +891,7 @@ export class Editor {
   // other mark-select tools the anchor is already null and the overlay empty.
   _resetTraceAnchor(): void {
     this.traceSelectState.firstPoint = null;
-    if (this.renderer.setReachableHighlights) {
-      this.renderer.setReachableHighlights(new Set());
-    }
+    this.highlighter.clear('reachable');
   }
 
   // Apply a single tile to the brush-select set.
@@ -1642,10 +1639,9 @@ export class Editor {
     });
   }
 
-  // Wrapper around renderer.setBoxSelection that also syncs the sidebar panel.
+  // Route the committed selection through the highlighter, then sync the panel.
   _applyBoxSelection(keys: any): void {
-    this.renderer.setBoxSelection(keys);
-    this.renderer.setSelectionGroups(this._buildSelectionOutlineGroups(keys));
+    this.highlighter.show({ keys }, { channel: 'selection' });
     this.multiSelectHandler?.update(this.boxSelectState.selectedKeys);
   }
 
