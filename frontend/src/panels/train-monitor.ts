@@ -5,6 +5,16 @@ import { stateManager } from '../lib/state-manager';
 import { showToast } from '../lib/toast';
 import { getBlockStateColor } from '../lib/helpers';
 
+// Signal-aspect dot colors for the lookahead chart — the single home for the
+// fixed hexes the chart paints. double_yellow shares yellow's fill and is
+// distinguished by an outer ring (see drawSignals).
+const SIGNAL_ASPECT_COLORS: Record<string, string> = {
+  green: '#04d361',
+  yellow: '#ffcd1e',
+  double_yellow: '#ffcd1e',
+  red: '#e83f5b',
+};
+
 interface CurvePoint {
     distance_cm: number;
     atc_limit: number;
@@ -153,7 +163,6 @@ class TrainMonitor {
     mouseX: number | null = null;
     mouseY: number | null = null;
     pinnedCm: number | null = null;
-    signalColors!: Record<string, string>;
 
     // View transform exposed by render() for the mouse/click handlers.
     _cmToX?: (cm: number) => number;
@@ -217,13 +226,6 @@ class TrainMonitor {
             this.render();
         });
         this.canvas.addEventListener('click', (e) => this.handleClick(e));
-        
-        this.signalColors = {
-            'green': '#04d361',
-            'yellow': '#ffcd1e',
-            'double_yellow': '#ffcd1e',
-            'red': '#e83f5b'
-        };
         
         this.closeBtn.addEventListener('click', () => this.hide());
         window.addEventListener('resize', () => this.resizeCanvas());
@@ -968,7 +970,7 @@ class TrainMonitor {
             if (x < 0 || x > this.canvas.width) return;
 
             const state = signal.state ? signal.state.toLowerCase() : null;
-            const color = this.signalColors[state ?? ''] || '#888';
+            const color = SIGNAL_ASPECT_COLORS[state ?? ''] || '#888';
 
             // Inline indicator just above the block bar (bar top sits at trackY-8).
             // Filled dot in state color; double-yellow gets an outer ring to
@@ -1362,7 +1364,7 @@ class TrainMonitor {
             this.ctx.lineTo(tipX - triangleSize, currentY - triangleSize/2);
             this.ctx.lineTo(tipX - triangleSize, currentY + triangleSize/2);
             this.ctx.closePath();
-            this.ctx.fillStyle = '#ffcd1e';  // Yellow
+            this.ctx.fillStyle = '#ffcd1e';  // Yellow (current-speed marker, not a signal aspect)
             this.ctx.fill();
             this.ctx.strokeStyle = '#fff';
             this.ctx.lineWidth = 1;
