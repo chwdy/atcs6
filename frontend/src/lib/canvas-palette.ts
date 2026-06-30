@@ -54,6 +54,10 @@ export interface CanvasPalette {
   trainBodyManual: string;
   trainBodyTeardown: string;
   trainBodyEb: string;
+  // highlight overlays driven by the LayoutHighlighter. Only the "locate" flash
+  // needs its own hue; peek/selection outlines take entity-chip colours and the
+  // reachable fill reuses `warning`, so they have no dedicated token here.
+  highlightLocate: string;
 }
 
 /** CSS custom property backing each palette key. */
@@ -90,6 +94,7 @@ const TOKENS: Record<keyof CanvasPalette, string> = {
   trainBodyManual: '--train-body-manual',
   trainBodyTeardown: '--train-body-teardown',
   trainBodyEb: '--train-body-eb',
+  highlightLocate: '--canvas-highlight-locate',
 };
 
 /** Dark-theme values, used when a token resolves empty (no stylesheet yet, or
@@ -128,6 +133,7 @@ const FALLBACK: CanvasPalette = {
   trainBodyManual: '#ffe066',
   trainBodyTeardown: '#c8a2ff',
   trainBodyEb: '#8257e5',
+  highlightLocate: '#ffd93d',
 };
 
 let cache: CanvasPalette | null = null;
@@ -171,6 +177,15 @@ export function withAlpha(color: string, alpha: number): string {
   const out = rgb ? `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})` : color;
   alphaCache.set(key, out);
   return out;
+}
+
+/** Return `color` as a bare `"r, g, b"` triple (no alpha, no wrapper). Accepts
+ *  the same inputs as withAlpha. Used where a sink composes its own
+ *  `rgba(${triple}, ${alpha})` — e.g. the renderer flash style. Falls back to
+ *  the input string when it cannot be parsed. */
+export function rgbTriple(color: string): string {
+  const rgb = parseRgb(color);
+  return rgb ? `${rgb.r}, ${rgb.g}, ${rgb.b}` : color;
 }
 
 function parseRgb(color: string): { r: number; g: number; b: number } | null {

@@ -60,6 +60,8 @@
     --train-body-manual: #ffe066;
     --train-body-teardown: #c8a2ff;
     --train-body-eb: #8257e5;
+    /* "Locate" flash from the LayoutHighlighter — a bright caution-yellow pulse. */
+    --canvas-highlight-locate: #ffd93d;
 }
 
 /* ── LIGHT — light paper, dark rails, status hues darkened to hold
@@ -91,6 +93,7 @@
     --train-body-manual: #b07d00;
     --train-body-teardown: #7c3aed;
     --train-body-eb: #7048cf;
+    --canvas-highlight-locate: #b07d00;
 }
 
 /* ── BLUEPRINT — deep blue ground, pale cyan-white linework, bright
@@ -122,4 +125,5 @@
     --train-body-manual: #ffe066;
     --train-body-teardown: #c8a2ff;
     --train-body-eb: #b07cff;
+    --canvas-highlight-locate: #ffe46b;
 }

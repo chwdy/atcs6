@@ -465,20 +465,9 @@ export class BlockEditorHandler {
         const x = parseInt(row.dataset.x ?? '', 10);
         const y = parseInt(row.dataset.y ?? '', 10);
         if (Number.isNaN(x) || Number.isNaN(y)) return;
-        const renderer = this.editor.renderer;
-        // Recenter the view on the tile (panToWorld handles the isometric math),
-        // then repaint the world layer at the new offset.
-        renderer?.camera?.panToWorld?.(x, y);
-        renderer?.requestRedraw?.({ world: true, live: true, reason: 'locate-tile' });
-        // Yellow "locate" highlight — not a danger flash (§17 keeps red for
-        // danger). highlightTrack lights the rail through the tile on top of the
-        // tile diamond, so both the boundary and the track section stand out.
-        renderer?.flashTiles?.([[x, y]], {
-          rgb: '255, 217, 61',
-          fillAlpha: 0.4,
-          durationMs: 900,
-          highlightTrack: true,
-        });
+        // Recenter on the tile and flash it, so a coordinate in the list maps to
+        // a place on the map. The locate flash's yellow comes from the theme.
+        this.editor.highlighter.show({ tiles: [[x, y]] }, { channel: 'locate', reveal: 'center' });
       });
     });
 

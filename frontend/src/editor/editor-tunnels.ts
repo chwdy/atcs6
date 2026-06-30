@@ -103,7 +103,7 @@ export class TunnelEditorHandler {
     this.editor.showSecondarySidebar('Tunnel', content);
     // Set the highlight AFTER showSecondarySidebar: opening any panel clears a
     // stale tunnel highlight (see Editor.showSecondarySidebar), so re-set ours.
-    this.editor.renderer?.setSelectedTunnel?.(pair);
+    this.editor.highlighter.show({ pair }, { channel: 'pair' });
 
     const deleteBtn = this.editor.$id('delete-tunnel-btn') as HTMLButtonElement | null;
     if (deleteBtn) {
@@ -144,7 +144,7 @@ export class TunnelEditorHandler {
 
   /** Drop the current tunnel highlight. */
   clearSelection(): void {
-    this.editor.renderer?.setSelectedTunnel?.(null);
+    this.editor.highlighter.clear('pair');
   }
 
   _endpointKey(ep: TunnelEndpoint): string {

@@ -1228,7 +1228,10 @@ export class RouteEditorHandler {
       return;
     }
 
-    this._applyHighlight(positions, 5000);
+    // A task locate is its own momentary flash (the `locate` channel), not a
+    // reachable region — so it no longer wipes the persistent waypoint
+    // feasibility highlight, which keeps using setReachableHighlights below.
+    this.editor.highlighter.show({ keys: positions }, { channel: 'locate', durationMs: 5000 });
     this._setStatus(`Route Editor: Highlighting task ${index + 1} (${label})`);
   }
 

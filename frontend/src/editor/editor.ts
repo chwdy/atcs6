@@ -47,6 +47,7 @@ import { MultiSelectActionsHandler } from './editor-multi-select';
 import { SelectModesHandler } from './editor-select-modes';
 import { DragBuildHandler } from './editor-drag-build';
 import { ToolbarHandler } from './editor-toolbar';
+import { LayoutHighlighter } from './layout-highlighter';
 import type { ToolContribution, ToolMode } from './tool-registry';
 
 /**
@@ -132,6 +133,9 @@ export class Editor {
   selectModesHandler: SelectModesHandler;
   dragBuildHandler: DragBuildHandler;
   toolbarHandler: ToolbarHandler;
+  // Single front door for "show me where this is on the layout" highlights.
+  // Wired here; call sites migrate onto it phase by phase.
+  highlighter: LayoutHighlighter;
   _plugins: EditorPlugin[] = [];
   // Tool id → contribution, rebuilt on every renderToolbar(). The delegated
   // toolbar click handler looks up the clicked tool here to dispatch by kind.
@@ -248,6 +252,17 @@ export class Editor {
     this.dragBuildHandler = new DragBuildHandler(this);
     this.toolbarHandler = new ToolbarHandler(this);
 
+    // Lazy `renderer` getter so highlighter construction never depends on field
+    // ordering. resolveEntityKeys is added when a call site needs entity
+    // targets; tiles/keys targets work without it.
+    const self = this;
+    this.highlighter = new LayoutHighlighter({
+      get renderer() {
+        return self.renderer;
+      },
+      buildOutlineGroups: (keys) => self._buildSelectionOutlineGroups(keys),
+    });
+
     this.setupEventListeners();
     // Keep the status-bar zoom % in sync with the camera no matter who changes
     // the scale (zoom buttons, wheel, Fit, initial framing). The camera emits
@@ -304,7 +319,7 @@ export class Editor {
     if (this.renderer?.clearBlockDirectionFocus) {
       this.renderer.clearBlockDirectionFocus();
     }
-    this.renderer?.setSelectedTunnel?.(null);
+    this.highlighter.clear('pair');
     // A new panel means the old panel's inspect peek highlight is stale.
     this.clearInspectHighlight();
     // Opening any panel other than Add Train drops a lingering train-placement
@@ -341,7 +356,7 @@ export class Editor {
   hideSecondarySidebar(options: any = {}): any {
     // uiHandler.hideSecondarySidebar() takes no args (it ignored `options` in
     // the classic code too); keep the param on the facade for callers.
-    this.renderer?.setSelectedTunnel?.(null);
+    this.highlighter.clear('pair');
     this.clearInspectHighlight();
     return this.uiHandler.hideSecondarySidebar();
   }
@@ -1641,13 +1656,11 @@ export class Editor {
   // cleared on any panel swap (showSecondarySidebar / hideSecondarySidebar) or
   // tool change, so a peek never outlives the moment.
   highlightInspectTiles(keys: Set<string>): void {
-    this.renderer.setInspectHighlight(this._buildSelectionOutlineGroups(keys));
+    this.highlighter.show({ keys }, { channel: 'peek' });
   }
 
   clearInspectHighlight(): void {
-    if (this.renderer.inspectHighlightGroups?.length) {
-      this.renderer.setInspectHighlight([]);
-    }
+    this.highlighter.clear('peek');
   }
 
   // Group the selected tiles by the entity each belongs to, so the renderer can
@@ -2899,23 +2912,11 @@ export class Editor {
    * connecting line is drawn by the renderer once the tunnel is selected.
    */
   _revealTunnelPartner(partner: { x: number; y: number; edge: string }): void {
-    const r = this.renderer;
-    const rect = r.canvas.getBoundingClientRect();
-    const sx = r.gridToScreenX(partner.x, partner.y);
-    const sy = r.gridToScreenY(partner.x, partner.y);
-    const margin = 60;
-    const onScreen =
-      sx >= margin && sx <= rect.width - margin && sy >= margin && sy <= rect.height - margin;
-    if (!onScreen) {
-      r.camera.panToWorld(partner.x, partner.y);
-    }
-    r.requestRedraw({ world: true, live: true, reason: 'tunnel-locate' });
-    // Yellow "locate" flash, matching the editor list "find on map" affordance.
-    r.flashTiles?.([[partner.x, partner.y]], {
-      rgb: '255, 217, 61',
-      fillAlpha: 0.4,
-      durationMs: 900,
-      highlightTrack: true,
-    });
+    // Pan to the partner only when it sits off-screen, then flash it — the same
+    // "find on map" locate the editor lists use.
+    this.highlighter.show(
+      { tiles: [[partner.x, partner.y]] },
+      { channel: 'locate', reveal: 'ifOffscreen' },
+    );
   }
 }
