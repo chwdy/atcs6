@@ -9,6 +9,7 @@
 // `updateCabButtons`; keep those names.
 
 import { stateManager } from '../lib/state-manager';
+import { formatSpeedReadout, formatATOEta, formatSimClock, middleTruncate } from './train-format';
 import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
 import { showConfirmModal, getTrackExits, getNeighborPosition, formatDuration, formatDistanceCm } from '../lib/helpers';
@@ -670,78 +671,6 @@ export class TrainEditorHandler {
     }
   }
 
-  /** Render the cab speed readout: "<big current>/<small max> km/h". */
-  _formatSpeedReadout(currentSpeed: any, maxSpeed: any): string {
-    const v = Number(currentSpeed) || 0;
-    const formatted = v < 10 ? v.toFixed(1) : Math.round(v).toString();
-    return `<span class="tc-speed-current">${formatted}</span><span class="tc-speed-max">/${maxSpeed}</span><span class="tc-speed-unit">km/h</span>`;
-  }
-
-  /** Format ATO ETA. Prefers controller.time_to_target_sec; falls back to a
-   *  coarse distance/speed estimate when the curve isn't published. */
-  _formatATOEta(controller: any, clearanceCm: any, currentSpeed: any): string {
-    const ato = controller?.time_to_target_sec;
-    let etaSec = null;
-    if (ato != null && Number.isFinite(ato) && ato > 0) {
-      etaSec = ato;
-    } else {
-      const convFactor = controller?.speed_conversion_factor;
-      const lookahead = controller?.lookahead ?? [];
-      const pathEnd =
-        lookahead.findLast?.((lp: any) => lp.is_path_end) ??
-        [...lookahead].reverse().find((lp: any) => lp.is_path_end);
-      const distCm = pathEnd?.distance_cm ?? clearanceCm;
-      const atoSpeed = controller?.target_speed;
-      const speed = atoSpeed != null && atoSpeed > 0.5 ? atoSpeed : currentSpeed;
-      if (distCm != null && Number.isFinite(distCm) && speed > 0.5 && convFactor > 0) {
-        etaSec = distCm / (speed * convFactor);
-      }
-    }
-    if (etaSec == null) return '—';
-
-    const duration = this._formatDuration(etaSec);
-    const simTime = stateManager?.simulationTime;
-    if (typeof simTime === 'number' && Number.isFinite(simTime)) {
-      const arrival = this._formatSimClock(simTime + etaSec);
-      return `${arrival} (${duration})`;
-    }
-    return duration;
-  }
-
-  _formatDuration(etaSec: number): string {
-    if (etaSec < 1) return '<1s';
-    if (etaSec < 60) return `${Math.round(etaSec)}s`;
-    const mins = Math.floor(etaSec / 60);
-    const secs = Math.round(etaSec % 60);
-    return `${mins}m ${secs}s`;
-  }
-
-  _formatSimClock(totalSec: number, { subsecond = false }: { subsecond?: boolean } = {}): string {
-    const t = Math.max(0, totalSec);
-    const h = Math.floor(t / 3600);
-    const m = Math.floor((t % 3600) / 60);
-    const s = Math.floor(t % 60);
-    const hh = String(h).padStart(2, '0');
-    const mm = String(m).padStart(2, '0');
-    const ss = String(s).padStart(2, '0');
-    if (subsecond) {
-      const ds = Math.floor((t % 1) * 10);
-      return `${hh}:${mm}:${ss}.${ds}`;
-    }
-    return `${hh}:${mm}:${ss}`;
-  }
-
-  /** Middle-ellipsis truncation. */
-  _middleTruncate(str: any, max: number): string {
-    if (!str) return '';
-    const s = String(str);
-    if (s.length <= max) return s;
-    const keep = max - 1; // reserve 1 char for the ellipsis
-    const head = Math.ceil(keep / 2);
-    const tail = Math.floor(keep / 2);
-    return `${s.slice(0, head)}…${s.slice(-tail)}`;
-  }
-
   initTrainsPanelHandlers(): void {
     const addBtn = document.getElementById('add-new-train-btn') as HTMLButtonElement | null;
     if (addBtn) {
@@ -919,7 +848,7 @@ export class TrainEditorHandler {
     const simTimeRaw = stateManager?.simulationTime;
     const simClockStr =
       typeof simTimeRaw === 'number' && Number.isFinite(simTimeRaw)
-        ? this._formatSimClock(simTimeRaw, { subsecond: true })
+        ? formatSimClock(simTimeRaw, { subsecond: true })
         : '—';
 
     const handleDescription =
@@ -942,7 +871,7 @@ export class TrainEditorHandler {
     const clearanceCm = controller?.clearance_ahead_cm ?? null;
     const distanceM =
       clearanceCm != null && Number.isFinite(clearanceCm) ? (clearanceCm / 100).toFixed(1) : '—';
-    const etaText = this._formatATOEta(controller, clearanceCm, currentSpeed);
+    const etaText = formatATOEta(controller, clearanceCm, currentSpeed);
 
     // Route metadata.
     const fullRunId = controller?.route_run_id || null;
@@ -954,10 +883,10 @@ export class TrainEditorHandler {
     const pathError = controller?.path_error || null;
     const requiredCab = controller?.ato_info?.required_cab || '—';
     const pathHeading = controller?.ato_info?.path_heading || '—';
-    const truncatedPath = pathName ? this._middleTruncate(pathName, 22) : '—';
+    const truncatedPath = pathName ? middleTruncate(pathName, 22) : '—';
 
     // Speed display — current value + max as a small "/N" suffix.
-    const speedHtml = this._formatSpeedReadout(currentSpeed, maxSpeed);
+    const speedHtml = formatSpeedReadout(currentSpeed, maxSpeed);
 
     // Speed-limit reason banner content (also seen in train monitor footer)
     const limitReason = controller?.speed_limit_reason || '';
@@ -980,7 +909,7 @@ export class TrainEditorHandler {
                         </div>
                         <div class="tc-field">
                             <dt class="tc-field-label">Run ID</dt>
-                            <dd class="tc-field-value" id="train-run-id-val" title="${runId || ''}">${runId ? this._middleTruncate(runId, 22) : '—'}</dd>
+                            <dd class="tc-field-value" id="train-run-id-val" title="${runId || ''}">${runId ? middleTruncate(runId, 22) : '—'}</dd>
                         </div>
                         <div class="tc-field">
                             <dt class="tc-field-label">Path</dt>
@@ -1578,7 +1507,7 @@ export class TrainEditorHandler {
       const panel = document.querySelector(`.tc-panel[data-train-id="${trainId}"]`);
       const simTimeEl = panel?.querySelector('#hmi-time');
       if (simTimeEl) {
-        simTimeEl.textContent = this._formatSimClock(simTime, { subsecond: true });
+        simTimeEl.textContent = formatSimClock(simTime, { subsecond: true });
       }
     });
 
@@ -1816,7 +1745,7 @@ export class TrainEditorHandler {
       const destinationDisplays = panel.querySelectorAll<HTMLElement>('.train-ato-destination-display');
       const resolvedPathId = controller.ato_info?.path_id || controller.assigned_path_id || null;
       if (pathDisplay) {
-        pathDisplay.textContent = resolvedPathId ? this._middleTruncate(resolvedPathId, 22) : '—';
+        pathDisplay.textContent = resolvedPathId ? middleTruncate(resolvedPathId, 22) : '—';
         pathDisplay.title = resolvedPathId || '';
       }
       if (destinationDisplays.length) {
@@ -1847,7 +1776,7 @@ export class TrainEditorHandler {
       const liveRunSuffix = fullRunId ? `#${fullRunId.split('#')[1] || ''}` : null;
       const planEl = panel.querySelector('#train-plan-id-val') as HTMLElement | null;
       if (planEl) {
-        planEl.textContent = livePlanId ? this._middleTruncate(livePlanId, 22) : '—';
+        planEl.textContent = livePlanId ? middleTruncate(livePlanId, 22) : '—';
         planEl.title = livePlanId || '';
       }
       const runEl = panel.querySelector('#train-run-id-val') as HTMLElement | null;
@@ -1925,7 +1854,7 @@ export class TrainEditorHandler {
           clearance != null && Number.isFinite(clearance) ? `${Math.round(clearance / 100)} m` : '—';
       }
       if (etaEl) {
-        const etaTextLive = this._formatATOEta(controller, clearance, liveSpeed);
+        const etaTextLive = formatATOEta(controller, clearance, liveSpeed);
         etaEl.textContent = etaTextLive && etaTextLive !== '—' ? `ETA ${etaTextLive}` : '';
       }
 
@@ -1983,7 +1912,7 @@ export class TrainEditorHandler {
         const simTime = stateManager?.simulationTime;
         simTimeEl.textContent =
           typeof simTime === 'number' && Number.isFinite(simTime)
-            ? this._formatSimClock(simTime, { subsecond: true })
+            ? formatSimClock(simTime, { subsecond: true })
             : '—';
       }
       const dwellRemEl = panel.querySelector('#hmi-dwell-remaining');
@@ -1997,7 +1926,7 @@ export class TrainEditorHandler {
           dwellRemEl.textContent = `${Math.ceil(remaining)}s left`;
           dwellRemEl.classList.remove('hidden');
           if (finishSec !== null) {
-            dwellUntilEl.textContent = `${this._formatSimClock(finishSec)} ←`;
+            dwellUntilEl.textContent = `${formatSimClock(finishSec)} ←`;
             dwellUntilEl.classList.remove('hidden');
           } else {
             dwellUntilEl.classList.add('hidden');
