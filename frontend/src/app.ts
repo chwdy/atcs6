@@ -19,6 +19,7 @@ import { TrainMonitor } from './panels/train-monitor';
 import { updateFatalBanner } from './panels/fatal-banner';
 import { startRestartReconnectFlow } from './ui/restart-flow';
 import { setupSettingsPanel } from './ui/settings-panel';
+import { setupHardwarePanel, refreshHardwarePanel } from './ui/hardware-panel';
 import { updateTrainDebugPanel as renderTrainDebugPanel, hideTrainDebugPanel as renderHideTrainDebugPanel } from './panels/train-debug-panel';
 import { updateTileDetails } from './panels/tile-debug-inspector';
 import { showConfirmModal, showFormModal } from './lib/helpers';
@@ -82,6 +83,7 @@ class App {
 
     this.setupDebugPanel();
     setupSettingsPanel(() => this.refreshNetwork());
+    setupHardwarePanel();
     this.setupViewControls();
     this.setupPanelToggles();
     this.refreshNetwork();
@@ -297,6 +299,17 @@ class App {
     if (settingsBtn) {
       settingsBtn.addEventListener('click', () => {
         this.openModal(settingsModal);
+      });
+    }
+
+    // Hardware setup modal. Reload the persisted config each open so it always
+    // reflects what is on disk; closing uses the generic modal machinery.
+    const hardwareBtn = document.getElementById('btn-hardware');
+    const hardwareModal = document.getElementById('hardware-modal');
+    if (hardwareBtn) {
+      hardwareBtn.addEventListener('click', () => {
+        this.openModal(hardwareModal);
+        void refreshHardwarePanel();
       });
     }
 

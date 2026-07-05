@@ -288,6 +288,38 @@ export class API implements LayoutDataClient, SimClient {
     return this._request('/health', {}, 'healthCheck');
   }
 
+  /**
+   * Read the persisted hardware backend selection (design_new.md "Power ->
+   * Hardware configuration"). Returns `{ config: {output_backend,
+   * occupancy_backend, device_target, device_port} }`.
+   */
+  async getHardwareConfig(): Promise<any> {
+    return this._request('/hardware/config', {}, 'getHardwareConfig');
+  }
+
+  /**
+   * Persist a new hardware backend selection. The server validates the merged
+   * configuration and writes it to the app-managed config file; it takes effect
+   * on the next session build (a server restart), not the running session. A
+   * rejected request (e.g. a real backend with no device target) throws with
+   * the server's error message.
+   */
+  async setHardwareConfig(config: {
+    output_backend: string;
+    occupancy_backend: string;
+    device_target: string | null;
+    device_port: string | null;
+  }): Promise<any> {
+    return this._request(
+      '/hardware/config',
+      {
+        method: 'PUT',
+        body: { config },
+      },
+      'setHardwareConfig'
+    );
+  }
+
   // === Block Management ===
 
   /** Get all blocks. */

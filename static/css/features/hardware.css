@@ -1,0 +1,90 @@
+/* Hardware Setup modal (#hardware-modal).
+ *
+ * Reuses the shared modal shell (components/modals.css), settings sections
+ * (settings-section / settings-section-title), rows (setting-row), and the
+ * canonical segmented control (.switch-group / .switch-btn, design-system.css).
+ * Only the modal-specific prose, the derived-mode status line, and the device
+ * reveal live here. Served raw — no build step.
+ */
+
+/* The `hidden` attribute must win over the display rules on .btn / .switch-group
+   / .setting-row so the device reveal and the Save↔Restart footer swap actually
+   hide. Scoped to this modal so it never affects display:none semantics
+   elsewhere. */
+#hardware-modal [hidden] {
+    display: none !important;
+}
+
+.hw-intro {
+    margin: 0 0 4px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+}
+
+.hw-intro strong {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+/* Per-control explanation under each segmented row. */
+.hw-hint {
+    margin: 8px 0 0;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--text-tertiary, var(--text-secondary));
+}
+
+/* Let the segmented control take the row's remaining width beside its label,
+   matching the selects in the Settings modal (.settings-select-fill). */
+#hardware-modal .setting-row .switch-group {
+    flex: 1;
+}
+
+/* Derived run-mode summary — the one line that tells the operator what the
+   current selection actually does. Neutral for sim; accent-tinted for real, the
+   notable "hardware is live" state (accent = active/selected per DESIGN_LANGUAGE
+   §3, not a fault, so never danger/red). */
+.hw-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+    padding: 10px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-dark);
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--text-secondary);
+}
+
+.hw-status-icon {
+    font-size: 15px;
+    line-height: 1;
+    flex-shrink: 0;
+    color: var(--text-secondary);
+}
+
+.hw-status.real {
+    border-color: rgba(var(--accent-rgb), 0.4);
+    background: rgba(var(--accent-rgb), 0.1);
+    color: var(--text-primary);
+}
+
+.hw-status.real .hw-status-icon {
+    color: var(--accent-hover);
+}
+
+.hw-status strong {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+/* Restart reminder, left-aligned in the footer opposite the action buttons. */
+.hw-restart-note {
+    margin-right: auto;
+    align-self: center;
+    font-size: 11px;
+    color: var(--warning-color, var(--text-secondary));
+}

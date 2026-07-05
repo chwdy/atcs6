@@ -2,6 +2,7 @@
 @import url('./base/themes.css');
 @import url('./base/layout-themes.css');
 @import url('./layout/shell.css');
+@import url('./layout/floating-window.css');
 @import url('./components/tools.css');
 @import url('./components/context-menu.css');
 @import url('./layout/canvas.css');
@@ -17,4 +18,5 @@
 @import url('./features/train-monitor.css');
 @import url('./features/diagnostics.css');
 @import url('./features/speed-profiles.css');
+@import url('./features/hardware.css');
 @import url('./base/motion.css');

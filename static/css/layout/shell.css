@@ -354,7 +354,7 @@ textarea {
    keeps the left edge, where the floating tool capsule overlays it, so the
    docked panel needs no margin to clear the capsule. Floating mode is
    fixed-positioned, so order has no effect there. */
-.secondary-sidebar:not(.secondary-sidebar--floating) {
+.secondary-sidebar:not(.floating-window) {
     order: 1;
 }
 
@@ -383,28 +383,22 @@ textarea {
 }
 
 /* Undocked: the whole inspector floats as one live, draggable window — same
-   panel and same single live editor, only its position changes. Drag by header;
-   the eight edge/corner handles (.secondary-sidebar-resizer) resize width and
-   height like a desktop window. The JS resize logic owns the width/height
-   clamps, so the docked min/max-width caps are lifted here. max-height caps the
-   un-resized (auto-height) panel to the viewport; once the height is dragged the
-   JS sets max-height: none inline so the explicit height governs. */
-.secondary-sidebar.secondary-sidebar--floating {
-    position: fixed;
-    z-index: 850;
+   panel and same single live editor, only its position changes. Chrome
+   (position/border/shadow/z-order/max-height/the eight edge-corner resize
+   handles) is the shared .floating-window class (layout/floating-window.css,
+   built by lib/window-manager.ts's FloatingWindow) — this only lifts the
+   docked width caps, since the JS resize logic owns width/height once
+   floating. */
+.secondary-sidebar.floating-window {
     min-width: 0;
     max-width: none;
-    max-height: 88vh;
-    border: 1px solid var(--border-color);
-    border-radius: var(--radius-md);
-    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
 }
 
-.secondary-sidebar.secondary-sidebar--floating .secondary-sidebar-header {
+.secondary-sidebar.floating-window .secondary-sidebar-header {
     cursor: move;
 }
 
-.secondary-sidebar.secondary-sidebar--floating .secondary-sidebar-content {
+.secondary-sidebar.floating-window .secondary-sidebar-content {
     overflow: auto;
 }
 
@@ -566,6 +560,15 @@ textarea {
     background: rgba(255, 255, 255, 0.02);
 }
 
+/* Drag-a-tab-out highlight — the strip being dragged over (a different
+   window's) while a cross-window tab drag (editor/tab-drag.ts) is in
+   flight. */
+.secondary-sidebar-tabs--drop-target {
+    outline: 2px solid var(--accent-color);
+    outline-offset: -2px;
+    background-color: rgba(var(--accent-rgb), 0.08);
+}
+
 /* Navigator: open tabs grouped by entity type (Trains, Blocks, …) so a busy
    working set reads as a type → instance tree, not one mixed flat strip. */
 .secondary-nav-group {
@@ -723,37 +726,45 @@ textarea {
     opacity: 1;
 }
 
-/* Floating-window resize handles — the undocked inspector behaves like a desktop
-   window: all four edges and corners resize it (width + height). The handles are
-   inert and hidden while docked; they only show when floating. Built once in JS
-   (setupInspectorFloatResize). The docked panel sits at a fixed width. */
-.secondary-sidebar-resizer {
-    display: none;
-    position: absolute;
-    z-index: 1001;
-    background-color: transparent;
-    transition: background-color 0.15s;
+/* Pop-out affordance — splits this one tab into its own floating window (a
+   second, independent tab group). Mirrors the pin/close buttons' footprint. */
+.secondary-tab-popout {
+    border: none;
+    background: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 0.66rem;
+    line-height: 1;
+    width: 12px;
+    height: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    flex-shrink: 0;
+    opacity: 0.6;
 }
 
-.secondary-sidebar--floating .secondary-sidebar-resizer {
-    display: block;
+.secondary-tab-popout:hover {
+    color: var(--accent-color);
+    opacity: 1;
 }
 
-.secondary-sidebar-resizer:hover {
-    background-color: rgba(var(--accent-rgb), 0.55);
+/* Follows the pointer during a cross-window tab drag (editor/tab-drag.ts) —
+   above everything, transient, same rationale as toasts (--z-toast). */
+.secondary-tab-drag-ghost {
+    position: fixed;
+    z-index: var(--z-toast);
+    pointer-events: none;
+    padding: 4px 10px;
+    background-color: var(--bg-panel);
+    border: 1px solid var(--accent-color);
+    border-radius: var(--control-radius-sm);
+    color: var(--text-primary);
+    font-size: 0.68rem;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+    opacity: 0.92;
 }
-
-/* Edges — thin strips inset from the corners so the corner handles win there. */
-.secondary-sidebar-resizer[data-resize-dir='n'] { top: 0; left: 12px; right: 12px; height: 6px; cursor: ns-resize; }
-.secondary-sidebar-resizer[data-resize-dir='s'] { bottom: 0; left: 12px; right: 12px; height: 6px; cursor: ns-resize; }
-.secondary-sidebar-resizer[data-resize-dir='e'] { top: 12px; bottom: 12px; right: 0; width: 6px; cursor: ew-resize; }
-.secondary-sidebar-resizer[data-resize-dir='w'] { top: 12px; bottom: 12px; left: 0; width: 6px; cursor: ew-resize; }
-
-/* Corners — sit above the edges so the diagonal cursor wins at each corner. */
-.secondary-sidebar-resizer[data-resize-dir='ne'] { top: 0; right: 0; width: 14px; height: 14px; cursor: nesw-resize; z-index: 1002; }
-.secondary-sidebar-resizer[data-resize-dir='nw'] { top: 0; left: 0; width: 14px; height: 14px; cursor: nwse-resize; z-index: 1002; }
-.secondary-sidebar-resizer[data-resize-dir='se'] { bottom: 0; right: 0; width: 14px; height: 14px; cursor: nwse-resize; z-index: 1002; }
-.secondary-sidebar-resizer[data-resize-dir='sw'] { bottom: 0; left: 0; width: 14px; height: 14px; cursor: nesw-resize; z-index: 1002; }
 
 /* Primary tool rail — a fixed-width capsule that floats over the canvas,
    vertically centred on the left, instead of a docked full-height column. It is
@@ -761,8 +772,9 @@ textarea {
    reclaim the full width behind it. `top/bottom:0 + margin:auto + height:fit-content`
    centres it vertically WITHOUT a transform — a transform would re-root the fixed
    `.tool-popover` flyout to the capsule and break its viewport positioning. The
-   capsule sits at the picker layer so its flyouts (fixed children, trapped in
-   this stacking context) render above the floating inspector (z 850). */
+   capsule sits at the picker layer (--z-picker, 1000) so its flyouts (fixed
+   children, trapped in this stacking context) render above every floating
+   window (the --z-window band, 900 + z-order — see lib/window-manager.ts). */
 .sidebar {
     position: absolute;
     left: 12px;

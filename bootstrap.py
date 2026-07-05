@@ -25,6 +25,8 @@ import importlib
 import os
 from types import ModuleType
 
+import hardware_config
+from enums import OperationMode
 from network import RailwayNetwork
 from notification_center import NotificationCenter
 from path_dispatcher import PathDispatcher
@@ -210,10 +212,34 @@ def bootstrap_runtime(
     # to keep the stream in memory only.
     if event_log_path:
         notification_center.enable_event_log(event_log_path)
+
+    # design_new.md "Power -> Hardware configuration": the hardware backend is
+    # chosen once when the operation session is built. Load the persisted
+    # selection from disk and resolve it to the interface overrides the session
+    # wires. `None` in a slot means "use the simulated default". A real backend
+    # whose driver is not present in this build raises
+    # HardwareBackendUnavailable; fall back to sim mode so the server still boots
+    # (the selection stays on disk, and takes effect once its driver lands).
+    hardware_config.load_from_disk()
+    hw_cfg = hardware_config.get_hardware_config()
+    try:
+        input_interface, block_output_interface, switch_output_interface = (
+            hardware_config.build_session_interfaces(hw_cfg)
+        )
+        operation_mode = hardware_config.derive_operation_mode(hw_cfg)
+    except hardware_config.HardwareBackendUnavailable as exc:
+        print(f"[bootstrap] {exc}; falling back to sim mode")
+        input_interface = block_output_interface = switch_output_interface = None
+        operation_mode = OperationMode.SIM
+
     sim_controller = SimulationController(
         network,
         path_dispatcher,
         notification_center=notification_center,
+        operation_mode=operation_mode,
+        input_interface=input_interface,
+        block_output_interface=block_output_interface,
+        switch_output_interface=switch_output_interface,
     )
     if sim_controller.power_controller:
         sim_controller.power_controller._sim_controller = sim_controller

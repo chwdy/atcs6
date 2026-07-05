@@ -1224,14 +1224,29 @@ class RouteExecutor:
 
         # Live-path target re-resolution invalidation (design_new.md:1716, 1735,
         # case `162a`): when a live path exists and a fresh resolve of the CURRENT
-        # walk-position now yields a different target than the path was built
-        # toward — e.g. a StationTarget re-resolving to a different platform — the
-        # already-acquired authority toward the old target is potentially stale.
-        # Latch a `revoked` cancel and wait for the ordinary Phase 3 cancel /
-        # replan flow instead of extending toward a different (block, direction);
-        # the same RouteRun is kept (this is NOT a structural Route.tasks edit).
-        # Normal waypoint-chaining advances to a fresh walk-position whose stored
-        # `resolved_target` is still None, so it never trips this check.
+        # walk-position now yields a different target BLOCK than the path was
+        # built toward — e.g. a StationTarget re-resolving to a different
+        # platform — the already-acquired authority toward the old block is
+        # potentially stale. Latch a `revoked` cancel and wait for the ordinary
+        # Phase 3 cancel / replan flow instead of extending toward a different
+        # block; the same RouteRun is kept (this is NOT a structural
+        # Route.tasks edit). Normal waypoint-chaining advances to a fresh
+        # walk-position whose stored `resolved_target` is still None, so it
+        # never trips this check.
+        #
+        # A direction-only change for the SAME block does not trip this check.
+        # A `task_direction == "either"` task resolves direction against the
+        # train's current span each time (design_new.md "RouteTask data"), so
+        # the resolved direction can legitimately differ from an earlier
+        # resolution purely because the train moved closer under its own live
+        # authority — the target block never changed, so the live path is not
+        # stale. Fall through and let `extend_path(...)` receive the freshly
+        # resolved direction. `extend_path(...)` still rejects a direction that
+        # would require reversing at the current authority end
+        # (`failure_kind = invalid_reverse`, design_new.md "Path extension"),
+        # and `_authority_acquisition_step` latches this same `revoked` cancel
+        # through that structural-extend-failure path, so an actually
+        # incompatible direction still gets cancelled and replanned.
         active_path_id = self._get_active_path_id(train_id)
         if active_path_id is not None and 0 <= projection.walk_position < len(
             exec_state.task_runs
@@ -1243,12 +1258,8 @@ class RouteExecutor:
             if (
                 stored_target is not None
                 and new_target is not None
-                and (
-                    stored_target.requested_destination_block_id
-                    != new_target.requested_destination_block_id
-                    or stored_target.requested_destination_direction
-                    != new_target.requested_destination_direction
-                )
+                and stored_target.requested_destination_block_id
+                != new_target.requested_destination_block_id
             ):
                 controller.route_hooks.phase_latches.set_path_cancel_request(
                     initiator="revoked",

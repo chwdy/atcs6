@@ -75,3 +75,66 @@ describe('_commitTrackBits — removing the last segment', () => {
     expect(selectElement).toHaveBeenCalledWith({ x: 3, y: 4 }); // resync revert
   });
 });
+
+// Regression: closing the home inspector while it is FLOATING must actually
+// hide the window. Its visibility in docked mode is the `.visible` class, but a
+// floating window is shown by the `.floating-window` class (position: fixed;
+// display: flex) which `.visible` does not gate — so hide must go through
+// FloatingWindow.setHidden (the `.floating-window--hidden` lever), and reopen
+// must clear it. The window-management refactor tested TabGroup.closeTab and
+// FloatingWindow.setHidden in isolation but never this empty→hide wiring for
+// the one dockable window, so a floating inspector's close/× left the frame on
+// screen.
+describe('home inspector hide/show routes through FloatingWindow.setHidden', () => {
+  // Minimal stand-ins for the two collaborators setupSecondarySidebar would
+  // build — enough surface for hide/showSecondarySidebar to run without a full
+  // DOM. The real classes are covered by window-manager / tab-group tests.
+  function makeUiHandler() {
+    const homeWindow = {
+      setHidden: vi.fn(),
+      isHidden: vi.fn(() => false),
+      isFloating: vi.fn(() => true),
+      getGeometry: vi.fn(() => ({ left: null, top: null, width: null, height: null })),
+    };
+    const homeTabGroup = {
+      cleanupPanelSubscriptions: vi.fn(),
+      clear: vi.fn(),
+      show: vi.fn(),
+      serialize: vi.fn(() => ({ pinned: false, activeTabId: null, tabs: [] })),
+    };
+    const editor = {
+      $id: vi.fn(() => null), // no DOM: the class-list block is skipped
+      renderer: null,
+      _currentEditorType: 'tile',
+      _currentEditorId: '0,0',
+      _activeTabGroupForRestore: null,
+    };
+    const handler = new EditorUIHandler(editor as any);
+    handler.homeWindow = homeWindow as any;
+    handler.homeTabGroup = homeTabGroup as any;
+    (handler as any).lastFocusedTabGroup = homeTabGroup; // canvas-driven default
+    return { handler, homeWindow, homeTabGroup, editor };
+  }
+
+  it('hideSecondarySidebar hides the floating window (setHidden(true))', async () => {
+    const { handler, homeWindow } = makeUiHandler();
+    await handler.hideSecondarySidebar();
+    expect(homeWindow.setHidden).toHaveBeenCalledWith(true);
+  });
+
+  it('showSecondarySidebar reveals a previously-hidden home window', () => {
+    const { handler, homeWindow, homeTabGroup } = makeUiHandler();
+    homeWindow.isHidden.mockReturnValue(true); // it was closed
+    handler.showSecondarySidebar('Tile Editor', '<div></div>');
+    expect(homeWindow.setHidden).toHaveBeenCalledWith(false);
+    expect(homeTabGroup.show).toHaveBeenCalledWith('Tile Editor', '<div></div>');
+  });
+
+  it('showSecondarySidebar does not re-focus an already-visible window', () => {
+    const { handler, homeWindow, homeTabGroup } = makeUiHandler();
+    homeWindow.isHidden.mockReturnValue(false); // already open
+    handler.showSecondarySidebar('Tile Editor', '<div></div>');
+    expect(homeWindow.setHidden).not.toHaveBeenCalled();
+    expect(homeTabGroup.show).toHaveBeenCalled();
+  });
+});

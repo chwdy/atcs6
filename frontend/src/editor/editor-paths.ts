@@ -552,7 +552,7 @@ export class PathEditorHandler {
     }
   }
 
-  /** Called by `editor-ui.cleanupSecondaryPanelSubscriptions` when the
+  /** Called by `TabGroup.cleanupPanelSubscriptions` (tab-group.ts) when the
    *  secondary sidebar hides or switches to a different panel. */
   _cleanup(): void {
     this._stopPathsListPoller();

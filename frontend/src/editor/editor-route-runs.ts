@@ -573,7 +573,7 @@ export class RouteRunEditorHandler {
 
   // ---- polling lifecycle ----
 
-  /** Called by `editor-ui.cleanupSecondaryPanelSubscriptions`
+  /** Called by `TabGroup.cleanupPanelSubscriptions` (tab-group.ts)
    *  when the secondary sidebar hides or switches to a different panel. */
   _cleanup(): void {
     this._stopPolling();

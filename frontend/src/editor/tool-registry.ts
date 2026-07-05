@@ -108,7 +108,6 @@ function buildRailButton(
   btn.type = 'button';
   btn.className = c.id === activeToolId ? 'tool-launch active' : 'tool-launch';
   btn.dataset.tool = c.id;
-  btn.title = c.title;
   const numEl = document.createElement('span');
   numEl.className = 'tool-launch-num';
   numEl.textContent = String(num);
@@ -136,7 +135,6 @@ function buildGroup(
   const trigger = document.createElement('button');
   trigger.type = 'button';
   trigger.className = 'tool-launch tool-group-btn';
-  trigger.title = group;
   trigger.setAttribute('aria-haspopup', 'true');
   trigger.setAttribute('aria-expanded', 'false');
   if (tools.some((t) => t.id === activeToolId)) trigger.classList.add('active');
@@ -173,7 +171,6 @@ function buildTile(c: ToolContribution, activeToolId: string): HTMLButtonElement
   btn.type = 'button';
   btn.className = c.id === activeToolId ? 'tool-btn active' : 'tool-btn';
   btn.dataset.tool = c.id;
-  btn.title = c.title;
   const icon = document.createElement('i');
   icon.className = `${c.icon} tool-icon`;
   btn.append(icon, ` ${c.label}`);

@@ -39,10 +39,10 @@
     --z-canvas-live: 2;
     --z-canvas-overlay: 3;
     --z-shell: 10;        /* sidebars, bottom dock, sticky panel toolbars */
+    --z-window: 900;      /* floating chrome windows — tab groups + diagnostics; below modals */
     --z-picker: 1000;     /* floating pickers, modal backdrops */
     --z-modal: 1100;      /* modal dialogs */
     --z-restart: 1200;    /* full-app restart overlay */
-    --z-inspector: 9000;  /* floating debug panels */
     --z-toast: 10000;     /* toasts — always on top */
 
     --font-main: 'Inter', sans-serif;

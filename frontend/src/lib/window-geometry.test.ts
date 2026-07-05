@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { computeFloatResize, type FloatRect } from './editor-ui';
+import { computeFloatResize, computeFitSize, type FloatRect } from './window-geometry';
 
 // The floating inspector starts at left 200, top 100, 350×400 — so its right
 // edge sits at 550 and its bottom at 500.
@@ -12,7 +12,7 @@ function resize(dir: string, dx: number, dy: number) {
   return computeFloatResize(dir, START, dx, dy, VIEWPORT, LIMITS);
 }
 
-describe('computeFloatResize — floating inspector edge/corner math', () => {
+describe('computeFloatResize — floating window edge/corner math', () => {
   it('SE corner grows width and height from a fixed left/top', () => {
     expect(resize('se', 100, 60)).toEqual({ width: 450, height: 460 });
   });
@@ -76,5 +76,58 @@ describe('computeFloatResize — floating inspector edge/corner math', () => {
     expect(resize('s', 0, 30)).not.toHaveProperty('left');
     expect(resize('e', 30, 0)).not.toHaveProperty('height');
     expect(resize('e', 30, 0)).not.toHaveProperty('top');
+  });
+});
+
+describe('computeFitSize — double-click-to-fit math', () => {
+  const ORIGIN = { left: 200, top: 100 };
+  const FIT_LIMITS = { minW: 260, minH: 180, maxW: 900, maxH: 900, margin: 6 };
+
+  it('fits exactly to natural size when it is well within all limits', () => {
+    expect(computeFitSize(ORIGIN, { width: 400, height: 300 }, VIEWPORT, FIT_LIMITS)).toEqual({
+      width: 400,
+      height: 300,
+    });
+  });
+
+  it('clamps to the available viewport space when content is larger than it', () => {
+    // From left 200, available width is 1024 - 200 - 6 = 818.
+    expect(computeFitSize(ORIGIN, { width: 2000, height: 300 }, VIEWPORT, FIT_LIMITS)).toEqual({
+      width: 818,
+      height: 300,
+    });
+    // From top 100, available height is 768 - 100 - 6 = 662.
+    expect(computeFitSize(ORIGIN, { width: 400, height: 2000 }, VIEWPORT, FIT_LIMITS)).toEqual({
+      width: 400,
+      height: 662,
+    });
+  });
+
+  it('clamps to minW/minH when content is smaller than the floor', () => {
+    expect(computeFitSize(ORIGIN, { width: 50, height: 40 }, VIEWPORT, FIT_LIMITS)).toEqual({
+      width: 260,
+      height: 180,
+    });
+  });
+
+  it('clamps to maxW/maxH when content exceeds an explicit cap, even with room in the viewport', () => {
+    const roomyViewport = { width: 2000, height: 2000 };
+    expect(computeFitSize({ left: 0, top: 0 }, { width: 1200, height: 1200 }, roomyViewport, FIT_LIMITS)).toEqual({
+      width: 900,
+      height: 900,
+    });
+  });
+
+  it('never includes position — only width/height, so the anchor never moves', () => {
+    const result = computeFitSize(ORIGIN, { width: 400, height: 300 }, VIEWPORT, FIT_LIMITS);
+    expect(result).not.toHaveProperty('left');
+    expect(result).not.toHaveProperty('top');
+  });
+
+  it('rounds fractional natural sizes', () => {
+    expect(computeFitSize(ORIGIN, { width: 400.6, height: 300.2 }, VIEWPORT, FIT_LIMITS)).toEqual({
+      width: 401,
+      height: 300,
+    });
   });
 });

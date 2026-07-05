@@ -1,120 +1,61 @@
-// editor-ui.ts — Editor UI Handler (secondary sidebar, working-set tabs,
-// collapsible sidebar sections, JSON viewer, bit/visual track editors).
+// editor-ui.ts — Editor UI Handler (secondary sidebar, JSON viewer, bit/visual
+// track editors).
 //
-// Owned by the Editor (`new EditorUIHandler(this)`). The sidebar chrome is
-// header (parent link · title · pin · close) + one row of entity-titled tabs;
-// see DESIGN_LANGUAGE.md §12 "Editor navigation".
+// The tab/navigator working-set logic (preview/pinned tabs, the type→instance
+// navigator, stale-tab pruning) lives in TabGroup (tab-group.ts) —
+// instantiable, so more than one can exist once a tab is split into its own
+// window (a later phase). The window chrome (dock/float toggle, drag,
+// 8-direction resize, double-click-to-fit) lives in FloatingWindow
+// (lib/window-manager.ts). This file wires the home sidebar's one TabGroup +
+// FloatingWindow to the static markup, and is the stable facade `Editor`
+// composes against — every method here keeps its original name and signature
+// so none of Editor's ~26 `showSecondarySidebar` callers (or its other
+// `uiHandler.*` calls) needed to change for this split.
+//
+// See DESIGN_LANGUAGE.md §12 "Editor navigation".
 
 import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
 import { showConfirmModal } from '../lib/helpers';
 import { FORBIDDEN_TRACK_BITS, isSquareCornerSwitch } from '../lib/constants';
-
-/** Editor types whose panel is a standalone collection/list — not the detail
- *  view of one entity. Their secondary-sidebar tabs get a bold label so a list
- *  tab (e.g. all trains) reads differently from an instance tab (e.g. one
- *  specific train). */
-const LIST_PANEL_EDITOR_TYPES = new Set([
-  'trains-list',
-  'paths-list',
-  'routes-list',
-  'route-runs-list',
-  'station-group-list',
-  'speed-profiles-list',
-  'switches-list',
-]);
-
-/** Editor types that open as a casual single-entity *preview* — the ones you
- *  reach by inspecting a tile/entity. A preview reuses one shared tab slot (the
- *  next inspect replaces it) until pinned. Everything else — list panels,
- *  route/path editors, setups — opens as its own kept tab. */
-const PREVIEW_ELIGIBLE_EDITOR_TYPES = new Set([
-  'tile',
-  'block',
-  'signal',
-  'platform',
-  'switch',
-  'train-control',
-  'tunnel',
-  'station-group-detail',
-  'speed-profile',
-  'path',
-  'route-run-editor',
-]);
-
-/** The floating inspector's current edges, in viewport pixels. */
-export interface FloatRect {
-  left: number;
-  top: number;
-  right: number;
-  bottom: number;
-}
-
-/** New inline dimensions for a float resize. Only the fields the drag direction
- *  changes are present — a pure-horizontal drag returns no top/height, etc. */
-export interface FloatResizeResult {
-  left?: number;
-  top?: number;
-  width?: number;
-  height?: number;
-}
-
-/** Pure resize math for the floating inspector's edge/corner handles. Given the
- *  grabbed direction, the window's edges at drag start, and the pointer delta,
- *  return the new inline dimensions. East/south move the right/bottom edge so
- *  the window grows from a fixed left/top; west/north move left/top so the
- *  opposite edge stays put. The window is clamped to at least minW × minH and to
- *  stay within the viewport (a `margin` gap from each side). */
-export function computeFloatResize(
-  dir: string,
-  start: FloatRect,
-  dx: number,
-  dy: number,
-  viewport: { width: number; height: number },
-  limits: { minW: number; minH: number; margin: number }
-): FloatResizeResult {
-  const { minW, minH, margin } = limits;
-  const out: FloatResizeResult = {};
-
-  if (dir.includes('e')) {
-    const right = Math.min(viewport.width - margin, Math.max(start.left + minW, start.right + dx));
-    out.width = Math.round(right - start.left);
-  } else if (dir.includes('w')) {
-    const left = Math.max(margin, Math.min(start.right - minW, start.left + dx));
-    out.left = Math.round(left);
-    out.width = Math.round(start.right - left);
-  }
-
-  if (dir.includes('s')) {
-    const bottom = Math.min(viewport.height - margin, Math.max(start.top + minH, start.bottom + dy));
-    out.height = Math.round(bottom - start.top);
-  } else if (dir.includes('n')) {
-    const top = Math.max(margin, Math.min(start.bottom - minH, start.top + dy));
-    out.top = Math.round(top);
-    out.height = Math.round(start.bottom - top);
-  }
-
-  return out;
-}
+import { TabGroup } from './tab-group';
+import { FloatingWindow, windowManager, type WindowGeometry } from '../lib/window-manager';
+import { showContextMenu, type ContextMenuSection } from '../lib/context-menu';
+import { wireTabDrag } from './tab-drag';
+import {
+  browserWindowPersistenceEnv,
+  loadRegistry,
+  loadWindowState,
+  saveWindowState,
+  ensureRegistered,
+  unregister,
+  type WindowPersistenceEnv,
+} from '../lib/window-persistence';
 
 export class EditorUIHandler {
   editor: EditorHost;
-  currentSecondaryPanel: any;
-  isTabNavigation: boolean;
-  secondaryTabs: any[];
-  activeSecondaryTabId: string | null;
-  secondaryPanelPinned: boolean;
-  secondaryInspectorStorageKey: string;
+  homeTabGroup!: TabGroup;
+  homeWindow!: FloatingWindow;
   sidebarSectionStorageKey: string;
+
+  private persistenceEnv: WindowPersistenceEnv = browserWindowPersistenceEnv();
+
+  /** Windows spawned by splitting a tab out of some group — floating-only,
+   *  each a full independent TabGroup + FloatingWindow. Keyed by groupId. */
+  private spawnedGroups = new Map<string, { window: FloatingWindow; tabGroup: TabGroup }>();
+  private spawnCounter = 0;
+
+  /** The group whose window was most recently focused (any pointerdown
+   *  inside it, including on an embedded action button — FloatingWindow
+   *  bumps z-order on every pointerdown, not just header drags). Content
+   *  actions embedded in a panel (an "Edit" button in a list row) call a
+   *  generic editor.showXEditor() with no idea which window they live in —
+   *  this is showSecondarySidebar's fallback so that action lands back in
+   *  the window the user was actually looking at, not always home. */
+  private lastFocusedTabGroup: TabGroup | null = null;
 
   constructor(editor: EditorHost) {
     this.editor = editor;
-    this.currentSecondaryPanel = null;
-    this.isTabNavigation = false;
-    this.secondaryTabs = [];
-    this.activeSecondaryTabId = null;
-    this.secondaryPanelPinned = false;
-    this.secondaryInspectorStorageKey = 'secondaryInspectorStateV1';
     this.sidebarSectionStorageKey = 'sidebarSectionStatesV1';
   }
 
@@ -123,15 +64,51 @@ export class EditorUIHandler {
   }
 
   setupSecondarySidebar(): void {
+    const sidebar = this.editor.$id('secondary-sidebar');
+    const header = sidebar?.querySelector('.secondary-sidebar-header') as HTMLElement | null;
+    if (!sidebar || !header) {
+      return;
+    }
+
+    this.homeTabGroup = new TabGroup({
+      groupId: 'home',
+      editor: this.editor,
+      dom: {
+        titleEl: () => this.editor.$id('secondary-sidebar-title'),
+        contentEl: () => this.editor.$id('secondary-sidebar-content'),
+        tabsEl: () => this.editor.$id('secondary-sidebar-tabs'),
+        parentBtnEl: () => this.editor.$id('secondary-nav-parent') as HTMLButtonElement | null,
+        pinBtnEl: () => this.editor.$id('secondary-nav-pin'),
+        closeBtnEl: () => this.editor.$id('close-secondary-sidebar'),
+        containerEl: () => this.editor.$id('secondary-sidebar'),
+      },
+      onPersist: () => this.persistSecondaryInspectorState(),
+    });
+
+    // The home sidebar is the one dockable window — it adopts the static
+    // markup (index.html) instead of FloatingWindow creating fresh DOM, and
+    // its header keeps its own richer button set (parent-link, pin, tearoff,
+    // close) instead of FloatingWindow's generic title + close.
+    this.homeWindow = new FloatingWindow({
+      id: 'home',
+      kind: 'home',
+      manager: windowManager,
+      title: 'Editor',
+      dockable: true,
+      adopt: { root: sidebar, header },
+      minW: 260,
+      minH: 180,
+      // Clear of the floating tool capsule on the left (right edge ~152).
+      defaultFloatPosition: { left: 168, top: 84 },
+      onGeometryChange: () => this.persistSecondaryInspectorState(),
+    });
+
+    windowManager.subscribe(() => this.updateLastFocusedTabGroup());
+    this.lastFocusedTabGroup = this.homeTabGroup;
+
     const closeBtn = this.editor.$id('close-secondary-sidebar');
     if (closeBtn) {
-      closeBtn.addEventListener('click', async () => {
-        if (this.activeSecondaryTabId) {
-          await this.closeSecondaryTab(this.activeSecondaryTabId);
-          return;
-        }
-        await this.hideSecondarySidebar();
-      });
+      closeBtn.addEventListener('click', () => this.closeActiveSecondaryTab());
     }
 
     const parentBtn = this.editor.$id('secondary-nav-parent');
@@ -144,9 +121,7 @@ export class EditorUIHandler {
     const pinBtn = this.editor.$id('secondary-nav-pin');
     if (pinBtn) {
       pinBtn.addEventListener('click', () => {
-        this.secondaryPanelPinned = !this.secondaryPanelPinned;
-        this.updateSecondaryNavigationState();
-        this.persistSecondaryInspectorState();
+        this.homeTabGroup.setPinned(!this.homeTabGroup.isPinned());
       });
     }
 
@@ -154,63 +129,372 @@ export class EditorUIHandler {
     if (tearoffBtn) {
       tearoffBtn.addEventListener('click', () => this.toggleInspectorFloat());
     }
-    this.setupInspectorFloatDrag();
-    this.setupInspectorFloatResize();
 
     const tabsEl: HTMLElement | null = this.editor.$id('secondary-sidebar-tabs');
     if (tabsEl) {
-      tabsEl.addEventListener('click', async (event) => {
-        const closeBtn = (event.target as HTMLElement).closest(
-          '.secondary-tab-close[data-tab-id]'
-        ) as HTMLElement | null;
-        if (closeBtn) {
-          event.stopPropagation();
-          const tabId = closeBtn.dataset.tabId;
-          if (tabId) {
-            await this.closeSecondaryTab(tabId);
-          }
-          return;
-        }
-
-        const pinTabBtn = (event.target as HTMLElement).closest(
-          '.secondary-tab-pin[data-tab-id]'
-        ) as HTMLElement | null;
-        if (pinTabBtn) {
-          event.stopPropagation();
-          const tabId = pinTabBtn.dataset.tabId;
-          if (tabId) {
-            this.pinTab(tabId);
-          }
-          return;
-        }
-
-        const labelBtn = (event.target as HTMLElement).closest(
-          '.secondary-tab-label[data-tab-id]'
-        ) as HTMLElement | null;
-        if (labelBtn) {
-          const tabId = labelBtn.dataset.tabId;
-          if (tabId) {
-            await this.activateSecondaryTab(tabId);
-          }
-        }
-      });
-
-      // Double-click a preview tab to keep it (pin).
-      tabsEl.addEventListener('dblclick', (event) => {
-        const tabEl = (event.target as HTMLElement).closest(
-          '.secondary-tab[data-tab-id]'
-        ) as HTMLElement | null;
-        if (tabEl && tabEl.dataset.tabId) {
-          this.pinTab(tabEl.dataset.tabId);
-        }
+      this.wireTabGroupInteractions(this.homeTabGroup, tabsEl);
+      wireTabDrag(tabsEl, {
+        group: this.homeTabGroup,
+        listDropTargets: () => this.listTabDropTargets(),
+        onDropOnGroup: (tabId, source, target) => {
+          void this.moveTabToGroup(source, tabId, target);
+        },
+        onDropOutside: (tabId, source, point) => {
+          void this.splitTabIntoNewWindow(source, tabId, point);
+        },
       });
     }
 
-    this.updateSecondaryNavigationState();
-    this.loadSecondaryInspectorState();
+    this.homeTabGroup.updateNavigationState();
+    this.restorePersistedState();
+    this.persistWindowRegistry();
     setTimeout(async () => {
-      await this.restoreSecondaryInspectorState();
+      await this.homeTabGroup.restoreActivePanel();
+      for (const { tabGroup } of this.spawnedGroups.values()) {
+        await tabGroup.restoreActivePanel();
+      }
     }, 0);
+  }
+
+  // ---- Tab-strip interactions (shared by the home group and every spawned
+  // window's group — a spawned window's tab strip behaves identically) ----
+
+  private wireTabGroupInteractions(group: TabGroup, tabsEl: HTMLElement): void {
+    tabsEl.addEventListener('click', async (event) => {
+      const target = event.target as HTMLElement;
+
+      const popOutBtn = target.closest('.secondary-tab-popout[data-tab-id]') as HTMLElement | null;
+      if (popOutBtn) {
+        event.stopPropagation();
+        const tabId = popOutBtn.dataset.tabId;
+        if (tabId) await this.splitTabIntoNewWindow(group, tabId);
+        return;
+      }
+
+      const closeTabBtn = target.closest('.secondary-tab-close[data-tab-id]') as HTMLElement | null;
+      if (closeTabBtn) {
+        event.stopPropagation();
+        const tabId = closeTabBtn.dataset.tabId;
+        if (tabId) await this.closeTabInGroup(group, tabId);
+        return;
+      }
+
+      const pinTabBtn = target.closest('.secondary-tab-pin[data-tab-id]') as HTMLElement | null;
+      if (pinTabBtn) {
+        event.stopPropagation();
+        const tabId = pinTabBtn.dataset.tabId;
+        if (tabId) group.pinTab(tabId);
+        return;
+      }
+
+      const labelBtn = target.closest('.secondary-tab-label[data-tab-id]') as HTMLElement | null;
+      if (labelBtn) {
+        const tabId = labelBtn.dataset.tabId;
+        if (tabId) await group.activateTab(tabId);
+      }
+    });
+
+    // Double-click a preview tab to keep it (pin).
+    tabsEl.addEventListener('dblclick', (event) => {
+      const tabEl = (event.target as HTMLElement).closest('.secondary-tab[data-tab-id]') as HTMLElement | null;
+      if (tabEl?.dataset.tabId) {
+        group.pinTab(tabEl.dataset.tabId);
+      }
+    });
+
+    // Right-click a tab: "Open in new window", plus "Move to <window>" for
+    // every other window currently open.
+    tabsEl.addEventListener('contextmenu', (event) => {
+      const tabEl = (event.target as HTMLElement).closest('.secondary-tab[data-tab-id]') as HTMLElement | null;
+      if (!tabEl?.dataset.tabId) return;
+      event.preventDefault();
+      this.showTabContextMenu(group, tabEl.dataset.tabId, event as MouseEvent);
+    });
+  }
+
+  private showTabContextMenu(group: TabGroup, tabId: string, event: MouseEvent): void {
+    const others = this.allTabGroups().filter((entry) => entry.group !== group);
+    const sections: ContextMenuSection[] = [
+      {
+        items: [
+          {
+            label: 'Open in new window',
+            icon: 'ti ti-external-link',
+            onSelect: () => this.splitTabIntoNewWindow(group, tabId),
+          },
+        ],
+      },
+    ];
+    if (others.length > 0) {
+      sections.push({
+        heading: 'Move to',
+        items: others.map((entry) => ({
+          label: entry.title,
+          icon: 'ti ti-arrow-right',
+          onSelect: () => this.moveTabToGroup(group, tabId, entry.group),
+        })),
+      });
+    }
+    showContextMenu(event.clientX, event.clientY, sections);
+  }
+
+  /** Every open tab group — the home one plus every spawned window's —
+   *  labeled by its current panel's title. Used to enumerate "Move to"
+   *  targets and to look up which spawned window owns a group. */
+  private allTabGroups(): Array<{ id: string; title: string; group: TabGroup }> {
+    const list = [{ id: 'home', title: 'Editor', group: this.homeTabGroup }];
+    for (const [id, entry] of this.spawnedGroups) {
+      list.push({ id, title: entry.tabGroup.currentPanel?.title || 'Window', group: entry.tabGroup });
+    }
+    return list;
+  }
+
+  /** Every currently open tab strip, as a cross-window tab drag
+   *  (editor/tab-drag.ts) drop candidate — home plus every spawned window's,
+   *  ordered topmost-first (resolveDropTarget's documented contract) so that
+   *  when two windows visually overlap, the drop resolves to whichever one
+   *  the user can actually see/click, not an arbitrary fixed order.
+   *  Recomputed on each drag rather than cached, since windows can open/
+   *  close while one is in flight. */
+  private listTabDropTargets(): Array<{ group: TabGroup; tabsEl: HTMLElement }> {
+    const list: Array<{ group: TabGroup; tabsEl: HTMLElement }> = [];
+    const openWindows = windowManager.all(); // back-to-front; last = topmost
+    for (let i = openWindows.length - 1; i >= 0; i--) {
+      const win = openWindows[i];
+      const group = win.id === 'home' ? this.homeTabGroup : this.spawnedGroups.get(win.id)?.tabGroup;
+      if (!group) {
+        continue; // a non-tab-group window (diagnostics) isn't a drop target
+      }
+      const tabsEl = win.getRootElement().querySelector<HTMLElement>('.secondary-sidebar-tabs');
+      if (tabsEl) {
+        list.push({ group, tabsEl });
+      }
+    }
+    return list;
+  }
+
+  /** Re-derive lastFocusedTabGroup from WindowManager's current z-order
+   *  (topmost = last). Called on every WindowManager change (open/close/
+   *  focus) — cheap, and simpler than threading a "which group is this"
+   *  callback through FloatingWindowOptions for every window kind. */
+  private updateLastFocusedTabGroup(): void {
+    const open = windowManager.all();
+    const top = open[open.length - 1];
+    if (!top) {
+      return;
+    }
+    if (top.id === 'home') {
+      this.lastFocusedTabGroup = this.homeTabGroup;
+      return;
+    }
+    const entry = this.spawnedGroups.get(top.id);
+    if (entry) {
+      this.lastFocusedTabGroup = entry.tabGroup;
+    }
+    // A non-tab-group window (diagnostics) being topmost doesn't change
+    // which *tab group* content actions should land in — leave it as-is.
+  }
+
+  /** Close one tab in a group; if that group is now empty, hide (home) or
+   *  destroy (spawned) its window. */
+  private async closeTabInGroup(group: TabGroup, tabId: string): Promise<void> {
+    await group.closeTab(tabId);
+    this.closeGroupWindowIfEmpty(group);
+  }
+
+  private closeGroupWindowIfEmpty(group: TabGroup): void {
+    if (group.tabs.length > 0) {
+      return;
+    }
+    if (group === this.homeTabGroup) {
+      void this.hideSecondarySidebar();
+      return;
+    }
+    for (const [id, entry] of this.spawnedGroups) {
+      if (entry.tabGroup === group) {
+        entry.tabGroup.cleanupPanelSubscriptions();
+        entry.window.destroy();
+        this.spawnedGroups.delete(id);
+        unregister(this.persistenceEnv, id);
+        return;
+      }
+    }
+  }
+
+  /** Split a tab out of its current group into a brand-new floating window
+   *  with its own full tab strip/navigator — the button/context-menu "Open
+   *  in new window" action, and where a drag-out (editor/tab-drag.ts) lands
+   *  when dropped outside every open window. `atPoint` positions the new
+   *  window under the drop point (drag-out); omitted, it cascades from a
+   *  default corner (button/menu trigger, which has no drop point of its
+   *  own). The new window is floating-only (there is only one dockable
+   *  slot, owned by the home window) and reuses the same secondary-sidebar-*
+   *  CSS as the home sidebar, so no new tab-strip visuals are needed. */
+  async splitTabIntoNewWindow(
+    sourceGroup: TabGroup,
+    tabId: string,
+    atPoint?: { x: number; y: number }
+  ): Promise<void> {
+    const tab = await sourceGroup.extractTab(tabId);
+    if (!tab) {
+      return;
+    }
+
+    const groupId = `tabgroup-${++this.spawnCounter}`;
+    const geometry = atPoint
+      ? { left: Math.max(8, atPoint.x - 60), top: Math.max(8, atPoint.y - 12) }
+      : // Cascade so repeated splits don't stack exactly on top of each
+        // other; clamped back on screen by FloatingWindow's own reclamp.
+        { left: 200 + 28 * (this.spawnCounter % 8), top: 120 + 28 * (this.spawnCounter % 8) };
+    const { tabGroup } = this.createSpawnedWindow(groupId, geometry);
+
+    tabGroup.acceptMovedTab(tab);
+    tabGroup.updateNavigationState();
+    void tabGroup.restoreTabPanel(tab);
+
+    this.closeGroupWindowIfEmpty(sourceGroup);
+    this.persistWindowRegistry();
+  }
+
+  /** Move a tab from one already-open group to another — the context-menu
+   *  "Move to <window>" action once more than one window is open. */
+  async moveTabToGroup(sourceGroup: TabGroup, tabId: string, targetGroup: TabGroup): Promise<void> {
+    if (sourceGroup === targetGroup) {
+      return;
+    }
+    const tab = await sourceGroup.extractTab(tabId);
+    if (!tab) {
+      return;
+    }
+    targetGroup.acceptMovedTab(tab);
+    await targetGroup.restoreTabPanel(tab);
+    this.closeGroupWindowIfEmpty(sourceGroup);
+  }
+
+  /** Build a spawned window's DOM + TabGroup + FloatingWindow, wire its
+   *  chrome interactions, and register it — shared by splitTabIntoNewWindow
+   *  (seeds the new TabGroup with one moved-in tab) and
+   *  restorePersistedWindows (seeds it by replaying a saved tab list on
+   *  boot): the chrome construction is identical either way, they differ
+   *  only in how the group's initial tabs get there. */
+  private createSpawnedWindow(
+    groupId: string,
+    initialGeometry: Partial<WindowGeometry>
+  ): { tabGroup: TabGroup; window: FloatingWindow } {
+    const dom = this.buildSpawnedWindowDom();
+
+    const tabGroup = new TabGroup({
+      groupId,
+      editor: this.editor,
+      dom: {
+        titleEl: () => dom.titleEl,
+        contentEl: () => dom.contentEl,
+        tabsEl: () => dom.tabsEl,
+        parentBtnEl: () => dom.parentBtnEl,
+        pinBtnEl: () => dom.pinBtnEl,
+        closeBtnEl: () => dom.closeBtnEl,
+        containerEl: () => dom.root,
+      },
+      onPersist: () => this.persistSpawnedWindow(groupId),
+    });
+    this.wireTabGroupInteractions(tabGroup, dom.tabsEl);
+    wireTabDrag(dom.tabsEl, {
+      group: tabGroup,
+      listDropTargets: () => this.listTabDropTargets(),
+      onDropOnGroup: (draggedTabId, source, target) => {
+        void this.moveTabToGroup(source, draggedTabId, target);
+      },
+      onDropOutside: (draggedTabId, source, point) => {
+        void this.splitTabIntoNewWindow(source, draggedTabId, point);
+      },
+    });
+    dom.parentBtnEl.addEventListener('click', async () => {
+      await tabGroup.navigateToParentList();
+    });
+    dom.pinBtnEl.addEventListener('click', () => {
+      tabGroup.setPinned(!tabGroup.isPinned());
+    });
+    dom.closeBtnEl.addEventListener('click', async () => {
+      if (tabGroup.activeTabId) {
+        await this.closeTabInGroup(tabGroup, tabGroup.activeTabId);
+      } else {
+        this.closeGroupWindowIfEmpty(tabGroup);
+      }
+    });
+
+    const win = new FloatingWindow({
+      id: groupId,
+      kind: 'tab-group',
+      manager: windowManager,
+      title: 'Editor',
+      dockable: false,
+      adopt: { root: dom.root, header: dom.header },
+      minW: 260,
+      minH: 180,
+      initialGeometry,
+      onCloseRequested: () => this.closeGroupWindowIfEmpty(tabGroup),
+      onGeometryChange: () => this.persistSpawnedWindow(groupId),
+    });
+
+    this.spawnedGroups.set(groupId, { window: win, tabGroup });
+    return { tabGroup, window: win };
+  }
+
+  /** Build the DOM for a spawned window: the same three-part shape as the
+   *  home sidebar's static markup (header with parent-link/pin/close + tabs +
+   *  content), generated since there's no bound on how many might exist.
+   *  Reuses the exact same CSS classes, so no new styling is needed. */
+  private buildSpawnedWindowDom(): {
+    root: HTMLElement;
+    header: HTMLElement;
+    titleEl: HTMLElement;
+    parentBtnEl: HTMLButtonElement;
+    pinBtnEl: HTMLElement;
+    closeBtnEl: HTMLElement;
+    tabsEl: HTMLElement;
+    contentEl: HTMLElement;
+  } {
+    const root = document.createElement('aside');
+    root.className = 'secondary-sidebar visible';
+
+    const header = document.createElement('div');
+    header.className = 'secondary-sidebar-header';
+
+    const parentBtnEl = document.createElement('button');
+    parentBtnEl.className = 'secondary-nav-btn secondary-nav-parent';
+    parentBtnEl.hidden = true;
+
+    const titleEl = document.createElement('h3');
+    titleEl.textContent = 'Editor';
+
+    const pinBtnEl = document.createElement('button');
+    pinBtnEl.className = 'secondary-nav-btn';
+    pinBtnEl.title = 'Pin inspector';
+    pinBtnEl.setAttribute('aria-label', 'Pin inspector');
+    pinBtnEl.innerHTML = '<i class="ti ti-pin"></i>';
+
+    const closeBtnEl = document.createElement('button');
+    closeBtnEl.className = 'close-btn';
+    closeBtnEl.title = 'Close';
+    closeBtnEl.textContent = '×';
+
+    header.appendChild(parentBtnEl);
+    header.appendChild(titleEl);
+    header.appendChild(pinBtnEl);
+    header.appendChild(closeBtnEl);
+
+    const tabsEl = document.createElement('div');
+    tabsEl.className = 'secondary-sidebar-tabs';
+
+    const contentEl = document.createElement('div');
+    contentEl.className = 'secondary-sidebar-content';
+
+    root.appendChild(header);
+    root.appendChild(tabsEl);
+    root.appendChild(contentEl);
+    document.body.appendChild(root);
+
+    return { root, header, titleEl, parentBtnEl, pinBtnEl, closeBtnEl, tabsEl, contentEl };
   }
 
   setupCollapsibleSidebarSections(): void {
@@ -275,193 +559,34 @@ export class EditorUIHandler {
   }
 
   showSecondarySidebar(title: string, content: string): void {
-    const sidebar = this.editor.$id('secondary-sidebar');
-    const titleEl = this.editor.$id('secondary-sidebar-title');
-    const contentEl = this.editor.$id('secondary-sidebar-content');
-
-    if (sidebar && titleEl && contentEl) {
-      titleEl.textContent = title;
-      contentEl.innerHTML = content;
-
-      sidebar.classList.remove('compact');
-      // The route editor re-adds this after rendering; clearing it here
-      // means every other panel resets to the default width.
-      sidebar.classList.remove('route-editor-wide');
-
-      sidebar.classList.add('visible');
-      // Opening an editor is an explicit intent to see it, so clear any
-      // header-toggle collapse (see App.setupPanelToggles).
-      sidebar.classList.remove('user-hidden');
-
-      this.currentSecondaryPanel = {
-        title,
-        content,
-        editorType: this.editor._currentEditorType,
-        editorId: this.editor._currentEditorId,
-      };
-      this.syncSecondaryTabsWithCurrentPanel();
-      this.renderSecondaryTabs();
-      this.updateSecondaryNavigationState();
-      this.persistSecondaryInspectorState();
+    // A tab living in a spawned window that's mid-restore (TabGroup.
+    // restoreTabPanel / navigateToParentList) marks itself as the target
+    // first, so that takes priority. Otherwise this is a fresh open — most
+    // are canvas-driven (inspecting a tile/entity) with no window context of
+    // their own, but a panel-embedded action button (an "Edit" row inside an
+    // already-open list) has no way to say which window it lives in either,
+    // so falling back to the last-focused window (rather than always home)
+    // means that action lands back in the window the user was looking at.
+    const target: TabGroup = this.editor._activeTabGroupForRestore || this.lastFocusedTabGroup || this.homeTabGroup;
+    // Reopening into the home window after it was closed while floating must
+    // clear the `.floating-window--hidden` that hideSecondarySidebar set —
+    // `.visible` alone can't reveal a floating window. Gated on isHidden so an
+    // ordinary inspect into an already-open window doesn't re-focus it every
+    // time. Spawned windows are never hidden (they're destroyed when empty),
+    // so this only concerns the home window.
+    if (target === this.homeTabGroup && this.homeWindow.isHidden()) {
+      this.homeWindow.setHidden(false);
     }
+    target.show(title, content);
   }
 
-  /** Toggle the whole inspector between docked (left) and a floating, draggable
-   *  window. It stays the same live, editable panel either way — only its
-   *  position changes, so every editor and subscription keeps working. */
+  /** Toggle the whole inspector between docked (left) and a floating,
+   *  draggable window. It stays the same live, editable panel either way —
+   *  only its position changes, so every editor and subscription keeps
+   *  working. */
   toggleInspectorFloat(): void {
-    const sidebar = this.editor.$id('secondary-sidebar');
-    if (!sidebar) {
-      return;
-    }
-    const floating = sidebar.classList.toggle('secondary-sidebar--floating');
-    if (floating) {
-      if (!sidebar.style.left) {
-        // Open clear of the floating tool capsule on the left (right edge ~152).
-        sidebar.style.left = '168px';
-        sidebar.style.top = '84px';
-      }
-      this._clampInspectorFloat();
-    } else {
-      sidebar.style.left = '';
-      sidebar.style.top = '';
-      // Drop the floating height so the docked panel flows in the column again;
-      // width is left intact (carried over from the floating window's last size).
-      sidebar.style.height = '';
-      sidebar.style.maxHeight = '';
-    }
+    const floating = this.homeWindow.toggleDock();
     this._updateTearoffButton(floating);
-    this.persistSecondaryInspectorState();
-  }
-
-  /** Drag the floating inspector by its header. No-op while docked. Bound once. */
-  setupInspectorFloatDrag(): void {
-    const sidebar = this.editor.$id('secondary-sidebar');
-    const header = sidebar?.querySelector('.secondary-sidebar-header') as HTMLElement | null;
-    if (!sidebar || !header) {
-      return;
-    }
-    let offset: { x: number; y: number } | null = null;
-    header.addEventListener('pointerdown', (e: PointerEvent) => {
-      if (!sidebar.classList.contains('secondary-sidebar--floating')) return;
-      if ((e.target as HTMLElement).closest('button')) return;
-      header.setPointerCapture(e.pointerId);
-      const r = sidebar.getBoundingClientRect();
-      offset = { x: e.clientX - r.left, y: e.clientY - r.top };
-    });
-    header.addEventListener('pointermove', (e: PointerEvent) => {
-      if (!offset) return;
-      const x = Math.max(0, Math.min(window.innerWidth - 80, e.clientX - offset.x));
-      const y = Math.max(0, Math.min(window.innerHeight - 40, e.clientY - offset.y));
-      sidebar.style.left = `${x}px`;
-      sidebar.style.top = `${y}px`;
-    });
-    const end = () => {
-      if (offset) {
-        offset = null;
-        this.persistSecondaryInspectorState();
-      }
-    };
-    header.addEventListener('pointerup', end);
-    header.addEventListener('pointercancel', end);
-  }
-
-  /** Build the eight edge/corner resize handles for the floating inspector and
-   *  wire their drag-to-resize. The handles only act while floating (docked mode
-   *  has a fixed width and the handles are hidden by CSS).
-   *  East/south grow width/height; west/north also move the left/top edge so the
-   *  opposite edge stays put. The window is clamped to stay on screen. Bound once. */
-  setupInspectorFloatResize(): void {
-    const sidebar = this.editor.$id('secondary-sidebar');
-    if (!sidebar) {
-      return;
-    }
-    const DIRECTIONS = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
-    const MARGIN = 6;
-    const MIN_W = 260;
-    const MIN_H = 180;
-
-    let active: {
-      dir: string;
-      startX: number;
-      startY: number;
-      left: number;
-      top: number;
-      right: number;
-      bottom: number;
-    } | null = null;
-
-    const onMove = (e: PointerEvent): void => {
-      if (!active) return;
-      const res = computeFloatResize(
-        active.dir,
-        active,
-        e.clientX - active.startX,
-        e.clientY - active.startY,
-        { width: window.innerWidth, height: window.innerHeight },
-        { minW: MIN_W, minH: MIN_H, margin: MARGIN }
-      );
-      if (res.left !== undefined) sidebar.style.left = `${res.left}px`;
-      if (res.top !== undefined) sidebar.style.top = `${res.top}px`;
-      if (res.width !== undefined) sidebar.style.width = `${res.width}px`;
-      if (res.height !== undefined) sidebar.style.height = `${res.height}px`;
-    };
-
-    const onEnd = (): void => {
-      if (!active) return;
-      active = null;
-      sidebar.classList.remove('resizing');
-      document.body.style.userSelect = '';
-      this.persistSecondaryInspectorState();
-    };
-
-    for (const dir of DIRECTIONS) {
-      const handle = document.createElement('div');
-      handle.className = 'secondary-sidebar-resizer';
-      handle.dataset.resizeDir = dir;
-      handle.addEventListener('pointerdown', (e: PointerEvent) => {
-        if (!sidebar.classList.contains('secondary-sidebar--floating')) return;
-        e.preventDefault();
-        e.stopPropagation();
-        handle.setPointerCapture(e.pointerId);
-        const r = sidebar.getBoundingClientRect();
-        active = {
-          dir,
-          startX: e.clientX,
-          startY: e.clientY,
-          left: r.left,
-          top: r.top,
-          right: r.right,
-          bottom: r.bottom,
-        };
-        // A vertical drag sets an explicit height; lift the auto-height cap so
-        // that height — not the CSS max-height — governs from here on.
-        if (dir.includes('n') || dir.includes('s')) {
-          sidebar.style.maxHeight = 'none';
-        }
-        sidebar.classList.add('resizing');
-        document.body.style.userSelect = 'none';
-      });
-      handle.addEventListener('pointermove', onMove);
-      handle.addEventListener('pointerup', onEnd);
-      handle.addEventListener('pointercancel', onEnd);
-      sidebar.appendChild(handle);
-    }
-  }
-
-  _clampInspectorFloat(): void {
-    const sidebar = this.editor.$id('secondary-sidebar');
-    if (!sidebar || !sidebar.classList.contains('secondary-sidebar--floating')) {
-      return;
-    }
-    const margin = 8;
-    const r = sidebar.getBoundingClientRect();
-    let x = parseFloat(sidebar.style.left) || r.left;
-    let y = parseFloat(sidebar.style.top) || r.top;
-    if (x + r.width > window.innerWidth - margin) x = Math.max(margin, window.innerWidth - r.width - margin);
-    if (y + r.height > window.innerHeight - margin) y = Math.max(margin, window.innerHeight - r.height - margin);
-    sidebar.style.left = `${x}px`;
-    sidebar.style.top = `${y}px`;
   }
 
   _updateTearoffButton(floating: boolean): void {
@@ -479,22 +604,26 @@ export class EditorUIHandler {
   }
 
   async hideSecondarySidebar(): Promise<void> {
-    const sidebar = this.editor.$id('secondary-sidebar');
-    if (sidebar) {
-      sidebar.classList.remove('visible');
-      sidebar.classList.remove('compact');
-      sidebar.classList.remove('route-editor-wide');
+    const container = this.editor.$id('secondary-sidebar');
+    if (container) {
+      container.classList.remove('visible');
+      container.classList.remove('compact');
+      container.classList.remove('route-editor-wide');
       // Reset the header-toggle collapse so a reopened panel starts shown.
-      sidebar.classList.remove('user-hidden');
+      container.classList.remove('user-hidden');
     }
+    // `.visible` is the docked-mode show/hide lever; it does nothing once the
+    // window is floating, because `.floating-window` (position: fixed;
+    // display: flex) governs a floating window's visibility instead. The
+    // floating lever is FloatingWindow.setHidden — call it so the frame
+    // actually disappears when floating. Harmless when docked (the
+    // `.floating-window--hidden` class it toggles only matches a floating
+    // window), so this needs no mode check. showSecondarySidebar clears it
+    // again on reopen.
+    this.homeWindow.setHidden(true);
 
-    this.cleanupSecondaryPanelSubscriptions();
-
-    this.currentSecondaryPanel = null;
-    this.secondaryTabs = [];
-    this.activeSecondaryTabId = null;
-    this.renderSecondaryTabs();
-    this.updateSecondaryNavigationState();
+    this.homeTabGroup.cleanupPanelSubscriptions();
+    this.homeTabGroup.clear();
     this.persistSecondaryInspectorState();
 
     this.editor._currentEditorType = null;
@@ -506,571 +635,97 @@ export class EditorUIHandler {
     }
   }
 
-  /** The navigable parent list of the current panel, or null when there is
-   *  none (list panels; detail panels with no list home, e.g. blocks). The
-   *  header's `← Parent` button shows exactly when this is non-null. */
-  getCurrentParentSegment(): any | null {
-    if (!this.currentSecondaryPanel) {
-      return null;
-    }
-    const segments = this.editor.getPanelLineage(this.currentSecondaryPanel) || [];
-    if (segments.length < 2) {
-      return null;
-    }
-    const parent = segments[0];
-    return parent && parent.editorType ? parent : null;
-  }
-
-  /** Open the current detail panel's parent list (header `← Parent` button,
-   *  Alt+Left). The list activates its existing tab or opens as a new one. */
   async navigateToParentList(): Promise<void> {
-    const parent = this.getCurrentParentSegment();
-    if (!parent) {
-      return;
-    }
-    this.cleanupSecondaryPanelSubscriptions();
-    await this.editor.restoreSecondaryPanel({
-      title: parent.label,
-      editorType: parent.editorType,
-      editorId: parent.editorId || null,
-      content: '',
-    });
-  }
-
-  makeSecondaryPanelKey(panelSnapshot: any): string {
-    const type = panelSnapshot?.editorType || '__none__';
-    const id = panelSnapshot?.editorId || '__none__';
-    return `${type}:${id}`;
-  }
-
-  createSecondaryTabSnapshot(panelSnapshot: any): any {
-    const type = panelSnapshot?.editorType || null;
-    const id = panelSnapshot?.editorId || null;
-    const key = this.makeSecondaryPanelKey(panelSnapshot);
-    return {
-      tabId: `${type || 'panel'}:${id || Date.now()}`,
-      key,
-      title: panelSnapshot?.title || 'Editor',
-      editorType: type,
-      editorId: id,
-      content: panelSnapshot?.content || '',
-      // A casual single-entity inspect opens as a preview (reuses one slot);
-      // lists and editors open as their own kept tab. See pinTab to promote.
-      pinned: !PREVIEW_ELIGIBLE_EDITOR_TYPES.has(type || ''),
-    };
-  }
-
-  syncSecondaryTabsWithCurrentPanel(): void {
-    if (!this.currentSecondaryPanel || this.isTabNavigation) {
-      return;
-    }
-
-    const key = this.makeSecondaryPanelKey(this.currentSecondaryPanel);
-    const existingTab = this.secondaryTabs.find((tab) => tab.key === key);
-
-    if (existingTab) {
-      existingTab.title = this.currentSecondaryPanel.title;
-      existingTab.editorType = this.currentSecondaryPanel.editorType;
-      existingTab.editorId = this.currentSecondaryPanel.editorId;
-      existingTab.content = this.currentSecondaryPanel.content;
-      this.activeSecondaryTabId = existingTab.tabId;
-      return;
-    }
-
-    const nextTab = this.createSecondaryTabSnapshot(this.currentSecondaryPanel);
-
-    // Preview reuse: a casual inspect (unpinned) replaces the existing preview
-    // slot instead of stacking a new tab, so clicking around the layout never
-    // piles up tabs. Pinned tabs always keep their own slot.
-    if (!nextTab.pinned) {
-      const previewIndex = this.secondaryTabs.findIndex((tab) => !tab.pinned);
-      if (previewIndex >= 0) {
-        this.secondaryTabs[previewIndex] = nextTab;
-        this.activeSecondaryTabId = nextTab.tabId;
-        this.persistSecondaryInspectorState();
-        return;
-      }
-    }
-
-    this.secondaryTabs.push(nextTab);
-    this.activeSecondaryTabId = nextTab.tabId;
-    this.persistSecondaryInspectorState();
-  }
-
-  /** Display label + tooltip for a tab. Detail tabs are titled by the entity
-   *  they hold (`BLK_588D28`, `#1000001`) — not by the editor's name — so two
-   *  open blocks stay distinguishable. List tabs keep their list name. The
-   *  tooltip carries the full lineage (`Blocks › BLK_588D28`). */
-  getSecondaryTabDisplay(tab: any): { label: string; tooltip: string } {
-    const segments = this.editor.getPanelLineage(tab) || [];
-    if (segments.length === 0) {
-      const fallback = tab?.title || 'Editor';
-      return { label: fallback, tooltip: fallback };
-    }
-    const label = segments[segments.length - 1].label || tab?.title || 'Editor';
-    const tooltip =
-      segments.length > 1 ? segments.map((s: any) => s.label).join(' › ') : label;
-    return { label, tooltip };
-  }
-
-  /** Tabler icon class for the entity-type indicator in the vertical tab strip.
-   *  Icon values are registered in static/icon-selections.json. */
-  getTabIconClass(editorType: string | null): string {
-    const iconMap: Record<string, string> = {
-      'tile': 'ti-square',
-      'block': 'ti-square',
-      'signal': 'ti-traffic-lights',
-      'platform': 'ti-building',
-      'switch': 'ti-git-branch',
-      'switches-list': 'ti-git-branch',
-      'tunnel': 'ti-building-tunnel',
-      'train-control': 'ti-train',
-      'trains-list': 'ti-train',
-      'route-editor': 'ti-map-2',
-      'route-run-editor': 'ti-player-play',
-      'route-runs-list': 'ti-player-play',
-      'routes-list': 'ti-map-2',
-      'path': 'ti-route',
-      'path-setup': 'ti-route',
-      'extend-path-setup': 'ti-arrows-horizontal',
-      'paths-list': 'ti-route',
-      'station-group': 'ti-home',
-      'station-group-detail': 'ti-home',
-      'station-group-list': 'ti-home',
-      'multi-select': 'ti-marquee-2',
-      'speed-profile': 'ti-gauge',
-      'speed-profiles-list': 'ti-gauge',
-    };
-    return iconMap[editorType || ''] ?? 'ti-file';
-  }
-
-  /** Map a granular editorType to its top-level navigator group (e.g. both
-   *  'train-control' and 'trains-list' fall under Trains). The navigator stacks
-   *  open tabs under these group headers as a type → instance tree. */
-  getSecondaryTabGroup(editorType: string | null): { key: string; label: string; icon: string } {
-    const groups: Record<string, { key: string; label: string; icon: string }> = {
-      'tile': { key: 'tile', label: 'Tiles', icon: 'ti-square' },
-      'block': { key: 'block', label: 'Blocks', icon: 'ti-square' },
-      'signal': { key: 'signal', label: 'Signals', icon: 'ti-traffic-lights' },
-      'platform': { key: 'platform', label: 'Platforms', icon: 'ti-building' },
-      'switch': { key: 'switch', label: 'Switches', icon: 'ti-git-branch' },
-      'switches-list': { key: 'switch', label: 'Switches', icon: 'ti-git-branch' },
-      'tunnel': { key: 'tunnel', label: 'Tunnels', icon: 'ti-building-tunnel' },
-      'train-control': { key: 'train', label: 'Trains', icon: 'ti-train' },
-      'trains-list': { key: 'train', label: 'Trains', icon: 'ti-train' },
-      'route-editor': { key: 'route', label: 'Routes', icon: 'ti-map-2' },
-      'route-run-editor': { key: 'route', label: 'Routes', icon: 'ti-map-2' },
-      'route-runs-list': { key: 'route', label: 'Routes', icon: 'ti-map-2' },
-      'routes-list': { key: 'route', label: 'Routes', icon: 'ti-map-2' },
-      'path': { key: 'path', label: 'Paths', icon: 'ti-route' },
-      'path-setup': { key: 'path', label: 'Paths', icon: 'ti-route' },
-      'extend-path-setup': { key: 'path', label: 'Paths', icon: 'ti-route' },
-      'paths-list': { key: 'path', label: 'Paths', icon: 'ti-route' },
-      'station-group': { key: 'station', label: 'Stations', icon: 'ti-home' },
-      'station-group-detail': { key: 'station', label: 'Stations', icon: 'ti-home' },
-      'station-group-list': { key: 'station', label: 'Stations', icon: 'ti-home' },
-      'speed-profile': { key: 'speed', label: 'Speed profiles', icon: 'ti-gauge' },
-      'speed-profiles-list': { key: 'speed', label: 'Speed profiles', icon: 'ti-gauge' },
-      'multi-select': { key: 'selection', label: 'Selection', icon: 'ti-marquee-2' },
-    };
-    return groups[editorType || ''] ?? { key: 'other', label: 'Other', icon: 'ti-file' };
-  }
-
-  renderSecondaryTabs(): void {
-    const tabsEl: HTMLElement | null = this.editor.$id('secondary-sidebar-tabs');
-    if (!tabsEl) {
-      return;
-    }
-
-    if (this.secondaryTabs.length === 0) {
-      tabsEl.innerHTML = '';
-      return;
-    }
-
-    const renderRow = (tab: any): string => {
-      const { label, tooltip } = this.getSecondaryTabDisplay(tab);
-      const safeLabel = this.escapeHtml(label);
-      const safeTooltip = this.escapeHtml(tooltip);
-      const activeClass = tab.tabId === this.activeSecondaryTabId ? ' active' : '';
-      const listClass = LIST_PANEL_EDITOR_TYPES.has(tab.editorType) ? ' secondary-tab--list' : '';
-      const previewClass = tab.pinned ? '' : ' secondary-tab--preview';
-      const iconClass = this.getTabIconClass(tab.editorType);
-      const pinButton = tab.pinned
-        ? ''
-        : `<button class="secondary-tab-pin" data-tab-id="${tab.tabId}" title="Pin tab (keep open)" aria-label="Pin tab"><i class="ti ti-pin" aria-hidden="true"></i></button>`;
-      return (
-        `<div class="secondary-tab${activeClass}${listClass}${previewClass}" data-tab-id="${tab.tabId}" title="${safeTooltip}">` +
-        `<i class="ti ${iconClass} secondary-tab-icon" aria-hidden="true"></i>` +
-        `<button class="secondary-tab-label btn-size-tight" data-tab-id="${tab.tabId}">${safeLabel}</button>` +
-        pinButton +
-        `<button class="secondary-tab-close" data-tab-id="${tab.tabId}" title="Close tab">×</button>` +
-        `</div>`
-      );
-    };
-
-    // Group the open tabs by top-level entity type: a type → instance tree so
-    // many open entities stay legible instead of one mixed flat strip.
-    const groups = new Map<string, { label: string; icon: string; tabs: any[] }>();
-    for (const tab of this.secondaryTabs) {
-      const g = this.getSecondaryTabGroup(tab.editorType);
-      let bucket = groups.get(g.key);
-      if (!bucket) {
-        bucket = { label: g.label, icon: g.icon, tabs: [] };
-        groups.set(g.key, bucket);
-      }
-      bucket.tabs.push(tab);
-    }
-
-    tabsEl.innerHTML = Array.from(groups.values())
-      .map(
-        (bucket) =>
-          `<div class="secondary-nav-group">` +
-          `<div class="secondary-nav-group-header">` +
-          `<i class="ti ${bucket.icon} secondary-nav-group-icon" aria-hidden="true"></i>` +
-          `<span class="secondary-nav-group-label">${this.escapeHtml(bucket.label)}</span>` +
-          `<span class="secondary-nav-group-count">${bucket.tabs.length}</span>` +
-          `</div>` +
-          bucket.tabs.map(renderRow).join('') +
-          `</div>`
-      )
-      .join('');
-
-    // Scroll the active tab into view in the vertical strip.
-    const activeEl = tabsEl.querySelector('.secondary-tab.active');
-    if (activeEl && typeof activeEl.scrollIntoView === 'function') {
-      activeEl.scrollIntoView({ block: 'nearest', inline: 'start' });
-    }
-  }
-
-  async activateSecondaryTab(tabId: string): Promise<void> {
-    const tab = this.secondaryTabs.find((t) => t.tabId === tabId);
-    if (!tab) {
-      return;
-    }
-
-    if (tab.tabId === this.activeSecondaryTabId) {
-      return;
-    }
-
-    if (this.currentSecondaryPanel) {
-      const currentTab = this.secondaryTabs.find((t) => t.tabId === this.activeSecondaryTabId);
-      if (currentTab) {
-        currentTab.title = this.currentSecondaryPanel.title;
-        currentTab.editorType = this.currentSecondaryPanel.editorType;
-        currentTab.editorId = this.currentSecondaryPanel.editorId;
-        currentTab.content = this.currentSecondaryPanel.content;
-      }
-    }
-
-    this.activeSecondaryTabId = tab.tabId;
-    this.renderSecondaryTabs();
-
-    await this.restoreSecondaryTabPanel(tab);
-    this.persistSecondaryInspectorState();
-  }
-
-  /** Promote a preview tab to a kept (pinned) tab so the next inspect no longer
-   *  replaces it. Triggered by the tab's pin button or a double-click. */
-  pinTab(tabId: string): void {
-    const tab = this.secondaryTabs.find((t) => t.tabId === tabId);
-    if (!tab || tab.pinned) {
-      return;
-    }
-    tab.pinned = true;
-    this.renderSecondaryTabs();
-    this.persistSecondaryInspectorState();
-  }
-
-  async closeSecondaryTab(tabId: string): Promise<void> {
-    const index = this.secondaryTabs.findIndex((t) => t.tabId === tabId);
-    if (index < 0) {
-      return;
-    }
-
-    const wasActive = this.secondaryTabs[index].tabId === this.activeSecondaryTabId;
-    this.secondaryTabs.splice(index, 1);
-
-    if (this.secondaryTabs.length === 0) {
-      this.activeSecondaryTabId = null;
-      this.renderSecondaryTabs();
-      await this.hideSecondarySidebar();
-      return;
-    }
-
-    if (wasActive) {
-      const nextIndex = Math.min(index, this.secondaryTabs.length - 1);
-      this.activeSecondaryTabId = this.secondaryTabs[nextIndex].tabId;
-      this.renderSecondaryTabs();
-      await this.restoreSecondaryTabPanel(this.secondaryTabs[nextIndex]);
-      this.persistSecondaryInspectorState();
-      return;
-    }
-
-    this.renderSecondaryTabs();
-    this.persistSecondaryInspectorState();
-  }
-
-  async restoreSecondaryTabPanel(tabSnapshot: any): Promise<void> {
-    this.cleanupSecondaryPanelSubscriptions();
-    this.isTabNavigation = true;
-    try {
-      const restored = await this.editor.restoreSecondaryPanel(tabSnapshot);
-      if (!restored) {
-        this.editor._currentEditorType = tabSnapshot.editorType || null;
-        this.editor._currentEditorId = tabSnapshot.editorId || null;
-        this.showSecondarySidebar(tabSnapshot.title || 'Editor', tabSnapshot.content || '');
-      }
-    } finally {
-      this.isTabNavigation = false;
-      this.renderSecondaryTabs();
-      this.updateSecondaryNavigationState();
-    }
+    return this.homeTabGroup.navigateToParentList();
   }
 
   isSecondaryPanelPinned(): boolean {
-    return this.secondaryPanelPinned;
+    return this.homeTabGroup.isPinned();
   }
 
-  closeActiveSecondaryTab(): Promise<void> {
-    if (!this.activeSecondaryTabId) {
-      return this.hideSecondarySidebar();
-    }
-    return this.closeSecondaryTab(this.activeSecondaryTabId);
-  }
-
-  persistSecondaryInspectorState(): void {
-    const tabs = this.secondaryTabs.map((tab) => ({
-      tabId: tab.tabId,
-      key: tab.key,
-      title: tab.title,
-      editorType: tab.editorType,
-      editorId: tab.editorId,
-      pinned: !!tab.pinned,
-    }));
-
-    const sidebar = this.editor.$id('secondary-sidebar');
-    const isFloating = !!(sidebar && sidebar.classList.contains('secondary-sidebar--floating'));
-    const payload = {
-      pinned: this.secondaryPanelPinned,
-      activeTabId: this.activeSecondaryTabId,
-      tabs,
-      floating: isFloating,
-      floatX: isFloating && sidebar ? sidebar.style.left : '',
-      floatY: isFloating && sidebar ? sidebar.style.top : '',
-      floatW: isFloating && sidebar ? sidebar.style.width : '',
-      floatH: isFloating && sidebar ? sidebar.style.height : '',
-    };
-
-    try {
-      localStorage.setItem(this.secondaryInspectorStorageKey, JSON.stringify(payload));
-    } catch (e) {}
-  }
-
-  loadSecondaryInspectorState(): void {
-    try {
-      const raw = localStorage.getItem(this.secondaryInspectorStorageKey);
-      if (!raw) {
-        return;
-      }
-
-      const parsed = JSON.parse(raw);
-      this.secondaryPanelPinned = parsed?.pinned === true;
-
-      const tabs = Array.isArray(parsed?.tabs) ? parsed.tabs : [];
-      this.secondaryTabs = tabs
-        .filter((tab: any) => tab && tab.editorType)
-        .map((tab: any) => ({
-          tabId: tab.tabId || `${tab.editorType}:${tab.editorId || Date.now()}`,
-          key: tab.key || this.makeSecondaryPanelKey(tab),
-          title: tab.title || 'Editor',
-          editorType: tab.editorType,
-          editorId: tab.editorId || null,
-          content: '',
-          // Default to kept: tabs persisted before preview/pin existed have no
-          // flag and were deliberately open, so they restore pinned rather than
-          // collapsing into the single preview slot. New state is explicit.
-          pinned: tab.pinned !== false,
-        }));
-
-      if (this.secondaryTabs.length > 0) {
-        const activeId = parsed?.activeTabId;
-        const activeExists = this.secondaryTabs.some((tab) => tab.tabId === activeId);
-        this.activeSecondaryTabId = activeExists ? activeId : this.secondaryTabs[0].tabId;
-      } else {
-        this.activeSecondaryTabId = null;
-      }
-
-      this.renderSecondaryTabs();
-      this.updateSecondaryNavigationState();
-
-      if (parsed?.floating) {
-        const sidebar = this.editor.$id('secondary-sidebar');
-        if (sidebar) {
-          sidebar.classList.add('secondary-sidebar--floating');
-          if (parsed.floatX) sidebar.style.left = parsed.floatX;
-          if (parsed.floatY) sidebar.style.top = parsed.floatY;
-          if (parsed.floatW) sidebar.style.width = parsed.floatW;
-          if (parsed.floatH) {
-            // Restoring an explicit height means the same auto-height cap lift
-            // the live resize applies (see setupInspectorFloatResize).
-            sidebar.style.height = parsed.floatH;
-            sidebar.style.maxHeight = 'none';
-          }
-          this._updateTearoffButton(true);
-        }
-      }
-    } catch (e) {}
-  }
-
-  async restoreSecondaryInspectorState(): Promise<void> {
-    if (!this.activeSecondaryTabId || this.secondaryTabs.length === 0) {
-      return;
-    }
-
-    // Persisted tabs are global, not per-scene: an entity that existed when a
-    // tab was saved may be absent from the scene now loaded. Wait for the
-    // first network load, then drop tabs whose entity is gone before
-    // restoring — otherwise restoring fires a request for a missing entity
-    // (e.g. GET /api/trains/DEMO_TRAIN -> 404 in a scene without that train).
-    await this.editor.whenNetworkReady();
-    this.pruneStaleSecondaryTabs();
-
-    if (!this.activeSecondaryTabId || this.secondaryTabs.length === 0) {
-      return;
-    }
-
-    const activeTab = this.secondaryTabs.find((tab) => tab.tabId === this.activeSecondaryTabId);
-    if (!activeTab) {
-      return;
-    }
-
-    await this.restoreSecondaryTabPanel(activeTab);
-  }
-
-  /** A persisted tab is stale when it points at an entity absent from the
-   *  loaded network. List/tool-setup panels and id-only editors (paths,
-   *  routes) aren't tied to a network entity and are always kept. */
-  isSecondaryTabStale(tab: any, network: any): boolean {
-    const id = tab?.editorId;
-    switch (tab?.editorType) {
-      case 'train':
-      case 'train-control':
-        return !(
-          Array.isArray(network?.trains) && network.trains.some((t: any) => t.id === id)
-        );
-      case 'block':
-        return !(network?.blocks && id in network.blocks);
-      case 'signal':
-        return !(network?.signals && id in network.signals);
-      case 'switch':
-        return !(network?.switches && id in network.switches);
-      case 'platform':
-        return !(
-          Array.isArray(network?.platforms) &&
-          network.platforms.some((p: any) => p.platform_id === id)
-        );
-      case 'station-group':
-        return !(
-          Array.isArray(network?.station_groups) &&
-          network.station_groups.some((s: any) => s.station_id === id)
-        );
-      default:
-        return false;
-    }
-  }
-
-  /** Drop persisted tabs whose entity no longer exists in the loaded network,
-   *  re-point the active tab, and persist if anything changed. */
-  pruneStaleSecondaryTabs(): void {
-    if (this.secondaryTabs.length === 0) {
-      return;
-    }
-    const network = this.editor.cachedNetwork;
-    const kept = this.secondaryTabs.filter((tab) => !this.isSecondaryTabStale(tab, network));
-    if (kept.length === this.secondaryTabs.length) {
-      return;
-    }
-
-    this.secondaryTabs = kept;
-    if (kept.length === 0) {
-      this.activeSecondaryTabId = null;
-    } else if (!kept.some((tab) => tab.tabId === this.activeSecondaryTabId)) {
-      this.activeSecondaryTabId = kept[0].tabId;
-    }
-    this.persistSecondaryInspectorState();
-    this.renderSecondaryTabs();
-    this.updateSecondaryNavigationState();
-  }
-
-  /** Close the tab pointing at a now-missing entity (matched by type + id).
-   *  No-op when no such tab is open; if it was the current editor, hide the
-   *  panel so the missing entity doesn't linger on screen. */
-  async closeStaleSecondaryTab(editorType: string, editorId: string): Promise<void> {
-    const tab = this.secondaryTabs.find(
-      (t) => t.editorType === editorType && t.editorId === editorId
-    );
-    if (tab) {
-      await this.closeSecondaryTab(tab.tabId);
-      return;
-    }
-    if (
-      this.editor._currentEditorType === editorType &&
-      this.editor._currentEditorId === editorId
-    ) {
+  async closeActiveSecondaryTab(): Promise<void> {
+    if (!this.homeTabGroup.activeTabId) {
       await this.hideSecondarySidebar();
-    }
-  }
-
-  cleanupSecondaryPanelSubscriptions(): void {
-    // Phase 3-4: Cleanup subscriptions for all handlers
-    if (this.editor.trainHandler?._cleanup) this.editor.trainHandler._cleanup();
-    if (this.editor.signalHandler?._cleanup) this.editor.signalHandler._cleanup();
-    if (this.editor.switchHandler?._cleanup) this.editor.switchHandler._cleanup();
-    if (this.editor.blockHandler?._cleanup) this.editor.blockHandler._cleanup();
-    if (this.editor.platformHandler?._cleanup) this.editor.platformHandler._cleanup();
-    if (this.editor.stationGroupHandler?._cleanup) this.editor.stationGroupHandler._cleanup();
-    if (this.editor.routeRunHandler?._cleanup) this.editor.routeRunHandler._cleanup();
-    if (this.editor.routeHandler?._cleanup) this.editor.routeHandler._cleanup();
-    if (this.editor.pathHandler?._cleanup) this.editor.pathHandler._cleanup();
-    if (this.editor.speedProfileHandler?._cleanup) this.editor.speedProfileHandler._cleanup();
-  }
-
-  escapeHtml(text: any): string {
-    return String(text)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
-
-  updateSecondaryNavigationState(): void {
-    const closeBtn = this.editor.$id('close-secondary-sidebar');
-    if (!closeBtn) {
       return;
     }
-    closeBtn.title = 'Close';
+    await this.closeTabInGroup(this.homeTabGroup, this.homeTabGroup.activeTabId);
+  }
 
-    // `← Trains`-style parent link: shown only when the open panel is a
-    // detail view whose parent list exists (DESIGN_LANGUAGE.md §12 — the back
-    // button is labeled with its destination).
-    const parentBtn = this.editor.$id('secondary-nav-parent') as HTMLButtonElement | null;
-    if (parentBtn) {
-      const parent = this.getCurrentParentSegment();
-      if (parent) {
-        parentBtn.hidden = false;
-        parentBtn.textContent = `← ${parent.label}`;
-        parentBtn.title = `Back to ${parent.label}`;
-      } else {
-        parentBtn.hidden = true;
-        parentBtn.textContent = '';
+  /** Persist the home window's own geometry/dock-state/tabs under the
+   *  unified 'home' key. Does not touch the top-level registry — the home
+   *  window always exists regardless of the registry's contents (see
+   *  restorePersistedState), so it doesn't need to be discovered through it;
+   *  only spawned windows do (persistWindowRegistry). */
+  persistSecondaryInspectorState(): void {
+    saveWindowState(this.persistenceEnv, 'home', {
+      geometry: this.homeWindow.getGeometry(),
+      floating: this.homeWindow.isFloating(),
+      tabGroup: this.homeTabGroup.serialize(),
+    });
+  }
+
+  /** Persist one spawned window's own geometry/tabs under its own key. */
+  private persistSpawnedWindow(groupId: string): void {
+    const entry = this.spawnedGroups.get(groupId);
+    if (!entry) {
+      return;
+    }
+    saveWindowState(this.persistenceEnv, groupId, {
+      geometry: entry.window.getGeometry(),
+      floating: true,
+      tabGroup: entry.tabGroup.serialize(),
+    });
+  }
+
+  /** Persist which windows currently exist — called at the handful of
+   *  moments a window is created (splitTabIntoNewWindow); closing one
+   *  updates the registry via closeGroupWindowIfEmpty's own unregister call
+   *  instead of a full rewrite here. Not called on every tab-level change
+   *  (persistSecondaryInspectorState / persistSpawnedWindow already fire for
+   *  those) — the registry only needs to change when a window itself
+   *  appears or disappears. */
+  private persistWindowRegistry(): void {
+    ensureRegistered(this.persistenceEnv, 'home', 'home');
+    for (const id of this.spawnedGroups.keys()) {
+      ensureRegistered(this.persistenceEnv, id, 'tab-group');
+    }
+  }
+
+  /** Boot-time restore: the home window's own state, plus every spawned
+   *  window the registry remembers. Diagnostics restores itself
+   *  independently (panels/diagnostics.ts) — it isn't a tab group and always
+   *  exists regardless of the registry, same as home. */
+  private restorePersistedState(): void {
+    const homeState = loadWindowState(this.persistenceEnv, 'home');
+    if (homeState) {
+      if (homeState.tabGroup) {
+        this.homeTabGroup.restoreTabs(homeState.tabGroup);
+      }
+      this.homeWindow.setGeometry(homeState.geometry);
+      if (homeState.floating && !this.homeWindow.isFloating()) {
+        this.homeWindow.toggleDock();
+      }
+      if (this.homeWindow.isFloating()) {
+        this._updateTearoffButton(true);
       }
     }
 
-    const pinBtn = this.editor.$id('secondary-nav-pin');
-    if (pinBtn) {
-      pinBtn.classList.toggle('active', this.secondaryPanelPinned);
-      pinBtn.title = this.secondaryPanelPinned ? 'Unpin inspector' : 'Pin inspector';
+    const registry = loadRegistry(this.persistenceEnv);
+    for (const entry of registry.windows) {
+      if (entry.kind !== 'tab-group' || entry.id === 'home') {
+        continue;
+      }
+      const state = loadWindowState(this.persistenceEnv, entry.id);
+      if (!state?.tabGroup || state.tabGroup.tabs.length === 0) {
+        continue; // nothing to restore — don't spawn an empty window
+      }
+      const { tabGroup } = this.createSpawnedWindow(entry.id, state.geometry);
+      tabGroup.restoreTabs(state.tabGroup);
+
+      const n = parseInt(entry.id.replace('tabgroup-', ''), 10);
+      if (!isNaN(n) && n > this.spawnCounter) {
+        this.spawnCounter = n;
+      }
     }
   }
 
@@ -1563,5 +1218,14 @@ export class EditorUIHandler {
     const nearY = y1 + t * dy;
 
     return Math.sqrt((px - nearX) * (px - nearX) + (py - nearY) * (py - nearY));
+  }
+
+  /** Close the tab pointing at a now-missing entity in every open group —
+   *  the home sidebar and any spawned windows alike. */
+  async closeStaleSecondaryTab(editorType: string, editorId: string): Promise<void> {
+    for (const { group } of this.allTabGroups()) {
+      await group.closeStaleTab(editorType, editorId);
+      this.closeGroupWindowIfEmpty(group);
+    }
   }
 }

@@ -1,0 +1,120 @@
+/* Floating window chrome — the shared shell for every draggable/resizable
+   panel: the diagnostics panel, the secondary sidebar's floating mode, and
+   any window spawned by splitting a tab out of it. Built by
+   frontend/src/lib/window-manager.ts (FloatingWindow). Header follows
+   DESIGN_LANGUAGE.md §2 "The four panel parts"; resizers follow §8.
+   Content-specific panels compose this class rather than redeclaring the
+   same border/shadow/resizer geometry — see diagnostics.css for an example
+   consumer. */
+
+.floating-window {
+    position: fixed;
+    display: flex;
+    flex-direction: column;
+    z-index: var(--z-window);
+    /* Safety default so an un-resized window never grows past the viewport —
+       lifted the moment a vertical resize or a fit sets an explicit height
+       (FloatingWindow sets max-height: none inline at that point). */
+    max-height: 88vh;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
+    background-color: var(--bg-panel);
+    color: var(--text-primary);
+    font-family: var(--font-main);
+    user-select: none;
+}
+
+.floating-window.floating-window--hidden {
+    display: none;
+}
+
+.floating-window.floating-window--dragging {
+    opacity: 0.92;
+}
+
+/* ---- Header (drag handle) ---- */
+.floating-window-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    gap: 8px;
+    padding: 8px 10px;
+    cursor: move;
+    background-color: var(--bg-hover);
+    border-top-left-radius: var(--radius-md);
+    border-top-right-radius: var(--radius-md);
+}
+
+.floating-window-title {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.floating-window-close {
+    flex-shrink: 0;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+    border-radius: 3px;
+}
+.floating-window-close:hover {
+    color: var(--text-primary);
+    background-color: var(--bg-panel);
+}
+
+/* ---- Content (everything below the header) ---- */
+/* A plain flex column filling the remaining space — it does not scroll
+   itself. The panel mounted inside owns its own toolbar/body/footer flex
+   rules (the body region is the one that scrolls), exactly like every
+   existing consumer already structures itself internally. */
+.floating-window-content {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+/* ---- Resize handles — all 8 edges/corners ---- */
+/* Hidden by default, shown only as a direct child of a floating window — a
+   dockable window (the home sidebar) creates these once regardless of dock
+   state, exactly like it dynamically created them before this migration, but
+   they must stay inert while docked (no position: fixed, no phantom
+   drag-to-resize hit targets along the docked column's edges). */
+.floating-window-resizer {
+    display: none;
+    position: absolute;
+    z-index: 1;
+    background-color: transparent;
+    transition: background-color 0.15s;
+}
+.floating-window > .floating-window-resizer {
+    display: block;
+}
+.floating-window-resizer:hover {
+    background-color: rgba(var(--accent-rgb), 0.55);
+}
+
+/* Edges — thin strips inset from the corners so the corner handles win there.
+   Sizes scale via --floating-window-handle-scale for coarse-pointer hardware
+   (see lib/dpi.ts's coarsePointerScale — 1 by default, ~2x under touch). */
+.floating-window-resizer[data-resize-dir='n'] { top: 0; left: 12px; right: 12px; height: calc(6px * var(--floating-window-handle-scale, 1)); cursor: ns-resize; }
+.floating-window-resizer[data-resize-dir='s'] { bottom: 0; left: 12px; right: 12px; height: calc(6px * var(--floating-window-handle-scale, 1)); cursor: ns-resize; }
+.floating-window-resizer[data-resize-dir='e'] { top: 12px; bottom: 12px; right: 0; width: calc(6px * var(--floating-window-handle-scale, 1)); cursor: ew-resize; }
+.floating-window-resizer[data-resize-dir='w'] { top: 12px; bottom: 12px; left: 0; width: calc(6px * var(--floating-window-handle-scale, 1)); cursor: ew-resize; }
+
+/* Corners — sit above the edges so the diagonal cursor wins at each corner. */
+.floating-window-resizer[data-resize-dir='ne'] { top: 0; right: 0; width: calc(14px * var(--floating-window-handle-scale, 1)); height: calc(14px * var(--floating-window-handle-scale, 1)); cursor: nesw-resize; z-index: 2; }
+.floating-window-resizer[data-resize-dir='nw'] { top: 0; left: 0; width: calc(14px * var(--floating-window-handle-scale, 1)); height: calc(14px * var(--floating-window-handle-scale, 1)); cursor: nwse-resize; z-index: 2; }
+.floating-window-resizer[data-resize-dir='se'] { bottom: 0; right: 0; width: calc(14px * var(--floating-window-handle-scale, 1)); height: calc(14px * var(--floating-window-handle-scale, 1)); cursor: nwse-resize; z-index: 2; }
+.floating-window-resizer[data-resize-dir='sw'] { bottom: 0; left: 0; width: calc(14px * var(--floating-window-handle-scale, 1)); height: calc(14px * var(--floating-window-handle-scale, 1)); cursor: nesw-resize; z-index: 2; }

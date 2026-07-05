@@ -154,7 +154,8 @@
 /* Flyout popover holding a group's tool tiles. position:fixed so the capsule's
    overflow can't clip it (the editor sets top/left on open from the button's
    viewport rect). The capsule (`.sidebar`) is a stacking context at the picker
-   layer, so this whole flyout renders above the floating inspector (z 850).
+   layer, so this whole flyout renders above every floating window (the
+   --z-window band — see lib/window-manager.ts).
 
    Width auto-fits the tiles: `width: max-content` would lay every tile on one
    line, but `max-width` caps the row at four 60px tiles (4×60 + 3×4 gap + 2×6

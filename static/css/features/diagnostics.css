@@ -1,71 +1,16 @@
 /* Diagnostics — floating, draggable debug panel.
    Shows a live snapshot of one Train + its TrainController organized into
-   four collapsible groups (config / live / derived / latches). */
+   four collapsible groups (config / live / derived / latches). The outer
+   window chrome (wrapper, header, drag, resize handles) is built by
+   FloatingWindow (lib/window-manager.ts, layout/floating-window.css) — this
+   file only styles what's mounted inside it: the toolbar/body/footer and
+   their content. */
 
-.diagnostics-panel {
-    position: fixed;
-    top: 80px;
-    right: 20px;
-    width: 420px;
-    min-width: 320px;
-    max-width: 900px;
-    max-height: 80vh;
-    z-index: 9000;
-    background-color: var(--bg-panel);
-    color: var(--text-primary);
-    border: 1px solid var(--border-color);
-    border-radius: var(--control-radius-sm);
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+/* Diagnostics' own font-size baseline for everything mounted inside the
+   shared .floating-window-content. */
+.floating-window[data-window-id="diagnostics"] .floating-window-content {
     font-family: var(--font-main);
     font-size: 12px;
-    display: flex;
-    flex-direction: column;
-    user-select: none;
-}
-
-.diagnostics-panel.diagnostics-panel-resizing {
-    cursor: ew-resize;
-}
-
-.diagnostics-panel.hidden {
-    display: none;
-}
-
-.diagnostics-panel.diagnostics-panel-dragging {
-    opacity: 0.92;
-}
-
-/* ---- Header / drag handle ---- */
-.diagnostics-panel-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 10px;
-    cursor: move;
-    background-color: var(--bg-hover);
-    border-top-left-radius: var(--control-radius-sm);
-    border-top-right-radius: var(--control-radius-sm);
-}
-
-.diagnostics-panel-title {
-    font-weight: 600;
-    color: var(--text-primary);
-    letter-spacing: 0.02em;
-}
-
-.diagnostics-panel-close {
-    background: transparent;
-    border: none;
-    color: var(--text-secondary);
-    font-size: 18px;
-    line-height: 1;
-    cursor: pointer;
-    padding: 0 4px;
-    border-radius: 3px;
-}
-.diagnostics-panel-close:hover {
-    color: var(--text-primary);
-    background-color: var(--bg-panel);
 }
 
 /* ---- Toolbar (train + rate + refresh) ---- */
@@ -316,26 +261,12 @@
     white-space: pre-wrap;
 }
 
-/* ---- Resize handle ---- */
-.diagnostics-resize-handle {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: 6px;
-    cursor: ew-resize;
-    background-color: transparent;
-    transition: background-color 0.15s;
-    z-index: 1;
-}
-.diagnostics-resize-handle:hover {
-    background-color: var(--accent-color);
-}
-
 /* ---- Name tooltip (custom, replaces native title) ---- */
 .diagnostics-name-tooltip {
+    /* z-index is set inline by diagnostics.ts (always just above the
+       panel's current stacking position — see FloatingWindow.getZIndex —
+       since WindowManager re-ranks that position as windows are focused). */
     position: fixed;
-    z-index: 9100;
     max-width: 360px;
     padding: 6px 9px;
     background-color: var(--bg-panel, #1a1d21);

@@ -141,9 +141,9 @@ Simulation.
 | **Top bar** | App-level commands: play/pause, the mode toggle, New / Save / Load, panel toggles, settings. The one region where the 32px `--control-height-sm` controls belong (§1 Layout). |
 | **Canvas** | The layout itself — two stacked `<canvas>` layers ([canvas.css](../static/css/layout/canvas.css); §16 "Two-canvas implementation"). |
 | **Left sidebar** | Build tools (the §3 tool-tile grid) and the Properties pane for the current selection ([tools.css](../static/css/components/tools.css)). |
-| **Secondary sidebar** | The working set: every open editor and list panel as a tab (§3 working-set tab strip; [shell.css](../static/css/layout/shell.css)). Detail editing and list browsing happen here. |
+| **Secondary sidebar** | The working set: every open editor and list panel as a tab (§3 working-set tab strip; [shell.css](../static/css/layout/shell.css)). Detail editing and list browsing happen here. A tab can split into its own floating window — a second, independent working set — via the tab's pop-out action, its context menu, or dragging it out (§12 "Splitting a tab into its own window"). |
 | **Bottom dock** | Continuous monitoring across many entities at once ([train-monitor.css](../static/css/features/train-monitor.css)). |
-| **Floating panels** | Spot-check diagnostics that overlay anything; draggable, resizable ([diagnostics.css](../static/css/features/diagnostics.css)). |
+| **Floating panels** | Spot-check diagnostics that overlay anything; draggable, resizable ([diagnostics.css](../static/css/features/diagnostics.css)). Chrome (drag, resize, double-click-to-fit, z-order) is shared with the secondary sidebar's floating mode and every split-off window via `FloatingWindow` ([window-manager.ts](../frontend/src/lib/window-manager.ts); [floating-window.css](../static/css/layout/floating-window.css)) — any number of these can be open at once. |
 | **Overlay layer** | Modals, toasts, floating pickers (§13). |
 
 Placement rule for a new feature: edits one record at a time → a
@@ -372,15 +372,11 @@ hand-pick a number between layers.
 | `--z-canvas-live` | `2` | Live canvas — trains, labels, selection (§16) |
 | `--z-canvas-overlay` | `3` | DOM overlays pinned to the canvas |
 | `--z-shell` | `10` | Sidebars, the bottom dock, sticky panel toolbars |
+| `--z-window` | `900` | Floating chrome windows — the secondary sidebar's floating mode, diagnostics, and every window split off from a tab. `WindowManager` stacks open windows within this band by focus order (topmost = most recently focused); the band sits below every picker/modal, so those always win. |
 | `--z-picker` | `1000` | Floating pickers, modal backdrops |
 | `--z-modal` | `1100` | Modal dialogs |
 | `--z-restart` | `1200` | Full-app restart overlay |
-| `--z-inspector` | `9000` | Floating debug panels |
 | `--z-toast` | `10000` | Toasts — transient, never blocked |
-
-The shipped layering has one inversion: the floating inspector (9000)
-sits above modal dialogs (1100), so a blocking modal can be covered by
-a debug panel. The modal should win (see Known divergences).
 
 ### Type
 
@@ -1319,6 +1315,20 @@ each one is individually correct. The canonical base class is `.chip` /
   → `var(--accent-color)`.
 - **Row resizer / drag handle**: 6px tall version of the same.
 - Cursor: `ew-resize` for column, `ns-resize` for row, `move` for whole-panel drag.
+- **Double-click-to-fit**: double-clicking a floating window's header resizes
+  it to its content's natural size (clamped to the viewport and to the
+  window's min/max), without moving its top-left anchor — the same corner it
+  grows from when dragged. Only the header triggers this; a tab's own
+  double-click is claimed for pin-promotion (§12 "Tab strip"). Shared by
+  every floating window (`FloatingWindow.fitToContent`,
+  [window-manager.ts](../frontend/src/lib/window-manager.ts)).
+- **Coarse-pointer sizing**: resize-handle and drag-handle hit areas scale up
+  under `matchMedia('(pointer: coarse)')` — a touch/stylus hardware panel —
+  via `coarsePointerScale()` in
+  [dpi.ts](../frontend/src/lib/dpi.ts). A hit-target concession, not a
+  layout or zoom change; canvas rendering separately scales its backing
+  store by `devicePixelRatio` for crispness (§16), which this is not — the
+  two are unrelated DPI concerns.
 
 ---
 
@@ -1745,6 +1755,41 @@ of inside any one section. Reference: `.re-toolbar` in
 
 ---
 
+### Splitting a tab into its own window
+
+Any tab in the working-set navigator can split into its own floating
+window — a second, independent working set with the exact same header
+chrome, tab strip, and navigator as the one it came from. It is not a
+lesser single-entity view: a split-off window keeps its own preview/pinned
+tabs, can receive more tabs later, and can itself be split or have tabs
+moved out of it. The one thing it cannot do is dock — there is exactly one
+docked slot in the page layout, owned by the secondary sidebar, so every
+split-off window is floating-only.
+
+Three ways to trigger a split, all routing through the same underlying
+move (`TabGroup.extractTab` / `acceptMovedTab` — [tab-group.ts](../frontend/src/editor/tab-group.ts)):
+
+- **Pop-out button** — the `ti-external-link` icon on the tab row (next to
+  pin and close). Always opens the tab into a brand-new window.
+- **Right-click menu** — "Open in new window," plus a "Move to `<window>`"
+  item for every other window currently open, so a tab can be relocated
+  into an existing window instead of always spawning a new one.
+- **Drag out** — grab a tab and drag it past a small threshold
+  ([tab-drag.ts](../frontend/src/editor/tab-drag.ts)): drop it on another
+  window's tab strip (highlighted while hovering) to move it there, drop it
+  on empty space to spawn a new window at the drop point, or press Escape
+  to cancel. A plain click below the threshold still just activates the
+  tab.
+
+A split-off window is chrome-identical to the secondary sidebar's floating
+mode — same `FloatingWindow` primitive, same drag/resize/double-click-to-fit,
+same z-order band — so §2's four-part-panel structure and §8's resizer
+conventions apply to it unchanged. Its geometry and tabs persist and
+restore across a reload the same way the secondary sidebar's do (one entry
+per window in a shared registry).
+
+---
+
 ## 13. Overlays
 
 Floating UI that sits above the panel layer.
@@ -1885,7 +1930,8 @@ When in doubt, copy the structure of one of these:
 - **Shared compositional primitives** → [components/status-blocks.css](../static/css/components/status-blocks.css) — the §6 banner, §7 chip, §11 status header, and §6 accent helpers. Editor panels consume these classes directly (`.status-header`, `.chip`, `.banner`, `.accent-*`) instead of redefining the shapes per feature.
 - **Detail-page editor** → [editor-route-runs.ts](../frontend/src/editor/editor-route-runs.ts) + [features/routes-paths.css](../static/css/features/routes-paths.css) — the worked reference for composing a `status-header` + stats block + list of rows inside an editor sidebar. Route-run-specific bits (`.rr-card`, `.rr-summary`, `.rr-task-*`) layer on top of the shared primitives.
 - **Long edit-and-act panel** → [editor-routes.ts](../frontend/src/editor/editor-routes.ts) + the `.re-toolbar` / `.atr-*` rules in `features/routes-paths.css` — the worked reference for a panel that mixes editing (tasks, mode, policy) with live monitoring (assigned trains, history). Demonstrates: sticky top toolbar with Save + dirty indicator + Refresh; assigned-trains list as a row-shaped second consumer of the `.rr-task-*` skeleton; history default-visible with per-entity cap; Force checkbox adjacent to the Assign button it modifies.
-- **Floating debug panel** → [diagnostics.css](../static/css/features/diagnostics.css) — header + toolbar + scrolling body + footer, draggable, resizable. Header has no border; relies on `--bg-hover` against `--bg-panel`. Toolbar keeps `border-bottom` because it shares `--bg-panel` with the body (per the §2 toolbar rule: same surface → hairline separator needed).
+- **Floating window chrome** → [layout/floating-window.css](../static/css/layout/floating-window.css) + [window-manager.ts](../frontend/src/lib/window-manager.ts) — the shared header (title + close, or an adopted richer header for a tab-hosting window) + content area + 8-direction resize handles, draggable, resizable, double-click-to-fit. Header has no border; relies on `--bg-hover` against `--bg-panel`. Every floating window (diagnostics, the secondary sidebar's floating mode, a split-off tab window) composes this instead of redefining it.
+- **Floating debug panel's own content** → [diagnostics.css](../static/css/features/diagnostics.css) — toolbar + scrolling body + footer mounted inside the shared chrome above. Toolbar keeps `border-bottom` because it shares `--bg-panel` with the body (per the §2 toolbar rule: same surface → hairline separator needed).
 - **Bottom dock** → [train-monitor.css](../static/css/features/train-monitor.css) — header + multi-column body + status footer, full-width, fixed height. Header has no border; the segmented view-distance control inside the header is a bordered container of flat ghosts (no internal dividers).
 - **Sidebar form** → [train-control.css](../static/css/features/train-control.css) — sectioned vertical stack inside a secondary sidebar. Status rows use the 3px left-border accent only, no surrounding 1px box.
 - **Working-set navigator** → [layout/shell.css](../static/css/layout/shell.css) `.secondary-sidebar-tabs` › `.secondary-nav-group` › `.secondary-tab` — open tabs grouped under collapsible type headers (icon · label · count) as a type → instance tree; a preview tab reuses one slot until pinned (§3 Working-set variant).
@@ -2400,7 +2446,6 @@ same change.
 |------|-------|--------|---------|
 | Private copies of the segmented control | `.tc-seg-btn` in [train-control.css](../static/css/features/train-control.css), `.tm-seg-btn` in [train-monitor.css](../static/css/features/train-monitor.css) | Fold onto `.switch-btn` (§3) | Next touch of either panel |
 | Pre-token literals — spacing, type sizes, radii, z-index written as raw values | all of `static/css` | Compose from the §1 scale tokens (`--space-*`, `--font-size-*`, `--radius-*`, `--z-*`); consolidate off-ramp values (13px type, 5/7/9px gaps, 3px small radii) to the nearest step | When touching the declaration |
-| Floating inspector outranks modals (z-index 9000 over 1100) | [diagnostics.css](../static/css/features/diagnostics.css) | Modal layer wins over debug panels | Next inspector or modal rework |
 | Canvas state marks hard-code hex — signal lamps, route status fills (incl. `#00ff88`), switch badges and locks, train mode tints | `renderer-{signals,routes,tracks,trains}.ts` | Consume §1 tokens / a tokenized canvas palette (§17 Rules) | When touching each renderer |
 | Passive empty states where a creation action exists | route / train / run list panels | §10 `.empty-state-action` with a `.btn-accent` CTA (§19) | When touching each panel |
 | Fixed-dark code surface in a panel — JSON viewer well + neon-green text | `.json-viewer-content` / `.json-content-view` (`#0d1020` / `#00ff88`) in [routes-paths.css](../static/css/features/routes-paths.css) | Either tokenize to surface tokens, or formally bless as a constant "code block" surface like the canvas (§1 Themes) | Next View-Full-JSON / routes-paths touch |

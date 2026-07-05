@@ -9,10 +9,22 @@
  * Phase 2+ will add Path / Block / Switch / Route inspectors. This file
  * is structured so that a future entity selector slots in without breaking
  * the train-only path.
+ *
+ * Window chrome (drag, resize, double-click-to-fit, DPI re-clamp, z-order) is
+ * owned by FloatingWindow (lib/window-manager.ts) — this file only builds and
+ * updates its own toolbar/body/footer content.
  */
 
 import { api } from '../lib/api';
 import { showToast } from '../lib/toast';
+import { FloatingWindow, windowManager, type WindowGeometry } from '../lib/window-manager';
+import {
+    browserWindowPersistenceEnv,
+    loadWindowState,
+    saveWindowState,
+    ensureRegistered,
+    type WindowState,
+} from '../lib/window-persistence';
 // Shapes of the inspector snapshot the backend returns from
 // GET /api/inspector/entity/train/<id>. Loosely typed — the panel only reads
 // these members and is defensive about missing ones.
@@ -43,7 +55,16 @@ interface InspectorSnapshot {
 (function () {
     "use strict";
 
-    const STATE_KEY = "diagnosticsPanelStateV1";
+    // Registered under the shared window-persistence scheme (lib/window-
+    // persistence.ts) as windowId 'diagnostics', windowKind 'diagnostics' —
+    // the one non-tab-group entry alongside 'home' and every spawned
+    // tab-group window. loadState/saveState keep their original shape
+    // (x/y/width/height/visible/trainId/refreshHz/sortMode/collapsedGroups)
+    // so nothing downstream of them (_applyPersistedFields,
+    // _buildFloatingWindow, _persistState) needed to change for this move —
+    // only where the state actually lives did.
+    const WINDOW_ID = "diagnostics";
+    const persistenceEnv = browserWindowPersistenceEnv();
     const FLASH_MS = 1000;
     const REFRESH_OPTIONS = [
         { label: "4 Hz", hz: 4 },
@@ -56,27 +77,41 @@ interface InspectorSnapshot {
     const MIN_WIDTH = 320;
     const MAX_WIDTH = 900;
 
-    function clampWidth(w: number) {
-        const max = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, window.innerWidth - 40));
-        return Math.max(MIN_WIDTH, Math.min(max, w));
+    function loadState(): Record<string, unknown> {
+        const state = loadWindowState(persistenceEnv, WINDOW_ID);
+        if (!state) return {};
+        return {
+            visible: !state.hidden,
+            trainId: state.diagnostics?.trainId ?? null,
+            refreshHz: state.diagnostics?.refreshHz,
+            x: state.geometry?.left ?? undefined,
+            y: state.geometry?.top ?? undefined,
+            width: state.geometry?.width ?? undefined,
+            height: state.geometry?.height ?? undefined,
+            sortMode: state.diagnostics?.sortMode,
+            collapsedGroups: state.diagnostics?.collapsedGroups ?? [],
+        };
     }
 
-    function loadState() {
-        try {
-            const raw = localStorage.getItem(STATE_KEY);
-            if (!raw) return {};
-            return JSON.parse(raw) || {};
-        } catch (e) {
-            return {};
-        }
-    }
-
-    function saveState(state: Record<string, unknown>) {
-        try {
-            localStorage.setItem(STATE_KEY, JSON.stringify(state));
-        } catch (e) {
-            // ignore quota / disabled storage
-        }
+    function saveState(s: Record<string, unknown>): void {
+        const state: WindowState = {
+            geometry: {
+                left: typeof s.x === "number" ? s.x : null,
+                top: typeof s.y === "number" ? s.y : null,
+                width: typeof s.width === "number" ? s.width : null,
+                height: typeof s.height === "number" ? s.height : null,
+            },
+            floating: true,
+            hidden: !s.visible,
+            diagnostics: {
+                trainId: (s.trainId as string) || null,
+                refreshHz: typeof s.refreshHz === "number" ? s.refreshHz : 1,
+                sortMode: (s.sortMode as "asc" | "desc" | null) ?? null,
+                collapsedGroups: Array.isArray(s.collapsedGroups) ? (s.collapsedGroups as string[]) : [],
+            },
+        };
+        saveWindowState(persistenceEnv, WINDOW_ID, state);
+        ensureRegistered(persistenceEnv, WINDOW_ID, "diagnostics");
     }
 
     function fmtValue(value: unknown): string {
@@ -114,20 +149,19 @@ interface InspectorSnapshot {
     }
 
     class DiagnosticsPanel {
-        // DOM handles — all assigned by _buildDom(), which init() calls before
-        // any other method runs (see bootstrap: `new DiagnosticsPanel(); .init()`).
-        // Declared definite (!) per the renderer.ts migration idiom.
-        _panelEl!: HTMLElement;
+        // DOM handles — all assigned by _buildContentDom(), which FloatingWindow
+        // calls synchronously (via its `content.mount` hook) from within
+        // _buildFloatingWindow(), which init() calls before any other method
+        // runs. Declared definite (!) per the renderer.ts migration idiom.
+        _floatingWindow!: FloatingWindow;
         _bodyEl!: HTMLElement;
         _trainSelectEl!: HTMLSelectElement;
         _rateSelectEl!: HTMLSelectElement;
         _refreshBtnEl!: HTMLElement;
-        _closeBtnEl!: HTMLElement;
         _footerEl!: HTMLElement;
         _expandAllBtnEl!: HTMLElement;
         _collapseAllBtnEl!: HTMLElement;
         _sortBtnEl!: HTMLElement;
-        _resizeHandleEl!: HTMLElement;
         _nameTooltipEl!: HTMLElement;
 
         _pollHandle: ReturnType<typeof setInterval> | null;
@@ -139,19 +173,15 @@ interface InspectorSnapshot {
         _currentTrainId: string | null;
         _refreshHz: number;
         _visible: boolean;
-        _dragOffset: { x: number; y: number } | null;
-        _position: { x: number; y: number } | null;
         _knownTrainIds: string[];
         _jsonExpansion: Map<string, boolean>;
-        _width: number;
-        _resizing: boolean;
         _sortMode: "asc" | "desc" | null;
 
         constructor() {
-            // DOM handles (_panelEl, _bodyEl, _trainSelectEl, _rateSelectEl,
-            // _refreshBtnEl, _nameTooltipEl, _expandAllBtnEl, _collapseAllBtnEl,
-            // _resizeHandleEl, _sortBtnEl, _closeBtnEl, _footerEl) are assigned by
-            // _buildDom() during init(); declared definite above.
+            // DOM handles (_bodyEl, _trainSelectEl, _rateSelectEl, _refreshBtnEl,
+            // _nameTooltipEl, _expandAllBtnEl, _collapseAllBtnEl, _sortBtnEl,
+            // _footerEl) are assigned by _buildContentDom(); declared definite
+            // above. _floatingWindow is assigned by _buildFloatingWindow().
             this._pollHandle = null;
             this._inflight = false;
             this._abortController = null;
@@ -161,25 +191,23 @@ interface InspectorSnapshot {
             this._currentTrainId = null;
             this._refreshHz = 1;
             this._visible = false;
-            this._dragOffset = null;
-            this._position = null; // {x, y}
 
             this._knownTrainIds = []; // cached from getNetwork()
 
             this._jsonExpansion = new Map(); // pathKey -> bool (in-memory only)
-            this._width = DEFAULT_WIDTH;
-            this._resizing = false;
             this._sortMode = "asc"; // null | "asc" | "desc"; default A→Z
         }
 
         init() {
-            this._buildDom();
-            this._restoreState();
-            this._setupDrag();
-            this._setupResize();
+            const s = loadState();
+            this._applyPersistedFields(s);
+            this._buildFloatingWindow(s);
             this._setupNameInteractions();
             this._wireToggleButton();
             this._wireSelectors();
+
+            this._rateSelectEl.value = String(this._refreshHz);
+            this._updateSortBtn();
 
             // First train list fetch (best-effort; ignore errors)
             this._refreshTrainList().then(() => {
@@ -187,17 +215,62 @@ interface InspectorSnapshot {
             });
         }
 
-        // ----- DOM construction --------------------------------------------
+        // ----- Persisted fields (no DOM) ------------------------------------
 
-        _buildDom() {
-            const panel = document.createElement("div");
-            panel.className = "diagnostics-panel hidden";
-            panel.id = "diagnostics-panel";
-            panel.innerHTML = `
-                <div class="diagnostics-panel-header" data-role="drag-handle">
-                    <span class="diagnostics-panel-title">Diagnostics</span>
-                    <button class="diagnostics-panel-close" type="button" title="Close">×</button>
-                </div>
+        _applyPersistedFields(s: Record<string, unknown>) {
+            this._visible = !!s.visible;
+            this._currentTrainId = (s.trainId as string) || null;
+            this._refreshHz = (s.refreshHz === 0 || s.refreshHz)
+                ? Number(s.refreshHz)
+                : 1;
+            this._collapsedGroups = new Set(
+                Array.isArray(s.collapsedGroups) ? (s.collapsedGroups as string[]) : []
+            );
+            this._sortMode =
+                s.sortMode === "asc" || s.sortMode === "desc" || s.sortMode === null
+                    ? (s.sortMode as "asc" | "desc" | null)
+                    : "asc";
+        }
+
+        // ----- Window chrome + DOM construction ------------------------------
+
+        /** Build the FloatingWindow this panel lives in. Diagnostics is a
+         *  permanent singleton toggled visible/hidden (never destroyed), so its
+         *  header close (×) button just hides it — see onCloseRequested. */
+        _buildFloatingWindow(s: Record<string, unknown>) {
+            const initialGeometry: Partial<WindowGeometry> = {};
+            if (typeof s.x === "number" && typeof s.y === "number") {
+                initialGeometry.left = Number(s.x);
+                initialGeometry.top = Number(s.y);
+            } else {
+                // Mirrors the old CSS default position (top: 80px; right: 20px)
+                // now that FloatingWindow always positions via an explicit left/top.
+                initialGeometry.left = Math.max(20, window.innerWidth - DEFAULT_WIDTH - 20);
+                initialGeometry.top = 80;
+            }
+            initialGeometry.width =
+                typeof s.width === "number" && s.width > 0 ? Number(s.width) : DEFAULT_WIDTH;
+            if (typeof s.height === "number" && s.height > 0) {
+                initialGeometry.height = Number(s.height);
+            }
+
+            this._floatingWindow = new FloatingWindow({
+                id: "diagnostics",
+                kind: "diagnostics",
+                manager: windowManager,
+                title: "Diagnostics",
+                minW: MIN_WIDTH,
+                maxW: MAX_WIDTH,
+                initialGeometry,
+                initialHidden: !this._visible,
+                content: { mount: (el) => this._buildContentDom(el) },
+                onCloseRequested: () => this.hide(),
+                onGeometryChange: () => this._persistState(),
+            });
+        }
+
+        _buildContentDom(contentEl: HTMLElement) {
+            contentEl.innerHTML = `
                 <div class="diagnostics-panel-toolbar">
                     <label class="diagnostics-panel-field">
                         Train
@@ -218,21 +291,16 @@ interface InspectorSnapshot {
                     <div class="empty-state">Select a train to begin.</div>
                 </div>
                 <div class="diagnostics-panel-footer" data-role="footer"></div>
-                <div class="diagnostics-resize-handle" data-role="resize-handle"></div>
             `;
-            document.body.appendChild(panel);
 
-            this._panelEl = panel;
-            this._bodyEl = panel.querySelector('[data-role="body"]') as HTMLElement;
-            this._trainSelectEl = panel.querySelector('[data-role="train-select"]') as HTMLSelectElement;
-            this._rateSelectEl = panel.querySelector('[data-role="rate-select"]') as HTMLSelectElement;
-            this._refreshBtnEl = panel.querySelector('[data-role="refresh"]') as HTMLElement;
-            this._closeBtnEl = panel.querySelector('.diagnostics-panel-close') as HTMLElement;
-            this._footerEl = panel.querySelector('[data-role="footer"]') as HTMLElement;
-            this._expandAllBtnEl = panel.querySelector('[data-role="expand-all"]') as HTMLElement;
-            this._collapseAllBtnEl = panel.querySelector('[data-role="collapse-all"]') as HTMLElement;
-            this._sortBtnEl = panel.querySelector('[data-role="sort"]') as HTMLElement;
-            this._resizeHandleEl = panel.querySelector('[data-role="resize-handle"]') as HTMLElement;
+            this._bodyEl = contentEl.querySelector('[data-role="body"]') as HTMLElement;
+            this._trainSelectEl = contentEl.querySelector('[data-role="train-select"]') as HTMLSelectElement;
+            this._rateSelectEl = contentEl.querySelector('[data-role="rate-select"]') as HTMLSelectElement;
+            this._refreshBtnEl = contentEl.querySelector('[data-role="refresh"]') as HTMLElement;
+            this._footerEl = contentEl.querySelector('[data-role="footer"]') as HTMLElement;
+            this._expandAllBtnEl = contentEl.querySelector('[data-role="expand-all"]') as HTMLElement;
+            this._collapseAllBtnEl = contentEl.querySelector('[data-role="collapse-all"]') as HTMLElement;
+            this._sortBtnEl = contentEl.querySelector('[data-role="sort"]') as HTMLElement;
 
             const tooltip = document.createElement("div");
             tooltip.className = "diagnostics-name-tooltip";
@@ -251,7 +319,6 @@ interface InspectorSnapshot {
             if (btn) {
                 btn.addEventListener("click", () => this.toggle());
             }
-            this._closeBtnEl.addEventListener("click", () => this.hide());
         }
 
         _wireSelectors() {
@@ -268,107 +335,6 @@ interface InspectorSnapshot {
             this._expandAllBtnEl.addEventListener("click", () => this._expandAll());
             this._collapseAllBtnEl.addEventListener("click", () => this._collapseAll());
             this._sortBtnEl.addEventListener("click", () => this._cycleSortMode());
-        }
-
-        // ----- Drag ---------------------------------------------------------
-
-        _setupDrag() {
-            const handle = this._panelEl.querySelector('[data-role="drag-handle"]') as HTMLElement;
-
-            handle.addEventListener("pointerdown", (e: PointerEvent) => {
-                if ((e.target as HTMLElement).closest("button, select, input, textarea")) return;
-                handle.setPointerCapture(e.pointerId);
-                const rect = this._panelEl.getBoundingClientRect();
-                this._dragOffset = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-                this._panelEl.classList.add("diagnostics-panel-dragging");
-            });
-
-            handle.addEventListener("pointermove", (e: PointerEvent) => {
-                if (!this._dragOffset) return;
-                const x = e.clientX - this._dragOffset.x;
-                const y = e.clientY - this._dragOffset.y;
-                const clampedX = Math.max(0, Math.min(window.innerWidth - 80, x));
-                const clampedY = Math.max(0, Math.min(window.innerHeight - 40, y));
-                this._panelEl.style.left = clampedX + "px";
-                this._panelEl.style.top = clampedY + "px";
-                this._panelEl.style.right = "auto";
-                this._position = { x: clampedX, y: clampedY };
-            });
-
-            const endDrag = () => {
-                if (!this._dragOffset) return;
-                this._dragOffset = null;
-                this._panelEl.classList.remove("diagnostics-panel-dragging");
-                this._persistState();
-            };
-            handle.addEventListener("pointerup", endDrag);
-            handle.addEventListener("pointercancel", endDrag);
-        }
-
-        // ----- Resize -------------------------------------------------------
-
-        _setupResize() {
-            const handle = this._resizeHandleEl;
-            if (!handle) return;
-            let startX = 0;
-            let startWidth = 0;
-
-            handle.addEventListener("pointerdown", (e: PointerEvent) => {
-                e.stopPropagation();
-                e.preventDefault();
-                handle.setPointerCapture(e.pointerId);
-                this._resizing = true;
-                startX = e.clientX;
-                startWidth = this._panelEl.getBoundingClientRect().width;
-                this._panelEl.classList.add("diagnostics-panel-resizing");
-            });
-
-            handle.addEventListener("pointermove", (e: PointerEvent) => {
-                if (!this._resizing) return;
-                const newWidth = clampWidth(startWidth + (e.clientX - startX));
-                this._panelEl.style.width = newWidth + "px";
-                this._width = newWidth;
-            });
-
-            const endResize = () => {
-                if (!this._resizing) return;
-                this._resizing = false;
-                this._panelEl.classList.remove("diagnostics-panel-resizing");
-                this._persistState();
-            };
-            handle.addEventListener("pointerup", endResize);
-            handle.addEventListener("pointercancel", endResize);
-        }
-
-        // ----- Viewport clamp ----------------------------------------------
-
-        _clampPositionToViewport() {
-            if (!this._position) return; // using default CSS positioning (right: 20px)
-            const margin = 8;
-            const rect = this._panelEl.getBoundingClientRect();
-            const width = rect.width || this._width || DEFAULT_WIDTH;
-            const height = rect.height;
-
-            let x = this._position.x;
-            let y = this._position.y;
-
-            if (x + width > window.innerWidth - margin) {
-                x = window.innerWidth - width - margin;
-            }
-            if (x < margin) x = margin;
-
-            if (height > 0 && y + height > window.innerHeight - margin) {
-                y = window.innerHeight - height - margin;
-            }
-            if (y < margin) y = margin;
-
-            if (x !== this._position.x || y !== this._position.y) {
-                this._position = { x, y };
-                this._panelEl.style.left = x + "px";
-                this._panelEl.style.top = y + "px";
-                this._panelEl.style.right = "auto";
-                this._persistState();
-            }
         }
 
         // ----- Name interactions: click-to-copy + hover tooltip + JSON carets
@@ -468,6 +434,9 @@ interface InspectorSnapshot {
                 html += `<div class="diagnostics-name-tooltip-meta">${escapeHtml(meta)}</div>`;
             }
             tt.innerHTML = html;
+            // Always render just above this panel's current stacking position —
+            // the panel's z-index shifts as WindowManager re-ranks focused windows.
+            tt.style.zIndex = String(this._floatingWindow.getZIndex() + 1);
             tt.style.display = "block";
             this._positionNameTooltip(evt);
         }
@@ -478,6 +447,7 @@ interface InspectorSnapshot {
             const full = scalarEl.dataset.full || "";
             if (!full) return;
             tt.innerHTML = `<div class="diagnostics-name-tooltip-value">${escapeHtml(full)}</div>`;
+            tt.style.zIndex = String(this._floatingWindow.getZIndex() + 1);
             tt.style.display = "block";
             this._positionNameTooltip(evt);
         }
@@ -515,8 +485,7 @@ interface InspectorSnapshot {
 
         show() {
             this._visible = true;
-            this._panelEl.classList.remove("hidden");
-            this._clampPositionToViewport();
+            this._floatingWindow.setHidden(false);
             this._refreshTrainList().then(() => {
                 this._startPolling();
             });
@@ -525,7 +494,7 @@ interface InspectorSnapshot {
 
         hide() {
             this._visible = false;
-            this._panelEl.classList.add("hidden");
+            this._floatingWindow.setHidden(true);
             this._hideNameTooltip();
             this._stopPolling();
             this._persistState();
@@ -533,49 +502,16 @@ interface InspectorSnapshot {
 
         // ----- State persistence -------------------------------------------
 
-        _restoreState() {
-            const s = loadState();
-            this._visible = !!s.visible;
-            this._currentTrainId = s.trainId || null;
-            this._refreshHz = (s.refreshHz === 0 || s.refreshHz)
-                ? Number(s.refreshHz)
-                : 1;
-            this._collapsedGroups = new Set(Array.isArray(s.collapsedGroups) ? s.collapsedGroups : []);
-
-            if (s.x !== undefined && s.y !== undefined) {
-                this._position = { x: Number(s.x), y: Number(s.y) };
-                this._panelEl.style.left = this._position.x + "px";
-                this._panelEl.style.top = this._position.y + "px";
-                this._panelEl.style.right = "auto";
-            }
-
-            if (typeof s.width === "number" && s.width > 0) {
-                this._width = clampWidth(Number(s.width));
-                this._panelEl.style.width = this._width + "px";
-            }
-
-            if (s.sortMode === "asc" || s.sortMode === "desc" || s.sortMode === null) {
-                this._sortMode = s.sortMode;
-            } else {
-                this._sortMode = "asc";
-            }
-            this._updateSortBtn();
-
-            this._rateSelectEl.value = String(this._refreshHz);
-            if (this._visible) {
-                this._panelEl.classList.remove("hidden");
-                this._clampPositionToViewport();
-            }
-        }
-
         _persistState() {
+            const geo = this._floatingWindow.getGeometry();
             saveState({
                 visible: this._visible,
                 trainId: this._currentTrainId,
                 refreshHz: this._refreshHz,
-                x: this._position ? this._position.x : undefined,
-                y: this._position ? this._position.y : undefined,
-                width: this._width,
+                x: geo.left ?? undefined,
+                y: geo.top ?? undefined,
+                width: geo.width ?? undefined,
+                height: geo.height ?? undefined,
                 sortMode: this._sortMode,
                 collapsedGroups: Array.from(this._collapsedGroups),
             });

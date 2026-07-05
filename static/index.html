@@ -79,6 +79,9 @@
                     <button id="btn-display" class="btn btn-icon-only" title="Display — editor &amp; layout themes" aria-label="Display settings: editor and layout themes" aria-haspopup="true" aria-expanded="false">
                         <i class="ti ti-palette"></i>
                     </button>
+                    <button id="btn-hardware" class="btn btn-icon-only" title="Hardware setup — virtual, GPIO, I²C" aria-label="Open hardware setup">
+                        <i class="ti ti-plug"></i>
+                    </button>
                     <button id="btn-settings" class="btn btn-icon-only" title="Settings &amp; Debug Info" aria-label="Open settings">
                         <i class="ti ti-settings"></i>
                     </button>
@@ -454,6 +457,66 @@
                         <span class="setting-label-compact">Loading…</span>
                     </div>
                 </section>
+            </div>
+        </div>
+    </div>
+
+    <div id="hardware-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Hardware Setup</h3>
+                <button class="close-btn" data-close-modal>&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="hw-intro">Choose how this layout drives trains and detects where they are. <strong>Virtual</strong> runs the full simulation with no hardware attached — pick a real backend only once your layout is wired up.</p>
+
+                <section class="settings-section">
+                    <h4 class="settings-section-title">Train control</h4>
+                    <div class="setting-row">
+                        <span class="setting-label-compact settings-label-inline">Output</span>
+                        <div class="switch-group fluid" id="hw-output-backend" role="group" aria-label="Train control backend">
+                            <button type="button" class="switch-btn" data-value="virtual">Virtual</button>
+                            <button type="button" class="switch-btn" data-value="gpio">GPIO</button>
+                        </div>
+                    </div>
+                    <p class="hw-hint">GPIO drives the track voltage and switch point motors through real outputs.</p>
+                </section>
+
+                <section class="settings-section">
+                    <h4 class="settings-section-title">Occupancy detection</h4>
+                    <div class="setting-row">
+                        <span class="setting-label-compact settings-label-inline">Input</span>
+                        <div class="switch-group fluid" id="hw-occupancy-backend" role="group" aria-label="Occupancy detection backend">
+                            <button type="button" class="switch-btn" data-value="virtual">Virtual</button>
+                            <button type="button" class="switch-btn" data-value="i2c">I²C</button>
+                        </div>
+                    </div>
+                    <p class="hw-hint">I²C reads current sensors to detect which blocks a train is standing on.</p>
+                </section>
+
+                <section class="settings-section" id="hw-device-section" hidden>
+                    <h4 class="settings-section-title">Device</h4>
+                    <div class="setting-row">
+                        <span class="setting-label-compact settings-label-inline">Target</span>
+                        <div class="switch-group fluid" id="hw-device-target" role="group" aria-label="Device target">
+                            <button type="button" class="switch-btn" data-value="ch347">CH347 (USB)</button>
+                            <button type="button" class="switch-btn" data-value="raspberry_pi">Raspberry Pi</button>
+                        </div>
+                    </div>
+                    <div class="setting-row" id="hw-device-port-row" hidden>
+                        <span class="setting-label-compact settings-label-inline">Port</span>
+                        <input type="text" id="hw-device-port" class="setting-input-compact settings-select-fill" placeholder="e.g. /dev/ttyUSB0" autocomplete="off" spellcheck="false" />
+                    </div>
+                    <p class="hw-hint" id="hw-device-hint">A real backend runs against one device. Both backends share it when both are real.</p>
+                </section>
+
+                <div class="hw-status" id="hw-status" role="status" aria-live="polite"></div>
+            </div>
+            <div class="modal-footer">
+                <span class="hw-restart-note" id="hw-restart-note" hidden>Applies after a server restart.</span>
+                <button class="btn btn-secondary" data-close-modal>Cancel</button>
+                <button class="btn btn-primary" id="hw-save-btn">Save</button>
+                <button class="btn btn-primary" id="hw-restart-btn" hidden>Restart now</button>
             </div>
         </div>
     </div>
