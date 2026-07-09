@@ -314,6 +314,12 @@ export class TabGroup {
       return;
     }
 
+    // A lone tab has nothing to leave behind: popping it out just empties this
+    // group (which then hides/closes) and respawns the same single tab in a new
+    // window at a cascade offset — a no-op "jump". Only show pop-out when there
+    // are other tabs that stay in this group.
+    const canPopOut = this.tabs.length > 1;
+
     const renderRow = (tab: SecondaryTab): string => {
       const { label, tooltip } = this.getTabDisplay(tab);
       const safeLabel = this.escapeHtml(label);
@@ -325,7 +331,9 @@ export class TabGroup {
       const pinButton = tab.pinned
         ? ''
         : `<button class="secondary-tab-pin" data-tab-id="${tab.tabId}" title="Pin tab (keep open)" aria-label="Pin tab"><i class="ti ti-pin" aria-hidden="true"></i></button>`;
-      const popOutButton = `<button class="secondary-tab-popout" data-tab-id="${tab.tabId}" title="Open in new window" aria-label="Open in new window"><i class="ti ti-external-link" aria-hidden="true"></i></button>`;
+      const popOutButton = canPopOut
+        ? `<button class="secondary-tab-popout" data-tab-id="${tab.tabId}" title="Open in new window" aria-label="Open in new window"><i class="ti ti-external-link" aria-hidden="true"></i></button>`
+        : '';
       return (
         `<div class="secondary-tab${activeClass}${listClass}${previewClass}" data-tab-id="${tab.tabId}" title="${safeTooltip}">` +
         `<i class="ti ${iconClass} secondary-tab-icon" aria-hidden="true"></i>` +

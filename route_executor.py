@@ -1213,6 +1213,18 @@ class RouteExecutor:
             # creation while dwell is pending or active.
             return
 
+        # ---------- run: timed roll, then a smooth ATC stop ------------------
+        # A `run` task keeps the train rolling for `task_time` seconds and then
+        # lets it coast to a smooth ATC stop wherever it is (position-agnostic).
+        # While rolling it falls through to ordinary authority acquisition; once
+        # the timer elapses `_run_task_step` drives the stop and returns True so
+        # no fresh authority is taken this tick.
+        if projection.task_kind == "run":
+            if self._run_task_step(
+                train, route, exec_state, controller, projection, now, delta_seconds
+            ):
+                return
+
         # ---------- 592a: re-resolve next target (post cursor changes) ------
         projection = self._find_next_task_target(train_id)
         if projection is None or projection.task_kind == "dwell":
@@ -1643,6 +1655,84 @@ class RouteExecutor:
         # Unpack (success, reason) tuple per train_controller agent signature.
         _fd_success, _fd_reason = controller.finish_dwell()
 
+    def _run_task_step(
+        self,
+        train: "Train",
+        route: "Route",
+        exec_state: RouteExecutionState,
+        controller: TrainController,
+        projection: "TargetProjection",
+        now: float,
+        delta_seconds: float,
+    ) -> bool:
+        """Phase-1 handling for a `run` task.
+
+        A `run` keeps the train moving for `task_time` seconds of simulated time,
+        then lets it coast to a smooth ATC stop wherever it is and finishes the
+        run so the following task (typically a `dwell`) takes over. The stop is
+        the ATO's ordinary operational deceleration (`TrainController.ato.stop()`),
+        not an abrupt cut, and the run never targets a stop location — where it
+        comes to rest is not part of the contract (design_new.md "RouteTask data").
+
+        The timer is measured in accumulated simulated `delta_seconds` (not
+        wall-clock), so "run 20 s" means 20 s of simulation and behaves the same
+        regardless of tick cadence. The accumulator is transient per-train
+        runtime state keyed on the run's walk-position; it resets when a
+        different walk-position becomes the active run.
+
+        Returns:
+            True  — the run window has elapsed and the train is stopping or the
+                    run is finished this tick; the caller must not acquire fresh
+                    authority.
+            False — the run is still within its time window; the caller falls
+                    through to ordinary authority acquisition to keep moving.
+        """
+        walk_pos = projection.walk_position
+        if not (0 <= walk_pos < len(exec_state.task_runs)):
+            return False
+        run_row = exec_state.task_runs[walk_pos]
+        task = route.tasks[run_row.task_index]
+        run_time = (
+            task.task_time if (task.task_time and task.task_time > 0.0) else 0.0
+        )
+
+        if not hasattr(self, "_run_elapsed"):
+            self._run_elapsed: Dict[str, tuple] = {}
+        train_id = train.train_id
+
+        # Already finished — clear the accumulator and wait for the following
+        # task to be armed.
+        if run_row.finished_at is not None:
+            self._run_elapsed.pop(train_id, None)
+            return True
+
+        prev = self._run_elapsed.get(train_id)
+        elapsed = prev[1] if (prev is not None and prev[0] == walk_pos) else 0.0
+
+        # Still inside the run window → accrue sim-time and keep rolling.
+        if elapsed < run_time:
+            self._run_elapsed[train_id] = (walk_pos, elapsed + delta_seconds)
+            return False
+
+        # Window elapsed: coast to a smooth ATC stop, then finish once at rest.
+        if not controller.is_stopped():
+            controller.ato.stop()
+            # Release the onward authority so nothing re-drives the train; the
+            # cancel commits in the gated Phase 3 once the train is stopped.
+            if self._get_active_path_id(train_id) is not None:
+                controller.route_hooks.phase_latches.set_path_cancel_request(
+                    initiator="run_complete",
+                    reason=f"run task (walk-position {walk_pos}) timer elapsed",
+                )
+            return True
+
+        # At rest: record finished_at + advance the cursor so the next task
+        # (typically a dwell at this position) is armed on the next tick.
+        self._run_elapsed.pop(train_id, None)
+        self.advance_walk_position(exec_state, route, walk_pos, now)
+        self._advance_to_next_task(route, exec_state)
+        return True
+
     def _covered_task_index_advance(
         self,
         train: "Train",
@@ -1678,7 +1768,10 @@ class RouteExecutor:
             if task is None:
                 break
 
-            if task.task_kind == "dwell":
+            # A `dwell` goes through dwell-entry; a `run` ends on its own timer
+            # (handled in `_run_task_step`) — neither is ever satisfied by
+            # coverage here, so stop advancing when either is next.
+            if task.task_kind in ("dwell", "run"):
                 break
 
             target_block = self.resolve_task_target_block(task, train=train)

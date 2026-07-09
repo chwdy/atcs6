@@ -19,6 +19,12 @@ import {
   parseOptionalMmToCm,
   applyStructuralLock,
 } from '../lib/helpers';
+import {
+  fetchHardwareConfig,
+  hardwareSectionHtml,
+  bindHardwareSection,
+  SWITCH_HW_SLOTS,
+} from '../ui/hardware-binding';
 
 export class SwitchEditorHandler {
   editor: EditorHost;
@@ -75,6 +81,10 @@ export class SwitchEditorHandler {
     } catch (err) {
       console.error('[SwitchEditorHandler] Failed to get track:', err);
     }
+
+    // Per-entity hardware binding (throw-output port). Null when hardware is
+    // off or the fetch fails, in which case the section renders nothing.
+    const hwCfg = await fetchHardwareConfig();
 
     const currentState = track?.switch_state ?? 0;
     const stateText = currentState === 0 ? 'MAIN' : 'DIVERGE';
@@ -336,6 +346,8 @@ export class SwitchEditorHandler {
                 ${renderAvailabilitySegment('switch', switchData, { idBase: 'switch-availability' })}
             </div>
 
+            ${hardwareSectionHtml(hwCfg, switchData.switch_id, SWITCH_HW_SLOTS)}
+
             <!-- Maintenance — read-only wear counter (design_new.md "Maintenance
                  counters"); counts real alignment changes during simulation. -->
             <div class="control-section">
@@ -356,10 +368,11 @@ export class SwitchEditorHandler {
     this.editor.showSecondarySidebar('Switch Editor', content);
 
     // Bind event handlers
-    this.bindEventHandlers(switchData);
+    this.bindEventHandlers(switchData, hwCfg);
   }
 
-  bindEventHandlers(switchData: any): void {
+  bindEventHandlers(switchData: any, hwCfg: any = null): void {
+    bindHardwareSection(hwCfg, switchData.switch_id);
     // Availability segment (disabled / manual). Per docs/DESIGN_LANGUAGE.md
     // §3 segmented control and design_new.md "Availability flag REST API
     // surface". Toggling `disabled = True` runs admin-reject preconditions

@@ -289,34 +289,112 @@ export class API implements LayoutDataClient, SimClient {
   }
 
   /**
-   * Read the persisted hardware backend selection (design_new.md "Power ->
-   * Hardware configuration"). Returns `{ config: {output_backend,
-   * occupancy_backend, device_target, device_port} }`.
+   * Read the persisted hardware configuration (design_new.md "Power -> Hardware
+   * configuration"): `{ config: {enabled, controller, chips, block_track,
+   * block_occupancy, switch_output} }`. Each chip is enriched with derived
+   * role / bus / port_count.
    */
   async getHardwareConfig(): Promise<any> {
     return this._request('/hardware/config', {}, 'getHardwareConfig');
   }
 
   /**
-   * Persist a new hardware backend selection. The server validates the merged
-   * configuration and writes it to the app-managed config file; it takes effect
-   * on the next session build (a server restart), not the running session. A
-   * rejected request (e.g. a real backend with no device target) throws with
-   * the server's error message.
+   * Persist a new hardware configuration (chip inventory + port bindings). The
+   * server validates it and writes it to the app-managed config file; it takes
+   * effect on the next session build (a server restart), not the running
+   * session. A rejected request (e.g. a chip missing a required parameter, or a
+   * binding to an out-of-range port) throws with the server's error message.
    */
-  async setHardwareConfig(config: {
-    output_backend: string;
-    occupancy_backend: string;
-    device_target: string | null;
-    device_port: string | null;
-  }): Promise<any> {
+  async setHardwareConfig(config: any): Promise<any> {
     return this._request(
       '/hardware/config',
-      {
-        method: 'PUT',
-        body: { config },
-      },
+      { method: 'PUT', body: { config } },
       'setHardwareConfig'
+    );
+  }
+
+  /** The selectable controller / chip catalog for the Hardware Setup dropdowns. */
+  async getHardwareCatalog(): Promise<any> {
+    return this._request('/hardware/catalog', {}, 'getHardwareCatalog');
+  }
+
+  /**
+   * Probe the controller + each configured chip. Opens a transient device at
+   * commissioning time (returns `{ok:false}` gracefully if none is attached or
+   * a real session already holds it). `config` is the config being edited.
+   */
+  async runHardwareSelfTest(config: any): Promise<any> {
+    return this._request(
+      '/hardware/self-test',
+      { method: 'POST', body: { config } },
+      'runHardwareSelfTest'
+    );
+  }
+
+  /**
+   * Pulse one output port ('595 bit / PCA9685 pair) or read one input port
+   * ('165 bit) so a single wire can be confirmed before binding.
+   */
+  async runHardwarePortTest(
+    config: any,
+    chipId: string,
+    port: number,
+    action: 'pulse_output' | 'read_input'
+  ): Promise<any> {
+    return this._request(
+      '/hardware/port-test',
+      { method: 'POST', body: { config, chip_id: chipId, port, action } },
+      'runHardwarePortTest'
+    );
+  }
+
+  /** Set (or clear, when chipId is null) one port binding, keyed by logical id. */
+  async updateHardwareBinding(
+    map: string,
+    logicalId: string,
+    chipId: string | null,
+    port: number | null
+  ): Promise<any> {
+    return this._request(
+      '/hardware/binding',
+      { method: 'PUT', body: { map, logical_id: logicalId, chip_id: chipId, port } },
+      'updateHardwareBinding'
+    );
+  }
+
+  /** Open a held commissioning session on the controller (for live input / sweep). */
+  async commissionOpen(config: any): Promise<any> {
+    return this._request(
+      '/hardware/commission/open',
+      { method: 'POST', body: { config } },
+      'commissionOpen'
+    );
+  }
+
+  /** Drive one output port on the held session (duty 0..1: PWM level, or on/off). */
+  async commissionOutput(chipId: string, port: number, duty: number): Promise<any> {
+    return this._request(
+      '/hardware/commission/output',
+      { method: 'POST', body: { chip_id: chipId, port, duty } },
+      'commissionOutput'
+    );
+  }
+
+  /** Read every input bit on a shift-in chip from the held session (live view). */
+  async commissionInputs(chipId: string): Promise<any> {
+    return this._request(
+      '/hardware/commission/inputs',
+      { method: 'POST', body: { chip_id: chipId } },
+      'commissionInputs'
+    );
+  }
+
+  /** Close the held commissioning session (de-energizes + releases the device). */
+  async commissionClose(): Promise<any> {
+    return this._request(
+      '/hardware/commission/close',
+      { method: 'POST', body: {} },
+      'commissionClose'
     );
   }
 

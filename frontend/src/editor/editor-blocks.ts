@@ -24,6 +24,12 @@ import {
   applyStructuralLock,
 } from '../lib/helpers';
 import { anchorToTiles } from '../lib/popover-anchor';
+import {
+  fetchHardwareConfig,
+  hardwareSectionHtml,
+  bindHardwareSection,
+  BLOCK_HW_SLOTS,
+} from '../ui/hardware-binding';
 
 export class BlockEditorHandler {
   editor: EditorHost;
@@ -125,6 +131,10 @@ export class BlockEditorHandler {
         return;
       }
     }
+
+    // Per-entity hardware binding (occupancy + track port). Null when hardware
+    // is off or the fetch fails, in which case the section renders nothing.
+    const hwCfg = await fetchHardwareConfig();
 
     const stateText = (block.state || 'free').toUpperCase();
     const { accentClass, chipClass } = this.getBlockStateAccent(block.state);
@@ -257,6 +267,8 @@ export class BlockEditorHandler {
                     })}
                 </div>
 
+                ${hardwareSectionHtml(hwCfg, blockId, BLOCK_HW_SLOTS)}
+
                 <!-- Maintenance — read-only usage counter (design_new.md
                      "Maintenance counters"); accrues while the simulation runs. -->
                 <div class="control-section control-section-divider mt-12 pt-12">
@@ -289,10 +301,11 @@ export class BlockEditorHandler {
     this._setupSubscription(blockId);
 
     // Initialize event handlers after content is rendered
-    setTimeout(() => this.initEditorHandlers(blockId), 0);
+    setTimeout(() => this.initEditorHandlers(blockId, hwCfg), 0);
   }
 
-  async initEditorHandlers(blockId: string): Promise<void> {
+  async initEditorHandlers(blockId: string, hwCfg: any = null): Promise<void> {
+    bindHardwareSection(hwCfg, blockId);
     const deleteBtn = this.editor.$id('delete-block-btn') as HTMLButtonElement | null;
     const nameInput = this.editor.$id('block-name-input') as HTMLInputElement | null;
     const lengthInput = this.editor.$id('block-length-input') as HTMLInputElement | null;

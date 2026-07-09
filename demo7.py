@@ -1,0 +1,339 @@
+"""Scene baked from demo7.json by json_to_scene.py.
+
+Auto-generated — do not hand-edit; re-run json_to_scene.py against the source
+layout instead. Layout only: 28 tracks, 0 switches,
+0 platforms (0 station groups),
+4 blocks (0 auto-created platform blocks),
+0 tunnels, 0 signals. Trains/routes are not
+part of the layout JSON, so setup_demo_train() is a stub.
+"""
+
+from network import RailwayNetwork
+from track import (
+    TrackSegment,
+    TRACK_NS,
+    TRACK_EW,
+    TRACK_NE,
+    TRACK_NW,
+    TRACK_SE,
+    TRACK_SW,
+)
+from switch import Switch
+
+
+SCENE_ID = 'demo7'
+
+
+TILES = [
+    (3, 6, TRACK_NE),
+    (3, 7, TRACK_NS),
+    (3, 8, TRACK_NS),
+    (3, 9, TRACK_SE),
+    (4, 5, TRACK_NE),
+    (4, 6, TRACK_SW),
+    (4, 9, TRACK_NW),
+    (4, 10, TRACK_SE),
+    (5, 5, TRACK_EW),
+    (5, 10, TRACK_NW),
+    (5, 11, TRACK_SE),
+    (6, 5, TRACK_EW),
+    (6, 11, TRACK_NW),
+    (6, 12, TRACK_SE),
+    (7, 5, TRACK_NW),
+    (7, 6, TRACK_SE),
+    (7, 12, TRACK_EW),
+    (8, 6, TRACK_NW),
+    (8, 7, TRACK_SE),
+    (8, 12, TRACK_EW),
+    (9, 7, TRACK_NW),
+    (9, 8, TRACK_SE),
+    (9, 11, TRACK_NE),
+    (9, 12, TRACK_SW),
+    (10, 8, TRACK_NW),
+    (10, 9, TRACK_NS),
+    (10, 10, TRACK_NS),
+    (10, 11, TRACK_SW),
+]
+
+
+SWITCHES = [
+]
+
+
+STATIONS = [
+]
+
+
+PLATFORMS = [
+]
+
+
+BLOCKS = [
+    ('BLK_AA62D2', '', [(3, 8), (3, 7), (3, 6), (4, 6), (4, 5), (5, 5), (6, 5)], 0.0, None),
+    ('BLK_AA6FB5', '', [(6, 12), (6, 11), (5, 11), (5, 10), (4, 10), (4, 9), (3, 9)], 0.0, None),
+    ('BLK_AA7B7E', '', [(10, 9), (10, 10), (10, 11), (9, 11), (9, 12), (8, 12), (7, 12)], 0.0, None),
+    ('BLK_AA866E', '', [(7, 5), (7, 6), (8, 6), (8, 7), (9, 7), (9, 8), (10, 8)], 0.0, None),
+]
+
+
+TUNNELS = [
+]
+
+
+SIGNALS = [
+]
+
+
+POWER_DISTRICTS = [
+    {'district_id': 'D_001', 'block_ids': ['BLK_AA62D2', 'BLK_AA6FB5', 'BLK_AA7B7E', 'BLK_AA866E'], 'name': ''},
+]
+
+
+def _add_tracks(network: RailwayNetwork) -> None:
+    """Place every baked track tile (dead-end ports are re-derived from geometry)."""
+    for (x, y, bits) in TILES:
+        network.add_track(TrackSegment(x, y, track_bits=bits))
+
+
+def _add_switches(network: RailwayNetwork) -> None:
+    """Create the Switch entity for each switch tile and link the tile to it."""
+    for (switch_id, x, y) in SWITCHES:
+        network.add_switch(Switch(switch_id=switch_id, x=x, y=y))
+        track = network.get_track(x, y)
+        if track is not None:
+            track.switch_id = switch_id
+
+
+def _add_stations(network: RailwayNetwork) -> None:
+    """Build each platform from its anchor tile + extensions, then group them.
+
+    add_station auto-creates one ``{platform_id}_BLOCK`` per platform, so those
+    blocks are not listed in BLOCKS.
+    """
+    for (group_id, group_name, platforms) in STATIONS:
+        platform_ids = []
+        for (platform_id, name, first_tile, extra_tiles, side, length_cm, top_speed_kmh) in platforms:
+            platform = network.add_station(
+                x=first_tile[0],
+                y=first_tile[1],
+                station_id=platform_id,
+                name=name,
+                length_cm=length_cm,
+                platform_side=side,
+                top_speed_kmh=top_speed_kmh,
+            )
+            for extra in extra_tiles:
+                network.extend_station(platform.platform_id, [extra])
+            platform_ids.append(platform.platform_id)
+        network.create_station_group(
+            station_id=group_id,
+            name=group_name,
+            platform_ids=platform_ids,
+        )
+
+
+def _add_platforms(network: RailwayNetwork) -> None:
+    """Build platforms that belong to no station group.
+
+    Same anchor-tile + extensions construction as ``_add_stations`` but with no
+    ``create_station_group`` call. Each platform still auto-creates its
+    ``{platform_id}_BLOCK``.
+    """
+    for (platform_id, name, first_tile, extra_tiles, side, length_cm, top_speed_kmh, block_name) in PLATFORMS:
+        platform = network.add_station(
+            x=first_tile[0],
+            y=first_tile[1],
+            station_id=platform_id,
+            name=name,
+            length_cm=length_cm,
+            platform_side=side,
+            top_speed_kmh=top_speed_kmh,
+        )
+        for extra in extra_tiles:
+            network.extend_station(platform.platform_id, [extra])
+        station_block = network.blocks.get(f"{platform.platform_id}_BLOCK")
+        if station_block is not None:
+            station_block.name = block_name
+
+
+def _add_blocks(network: RailwayNetwork) -> None:
+    """Create the non-platform blocks from their baked tile lists."""
+    for (block_id, name, positions, length_cm, speed_limit_kmh) in BLOCKS:
+        network.create_block_with_tracks(
+            block_id=block_id,
+            positions=positions,
+            name=name,
+            length_cm=length_cm,
+            speed_limit_kmh=speed_limit_kmh,
+        )
+
+
+def _add_tunnels(network: RailwayNetwork) -> None:
+    """Join the baked tunnel endpoint pairs."""
+    for (a, b) in TUNNELS:
+        network.add_tunnel(a, b)
+
+
+def _add_signals(network: RailwayNetwork) -> None:
+    """Rebuild signals via the canonical Signal.from_dict loader."""
+    if not SIGNALS:
+        return
+    from railway_signal import Signal
+    for sig in SIGNALS:
+        signal = Signal.from_dict(sig)
+        network.signals[signal.signal_id] = signal
+        track = network.get_track(*signal.position)
+        if track is not None and signal.signal_id not in track.signal_ids:
+            track.signal_ids.append(signal.signal_id)
+
+
+def _add_power_districts(network: RailwayNetwork) -> None:
+    """Rebuild power districts, mirroring ``RailwayNetwork.from_dict``.
+
+    Districts are an operator grouping of blocks onto one power feed, not
+    re-derivable from geometry, so they load directly: construct each
+    ``PowerDistrict`` from its dict and rebuild the reverse index once. Runs
+    after every block exists (a district may name a platform block).
+    """
+    if not POWER_DISTRICTS:
+        return
+    from power_district import PowerDistrict
+    for district_data in POWER_DISTRICTS:
+        district = PowerDistrict.from_dict(district_data)
+        network.power_districts[district.district_id] = district
+    network._get_power_district_registry()._rebuild_district_index()
+
+
+def create_comprehensive_demo() -> RailwayNetwork:
+    """Build the baked network from scratch and return it."""
+    network = RailwayNetwork()
+    _add_tracks(network)
+    _add_switches(network)
+    _add_stations(network)
+    _add_platforms(network)
+    _add_blocks(network)
+    _add_power_districts(network)
+    _add_tunnels(network)
+    _add_signals(network)
+    network.recompute_all_flank_protection()
+    return network
+
+
+# Which loop demo7 runs when it boots (see setup_demo_train):
+#   "stop_loop"   — stop + HOLD_SECONDS hold at every block, forever
+#   "continuous"  — endless laps with no stop (stops-free CIRCULAR waypoint route)
+# Both are robust one-way loops: one loco on the single power district D_001
+# (one train per powered district) with no platforms, so every stop targets a
+# BlockTarget. The engine also carries a timed `run` task (depart, roll for N
+# simulated seconds, then coast to a smooth ATC stop wherever it is), but a
+# run/dwell *loop* on this small symmetric oval trips the known reverse-
+# resolution wrap-back stall, so demo7's shipped loops use stops in loop order.
+DEMO7_MODE = "stop_loop"
+HOLD_SECONDS = 5.0
+
+
+def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
+    """Place one locomotive on the single loop and drive it per ``DEMO7_MODE``.
+
+    demo7 is a single four-block oval on one shared power feed (power district
+    ``D_001``). There are no platforms, so every stop targets a ``BlockTarget``
+    — the block itself is the stop location — and one train on one district
+    satisfies the "one train per powered district" rule.
+
+    Modes (``DEMO7_MODE``):
+      * ``stop_loop`` (default): a CIRCULAR route that stops and holds
+        ``HOLD_SECONDS`` at each block. The run between blocks lasts however
+        long the loco takes to reach the next block at its speed profile.
+      * ``continuous``: a stops-free CIRCULAR waypoint route — the loco laps the
+        loop without stopping.
+    """
+    import math
+    from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
+    from train_route import (
+        Route, RouteTask, RouteMode, RouteStartMode, BlockTarget,
+    )
+
+    # Layout-only loads (e.g. json_to_scene --verify calls create_comprehensive_demo
+    # without a controller) have nothing to place.
+    if sim_controller is None:
+        return
+
+    # Blocks in loop order (each is adjacent to the next; the fourth wraps to
+    # the first). AA62D2 top-left -> AA866E top-right -> AA7B7E bottom-right ->
+    # AA6FB5 bottom-left -> back.
+    LOOP_ORDER = ["BLK_AA62D2", "BLK_AA866E", "BLK_AA7B7E", "BLK_AA6FB5"]
+
+    # Real-world block lengths. The layout's true perimeter is two 315 mm-radius
+    # semicircle ends (pi * 31.5 cm each) plus two 56 cm straights =
+    # 2*(pi*31.5) + 2*56 = 309.92 cm. The baked layout splits the loop into four
+    # equal-tile quadrant blocks rather than a 2-curve + 2-straight split, so the
+    # perimeter is spread evenly across the four blocks — total lap length (and
+    # therefore lap time) matches the real loop.
+    per_block_cm = (2.0 * math.pi * 31.5 + 2.0 * 56.0) / 4.0
+    for block_id in LOOP_ORDER:
+        network.blocks[block_id].length_cm = per_block_cm
+
+    # One shared, slow profile so a lap over the ~3.1 m loop is watchable.
+    profile = SpeedProfile(
+        profile_id="loop_profile",
+        name="Loop Stock",
+        power_speed_curve=list(DEFAULT_SPEED_PROFILE.power_speed_curve),
+        voltage_power_curve=list(DEFAULT_SPEED_PROFILE.voltage_power_curve),
+        lighting_voltage=DEFAULT_SPEED_PROFILE.lighting_voltage,
+        acceleration_rate=3.0,
+        deceleration_rate=4.2,
+        emergency_brake_rate=5,
+        friction_rate=DEFAULT_SPEED_PROFILE.friction_rate,
+        operational_decel_ratio=DEFAULT_SPEED_PROFILE.operational_decel_ratio,
+        air_resistance_enabled=True,
+        drag_coefficient=0.001,
+        reference_speed_kmh=100.0,
+    )
+    network.speed_profiles.register(profile)
+
+    # Place one 20 cm loco at the bottom of the left column, facing north so it
+    # heads forward around the loop (north out of (3, 8) leads into AA866E).
+    train = sim_controller.add_train(
+        train_id="T_LOOP",
+        starting_block_id="BLK_AA62D2",
+        initial_direction="NORTH",
+        max_speed_kmh=15.0,
+        length_cm=20.0,
+        train_type="LOCOMOTIVE",
+        initial_cab="A",
+        start_tile=(3, 8),
+    )
+    train.speed_profile_id = profile.profile_id
+
+    # Build the CIRCULAR route for the selected mode. task_direction "either"
+    # lets the executor resolve a concrete direction each leg. Stops are listed
+    # in loop order so the loco keeps going one way around (a robust one-way
+    # loop needs a stop on each block; sparse stops that skip blocks hit a known
+    # reverse-resolution wrap-back stall on this symmetric loop).
+    route = Route(
+        route_id="ROUTE_LOOP", name="Loop", mode=RouteMode.CIRCULAR,
+        is_active=True, start_mode=RouteStartMode.NEAREST,
+    )
+    for block_id in LOOP_ORDER:
+        target = BlockTarget(block_id=block_id)
+        if DEMO7_MODE == "continuous":
+            route.add_task(RouteTask(
+                task_kind="waypoint", task_location=target,
+                task_direction="either",
+            ))
+        else:  # "stop_loop"
+            route.add_task(RouteTask(
+                task_kind="stop", task_location=target,
+                task_direction="either",
+            ))
+            route.add_task(RouteTask(
+                task_kind="dwell", task_location=target,
+                task_direction="either", task_time=HOLD_SECONDS,
+            ))
+    sim_controller.route_executor.register_route(route)
+    route.assign_train("T_LOOP")
+    sim_controller.get_or_create_controller("T_LOOP").commands.enqueue_command(
+        "power_on"
+    )
+
+    print(f"  Demo 7: 1 loco on a 4-block loop, mode={DEMO7_MODE!r}.")

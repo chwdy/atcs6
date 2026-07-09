@@ -200,6 +200,25 @@ def gen_signals(snapshot) -> str:
     return "\n".join(lines)
 
 
+def gen_power_districts(net) -> str:
+    """Emit each power district as the same dict shape ``from_dict`` consumes.
+
+    A power district is an operator grouping of blocks onto one power feed
+    (design_new.md "Power district"); it is not re-derivable from geometry, so
+    it must be baked explicitly. The dict form lets the generated scene reload
+    districts through the identical direct-load path as ``RailwayNetwork.from_dict``.
+    """
+    lines = ["POWER_DISTRICTS = ["]
+    for did in sorted(net.power_districts.keys()):
+        d = net.power_districts[did]
+        lines.append(
+            f"    {{'district_id': {d.district_id!r}, "
+            f"'block_ids': {list(d.block_ids)!r}, 'name': {d.name!r}}},"
+        )
+    lines.append("]")
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------------------- #
 # Static builder functions emitted verbatim into every generated scene.
 # --------------------------------------------------------------------------- #
@@ -302,6 +321,23 @@ def _add_signals(network: RailwayNetwork) -> None:
             track.signal_ids.append(signal.signal_id)
 
 
+def _add_power_districts(network: RailwayNetwork) -> None:
+    """Rebuild power districts, mirroring ``RailwayNetwork.from_dict``.
+
+    Districts are an operator grouping of blocks onto one power feed, not
+    re-derivable from geometry, so they load directly: construct each
+    ``PowerDistrict`` from its dict and rebuild the reverse index once. Runs
+    after every block exists (a district may name a platform block).
+    """
+    if not POWER_DISTRICTS:
+        return
+    from power_district import PowerDistrict
+    for district_data in POWER_DISTRICTS:
+        district = PowerDistrict.from_dict(district_data)
+        network.power_districts[district.district_id] = district
+    network._get_power_district_registry()._rebuild_district_index()
+
+
 def create_comprehensive_demo() -> RailwayNetwork:
     """Build the baked network from scratch and return it."""
     network = RailwayNetwork()
@@ -310,6 +346,7 @@ def create_comprehensive_demo() -> RailwayNetwork:
     _add_stations(network)
     _add_platforms(network)
     _add_blocks(network)
+    _add_power_districts(network)
     _add_tunnels(network)
     _add_signals(network)
     network.recompute_all_flank_protection()
@@ -336,6 +373,7 @@ def build_module_text(snapshot: dict, scene_id: str, source_name: str) -> tuple[
     stations, grouped = gen_stations(net)
     platforms = gen_platforms(net, grouped)
     blocks = gen_blocks(net)
+    power_districts = gen_power_districts(net)
     tunnels = gen_tunnels(net)
     signals = gen_signals(snapshot)
 
@@ -355,7 +393,8 @@ Auto-generated — do not hand-edit; re-run json_to_scene.py against the source
 layout instead. Layout only: {len(net.tracks)} tracks, {len(net.switches)} switches,
 {len(net.platforms)} platforms ({len(net.station_groups)} station groups),
 {len(net.blocks)} blocks ({n_platform_blocks} auto-created platform blocks),
-{len(net.tunnels) // 2} tunnels, {len(net.signals)} signals. Trains/routes are not
+{len(net.power_districts)} power districts, {len(net.tunnels) // 2} tunnels,
+{len(net.signals)} signals. Trains/routes are not
 part of the layout JSON, so setup_demo_train() is a stub.
 """
 
@@ -375,7 +414,7 @@ from switch import Switch
 SCENE_ID = {scene_id!r}'''
 
     body = "\n\n\n".join(
-        [header, tiles, switches, stations, platforms, blocks, tunnels, signals]
+        [header, tiles, switches, stations, platforms, blocks, power_districts, tunnels, signals]
     )
     return body + "\n\n" + _BUILDERS, warnings
 
@@ -422,6 +461,10 @@ def _fingerprint(net) -> dict:
         sid: (tuple(s.position), s.detection_direction, s.monitored_block_id)
         for sid, s in net.signals.items()
     }
+    power_districts = {
+        d.district_id: (d.name, tuple(sorted(d.block_ids)))
+        for d in net.power_districts.values()
+    }
     return {
         "tracks": tracks,
         "switches": switches,
@@ -430,6 +473,7 @@ def _fingerprint(net) -> dict:
         "blocks": blocks,
         "tunnels": tunnels,
         "signals": signals,
+        "power_districts": power_districts,
     }
 
 
@@ -465,7 +509,7 @@ def verify(output_path: str, snapshot: dict) -> bool:
 
     fa, fb = _fingerprint(gen_net), _fingerprint(canon)
     all_msgs = []
-    for section in ("tracks", "switches", "platforms", "groups", "blocks", "tunnels", "signals"):
+    for section in ("tracks", "switches", "platforms", "groups", "blocks", "tunnels", "signals", "power_districts"):
         all_msgs += _diff_section(section, fa[section], fb[section])
 
     if all_msgs:
@@ -476,7 +520,8 @@ def verify(output_path: str, snapshot: dict) -> bool:
     print("VERIFY OK — generated scene is equivalent to the canonical from_dict load:")
     print(f"  tracks={len(fa['tracks'])} switches={len(fa['switches'])} "
           f"platforms={len(fa['platforms'])} groups={len(fa['groups'])} "
-          f"blocks={len(fa['blocks'])} tunnels={len(fa['tunnels'])} signals={len(fa['signals'])}")
+          f"blocks={len(fa['blocks'])} tunnels={len(fa['tunnels'])} signals={len(fa['signals'])} "
+          f"power_districts={len(fa['power_districts'])}")
     return True
 
 

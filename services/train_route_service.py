@@ -483,14 +483,25 @@ def activate_route(
             "Cannot activate a route with no tasks. Add at least one "
             "task before activating."
         )
-    # Per design_new.md lines 1278-1286: a route is runnable only if it ends in
-    # a stop (optionally followed by dwell tasks) — which also guarantees at
-    # least one stop, so a waypoint-only route is rejected — and carries an
-    # in-range priority. These are enforced at activation time.
+    # Per design_new.md "Route-definition validation": a route must carry at
+    # least one non-dwell task and an in-range priority, enforced at activation.
+    # A CIRCULAR route never terminates, so it may run continuously with no stop
+    # (e.g. a waypoint-only loop, or a run/dwell loop) — there is no terminal
+    # task to "complete". A ONE_OFF / ROUND_TRIP route must still end at a task
+    # that brings the train to rest: a `stop`, or a timed `run` (which ends at a
+    # smooth ATC stop), optionally followed by dwell tasks.
     non_dwell_tasks = [t for t in route.tasks if t.task_kind != "dwell"]
-    if not non_dwell_tasks or non_dwell_tasks[-1].task_kind != "stop":
+    if not non_dwell_tasks:
         raise ValidationError(
-            "A route must contain at least one stop and end in a stop task "
+            "A route must contain at least one non-dwell task (waypoint, stop, "
+            "or run) before activation."
+        )
+    if route.mode != RouteMode.CIRCULAR and non_dwell_tasks[-1].task_kind not in (
+        "stop",
+        "run",
+    ):
+        raise ValidationError(
+            "A non-circular route must end in a stop or run task "
             "(optionally followed by dwell tasks) before activation."
         )
     if not 0 <= int(route.priority) <= 9:

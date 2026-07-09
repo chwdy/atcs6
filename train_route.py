@@ -175,14 +175,18 @@ class RouteTask:
     `task_location` decides everything else.
 
     Attributes:
-        task_kind: "waypoint" | "stop" | "dwell".
+        task_kind: "waypoint" | "stop" | "dwell" | "run".
         task_location: One of BlockTarget / PlatformTarget / StationTarget.
             The tagged union enforces exactly one targeting mode is present.
+            For a `run` task the location is only the direction seed for the
+            leg the run rolls along; the run ends on a timer, not on arrival.
         task_direction: Block-relative traversal preference. RouteExecutor
             resolves "either" to a concrete direction before any dispatcher
             call; the dispatcher never receives "either".
         task_time: Semantics depend on task_kind. For dwell: hold duration
-            in seconds; omit (None) means depart immediately. For
+            in seconds; omit (None) means depart immediately. For run: how
+            long in seconds the train keeps moving before the executor lets
+            it coast to a smooth ATC stop (position-agnostic). For
             waypoint/stop: expected travel time in seconds from the previous
             task's location to this one (used for early/on-time/late
             classification).
@@ -190,7 +194,7 @@ class RouteTask:
             for `stop` tasks; granted immediately if the train arrives late.
     """
 
-    task_kind: Literal["waypoint", "stop", "dwell"]
+    task_kind: Literal["waypoint", "stop", "dwell", "run"]
     task_location: TaskLocation
     task_direction: Literal["forward", "reverse", "either"] = "either"
     task_time: Optional[float] = None
@@ -296,7 +300,7 @@ class RouteTask:
         (`{"block_id"/"platform_id"/"station_id": "..."}`).
         """
         kind = data.get("task_kind", "waypoint")
-        if kind not in ("waypoint", "stop", "dwell"):
+        if kind not in ("waypoint", "stop", "dwell", "run"):
             kind = "waypoint"
 
         direction = data.get("task_direction", "either")

@@ -88,3 +88,309 @@
     font-size: 11px;
     color: var(--warning-color, var(--text-secondary));
 }
+
+/* The setup grows past the base 500px modal; give it a touch more room and let
+   the body scroll. */
+.hw-modal-content {
+    max-width: 580px;
+}
+#hardware-modal .modal-body {
+    overflow-y: auto;
+}
+
+/* Master enable toggle. */
+.hw-enable-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 8px 0 4px;
+    padding: 10px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-dark);
+    cursor: pointer;
+}
+.hw-enable-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+}
+.hw-enable-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.hw-enable-sub {
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--text-secondary);
+}
+/* Checkbox rendered as a pill switch. */
+.hw-toggle {
+    appearance: none;
+    -webkit-appearance: none;
+    position: relative;
+    width: 38px;
+    height: 20px;
+    flex-shrink: 0;
+    border-radius: 999px;
+    background: var(--bg-hover, #333);
+    border: 1px solid var(--border-color);
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+.hw-toggle::after {
+    content: "";
+    position: absolute;
+    top: 1px;
+    left: 1px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--text-secondary);
+    transition: transform 0.15s ease, background 0.15s ease;
+}
+.hw-toggle:checked {
+    background: rgba(var(--accent-rgb), 0.6);
+    border-color: rgba(var(--accent-rgb), 0.6);
+}
+.hw-toggle:checked::after {
+    transform: translateX(18px);
+    background: #fff;
+}
+
+/* Section head: title beside a note or an action button. */
+.hw-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+.hw-sec-note {
+    font-size: 11px;
+    color: var(--text-tertiary, var(--text-secondary));
+}
+.hw-btn-sm {
+    padding: 4px 10px;
+    font-size: 11px;
+}
+.hw-btn-sm.is-busy {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+/* Chip list rows. */
+.hw-chip-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 8px 0;
+}
+.hw-empty {
+    margin: 6px 0;
+    font-size: 11px;
+    color: var(--text-tertiary, var(--text-secondary));
+}
+.hw-chip {
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-dark);
+    padding: 8px 10px;
+}
+.hw-chip-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.hw-chip-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.hw-chip-meta {
+    flex: 1;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+.hw-chip-remove {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+}
+.hw-chip-remove:hover {
+    color: var(--danger-color, #e5534b);
+}
+.hw-chip-ports {
+    margin-top: 6px;
+}
+.hw-chip-untested {
+    font-size: 11px;
+    color: var(--text-tertiary, var(--text-secondary));
+}
+.hw-chip-badge {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+.hw-chip-badge.hw-ok {
+    color: var(--success-color, #57ab5a);
+    background: rgba(87, 171, 90, 0.14);
+}
+.hw-chip-badge.hw-bad {
+    color: var(--warning-color, #d9a441);
+    background: rgba(217, 164, 65, 0.14);
+}
+
+/* Port pills — a compact grid; click to pulse/read. */
+.hw-port-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+}
+.hw-port {
+    min-width: 22px;
+    padding: 2px 4px;
+    font-size: 10px;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    cursor: pointer;
+    transition: all 0.12s ease;
+}
+.hw-port.ok {
+    color: var(--accent-hover);
+    background: rgba(var(--accent-rgb), 0.16);
+    border-color: rgba(var(--accent-rgb), 0.4);
+}
+.hw-port.off {
+    color: var(--text-tertiary, var(--text-secondary));
+    background: transparent;
+}
+.hw-port:hover {
+    border-color: var(--accent-color);
+}
+
+/* Add-chip form row. */
+.hw-add-chip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+.hw-add-chip .hw-add-kind {
+    flex: 0 0 auto;
+    min-width: 150px;
+}
+.hw-add-params {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+.hw-add-params .hw-param {
+    width: auto;
+}
+.hw-add-params .hw-chain {
+    width: 52px;
+}
+.hw-linkbtn {
+    background: none;
+    border: none;
+    color: var(--accent-hover);
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0 2px;
+    text-decoration: underline;
+}
+
+/* Self-test summary line. */
+.hw-selftest-summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 6px 0;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+/* Binding tables. */
+.hw-bind-group {
+    margin-top: 10px;
+}
+.hw-bind-title {
+    margin: 0 0 4px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-secondary);
+}
+.hw-bind-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+}
+.hw-bind-table th {
+    text-align: left;
+    font-weight: 500;
+    color: var(--text-tertiary, var(--text-secondary));
+    padding: 2px 6px;
+}
+.hw-bind-table td {
+    padding: 3px 6px;
+    border-top: 1px solid var(--border-color);
+}
+.hw-bind-name {
+    color: var(--text-primary);
+    white-space: nowrap;
+}
+.hw-bind-select {
+    width: 100%;
+    min-width: 120px;
+    padding: 3px 6px;
+    font-size: 11px;
+    height: 24px;
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+}
+
+/* Per-chip Live-view / Sweep action button in the chip head. */
+.hw-chip-action {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+}
+.hw-chip-action:hover {
+    border-color: var(--accent-color);
+    color: var(--accent-hover);
+}
+.hw-chip-action.on {
+    background: rgba(var(--accent-rgb), 0.16);
+    border-color: rgba(var(--accent-rgb), 0.4);
+    color: var(--accent-hover);
+}
+
+/* Live / sweep active badge, and the port currently driven by the marquee. */
+.hw-chip-badge.hw-live {
+    color: var(--accent-hover);
+    background: rgba(var(--accent-rgb), 0.16);
+}
+.hw-port.sweep {
+    color: #fff;
+    background: var(--accent-color);
+    border-color: var(--accent-color);
+}

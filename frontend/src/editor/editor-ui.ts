@@ -149,9 +149,18 @@ export class EditorUIHandler {
     this.restorePersistedState();
     this.persistWindowRegistry();
     setTimeout(async () => {
+      // restoreActivePanel prunes tabs whose entity is absent from the loaded
+      // scene (persisted tabs are global, not per-scene). Pruning can empty a
+      // group, and unlike the close/move paths it doesn't itself hide/destroy
+      // the window — so an all-stale group would restore as an empty frame.
+      // Enforce the "no empty group stays visible" rule here. Snapshot the
+      // spawned map first: closeGroupWindowIfEmpty deletes from it when it
+      // destroys a window, which would mutate the Map mid-iteration.
       await this.homeTabGroup.restoreActivePanel();
-      for (const { tabGroup } of this.spawnedGroups.values()) {
+      this.closeGroupWindowIfEmpty(this.homeTabGroup);
+      for (const { tabGroup } of [...this.spawnedGroups.values()]) {
         await tabGroup.restoreActivePanel();
+        this.closeGroupWindowIfEmpty(tabGroup);
       }
     }, 0);
   }
@@ -214,8 +223,12 @@ export class EditorUIHandler {
 
   private showTabContextMenu(group: TabGroup, tabId: string, event: MouseEvent): void {
     const others = this.allTabGroups().filter((entry) => entry.group !== group);
-    const sections: ContextMenuSection[] = [
-      {
+    const sections: ContextMenuSection[] = [];
+    // Popping a lone tab out just relocates its window (this group empties and
+    // closes), so only offer it when there are other tabs to leave behind —
+    // matches the tab-strip pop-out button being hidden in the same case.
+    if (group.tabs.length > 1) {
+      sections.push({
         items: [
           {
             label: 'Open in new window',
@@ -223,8 +236,8 @@ export class EditorUIHandler {
             onSelect: () => this.splitTabIntoNewWindow(group, tabId),
           },
         ],
-      },
-    ];
+      });
+    }
     if (others.length > 0) {
       sections.push({
         heading: 'Move to',
@@ -234,6 +247,9 @@ export class EditorUIHandler {
           onSelect: () => this.moveTabToGroup(group, tabId, entry.group),
         })),
       });
+    }
+    if (sections.length === 0) {
+      return;
     }
     showContextMenu(event.clientX, event.clientY, sections);
   }
