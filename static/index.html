@@ -468,64 +468,10 @@
                 <button class="close-btn" data-close-modal>&times;</button>
             </div>
             <div class="modal-body">
-                <p class="hw-intro">Add the chips on your control board, run a self-test, then connect the working ports to blocks and switches. <strong>Leave hardware off</strong> to keep running the full simulation.</p>
-
-                <label class="hw-enable-row" for="hw-enabled">
-                    <span class="hw-enable-text">
-                        <span class="hw-enable-label">Use real hardware</span>
-                        <span class="hw-enable-sub">Drives track, switches, and occupancy through the controller — applies on the next restart.</span>
-                    </span>
-                    <input type="checkbox" id="hw-enabled" class="hw-toggle" role="switch" />
-                </label>
-
-                <section class="settings-section">
-                    <h4 class="settings-section-title">Controller</h4>
-                    <div class="setting-row">
-                        <span class="setting-label-compact settings-label-inline">Bridge</span>
-                        <select id="hw-controller-kind" class="setting-select"></select>
-                    </div>
-                    <div class="setting-row" id="hw-controller-port-row" hidden>
-                        <span class="setting-label-compact settings-label-inline">Port</span>
-                        <input type="text" id="hw-controller-port" class="setting-input-compact settings-select-fill" placeholder="auto (USB VID/PID)" autocomplete="off" spellcheck="false" />
-                    </div>
-                </section>
-
-                <section class="settings-section">
-                    <div class="hw-section-head">
-                        <h4 class="settings-section-title">Output</h4>
-                        <span class="hw-sec-note">track power + switches</span>
-                    </div>
-                    <div class="hw-chip-list" id="hw-output-chips"></div>
-                    <div class="hw-add-chip" id="hw-output-add"></div>
-                </section>
-
-                <section class="settings-section">
-                    <div class="hw-section-head">
-                        <h4 class="settings-section-title">Input</h4>
-                        <span class="hw-sec-note">block occupancy</span>
-                    </div>
-                    <div class="hw-chip-list" id="hw-input-chips"></div>
-                    <div class="hw-add-chip" id="hw-input-add"></div>
-                </section>
-
-                <section class="settings-section">
-                    <div class="hw-section-head">
-                        <h4 class="settings-section-title">Connections</h4>
-                        <button type="button" class="btn btn-secondary hw-btn-sm" id="hw-selftest-all"><i class="ti ti-plug-connected" aria-hidden="true"></i> Run self-test</button>
-                    </div>
-                    <p class="hw-hint">Self-test finds which ports respond. Then connect each block and switch to a working port.</p>
-                    <div class="hw-selftest-summary" id="hw-selftest-summary" hidden></div>
-                    <div class="hw-bindings" id="hw-bindings"></div>
-                </section>
-
-                <div class="hw-status" id="hw-status" role="status" aria-live="polite"></div>
+                <p class="hw-intro">Find the chips on your control board and confirm their ports respond. Blocks and switches are wired to ports in their own editor panels.</p>
+                <div id="hw-body"></div>
             </div>
-            <div class="modal-footer">
-                <span class="hw-restart-note" id="hw-restart-note" hidden>Applies after a server restart.</span>
-                <button class="btn btn-secondary" data-close-modal>Cancel</button>
-                <button class="btn btn-primary" id="hw-save-btn">Save</button>
-                <button class="btn btn-primary" id="hw-restart-btn" hidden>Restart now</button>
-            </div>
+            <div class="modal-footer hw-gate" id="hw-gate"></div>
         </div>
     </div>
 

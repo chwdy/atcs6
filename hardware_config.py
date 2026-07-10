@@ -6,11 +6,15 @@ This store answers three questions for the next operation session:
 - **What is wired?** A `controller` (the transport bridge) plus a list of `chips`
   (each a PWM driver, shift-out, or shift-in), every chip carrying the parameters
   the user set: an I2C address, or an SPI select line + cascade length.
-- **What connects to what?** The `bindings` — three maps from a logical id to a
-  chip port: `block_track` (block_id -> track port), `block_occupancy` (block_id
-  -> input port), `switch_output` (switch_id -> throw port). This is the logical
-  id -> physical channel map; the concrete driver in `hardware/` is the only
-  consumer of it (design_new.md "Power", Hardware interface boundary).
+- **What connects to what?** The `bindings` — maps from a logical id to a chip
+  port: `block_track` (block_id -> track port), `switch_output` (switch_id ->
+  throw port), and two occupancy sources for the hybrid detector —
+  `block_occupancy` (block_id -> '165 digital-detector port) and
+  `block_occupancy_current` (block_id -> INA3221 current channel, with its
+  per-channel baseline/threshold). `output_enable` optionally names the '595 bit
+  wired to each PCA's /OE. This is the logical id -> physical channel map; the
+  concrete driver in `hardware/` is the only consumer of it (design_new.md
+  "Power", Hardware interface boundary).
 - **Is it live?** `enabled` gates real mode. A session runs real when `enabled`
   is set and at least one chip is configured; each interface (track / switch /
   occupancy) resolves real only when a chip of its role exists, else simulated.
@@ -29,12 +33,15 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from enums import OperationMode
 from hardware.catalog import (
+    BUS_I2C,
     CHIP_CATALOG,
     CONTROLLER_CATALOG,
+    PORT_CURRENT_SENSE,
+    PORT_DIGITAL_IN,
     ROLE_OCCUPANCY,
     ROLE_SWITCH,
     ROLE_TRACK,
-    SPI_SELECT_LINES,
+    latch_lines_for,
     ports_for_chip,
 )
 
@@ -44,6 +51,15 @@ CONFIG_PATH = "hardware_config.json"
 
 # I2C 7-bit address range for a peripheral (0x00-0x02 and 0x78-0x7F reserved).
 _I2C_MIN, _I2C_MAX = 0x03, 0x77
+
+# Hybrid current-sense occupancy defaults (design_new.md Power, Block occupancy
+# detection). A block powered above the deadband is read by its INA3221 current
+# channel; abs(current - baseline) at/above the threshold marks it occupied. A
+# per-channel `CurrentBinding` may override the threshold/baseline; None on a
+# field means "use the default below".
+DEFAULT_CURRENT_THRESHOLD_MA = 15.0
+DEFAULT_CURRENT_BASELINE_MA = 0.0
+DEFAULT_IDLE_DEADBAND_V = 0.25
 
 
 class HardwareConfigError(ValueError):
@@ -77,25 +93,22 @@ class ControllerConfig:
 
 @dataclass
 class ChipConfig:
-    """One configured chip. `role` and `bus` are derived from `kind` via the
-    catalog, never stored, so they cannot drift."""
+    """One configured chip. `bus` is stored (a shift register can be wired on SPI
+    or GPIO), defaulting to the kind's first allowed bus; `role` is derived from
+    `kind` via the catalog, never stored, so it cannot drift."""
 
     chip_id: str
     kind: str
-    i2c_address: Optional[int] = None   # pca9685 (user-set jumper address)
+    bus: Optional[str] = None            # i2c/spi/gpio; None -> kind's first allowed bus
+    i2c_address: Optional[int] = None   # i2c bus (user-set jumper address)
     chain_length: int = 1               # hc595/hc165 cascade count
-    spi_select: Optional[str] = None    # hc595/hc165 latch/load line, by pad
+    spi_select: Optional[str] = None    # spi/gpio latch/load line, by pad
     label: str = ""
 
     @property
     def role(self) -> Optional[str]:
         ck = CHIP_CATALOG.get(self.kind)
         return ck.role if ck else None
-
-    @property
-    def bus(self) -> Optional[str]:
-        ck = CHIP_CATALOG.get(self.kind)
-        return ck.bus if ck else None
 
 
 @dataclass
@@ -107,6 +120,19 @@ class PortBinding:
 
 
 @dataclass
+class CurrentBinding:
+    """A block's INA3221 current-sense channel plus its per-channel calibration.
+
+    `baseline_ma` / `threshold_ma` None means "use the module default" — the
+    interface resolves them so a user only sets what differs from the norm."""
+
+    chip_id: str
+    port: int
+    baseline_ma: Optional[float] = None
+    threshold_ma: Optional[float] = None
+
+
+@dataclass
 class HardwareConfig:
     """The whole selection. Defaults are the all-virtual sim-mode configuration."""
 
@@ -114,8 +140,18 @@ class HardwareConfig:
     controller: ControllerConfig = field(default_factory=ControllerConfig)
     chips: List[ChipConfig] = field(default_factory=list)
     block_track: Dict[str, PortBinding] = field(default_factory=dict)
+    # Two occupancy sources per the hybrid detector: `block_occupancy` is the
+    # digital detector ('165, read when a block is idle) and
+    # `block_occupancy_current` is the INA3221 channel (read when the block is
+    # powered). A block may appear in either or both.
     block_occupancy: Dict[str, PortBinding] = field(default_factory=dict)
+    block_occupancy_current: Dict[str, CurrentBinding] = field(default_factory=dict)
     switch_output: Dict[str, PortBinding] = field(default_factory=dict)
+    # Optional per-PCA output-enable line: key = track (pca9685) chip_id, value =
+    # the '595 bit wired to that PCA's /OE. Driven to enable once at session
+    # build and held; there is no per-tick coast window. Empty when /OE is tied
+    # enabled in hardware.
+    output_enable: Dict[str, PortBinding] = field(default_factory=dict)
 
 
 _config = HardwareConfig()
@@ -144,10 +180,23 @@ def _binding_dict(m: Dict[str, PortBinding]) -> Dict[str, Dict[str, Any]]:
     return {lid: {"chip_id": b.chip_id, "port": b.port} for lid, b in m.items()}
 
 
+def _current_binding_dict(m: Dict[str, CurrentBinding]) -> Dict[str, Dict[str, Any]]:
+    return {
+        lid: {
+            "chip_id": b.chip_id,
+            "port": b.port,
+            "baseline_ma": b.baseline_ma,
+            "threshold_ma": b.threshold_ma,
+        }
+        for lid, b in m.items()
+    }
+
+
 def _chip_persist(c: ChipConfig) -> Dict[str, Any]:
     return {
         "chip_id": c.chip_id,
         "kind": c.kind,
+        "bus": c.bus,
         "i2c_address": c.i2c_address,
         "chain_length": c.chain_length,
         "spi_select": c.spi_select,
@@ -163,20 +212,23 @@ def _persist_dict(cfg: HardwareConfig) -> Dict[str, Any]:
         "chips": [_chip_persist(c) for c in cfg.chips],
         "block_track": _binding_dict(cfg.block_track),
         "block_occupancy": _binding_dict(cfg.block_occupancy),
+        "block_occupancy_current": _current_binding_dict(cfg.block_occupancy_current),
         "switch_output": _binding_dict(cfg.switch_output),
+        "output_enable": _binding_dict(cfg.output_enable),
     }
 
 
 def as_dict() -> Dict[str, Any]:
-    """API payload for `GET /api/hardware/config` — the persisted form enriched
-    with each chip's derived role / bus / port_count for the frontend."""
+    """API payload for `GET /api/hardware/config` — the persisted form (which
+    already carries each chip's stored `bus`) enriched with each chip's derived
+    role / direction / port_count / port_kind for the frontend."""
     payload = _persist_dict(_config)
     for chip_payload, chip in zip(payload["chips"], _config.chips):
+        ck = CHIP_CATALOG.get(chip.kind)
         chip_payload["role"] = chip.role
-        chip_payload["bus"] = chip.bus
-        chip_payload["port_count"] = (
-            ports_for_chip(chip.kind, chip.chain_length) if chip.kind in CHIP_CATALOG else 0
-        )
+        chip_payload["direction"] = ck.direction if ck else None
+        chip_payload["port_count"] = ports_for_chip(chip.kind, chip.chain_length) if ck else 0
+        chip_payload["port_kind"] = ck.port_kind if ck else None
     return payload
 
 
@@ -218,6 +270,7 @@ def _parse_chip(data: Any) -> ChipConfig:
     return ChipConfig(
         chip_id=str(data.get("chip_id", "")).strip(),
         kind=str(data.get("kind", "")).strip(),
+        bus=_opt_str(data.get("bus")),
         i2c_address=_opt_int(data.get("i2c_address")),
         chain_length=int(data.get("chain_length", 1) or 1),
         spi_select=_opt_str(data.get("spi_select")),
@@ -241,6 +294,36 @@ def _parse_bindings(data: Any) -> Dict[str, PortBinding]:
     return out
 
 
+def _opt_float(value: Any) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise HardwareConfigError(f"expected a number, got {value!r}") from exc
+
+
+def _parse_current_bindings(data: Any) -> Dict[str, CurrentBinding]:
+    data = data if isinstance(data, dict) else {}
+    out: Dict[str, CurrentBinding] = {}
+    for logical_id, raw in data.items():
+        raw = raw if isinstance(raw, dict) else {}
+        chip_id = str(raw.get("chip_id", "")).strip()
+        try:
+            port = int(raw.get("port"))
+        except (TypeError, ValueError) as exc:
+            raise HardwareConfigError(
+                f"current binding {logical_id!r} needs an integer port"
+            ) from exc
+        out[str(logical_id)] = CurrentBinding(
+            chip_id=chip_id,
+            port=port,
+            baseline_ma=_opt_float(raw.get("baseline_ma")),
+            threshold_ma=_opt_float(raw.get("threshold_ma")),
+        )
+    return out
+
+
 def _merged_from_updates(updates: Dict[str, Any]) -> HardwareConfig:
     """Build the candidate config: each top-level key present in `updates`
     replaces that section; absent keys keep the current singleton's value."""
@@ -250,7 +333,9 @@ def _merged_from_updates(updates: Dict[str, Any]) -> HardwareConfig:
         chips=list(_config.chips),
         block_track=dict(_config.block_track),
         block_occupancy=dict(_config.block_occupancy),
+        block_occupancy_current=dict(_config.block_occupancy_current),
         switch_output=dict(_config.switch_output),
+        output_enable=dict(_config.output_enable),
     )
     if "enabled" in updates:
         merged.enabled = bool(updates["enabled"])
@@ -262,8 +347,12 @@ def _merged_from_updates(updates: Dict[str, Any]) -> HardwareConfig:
         merged.block_track = _parse_bindings(updates["block_track"])
     if "block_occupancy" in updates:
         merged.block_occupancy = _parse_bindings(updates["block_occupancy"])
+    if "block_occupancy_current" in updates:
+        merged.block_occupancy_current = _parse_current_bindings(updates["block_occupancy_current"])
     if "switch_output" in updates:
         merged.switch_output = _parse_bindings(updates["switch_output"])
+    if "output_enable" in updates:
+        merged.output_enable = _parse_bindings(updates["output_enable"])
     return merged
 
 
@@ -292,20 +381,33 @@ def _validate(cfg: HardwareConfig) -> None:
                 f"chip {c.chip_id!r}: kind must be one of {list(CHIP_CATALOG)}, "
                 f"got {c.kind!r}"
             )
-        if ck.needs_i2c_address:
+        # Resolve the bus this chip is wired on (default = the kind's first
+        # allowed bus) and check the kind actually supports it.
+        if c.bus is None:
+            c.bus = ck.buses[0]
+        if c.bus not in ck.buses:
+            raise HardwareConfigError(
+                f"chip {c.chip_id!r}: {c.kind} cannot be on bus {c.bus!r}; "
+                f"allowed: {list(ck.buses)}"
+            )
+
+        # The coordinate a chip needs depends on its bus: an I2C chip addresses,
+        # an SPI/GPIO chip latches on a line.
+        if c.bus == BUS_I2C:
             if c.i2c_address is None:
-                raise HardwareConfigError(f"chip {c.chip_id!r}: {c.kind} needs an i2c_address")
+                raise HardwareConfigError(f"chip {c.chip_id!r}: an i2c chip needs an i2c_address")
             if not (_I2C_MIN <= c.i2c_address <= _I2C_MAX):
                 raise HardwareConfigError(
                     f"chip {c.chip_id!r}: i2c_address {hex(c.i2c_address)} out of "
                     f"range {hex(_I2C_MIN)}..{hex(_I2C_MAX)}"
                 )
-        if ck.needs_spi_select:
+        else:
+            lines = latch_lines_for(c.bus)
             if c.spi_select is None:
-                raise HardwareConfigError(f"chip {c.chip_id!r}: {c.kind} needs a spi_select line")
-            if c.spi_select not in SPI_SELECT_LINES:
+                raise HardwareConfigError(f"chip {c.chip_id!r}: a {c.bus} chip needs a latch line")
+            if c.spi_select not in lines:
                 raise HardwareConfigError(
-                    f"chip {c.chip_id!r}: spi_select must be one of {SPI_SELECT_LINES}, "
+                    f"chip {c.chip_id!r}: latch line must be one of {lines}, "
                     f"got {c.spi_select!r}"
                 )
         if c.chain_length < 1:
@@ -318,14 +420,30 @@ def _validate(cfg: HardwareConfig) -> None:
     chips_by_id = {c.chip_id: c for c in cfg.chips}
     _validate_bindings(cfg.block_track, ROLE_TRACK, chips_by_id, "block_track")
     _validate_bindings(cfg.switch_output, ROLE_SWITCH, chips_by_id, "switch_output")
-    _validate_bindings(cfg.block_occupancy, ROLE_OCCUPANCY, chips_by_id, "block_occupancy")
+    # The two occupancy maps share the occupancy role but split by port kind: the
+    # digital detector ('165) vs the current-sense channel (INA3221).
+    _validate_bindings(
+        cfg.block_occupancy, ROLE_OCCUPANCY, chips_by_id, "block_occupancy",
+        port_kind=PORT_DIGITAL_IN,
+    )
+    _validate_bindings(
+        cfg.block_occupancy_current, ROLE_OCCUPANCY, chips_by_id, "block_occupancy_current",
+        port_kind=PORT_CURRENT_SENSE,
+    )
+    for logical_id, b in cfg.block_occupancy_current.items():
+        if b.threshold_ma is not None and b.threshold_ma < 0:
+            raise HardwareConfigError(
+                f"block_occupancy_current[{logical_id!r}] threshold_ma must be >= 0"
+            )
+    _validate_output_enable(cfg.output_enable, chips_by_id)
 
 
 def _validate_bindings(
-    m: Dict[str, PortBinding],
+    m: Dict[str, Any],
     role: str,
     chips_by_id: Dict[str, ChipConfig],
     name: str,
+    port_kind: Optional[str] = None,
 ) -> None:
     used: set = set()
     for logical_id, b in m.items():
@@ -338,6 +456,10 @@ def _validate_bindings(
         if ck.role != role:
             raise HardwareConfigError(
                 f"{name}[{logical_id!r}] chip {b.chip_id!r} is {ck.role}, needs {role}"
+            )
+        if port_kind is not None and ck.port_kind != port_kind:
+            raise HardwareConfigError(
+                f"{name}[{logical_id!r}] chip {b.chip_id!r} is {ck.port_kind}, needs {port_kind}"
             )
         count = ports_for_chip(chip.kind, chip.chain_length)
         if not (0 <= b.port < count):
@@ -353,6 +475,48 @@ def _validate_bindings(
         used.add(key)
 
 
+def _validate_output_enable(
+    m: Dict[str, PortBinding],
+    chips_by_id: Dict[str, ChipConfig],
+) -> None:
+    """Each /OE binding keys on a track (pca9685) chip_id and points at the '595
+    output bit wired to that PCA's /OE pin."""
+    used: set = set()
+    for track_chip_id, b in m.items():
+        target = chips_by_id.get(track_chip_id)
+        if target is None:
+            raise HardwareConfigError(
+                f"output_enable key {track_chip_id!r} is not a configured chip"
+            )
+        if CHIP_CATALOG[target.kind].role != ROLE_TRACK:
+            raise HardwareConfigError(
+                f"output_enable key {track_chip_id!r} must be a track chip, "
+                f"is {CHIP_CATALOG[target.kind].role}"
+            )
+        drive = chips_by_id.get(b.chip_id)
+        if drive is None:
+            raise HardwareConfigError(
+                f"output_enable[{track_chip_id!r}] references unknown chip {b.chip_id!r}"
+            )
+        if CHIP_CATALOG[drive.kind].role != ROLE_SWITCH:
+            raise HardwareConfigError(
+                f"output_enable[{track_chip_id!r}] chip {b.chip_id!r} is "
+                f"{CHIP_CATALOG[drive.kind].role}, needs an {ROLE_SWITCH} bit for /OE"
+            )
+        count = ports_for_chip(drive.kind, drive.chain_length)
+        if not (0 <= b.port < count):
+            raise HardwareConfigError(
+                f"output_enable[{track_chip_id!r}] port {b.port} out of range "
+                f"0..{count - 1} on chip {b.chip_id!r}"
+            )
+        key = (b.chip_id, b.port)
+        if key in used:
+            raise HardwareConfigError(
+                f"output_enable: port {b.port} on chip {b.chip_id!r} is bound more than once"
+            )
+        used.add(key)
+
+
 # ---------------------------------------------------------------------------
 # Commit / persistence
 # ---------------------------------------------------------------------------
@@ -363,12 +527,31 @@ def _apply(cfg: HardwareConfig) -> HardwareConfig:
     return _config
 
 
+def _prune_dangling_bindings(cfg: HardwareConfig) -> None:
+    """Drop binding entries that reference a chip no longer configured. The
+    Hardware Setup screen saves only the chip list — port bindings are edited in
+    the per-entity block/switch panels — so removing a chip there must not leave
+    a binding pointing at a chip that is gone. Such a binding is dropped, not a
+    fatal validation error."""
+    ids = {c.chip_id for c in cfg.chips}
+    for map_name in ("block_track", "block_occupancy", "block_occupancy_current", "switch_output"):
+        m = getattr(cfg, map_name)
+        for lid in [k for k, b in m.items() if b.chip_id not in ids]:
+            del m[lid]
+    # output_enable is keyed by the track chip and points at the switch chip that
+    # drives its /OE; drop the entry if either chip is gone.
+    oe = cfg.output_enable
+    for track_id in [k for k, b in oe.items() if k not in ids or b.chip_id not in ids]:
+        del oe[track_id]
+
+
 def apply_updates(updates: Dict[str, Any], *, persist: bool = True) -> HardwareConfig:
     """Apply a partial section->value dict, validate the whole, and (by default)
     write it to disk. On any violation nothing is committed and
     `HardwareConfigError` is raised, so a rejected request leaves the singleton
     and the file untouched."""
     merged = _merged_from_updates(updates or {})
+    _prune_dangling_bindings(merged)   # a chip removed on the setup screen drops its bindings
     _validate(merged)   # raises before any commit
     _apply(merged)
     if persist:
@@ -388,7 +571,9 @@ def _copy_config() -> HardwareConfig:
         chips=list(_config.chips),
         block_track=dict(_config.block_track),
         block_occupancy=dict(_config.block_occupancy),
+        block_occupancy_current=dict(_config.block_occupancy_current),
         switch_output=dict(_config.switch_output),
+        output_enable=dict(_config.output_enable),
     )
 
 
@@ -421,6 +606,40 @@ def set_binding(
     return _config
 
 
+def set_current_binding(
+    block_id: str,
+    chip_id: Optional[str] = None,
+    port: Optional[int] = None,
+    *,
+    baseline_ma: Any = None,
+    threshold_ma: Any = None,
+    persist: bool = True,
+) -> HardwareConfig:
+    """Set or clear one block's INA3221 current binding (the per-entity block
+    editor's current-sense row). `chip_id` None/empty clears it. `baseline_ma` /
+    `threshold_ma` None keep the module defaults. The whole configuration is
+    re-validated, so an out-of-range / wrong-port-kind / already-used channel is
+    rejected and nothing is committed."""
+    candidate = _copy_config()
+    target = candidate.block_occupancy_current
+    if chip_id in (None, ""):
+        target.pop(block_id, None)
+    else:
+        if port is None:
+            raise HardwareConfigError("port is required when chip_id is set")
+        target[block_id] = CurrentBinding(
+            chip_id=str(chip_id),
+            port=int(port),
+            baseline_ma=_opt_float(baseline_ma),
+            threshold_ma=_opt_float(threshold_ma),
+        )
+    _validate(candidate)
+    _apply(candidate)
+    if persist:
+        save_to_disk()
+    return _config
+
+
 def config_from_payload(payload: Dict[str, Any]) -> HardwareConfig:
     """Build and validate a standalone `HardwareConfig` from a full payload
     (no merge with the singleton). Used by the self-test / port-test endpoints
@@ -432,7 +651,9 @@ def config_from_payload(payload: Dict[str, Any]) -> HardwareConfig:
         chips=[_parse_chip(c) for c in (payload.get("chips") or [])],
         block_track=_parse_bindings(payload.get("block_track", {})),
         block_occupancy=_parse_bindings(payload.get("block_occupancy", {})),
+        block_occupancy_current=_parse_current_bindings(payload.get("block_occupancy_current", {})),
         switch_output=_parse_bindings(payload.get("switch_output", {})),
+        output_enable=_parse_bindings(payload.get("output_enable", {})),
     )
     _validate(cfg)
     return cfg
@@ -481,6 +702,20 @@ def _binding_tuples(m: Dict[str, PortBinding]) -> Dict[str, Tuple[str, int]]:
     return {lid: (b.chip_id, b.port) for lid, b in m.items()}
 
 
+def _current_binding_tuples(
+    m: Dict[str, CurrentBinding],
+) -> Dict[str, Tuple[str, int, float, float]]:
+    """Resolve each current binding to (chip_id, port, baseline_a, threshold_a),
+    filling per-channel None with the module defaults and converting mA -> A so
+    the interface compares against raw INA3221 amps."""
+    out: Dict[str, Tuple[str, int, float, float]] = {}
+    for lid, b in m.items():
+        baseline_ma = b.baseline_ma if b.baseline_ma is not None else DEFAULT_CURRENT_BASELINE_MA
+        threshold_ma = b.threshold_ma if b.threshold_ma is not None else DEFAULT_CURRENT_THRESHOLD_MA
+        out[lid] = (b.chip_id, b.port, baseline_ma / 1000.0, threshold_ma / 1000.0)
+    return out
+
+
 def build_session_interfaces(
     cfg: Optional[HardwareConfig] = None,
 ) -> Tuple[Optional[Any], Optional[Any], Optional[Any]]:
@@ -521,6 +756,9 @@ def build_session_interfaces(
             _binding_tuples(cfg.block_track),
             _binding_tuples(cfg.block_occupancy),
             _binding_tuples(cfg.switch_output),
+            block_occupancy_current=_current_binding_tuples(cfg.block_occupancy_current),
+            output_enable=_binding_tuples(cfg.output_enable),
+            idle_deadband_v=DEFAULT_IDLE_DEADBAND_V,
         )
     except Exception as exc:
         try:

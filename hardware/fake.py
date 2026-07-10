@@ -28,6 +28,8 @@ class FakeCh347Device:
             k: bytearray(v) for k, v in (inputs or {}).items()
         }
         self._reg_ptr: Dict[int, int] = {}
+        # 16-bit register file per I2C address (INA3221 shunt/bus/config/id).
+        self.registers: Dict[int, Dict[int, int]] = {}
 
     # -- lifecycle -------------------------------------------------------
     def open(self) -> None:
@@ -49,11 +51,20 @@ class FakeCh347Device:
             on = data[1] | (data[2] << 8)
             off = data[3] | (data[4] << 8)
             self.pwm.setdefault(addr, {})[channel] = (on, off)
+        # Emulate a 16-bit register write [reg, high, low] (INA3221 config etc.).
+        elif len(data) == 3:
+            self.registers.setdefault(addr, {})[data[0]] = (data[1] << 8) | data[2]
         return True
 
     def i2c_read(self, addr: int, length: int) -> Tuple[bool, bytes]:
         if addr not in self.present:
             return False, b""
+        reg = self._reg_ptr.get(addr)
+        regs = self.registers.get(addr, {})
+        if reg is not None and reg in regs:
+            value = regs[reg]
+            raw = bytes([(value >> 8) & 0xFF, value & 0xFF])
+            return True, (raw + bytes(length))[:length]
         return True, bytes(length)   # benign zeros; enough for a MODE1 probe
 
     def i2c_scan(self) -> List[int]:
@@ -95,3 +106,28 @@ class FakeCh347Device:
             buf[byte_idx] |= (1 << bit_idx)
         else:
             buf[byte_idx] &= ~(1 << bit_idx)
+
+    # -- INA3221 helpers -------------------------------------------------
+    _INA_SHUNT_REG = {1: 0x01, 2: 0x03, 3: 0x05}
+    _INA_BUS_REG = {1: 0x02, 2: 0x04, 3: 0x06}
+
+    def set_register(self, addr: int, reg: int, value: int) -> None:
+        """Set a raw 16-bit register a later `i2c_read(addr, 2)` returns (used
+        for the INA3221 identity register and other direct-register reads)."""
+        self.registers.setdefault(addr, {})[reg] = value & 0xFFFF
+
+    def set_ina3221_current(
+        self, addr: int, channel: int, amps: float, shunt_ohms: float = 0.1
+    ) -> None:
+        """Set an INA3221 channel's shunt register so `read_current(channel)`
+        returns ~`amps` for a driver reading the same `shunt_ohms` (40 µV LSB,
+        signed 13-bit)."""
+        counts = int(round(amps * shunt_ohms / 40e-6))
+        counts = max(-4096, min(4095, counts))
+        self.set_register(addr, self._INA_SHUNT_REG[channel], (counts & 0x1FFF) << 3)
+
+    def set_ina3221_bus_voltage(self, addr: int, channel: int, volts: float) -> None:
+        """Set an INA3221 channel's bus register so `read_bus_voltage(channel)`
+        returns ~`volts` (8 mV LSB, unsigned 13-bit)."""
+        counts = max(0, min(0x1FFF, int(round(volts / 8e-3))))
+        self.set_register(addr, self._INA_BUS_REG[channel], counts << 3)

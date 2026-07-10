@@ -1,145 +1,576 @@
 /* Hardware Setup modal (#hardware-modal).
  *
- * Reuses the shared modal shell (components/modals.css), settings sections
- * (settings-section / settings-section-title), rows (setting-row), and the
- * canonical segmented control (.switch-group / .switch-btn, design-system.css).
- * Only the modal-specific prose, the derived-mode status line, and the device
- * reveal live here. Served raw — no build step.
+ * Commissions the chips on the control board — bus, coordinate, ports, health —
+ * and nothing else (block/switch -> port binding lives in the entity editors).
+ * The body is rendered by hardware-panel.ts into #hw-body; the footer gate into
+ * #hw-gate. Composition follows docs/DESIGN_LANGUAGE.md (§11 cards, §7 chips,
+ * §6 accents, §10 states).
  */
 
-/* The `hidden` attribute must win over the display rules on .btn / .switch-group
-   / .setting-row so the device reveal and the Save↔Restart footer swap actually
-   hide. Scoped to this modal so it never affects display:none semantics
-   elsewhere. */
 #hardware-modal [hidden] {
     display: none !important;
 }
 
+.hw-modal-content {
+    max-width: 820px;
+}
+
+#hardware-modal .modal-body {
+    padding: var(--space-8) calc(var(--space-16) + var(--space-4)) var(--space-16);
+    overflow-y: auto;
+}
+
 .hw-intro {
-    margin: 0 0 4px;
-    font-size: 12px;
+    margin: var(--space-8) 0 0;
+    font-size: var(--font-size-body);
     line-height: 1.5;
     color: var(--text-secondary);
 }
 
-.hw-intro strong {
-    color: var(--text-primary);
-    font-weight: 600;
+/* --- stage ---------------------------------------------------------------- */
+.hw-stage {
+    padding: var(--space-16) 0;
 }
 
-/* Per-control explanation under each segmented row. */
-.hw-hint {
-    margin: 8px 0 0;
-    font-size: 11px;
-    line-height: 1.45;
-    color: var(--text-tertiary, var(--text-secondary));
+.hw-stage + .hw-stage {
+    border-top: 1px solid var(--border-color);
 }
 
-/* Let the segmented control take the row's remaining width beside its label,
-   matching the selects in the Settings modal (.settings-select-fill). */
-#hardware-modal .setting-row .switch-group {
-    flex: 1;
-}
-
-/* Derived run-mode summary — the one line that tells the operator what the
-   current selection actually does. Neutral for sim; accent-tinted for real, the
-   notable "hardware is live" state (accent = active/selected per DESIGN_LANGUAGE
-   §3, not a fault, so never danger/red). */
-.hw-status {
+.hw-stage-head {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-top: 4px;
-    padding: 10px 12px;
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    background: var(--bg-dark);
-    font-size: 12px;
-    line-height: 1.4;
-    color: var(--text-secondary);
+    gap: var(--space-8);
+    margin-bottom: var(--space-4);
 }
 
-.hw-status-icon {
-    font-size: 15px;
-    line-height: 1;
+.hw-stage-num {
     flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    border-radius: var(--radius-pill);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-label);
+    font-weight: 700;
+    color: var(--text-secondary);
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
+}
+
+.hw-stage.done .hw-stage-num {
+    color: var(--success-color);
+    border-color: rgba(var(--success-rgb), 0.5);
+    background: rgba(var(--success-rgb), 0.12);
+}
+
+.hw-stage-title {
+    font-size: var(--font-size-title);
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-6);
+}
+
+.hw-stage-desc {
+    margin: 0 0 var(--space-12) 28px;
+    font-size: var(--font-size-body);
+    line-height: 1.5;
     color: var(--text-secondary);
 }
 
-.hw-status.real {
-    border-color: rgba(var(--accent-rgb), 0.4);
-    background: rgba(var(--accent-rgb), 0.1);
-    color: var(--text-primary);
+.hw-indent {
+    margin-left: 28px;
 }
 
-.hw-status.real .hw-status-icon {
-    color: var(--accent-hover);
+.hw-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-8);
+    flex-wrap: wrap;
+    margin-bottom: var(--space-8);
 }
 
-.hw-status strong {
-    color: var(--text-primary);
+.hw-lbl {
+    font-size: var(--font-size-label);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-tertiary);
     font-weight: 600;
 }
 
-/* Restart reminder, left-aligned in the footer opposite the action buttons. */
-.hw-restart-note {
-    margin-right: auto;
-    align-self: center;
-    font-size: 11px;
-    color: var(--warning-color, var(--text-secondary));
+.hw-btn-sm {
+    min-height: var(--control-height-xs);
+    padding: 0 var(--space-8);
+    font-size: var(--font-size-body);
 }
 
-/* The setup grows past the base 500px modal; give it a touch more room and let
-   the body scroll. */
-.hw-modal-content {
-    max-width: 580px;
-}
-#hardware-modal .modal-body {
-    overflow-y: auto;
-}
-
-/* Master enable toggle. */
-.hw-enable-row {
+/* --- controller connection banner ---------------------------------------- */
+.hw-conn {
     display: flex;
     align-items: center;
-    gap: 12px;
-    margin: 8px 0 4px;
-    padding: 10px 12px;
+    gap: var(--space-8);
+    flex-wrap: wrap;
+    padding: var(--space-8) var(--space-10);
     border: 1px solid var(--border-color);
-    border-radius: 6px;
+    border-left: 3px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
     background: var(--bg-dark);
-    cursor: pointer;
+    font-size: var(--font-size-body);
+    color: var(--text-secondary);
 }
-.hw-enable-text {
+
+.hw-conn.ok {
+    border-left-color: var(--success-color);
+    background: rgba(var(--success-rgb), 0.07);
+}
+
+.hw-conn strong {
+    color: var(--text-primary);
+    font-weight: 650;
+}
+
+.hw-conn-dot {
+    width: 8px;
+    height: 8px;
+    flex-shrink: 0;
+    border-radius: var(--radius-pill);
+    background: var(--text-tertiary);
+}
+
+.hw-conn.ok .hw-conn-dot {
+    background: var(--success-color);
+}
+
+.hw-scan-chips {
+    display: flex;
+    gap: var(--space-4);
+    flex-wrap: wrap;
+    margin-left: auto;
+}
+
+.hw-addr-chip {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-label);
+    padding: 1px var(--space-6);
+    border-radius: var(--radius-pill);
+    background: var(--bg-hover);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+}
+
+/* --- bus group ------------------------------------------------------------ */
+.hw-bus {
+    margin-bottom: var(--space-8);
+}
+
+.hw-bus + .hw-bus {
+    margin-top: var(--space-12);
+}
+
+.hw-bus-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-8);
+    margin-bottom: var(--space-6);
+}
+
+.hw-bus-badge {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-label);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 2px var(--space-6);
+    border-radius: var(--radius-xs);
+}
+
+.hw-bus-i2c { color: var(--info-color); background: rgba(var(--info-rgb), 0.15); }
+.hw-bus-spi { color: var(--accent-hover); background: rgba(var(--accent-rgb), 0.16); }
+.hw-bus-gpio { color: var(--warning-color); background: rgba(var(--warning-rgb), 0.15); }
+
+.hw-bus-order {
+    font-size: var(--font-size-label);
+    color: var(--text-tertiary);
+}
+
+.hw-bus-empty {
+    font-size: var(--font-size-body);
+    font-style: italic;
+    color: var(--text-tertiary);
+    padding: var(--space-2) 0 var(--space-4);
+}
+
+/* --- chip card (§11) ------------------------------------------------------ */
+.hw-chip {
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    padding: var(--space-8) var(--space-10);
+    margin: var(--space-6) 0;
+}
+
+.hw-chip.alive { border-left-color: var(--success-color); }
+.hw-chip.noresp { border-left-color: var(--danger-color); }
+
+.hw-chip-top {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: start;
+    gap: var(--space-10);
+}
+
+.hw-coord {
+    align-self: start;
+}
+
+.hw-coord-input,
+.hw-coord-select {
+    height: 26px;
+    padding: 0 var(--space-6);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-value);
+    font-weight: 700;
+    color: var(--text-primary);
+    background: var(--bg-hover);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-xs);
+    outline: none;
+}
+
+.hw-coord-input {
+    width: 74px;
+    text-align: center;
+}
+
+.hw-coord-input:focus,
+.hw-coord-select:focus {
+    border-color: var(--accent-color);
+}
+
+.hw-chip-id {
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 2px;
-    flex: 1;
 }
-.hw-enable-label {
-    font-size: 13px;
-    font-weight: 600;
+
+.hw-chip-name {
+    font-size: var(--font-size-value);
+    font-weight: 650;
     color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: var(--space-6);
+    flex-wrap: wrap;
 }
-.hw-enable-sub {
-    font-size: 11px;
-    line-height: 1.4;
+
+.hw-dir {
+    font-size: 8.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    padding: 1px var(--space-6);
+    border-radius: var(--radius-xs);
+}
+
+.hw-dir.out { color: var(--info-color); background: rgba(var(--info-rgb), 0.14); }
+.hw-dir.in { color: var(--success-color); background: rgba(var(--success-rgb), 0.14); }
+
+.hw-chip-meta {
+    font-size: var(--font-size-body);
     color: var(--text-secondary);
 }
-/* Checkbox rendered as a pill switch. */
+
+.hw-chip-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: var(--space-4);
+}
+
+.hw-state-badge {
+    font-size: var(--font-size-micro);
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 2px var(--space-6);
+    border-radius: var(--radius-xs);
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-4);
+}
+
+.hw-state-badge.untested { color: var(--text-tertiary); background: var(--bg-hover); }
+.hw-state-badge.alive { color: var(--success-color); background: rgba(var(--success-rgb), 0.15); }
+.hw-state-badge.noresp { color: var(--danger-color); background: rgba(var(--danger-rgb), 0.15); }
+
+.hw-chip-action {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-4);
+    min-height: var(--control-height-xs);
+    padding: 0 var(--space-8);
+    border-radius: var(--control-radius-sm);
+    border: 1px solid var(--border-color);
+    background: transparent;
+    color: var(--text-primary);
+    font-size: var(--font-size-body);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.hw-chip-action:hover {
+    border-color: var(--accent-color);
+    color: var(--accent-hover);
+}
+
+.hw-chip-action.on {
+    background: rgba(var(--accent-rgb), 0.16);
+    border-color: rgba(var(--accent-rgb), 0.45);
+    color: var(--accent-hover);
+}
+
+.hw-chip-remove {
+    width: var(--control-height-xs);
+    height: var(--control-height-xs);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: var(--control-radius-sm);
+    color: var(--text-tertiary);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.hw-chip-remove:hover {
+    background: rgba(var(--danger-rgb), 0.1);
+    color: var(--danger-color);
+}
+
+/* --- port count row (cascadable shift registers) -------------------------- */
+.hw-portcount {
+    display: flex;
+    align-items: center;
+    gap: var(--space-8);
+    margin-top: var(--space-8);
+}
+
+.hw-portcount-input {
+    width: 66px;
+    height: 26px;
+    padding: 0 var(--space-6);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-value);
+    text-align: center;
+    color: var(--text-primary);
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    outline: none;
+}
+
+.hw-portcount-input:focus { border-color: var(--accent-color); }
+
+.hw-hint-inline {
+    font-size: var(--font-size-label);
+    color: var(--text-tertiary);
+}
+
+/* --- ports ---------------------------------------------------------------- */
+.hw-ports {
+    margin-top: var(--space-8);
+}
+
+.hw-ports-legend {
+    font-size: var(--font-size-label);
+    color: var(--text-tertiary);
+    margin-bottom: var(--space-6);
+    display: flex;
+    gap: var(--space-6);
+    flex-wrap: wrap;
+}
+
+.hw-test-hint {
+    color: var(--accent-hover);
+}
+
+.hw-port-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-4);
+}
+
+.hw-port {
+    min-width: 32px;
+    height: 22px;
+    padding: 0 var(--space-4);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-label);
+    border-radius: var(--radius-xs);
+    border: 1px solid var(--border-color);
+    background: transparent;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    transition: border-color 0.12s ease, background-color 0.12s ease, color 0.12s ease;
+}
+
+.hw-port.wide { min-width: 52px; }
+
+.hw-port:hover {
+    border-color: var(--accent-color);
+    color: var(--accent-hover);
+}
+
+.hw-port.live {
+    color: var(--success-color);
+    border-color: rgba(var(--success-rgb), 0.5);
+    background: rgba(var(--success-rgb), 0.14);
+}
+
+.hw-port.sweep {
+    color: var(--bg-dark);
+    background: var(--accent-color);
+    border-color: var(--accent-color);
+}
+
+/* --- add-chip form -------------------------------------------------------- */
+.hw-add-open {
+    width: 100%;
+    justify-content: center;
+    border-style: dashed;
+    margin-top: var(--space-6);
+}
+
+.hw-add-form {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, auto));
+    gap: var(--space-8);
+    align-items: end;
+    padding: var(--space-10);
+    margin-top: var(--space-6);
+    border: 1px dashed var(--border-color);
+    border-radius: var(--control-radius-sm);
+    background: var(--bg-dark);
+}
+
+.hw-add-fld {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+}
+
+.hw-add-fld .setting-select,
+.hw-add-fld .hw-coord-input,
+.hw-add-fld .hw-portcount-input {
+    width: 100%;
+}
+
+.hw-add-actions {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-6);
+}
+
+/* --- footer gate (the single go-live control) ----------------------------- */
+.hw-gate {
+    display: flex;
+    align-items: center;
+    gap: var(--space-12);
+    flex-wrap: wrap;
+}
+
+.hw-checklist {
+    display: flex;
+    gap: var(--space-6);
+    flex-wrap: wrap;
+    flex: 1;
+    min-width: 240px;
+}
+
+.hw-check {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-4);
+    font-size: var(--font-size-label);
+    font-weight: 550;
+    padding: 3px var(--space-8) 3px var(--space-6);
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--border-color);
+    background: var(--bg-panel);
+    color: var(--text-secondary);
+}
+
+.hw-check.ok {
+    color: var(--success-color);
+    border-color: rgba(var(--success-rgb), 0.4);
+    background: rgba(var(--success-rgb), 0.1);
+}
+
+.hw-check.warn {
+    color: var(--warning-color);
+    border-color: rgba(var(--warning-rgb), 0.45);
+    background: rgba(var(--warning-rgb), 0.12);
+    cursor: pointer;
+}
+
+.hw-gate-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-10);
+}
+
+.hw-enable {
+    display: flex;
+    align-items: center;
+    gap: var(--space-8);
+    padding: var(--space-6) var(--space-10);
+    border-radius: var(--control-radius-sm);
+    border: 1px solid var(--border-color);
+    background: var(--bg-panel);
+    cursor: pointer;
+}
+
+.hw-enable.locked {
+    opacity: 0.65;
+    cursor: not-allowed;
+}
+
+.hw-enable-text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.hw-enable-label {
+    font-size: var(--font-size-value);
+    font-weight: 650;
+    color: var(--text-primary);
+}
+
+.hw-enable-sub {
+    font-size: var(--font-size-label);
+    color: var(--text-secondary);
+}
+
 .hw-toggle {
-    appearance: none;
-    -webkit-appearance: none;
     position: relative;
     width: 38px;
     height: 20px;
     flex-shrink: 0;
-    border-radius: 999px;
-    background: var(--bg-hover, #333);
+    border-radius: var(--radius-pill);
+    background: var(--bg-hover);
     border: 1px solid var(--border-color);
-    cursor: pointer;
-    transition: background 0.15s ease;
+    transition: background 0.15s ease, border-color 0.15s ease;
 }
+
 .hw-toggle::after {
     content: "";
     position: absolute;
@@ -147,250 +578,38 @@
     left: 1px;
     width: 16px;
     height: 16px;
-    border-radius: 50%;
+    border-radius: var(--radius-pill);
     background: var(--text-secondary);
     transition: transform 0.15s ease, background 0.15s ease;
 }
-.hw-toggle:checked {
-    background: rgba(var(--accent-rgb), 0.6);
-    border-color: rgba(var(--accent-rgb), 0.6);
+
+.hw-enable.on .hw-toggle {
+    background: rgba(var(--success-rgb), 0.4);
+    border-color: rgba(var(--success-rgb), 0.65);
 }
-.hw-toggle:checked::after {
+
+.hw-enable.on .hw-toggle::after {
     transform: translateX(18px);
-    background: #fff;
+    background: var(--text-primary);
 }
 
-/* Section head: title beside a note or an action button. */
-.hw-section-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-}
-.hw-sec-note {
-    font-size: 11px;
-    color: var(--text-tertiary, var(--text-secondary));
-}
-.hw-btn-sm {
-    padding: 4px 10px;
-    font-size: 11px;
-}
-.hw-btn-sm.is-busy {
-    opacity: 0.6;
-    pointer-events: none;
-}
-
-/* Chip list rows. */
-.hw-chip-list {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    margin: 8px 0;
-}
-.hw-empty {
-    margin: 6px 0;
-    font-size: 11px;
-    color: var(--text-tertiary, var(--text-secondary));
-}
-.hw-chip {
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    background: var(--bg-dark);
-    padding: 8px 10px;
-}
-.hw-chip-head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-.hw-chip-name {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-primary);
-}
-.hw-chip-meta {
-    flex: 1;
-    font-size: 11px;
-    color: var(--text-secondary);
-}
-.hw-chip-remove {
-    background: none;
-    border: none;
-    color: var(--text-secondary);
-    font-size: 16px;
-    line-height: 1;
-    cursor: pointer;
-    padding: 0 4px;
-}
-.hw-chip-remove:hover {
-    color: var(--danger-color, #e5534b);
-}
-.hw-chip-ports {
-    margin-top: 6px;
-}
-.hw-chip-untested {
-    font-size: 11px;
-    color: var(--text-tertiary, var(--text-secondary));
-}
-.hw-chip-badge {
-    display: inline-block;
-    font-size: 10px;
-    font-weight: 600;
-    padding: 1px 6px;
-    border-radius: 4px;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-}
-.hw-chip-badge.hw-ok {
-    color: var(--success-color, #57ab5a);
-    background: rgba(87, 171, 90, 0.14);
-}
-.hw-chip-badge.hw-bad {
-    color: var(--warning-color, #d9a441);
-    background: rgba(217, 164, 65, 0.14);
-}
-
-/* Port pills — a compact grid; click to pulse/read. */
-.hw-port-grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    margin-top: 6px;
-}
-.hw-port {
-    min-width: 22px;
-    padding: 2px 4px;
-    font-size: 10px;
-    border-radius: 4px;
-    border: 1px solid var(--border-color);
-    cursor: pointer;
-    transition: all 0.12s ease;
-}
-.hw-port.ok {
-    color: var(--accent-hover);
-    background: rgba(var(--accent-rgb), 0.16);
-    border-color: rgba(var(--accent-rgb), 0.4);
-}
-.hw-port.off {
-    color: var(--text-tertiary, var(--text-secondary));
-    background: transparent;
-}
-.hw-port:hover {
-    border-color: var(--accent-color);
-}
-
-/* Add-chip form row. */
-.hw-add-chip {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px;
-}
-.hw-add-chip .hw-add-kind {
-    flex: 0 0 auto;
-    min-width: 150px;
-}
-.hw-add-params {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-}
-.hw-add-params .hw-param {
-    width: auto;
-}
-.hw-add-params .hw-chain {
-    width: 52px;
-}
-.hw-linkbtn {
-    background: none;
-    border: none;
-    color: var(--accent-hover);
-    font-size: 11px;
-    cursor: pointer;
-    padding: 0 2px;
-    text-decoration: underline;
-}
-
-/* Self-test summary line. */
-.hw-selftest-summary {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin: 6px 0;
-    font-size: 11px;
-    color: var(--text-secondary);
-}
-
-/* Binding tables. */
-.hw-bind-group {
-    margin-top: 10px;
-}
-.hw-bind-title {
-    margin: 0 0 4px;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--text-secondary);
-}
-.hw-bind-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 11px;
-}
-.hw-bind-table th {
-    text-align: left;
-    font-weight: 500;
-    color: var(--text-tertiary, var(--text-secondary));
-    padding: 2px 6px;
-}
-.hw-bind-table td {
-    padding: 3px 6px;
-    border-top: 1px solid var(--border-color);
-}
-.hw-bind-name {
-    color: var(--text-primary);
+.hw-restart-note {
+    font-size: var(--font-size-body);
+    color: var(--warning-color);
     white-space: nowrap;
 }
-.hw-bind-select {
-    width: 100%;
-    min-width: 120px;
-    padding: 3px 6px;
-    font-size: 11px;
-    height: 24px;
-    background: var(--bg-dark);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    color: var(--text-primary);
-}
 
-/* Per-chip Live-view / Sweep action button in the chip head. */
-.hw-chip-action {
-    font-size: 10px;
-    padding: 2px 8px;
-    border-radius: 4px;
-    border: 1px solid var(--border-color);
-    background: transparent;
-    color: var(--text-secondary);
-    cursor: pointer;
-    white-space: nowrap;
-}
-.hw-chip-action:hover {
-    border-color: var(--accent-color);
-    color: var(--accent-hover);
-}
-.hw-chip-action.on {
-    background: rgba(var(--accent-rgb), 0.16);
-    border-color: rgba(var(--accent-rgb), 0.4);
-    color: var(--accent-hover);
-}
+@media (max-width: 640px) {
+    .hw-chip-top {
+        grid-template-columns: 1fr;
+    }
 
-/* Live / sweep active badge, and the port currently driven by the marquee. */
-.hw-chip-badge.hw-live {
-    color: var(--accent-hover);
-    background: rgba(var(--accent-rgb), 0.16);
-}
-.hw-port.sweep {
-    color: #fff;
-    background: var(--accent-color);
-    border-color: var(--accent-color);
+    .hw-chip-actions {
+        justify-content: flex-start;
+    }
+
+    .hw-gate-actions {
+        width: 100%;
+        justify-content: space-between;
+    }
 }

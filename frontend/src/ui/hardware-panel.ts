@@ -1,57 +1,53 @@
 /**
  * Hardware Setup modal (#hardware-modal).
  *
- * Three modular sections (design_new.md "Power -> Hardware configuration"):
- *   - Controller: the transport bridge (CH347) + optional device port.
- *   - Output: the chips that drive track power (PCA9685) and switches (74HC595).
- *   - Input: the chips that read occupancy (74HC165).
- * Each chip is added from a dropdown with its parameters (I2C address, or SPI
- * select line + cascade length). A self-test probes every chip; the ports that
- * respond become the pool the Connections tables bind to blocks and switches.
+ * This screen commissions the *chips* on the control board and nothing else:
+ * where each chip is (which bus + address / latch line), what it is, how many
+ * ports it has, and whether those ports respond. It does not bind ports to the
+ * layout — blocks and switches are wired to ports in their own editor panels
+ * (see hardware-binding.ts), so the config the panel writes carries only the
+ * controller and the chip list and leaves the binding maps untouched.
  *
- * The selection is persisted server-side and applies on the next session build,
- * so a save is followed by an offer to restart (the shared restart/reconnect
- * flow). setupHardwarePanel() wires the fixed controls once; refreshHardwarePanel()
- * loads the catalog + persisted config + the layout's blocks/switches and
- * renders — call it each time the modal opens.
+ * The flow, top to bottom:
+ *   1. Connect the bridge  — pick the controller, Detect it (scans the I2C bus).
+ *   2. Your chips, by bus  — I2C / SPI / GPIO groups, each chip ordered by its
+ *      address or latch line. Prove each chip: outputs Sweep, inputs Read live.
+ *   3. Go live (footer)    — one readiness checklist gates the Enable switch;
+ *      enabling applies on the next session build, so a save offers a restart.
+ *
+ * setupHardwarePanel() wires the delegated handlers once; refreshHardwarePanel()
+ * loads the catalog + persisted config and renders — call it each time the modal
+ * opens.
  */
 import { api } from '../lib/api';
 import { showToast } from '../lib/toast';
 import { startRestartReconnectFlow } from './restart-flow';
 
-const ROLE_TRACK = 'track_output';
-const ROLE_SWITCH = 'switch_output';
-const ROLE_OCCUPANCY = 'occupancy_input';
-const OUTPUT_ROLES = [ROLE_TRACK, ROLE_SWITCH];
+const BUS_ORDER = ['i2c', 'spi', 'gpio'] as const;
+const BUS_LABEL: Record<string, string> = { i2c: 'I²C', spi: 'SPI', gpio: 'GPIO' };
+const BUS_ORDERED_BY: Record<string, string> = {
+  i2c: 'ordered by address', spi: 'ordered by latch line', gpio: 'ordered by pin',
+};
 
-interface Binding { chip_id: string; port: number; }
-interface ChipCfg {
-  chip_id: string;
-  kind: string;
-  i2c_address: number | null;
-  chain_length: number;
-  spi_select: string | null;
-  label: string;
-}
-interface HwState {
-  enabled: boolean;
-  controller: { kind: string; device_port: string | null };
-  chips: ChipCfg[];
-  block_track: Record<string, Binding>;
-  block_occupancy: Record<string, Binding>;
-  switch_output: Record<string, Binding>;
-}
 interface CatalogChip {
-  kind: string; label: string; bus: string; role: string;
-  ports_per_unit: number; cascadable: boolean;
-  needs_i2c_address: boolean; needs_spi_select: boolean;
-  port_kind: string; default_i2c_address: number | null;
-  default_spi_select: string | null; port_help: string;
+  kind: string; label: string; buses: string[]; role: string; direction: string;
+  ports_per_unit: number; cascadable: boolean; port_kind: string;
+  default_i2c_address: number | null; port_help: string;
 }
 interface Catalog {
   controllers: { kind: string; label: string; needs_device_port: boolean }[];
   chips: CatalogChip[];
   spi_select_lines: string[];
+  gpio_lines: string[];
+}
+interface ChipCfg {
+  chip_id: string; kind: string; bus: string;
+  i2c_address: number | null; chain_length: number; spi_select: string | null; label: string;
+}
+interface HwState {
+  enabled: boolean;
+  controller: { kind: string; device_port: string | null };
+  chips: ChipCfg[];
 }
 interface PortResult { port: number; available: boolean; }
 type SelfTest = Record<string, { reachable: boolean; ports: PortResult[] }>;
@@ -60,27 +56,21 @@ const DEFAULT_STATE: HwState = {
   enabled: false,
   controller: { kind: 'ch347', device_port: null },
   chips: [],
-  block_track: {},
-  block_occupancy: {},
-  switch_output: {},
 };
 
 let state: HwState = clone(DEFAULT_STATE);
 let catalog: Catalog | null = null;
-let blocks: { id: string; name: string }[] = [];
-let switches: { id: string; name: string }[] = [];
 let selfTest: SelfTest = {};
 let i2cScan: string[] = [];
+let controllerReachable = false;
 let savedSinceEdit = false;
+let adding = false;
 
-// Commissioning session — a held device for the live input view and the output
-// marquee. Only one activity at a time; stopped on modal close / refresh.
+// Commissioning — a held device for the live input view and the output sweep.
+// Only one activity runs at a time; it is stopped on modal close / refresh.
 let commissionActive = false;
-let liveChipId: string | null = null;
-let liveValues: boolean[] = [];
-let liveTimer: any = null;
-let sweepChipId: string | null = null;
-let sweepActivePort = -1;
+let activity: { chipId: string; kind: 'sweep' | 'live'; port: number; values: number[] } | null = null;
+let activityTimer: any = null;
 let sweepAbort = false;
 
 function clone<T>(v: T): T { return JSON.parse(JSON.stringify(v)); }
@@ -88,102 +78,57 @@ function esc(s: any): string {
   return String(s).replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' } as any)[c]);
 }
+function el<T extends HTMLElement = HTMLElement>(id: string): T | null {
+  return document.getElementById(id) as T | null;
+}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// --- catalog-derived chip facts --------------------------------------------
 function catalogChip(kind: string): CatalogChip | undefined {
   return catalog?.chips.find((c) => c.kind === kind);
 }
-function chipRole(chip: ChipCfg): string | undefined { return catalogChip(chip.kind)?.role; }
-function chipPortCount(chip: ChipCfg): number {
+function chipPorts(chip: ChipCfg): number {
   const ck = catalogChip(chip.kind);
   if (!ck) return 0;
   return ck.ports_per_unit * (ck.cascadable ? Math.max(1, chip.chain_length) : 1);
 }
-function chipLabel(chip: ChipCfg): string {
-  return chip.label || catalogChip(chip.kind)?.label || chip.kind;
+function chipDirection(chip: ChipCfg): string { return catalogChip(chip.kind)?.direction || 'output'; }
+function isCurrentSense(chip: ChipCfg): boolean { return catalogChip(chip.kind)?.port_kind === 'current_sense'; }
+function chipLabel(chip: ChipCfg): string { return catalogChip(chip.kind)?.label || chip.kind; }
+function latchLines(bus: string): string[] {
+  if (bus === 'spi') return catalog?.spi_select_lines || [];
+  if (bus === 'gpio') return catalog?.gpio_lines || [];
+  return [];
 }
-function chipParamSummary(chip: ChipCfg): string {
-  const ck = catalogChip(chip.kind);
-  if (ck?.needs_i2c_address) {
-    return `${ck.bus} @ 0x${(chip.i2c_address ?? 0).toString(16)} · ${chipPortCount(chip)} ports`;
-  }
-  if (ck?.needs_spi_select) {
-    return `${ck.bus} ${chip.spi_select} ×${chip.chain_length} · ${chipPortCount(chip)} ports`;
-  }
-  return `${chipPortCount(chip)} ports`;
+function coordText(chip: ChipCfg): string {
+  if (chip.bus === 'i2c') return chip.i2c_address != null ? '0x' + chip.i2c_address.toString(16) : '';
+  return (chip.spi_select || '').toUpperCase();
 }
-
-// --- element access --------------------------------------------------------
-function el<T extends HTMLElement = HTMLElement>(id: string): T | null {
-  return document.getElementById(id) as T | null;
+function coordSort(chip: ChipCfg): number {
+  if (chip.bus === 'i2c') return chip.i2c_address ?? 9999;
+  return latchLines(chip.bus).indexOf(chip.spi_select || '');
 }
 
 // --- setup (once) ----------------------------------------------------------
 export function setupHardwarePanel(): void {
-  const enabled = el<HTMLInputElement>('hw-enabled');
-  const ctrlKind = el<HTMLSelectElement>('hw-controller-kind');
-  const ctrlPort = el<HTMLInputElement>('hw-controller-port');
-  const selfTestBtn = el('hw-selftest-all');
-  const saveBtn = el<HTMLButtonElement>('hw-save-btn');
-  const restartBtn = el('hw-restart-btn');
-  const outputChips = el('hw-output-chips');
-  const inputChips = el('hw-input-chips');
-  const bindings = el('hw-bindings');
-  if (!enabled || !ctrlKind || !ctrlPort || !selfTestBtn || !saveBtn ||
-      !restartBtn || !outputChips || !inputChips || !bindings) {
+  const modal = el('hardware-modal');
+  const bodyEl = el('hw-body');
+  const gateEl = el('hw-gate');
+  if (!modal || !bodyEl || !gateEl) {
     console.warn('[App] Hardware panel elements not found');
     return;
   }
 
-  enabled.addEventListener('change', () => { state.enabled = enabled.checked; onEdit(); render(); });
-  ctrlKind.addEventListener('change', () => { state.controller.kind = ctrlKind.value; onEdit(); render(); });
-  ctrlPort.addEventListener('input', () => {
-    state.controller.device_port = ctrlPort.value.trim() || null; onEdit();
-  });
-  selfTestBtn.addEventListener('click', () => void runSelfTest());
-  saveBtn.addEventListener('click', () => void save());
-  restartBtn.addEventListener('click', async () => {
-    try { await api.restartServer(); } catch (e) {
-      console.error('[App] Hardware restart request failed:', e);
-      showToast('Could not reach server to restart.', 'error', 4000);
-      return;
-    }
-    startRestartReconnectFlow();
-  });
+  const root = modal;
+  root.addEventListener('click', (e) => void onClick(e));
+  root.addEventListener('change', (e) => onChange(e));
+  root.addEventListener('input', (e) => onInput(e));
 
-  // Delegated: chip removal + port testing on the two chip lists.
-  for (const list of [outputChips, inputChips]) {
-    list.addEventListener('click', (e) => {
-      const target = e.target as HTMLElement;
-      const chipEl = target.closest<HTMLElement>('[data-chip-id]');
-      if (!chipEl) return;
-      const chipId = chipEl.dataset.chipId!;
-      if (target.closest('[data-hw-action="remove-chip"]')) {
-        removeChip(chipId);
-      } else if (target.closest('[data-hw-action="live"]')) {
-        void toggleLive(chipId);
-      } else if (target.closest('[data-hw-action="sweep"]')) {
-        void toggleSweep(chipId);
-      } else {
-        const pill = target.closest<HTMLElement>('[data-hw-action="test-port"]');
-        if (pill) void testPort(chipId, Number(pill.dataset.port));
-      }
-    });
-  }
-
-  // Delegated: binding dropdown changes.
-  bindings.addEventListener('change', (e) => {
-    const sel = (e.target as HTMLElement).closest<HTMLSelectElement>('select[data-hw-bind]');
-    if (!sel) return;
-    applyBinding(sel.dataset.hwBind as keyof HwState, sel.dataset.hwId!, sel.value);
-  });
-
-  // Stop any live/sweep activity (and release the device) when the modal closes,
+  // Stop any live/sweep activity (and release the device) when the modal closes
   // via any path — close button, backdrop, or Escape all drop the `active` class.
-  const modal = document.getElementById('hardware-modal');
-  if (modal) {
-    new MutationObserver(() => {
-      if (!modal.classList.contains('active')) void stopCommissioning();
-    }).observe(modal, { attributes: true, attributeFilter: ['class'] });
-  }
+  new MutationObserver(() => {
+    if (!modal.classList.contains('active')) void stopCommissioning();
+  }).observe(modal, { attributes: true, attributeFilter: ['class'] });
 }
 
 function onEdit(): void { savedSinceEdit = false; }
@@ -192,139 +137,309 @@ function onEdit(): void { savedSinceEdit = false; }
 export async function refreshHardwarePanel(): Promise<void> {
   await stopCommissioning();
   savedSinceEdit = false;
+  adding = false;
   selfTest = {};
   i2cScan = [];
+  controllerReachable = false;
   try {
-    const [cat, cfg, blockList, switchList] = await Promise.all([
-      api.getHardwareCatalog(),
-      api.getHardwareConfig(),
-      api.getBlocks().catch(() => []),
-      api.getSwitches().catch(() => []),
-    ]);
+    const [cat, cfg] = await Promise.all([api.getHardwareCatalog(), api.getHardwareConfig()]);
     catalog = cat as Catalog;
     state = normalizeConfig(cfg?.config || {});
-    blocks = asIdList(blockList, 'block_id');
-    switches = asIdList(switchList, 'switch_id');
   } catch (e) {
     console.error('[App] Failed to load hardware setup:', e);
     showToast('Failed to load hardware setup.', 'error');
     state = clone(DEFAULT_STATE);
   }
-  buildControllerControls();
-  buildAddForms();
   render();
-}
-
-function asIdList(raw: any, key: string): { id: string; name: string }[] {
-  const arr = Array.isArray(raw) ? raw : raw?.blocks || raw?.switches || [];
-  return arr
-    .map((x: any) => ({ id: String(x?.[key] ?? ''), name: String(x?.name || x?.[key] || '') }))
-    .filter((x: any) => x.id);
 }
 
 function normalizeConfig(cfg: any): HwState {
   return {
     enabled: !!cfg.enabled,
-    controller: {
-      kind: cfg.controller?.kind || 'ch347',
-      device_port: cfg.controller?.device_port ?? null,
-    },
+    controller: { kind: cfg.controller?.kind || 'ch347', device_port: cfg.controller?.device_port ?? null },
     chips: (cfg.chips || []).map((c: any): ChipCfg => ({
       chip_id: String(c.chip_id),
       kind: String(c.kind),
+      bus: String(c.bus || catalogChip(String(c.kind))?.buses?.[0] || 'i2c'),
       i2c_address: c.i2c_address ?? null,
       chain_length: Number(c.chain_length) || 1,
       spi_select: c.spi_select ?? null,
       label: c.label || '',
     })),
-    block_track: cfg.block_track || {},
-    block_occupancy: cfg.block_occupancy || {},
-    switch_output: cfg.switch_output || {},
   };
 }
 
-// --- fixed controls --------------------------------------------------------
-function buildControllerControls(): void {
-  const sel = el<HTMLSelectElement>('hw-controller-kind');
-  if (!sel || !catalog) return;
-  sel.innerHTML = catalog.controllers
-    .map((c) => `<option value="${esc(c.kind)}">${esc(c.label)}</option>`)
-    .join('');
+// --- payload: controller + chips only (binding maps stay untouched) --------
+function payload(): any {
+  return {
+    enabled: state.enabled,
+    controller: { kind: state.controller.kind, device_port: state.controller.device_port },
+    chips: state.chips.map((c) => ({
+      chip_id: c.chip_id, kind: c.kind, bus: c.bus, i2c_address: c.i2c_address,
+      chain_length: c.chain_length, spi_select: c.spi_select, label: c.label,
+    })),
+  };
 }
 
-function buildAddForms(): void {
-  const outputKinds = (catalog?.chips || []).filter((c) => OUTPUT_ROLES.includes(c.role));
-  const inputKinds = (catalog?.chips || []).filter((c) => c.role === ROLE_OCCUPANCY);
-  buildAddForm(el('hw-output-add'), outputKinds);
-  buildAddForm(el('hw-input-add'), inputKinds);
+// --- readiness -------------------------------------------------------------
+interface Check { key: string; ok: boolean; label: string; }
+function readiness(): Check[] {
+  const checks: Check[] = [];
+  checks.push({ key: 'bridge', ok: controllerReachable, label: controllerReachable ? 'Bridge connected' : 'Connect the bridge' });
+
+  const noCoord = state.chips.filter((c) => (c.bus === 'i2c' ? c.i2c_address == null : !c.spi_select));
+  checks.push({
+    key: 'coord', ok: state.chips.length > 0 && noCoord.length === 0,
+    label: noCoord.length ? `Set ${noCoord.length} address/latch` : state.chips.length ? 'Addresses & latches set' : 'Add a chip',
+  });
+
+  const unproven = state.chips.filter((c) => !selfTest[c.chip_id]?.reachable);
+  checks.push({
+    key: 'test', ok: state.chips.length > 0 && unproven.length === 0,
+    label: unproven.length ? `${unproven.length} chip${unproven.length > 1 ? 's' : ''} unproven` : 'Every port responds',
+  });
+  return checks;
+}
+const isReady = (): boolean => state.chips.length > 0 && readiness().every((c) => c.ok);
+
+// --- render ----------------------------------------------------------------
+function render(): void {
+  const body = el('hw-body');
+  const gate = el('hw-gate');
+  if (!body || !gate || !catalog) return;
+  const scan = `<datalist id="hw-i2c-scan">${i2cScan.map((a) => `<option value="${esc(a)}"></option>`).join('')}</datalist>`;
+  body.innerHTML = controllerStageHtml() + chipsStageHtml() + scan;
+  gate.innerHTML = gateHtml();
 }
 
-function buildAddForm(container: HTMLElement | null, kinds: CatalogChip[]): void {
-  if (!container) return;
-  if (!kinds.length) { container.innerHTML = ''; return; }
-  container.innerHTML = `
-    <select class="setting-select hw-add-kind">
-      ${kinds.map((k) => `<option value="${esc(k.kind)}">${esc(k.label)}</option>`).join('')}
-    </select>
-    <span class="hw-add-params"></span>
-    <button type="button" class="btn btn-secondary hw-btn-sm hw-add-btn">Add</button>`;
-  const kindSel = container.querySelector<HTMLSelectElement>('.hw-add-kind')!;
-  const params = container.querySelector<HTMLElement>('.hw-add-params')!;
-  const addBtn = container.querySelector<HTMLButtonElement>('.hw-add-btn')!;
-  const renderParams = () => { params.innerHTML = paramFieldsHtml(catalogChip(kindSel.value)); };
-  kindSel.addEventListener('change', renderParams);
-  addBtn.addEventListener('click', () => addChipFromForm(kindSel.value, params));
-  renderParams();
+function controllerStageHtml(): string {
+  const ctrl = catalog!.controllers.find((c) => c.kind === state.controller.kind) || catalog!.controllers[0];
+  const portRow = ctrl?.needs_device_port
+    ? `<div class="hw-row"><span class="hw-lbl">Port</span>
+        <input type="text" class="setting-input-compact" data-hw="device-port"
+          placeholder="auto (USB VID/PID)" value="${esc(state.controller.device_port ?? '')}" spellcheck="false" /></div>`
+    : '';
+  const conn = controllerReachable
+    ? `<div class="hw-conn ok"><span class="hw-conn-dot"></span>
+        <span><strong>Connected.</strong> ${i2cScan.length} device${i2cScan.length === 1 ? '' : 's'} on the I²C bus.</span>
+        <span class="hw-scan-chips">${i2cScan.map((a) => `<span class="hw-addr-chip">${esc(a)}</span>`).join('')}</span></div>`
+    : `<div class="hw-conn"><span class="hw-conn-dot"></span>
+        <span>Not connected — running in <strong>simulation</strong>. Detect to talk to the board.</span></div>`;
+  const done = controllerReachable ? ' done' : '';
+  return `<section class="hw-stage${done}">
+    <div class="hw-stage-head"><span class="hw-stage-num">${controllerReachable ? '✓' : '1'}</span>
+      <span class="hw-stage-title">Connect the bridge</span></div>
+    <p class="hw-stage-desc">The USB board every message travels through. Detect scans the I²C bus for chips.</p>
+    <div class="hw-row hw-indent">
+      <span class="hw-lbl">Bridge</span>
+      <select class="setting-select" data-hw="controller-kind">
+        ${catalog!.controllers.map((c) => `<option value="${esc(c.kind)}"${c.kind === state.controller.kind ? ' selected' : ''}>${esc(c.label)}</option>`).join('')}
+      </select>
+      <button type="button" class="btn btn-accent hw-btn-sm" data-hw="detect"><i class="ti ti-plug-connected" aria-hidden="true"></i> ${controllerReachable ? 'Re-detect' : 'Detect controller'}</button>
+    </div>
+    ${portRow ? `<div class="hw-indent">${portRow}</div>` : ''}
+    <div class="hw-indent">${conn}</div>
+  </section>`;
 }
 
-function paramFieldsHtml(ck: CatalogChip | undefined): string {
-  if (!ck) return '';
-  if (ck.needs_i2c_address) {
-    const def = ck.default_i2c_address != null ? '0x' + ck.default_i2c_address.toString(16) : '';
-    return `<input class="setting-input-compact hw-param" data-param="i2c_address"
-              list="hw-i2c-scan" placeholder="0x40" value="${esc(def)}" spellcheck="false" />
-            <datalist id="hw-i2c-scan"></datalist>
-            <button type="button" class="hw-linkbtn hw-scan-btn" title="Scan the I2C bus">scan</button>`;
+function chipsStageHtml(): string {
+  const proven = state.chips.length > 0 && readiness()[1].ok && readiness()[2].ok;
+  const groups = BUS_ORDER.map(busGroupHtml).join('');
+  return `<section class="hw-stage${proven ? ' done' : ''}">
+    <div class="hw-stage-head"><span class="hw-stage-num">${proven ? '✓' : '2'}</span>
+      <span class="hw-stage-title"><i class="ti ti-cpu" aria-hidden="true"></i> Your chips, by bus</span></div>
+    <p class="hw-stage-desc">Every chip on the board — grouped by the bus it lives on, ordered by its address or latch line. Prove each one's ports respond.</p>
+    <div class="hw-indent">${groups}${addFormHtml()}</div>
+  </section>`;
+}
+
+function busGroupHtml(bus: string): string {
+  const chips = state.chips.filter((c) => c.bus === bus).sort((a, b) => coordSort(a) - coordSort(b));
+  const cards = chips.length ? chips.map(chipCardHtml).join('') : `<div class="hw-bus-empty">No chips on this bus yet.</div>`;
+  return `<div class="hw-bus" data-bus="${bus}">
+    <div class="hw-bus-head"><span class="hw-bus-badge hw-bus-${bus}">${BUS_LABEL[bus]}</span>
+      <span class="hw-bus-order">${BUS_ORDERED_BY[bus]}</span></div>
+    ${cards}</div>`;
+}
+
+function chipCardHtml(chip: ChipCfg): string {
+  const ck = catalogChip(chip.kind);
+  const dir = chipDirection(chip);
+  const st = selfTest[chip.chip_id];
+  const stateCls = st ? (st.reachable ? 'alive' : 'noresp') : 'untested';
+  const badge = st
+    ? (st.reachable
+      ? `<span class="hw-state-badge alive"><i class="ti ti-check" aria-hidden="true"></i> Responds</span>`
+      : `<span class="hw-state-badge noresp"><i class="ti ti-alert-triangle" aria-hidden="true"></i> No response</span>`)
+    : `<span class="hw-state-badge untested">Untested</span>`;
+  const dirBadge = `<span class="hw-dir ${dir === 'output' ? 'out' : 'in'}">${dir === 'output' ? 'OUTPUT' : 'INPUT'}</span>`;
+  const chained = ck?.cascadable ? ` (${Math.max(1, chip.chain_length)} chip${chip.chain_length > 1 ? 's' : ''} chained)` : '';
+  const on = activity?.chipId === chip.chip_id;
+  const testBtn = dir === 'output'
+    ? `<button type="button" class="hw-chip-action${on ? ' on' : ''}" data-hw="sweep" data-id="${esc(chip.chip_id)}"><i class="ti ti-${on ? 'player-stop' : 'player-play'}" aria-hidden="true"></i> ${on ? 'Stop' : 'Sweep'}</button>`
+    : `<button type="button" class="hw-chip-action${on ? ' on' : ''}" data-hw="live" data-id="${esc(chip.chip_id)}"><i class="ti ti-${on ? 'player-stop' : 'activity'}" aria-hidden="true"></i> ${on ? 'Stop' : 'Read live'}</button>`;
+  return `<div class="hw-chip ${stateCls}" data-chip="${esc(chip.chip_id)}">
+    <div class="hw-chip-top">
+      ${coordCellHtml(chip)}
+      <div class="hw-chip-id">
+        <span class="hw-chip-name">${esc(chip.kind)} ${dirBadge}</span>
+        <span class="hw-chip-meta">${esc(chipLabel(chip))} · ${chipPorts(chip)} ports${chained}</span>
+      </div>
+      <div class="hw-chip-actions">
+        ${badge}
+        <button type="button" class="hw-chip-action" data-hw="self-test" data-id="${esc(chip.chip_id)}"><i class="ti ti-test-pipe" aria-hidden="true"></i> Self-test</button>
+        ${testBtn}
+        <button type="button" class="hw-chip-remove" data-hw="remove" data-id="${esc(chip.chip_id)}" title="Remove chip" aria-label="Remove chip">&times;</button>
+      </div>
+    </div>
+    ${chip.bus !== 'i2c' && ck?.cascadable ? portCountRowHtml(chip) : ''}
+    ${portsHtml(chip)}
+  </div>`;
+}
+
+function coordCellHtml(chip: ChipCfg): string {
+  if (chip.bus === 'i2c') {
+    const val = chip.i2c_address != null ? '0x' + chip.i2c_address.toString(16) : '';
+    return `<span class="hw-coord">
+      <input type="text" class="hw-coord-input" data-hw="addr" data-id="${esc(chip.chip_id)}"
+        list="hw-i2c-scan" placeholder="0x40" value="${esc(val)}" spellcheck="false" title="I²C address" />
+    </span>`;
   }
-  if (ck.needs_spi_select) {
-    const opts = (catalog?.spi_select_lines || [])
-      .map((l) => `<option value="${esc(l)}"${l === ck.default_spi_select ? ' selected' : ''}>${esc(l.toUpperCase())}</option>`)
-      .join('');
-    return `<select class="setting-select hw-param" data-param="spi_select" title="Latch/load line, by CH347 pad name">${opts}</select>
-            <input class="setting-input-compact hw-param hw-chain" data-param="chain_length" type="number" min="1" value="1" title="Cascaded chips" />`;
-  }
-  return '';
+  const lines = latchLines(chip.bus);
+  return `<span class="hw-coord"><select class="hw-coord-select" data-hw="latch" data-id="${esc(chip.chip_id)}" title="Latch line">
+    ${lines.map((l) => `<option value="${esc(l)}"${l === chip.spi_select ? ' selected' : ''}>${esc(l.toUpperCase())}</option>`).join('')}
+  </select></span>`;
 }
 
-function addChipFromForm(kind: string, params: HTMLElement): void {
-  const ck = catalogChip(kind);
+function portCountRowHtml(chip: ChipCfg): string {
+  const ck = catalogChip(chip.kind)!;
+  return `<div class="hw-portcount">
+    <span class="hw-lbl">Ports</span>
+    <input type="number" class="hw-portcount-input" data-hw="ports" data-id="${esc(chip.chip_id)}"
+      min="${ck.ports_per_unit}" step="${ck.ports_per_unit}" value="${chipPorts(chip)}" />
+    <span class="hw-hint-inline">${ck.ports_per_unit} per chip</span>
+  </div>`;
+}
+
+function portsHtml(chip: ChipCfg): string {
+  const ck = catalogChip(chip.kind);
+  const n = chipPorts(chip);
+  const dir = chipDirection(chip);
+  const current = isCurrentSense(chip);
+  let legend: string;
+  if (ck?.port_kind === 'bipolar_pair') legend = `${n} bipolar ports · ±12V`;
+  else if (ck?.port_kind === 'digital_out') legend = `${n} output bits · 0/1`;
+  else if (ck?.port_kind === 'digital_in') legend = `${n} input bits`;
+  else legend = `${n} current channels · mA`;
+  const hint = dir === 'output' ? 'click a port to pulse it' : 'Read live to watch these';
+
+  const act = activity?.chipId === chip.chip_id ? activity : null;
+  const pills: string[] = [];
+  for (let p = 0; p < n; p++) {
+    const name = current ? 'CH' + (p + 1) : 'P' + p;
+    let cls = 'hw-port', txt = name, extra = '';
+    if (act?.kind === 'sweep' && act.port === p) cls += ' sweep';
+    if (act?.kind === 'live') {
+      const v = act.values[p];
+      if (current) { cls += ' wide'; txt = v != null ? Math.round(v) + 'mA' : name; if (v > 30) cls += ' live'; }
+      else if (v) cls += ' live';
+    }
+    if (dir === 'output') {
+      pills.push(`<button type="button" class="${cls}${extra}" data-hw="pulse" data-id="${esc(chip.chip_id)}" data-port="${p}" title="${name} — click to pulse">${txt}</button>`);
+    } else {
+      pills.push(`<span class="${cls}${extra}" title="${name}">${txt}</span>`);
+    }
+  }
+  return `<div class="hw-ports">
+    <div class="hw-ports-legend"><span>${legend}</span><span class="hw-test-hint">· ${hint}</span></div>
+    <div class="hw-port-grid">${pills.join('')}</div>
+  </div>`;
+}
+
+// --- add-chip form ---------------------------------------------------------
+function addFormHtml(): string {
+  if (!adding) {
+    return `<button type="button" class="btn btn-secondary hw-add-open" data-hw="add-open"><i class="ti ti-plus" aria-hidden="true"></i> Add a chip</button>`;
+  }
+  const kinds = catalog!.chips;
+  const typeOpts = kinds.map((k) => `<option value="${esc(k.kind)}">${esc(k.label)}</option>`).join('');
+  return `<div class="hw-add-form" id="hw-add-form">
+    <div class="hw-add-fld"><span class="hw-lbl">Chip</span>
+      <select class="setting-select" id="hw-af-type">${typeOpts}</select></div>
+    <div class="hw-add-fld"><span class="hw-lbl">Bus</span>
+      <select class="setting-select" id="hw-af-bus"></select></div>
+    <div class="hw-add-fld"><span class="hw-lbl" id="hw-af-coord-lbl">Address</span>
+      <span id="hw-af-coord"></span></div>
+    <div class="hw-add-fld"><span class="hw-lbl">Ports</span>
+      <input type="number" class="hw-portcount-input" id="hw-af-ports" min="1" value="8" /></div>
+    <div class="hw-add-fld hw-add-actions">
+      <button type="button" class="btn btn-accent hw-btn-sm" data-hw="add-commit">Add chip</button>
+      <button type="button" class="btn btn-secondary hw-btn-sm" data-hw="add-cancel">Cancel</button>
+    </div>
+  </div>`;
+}
+
+function syncAddForm(): void {
+  const typeSel = el<HTMLSelectElement>('hw-af-type');
+  const busSel = el<HTMLSelectElement>('hw-af-bus');
+  const coordLbl = el('hw-af-coord-lbl');
+  const coord = el('hw-af-coord');
+  const ports = el<HTMLInputElement>('hw-af-ports');
+  if (!typeSel || !busSel || !coordLbl || !coord || !ports) return;
+  const ck = catalogChip(typeSel.value);
   if (!ck) return;
-  const read = (name: string) =>
-    params.querySelector<HTMLInputElement>(`[data-param="${name}"]`)?.value?.trim() ?? '';
-  const chip: ChipCfg = {
-    chip_id: nextChipId(kind),
-    kind,
-    i2c_address: null,
-    chain_length: 1,
-    spi_select: null,
-    label: '',
-  };
-  if (ck.needs_i2c_address) {
-    const raw = read('i2c_address');
-    const addr = raw.toLowerCase().startsWith('0x') ? parseInt(raw, 16) : parseInt(raw, 10);
-    if (!Number.isFinite(addr)) { showToast('Enter an I2C address (e.g. 0x40).', 'error'); return; }
-    chip.i2c_address = addr;
+  busSel.innerHTML = ck.buses.map((b) => `<option value="${esc(b)}">${BUS_LABEL[b]}</option>`).join('');
+  ports.value = String(ck.ports_per_unit);
+  ports.step = String(ck.ports_per_unit);
+  ports.disabled = !ck.cascadable;
+  syncAddCoord();
+
+  function syncAddCoord(): void {
+    const bus = busSel!.value;
+    if (bus === 'i2c') {
+      coordLbl!.textContent = 'Address';
+      const def = ck!.default_i2c_address != null ? '0x' + ck!.default_i2c_address.toString(16) : '';
+      coord!.innerHTML = `<input type="text" class="hw-coord-input" id="hw-af-coord-val" list="hw-i2c-scan" placeholder="0x40" value="${esc(def)}" spellcheck="false" />`;
+    } else {
+      coordLbl!.textContent = 'Latch line';
+      const lines = latchLines(bus);
+      coord!.innerHTML = `<select class="setting-select" id="hw-af-coord-val">${lines.map((l) => `<option value="${esc(l)}">${esc(l.toUpperCase())}</option>`).join('')}</select>`;
+    }
   }
-  if (ck.needs_spi_select) {
-    chip.spi_select = read('spi_select') || ck.default_spi_select;
-    chip.chain_length = Math.max(1, parseInt(read('chain_length'), 10) || 1);
+  typeSel.onchange = syncAddForm;
+  busSel.onchange = syncAddCoord;
+}
+
+function commitAdd(): void {
+  const typeSel = el<HTMLSelectElement>('hw-af-type');
+  const busSel = el<HTMLSelectElement>('hw-af-bus');
+  const portsEl = el<HTMLInputElement>('hw-af-ports');
+  const coordVal = el<HTMLInputElement>('hw-af-coord-val');
+  if (!typeSel || !busSel || !portsEl) return;
+  const ck = catalogChip(typeSel.value);
+  if (!ck) return;
+  const bus = busSel.value;
+  const chip: ChipCfg = {
+    chip_id: nextChipId(typeSel.value), kind: typeSel.value, bus,
+    i2c_address: null, chain_length: 1, spi_select: null, label: '',
+  };
+  if (bus === 'i2c') {
+    const raw = (coordVal?.value || '').trim();
+    const addr = raw.toLowerCase().startsWith('0x') ? parseInt(raw, 16) : parseInt(raw, 10);
+    if (!Number.isFinite(addr)) { showToast('Enter an I²C address (e.g. 0x40).', 'error'); return; }
+    chip.i2c_address = addr;
+  } else {
+    chip.spi_select = coordVal?.value || latchLines(bus)[0];
+  }
+  if (ck.cascadable) {
+    const ports = Math.max(ck.ports_per_unit, parseInt(portsEl.value, 10) || ck.ports_per_unit);
+    chip.chain_length = Math.max(1, Math.round(ports / ck.ports_per_unit));
   }
   state.chips.push(chip);
-  delete selfTest[chip.chip_id];
+  adding = false;
   onEdit();
   render();
-  // Reset the numeric/address inputs to defaults for the next add.
-  params.innerHTML = paramFieldsHtml(ck);
+  showToast('Chip added.', 'success', 1800);
 }
 
 function nextChipId(kind: string): string {
@@ -334,298 +449,168 @@ function nextChipId(kind: string): string {
   return `${kind}-${n}`;
 }
 
-function removeChip(chipId: string): void {
-  if (chipId === liveChipId || chipId === sweepChipId) void stopCommissioning();
-  state.chips = state.chips.filter((c) => c.chip_id !== chipId);
-  delete selfTest[chipId];
-  // Drop any bindings that referenced the removed chip.
-  for (const map of [state.block_track, state.block_occupancy, state.switch_output]) {
-    for (const id of Object.keys(map)) if (map[id].chip_id === chipId) delete map[id];
+// --- footer gate -----------------------------------------------------------
+function gateHtml(): string {
+  const checks = readiness();
+  const ready = isReady();
+  const pills = checks.map((c) =>
+    `<span class="hw-check ${c.ok ? 'ok' : 'warn'}"${c.ok ? '' : ` data-hw="jump" data-key="${c.key}"`}>` +
+    `<i class="ti ti-${c.ok ? 'check' : 'alert-triangle'}" aria-hidden="true"></i> ${esc(c.label)}</span>`).join('');
+  const effEnabled = state.enabled && ready;
+  const enableTitle = effEnabled ? 'Hardware enabled' : ready ? 'Enable hardware' : 'Simulation only';
+  const enableSub = ready ? 'applies after restart' : 'clear the amber steps first';
+  const restart = savedSinceEdit
+    ? `<span class="hw-restart-note">Applies after a restart.</span>
+       <button type="button" class="btn btn-primary" data-hw="restart">Restart now</button>`
+    : `<button type="button" class="btn ${effEnabled ? 'btn-accent' : 'btn-secondary'}" data-hw="save">Save</button>`;
+  return `<div class="hw-checklist">${pills}</div>
+    <div class="hw-gate-actions">
+      <label class="hw-enable ${effEnabled ? 'on' : ''} ${ready ? '' : 'locked'}" data-hw="enable">
+        <span class="hw-enable-text"><span class="hw-enable-label">${enableTitle}</span>
+          <span class="hw-enable-sub">${enableSub}</span></span>
+        <span class="hw-toggle"></span>
+      </label>
+      ${restart}
+    </div>`;
+}
+
+// --- event handlers --------------------------------------------------------
+async function onClick(e: Event): Promise<void> {
+  const target = (e.target as HTMLElement).closest<HTMLElement>('[data-hw]');
+  if (!target) return;
+  const act = target.dataset.hw;
+  const id = target.dataset.id || '';
+  switch (act) {
+    case 'detect': return void detect();
+    case 'self-test': return void selfTestChip(id);
+    case 'remove': return removeChip(id);
+    case 'sweep': return void toggleSweep(id);
+    case 'live': return void toggleLive(id);
+    case 'pulse': return void pulsePort(id, Number(target.dataset.port));
+    case 'add-open': adding = true; render(); syncAddForm(); return;
+    case 'add-cancel': adding = false; render(); return;
+    case 'add-commit': return commitAdd();
+    case 'enable': return toggleEnable();
+    case 'save': return void save();
+    case 'restart': return void restart();
+    case 'jump': return jumpTo(target.dataset.key || '');
   }
+}
+
+function onChange(e: Event): void {
+  const t = (e.target as HTMLElement).closest<HTMLElement>('[data-hw]');
+  if (!t) return;
+  const id = t.dataset.id || '';
+  if (t.dataset.hw === 'controller-kind') { state.controller.kind = (t as HTMLSelectElement).value; onEdit(); render(); }
+  else if (t.dataset.hw === 'latch') { setChip(id, (c) => { c.spi_select = (t as HTMLSelectElement).value; }); }
+  else if (t.dataset.hw === 'addr') { setAddress(id, (t as HTMLInputElement).value); }
+  else if (t.dataset.hw === 'ports') { setPorts(id, (t as HTMLInputElement).value); }
+}
+
+function onInput(e: Event): void {
+  const t = (e.target as HTMLElement).closest<HTMLElement>('[data-hw="device-port"]');
+  if (t) { state.controller.device_port = (t as HTMLInputElement).value.trim() || null; onEdit(); }
+}
+
+function setChip(id: string, mut: (c: ChipCfg) => void): void {
+  const chip = state.chips.find((c) => c.chip_id === id);
+  if (!chip) return;
+  mut(chip);
+  delete selfTest[id];
+  onEdit();
+  render();
+}
+function setAddress(id: string, raw: string): void {
+  const v = raw.trim();
+  const addr = v ? (v.toLowerCase().startsWith('0x') ? parseInt(v, 16) : parseInt(v, 10)) : NaN;
+  setChip(id, (c) => { c.i2c_address = Number.isFinite(addr) ? addr : null; });
+}
+function setPorts(id: string, raw: string): void {
+  const chip = state.chips.find((c) => c.chip_id === id);
+  const ck = chip && catalogChip(chip.kind);
+  if (!chip || !ck) return;
+  const ports = Math.max(ck.ports_per_unit, parseInt(raw, 10) || ck.ports_per_unit);
+  setChip(id, (c) => { c.chain_length = Math.max(1, Math.round(ports / ck.ports_per_unit)); });
+}
+
+function removeChip(id: string): void {
+  if (activity?.chipId === id) void stopCommissioning();
+  state.chips = state.chips.filter((c) => c.chip_id !== id);
+  delete selfTest[id];
   onEdit();
   render();
 }
 
-// --- render ----------------------------------------------------------------
-function render(): void {
-  const enabled = el<HTMLInputElement>('hw-enabled');
-  const ctrlKind = el<HTMLSelectElement>('hw-controller-kind');
-  const ctrlPort = el<HTMLInputElement>('hw-controller-port');
-  if (enabled) enabled.checked = state.enabled;
-  if (ctrlKind) ctrlKind.value = state.controller.kind;
-  if (ctrlPort) ctrlPort.value = state.controller.device_port ?? '';
-
-  renderOutputChips();
-  renderInputChips();
-  renderBindings();
-  renderSelfTestSummary();
-  renderStatus();
-  renderFooter();
-}
-
-function renderChipList(containerId: string, pred: (c: ChipCfg) => boolean): void {
-  const container = el(containerId);
-  if (!container) return;
-  const chips = state.chips.filter(pred);
-  if (!chips.length) {
-    container.innerHTML = `<p class="hw-empty">No chips added yet.</p>`;
-    return;
-  }
-  container.innerHTML = chips.map((chip) => `
-    <div class="hw-chip" data-chip-id="${esc(chip.chip_id)}">
-      <div class="hw-chip-head">
-        <span class="hw-chip-name">${esc(chipLabel(chip))}</span>
-        <span class="hw-chip-meta">${esc(chipParamSummary(chip))}</span>
-        ${chipActionHtml(chip)}
-        <button type="button" class="hw-chip-remove" data-hw-action="remove-chip"
-                title="Remove chip" aria-label="Remove chip">&times;</button>
-      </div>
-      <div class="hw-chip-ports">${portsHtml(chip)}</div>
-    </div>`).join('');
-}
-
-function chipActionHtml(chip: ChipCfg): string {
-  if (chipRole(chip) === ROLE_OCCUPANCY) {
-    const on = liveChipId === chip.chip_id;
-    return `<button type="button" class="hw-chip-action${on ? ' on' : ''}" data-hw-action="live">${on ? 'Stop' : 'Live view'}</button>`;
-  }
-  const on = sweepChipId === chip.chip_id;
-  return `<button type="button" class="hw-chip-action${on ? ' on' : ''}" data-hw-action="sweep">${on ? 'Stop' : '走马灯 sweep'}</button>`;
-}
-
-function portsHtml(chip: ChipCfg): string {
-  const count = chipPortCount(chip);
-  // Live input view — every input bit lit by its current value.
-  if (liveChipId === chip.chip_id) {
-    const pills: string[] = [];
-    for (let p = 0; p < count; p++) {
-      pills.push(`<span class="hw-port ${liveValues[p] ? 'ok' : 'off'}" title="Port ${p}">${p}</span>`);
-    }
-    return `<span class="hw-chip-badge hw-live">Live</span><div class="hw-port-grid">${pills.join('')}</div>`;
-  }
-  // Output marquee — highlight the port currently driven.
-  if (sweepChipId === chip.chip_id) {
-    const pills: string[] = [];
-    for (let p = 0; p < count; p++) {
-      pills.push(`<span class="hw-port ${p === sweepActivePort ? 'sweep' : 'off'}" title="Port ${p}">${p}</span>`);
-    }
-    return `<span class="hw-chip-badge hw-live">Sweeping…</span><div class="hw-port-grid">${pills.join('')}</div>`;
-  }
-  const r = selfTest[chip.chip_id];
-  if (!r) return `<span class="hw-chip-untested">Not tested yet — run self-test.</span>`;
-  if (!r.reachable) return `<span class="hw-chip-badge hw-bad">No response</span>`;
-  const avail = new Map(r.ports.map((p) => [p.port, p.available]));
-  const pills: string[] = [];
-  for (let p = 0; p < count; p++) {
-    const ok = avail.get(p) ?? false;
-    pills.push(
-      `<button type="button" class="hw-port ${ok ? 'ok' : 'off'}" data-hw-action="test-port"
-        data-port="${p}" title="Port ${p} — click to test">${p}</button>`);
-  }
-  return `<span class="hw-chip-badge hw-ok">Reachable</span><div class="hw-port-grid">${pills.join('')}</div>`;
-}
-
-function renderBindings(): void {
-  const container = el('hw-bindings');
-  if (!container) return;
-  const hasTrack = state.chips.some((c) => chipRole(c) === ROLE_TRACK);
-  const hasOcc = state.chips.some((c) => chipRole(c) === ROLE_OCCUPANCY);
-  const hasSw = state.chips.some((c) => chipRole(c) === ROLE_SWITCH);
-
-  let html = '';
-  if (blocks.length && (hasTrack || hasOcc)) {
-    html += `<div class="hw-bind-group"><h5 class="hw-bind-title">Blocks</h5>
-      <table class="hw-bind-table"><thead><tr><th>Block</th>
-      <th>Occupancy</th><th>Track power</th></tr></thead><tbody>`;
-    html += blocks.map((b) => `<tr><td class="hw-bind-name">${esc(b.name)}</td>
-      <td>${portSelect('block_occupancy', b.id, ROLE_OCCUPANCY)}</td>
-      <td>${portSelect('block_track', b.id, ROLE_TRACK)}</td></tr>`).join('');
-    html += `</tbody></table></div>`;
-  }
-  if (switches.length && hasSw) {
-    html += `<div class="hw-bind-group"><h5 class="hw-bind-title">Switches</h5>
-      <table class="hw-bind-table"><thead><tr><th>Switch</th><th>Throw output</th></tr></thead><tbody>`;
-    html += switches.map((s) => `<tr><td class="hw-bind-name">${esc(s.name)}</td>
-      <td>${portSelect('switch_output', s.id, ROLE_SWITCH)}</td></tr>`).join('');
-    html += `</tbody></table></div>`;
-  }
-  if (!html) {
-    html = `<p class="hw-hint">Add ${blocks.length ? '' : 'blocks and '}chips above to connect ports here.</p>`;
-  }
-  container.innerHTML = html;
-}
-
-function portSelect(mapName: keyof HwState, logicalId: string, role: string): string {
-  const chips = state.chips.filter((c) => chipRole(c) === role);
-  if (!chips.length) return `<select class="hw-bind-select" disabled><option>— no chip —</option></select>`;
-  const current = (state[mapName] as Record<string, Binding>)[logicalId];
-  const options = [`<option value="">— none —</option>`];
-  for (const chip of chips) {
-    const r = selfTest[chip.chip_id];
-    for (let p = 0; p < chipPortCount(chip); p++) {
-      const val = `${chip.chip_id}::${p}`;
-      const sel = current && current.chip_id === chip.chip_id && current.port === p ? ' selected' : '';
-      let mark = '';
-      if (r) mark = r.reachable && (r.ports.find((x) => x.port === p)?.available) ? '' : ' ✕';
-      options.push(`<option value="${esc(val)}"${sel}>${esc(chipLabel(chip))} · P${p}${mark}</option>`);
-    }
-  }
-  return `<select class="hw-bind-select" data-hw-bind="${esc(mapName)}" data-hw-id="${esc(logicalId)}">${options.join('')}</select>`;
-}
-
-function applyBinding(mapName: keyof HwState, logicalId: string, value: string): void {
-  const map = state[mapName] as Record<string, Binding>;
-  if (!value) {
-    delete map[logicalId];
-  } else {
-    const [chip_id, port] = value.split('::');
-    map[logicalId] = { chip_id, port: Number(port) };
-  }
+function toggleEnable(): void {
+  if (!isReady()) { showToast('Finish the amber steps to enable hardware.', 'warning', 3600); return; }
+  state.enabled = !state.enabled;
   onEdit();
-  renderStatus();
-  renderFooter();
+  render();
 }
 
-function renderSelfTestSummary(): void {
-  const summary = el('hw-selftest-summary');
-  if (!summary) return;
-  const ids = Object.keys(selfTest);
-  if (!ids.length) { summary.hidden = true; summary.innerHTML = ''; return; }
-  const reachable = ids.filter((id) => selfTest[id].reachable).length;
-  const scan = i2cScan.length ? ` · I2C bus: ${i2cScan.join(', ')}` : '';
-  summary.hidden = false;
-  summary.innerHTML = `<i class="ti ti-checks" aria-hidden="true"></i> ${reachable}/${ids.length} chips reachable${esc(scan)}`;
+function jumpTo(key: string): void {
+  const sel = key === 'bridge' ? '.hw-stage' : '.hw-bus';
+  el('hw-body')?.querySelector(sel)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-function renderStatus(): void {
-  const status = el('hw-status');
-  if (!status) return;
-  const real = state.enabled && state.chips.length > 0;
-  status.classList.toggle('real', real);
-  let msg: string;
-  if (!state.enabled) {
-    msg = '<strong>Simulation</strong> — full simulation, no hardware attached.';
-  } else if (!state.chips.length) {
-    msg = '<strong>Real mode on</strong> — add at least one chip to drive hardware.';
-  } else {
-    const n = state.chips.length;
-    msg = `<strong>Real mode</strong> — ${n} chip${n === 1 ? '' : 's'} on ${esc(controllerLabel())}. Applies on restart.`;
-  }
-  status.innerHTML =
-    `<i class="ti ${real ? 'ti-plug-connected' : 'ti-device-desktop'} hw-status-icon" aria-hidden="true"></i><span>${msg}</span>`;
-}
-
-function controllerLabel(): string {
-  return catalog?.controllers.find((c) => c.kind === state.controller.kind)?.label || state.controller.kind;
-}
-
-function renderFooter(): void {
-  const note = el('hw-restart-note');
-  const saveBtn = el('hw-save-btn');
-  const restartBtn = el('hw-restart-btn');
-  if (note) note.hidden = !savedSinceEdit;
-  if (saveBtn) saveBtn.hidden = savedSinceEdit;
-  if (restartBtn) restartBtn.hidden = !savedSinceEdit;
-}
-
-// --- payload / actions -----------------------------------------------------
-function payload(): any {
-  return {
-    enabled: state.enabled,
-    controller: { kind: state.controller.kind, device_port: state.controller.device_port },
-    chips: state.chips.map((c) => ({
-      chip_id: c.chip_id, kind: c.kind, i2c_address: c.i2c_address,
-      chain_length: c.chain_length, spi_select: c.spi_select, label: c.label,
-    })),
-    block_track: state.block_track,
-    block_occupancy: state.block_occupancy,
-    switch_output: state.switch_output,
-  };
-}
-
-async function save(): Promise<void> {
-  const saveBtn = el<HTMLButtonElement>('hw-save-btn');
-  if (saveBtn) saveBtn.disabled = true;
-  try {
-    await api.setHardwareConfig(payload());
-    savedSinceEdit = true;
-    renderFooter();
-    showToast('Hardware setup saved — restart to apply.', 'success', 2500);
-  } catch (e: any) {
-    console.error('[App] Failed to save hardware config:', e);
-    showToast(e?.message || 'Failed to save hardware setup.', 'error', 4000);
-  } finally {
-    if (saveBtn) saveBtn.disabled = false;
-  }
-}
-
-async function runSelfTest(): Promise<void> {
-  const btn = el<HTMLButtonElement>('hw-selftest-all');
-  if (btn) { btn.disabled = true; btn.classList.add('is-busy'); }
+// --- detect / self-test ----------------------------------------------------
+async function detect(): Promise<void> {
+  const btn = document.querySelector<HTMLButtonElement>('[data-hw="detect"]');
+  if (btn) btn.disabled = true;
   try {
     const res = await api.runHardwareSelfTest(payload());
-    selfTest = {};
-    for (const c of res?.chips || []) {
-      selfTest[c.chip_id] = { reachable: !!c.reachable, ports: c.ports || [] };
-    }
+    controllerReachable = !!res?.ok && !!res?.controller?.reachable;
     i2cScan = res?.controller?.i2c_scan || [];
-    fillScanDatalist();
-    if (!res?.ok) {
-      showToast(res?.error ? `Controller not reachable: ${res.error}` : 'Controller not reachable.', 'error', 4000);
-    } else {
-      const reachable = Object.values(selfTest).filter((r) => r.reachable).length;
-      showToast(`Self-test done — ${reachable}/${Object.keys(selfTest).length} chips reachable.`, 'success', 2500);
-    }
+    selfTest = {};
+    for (const c of res?.chips || []) selfTest[c.chip_id] = { reachable: !!c.reachable, ports: c.ports || [] };
     render();
+    if (!controllerReachable) showToast(res?.error ? `Controller not reachable: ${res.error}` : 'Controller not reachable.', 'error', 4000);
+    else {
+      const reachable = Object.values(selfTest).filter((r) => r.reachable).length;
+      showToast(`Connected — ${reachable}/${state.chips.length} chips respond.`, 'success', 2500);
+    }
   } catch (e: any) {
-    console.error('[App] Self-test failed:', e);
-    showToast(e?.message || 'Self-test failed — check chip settings.', 'error', 4000);
+    showToast(e?.message || 'Detect failed.', 'error', 4000);
   } finally {
-    if (btn) { btn.disabled = false; btn.classList.remove('is-busy'); }
+    if (btn) btn.disabled = false;
   }
 }
 
-function fillScanDatalist(): void {
-  const dl = document.getElementById('hw-i2c-scan');
-  if (dl) dl.innerHTML = i2cScan.map((a) => `<option value="${esc(a)}"></option>`).join('');
+async function selfTestChip(id: string): Promise<void> {
+  const chip = state.chips.find((c) => c.chip_id === id);
+  if (!chip) return;
+  try {
+    const res = await api.runHardwareSelfTest(payload(), id);
+    if (!res?.ok) { showToast(res?.error ? `Controller not reachable: ${res.error}` : 'Controller not reachable.', 'error', 4000); return; }
+    controllerReachable = !!res?.controller?.reachable;
+    if (res.controller?.i2c_scan) i2cScan = res.controller.i2c_scan;
+    const c = (res.chips || []).find((x: any) => x.chip_id === id);
+    if (c) selfTest[id] = { reachable: !!c.reachable, ports: c.ports || [] };
+    render();
+    showToast(c?.reachable ? `${chip.kind} · all ${chipPorts(chip)} ports respond.` : `${chip.kind} did not respond.`,
+      c?.reachable ? 'success' : 'error', c?.reachable ? 2200 : 3500);
+  } catch (e: any) {
+    showToast(e?.message || 'Self-test failed.', 'error', 4000);
+  }
 }
 
-async function testPort(chipId: string, port: number): Promise<void> {
-  const chip = state.chips.find((c) => c.chip_id === chipId);
-  if (!chip) return;
-  const role = chipRole(chip);
-  const action = role === ROLE_OCCUPANCY ? 'read_input' : 'pulse_output';
+async function pulsePort(id: string, port: number): Promise<void> {
+  if (activity) return;   // don't pulse while a sweep/live session holds the device
   try {
-    const res = await api.runHardwarePortTest(payload(), chipId, port, action);
+    const res = await api.runHardwarePortTest(payload(), id, port, 'pulse_output');
     if (!res?.ok) { showToast(res?.error || 'Port test failed.', 'error', 3500); return; }
-    if (action === 'read_input') {
-      showToast(`${chipLabel(chip)} port ${port}: ${res.value ? 'current present' : 'no current'}`, 'info', 2500);
-    } else {
-      showToast(`Pulsed ${chipLabel(chip)} port ${port}.`, 'success', 2000);
-    }
+    showToast(`Pulsed port ${port}.`, 'success', 1600);
   } catch (e: any) {
     showToast(e?.message || 'Port test failed.', 'error', 3500);
   }
 }
 
-// --- commissioning: live input view + output marquee (走马灯) ---------------
-function renderOutputChips(): void {
-  renderChipList('hw-output-chips', (c) => OUTPUT_ROLES.includes(chipRole(c) || ''));
-}
-function renderInputChips(): void {
-  renderChipList('hw-input-chips', (c) => chipRole(c) === ROLE_OCCUPANCY);
-}
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
+// --- commissioning: sweep (output) + read-live (input) ---------------------
 async function ensureCommission(): Promise<boolean> {
   if (commissionActive) return true;
   try {
     const res = await api.commissionOpen(payload());
-    if (!res?.ok) {
-      showToast(res?.error ? `Controller unavailable: ${res.error}` : 'Controller unavailable.', 'error', 4000);
-      return false;
-    }
+    if (!res?.ok) { showToast(res?.error ? `Controller unavailable: ${res.error}` : 'Controller unavailable.', 'error', 4000); return false; }
   } catch (e: any) {
     showToast(e?.message || 'Controller unavailable.', 'error', 4000);
     return false;
@@ -636,88 +621,88 @@ async function ensureCommission(): Promise<boolean> {
 
 async function stopCommissioning(): Promise<void> {
   sweepAbort = true;
-  sweepChipId = null;
-  sweepActivePort = -1;
-  if (liveTimer) {
-    clearInterval(liveTimer);
-    liveTimer = null;
-  }
-  liveChipId = null;
-  liveValues = [];
+  if (activityTimer) { clearInterval(activityTimer); activityTimer = null; }
+  activity = null;
   if (commissionActive) {
     commissionActive = false;
-    try {
-      await api.commissionClose();
-    } catch {
-      /* best effort */
-    }
+    try { await api.commissionClose(); } catch { /* best effort */ }
   }
 }
 
-async function toggleLive(chipId: string): Promise<void> {
-  if (liveChipId === chipId) {
-    await stopCommissioning();
-    render();
-    return;
-  }
+async function toggleSweep(id: string): Promise<void> {
+  if (activity?.chipId === id) { await stopCommissioning(); render(); return; }
   await stopCommissioning();
   if (!(await ensureCommission())) return;
-  liveChipId = chipId;
-  render();
-  const poll = async () => {
-    if (liveChipId !== chipId) return;
-    try {
-      const res = await api.commissionInputs(chipId);
-      if (res?.ok) {
-        liveValues = (res.ports || []).map((p: any) => !!p.value);
-        renderInputChips();
-      }
-    } catch {
-      /* transient */
-    }
-  };
-  await poll();
-  liveTimer = setInterval(poll, 400);
-}
-
-async function toggleSweep(chipId: string): Promise<void> {
-  if (sweepChipId === chipId) {
-    await stopCommissioning();
-    render();
-    return;
-  }
-  await stopCommissioning();
-  if (!(await ensureCommission())) return;
-  sweepChipId = chipId;
+  activity = { chipId: id, kind: 'sweep', port: 0, values: [] };
   sweepAbort = false;
   render();
-  void runSweep(chipId);
+  void runSweep(id);
 }
 
-async function runSweep(chipId: string): Promise<void> {
-  const chip = state.chips.find((c) => c.chip_id === chipId);
+async function runSweep(id: string): Promise<void> {
+  const chip = state.chips.find((c) => c.chip_id === id);
   if (!chip) return;
-  const count = chipPortCount(chip);
-  // PWM (track) chips step through voltage %; digital (switch) chips are on/off.
-  const duties = chipRole(chip) === ROLE_TRACK ? [0.3, 0.6, 1.0] : [1.0];
+  const count = chipPorts(chip);
+  const duties = chip.bus === 'i2c' ? [0.3, 0.6, 1.0] : [1.0];   // PWM steps vs on/off
   let pass = 0;
-  while (!sweepAbort && sweepChipId === chipId) {
+  while (!sweepAbort && activity?.chipId === id) {
     const duty = duties[pass % duties.length];
     pass++;
-    for (let p = 0; p < count && !sweepAbort && sweepChipId === chipId; p++) {
-      try {
-        await api.commissionOutput(chipId, p, duty);
-      } catch {
-        /* ignore */
-      }
-      sweepActivePort = p;
-      renderOutputChips();
-      await sleep(500);
-      try {
-        await api.commissionOutput(chipId, p, 0);
-      } catch {
-        /* ignore */
-      }
+    for (let p = 0; p < count && !sweepAbort && activity?.chipId === id; p++) {
+      try { await api.commissionOutput(id, p, duty); } catch { /* ignore */ }
+      if (activity) { activity.port = p; render(); }
+      await sleep(450);
+      try { await api.commissionOutput(id, p, 0); } catch { /* ignore */ }
     }
   }
+}
+
+async function toggleLive(id: string): Promise<void> {
+  if (activity?.chipId === id) { await stopCommissioning(); render(); return; }
+  await stopCommissioning();
+  if (!(await ensureCommission())) return;
+  const chip = state.chips.find((c) => c.chip_id === id);
+  const current = chip ? isCurrentSense(chip) : false;
+  activity = { chipId: id, kind: 'live', port: -1, values: [] };
+  render();
+  const poll = async () => {
+    if (activity?.chipId !== id) return;
+    try {
+      if (current) {
+        const res = await api.commissionCurrents(id);
+        if (res?.ok && activity) { activity.values = (res.currents || []).map((p: any) => Number(p.current_ma) || 0); render(); }
+      } else {
+        const res = await api.commissionInputs(id);
+        if (res?.ok && activity) { activity.values = (res.ports || []).map((p: any) => (p.value ? 1 : 0)); render(); }
+      }
+    } catch { /* transient */ }
+  };
+  await poll();
+  activityTimer = setInterval(poll, 500);
+}
+
+// --- save / restart --------------------------------------------------------
+async function save(): Promise<void> {
+  const btn = document.querySelector<HTMLButtonElement>('[data-hw="save"]');
+  if (btn) btn.disabled = true;
+  try {
+    if (state.enabled && !isReady()) { state.enabled = false; render(); showToast('Hardware stayed off — finish the checklist.', 'warning', 4000); return; }
+    await api.setHardwareConfig(payload());
+    savedSinceEdit = true;
+    render();
+    showToast('Hardware setup saved — restart to apply.', 'success', 2500);
+  } catch (e: any) {
+    showToast(e?.message || 'Failed to save hardware setup.', 'error', 4000);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function restart(): Promise<void> {
+  try { await api.restartServer(); } catch (e) {
+    console.error('[App] Hardware restart request failed:', e);
+    showToast('Could not reach server to restart.', 'error', 4000);
+    return;
+  }
+  startRestartReconnectFlow();
 }

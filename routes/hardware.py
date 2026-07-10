@@ -58,7 +58,8 @@ def register(app, state: AppState) -> None:
             return jsonify({"status": "error", "error": str(exc)}), 400
         from hardware import self_test
 
-        return jsonify(self_test.run_self_test(cfg))
+        # Optional: limit the probe to one chip (the per-chip Self-test button).
+        return jsonify(self_test.run_self_test(cfg, chip_id=data.get("chip_id")))
 
     @app.route("/api/hardware/port-test", methods=["POST"])
     def hardware_port_test():
@@ -96,9 +97,20 @@ def register(app, state: AppState) -> None:
             return jsonify({"status": "error", "error": "map and logical_id are required"}), 400
         try:
             with state.simulation_lock:
-                hardware_config.set_binding(
-                    map_name, str(logical_id), data.get("chip_id"), data.get("port")
-                )
+                if map_name == "block_occupancy_current":
+                    # The current map carries per-channel calibration, so it has
+                    # its own setter (design_new.md Power, Block occupancy detection).
+                    hardware_config.set_current_binding(
+                        str(logical_id),
+                        data.get("chip_id"),
+                        data.get("port"),
+                        baseline_ma=data.get("baseline_ma"),
+                        threshold_ma=data.get("threshold_ma"),
+                    )
+                else:
+                    hardware_config.set_binding(
+                        map_name, str(logical_id), data.get("chip_id"), data.get("port")
+                    )
         except hardware_config.HardwareConfigError as exc:
             return jsonify({"status": "error", "error": str(exc)}), 400
         return jsonify({"status": "success", "config": hardware_config.as_dict()})
@@ -141,6 +153,20 @@ def register(app, state: AppState) -> None:
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)})
         return jsonify({"ok": True, "ports": [{"port": i, "value": v} for i, v in enumerate(bits)]})
+
+    @app.route("/api/hardware/commission/currents", methods=["POST"])
+    def hardware_commission_currents():
+        data = request.get_json(silent=True) or {}
+        from hardware import commission
+
+        try:
+            currents = commission.get_session().read_currents(data.get("chip_id"))
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)})
+        return jsonify({
+            "ok": True,
+            "currents": [{"port": i, "current_ma": v} for i, v in enumerate(currents)],
+        })
 
     @app.route("/api/hardware/commission/close", methods=["POST"])
     def hardware_commission_close():

@@ -1,14 +1,14 @@
 """Chip + controller catalog — the metadata that drives the Hardware Setup
 dropdowns, config validation, and per-chip port counts.
 
-Adding support for a new chip is one entry here: its bus, the interface role it
-fills, how many ports it contributes, and which parameters the user must set.
-Everything else (validation, the catalog REST payload, the binding-port pool)
-reads this table, so no chip knowledge is duplicated elsewhere.
+Adding support for a new chip is one entry here: the buses it can be wired on,
+the interface role it fills, how many ports it contributes, and how its ports
+behave. Everything else (validation, the catalog REST payload, the binding-port
+pool) reads this table, so no chip knowledge is duplicated elsewhere.
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # Interface roles a chip can fill (one per abstract interface).
 ROLE_TRACK = "track_output"        # OutputInterface        (block track voltage)
@@ -16,12 +16,50 @@ ROLE_SWITCH = "switch_output"      # SwitchOutputInterface  (switch throw)
 ROLE_OCCUPANCY = "occupancy_input"  # InputInterface        (block current)
 ROLES = (ROLE_TRACK, ROLE_SWITCH, ROLE_OCCUPANCY)
 
+# Buses a chip can be wired on. A chip *type* declares which of these it supports
+# (its `buses`); each configured chip *instance* records the one it is actually
+# wired on. A shift register is the reason a chip can have more than one: it can
+# be driven by the hardware SPI peripheral (`spi`) or bit-banged over GPIO pins
+# (`gpio`). A PWM/current chip is I2C only.
 BUS_I2C = "i2c"
 BUS_SPI = "spi"
+BUS_GPIO = "gpio"
 
-# Physical SPI select/latch lines the CH347 exposes, named by *pad* (not the
-# off-by-one ch347api name). See ch347_device for the pad -> library mapping.
-SPI_SELECT_LINES: List[str] = ["cs0", "cs1"] + [f"gpio{i}" for i in range(8)]
+# Port kinds a chip's ports expose. Occupancy has two: a digital detector bit
+# ('165) and an analog current-sense channel (INA3221); config validation routes
+# the digital-occupancy vs current-occupancy binding maps by these.
+PORT_BIPOLAR_PAIR = "bipolar_pair"
+PORT_DIGITAL_OUT = "digital_out"
+PORT_DIGITAL_IN = "digital_in"
+PORT_CURRENT_SENSE = "current_sense"
+
+# Each port kind implies a data direction. Direction picks the commissioning
+# test the Hardware Setup screen offers: an output chip is *driven* (pulse /
+# sweep a port), an input chip is *read* (live view of the bits / currents).
+DIR_OUTPUT = "output"
+DIR_INPUT = "input"
+_PORT_DIRECTION: Dict[str, str] = {
+    PORT_BIPOLAR_PAIR: DIR_OUTPUT,
+    PORT_DIGITAL_OUT: DIR_OUTPUT,
+    PORT_DIGITAL_IN: DIR_INPUT,
+    PORT_CURRENT_SENSE: DIR_INPUT,
+}
+
+# The latch/select line each bus offers, named by CH347 *pad* (not the off-by-one
+# ch347api name; see ch347_device for the pad -> library mapping). I2C addresses
+# its chips instead of latching, so it has no lines. The hardware SPI peripheral
+# has two chip-select lines; GPIO bit-banging can latch on any general-purpose pin.
+SPI_SELECT_LINES: List[str] = ["cs0", "cs1"]
+GPIO_LINES: List[str] = [f"gpio{i}" for i in range(8)]
+
+
+def latch_lines_for(bus: str) -> List[str]:
+    """Valid latch lines for a bus (empty for I2C, which addresses instead)."""
+    if bus == BUS_SPI:
+        return SPI_SELECT_LINES
+    if bus == BUS_GPIO:
+        return GPIO_LINES
+    return []
 
 
 @dataclass(frozen=True)
@@ -30,60 +68,69 @@ class ChipKind:
 
     kind: str
     label: str
-    bus: str
+    buses: Tuple[str, ...]       # buses this chip can be wired on; buses[0] = default
     role: str
     ports_per_unit: int          # ports one physical chip contributes
-    cascadable: bool             # SPI shift registers chain; the PCA9685 does not
-    needs_i2c_address: bool
-    needs_spi_select: bool
-    port_kind: str               # "bipolar_pair" | "digital_out" | "digital_in"
+    cascadable: bool             # SPI/GPIO shift registers chain; the PCA9685 does not
+    port_kind: str               # "bipolar_pair" | "digital_out" | "digital_in" | "current_sense"
     default_i2c_address: Optional[int] = None
-    default_spi_select: Optional[str] = None
     port_help: str = ""
+
+    @property
+    def direction(self) -> str:
+        """"output" (driven) or "input" (read), derived from the port kind."""
+        return _PORT_DIRECTION[self.port_kind]
 
 
 CHIP_CATALOG: Dict[str, ChipKind] = {
     "pca9685": ChipKind(
         kind="pca9685",
         label="PCA9685 · 16-ch PWM",
-        bus=BUS_I2C,
+        buses=(BUS_I2C,),
         role=ROLE_TRACK,
         # 16 PWM channels -> 8 bipolar track ports. Each port is an H-bridge
         # channel pair (2*port = IN1, 2*port+1 = IN2): magnitude -> duty,
         # sign -> which input drives, so track voltage stays bipolar (±12V).
         ports_per_unit=8,
         cascadable=False,
-        needs_i2c_address=True,
-        needs_spi_select=False,
-        port_kind="bipolar_pair",
+        port_kind=PORT_BIPOLAR_PAIR,
         default_i2c_address=0x40,
         port_help="H-bridge channel pair per port; magnitude→duty, sign→direction.",
     ),
     "hc595": ChipKind(
         kind="hc595",
         label="74HC595 · shift-out",
-        bus=BUS_SPI,
+        buses=(BUS_SPI, BUS_GPIO),
         role=ROLE_SWITCH,
         ports_per_unit=8,
         cascadable=True,
-        needs_i2c_address=False,
-        needs_spi_select=True,
-        port_kind="digital_out",
-        default_spi_select="cs0",
+        port_kind=PORT_DIGITAL_OUT,
         port_help="One output bit per port; level = MAIN(0)/DIVERGE(1).",
     ),
     "hc165": ChipKind(
         kind="hc165",
         label="74HC165 · shift-in",
-        bus=BUS_SPI,
+        buses=(BUS_SPI, BUS_GPIO),
         role=ROLE_OCCUPANCY,
         ports_per_unit=8,
         cascadable=True,
-        needs_i2c_address=False,
-        needs_spi_select=True,
-        port_kind="digital_in",
-        default_spi_select="cs1",
+        port_kind=PORT_DIGITAL_IN,
         port_help="One input bit per port; 1 = current present on the block.",
+    ),
+    "ina3221": ChipKind(
+        kind="ina3221",
+        label="INA3221 · 3-ch current sense",
+        buses=(BUS_I2C,),
+        role=ROLE_OCCUPANCY,
+        # 3 current-sense channels -> 3 occupancy ports (port 0 = CH1). One chip
+        # covers up to three blocks; abs(current) above a per-channel threshold is
+        # the *driving* occupancy signal in the hybrid detector. Not cascadable —
+        # add more chips at 0x40..0x43 for more blocks.
+        ports_per_unit=3,
+        cascadable=False,
+        port_kind=PORT_CURRENT_SENSE,
+        default_i2c_address=0x40,
+        port_help="One INA3221 channel per port (port 0 = CH1); abs(current) above threshold = occupied.",
     ),
 }
 
@@ -126,20 +173,19 @@ def catalog_payload() -> dict:
             {
                 "kind": ck.kind,
                 "label": ck.label,
-                "bus": ck.bus,
+                "buses": list(ck.buses),
                 "role": ck.role,
+                "direction": ck.direction,
                 "ports_per_unit": ck.ports_per_unit,
                 "cascadable": ck.cascadable,
-                "needs_i2c_address": ck.needs_i2c_address,
-                "needs_spi_select": ck.needs_spi_select,
                 "port_kind": ck.port_kind,
                 "default_i2c_address": ck.default_i2c_address,
-                "default_spi_select": ck.default_spi_select,
                 "port_help": ck.port_help,
             }
             for ck in CHIP_CATALOG.values()
         ],
         "spi_select_lines": SPI_SELECT_LINES,
+        "gpio_lines": GPIO_LINES,
         "roles": {
             "track_output": ROLE_TRACK,
             "switch_output": ROLE_SWITCH,

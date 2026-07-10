@@ -8,43 +8,90 @@ id -> (chip_id, port)) is passed in from persisted config; this is the only plac
 that consumes it.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from block_occupancy import InputInterface
 from block_power import MAX_TRACK_VOLTAGE, OutputInterface
 from switch_power import SwitchOutputInterface
 
 from hardware.catalog import (
+    BUS_GPIO,
     CHIP_CATALOG,
     ROLE_OCCUPANCY,
     ROLE_SWITCH,
     ROLE_TRACK,
+    SPI_SELECT_LINES,
+    latch_lines_for,
 )
 from hardware.chips.hc165 import HC165Chain
 from hardware.chips.hc595 import HC595Chain
+from hardware.chips.ina3221 import INA3221
 from hardware.chips.pca9685 import PCA9685
 
 # A binding map: logical id -> (chip_id, port).
 BindingMap = Dict[str, Tuple[str, int]]
+# A current-sense binding map: block_id -> (chip_id, port, baseline_a, threshold_a).
+# Thresholds arrive already resolved to amps by the config layer.
+CurrentBindingMap = Dict[str, Tuple[str, int, float, float]]
+
+# Direct-call fallback deadband; the config layer passes its own resolved value.
+_IDLE_DEADBAND_V = 0.25
+
+
+def _resolved_bus(spec: Any, ck: Any) -> str:
+    """The bus a chip spec is wired on, defaulting to the chip's first allowed
+    bus when the spec did not record one (e.g. a directly-constructed test spec)."""
+    return getattr(spec, "bus", None) or ck.buses[0]
+
+
+def _resolved_latch(spec: Any, ck: Any) -> Optional[str]:
+    """The latch line for a shift-register spec, falling back to the first line
+    its bus offers."""
+    bus = _resolved_bus(spec, ck)
+    lines = latch_lines_for(bus)
+    return spec.spi_select or (lines[0] if lines else None)
+
+
+def gpio_transfer_cs(chip_specs: List[Any]) -> str:
+    """The chip-select pad the SPI engine may assert while a GPIO-latched chip
+    is clocked.
+
+    A GPIO-latched shift register still moves its data over the SPI peripheral,
+    which `ch347api` refuses to drive with no CS enabled — and the CH347 asserts
+    then releases that CS around the transfer. Borrowing a pad a '595 latches on
+    would clock stray bytes into it on the release edge (it could throw a
+    switch), so those pads are excluded. A '165's load pad is safe to borrow: the
+    transfer only freezes and re-loads its parallel inputs.
+    """
+    latch_pads = {
+        spec.spi_select for spec in chip_specs
+        if spec.kind == "hc595" and spec.spi_select in SPI_SELECT_LINES
+    }
+    for pad in SPI_SELECT_LINES:
+        if pad not in latch_pads:
+            return pad
+    raise RuntimeError(
+        "a GPIO-latched chip needs a chip-select pad that no '595 latches on for "
+        f"its SPI data transfer; both {SPI_SELECT_LINES} are '595 latches"
+    )
 
 
 def build_chip(device: Any, spec: Any) -> Any:
     """Instantiate the chip driver for a chip spec (duck-typed: chip_id, kind,
-    i2c_address, chain_length, spi_select)."""
+    bus, i2c_address, chain_length, spi_select)."""
     ck = CHIP_CATALOG[spec.kind]
     if spec.kind == "pca9685":
         address = spec.i2c_address if spec.i2c_address is not None else ck.default_i2c_address
         return PCA9685(device, address=address)
-    if spec.kind == "hc595":
-        return HC595Chain(
-            device, select=spec.spi_select or ck.default_spi_select,
-            chain_length=spec.chain_length,
-        )
-    if spec.kind == "hc165":
-        return HC165Chain(
-            device, select=spec.spi_select or ck.default_spi_select,
-            chain_length=spec.chain_length,
-        )
+    if spec.kind in ("hc595", "hc165"):
+        # The latch line is a chip-select pad (spi bus) or a general-purpose pin
+        # (gpio bus); the device branches on the pad name. Data clocks over the
+        # SPI peripheral either way.
+        cls = HC595Chain if spec.kind == "hc595" else HC165Chain
+        return cls(device, select=_resolved_latch(spec, ck), chain_length=spec.chain_length)
+    if spec.kind == "ina3221":
+        address = spec.i2c_address if spec.i2c_address is not None else ck.default_i2c_address
+        return INA3221(device, address=address)
     raise ValueError(f"unknown chip kind {spec.kind!r}")
 
 
@@ -119,29 +166,81 @@ class Ch347SwitchOutputInterface(SwitchOutputInterface):
 
 
 class Ch347OccupancyInputInterface(InputInterface):
-    """Block current over 74HC165 input bits (one bit per block)."""
+    """Hybrid block occupancy: a digital detector ('165) plus a current-sense
+    channel (INA3221), selected per block by whether the block is being driven.
 
-    def __init__(self, chips_by_id: Dict[str, HC165Chain], bindings: BindingMap) -> None:
-        self._chips = chips_by_id
-        self._bindings = bindings
+    While a block is powered its rail voltage is a poor occupancy signal, so the
+    INA3221 current channel decides (abs current above the block's threshold). When
+    the block is idle the '165 detector decides. `voltage_of` reports the last
+    commanded block voltage (from the real track interface); a block over the
+    deadband is "driven". A block may have both sources, only one, or neither:
+
+      - driven + has current  -> INA3221 current
+      - otherwise + has digital -> '165 bit
+      - idle + only current    -> INA3221 (reads ~0 with no drive; best effort)
+      - no binding             -> not detected (False)
+
+    This all stays below `read_block_currents()`, so the detector above the
+    interface still sees only a per-block boolean.
+    """
+
+    def __init__(
+        self,
+        digital_chips: Dict[str, HC165Chain],
+        digital_bindings: BindingMap,
+        current_chips: Optional[Dict[str, INA3221]] = None,
+        current_bindings: Optional[CurrentBindingMap] = None,
+        voltage_of: Optional[Callable[[str], float]] = None,
+        idle_deadband_v: float = _IDLE_DEADBAND_V,
+    ) -> None:
+        self._digital_chips = digital_chips
+        self._digital = digital_bindings
+        self._current_chips = current_chips or {}
+        self._current = current_bindings or {}
+        self._voltage_of = voltage_of
+        self._idle_deadband_v = idle_deadband_v
 
     def read_block_currents(self) -> Dict[str, bool]:
-        # Read each chain once per call, then map bound blocks to their bit.
-        cache: Dict[str, bytes] = {}
+        digital_cache: Dict[str, bytes] = {}
         result: Dict[str, bool] = {}
-        for block_id, (chip_id, port) in self._bindings.items():
-            chip = self._chips.get(chip_id)
-            if chip is None:
+        for block_id in set(self._digital) | set(self._current):
+            driven = self._is_driven(block_id)
+            if driven and block_id in self._current:
+                result[block_id] = self._read_current(block_id)
+            elif block_id in self._digital:
+                result[block_id] = self._read_digital(block_id, digital_cache)
+            elif block_id in self._current:
+                result[block_id] = self._read_current(block_id)
+            else:
                 result[block_id] = False
-                continue
-            if chip_id not in cache:
-                cache[chip_id] = chip.read_all()
-            data = cache[chip_id]
-            byte_idx, bit_idx = divmod(port, 8)
-            result[block_id] = (
-                bool(data[byte_idx] & (1 << bit_idx)) if byte_idx < len(data) else False
-            )
         return result
+
+    def _is_driven(self, block_id: str) -> bool:
+        if self._voltage_of is None:
+            return False
+        return abs(self._voltage_of(block_id)) > self._idle_deadband_v
+
+    def _read_digital(self, block_id: str, cache: Dict[str, bytes]) -> bool:
+        chip_id, port = self._digital[block_id]
+        chip = self._digital_chips.get(chip_id)
+        if chip is None:
+            return False
+        if chip_id not in cache:               # read each '165 chain once per call
+            cache[chip_id] = chip.read_all()
+        data = cache[chip_id]
+        byte_idx, bit_idx = divmod(port, 8)
+        return bool(data[byte_idx] & (1 << bit_idx)) if byte_idx < len(data) else False
+
+    def _read_current(self, block_id: str) -> bool:
+        chip_id, port, baseline_a, threshold_a = self._current[block_id]
+        chip = self._current_chips.get(chip_id)
+        if chip is None:
+            return False
+        try:
+            current = chip.read_current(port + 1)   # port 0 -> INA3221 channel 1
+        except Exception:
+            return False
+        return abs(current - baseline_a) >= threshold_a
 
 
 def build_real_interfaces(
@@ -150,14 +249,25 @@ def build_real_interfaces(
     block_track: BindingMap,
     block_occupancy: BindingMap,
     switch_output: BindingMap,
+    block_occupancy_current: Optional[CurrentBindingMap] = None,
+    output_enable: Optional[BindingMap] = None,
+    idle_deadband_v: float = _IDLE_DEADBAND_V,
 ) -> Tuple[Optional[InputInterface], Optional[OutputInterface], Optional[SwitchOutputInterface]]:
     """Instantiate + initialize chips grouped by role and wire the three
     interfaces. A role with no chip returns `None` (its simulated default is
-    used). Performs live init (PWM reset/freq, shift-register clear) so hardware
-    starts in a known state."""
+    used). Performs live init (PWM reset/freq, shift-register clear, INA3221
+    channel enable) so hardware starts in a known state. Occupancy is the hybrid
+    of the '165 digital detector and the INA3221 current channels; the returned
+    input interface selects between them per block by drive state."""
     track_chips: Dict[str, PCA9685] = {}
     switch_chips: Dict[str, HC595Chain] = {}
-    input_chips: Dict[str, HC165Chain] = {}
+    digital_chips: Dict[str, HC165Chain] = {}
+    current_chips: Dict[str, INA3221] = {}
+
+    # A GPIO-latched chip borrows a chip-select pad for its SPI transfer. Choose a
+    # safe one before any chip is built, because the first `all_off()` latches.
+    if any(getattr(spec, "bus", None) == BUS_GPIO for spec in chip_specs):
+        device.gpio_transfer_cs = gpio_transfer_cs(chip_specs)
 
     for spec in chip_specs:
         ck = CHIP_CATALOG[spec.kind]
@@ -169,15 +279,34 @@ def build_real_interfaces(
             chip.all_off()
             switch_chips[spec.chip_id] = chip
         elif ck.role == ROLE_OCCUPANCY:
-            input_chips[spec.chip_id] = chip
+            if spec.kind == "ina3221":
+                chip.configure()               # reset + enable all three channels
+                current_chips[spec.chip_id] = chip
+            else:
+                digital_chips[spec.chip_id] = chip
 
-    input_iface = (
-        Ch347OccupancyInputInterface(input_chips, block_occupancy) if input_chips else None
-    )
     block_out = (
         Ch347TrackOutputInterface(track_chips, block_track) if track_chips else None
     )
     switch_out = (
         Ch347SwitchOutputInterface(switch_chips, switch_output) if switch_chips else None
     )
+
+    # Enable-and-hold each PCA's /OE (active-low): drive its '595 bit low once.
+    # There is no per-tick coast window, so nothing drives it high afterwards.
+    for _track_chip_id, (drive_chip_id, port) in (output_enable or {}).items():
+        drive = switch_chips.get(drive_chip_id)
+        if drive is not None:
+            drive.set_output(port, False)
+
+    input_iface: Optional[InputInterface] = None
+    if digital_chips or current_chips:
+        input_iface = Ch347OccupancyInputInterface(
+            digital_chips,
+            block_occupancy,
+            current_chips=current_chips,
+            current_bindings=block_occupancy_current or {},
+            voltage_of=(block_out.get_actual_voltage if block_out is not None else None),
+            idle_deadband_v=idle_deadband_v,
+        )
     return input_iface, block_out, switch_out

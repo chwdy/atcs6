@@ -321,12 +321,13 @@ export class API implements LayoutDataClient, SimClient {
   /**
    * Probe the controller + each configured chip. Opens a transient device at
    * commissioning time (returns `{ok:false}` gracefully if none is attached or
-   * a real session already holds it). `config` is the config being edited.
+   * a real session already holds it). `config` is the config being edited;
+   * `chipId` limits the probe to that one chip (the per-chip Self-test button).
    */
-  async runHardwareSelfTest(config: any): Promise<any> {
+  async runHardwareSelfTest(config: any, chipId?: string): Promise<any> {
     return this._request(
       '/hardware/self-test',
-      { method: 'POST', body: { config } },
+      { method: 'POST', body: { config, ...(chipId ? { chip_id: chipId } : {}) } },
       'runHardwareSelfTest'
     );
   }
@@ -348,16 +349,18 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
-  /** Set (or clear, when chipId is null) one port binding, keyed by logical id. */
+  /** Set (or clear, when chipId is null) one port binding, keyed by logical id.
+   * `extra` carries the current map's per-channel calibration (baseline/threshold mA). */
   async updateHardwareBinding(
     map: string,
     logicalId: string,
     chipId: string | null,
-    port: number | null
+    port: number | null,
+    extra?: { baseline_ma?: number | null; threshold_ma?: number | null }
   ): Promise<any> {
     return this._request(
       '/hardware/binding',
-      { method: 'PUT', body: { map, logical_id: logicalId, chip_id: chipId, port } },
+      { method: 'PUT', body: { map, logical_id: logicalId, chip_id: chipId, port, ...(extra || {}) } },
       'updateHardwareBinding'
     );
   }
@@ -386,6 +389,15 @@ export class API implements LayoutDataClient, SimClient {
       '/hardware/commission/inputs',
       { method: 'POST', body: { chip_id: chipId } },
       'commissionInputs'
+    );
+  }
+
+  /** Read every channel's current (mA) on an INA3221 from the held session. */
+  async commissionCurrents(chipId: string): Promise<any> {
+    return this._request(
+      '/hardware/commission/currents',
+      { method: 'POST', body: { chip_id: chipId } },
+      'commissionCurrents'
     );
   }
 

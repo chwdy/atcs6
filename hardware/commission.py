@@ -82,6 +82,28 @@ class CommissionSession:
             self._touch()
             return bits
 
+    def read_currents(self, chip_id: str) -> List[float]:
+        """Read every channel's current in mA on an INA3221 (for the live
+        calibration view). Configures the chip once so its channels are enabled."""
+        with self._lock:
+            self._require_open()
+            chip = self._chips.get(chip_id)
+            if chip is None or not hasattr(chip, "read_current"):
+                raise KeyError(f"chip {chip_id!r} is not a current-sense chip")
+            if chip_id not in self._configured:
+                if hasattr(chip, "configure"):
+                    chip.configure()
+                self._configured.add(chip_id)
+            channels = getattr(chip, "NUM_CHANNELS", 3)
+            readings: List[float] = []
+            for channel in range(1, channels + 1):
+                try:
+                    readings.append(chip.read_current(channel) * 1000.0)
+                except Exception:
+                    readings.append(0.0)
+            self._touch()
+            return readings
+
     def status(self) -> Dict[str, Any]:
         with self._lock:
             self._expire_locked()

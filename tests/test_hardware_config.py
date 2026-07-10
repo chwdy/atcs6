@@ -1,8 +1,9 @@
 """Hardware configuration store, factory, REST surface, and bootstrap wiring.
 
 design_new.md "Power -> Hardware configuration": a chip inventory (controller +
-chips) plus three port-binding maps (block_track, block_occupancy,
-switch_output), persisted to an app-managed JSON file and applied at the next
+chips) plus the port-binding maps (block_track, block_occupancy,
+block_occupancy_current, switch_output, output_enable), persisted to an
+app-managed JSON file and applied at the next
 session build. These tests cover the config store + validation, disk persistence
 (round-trip + fail-safe), the operation-mode derivation, the interface factory
 (sim -> no overrides, real -> interfaces built from a fake device or a clear
@@ -75,7 +76,8 @@ def test_as_dict_shape():
     keys = set(hardware_config.as_dict().keys())
     assert keys == {
         "enabled", "controller", "chips",
-        "block_track", "block_occupancy", "switch_output",
+        "block_track", "block_occupancy", "block_occupancy_current",
+        "switch_output", "output_enable",
     }
 
 
@@ -85,6 +87,7 @@ def test_as_dict_enriches_chips_with_derived_fields():
     assert chips["pwm1"]["role"] == "track_output"
     assert chips["pwm1"]["bus"] == "i2c"
     assert chips["pwm1"]["port_count"] == 8    # 16 channels -> 8 bipolar ports
+    assert chips["pwm1"]["port_kind"] == "bipolar_pair"
     assert chips["sw1"]["port_count"] == 24    # 3-chip '595 chain
 
 
@@ -119,6 +122,64 @@ def test_shift_register_requires_spi_select():
         )
 
 
+def test_bus_defaults_to_first_allowed_bus():
+    # A chip that omits `bus` takes its kind's first allowed bus (pca -> i2c,
+    # hc595 -> spi), and that resolved bus is what gets stored.
+    cfg = hardware_config.config_from_payload({"chips": [
+        {"chip_id": "p", "kind": "pca9685", "i2c_address": "0x40"},
+        {"chip_id": "s", "kind": "hc595", "spi_select": "cs0"},
+    ]})
+    by_id = {c.chip_id: c for c in cfg.chips}
+    assert by_id["p"].bus == "i2c"
+    assert by_id["s"].bus == "spi"
+
+
+def test_chip_rejected_on_unsupported_bus():
+    # The PCA9685 is I2C only; putting it on SPI is rejected.
+    with pytest.raises(hardware_config.HardwareConfigError):
+        hardware_config.config_from_payload({"chips": [
+            {"chip_id": "p", "kind": "pca9685", "bus": "spi", "spi_select": "cs0"},
+        ]})
+
+
+def test_shift_register_on_gpio_bus_validates_and_persists():
+    hardware_config.apply_updates({"chips": [
+        {"chip_id": "s", "kind": "hc595", "bus": "gpio", "spi_select": "gpio2", "chain_length": 2},
+    ]}, persist=False)
+    chip = hardware_config.as_dict()["chips"][0]
+    assert chip["bus"] == "gpio" and chip["spi_select"] == "gpio2"
+    assert chip["port_count"] == 16 and chip["direction"] == "output"
+
+
+def test_gpio_chip_rejects_a_spi_cs_latch():
+    # cs0/cs1 are SPI chip-select lines; a GPIO chip must latch on a gpio pin.
+    with pytest.raises(hardware_config.HardwareConfigError):
+        hardware_config.config_from_payload({"chips": [
+            {"chip_id": "s", "kind": "hc595", "bus": "gpio", "spi_select": "cs0"},
+        ]})
+
+
+def test_spi_chip_rejects_a_gpio_latch():
+    with pytest.raises(hardware_config.HardwareConfigError):
+        hardware_config.config_from_payload({"chips": [
+            {"chip_id": "s", "kind": "hc595", "bus": "spi", "spi_select": "gpio2"},
+        ]})
+
+
+def test_removing_a_chip_prunes_its_dangling_bindings():
+    # The chips-only Hardware Setup screen re-saves just the chip list; removing a
+    # chip a block was bound to must drop that binding, not fail validation.
+    hardware_config.apply_updates(_real_payload(), persist=False)
+    assert "B1" in hardware_config.get_hardware_config().block_track
+    hardware_config.apply_updates({"chips": [
+        {"chip_id": "sw1", "kind": "hc595", "spi_select": "cs0", "chain_length": 3},
+    ]}, persist=False)
+    cfg = hardware_config.get_hardware_config()
+    assert "B1" not in cfg.block_track       # its track chip 'pwm1' is gone -> pruned
+    assert "B1" not in cfg.block_occupancy   # its detector chip 'in1' is gone -> pruned
+    assert "SW_A" in cfg.switch_output       # 'sw1' still configured -> kept
+
+
 def test_rejects_unknown_chip_kind():
     with pytest.raises(hardware_config.HardwareConfigError):
         hardware_config.config_from_payload(
@@ -139,6 +200,100 @@ def test_rejects_non_cascadable_chain_length():
         hardware_config.config_from_payload({"chips": [
             {"chip_id": "p", "kind": "pca9685", "i2c_address": "0x40", "chain_length": 2},
         ]})
+
+
+def test_ina3221_requires_i2c_address():
+    with pytest.raises(hardware_config.HardwareConfigError):
+        hardware_config.config_from_payload(
+            {"chips": [{"chip_id": "c", "kind": "ina3221"}]}
+        )
+
+
+def test_ina3221_current_binding_validates_with_three_ports_and_calibration():
+    cfg = hardware_config.config_from_payload({
+        "chips": [{"chip_id": "cur1", "kind": "ina3221", "i2c_address": "0x40"}],
+        "block_occupancy_current": {
+            "B1": {"chip_id": "cur1", "port": 2, "baseline_ma": 1.5, "threshold_ma": 20},
+        },
+    })
+    binding = cfg.block_occupancy_current["B1"]
+    assert binding.port == 2 and binding.baseline_ma == 1.5 and binding.threshold_ma == 20.0
+    # port 3 is out of range for a 3-channel INA3221
+    with pytest.raises(hardware_config.HardwareConfigError):
+        hardware_config.config_from_payload({
+            "chips": [{"chip_id": "cur1", "kind": "ina3221", "i2c_address": "0x40"}],
+            "block_occupancy_current": {"B1": {"chip_id": "cur1", "port": 3}},
+        })
+
+
+def test_current_binding_tuples_resolves_defaults_and_converts_ma():
+    # The seam build_session_interfaces relies on: None -> module default, mA -> A.
+    m = {
+        "B1": hardware_config.CurrentBinding("cur1", 0),                      # defaults
+        "B2": hardware_config.CurrentBinding("cur1", 1, baseline_ma=2.0, threshold_ma=20.0),
+    }
+    out = hardware_config._current_binding_tuples(m)
+    assert out["B1"] == ("cur1", 0, 0.0, hardware_config.DEFAULT_CURRENT_THRESHOLD_MA / 1000.0)
+    assert out["B2"] == ("cur1", 1, 0.002, 0.020)
+
+
+def test_occupancy_maps_split_by_port_kind():
+    # The digital detector goes in block_occupancy; the current-sense channel goes
+    # in block_occupancy_current. Crossing them is rejected by port kind.
+    with pytest.raises(hardware_config.HardwareConfigError):
+        hardware_config.config_from_payload({
+            "chips": [{"chip_id": "cur1", "kind": "ina3221", "i2c_address": "0x40"}],
+            "block_occupancy": {"B1": {"chip_id": "cur1", "port": 0}},   # INA in digital map
+        })
+    with pytest.raises(hardware_config.HardwareConfigError):
+        hardware_config.config_from_payload({
+            "chips": [{"chip_id": "in1", "kind": "hc165", "spi_select": "cs1"}],
+            "block_occupancy_current": {"B1": {"chip_id": "in1", "port": 0}},  # '165 in current map
+        })
+
+
+def test_output_enable_binding_validates_track_key_and_switch_bit():
+    cfg = hardware_config.config_from_payload({
+        "chips": [
+            {"chip_id": "pwm1", "kind": "pca9685", "i2c_address": "0x40"},
+            {"chip_id": "sw1", "kind": "hc595", "spi_select": "cs0"},
+        ],
+        "output_enable": {"pwm1": {"chip_id": "sw1", "port": 2}},
+    })
+    assert cfg.output_enable["pwm1"].port == 2
+    # key must be a track chip
+    with pytest.raises(hardware_config.HardwareConfigError):
+        hardware_config.config_from_payload({
+            "chips": [{"chip_id": "sw1", "kind": "hc595", "spi_select": "cs0"}],
+            "output_enable": {"sw1": {"chip_id": "sw1", "port": 2}},
+        })
+    # /OE driver bit must be a switch ('595) output, not the PWM chip
+    with pytest.raises(hardware_config.HardwareConfigError):
+        hardware_config.config_from_payload({
+            "chips": [{"chip_id": "pwm1", "kind": "pca9685", "i2c_address": "0x40"}],
+            "output_enable": {"pwm1": {"chip_id": "pwm1", "port": 0}},
+        })
+
+
+def test_set_current_binding_sets_and_clears():
+    hardware_config.apply_updates(
+        {"chips": [{"chip_id": "cur1", "kind": "ina3221", "i2c_address": "0x40"}]},
+        persist=False,
+    )
+    hardware_config.set_current_binding(
+        "B1", "cur1", 0, baseline_ma=1.0, threshold_ma=12, persist=False
+    )
+    b = hardware_config.get_hardware_config().block_occupancy_current["B1"]
+    assert (b.port, b.baseline_ma, b.threshold_ma) == (0, 1.0, 12.0)
+    hardware_config.set_current_binding("B1", None, persist=False)
+    assert "B1" not in hardware_config.get_hardware_config().block_occupancy_current
+    # a digital ('165) chip in the current map is rejected, nothing committed
+    hardware_config.apply_updates(
+        {"chips": [{"chip_id": "in1", "kind": "hc165", "spi_select": "cs1"}]},
+        persist=False,
+    )
+    with pytest.raises(hardware_config.HardwareConfigError):
+        hardware_config.set_current_binding("B1", "in1", 0, persist=False)
 
 
 def test_binding_unknown_chip_rejected():
@@ -199,6 +354,27 @@ def test_apply_updates_persists_and_round_trips():
     hardware_config.load_from_disk()
     assert hardware_config.is_real() is True
     assert len(hardware_config.get_hardware_config().chips) == 3
+
+
+def test_current_and_output_enable_maps_round_trip_on_disk():
+    hardware_config.apply_updates(_real_payload(
+        chips=[
+            {"chip_id": "pwm1", "kind": "pca9685", "i2c_address": "0x40"},
+            {"chip_id": "sw1", "kind": "hc595", "spi_select": "cs0", "chain_length": 3},
+            {"chip_id": "cur1", "kind": "ina3221", "i2c_address": "0x41"},
+        ],
+        block_occupancy={},
+        block_occupancy_current={
+            "B1": {"chip_id": "cur1", "port": 0, "baseline_ma": 2.0, "threshold_ma": 18},
+        },
+        output_enable={"pwm1": {"chip_id": "sw1", "port": 7}},
+    ))
+    hardware_config.reset_to_defaults()
+    hardware_config.load_from_disk()
+    cfg = hardware_config.get_hardware_config()
+    assert cfg.block_occupancy_current["B1"].threshold_ma == 18.0
+    assert cfg.block_occupancy_current["B1"].baseline_ma == 2.0
+    assert cfg.output_enable["pwm1"].port == 7
 
 
 def test_apply_updates_persist_false_does_not_write():
@@ -335,8 +511,8 @@ def test_get_catalog(client):
     assert resp.status_code == 200
     body = resp.get_json()
     kinds = {c["kind"] for c in body["chips"]}
-    assert kinds == {"pca9685", "hc595", "hc165"}
-    assert "cs0" in body["spi_select_lines"] and "gpio0" in body["spi_select_lines"]
+    assert kinds == {"pca9685", "hc595", "hc165", "ina3221"}
+    assert "cs0" in body["spi_select_lines"] and "gpio0" in body["gpio_lines"]
 
 
 def test_put_valid_config_succeeds_and_persists(client):
@@ -413,6 +589,42 @@ def test_binding_endpoint_rejects_out_of_range(client):
         "map": "switch_output", "logical_id": "SW_Z", "chip_id": "sw1", "port": 99,
     })
     assert r.status_code == 400
+
+
+def test_binding_endpoint_sets_current_binding(client):
+    client.put("/api/hardware/config", json={
+        "enabled": True,
+        "chips": [{"chip_id": "cur1", "kind": "ina3221", "i2c_address": "0x40"}],
+    })
+    r = client.put("/api/hardware/binding", json={
+        "map": "block_occupancy_current", "logical_id": "B1",
+        "chip_id": "cur1", "port": 2, "baseline_ma": 0.5, "threshold_ma": 18,
+    })
+    assert r.status_code == 200
+    b = hardware_config.get_hardware_config().block_occupancy_current["B1"]
+    assert b.port == 2 and b.threshold_ma == 18.0 and b.baseline_ma == 0.5
+    r2 = client.put("/api/hardware/binding",
+                    json={"map": "block_occupancy_current", "logical_id": "B1"})
+    assert r2.status_code == 200
+    assert "B1" not in hardware_config.get_hardware_config().block_occupancy_current
+
+
+def test_commission_currents_endpoint_with_fake(client, monkeypatch):
+    import hardware.ch347_device as chdev
+    fake = FakeCh347Device(present_addresses={0x41})
+    monkeypatch.setattr(chdev, "open_ch347_device", lambda port=None: fake)
+    fake.set_ina3221_current(0x41, 1, 0.020)
+
+    cfg_payload = {"enabled": True,
+                   "chips": [{"chip_id": "cur1", "kind": "ina3221", "i2c_address": "0x41"}]}
+    assert client.post("/api/hardware/commission/open",
+                       json={"config": cfg_payload}).get_json()["ok"] is True
+    resp = client.post("/api/hardware/commission/currents",
+                       json={"chip_id": "cur1"}).get_json()
+    assert resp["ok"] is True
+    assert len(resp["currents"]) == 3
+    assert abs(resp["currents"][0]["current_ma"] - 20.0) <= 0.5
+    client.post("/api/hardware/commission/close", json={})
 
 
 def test_commission_endpoints_with_fake(client, monkeypatch):
