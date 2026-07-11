@@ -7,7 +7,7 @@ Run with: pytest tests/test_trains_cab.py -v
 import logging
 import pytest
 
-from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NW
+from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
 from enums import BlockState, Direction, TrainState, HandlePosition
@@ -28,7 +28,7 @@ def network():
 @pytest.fixture
 def straight_ew_track(network):
     for x in range(5):
-        track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+        track = Tile(x=x, y=0, track_bits=TRACK_EW)
         network.add_track(track)
     return network
 
@@ -48,7 +48,7 @@ class TestCabSwitchEndPositionsBugFix:
 
     def _setup_two_tile_train(self, network):
         for x in range(3):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
 
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=80.0)
         train = Train(train_id="CAB_SWAP_TEST", consist=[car])
@@ -157,7 +157,7 @@ class TestCabSwitchEntryEdgeFlipBugFix:
 
     def _setup_straight_line(self, network, length_cm: float, head_x: int = 1):
         for x in range(-2, 4):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
 
         car = TrainCar("CAB_EDGE_TEST", "LOCOMOTIVE", length_cm=length_cm)
         train = Train(train_id="CAB_EDGE_TEST", consist=[car])
@@ -248,7 +248,7 @@ class TestSetCabDoubleFlipBugFix:
     def _setup_multi_tile_train(self, network):
         """Create a 2-tile train on E-W track, facing EAST with cab A."""
         for x in range(5):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
 
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=80.0, max_speed=80.0)
         train = Train(train_id="FLIP_TEST", consist=[car], max_speed=80.0)
@@ -272,7 +272,7 @@ class TestSetCabDoubleFlipBugFix:
     def _setup_single_tile_train(self, network):
         """Create a 1-tile train on E-W track, facing EAST with cab A."""
         for x in range(3):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
 
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=20.0, max_speed=80.0)
         train = Train(train_id="FLIP_TEST_1T", consist=[car], max_speed=80.0)
@@ -406,7 +406,7 @@ class TestSetCabDoubleFlipBugFix:
     def test_set_cab_from_none_does_not_flip(self, network):
         """Setting cab from None (first selection) should NOT flip direction."""
         for x in range(5):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
 
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=80.0, max_speed=80.0)
         train = Train(train_id="FIRST_CAB", consist=[car], max_speed=80.0)

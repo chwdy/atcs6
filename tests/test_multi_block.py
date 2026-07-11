@@ -11,7 +11,7 @@ from train_controller import create_controller_for_train
 from tests.train_test_helpers import set_train_span
 from network import RailwayNetwork
 from block import Block
-from track import TrackSegment
+from track import Tile
 from block_power import BlockPowerController, SimulatedOutputInterface
 from speed_profile import SpeedProfile
 from enums import Direction, TrainState
@@ -35,15 +35,15 @@ class TestMultiBlockOccupancy:
         network.blocks["BLK_C"] = block_c
 
         # Create tracks for each block
-        track_a = TrackSegment(x=0, y=0)
+        track_a = Tile(x=0, y=0)
         track_a.block_section_id = "BLK_A"
         track_a.length = 1.0  # 1 meter
 
-        track_b = TrackSegment(x=1, y=0)
+        track_b = Tile(x=1, y=0)
         track_b.block_section_id = "BLK_B"
         track_b.length = 1.0
 
-        track_c = TrackSegment(x=2, y=0)
+        track_c = Tile(x=2, y=0)
         track_c.block_section_id = "BLK_C"
         track_c.length = 1.0
 

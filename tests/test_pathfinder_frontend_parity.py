@@ -12,7 +12,7 @@ Drift on this rule was the original motivation. The previous frontend
 set, which let a path "cheat" across disconnected segments inside a
 crossing or switch. The fix added `ConstructionPathfinder.getExitsForEntry`
 in `frontend/src/lib/pathfinders.ts`. This file pins that helper's contract
-against the backend's `TrackSegment.get_exits(entry, use_switch_state=False)`
+against the backend's `Tile.get_exits(entry, use_switch_state=False)`
 so future changes on either side trip CI before drift accumulates.
 
 Covers:
@@ -33,7 +33,7 @@ from typing import Optional, Set, Tuple
 
 from network import RailwayNetwork
 from railway_pathfinder import RailwayPathfinder
-from track import TrackSegment
+from track import Tile
 
 
 # ---------------------------------------------------------------- conversion
@@ -81,13 +81,13 @@ def js_get_exits_for_entry(track_bits: int, entry: str) -> Set[str]:
 def test_segment_binding_primitive_agrees_with_backend():
     """For every non-empty `track_bits` (1..63) and every entry edge,
     the frontend `getExitsForEntry` must return the same exit set as the
-    backend's `TrackSegment.get_exits(entry, use_switch_state=False)`.
+    backend's `Tile.get_exits(entry, use_switch_state=False)`.
 
     If this fails, the segment-binding rule has drifted between the JS
     `SEGMENTS` table and the backend `BIT_TO_EDGES` table.
     """
     for track_bits in range(1, 64):
-        track = TrackSegment(x=0, y=0, track_bits=track_bits)
+        track = Tile(x=0, y=0, track_bits=track_bits)
         for entry_long in ('NORTH', 'EAST', 'SOUTH', 'WEST'):
             entry_short = LONG_TO_SHORT[entry_long]
             backend_exits = {
@@ -198,13 +198,13 @@ def test_bfs_reachability_respects_crossing_segment_isolation():
     network = RailwayNetwork()
     # Crossing at (1, 1) — left out of any block here; the four arms are
     # separate blocks so the test exercises path isolation through the crossing.
-    network.add_track(TrackSegment(x=1, y=1, track_bits=3))
+    network.add_track(Tile(x=1, y=1, track_bits=3))
     # NS arms: A north of crossing, D south of crossing.
-    network.add_track(TrackSegment(x=1, y=2, track_bits=1))
-    network.add_track(TrackSegment(x=1, y=0, track_bits=1))
+    network.add_track(Tile(x=1, y=2, track_bits=1))
+    network.add_track(Tile(x=1, y=0, track_bits=1))
     # EW arms: B east of crossing, C west of crossing.
-    network.add_track(TrackSegment(x=2, y=1, track_bits=2))
-    network.add_track(TrackSegment(x=0, y=1, track_bits=2))
+    network.add_track(Tile(x=2, y=1, track_bits=2))
+    network.add_track(Tile(x=0, y=1, track_bits=2))
 
     network.create_block_with_tracks(block_id="A", positions=[(1, 2)])
     network.create_block_with_tracks(block_id="D", positions=[(1, 0)])

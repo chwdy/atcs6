@@ -21,7 +21,7 @@ from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from simulation import SimulationController
 from persistence import PersistenceManager
-from track import TrackSegment
+from track import Tile
 from block import Block
 from railway_signal import Signal, SignalType
 from station import Station
@@ -69,12 +69,12 @@ def network_with_tracks(app_state):
 
     # Add straight east-west tracks at y=0
     for x in range(5):
-        track = TrackSegment(x=x, y=0, track_bits=2)  # EW track
+        track = Tile(x=x, y=0, track_bits=2)  # EW track
         network.add_track(track)
 
     # Add straight north-south tracks at x=0
     for y in range(1, 5):
-        track = TrackSegment(x=0, y=y, track_bits=1)  # NS track
+        track = Tile(x=0, y=y, track_bits=1)  # NS track
         network.add_track(track)
 
     return network
@@ -920,7 +920,7 @@ class TestRouteRedesignApis:
 
     def _setup_connected_platforms(self, app_state, client):
         for x in range(4):
-            app_state.network.add_track(TrackSegment(x=x, y=0, track_bits=2))
+            app_state.network.add_track(Tile(x=x, y=0, track_bits=2))
 
         app_state.network.create_block_with_tracks(
             block_id="BLK_A",
@@ -959,7 +959,7 @@ class TestRouteRedesignApis:
         )
 
     def test_platform_endpoint_create_and_get(self, client, app_state):
-        app_state.network.add_track(TrackSegment(x=10, y=0, track_bits=2))
+        app_state.network.add_track(Tile(x=10, y=0, track_bits=2))
         create_resp = client.post(
             "/api/platform",
             json={"x": 10, "y": 0, "platform_id": "PLT_001", "name": "P1"},
@@ -1009,7 +1009,7 @@ class TestRouteRedesignApis:
         disconnected components, marking valid pairs unviable."""
         network = app_state.network
         for x in range(5):
-            network.add_track(TrackSegment(x=x, y=0, track_bits=2))
+            network.add_track(Tile(x=x, y=0, track_bits=2))
         # (2,0) is intentionally left out of both blocks; it has track
         # geometry but no block_section_id — the same shape a switch tile
         # has in v1.
@@ -1046,8 +1046,8 @@ class TestRouteRedesignApis:
         """Truly disconnected blocks return viable=False with a No-path
         error and the requested direction is echoed back."""
         network = app_state.network
-        network.add_track(TrackSegment(x=0, y=0, track_bits=2))
-        network.add_track(TrackSegment(x=10, y=0, track_bits=2))
+        network.add_track(Tile(x=0, y=0, track_bits=2))
+        network.add_track(Tile(x=10, y=0, track_bits=2))
         network.create_block_with_tracks(
             block_id="BLK_X",
             positions=[(0, 0)],
@@ -1105,7 +1105,7 @@ class TestRouteRedesignApis:
         (simulation.py:607). Phase 1 cannot allocate a path without that span.
         """
         for x in range(4):
-            app_state.network.add_track(TrackSegment(x=x, y=0, track_bits=2))
+            app_state.network.add_track(Tile(x=x, y=0, track_bits=2))
         app_state.network.create_block_with_tracks(
             block_id="BLK_A", positions=[(0, 0), (1, 0)], name="Block A"
         )

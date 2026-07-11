@@ -1,5 +1,5 @@
 """
-Tests for the Non-empty parent rule (design_new.md, "TrackSegment" ownership
+Tests for the Non-empty parent rule (design_new.md, "Tile" ownership
 list): every grouping entity in the ownership chain always owns at least one
 child, and removing the last child deletes the now-empty parent in the same
 operation, cascading upward.
@@ -25,14 +25,14 @@ from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from services import platform_service
 from simulation import SimulationController
-from track import TrackSegment
+from track import Tile
 
 
 def _network_with_ew_tracks(n: int = 4) -> RailwayNetwork:
     """A bare network with `n` straight EW tracks along y=0 at x=0..n-1."""
     net = RailwayNetwork()
     for x in range(n):
-        net.add_track(TrackSegment(x=x, y=0, track_bits=2))  # EW straight
+        net.add_track(Tile(x=x, y=0, track_bits=2))  # EW straight
     return net
 
 

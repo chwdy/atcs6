@@ -5,14 +5,14 @@ signal-remap behaviour that depends on it.
 from network import RailwayNetwork
 from railway_pathfinder import RailwayPathfinder
 from railway_signal import SignalType
-from track import TrackSegment, TRACK_EW
+from track import Tile, TRACK_EW
 
 
 def _seven_tile_ew_line() -> RailwayNetwork:
     """7 tiles connected EW at y=0, x=0..6."""
     network = RailwayNetwork()
     for x in range(7):
-        network.add_track(TrackSegment(x=x, y=0, track_bits=TRACK_EW))
+        network.add_track(Tile(x=x, y=0, track_bits=TRACK_EW))
     return network
 
 
@@ -34,8 +34,8 @@ def test_measure_distance_overlap_is_zero():
 def test_measure_distance_unreachable_is_none():
     # Two disconnected tiles.
     network = RailwayNetwork()
-    network.add_track(TrackSegment(x=0, y=0, track_bits=TRACK_EW))
-    network.add_track(TrackSegment(x=5, y=0, track_bits=TRACK_EW))
+    network.add_track(Tile(x=0, y=0, track_bits=TRACK_EW))
+    network.add_track(Tile(x=5, y=0, track_bits=TRACK_EW))
     pf = RailwayPathfinder(network)
     assert pf.measure_distance((0, 0), (5, 0)) is None
 

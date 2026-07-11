@@ -8,7 +8,7 @@ providing a way to verify that API changes don't break existing layouts.
 
 from typing import Any, Dict, List
 
-from track import TrackSegment
+from track import Tile
 
 
 class StepPlayer:
@@ -173,7 +173,7 @@ class StepPlayer:
         y = op["y"]
         track_bits = op["track_bits"]
 
-        track = TrackSegment(x, y, track_bits=track_bits)
+        track = Tile(x, y, track_bits=track_bits)
         network.add_track(track)
         return f"{x},{y}"
 
@@ -181,7 +181,7 @@ class StepPlayer:
         """Execute add_switch operation.
 
         Registers a `Switch` entity at an already-placed switch tile. The
-        underlying `TrackSegment` must have been created by an earlier
+        underlying `Tile` must have been created by an earlier
         `add_track` step (the recorder orders tracks before switches).
         """
         from switch import Switch

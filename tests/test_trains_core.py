@@ -7,7 +7,7 @@ Run with: pytest tests/test_trains_core.py -v
 import logging
 import pytest
 
-from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NW
+from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
 from enums import BlockState, Direction, TrainState, HandlePosition, PathStatus
@@ -27,7 +27,7 @@ def network():
 @pytest.fixture
 def straight_ew_track(network):
     for x in range(5):
-        track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+        track = Tile(x=x, y=0, track_bits=TRACK_EW)
         network.add_track(track)
     return network
 
@@ -78,7 +78,7 @@ class TestSimulationController:
         """
         # Single east-west line: STA_A(0,0) -- BLK_A -- STA_B(3,0) -- BLK_C -- STA_C(6,0).
         for x in range(7):
-            network.add_track(TrackSegment(x=x, y=0, track_bits=TRACK_EW))
+            network.add_track(Tile(x=x, y=0, track_bits=TRACK_EW))
         network.add_station(0, 0, station_id="STA_A", name="A", length_cm=50.0, top_speed_kmh=80.0)
         network.add_station(3, 0, station_id="STA_B", name="B", length_cm=50.0, top_speed_kmh=80.0)
         network.add_station(6, 0, station_id="STA_C", name="C", length_cm=50.0, top_speed_kmh=80.0)
@@ -176,7 +176,7 @@ class TestTrainPlacement:
 
     def test_place_train_head_at_exit_edge(self, network):
         for x in range(3):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
         network.create_block_with_tracks(
             "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
         )

@@ -21,7 +21,7 @@ is sitting on.
 
 from network import RailwayNetwork
 from railway_pathfinder import RailwayPathfinder
-from track import TrackSegment
+from track import Tile
 
 EW, NW = 2, 8
 NS, SE = 1, 16
@@ -29,12 +29,12 @@ NS, SE = 1, 16
 
 def _depot_ladder() -> RailwayNetwork:
     net = RailwayNetwork()
-    net.add_track(TrackSegment(x=0, y=1, track_bits=EW))        # LEAD
-    net.add_track(TrackSegment(x=1, y=1, track_bits=EW | NW))   # S1 switch
-    net.add_track(TrackSegment(x=2, y=1, track_bits=EW | NW))   # S2 switch
-    net.add_track(TrackSegment(x=3, y=1, track_bits=EW))        # MAIN
-    net.add_track(TrackSegment(x=1, y=2, track_bits=1))         # SIDE1 (N-S stub)
-    net.add_track(TrackSegment(x=2, y=2, track_bits=1))         # SIDE2 (N-S stub)
+    net.add_track(Tile(x=0, y=1, track_bits=EW))        # LEAD
+    net.add_track(Tile(x=1, y=1, track_bits=EW | NW))   # S1 switch
+    net.add_track(Tile(x=2, y=1, track_bits=EW | NW))   # S2 switch
+    net.add_track(Tile(x=3, y=1, track_bits=EW))        # MAIN
+    net.add_track(Tile(x=1, y=2, track_bits=1))         # SIDE1 (N-S stub)
+    net.add_track(Tile(x=2, y=2, track_bits=1))         # SIDE2 (N-S stub)
     net.create_block_with_tracks(block_id="LEAD", positions=[(0, 1)])
     net.create_block_with_tracks(block_id="MAIN", positions=[(3, 1)])
     net.create_block_with_tracks(block_id="SIDE1", positions=[(1, 2)])
@@ -154,11 +154,11 @@ def _curved_platform() -> RailwayNetwork:
     WEST. This is the demo_5 platform shape that broke the Quick Route tool.
     """
     net = RailwayNetwork()
-    net.add_track(TrackSegment(x=2, y=1, track_bits=NW))   # east end, edges {N,W}
-    net.add_track(TrackSegment(x=1, y=1, track_bits=SE))   # mid,      edges {S,E}
-    net.add_track(TrackSegment(x=1, y=0, track_bits=NW))   # south end, edges {N,W}
-    net.add_track(TrackSegment(x=2, y=2, track_bits=NS))   # NORTH exit
-    net.add_track(TrackSegment(x=0, y=0, track_bits=EW))   # WEST exit
+    net.add_track(Tile(x=2, y=1, track_bits=NW))   # east end, edges {N,W}
+    net.add_track(Tile(x=1, y=1, track_bits=SE))   # mid,      edges {S,E}
+    net.add_track(Tile(x=1, y=0, track_bits=NW))   # south end, edges {N,W}
+    net.add_track(Tile(x=2, y=2, track_bits=NS))   # NORTH exit
+    net.add_track(Tile(x=0, y=0, track_bits=EW))   # WEST exit
     net.create_block_with_tracks(block_id="PLATFORM", positions=[(2, 1), (1, 1), (1, 0)])
     net.create_block_with_tracks(block_id="NORTH", positions=[(2, 2)])
     net.create_block_with_tracks(block_id="WEST", positions=[(0, 0)])

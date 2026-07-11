@@ -7,7 +7,7 @@ Run with: pytest tests/test_blocks.py -v
 import pytest
 
 from track import (
-    TrackSegment,
+    Tile,
     TRACK_NS,
     TRACK_EW,
     TRACK_NE,
@@ -46,7 +46,7 @@ def network():
 @pytest.fixture
 def straight_ew_track(network):
     for x in range(5):
-        track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+        track = Tile(x=x, y=0, track_bits=TRACK_EW)
         network.add_track(track)
     return network
 
@@ -54,27 +54,27 @@ def straight_ew_track(network):
 @pytest.fixture
 def straight_ns_track(network):
     for y in range(5):
-        track = TrackSegment(x=0, y=y, track_bits=TRACK_NS)
+        track = Tile(x=0, y=y, track_bits=TRACK_NS)
         network.add_track(track)
     return network
 
 
 @pytest.fixture
 def y_switch(network):
-    network.add_track(TrackSegment(x=1, y=0, track_bits=TRACK_NS))
-    network.add_track(TrackSegment(x=1, y=1, track_bits=TRACK_NS | TRACK_NE))
-    network.add_track(TrackSegment(x=1, y=2, track_bits=TRACK_NS))
-    network.add_track(TrackSegment(x=2, y=0, track_bits=TRACK_SW))
+    network.add_track(Tile(x=1, y=0, track_bits=TRACK_NS))
+    network.add_track(Tile(x=1, y=1, track_bits=TRACK_NS | TRACK_NE))
+    network.add_track(Tile(x=1, y=2, track_bits=TRACK_NS))
+    network.add_track(Tile(x=2, y=0, track_bits=TRACK_SW))
     return network
 
 
 @pytest.fixture
 def diamond_crossing(network):
-    network.add_track(TrackSegment(x=0, y=1, track_bits=TRACK_EW))
-    network.add_track(TrackSegment(x=2, y=1, track_bits=TRACK_EW))
-    network.add_track(TrackSegment(x=1, y=0, track_bits=TRACK_NS))
-    network.add_track(TrackSegment(x=1, y=2, track_bits=TRACK_NS))
-    network.add_track(TrackSegment(x=1, y=1, track_bits=TRACK_NS | TRACK_EW))
+    network.add_track(Tile(x=0, y=1, track_bits=TRACK_EW))
+    network.add_track(Tile(x=2, y=1, track_bits=TRACK_EW))
+    network.add_track(Tile(x=1, y=0, track_bits=TRACK_NS))
+    network.add_track(Tile(x=1, y=2, track_bits=TRACK_NS))
+    network.add_track(Tile(x=1, y=1, track_bits=TRACK_NS | TRACK_EW))
     return network
 
 
@@ -249,7 +249,7 @@ class TestBlockExtension:
     def test_extend_block_with_force_removes_signal_monitoring(self):
         network = RailwayNetwork()
         for i in range(4):
-            network.add_track(TrackSegment(0, i, TRACK_NS))
+            network.add_track(Tile(0, i, TRACK_NS))
         network.create_block("BLOCK_A")
         network.assign_track_to_block(0, 0, "BLOCK_A")
         network.assign_track_to_block(0, 1, "BLOCK_A")
@@ -266,7 +266,7 @@ class TestBlockExtension:
     def test_blocks_can_exist_within_stations(self):
         network = RailwayNetwork()
         for x in range(4):
-            network.add_track(TrackSegment(x, 0, TRACK_EW))
+            network.add_track(Tile(x, 0, TRACK_EW))
         network.add_station(0, 0, station_id="STA_TEST", name="Test Station")
         network.extend_station("STA_TEST", [(1, 0), (2, 0), (3, 0)])
         network.create_block("PLATFORM_1")
@@ -304,7 +304,7 @@ class TestBlockValidation:
 
     def test_validate_track_for_block_rejects_diagonal_crossing(self, network):
         # Diagonal crossings (NW+SE, NE+SW) stay out of blocks.
-        network.add_track(TrackSegment(x=0, y=0, track_bits=TRACK_NW | TRACK_SE))
+        network.add_track(Tile(x=0, y=0, track_bits=TRACK_NW | TRACK_SE))
         track = network.get_track(0, 0)
         is_valid, msg = validate_track_for_block(track, network)
         assert is_valid == False
@@ -364,7 +364,7 @@ class TestMultiBlockOccupancy:
 
     def test_short_train_single_block(self):
         network = RailwayNetwork()
-        track1 = TrackSegment(0, 0, track_bits=TRACK_EW, length=1.0)
+        track1 = Tile(0, 0, track_bits=TRACK_EW, length=1.0)
         track1.block_section_id = "BLOCK_1"
         network.add_track(track1)
         block1 = Block(block_id="BLOCK_1", length_cm=1000.0)
@@ -394,10 +394,10 @@ class TestMultiBlockOccupancy:
 
     def test_long_train_two_blocks(self):
         network = RailwayNetwork()
-        track1 = TrackSegment(0, 0, track_bits=TRACK_EW, length=1.0)
+        track1 = Tile(0, 0, track_bits=TRACK_EW, length=1.0)
         track1.block_section_id = "BLOCK_1"
         network.add_track(track1)
-        track2 = TrackSegment(1, 0, track_bits=TRACK_EW, length=1.0)
+        track2 = Tile(1, 0, track_bits=TRACK_EW, length=1.0)
         track2.block_section_id = "BLOCK_2"
         network.add_track(track2)
         block1 = Block(block_id="BLOCK_1", length_cm=10000.0)
@@ -691,7 +691,7 @@ class TestDirectionalCaution:
         network = RailwayNetwork()
         # Three single-tile blocks A, B, C at x=0, x=1, x=2.
         for x in range(3):
-            network.add_track(TrackSegment(x=x, y=0, track_bits=TRACK_EW))
+            network.add_track(Tile(x=x, y=0, track_bits=TRACK_EW))
         # Assign each tile to its own block.
         a = network.create_block("A", "A")
         b = network.create_block("B", "B")

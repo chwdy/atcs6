@@ -7,7 +7,7 @@ Run with: pytest tests/test_stations.py -v
 import pytest
 
 from track import (
-    TrackSegment,
+    Tile,
     TRACK_NS,
     TRACK_EW,
     TRACK_NE,
@@ -36,7 +36,7 @@ def network():
 @pytest.fixture
 def straight_ew_track(network):
     for x in range(5):
-        track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+        track = Tile(x=x, y=0, track_bits=TRACK_EW)
         network.add_track(track)
     return network
 
@@ -44,24 +44,24 @@ def straight_ew_track(network):
 @pytest.fixture
 def straight_ns_track(network):
     for y in range(5):
-        track = TrackSegment(x=0, y=y, track_bits=TRACK_NS)
+        track = Tile(x=0, y=y, track_bits=TRACK_NS)
         network.add_track(track)
     return network
 
 
 @pytest.fixture
 def zigzag_diagonal_nw_se(network):
-    network.add_track(TrackSegment(x=0, y=0, track_bits=TRACK_NW))
-    network.add_track(TrackSegment(x=1, y=1, track_bits=TRACK_SE))
-    network.add_track(TrackSegment(x=2, y=2, track_bits=TRACK_NW))
+    network.add_track(Tile(x=0, y=0, track_bits=TRACK_NW))
+    network.add_track(Tile(x=1, y=1, track_bits=TRACK_SE))
+    network.add_track(Tile(x=2, y=2, track_bits=TRACK_NW))
     return network
 
 
 @pytest.fixture
 def zigzag_diagonal_ne_sw(network):
-    network.add_track(TrackSegment(x=0, y=0, track_bits=TRACK_NE))
-    network.add_track(TrackSegment(x=1, y=1, track_bits=TRACK_SW))
-    network.add_track(TrackSegment(x=2, y=2, track_bits=TRACK_NE))
+    network.add_track(Tile(x=0, y=0, track_bits=TRACK_NE))
+    network.add_track(Tile(x=1, y=1, track_bits=TRACK_SW))
+    network.add_track(Tile(x=2, y=2, track_bits=TRACK_NE))
     return network
 
 
@@ -222,9 +222,9 @@ class TestMultiBlockStationAPI:
     """Tests for multi-block station API endpoints"""
 
     def test_assign_tile_to_block_endpoint(self, network):
-        network.add_track(TrackSegment(0, 1, TRACK_NS))
-        network.add_track(TrackSegment(0, 2, TRACK_NS))
-        network.add_track(TrackSegment(0, 3, TRACK_NS))
+        network.add_track(Tile(0, 1, TRACK_NS))
+        network.add_track(Tile(0, 2, TRACK_NS))
+        network.add_track(Tile(0, 3, TRACK_NS))
         station = network.add_station(0, 1, station_id="STA_001", name="Test Station")
         network.extend_station("STA_001", [(0, 2), (0, 3)])
         network.create_block("BLK_001")
@@ -233,8 +233,8 @@ class TestMultiBlockStationAPI:
         assert station.get_block_for_tile(0, 2) == "BLK_001"
 
     def test_unassign_tile_from_block_endpoint(self, network):
-        network.add_track(TrackSegment(0, 1, TRACK_NS))
-        network.add_track(TrackSegment(0, 2, TRACK_NS))
+        network.add_track(Tile(0, 1, TRACK_NS))
+        network.add_track(Tile(0, 2, TRACK_NS))
         station = network.add_station(0, 1, station_id="STA_001", name="Test Station")
         network.extend_station("STA_001", [(0, 2)])
         network.create_block("BLK_001")
@@ -245,9 +245,9 @@ class TestMultiBlockStationAPI:
         assert station.get_block_for_tile(0, 1) is None
 
     def test_get_block_assignments_structure(self, network):
-        network.add_track(TrackSegment(0, 1, TRACK_NS))
-        network.add_track(TrackSegment(0, 2, TRACK_NS))
-        network.add_track(TrackSegment(0, 3, TRACK_NS))
+        network.add_track(Tile(0, 1, TRACK_NS))
+        network.add_track(Tile(0, 2, TRACK_NS))
+        network.add_track(Tile(0, 3, TRACK_NS))
         station = network.add_station(0, 1, station_id="STA_001", name="Test Station")
         network.extend_station("STA_001", [(0, 2), (0, 3)])
         network.create_block("BLK_001")
@@ -259,8 +259,8 @@ class TestMultiBlockStationAPI:
         assert all_blocks == {"BLK_001", "BLK_002"}
 
     def test_block_assignments_persist_through_serialization(self, network):
-        network.add_track(TrackSegment(0, 1, TRACK_NS))
-        network.add_track(TrackSegment(0, 2, TRACK_NS))
+        network.add_track(Tile(0, 1, TRACK_NS))
+        network.add_track(Tile(0, 2, TRACK_NS))
         station = network.add_station(0, 1, station_id="STA_001", name="Test Station")
         network.extend_station("STA_001", [(0, 2)])
         network.create_block("BLK_001")
@@ -278,51 +278,51 @@ class TestExtensionValidation:
     """Tests for can-extend validation logic"""
 
     def test_station_extension_requires_adjacency(self, network):
-        network.add_track(TrackSegment(0, 0, TRACK_NS))
-        network.add_track(TrackSegment(0, 1, TRACK_NS))
-        network.add_track(TrackSegment(0, 2, TRACK_NS))
+        network.add_track(Tile(0, 0, TRACK_NS))
+        network.add_track(Tile(0, 1, TRACK_NS))
+        network.add_track(Tile(0, 2, TRACK_NS))
         station = network.add_station(0, 0, station_id="STATION_A", name="Station A")
         network.extend_station("STATION_A", [(0, 1), (0, 2)])
-        network.add_track(TrackSegment(0, 5, TRACK_NS))
+        network.add_track(Tile(0, 5, TRACK_NS))
         with pytest.raises(ValueError, match="must be adjacent to existing station"):
             network.extend_station("STATION_A", [(0, 5)])
 
     def test_station_extension_requires_orientation_match(self, network):
-        network.add_track(TrackSegment(0, 0, TRACK_NS))
-        network.add_track(TrackSegment(0, 1, TRACK_NS))
+        network.add_track(Tile(0, 0, TRACK_NS))
+        network.add_track(Tile(0, 1, TRACK_NS))
         station = network.add_station(0, 0, station_id="STATION_A", name="Station A")
         network.extend_station("STATION_A", [(0, 1)])
-        network.add_track(TrackSegment(0, 2, TRACK_EW))
+        network.add_track(Tile(0, 2, TRACK_EW))
         with pytest.raises(ValueError, match="exact orientation match"):
             network.extend_station("STATION_A", [(0, 2)])
 
     def test_block_extension_requires_adjacency(self, network):
-        network.add_track(TrackSegment(0, 0, TRACK_EW))
-        network.add_track(TrackSegment(1, 0, TRACK_EW))
-        network.add_track(TrackSegment(2, 0, TRACK_EW))
+        network.add_track(Tile(0, 0, TRACK_EW))
+        network.add_track(Tile(1, 0, TRACK_EW))
+        network.add_track(Tile(2, 0, TRACK_EW))
         network.create_block("BLOCK_A")
         network.assign_track_to_block(0, 0, "BLOCK_A")
         network.assign_track_to_block(1, 0, "BLOCK_A")
         network.assign_track_to_block(2, 0, "BLOCK_A")
-        network.add_track(TrackSegment(5, 0, TRACK_EW))
+        network.add_track(Tile(5, 0, TRACK_EW))
         with pytest.raises(ValueError, match="must be adjacent to existing block"):
             network.extend_block("BLOCK_A", [(5, 0)])
 
     def test_block_extension_rejects_diagonal_crossings(self, network):
         # Diagonal crossings (NW+SE, NE+SW) cannot be extended into a block.
-        network.add_track(TrackSegment(0, 0, TRACK_EW))
+        network.add_track(Tile(0, 0, TRACK_EW))
         network.create_block("BLOCK_A")
         network.assign_track_to_block(0, 0, "BLOCK_A")
-        network.add_track(TrackSegment(1, 0, TRACK_NW | TRACK_SE))
+        network.add_track(Tile(1, 0, TRACK_NW | TRACK_SE))
         with pytest.raises(ValueError, match="Cannot add crossing to block"):
             network.extend_block("BLOCK_A", [(1, 0)])
 
     def test_block_extension_allows_orthogonal_crossing(self, network):
         # The orthogonal NS+EW crossing (track_bits 3) may be extended into a block.
-        network.add_track(TrackSegment(0, 0, TRACK_EW))
+        network.add_track(Tile(0, 0, TRACK_EW))
         network.create_block("BLOCK_A")
         network.assign_track_to_block(0, 0, "BLOCK_A")
-        network.add_track(TrackSegment(1, 0, TRACK_NS | TRACK_EW))
+        network.add_track(Tile(1, 0, TRACK_NS | TRACK_EW))
         network.extend_block("BLOCK_A", [(1, 0)])
         assert network.get_track(1, 0).block_section_id == "BLOCK_A"
 
@@ -331,9 +331,9 @@ class TestStationStoppingBehavior:
     """Tests for station stopping position logic."""
 
     def test_single_tile_station_stops_at_only_tile(self, network):
-        network.add_track(TrackSegment(0, 0, TRACK_EW))
-        network.add_track(TrackSegment(1, 0, TRACK_EW))
-        network.add_track(TrackSegment(2, 0, TRACK_EW))
+        network.add_track(Tile(0, 0, TRACK_EW))
+        network.add_track(Tile(1, 0, TRACK_EW))
+        network.add_track(Tile(2, 0, TRACK_EW))
         station = network.add_station(
             1, 0, station_id="STA_SINGLE", name="Single Tile Station", length_cm=1500.0
         )
@@ -352,7 +352,7 @@ class TestStationStoppingBehavior:
 
     def test_multi_tile_station_traveling_east_stops_at_easternmost(self, network):
         for x in range(5):
-            network.add_track(TrackSegment(x, 0, TRACK_EW))
+            network.add_track(Tile(x, 0, TRACK_EW))
         station = network.add_station(
             1,
             0,
@@ -376,7 +376,7 @@ class TestStationStoppingBehavior:
 
     def test_multi_tile_station_traveling_north_stops_at_northernmost(self, network):
         for y in range(5):
-            network.add_track(TrackSegment(0, y, TRACK_NS))
+            network.add_track(Tile(0, y, TRACK_NS))
         station = network.add_station(
             0,
             1,
@@ -403,9 +403,9 @@ class TestBlockStationIntegration:
     """Tests for block-station synchronization."""
 
     def test_auto_shorten_block_when_station_tile_removed(self, network):
-        network.add_track(TrackSegment(0, 0, TRACK_NS))
-        network.add_track(TrackSegment(0, 1, TRACK_NS))
-        network.add_track(TrackSegment(0, 2, TRACK_NS))
+        network.add_track(Tile(0, 0, TRACK_NS))
+        network.add_track(Tile(0, 1, TRACK_NS))
+        network.add_track(Tile(0, 2, TRACK_NS))
         station = network.add_station(0, 0, station_id="STATION_A", name="Station A")
         network.extend_station("STATION_A", [(0, 1), (0, 2)])
         station_block_id = f"{station.platform_id}_BLOCK"

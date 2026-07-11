@@ -6,7 +6,7 @@ Run with: pytest tests/test_trains_controller.py -v
 
 import pytest
 
-from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NW
+from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
 from enums import BlockState, Direction, TrainState, HandlePosition
@@ -28,7 +28,7 @@ def network():
 @pytest.fixture
 def straight_ew_track(network):
     for x in range(5):
-        track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+        track = Tile(x=x, y=0, track_bits=TRACK_EW)
         network.add_track(track)
     return network
 
@@ -100,7 +100,7 @@ class TestRaceConditionFix:
         network = RailwayNetwork()
 
         # Create track and block with speed limit
-        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        track = Tile(x=0, y=0, track_bits=TRACK_EW)
         track.block_section_id = "B1"
         network.add_track(track)
 
@@ -231,8 +231,8 @@ class TestTrainControllerBrakingNotches:
             make_synthetic_path,
         )
 
-        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
-        next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        track = Tile(x=0, y=0, track_bits=TRACK_EW)
+        next_track = Tile(x=1, y=0, track_bits=TRACK_EW)
         network.add_track(track)
         network.add_track(next_track)
         network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
@@ -351,8 +351,8 @@ class TestTrainClearancePrecisionBugFix:
         """Remaining distance should reflect head distance in current tile."""
         network = RailwayNetwork()
 
-        track_a = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
-        track_b = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        track_a = Tile(x=0, y=0, track_bits=TRACK_EW)
+        track_b = Tile(x=1, y=0, track_bits=TRACK_EW)
         track_a.block_section_id = "B1"
         track_b.block_section_id = "B1"
         network.add_track(track_a)
@@ -400,7 +400,7 @@ class TestATCOverspeedWarning:
     def _sim_with_authority(self):
         network = RailwayNetwork()
         for x in range(6):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
         for blk, (a, b) in [("B1", (0, 1)), ("B2", (2, 3)), ("B3", (4, 5))]:
             network.create_block_with_tracks(
                 block_id=blk, positions=[(a, 0), (b, 0)], name=blk, length_cm=200.0

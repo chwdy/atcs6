@@ -49,7 +49,7 @@ read as straight horizontal running lines on screen.
 
 from network import RailwayNetwork
 from track import (
-    TrackSegment,
+    Tile,
     TRACK_NS,
     TRACK_EW,
     TRACK_NE,
@@ -80,7 +80,7 @@ def test_block_validation():
     test_network = RailwayNetwork()
 
     for x in range(8):
-        test_network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+        test_network.add_track(Tile(x, 0, track_bits=TRACK_EW))
 
     print("\n[TEST 1] Verifying disconnected tracks are rejected...")
     try:
@@ -95,7 +95,7 @@ def test_block_validation():
         print(f"  ✓ Correctly rejected: {e}")
 
     print("\n[TEST 2] Verifying switches cannot be in blocks...")
-    switch_track = TrackSegment(5, 0, track_bits=TRACK_EW | TRACK_NE)
+    switch_track = Tile(5, 0, track_bits=TRACK_EW | TRACK_NE)
     test_network.add_track(switch_track)
     switch = Switch(switch_id="SW_5_0", x=5, y=0)
     test_network.add_switch(switch)
@@ -134,7 +134,7 @@ def test_block_validation():
 # Baked track geometry from layouts/demo_6.json. Each entry: (x, y, bits).
 # dead_end_ports (buffer stops) are NOT listed here — the network recomputes
 # them from connectivity when tracks are added (see
-# TrackSegment._update_dead_ends). Switch tiles carry their geometry here and
+# Tile._update_dead_ends). Switch tiles carry their geometry here and
 # get their Switch entity from SWITCHES below.
 TILES = [
     (-22, 2, TRACK_NE),
@@ -984,7 +984,7 @@ BRANCH_TRAIN_IDS = [
 def _add_tracks(network: RailwayNetwork) -> None:
     """Place every baked track tile."""
     for (x, y, bits) in TILES:
-        network.add_track(TrackSegment(x, y, track_bits=bits))
+        network.add_track(Tile(x, y, track_bits=bits))
 
 
 def _add_switches(network: RailwayNetwork) -> None:

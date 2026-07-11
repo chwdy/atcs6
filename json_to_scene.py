@@ -226,7 +226,7 @@ _BUILDERS = '''
 def _add_tracks(network: RailwayNetwork) -> None:
     """Place every baked track tile (dead-end ports are re-derived from geometry)."""
     for (x, y, bits) in TILES:
-        network.add_track(TrackSegment(x, y, track_bits=bits))
+        network.add_track(Tile(x, y, track_bits=bits))
 
 
 def _add_switches(network: RailwayNetwork) -> None:
@@ -400,7 +400,7 @@ part of the layout JSON, so setup_demo_train() is a stub.
 
 from network import RailwayNetwork
 from track import (
-    TrackSegment,
+    Tile,
     TRACK_NS,
     TRACK_EW,
     TRACK_NE,

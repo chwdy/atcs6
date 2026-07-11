@@ -16,7 +16,7 @@ import pytest
 from datetime import datetime, timedelta
 
 from network import RailwayNetwork
-from track import TrackSegment, TRACK_EW, TRACK_NS, TRACK_NW, TRACK_SE
+from track import Tile, TRACK_EW, TRACK_NS, TRACK_NW, TRACK_SE
 from train import Train, TrainCar
 from train_span import SpanEndLocator, TrainSpan
 from path_dispatcher import PathDispatcher
@@ -70,7 +70,7 @@ class TestExtendPathBug:
         # Create a simple linear track: A - B - C - D - E
         # All connected with EW tracks
         for x in range(0, 10):
-            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            track = Tile(x, 0, track_bits=TRACK_EW)
             network.add_track(track)
 
         # Create 5 blocks
@@ -421,7 +421,7 @@ class TestExtendPathAtoSync:
 
         # 6 tiles: BLK_A=(0,0),(1,0)  BLK_B=(2,0),(3,0)  BLK_C=(4,0),(5,0)
         for x in range(6):
-            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            track = Tile(x, 0, track_bits=TRACK_EW)
             network.add_track(track)
 
         network.create_block_with_tracks(
@@ -565,7 +565,7 @@ class TestEffectivePathTiles:
         network = RailwayNetwork()
 
         for x in range(0, 10):
-            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            track = Tile(x, 0, track_bits=TRACK_EW)
             network.add_track(track)
 
         network.create_block_with_tracks(
@@ -741,7 +741,7 @@ class TestAtoDestinationCleanup:
         network = RailwayNetwork()
 
         for x in range(0, 10):
-            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            track = Tile(x, 0, track_bits=TRACK_EW)
             network.add_track(track)
 
         network.create_block_with_tracks(

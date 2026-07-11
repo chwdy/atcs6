@@ -14,7 +14,7 @@ Covers design_new.md "Power" (Switch power-controller role) and the
 
 import pytest
 
-from track import TrackSegment, TRACK_EW, TRACK_NW, TRACK_NS, TRACK_SE
+from track import Tile, TRACK_EW, TRACK_NW, TRACK_NS, TRACK_SE
 from switch import Switch
 from enums import SwitchState
 from block_power import BlockPowerController, OutputInterface, SimulatedOutputInterface
@@ -27,7 +27,7 @@ from switch_power import (
 
 
 # ---------------------------------------------------------------------------
-# Lightweight fakes — real TrackSegment / Switch geometry, minimal network.
+# Lightweight fakes — real Tile / Switch geometry, minimal network.
 # ---------------------------------------------------------------------------
 
 
@@ -96,12 +96,12 @@ def _standard_switch_network():
     DIVERGE(1) exit N -> (1,1); entry across W -> (0,0).
     """
     net = FakeNetwork()
-    net.add_track(TrackSegment(x=1, y=0, track_bits=TRACK_EW | TRACK_NW))
+    net.add_track(Tile(x=1, y=0, track_bits=TRACK_EW | TRACK_NW))
     # Neighbour tiles must exist for get_neighbor; their own geometry is
     # irrelevant to port derivation.
-    net.add_track(TrackSegment(x=0, y=0, track_bits=TRACK_EW))  # entry side
-    net.add_track(TrackSegment(x=2, y=0, track_bits=TRACK_EW))  # MAIN branch
-    net.add_track(TrackSegment(x=1, y=1, track_bits=TRACK_NS))  # DIVERGE branch
+    net.add_track(Tile(x=0, y=0, track_bits=TRACK_EW))  # entry side
+    net.add_track(Tile(x=2, y=0, track_bits=TRACK_EW))  # MAIN branch
+    net.add_track(Tile(x=1, y=1, track_bits=TRACK_NS))  # DIVERGE branch
     net._tile_block = {
         (0, 0): "BLK_ENTRY",
         (2, 0): "BLK_MAIN",
@@ -154,7 +154,7 @@ def test_derive_ports_crossover_returns_none():
     """A scissors crossover (NS+EW+NW+SE) has no single common entry leg."""
     net = FakeNetwork()
     net.add_track(
-        TrackSegment(x=1, y=0, track_bits=TRACK_NS | TRACK_EW | TRACK_NW | TRACK_SE)
+        Tile(x=1, y=0, track_bits=TRACK_NS | TRACK_EW | TRACK_NW | TRACK_SE)
     )
     sw = Switch(switch_id="X", x=1, y=0)
     net.switches = {"X": sw}
@@ -185,7 +185,7 @@ def test_verify_confirms_in_sim_when_aligned_and_energized():
 def test_verify_skips_for_crossover():
     net = FakeNetwork()
     net.add_track(
-        TrackSegment(x=1, y=0, track_bits=TRACK_NS | TRACK_EW | TRACK_NW | TRACK_SE)
+        Tile(x=1, y=0, track_bits=TRACK_NS | TRACK_EW | TRACK_NW | TRACK_SE)
     )
     sw = Switch(switch_id="X", x=1, y=0)
     net.switches = {"X": sw}

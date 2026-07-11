@@ -28,7 +28,7 @@ dependency on switch-state geometry:
 
 import pytest
 
-from track import TrackSegment, TRACK_NS, TRACK_EW
+from track import Tile, TRACK_NS, TRACK_EW
 from network import RailwayNetwork
 from block import Block, CautionState
 from block_manager import BlockManager
@@ -55,10 +55,10 @@ def _straight_chain_manager():
     (1,0). The walk reaches B with chain_entry_edge == 'W' == opposite('E').
     """
     net = RailwayNetwork()
-    a = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+    a = Tile(x=0, y=0, track_bits=TRACK_EW)
     a.block_section_id = "A"
     net.add_track(a)
-    b = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+    b = Tile(x=1, y=0, track_bits=TRACK_EW)
     b.block_section_id = "B"
     net.add_track(b)
     net.blocks["A"] = Block(block_id="A")
@@ -111,7 +111,7 @@ def test_forward_train_has_reversed_keys_on_chain_entry_edge(
     ``travel_direction`` equals the PASSED chain-entry edge — independent of
     the CAUTION block's exit edge."""
     net = RailwayNetwork()
-    occ_tile = TrackSegment(x=1, y=1, track_bits=TRACK_NS)
+    occ_tile = Tile(x=1, y=1, track_bits=TRACK_NS)
     occ_tile.block_section_id = "OCC"
     net.add_track(occ_tile)
     net.blocks["OCC"] = Block(block_id="OCC")
@@ -131,7 +131,7 @@ def test_forward_train_has_reversed_keeps_caution_without_back_reference():
     """No SimulationController back-reference => never escalate to a clear
     (positive evidence of reversal is required)."""
     net = RailwayNetwork()
-    occ_tile = TrackSegment(x=1, y=1, track_bits=TRACK_NS)
+    occ_tile = Tile(x=1, y=1, track_bits=TRACK_NS)
     occ_tile.block_section_id = "OCC"
     net.add_track(occ_tile)
     net.blocks["OCC"] = Block(block_id="OCC")

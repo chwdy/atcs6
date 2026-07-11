@@ -7,7 +7,7 @@ with configurable physical properties for each branch (MAIN and DIVERGE paths).
 
 Design Notes:
 - Each switch has separate length and radius for MAIN (position 0) and DIVERGE (position 1) paths
-- Switch position is authoritative on the Switch entity (not on TrackSegment) in v1
+- Switch position is authoritative on the Switch entity (not on Tile) in v1
 - Switches are auto-created when switch tracks are placed
 - Default length is 0.0 cm (unconfigured) which triggers warnings but allows operation
 - Multi-owner future-authority locks: same-position path locks may co-exist; physical

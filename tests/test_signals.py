@@ -7,7 +7,7 @@ Run with: pytest tests/test_signals.py -v
 import pytest
 
 from track import (
-    TrackSegment,
+    Tile,
     TRACK_NS,
     TRACK_EW,
     TRACK_NE,
@@ -61,9 +61,9 @@ class TestSignal:
 
     def test_signal_switch_routing_check(self):
         network = RailwayNetwork()
-        network.add_track(TrackSegment(3, 0, TRACK_NW + TRACK_EW))
-        network.add_track(TrackSegment(3, 1, TRACK_NS))
-        network.add_track(TrackSegment(3, 2, TRACK_NS))
+        network.add_track(Tile(3, 0, TRACK_NW + TRACK_EW))
+        network.add_track(Tile(3, 1, TRACK_NS))
+        network.add_track(Tile(3, 2, TRACK_NS))
         network.create_block("BLOCK_BRANCH")
         network.assign_track_to_block(3, 2, "BLOCK_BRANCH")
         signal = network.add_signal(3, 1, "N")
@@ -82,7 +82,7 @@ class TestSignalInBlock:
     def test_signal_tile_keeps_block_section_id(self):
         network = RailwayNetwork()
         for x in range(3):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
         network.create_block_with_tracks(
             block_id="BLOCK_A", positions=[(0, 0), (1, 0), (2, 0)], name="Block A"
         )
@@ -93,7 +93,7 @@ class TestSignalInBlock:
     def test_is_signal_on_entry_tile_eastbound(self):
         network = RailwayNetwork()
         for x in range(4):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
         network.create_block_with_tracks("BLOCK_A", [(0, 0)], name="A")
         network.create_block_with_tracks("BLOCK_B", [(1, 0), (2, 0), (3, 0)], name="B")
         signal = network.add_signal(1, 0, "E", auto_connect=False)
@@ -104,7 +104,7 @@ class TestSignalInBlock:
     def test_is_signal_on_entry_tile_westbound(self):
         network = RailwayNetwork()
         for x in range(4):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
         network.create_block_with_tracks("BLOCK_A", [(0, 0), (1, 0), (2, 0)], name="A")
         network.create_block_with_tracks("BLOCK_B", [(3, 0)], name="B")
         signal = network.add_signal(2, 0, "W", auto_connect=False)
@@ -113,7 +113,7 @@ class TestSignalInBlock:
     def test_signal_in_middle_cannot_monitor_own_block(self):
         network = RailwayNetwork()
         for x in range(5):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
         network.create_block_with_tracks(
             "BLOCK_A", [(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)], name="A"
         )
@@ -124,7 +124,7 @@ class TestSignalInBlock:
     def test_signal_on_entry_can_monitor_own_block(self):
         network = RailwayNetwork()
         for x in range(5):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
         network.create_block_with_tracks(
             "BLOCK_A", [(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)], name="A"
         )
@@ -139,7 +139,7 @@ class TestSignalDirectionAwareness:
     def test_signal_shows_red_for_opposite_direction_route(self):
         network = RailwayNetwork()
         for x in range(4):
-            t = TrackSegment(x, 0, track_bits=TRACK_EW)
+            t = Tile(x, 0, track_bits=TRACK_EW)
             network.add_track(t)
         network.create_block_with_tracks("BLOCK_A", [(0, 0), (1, 0)])
         network.create_block_with_tracks("BLOCK_B", [(2, 0), (3, 0)])
@@ -155,7 +155,7 @@ class TestSignalDirectionAwareness:
     def test_signal_shows_green_for_same_direction_route(self):
         network = RailwayNetwork()
         for x in range(4):
-            t = TrackSegment(x, 0, track_bits=TRACK_EW)
+            t = Tile(x, 0, track_bits=TRACK_EW)
             network.add_track(t)
         network.create_block_with_tracks("BLOCK_A", [(0, 0), (1, 0)])
         network.create_block_with_tracks("BLOCK_B", [(2, 0), (3, 0)])
@@ -172,7 +172,7 @@ class TestSwitchSignalBugFixes:
     """Tests for switch and signal routing bug fixes."""
 
     def test_diverge_only_switch_blocks_inactive_entry_bits_12(self):
-        track = TrackSegment(0, 0, 12)
+        track = Tile(0, 0, 12)
         track.switch_state = 0
         assert track.get_exits("N", use_switch_state=True) == ["E"]
         assert track.get_exits("E", use_switch_state=True) == ["N"]
@@ -183,7 +183,7 @@ class TestSwitchSignalBugFixes:
         assert track.get_exits("E", use_switch_state=True) == []
 
     def test_diverge_only_switch_blocks_inactive_entry_bits_20(self):
-        track = TrackSegment(0, 0, 20)
+        track = Tile(0, 0, 20)
         track.switch_state = 0
         assert track.get_exits("E", use_switch_state=True) == ["N"]
         assert track.get_exits("N", use_switch_state=True) == ["E"]
@@ -205,7 +205,7 @@ class TestSwitchSignalBugFixes:
             (34, "EW+SW"),
         ]
         for bits, name in configs:
-            track = TrackSegment(0, 0, bits)
+            track = Tile(0, 0, bits)
             assert track.is_switch, f"{name} should be a switch"
             track.switch_state = 0
             main_edges = {"N", "S"} if bits & 1 else {"E", "W"}
@@ -218,9 +218,9 @@ class TestSwitchSignalBugFixes:
 
     def test_signal_ignores_approach_switch_north_facing(self):
         network = RailwayNetwork()
-        network.add_track(TrackSegment(0, 0, TRACK_NW + TRACK_EW))
-        network.add_track(TrackSegment(0, 1, TRACK_NS))
-        network.add_track(TrackSegment(0, 2, TRACK_NS))
+        network.add_track(Tile(0, 0, TRACK_NW + TRACK_EW))
+        network.add_track(Tile(0, 1, TRACK_NS))
+        network.add_track(Tile(0, 2, TRACK_NS))
         network.create_block("BLOCK_NORTH")
         network.assign_track_to_block(0, 2, "BLOCK_NORTH")
         signal = network.add_signal(0, 1, "N")
@@ -259,7 +259,7 @@ class TestControllerSignalDirectionFiltering:
         network = RailwayNetwork()
         # 6-tile east-west track: (0,0) to (5,0)
         for x in range(6):
-            t = TrackSegment(x, 0, track_bits=TRACK_EW)
+            t = Tile(x, 0, track_bits=TRACK_EW)
             network.add_track(t)
 
         # Create 3 blocks
@@ -447,7 +447,7 @@ class TestSimulationSignalUpdates:
 
         network = RailwayNetwork()
         for x in range(4):
-            t = TrackSegment(x, 0, track_bits=TRACK_EW)
+            t = Tile(x, 0, track_bits=TRACK_EW)
             network.add_track(t)
 
         network.create_block_with_tracks("BLOCK_A", [(0, 0), (1, 0)])
@@ -484,7 +484,7 @@ class TestSimulationSignalUpdates:
 
         network = RailwayNetwork()
         for x in range(6):
-            t = TrackSegment(x, 0, track_bits=TRACK_EW)
+            t = Tile(x, 0, track_bits=TRACK_EW)
             network.add_track(t)
 
         network.create_block_with_tracks("BLOCK_A", [(0, 0), (1, 0)])

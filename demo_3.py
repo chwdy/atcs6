@@ -28,7 +28,7 @@ Initial placement:
 """
 
 from network import RailwayNetwork
-from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NE, TRACK_NW, TRACK_SE
+from track import Tile, TRACK_NS, TRACK_EW, TRACK_NE, TRACK_NW, TRACK_SE
 from path_dispatcher import PathDispatcher
 from switch import Switch
 
@@ -71,7 +71,7 @@ def test_block_validation():
     test_network = RailwayNetwork()
 
     for x in range(8):
-        test_network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+        test_network.add_track(Tile(x, 0, track_bits=TRACK_EW))
 
     print("\n[TEST 1] Verifying disconnected tracks are rejected...")
     try:
@@ -86,7 +86,7 @@ def test_block_validation():
         print(f"  ✓ Correctly rejected: {e}")
 
     print("\n[TEST 2] Verifying switches cannot be in blocks...")
-    switch_track = TrackSegment(5, 0, track_bits=TRACK_EW | TRACK_NE)
+    switch_track = Tile(5, 0, track_bits=TRACK_EW | TRACK_NE)
     test_network.add_track(switch_track)
     switch = Switch(switch_id="SW_5_0", x=5, y=0)
     test_network.add_switch(switch)
@@ -183,7 +183,7 @@ def _add_plain_tracks(network: RailwayNetwork) -> None:
     """Place all non-switch tiles for both tracks."""
     for tiles in (S_TRACK_TILES, N_TRACK_TILES):
         for (x, y, bits, _role) in tiles:
-            network.add_track(TrackSegment(x, y, track_bits=bits))
+            network.add_track(Tile(x, y, track_bits=bits))
 
 
 def _add_crossovers(network: RailwayNetwork) -> None:
@@ -196,7 +196,7 @@ def _add_crossovers(network: RailwayNetwork) -> None:
     """
     from enums import SwitchState
     for (sx, sy, sid) in ((2, 3, "SW_X1"), (8, 9, "SW_X2")):
-        tile = TrackSegment(sx, sy, track_bits=SCISSORS_BITS)
+        tile = Tile(sx, sy, track_bits=SCISSORS_BITS)
         network.add_track(tile)
         switch = Switch(switch_id=sid, x=sx, y=sy)
         # DIVERGE (1) = stay-on-track via NW/SE diagonals — the demo's

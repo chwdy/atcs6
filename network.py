@@ -11,7 +11,7 @@ from collections import deque
 import logging
 from typing import Dict, List, Optional, Set, Tuple, Any, Union, TYPE_CHECKING
 import uuid
-from track import TrackSegment, EDGE_MASKS, BIT_TO_EDGES
+from track import Tile, EDGE_MASKS, BIT_TO_EDGES
 from train import Train
 from block import Block
 from block_manager import BlockManager
@@ -56,7 +56,7 @@ _OPPOSITE_EDGE: Dict[str, str] = {"N": "S", "S": "N", "E": "W", "W": "E"}
 
 def _bits_form_switch(bits: int) -> bool:
     """True if the bit pattern alone would make a tile a switch (any port
-    with 2+ exits). Mirrors `TrackSegment.switch_points` without needing
+    with 2+ exits). Mirrors `Tile.switch_points` without needing
     a live segment instance."""
     edge_exits = {"N": 0, "E": 0, "S": 0, "W": 0}
     for bit in range(6):
@@ -76,7 +76,7 @@ class RailwayNetwork:
     """
 
     def __init__(self):
-        self.tracks: Dict[Tuple[int, int], TrackSegment] = {}
+        self.tracks: Dict[Tuple[int, int], Tile] = {}
         self.trains: Dict[str, Train] = {}
         self.blocks: Dict[str, Block] = {}
         self.signals: Dict[str, Signal] = {}
@@ -136,13 +136,13 @@ class RailwayNetwork:
         self._tile_to_block: Dict[Tuple[int, int], str] = {}
         self._tile_to_platform: Dict[Tuple[int, int], str] = {}
 
-        # Reverse index block id -> its TrackSegments, derived from
+        # Reverse index block id -> its Tiles, derived from
         # _tile_to_block and built lazily by _block_tiles_index(). Turns
         # get_block_tracks() from an O(all tracks) scan into an O(block)
         # lookup; the lookahead calls it thousands of times per tick. None
         # means "rebuild on next read"; invalidate_pathfinding_cache() resets
         # it on every topology change (none of which run in the tick loop).
-        self._block_index_cache: Optional[Dict[str, List["TrackSegment"]]] = None
+        self._block_index_cache: Optional[Dict[str, List["Tile"]]] = None
 
         # Cache of built topology-only walk CANDIDATES, keyed by
         # (start_block_id, end_block_id). Populated lazily by
@@ -268,7 +268,7 @@ class RailwayNetwork:
     def tile_to_block_id(self, x: int, y: int) -> Optional[str]:
         """Reverse index from tile coordinate to owning Block id, or None.
 
-        Per design_new.md: TrackSegment does not store block membership.
+        Per design_new.md: Tile does not store block membership.
         All "which block owns this tile?" lookups go through this method.
         """
         return self._tile_to_block.get((x, y))
@@ -325,7 +325,7 @@ class RailwayNetwork:
         reload). None of those run inside the sim tick loop, so the cache
         survives a whole `update()` storm and is rebuilt lazily after an edit."""
         # Defensive getattr: the block_section_id setter routes through
-        # _set_tile_block -> here, which can fire on a TrackSegment whose
+        # _set_tile_block -> here, which can fire on a Tile whose
         # network back-reference was attached before __init__ finished wiring
         # the cache (e.g. unusual deserialization orders).
         cache = getattr(self, "_walk_cache", None)
@@ -366,7 +366,7 @@ class RailwayNetwork:
         # Drops _walk_cache + _block_index_cache.
         self.invalidate_pathfinding_cache()
 
-    def add_track(self, track: TrackSegment):
+    def add_track(self, track: Tile):
         """Add a track segment to the network and propagate updates"""
         key = (track.x, track.y)
         self.tracks[key] = track
@@ -393,11 +393,11 @@ class RailwayNetwork:
         """
         self._lookahead_world_version += 1
 
-    def get_track(self, x: int, y: int) -> Optional[TrackSegment]:
+    def get_track(self, x: int, y: int) -> Optional[Tile]:
         """Get track segment at specified position"""
         return self.tracks.get((x, y))
 
-    def get_neighbor(self, x: int, y: int, edge: str) -> Optional[TrackSegment]:
+    def get_neighbor(self, x: int, y: int, edge: str) -> Optional[Tile]:
         """Get neighbor tile in the specified direction.
 
         Args:
@@ -405,7 +405,7 @@ class RailwayNetwork:
             edge: Direction to look ('N', 'E', 'S', 'W')
 
         Returns:
-            TrackSegment if neighbor exists, None otherwise. When the grid
+            Tile if neighbor exists, None otherwise. When the grid
             cell beyond ``edge`` is empty, the lookup falls through to
             ``self.tunnels`` and returns the far tile of a tunnel anchored
             at ``(x, y, edge)`` if one is registered.
@@ -798,8 +798,8 @@ class RailwayNetwork:
     def get_block(self, block_id: str) -> Optional[Block]:
         return self.blocks.get(block_id)
 
-    def _block_tiles_index(self) -> Dict[str, List[TrackSegment]]:
-        """Lazily-built reverse index: block id -> its TrackSegments.
+    def _block_tiles_index(self) -> Dict[str, List[Tile]]:
+        """Lazily-built reverse index: block id -> its Tiles.
 
         Built by a single pass over ``self.tracks`` (preserving
         ``tracks.values()`` order, so ``get_block_tracks`` returns tracks in
@@ -818,7 +818,7 @@ class RailwayNetwork:
             self._block_index_cache = idx
         return idx
 
-    def get_block_tracks(self, block_id: str) -> List[TrackSegment]:
+    def get_block_tracks(self, block_id: str) -> List[Tile]:
         """Get all tracks belonging to a block (O(block) via the reverse
         index in ``_block_tiles_index``, not an O(all tracks) scan)."""
         return list(self._block_tiles_index().get(block_id, ()))
@@ -836,7 +836,7 @@ class RailwayNetwork:
         return self._get_block_geometry_manager().validate_block_continuity(block_id)
 
     def _get_block_connected_neighbors(
-        self, track: TrackSegment
+        self, track: Tile
     ) -> List[Tuple[int, int]]:
         """
         Get positions of tracks connected via edges.
@@ -1473,7 +1473,7 @@ class RailwayNetwork:
         self._ensure_resource_managers()
 
         for t_data in data.get("tracks", []):
-            track = TrackSegment.from_dict(t_data)
+            track = Tile.from_dict(t_data)
             self.add_track(track)
 
         # Rebuild signals

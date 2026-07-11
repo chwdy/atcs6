@@ -178,7 +178,7 @@ def _normalize_edge(edge: str) -> Optional[str]:
 
 
 @dataclass
-class TrackSegment:
+class Tile:
     """
     Railway track segment represented by a 6-bit geometry.
     track_bits and dead_end_ports are the only persistent connection data.
@@ -193,11 +193,11 @@ class TrackSegment:
     dead_end_ports: Set[str] = field(default_factory=set)  # Buffer stops (N/E/S/W)
 
     # === SWITCH STATE ===
-    # Per design_new.md "TrackSegment role and traversal" + "Switch entity":
-    # `Switch.position` is the canonical live switch alignment; `TrackSegment`
+    # Per design_new.md "Tile role and traversal" + "Switch entity":
+    # `Switch.position` is the canonical live switch alignment; `Tile`
     # does not store switch state. The `_switch_state_local` field below is a
     # fallback used only when this segment is not attached to a `RailwayNetwork`
-    # (e.g. unit tests that construct a bare TrackSegment without a network).
+    # (e.g. unit tests that construct a bare Tile without a network).
     # When the segment is attached, the `switch_state` property resolves
     # through `network.switches[switch_id].position`.
     _switch_state_local: int = 0
@@ -209,7 +209,7 @@ class TrackSegment:
     # station_id / block_section_id are exposed as @property below; the
     # _-prefixed fields are local fallbacks used only when the track is not
     # attached to a RailwayNetwork (e.g. unit tests that construct a bare
-    # TrackSegment). When the track is attached, the network's reverse
+    # Tile). When the track is attached, the network's reverse
     # indices (tile_to_platform_id / tile_to_block_id) are the source of
     # truth and these locals stay None.
     _station_id_local: Optional[str] = None
@@ -223,23 +223,23 @@ class TrackSegment:
     # === OTHER PROPERTIES ===
     length: float = 1.0
     # Per design_new.md line 566, `occupied_by` and `reserved_by` are removed
-    # live runtime fields on TrackSegment in v1. Physical occupancy lives on
+    # live runtime fields on Tile in v1. Physical occupancy lives on
     # the owning resource (`Block.occupied_by` / `Switch.occupied_by`) and
     # reservations live on `Block.reserved_for_train` /
     # `Block.reserved_by_path`. The `occupied_by` / `reserved_by` reads on
-    # `TrackSegment` are derived `@property` shims defined below. The
+    # `Tile` are derived `@property` shims defined below. The
     # `_local` fallbacks are used only when the segment is not attached to a
-    # `RailwayNetwork` (e.g. unit tests with bare TrackSegments).
+    # `RailwayNetwork` (e.g. unit tests with bare Tiles).
     _occupied_by_local: Optional[str] = None
     _reserved_by_local: Optional[str] = None
 
     # === PATH LOCKING (Dispatcher System) ===
     # Per design_new.md "Track-segment role and traversal", switch lock
     # ownership lives entirely on `Switch.locks` (keyed by
-    # `(path_id, source_switch_id)`). `TrackSegment` stores no lock state and
+    # `(path_id, source_switch_id)`). `Tile` stores no lock state and
     # exposes no lock surface; callers resolve the owning `Switch` via
     # `switch_id` and read `Switch.locks` / `Switch.is_locked()` directly.
-    # Note: pre-v1 also stored `path_direction` on TrackSegment. Per
+    # Note: pre-v1 also stored `path_direction` on Tile. Per
     # design_new.md line 566/941 it is a removed field; traversal direction
     # is owned by `Block.reserved_direction` (dispatcher reservation) and
     # `Path.resource_sequence[*].entry_edge` (per-resource frame data). Live
@@ -266,7 +266,7 @@ class TrackSegment:
         self._switch_state_local = 0 if self._switch_state_local == 0 else 1
 
     # ========== Station / block membership (network-derived) ==========
-    # Per design_new.md: TrackSegment does not store station, platform, or
+    # Per design_new.md: Tile does not store station, platform, or
     # block membership. The owning RailwayNetwork holds the canonical
     # tile -> platform_id and tile -> block_id reverse indices. These
     # property shims keep the existing readers/writers working: when the
@@ -407,7 +407,7 @@ class TrackSegment:
         is attached to a `RailwayNetwork` and has an owning `Switch`, this
         property resolves from `network.switches[switch_id].position`. The
         local fallback `_switch_state_local` is used only when not attached
-        (e.g. unit tests with bare TrackSegments).
+        (e.g. unit tests with bare Tiles).
         """
         if (
             self.network is not None
@@ -446,7 +446,7 @@ class TrackSegment:
     # ========== Physical occupancy / reservation (network-derived) ==========
     # Per design_new.md, physical occupancy lives on `Block.occupied_by` /
     # `Switch.occupied_by`, and dispatcher reservations live on
-    # `Block.reserved_for_train`. `TrackSegment` exposes derived read shims
+    # `Block.reserved_for_train`. `Tile` exposes derived read shims
     # so the existing UI / API surface (which serialises track tiles) can
     # show per-tile occupancy without storing it.
 
@@ -777,7 +777,7 @@ class TrackSegment:
 
         Returns the same edges as the legacy `get_exits(...)` helper but
         sourced from the canonical `Switch.position`, not the legacy
-        `TrackSegment._switch_state` cache.
+        `Tile._switch_state` cache.
         """
         # Fix #10 (design_new.md line 617): disabled switches have no
         # traversable exits; check before delegating to get_exits.
@@ -1034,7 +1034,7 @@ class TrackSegment:
         return None
 
     def is_curve_connection(
-        self, exit_edge: str, neighbor_segment: "TrackSegment"
+        self, exit_edge: str, neighbor_segment: "Tile"
     ) -> bool:
         """Check if connection to neighbor at exit_edge is a curve.
 
@@ -1043,7 +1043,7 @@ class TrackSegment:
 
         Args:
             exit_edge: The edge where this segment connects to neighbor
-            neighbor_segment: The neighbor TrackSegment
+            neighbor_segment: The neighbor Tile
 
         Returns:
             True if this is a curve connection (different orientation groups)
@@ -1131,7 +1131,7 @@ class TrackSegment:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "TrackSegment":
+    def from_dict(cls, data: dict) -> "Tile":
         """Reconstruct tile from a layout snapshot.
 
         Runtime fields (the dispatcher `switch_state` mirror) are not loaded

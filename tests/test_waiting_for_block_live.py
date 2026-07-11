@@ -15,7 +15,7 @@ obstruction frees — without any ``extend_path`` call refreshing a stored field
 """
 
 from network import RailwayNetwork
-from track import TrackSegment, TRACK_EW
+from track import Tile, TRACK_EW
 from train import Train, TrainCar
 from enums import Direction
 from path_dispatcher import PathDispatcher
@@ -27,7 +27,7 @@ def _linear_network():
     """A - B - C - D - E linear EW corridor, two tiles per block."""
     net = RailwayNetwork()
     for x in range(0, 10):
-        net.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+        net.add_track(Tile(x, 0, track_bits=TRACK_EW))
     for bid, (a, b) in [
         ("BLOCK_A", (0, 1)),
         ("BLOCK_B", (2, 3)),

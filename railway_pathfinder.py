@@ -1117,7 +1117,7 @@ class RailwayPathfinder:
             return None
 
         # `Block` carries its id as `block_id`; `block_section_id` is the
-        # `TrackSegment` field pointing to the owning block.
+        # `Tile` field pointing to the owning block.
         dest_block_id = dest_block.block_id
         first_dest_tile: Optional[Tuple[int, int]] = None
         first_dest_idx: Optional[int] = None

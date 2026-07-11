@@ -20,7 +20,7 @@ knowing any status codes:
     {"status": "switch_locked", "holder_path", "holder_state"}  # pure editor
     {"status": "switch_change_rejected", "reason": str}  # runtime refused throw
     {"status": "removed"}                            # tile became empty
-    {"status": "updated", "track": <TrackSegment>}
+    {"status": "updated", "track": <Tile>}
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from typing import Any, Dict, List
 from app_state import AppState
 from services.exceptions import NotFoundError, ValidationError
 from switch import Switch
-from track import FORBIDDEN_TRACK_BITS, TrackSegment, is_square_corner_switch
+from track import FORBIDDEN_TRACK_BITS, Tile, is_square_corner_switch
 
 _SQUARE_CORNER_MESSAGE = (
     "Invalid switch placement: a switch branch is 90° to a connecting "
@@ -224,8 +224,8 @@ def add_tracks_bulk(
     track objects as ``{"added": [...], "updated": [...]}`` for the caller
     to serialize.
     """
-    added: List[TrackSegment] = []
-    updated: List[TrackSegment] = []
+    added: List[Tile] = []
+    updated: List[Tile] = []
 
     for track_data in tracks_data:
         tx = track_data.get("x")
@@ -254,7 +254,7 @@ def add_tracks_bulk(
         else:
             if new_bits in FORBIDDEN_TRACK_BITS or is_square_corner_switch(new_bits):
                 continue
-            track = TrackSegment(x=tx, y=ty, track_bits=new_bits)
+            track = Tile(x=tx, y=ty, track_bits=new_bits)
             if track_data.get("station_name"):
                 track.station_name = track_data["station_name"]
             state.network.add_track(track)

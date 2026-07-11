@@ -6,20 +6,20 @@ It imports all components from separate modules and creates a demo
 showing train dispatching, scheduling, and safety systems in action.
 
 Track Building using 6-bit track_bits system:
-- TrackSegment(x, y, track_bits=TRACK_EW): East-West straight track
-- TrackSegment(x, y, track_bits=TRACK_NS): North-South straight track
-- TrackSegment(x, y, track_bits=TRACK_NE): North-East diagonal track
-- TrackSegment(x, y, track_bits=TRACK_NW): North-West diagonal track
-- TrackSegment(x, y, track_bits=TRACK_SE): South-East diagonal track
-- TrackSegment(x, y, track_bits=TRACK_SW): South-West diagonal track
-- TrackSegment(x, y, track_bits=TRACK_EW | TRACK_NE): 3-way switch
+- Tile(x, y, track_bits=TRACK_EW): East-West straight track
+- Tile(x, y, track_bits=TRACK_NS): North-South straight track
+- Tile(x, y, track_bits=TRACK_NE): North-East diagonal track
+- Tile(x, y, track_bits=TRACK_NW): North-West diagonal track
+- Tile(x, y, track_bits=TRACK_SE): South-East diagonal track
+- Tile(x, y, track_bits=TRACK_SW): South-West diagonal track
+- Tile(x, y, track_bits=TRACK_EW | TRACK_NE): 3-way switch
 - Dead-ends are auto-detected by propagation system based on neighbor connectivity
 """
 
 from datetime import datetime
 from network import RailwayNetwork
 from track import (
-    TrackSegment,
+    Tile,
     TRACK_NS,
     TRACK_EW,
     TRACK_NE,
@@ -53,7 +53,7 @@ def test_block_validation():
 
     # Create some test tracks (0,0) to (7,0) - extra tracks at (6,0) and (7,0) for Test 5/6
     for x in range(8):
-        test_network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+        test_network.add_track(Tile(x, 0, track_bits=TRACK_EW))
 
     # Test 1: Cannot create block with disconnected tracks
     print("\n[TEST 1] Verifying disconnected tracks are rejected...")
@@ -70,7 +70,7 @@ def test_block_validation():
 
     # Test 2: Cannot add switch to block
     print("\n[TEST 2] Verifying switches cannot be in blocks...")
-    switch_track = TrackSegment(5, 0, track_bits=TRACK_EW | TRACK_NE)  # Switch
+    switch_track = Tile(5, 0, track_bits=TRACK_EW | TRACK_NE)  # Switch
     test_network.add_track(switch_track)
     # Create switch entity
     switch = Switch(switch_id="SW_5_0", x=5, y=0)
@@ -213,7 +213,7 @@ def create_comprehensive_demo():
 
     # Main Line West: (0,0) to (2,0)
     for x in range(0, 3):
-        track = TrackSegment(x, 0, track_bits=TRACK_EW)
+        track = Tile(x, 0, track_bits=TRACK_EW)
         network.add_track(track)
 
     # Create block with validated track assignment
@@ -227,7 +227,7 @@ def create_comprehensive_demo():
 
     # Switch at (3,0) - BOUNDARY, NO block assignment
     # Connects main line (EW) with branch toward NORTH via NW
-    track = TrackSegment(3, 0, track_bits=TRACK_EW | TRACK_NW)
+    track = Tile(3, 0, track_bits=TRACK_EW | TRACK_NW)
     track.switch_state = 0  # MAIN (EW) active
     # track.block_section_id intentionally left as None
     network.add_track(track)
@@ -238,7 +238,7 @@ def create_comprehensive_demo():
 
     # Main Line East: (4,0) to (10,0)
     for x in range(4, 11):
-        track = TrackSegment(x, 0, track_bits=TRACK_EW)
+        track = Tile(x, 0, track_bits=TRACK_EW)
         network.add_track(track)
 
     # Create block with validated track assignment
@@ -267,7 +267,7 @@ def create_comprehensive_demo():
 
     # North Branch: (3,1) to (3,3)
     for y in range(1, 4):
-        track = TrackSegment(3, y, track_bits=TRACK_NS)
+        track = Tile(3, y, track_bits=TRACK_NS)
         network.add_track(track)
 
     # Create block with validated track assignment
@@ -301,7 +301,7 @@ def create_comprehensive_demo():
     if existing:
         network.remove_track(9, 0)
     # Create switch at (9,0) - EW + NW to go up-left diagonally
-    switch_track = TrackSegment(9, 0, track_bits=TRACK_EW | TRACK_NW)
+    switch_track = Tile(9, 0, track_bits=TRACK_EW | TRACK_NW)
     switch_track.switch_state = 0  # MAIN (EW) active initially
     network.add_track(switch_track)
     # Create switch entity
@@ -311,15 +311,15 @@ def create_comprehensive_demo():
 
     # Simple approach: vertical branch at x=9
     for y in range(1, 6):
-        track = TrackSegment(9, y, track_bits=TRACK_NS)
+        track = Tile(9, y, track_bits=TRACK_NS)
         network.add_track(track)
 
-    network.add_track(TrackSegment(9, 6, track_bits=TRACK_SE))
-    network.add_track(TrackSegment(10, 6, track_bits=TRACK_NW))
-    network.add_track(TrackSegment(10, 7, track_bits=TRACK_SE))
-    network.add_track(TrackSegment(11, 7, track_bits=TRACK_NW))
-    network.add_track(TrackSegment(11, 8, track_bits=TRACK_SE))
-    network.add_track(TrackSegment(12, 8, track_bits=TRACK_NW))
+    network.add_track(Tile(9, 6, track_bits=TRACK_SE))
+    network.add_track(Tile(10, 6, track_bits=TRACK_NW))
+    network.add_track(Tile(10, 7, track_bits=TRACK_SE))
+    network.add_track(Tile(11, 7, track_bits=TRACK_NW))
+    network.add_track(Tile(11, 8, track_bits=TRACK_SE))
+    network.add_track(Tile(12, 8, track_bits=TRACK_NW))
 
     network.create_block_with_tracks(
         block_id="BLOCK_EAST_BRANCH",
@@ -729,7 +729,7 @@ def create_diagonal_siding(network: RailwayNetwork):
     for x in range(11, 15):
         existing = network.get_track(x, 0)
         if not existing:
-            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            track = Tile(x, 0, track_bits=TRACK_EW)
             network.add_track(track)
             print(f"    Added main line track at ({x}, 0)")
 
@@ -737,7 +737,7 @@ def create_diagonal_siding(network: RailwayNetwork):
     existing = network.get_track(12, 0)
     if existing:
         network.remove_track(12, 0)
-    switch_track = TrackSegment(12, 0, track_bits=TRACK_EW | TRACK_NW)
+    switch_track = Tile(12, 0, track_bits=TRACK_EW | TRACK_NW)
     switch_track.switch_state = 0  # MAIN (EW) active initially
     network.add_track(switch_track)
     # Create switch entity
@@ -755,31 +755,31 @@ def create_diagonal_siding(network: RailwayNetwork):
 
     # (12,1): SE - connects S to E
     # Entry from S (from switch NW at 12,0), exit E to (13,1)
-    track = TrackSegment(12, 1, track_bits=TRACK_SE)
+    track = Tile(12, 1, track_bits=TRACK_SE)
     network.add_track(track)
     print(f"    Added SE track at (12,1)")
 
     # (13,1): NW - connects N to W
     # Entry from W (from 12,1 SE), exit N to (13,2)
-    track = TrackSegment(13, 1, track_bits=TRACK_NW)
+    track = Tile(13, 1, track_bits=TRACK_NW)
     network.add_track(track)
     print(f"    Added NW track at (13,1)")
 
     # (13,2): SE - connects S to E
     # Entry from S (from 13,1 NW), exit E to (14,2)
-    track = TrackSegment(13, 2, track_bits=TRACK_SE)
+    track = Tile(13, 2, track_bits=TRACK_SE)
     network.add_track(track)
     print(f"    Added SE track at (13,2)")
 
     # (14,2): NW - connects N to W
     # Entry from W (from 13,2 SE), exit N to (14,3)
-    track = TrackSegment(14, 2, track_bits=TRACK_NW)
+    track = Tile(14, 2, track_bits=TRACK_NW)
     network.add_track(track)
     print(f"    Added NW track at (14,2)")
 
     # (14,3): SE - connects S to E (dead end on E side)
     # Entry from S (from 14,2 NW), exit E is dead end
-    track = TrackSegment(14, 3, track_bits=TRACK_SE)
+    track = Tile(14, 3, track_bits=TRACK_SE)
     network.add_track(track)
     print(f"    Added SE track at (14,3) - end of siding")
 

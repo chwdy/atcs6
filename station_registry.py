@@ -32,7 +32,7 @@ class StationRegistry:
     def tile_to_platform_id(self, x: int, y: int) -> Optional[str]:
         """Reverse index from tile coordinate to owning Platform id, or None.
 
-        Per design_new.md: TrackSegment does not store platform membership.
+        Per design_new.md: Tile does not store platform membership.
         Returns the concrete physical Platform that owns this tile.
         """
         return self._n._tile_to_platform.get((x, y))
@@ -506,7 +506,7 @@ class StationRegistry:
             if platform_id not in normalized_platform_ids:
                 normalized_platform_ids.append(platform_id)
 
-        # Non-empty parent rule (design_new.md, TrackSegment ownership list):
+        # Non-empty parent rule (design_new.md, Tile ownership list):
         # a Station always owns at least one Platform, so a group is never
         # created empty.
         if not normalized_platform_ids:
@@ -532,7 +532,7 @@ class StationRegistry:
     def _prune_station_group_if_empty(self, station_id: str) -> bool:
         """Delete a logical station group when it has no platforms left.
 
-        Enforces the Non-empty parent rule (design_new.md, TrackSegment
+        Enforces the Non-empty parent rule (design_new.md, Tile
         ownership list): a Station always owns at least one Platform, so a
         group whose last platform just left is removed rather than persisted
         empty. No-op (returns False) when the group is missing or still has
@@ -575,7 +575,7 @@ class StationRegistry:
     ) -> bool:
         """Remove a platform from a logical station group.
 
-        Non-empty parent rule (design_new.md, TrackSegment ownership list):
+        Non-empty parent rule (design_new.md, Tile ownership list):
         if this removes the group's last platform, the now-empty group is
         deleted in the same call rather than left empty.
         """

@@ -19,7 +19,7 @@ from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from simulation import SimulationController
-from track import TrackSegment
+from track import Tile
 from train import Train, TrainCar
 from train_route import RouteTask
 
@@ -259,7 +259,7 @@ def state_with_switch_track(state):
     long path (EW) and a short path (NE), so switch_points is non-empty and
     `is_switch` is True -- the same shape demo_3 uses for a switch tile.
     """
-    state.network.add_track(TrackSegment(x=5, y=0, track_bits=0b000110))
+    state.network.add_track(Tile(x=5, y=0, track_bits=0b000110))
     return state
 
 
@@ -281,7 +281,7 @@ class TestSwitchService:
 
     def test_create_switch_non_switch_track_raises_validation(self, state):
         """A straight (EW-only) tile is a track but not a switch."""
-        state.network.add_track(TrackSegment(x=1, y=0, track_bits=2))
+        state.network.add_track(Tile(x=1, y=0, track_bits=2))
         with pytest.raises(ValidationError):
             switch_service.create_switch_at_track(state, 1, 0, data={})
 
@@ -539,7 +539,7 @@ class TestBlockService:
         # the platform, delete the platform too (design_new.md:644).
         from track import TRACK_NS
 
-        state.network.add_track(TrackSegment(0, 0, TRACK_NS))
+        state.network.add_track(Tile(0, 0, TRACK_NS))
         platform = state.network.add_station(
             0, 0, station_id="STA_CASCADE", name="Cascade", length_cm=200.0
         )
@@ -561,7 +561,7 @@ class TestBlockService:
         # a dangling block_assignments entry (design_new.md:644).
         from track import TRACK_NS
 
-        state.network.add_track(TrackSegment(0, 0, TRACK_NS))
+        state.network.add_track(Tile(0, 0, TRACK_NS))
         platform = state.network.add_station(
             0, 0, station_id="STA_RMTILE", name="RmTile", length_cm=200.0
         )
@@ -604,12 +604,12 @@ class TestTrackService:
             track_service.update_track(state, 9, 9, data={"track_bits": 2})
 
     def test_update_invalid_body_raises_validation(self, state):
-        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        state.network.add_track(Tile(x=0, y=0, track_bits=2))
         with pytest.raises(ValidationError):
             track_service.update_track(state, 0, 0, data=["not", "a", "dict"])
 
     def test_update_track_bits_updates(self, state):
-        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        state.network.add_track(Tile(x=0, y=0, track_bits=2))
         result = track_service.update_track(state, 0, 0, data={"track_bits": 1})
         assert result["status"] == "updated"
         assert result["track"].track_bits == 1
@@ -619,7 +619,7 @@ class TestTrackService:
             track_service.delete_track(state, 9, 9)
 
     def test_delete_track(self, state):
-        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        state.network.add_track(Tile(x=0, y=0, track_bits=2))
         assert track_service.delete_track(state, 0, 0) is True
         assert track_service.get_track(state, 0, 0) is None
 
@@ -636,7 +636,7 @@ class TestTrackService:
         assert track_service.get_track(state, 0, 0) is not None
 
     def test_add_tracks_bulk_updates_existing(self, state):
-        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        state.network.add_track(Tile(x=0, y=0, track_bits=2))
         result = track_service.add_tracks_bulk(
             state, tracks_data=[{"x": 0, "y": 0, "track_bits": 2}]
         )
@@ -644,8 +644,8 @@ class TestTrackService:
         assert len(result["added"]) == 0
 
     def test_delete_tracks_bulk_no_impact(self, state):
-        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
-        state.network.add_track(TrackSegment(x=1, y=0, track_bits=2))
+        state.network.add_track(Tile(x=0, y=0, track_bits=2))
+        state.network.add_track(Tile(x=1, y=0, track_bits=2))
         result = track_service.delete_tracks_bulk(state, positions=[[0, 0], [1, 0]])
         assert result["status"] == "done"
         assert result["deleted"] == [[0, 0], [1, 0]]
@@ -664,13 +664,13 @@ class TestTrackService:
         return calls
 
     def test_delete_track_recomputes_flank(self, state, monkeypatch):
-        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        state.network.add_track(Tile(x=0, y=0, track_bits=2))
         calls = self._spy_flank(state, monkeypatch)
         track_service.delete_track(state, 0, 0)
         assert calls, "delete_track must recompute switch flank protection"
 
     def test_update_track_recomputes_flank(self, state, monkeypatch):
-        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        state.network.add_track(Tile(x=0, y=0, track_bits=2))
         calls = self._spy_flank(state, monkeypatch)
         track_service.update_track(state, 0, 0, data={"track_bits": 1})
         assert calls, "update_track must recompute switch flank protection"
@@ -683,7 +683,7 @@ class TestTrackService:
         assert calls, "add_tracks_bulk must recompute switch flank protection"
 
     def test_delete_tracks_bulk_recomputes_flank(self, state, monkeypatch):
-        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        state.network.add_track(Tile(x=0, y=0, track_bits=2))
         calls = self._spy_flank(state, monkeypatch)
         track_service.delete_tracks_bulk(state, positions=[[0, 0]])
         assert calls, "delete_tracks_bulk must recompute switch flank protection"
@@ -699,7 +699,7 @@ class TestPlatformService:
             platform_service.require_platform(state, "GHOST")
 
     def test_create_platform(self, state):
-        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        state.network.add_track(Tile(x=0, y=0, track_bits=2))
         platform = platform_service.create_platform(
             state, x=0, y=0, platform_id="PLT_1", name="P1"
         )
@@ -707,7 +707,7 @@ class TestPlatformService:
         assert state.network.get_platform("PLT_1") is platform
 
     def test_update_platform(self, state):
-        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        state.network.add_track(Tile(x=0, y=0, track_bits=2))
         platform_service.create_platform(state, x=0, y=0, platform_id="PLT_U", name="old")
         updated = platform_service.update_platform(
             state, "PLT_U", data={"name": "new", "disabled": True}
@@ -723,7 +723,7 @@ class TestPlatformService:
         # Regression: an invalid platform_side must surface as ValidationError
         # (-> HTTP 400) rather than a bare ValueError leaking as HTTP 500, so
         # update_platform matches the create/extend bad-input contract.
-        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        state.network.add_track(Tile(x=0, y=0, track_bits=2))
         platform_service.create_platform(state, x=0, y=0, platform_id="PLT_S")
         with pytest.raises(ValidationError):
             platform_service.update_platform(
@@ -731,7 +731,7 @@ class TestPlatformService:
             )
 
     def test_delete_platform(self, state):
-        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        state.network.add_track(Tile(x=0, y=0, track_bits=2))
         platform_service.create_platform(state, x=0, y=0, platform_id="PLT_X")
         assert platform_service.delete_platform(state, "PLT_X") is True
         assert platform_service.get_platform(state, "PLT_X") is None
@@ -742,7 +742,7 @@ class TestPlatformService:
 
     def test_validate_placement(self, state):
         assert platform_service.validate_placement(state, 9, 9)["can_place"] is False
-        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        state.network.add_track(Tile(x=0, y=0, track_bits=2))
         assert platform_service.validate_placement(state, 0, 0)["can_place"] is True
 
     def test_can_extend_unknown_platform_raises_not_found(self, state):
@@ -754,7 +754,7 @@ class TestPlatformService:
             platform_service.assign_tile(state, "GHOST", x=0, y=0, block_id="BLK")
 
     def test_assign_tile_unknown_block_raises_not_found(self, state):
-        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        state.network.add_track(Tile(x=0, y=0, track_bits=2))
         platform_service.create_platform(state, x=0, y=0, platform_id="PLT_A")
         with pytest.raises(NotFoundError):
             platform_service.assign_tile(

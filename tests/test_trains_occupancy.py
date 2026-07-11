@@ -7,7 +7,7 @@ Run with: pytest tests/test_trains_occupancy.py -v
 import logging
 import pytest
 
-from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NW
+from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
 from enums import BlockState, Direction, TrainState, HandlePosition
@@ -27,7 +27,7 @@ def network():
 @pytest.fixture
 def straight_ew_track(network):
     for x in range(5):
-        track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+        track = Tile(x=x, y=0, track_bits=TRACK_EW)
         network.add_track(track)
     return network
 
@@ -36,9 +36,9 @@ class TestTrainPlacementOccupancy:
     """Tests for train placement and block occupancy."""
 
     def test_train_placement_sets_block_occupied(self, network):
-        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        track = Tile(x=0, y=0, track_bits=TRACK_EW)
         network.add_track(track)
-        network.add_track(TrackSegment(x=1, y=0, track_bits=TRACK_EW))
+        network.add_track(Tile(x=1, y=0, track_bits=TRACK_EW))
         block = Block(block_id="BLK_001", name="Test Block")
         network.blocks["BLK_001"] = block
         block.tiles = [(0, 0)]
@@ -53,7 +53,7 @@ class TestTrainPlacementOccupancy:
 
     def test_train_placement_with_multiple_tiles(self, network):
         for x in range(3):
-            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            track = Tile(x=x, y=0, track_bits=TRACK_EW)
             network.add_track(track)
             track.block_section_id = "BLK_001"
         block = Block(block_id="BLK_001", name="Long Block")
@@ -72,7 +72,7 @@ class TestTrainPlacementValidation:
 
     def test_40cm_train_on_150cm_block_fits(self, network):
         for x in range(3):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
         network.create_block_with_tracks(
             "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
         )
@@ -85,7 +85,7 @@ class TestTrainPlacementValidation:
 
     def test_80cm_train_spans_two_tiles(self, network):
         for x in range(3):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
         network.create_block_with_tracks(
             "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
         )
@@ -99,7 +99,7 @@ class TestTrainPlacementValidation:
 
     def test_train_too_long_raises_error(self, network):
         for x in range(2):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
         network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=100.0)
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=120.0)
         train = Train(train_id="T1", consist=[car])
@@ -113,7 +113,7 @@ class TestTrainOccupiedTilesRich:
 
     def test_rich_tiles_single_tile_train(self, network):
         for x in range(3):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
         network.create_block_with_tracks(
             "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
         )

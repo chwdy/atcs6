@@ -13,7 +13,7 @@ This is purely a smoke check, not a real test scene.
 """
 
 from bootstrap import bootstrap_runtime
-from track import TRACK_EW, TrackSegment
+from track import TRACK_EW, Tile
 
 from .base import SceneFixture
 
@@ -33,7 +33,7 @@ class EmptyScene:
         # Three EW tiles so the train can be placed facing east (placement
         # requires at least one connected neighbour in the facing direction).
         for x in range(3):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
         network.create_block_with_tracks(
             block_id="EMPTY_BLOCK",
             positions=[(0, 0), (1, 0), (2, 0)],

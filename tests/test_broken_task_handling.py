@@ -21,7 +21,7 @@ Run with:
 import pytest
 
 from network import RailwayNetwork
-from track import TrackSegment
+from track import Tile
 from train_route import (
     BlockTarget,
     PlatformTarget,
@@ -44,7 +44,7 @@ def _net() -> RailwayNetwork:
     """A network with three platforms; STA_A=[PLT_A], STA_B=[PLT_B], PLT_C free."""
     net = RailwayNetwork()
     for x in range(8):
-        net.add_track(TrackSegment(x=x, y=0, track_bits=2))  # EW straight
+        net.add_track(Tile(x=x, y=0, track_bits=2))  # EW straight
     net.add_platform(0, 0, platform_id="PLT_A", name="A")
     net.add_platform(2, 0, platform_id="PLT_B", name="B")
     net.add_platform(4, 0, platform_id="PLT_C", name="C")

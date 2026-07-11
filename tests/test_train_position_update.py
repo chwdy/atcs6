@@ -10,7 +10,7 @@ tests in tests/test_trains_physics.py.
 import pytest
 from train import Train, TrainCar
 from network import RailwayNetwork
-from track import TrackSegment, TRACK_EW
+from track import Tile, TRACK_EW
 from enums import Direction, TrainState
 from simulation import SimulationController
 
@@ -23,7 +23,7 @@ class TestTrainPositionUpdates:
         """Create simple straight E-W track for testing."""
         network = RailwayNetwork()
         for x in range(5):
-            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            track = Tile(x=x, y=0, track_bits=TRACK_EW)
             network.add_track(track)
         return network
 

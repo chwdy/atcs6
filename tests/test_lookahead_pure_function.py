@@ -12,7 +12,7 @@ resolves to PathDispatcher.get_active_path(self.train_id) on every read.
 
 from enums import Direction
 from network import RailwayNetwork
-from track import TrackSegment, TRACK_EW
+from track import Tile, TRACK_EW
 from train import Train, TrainCar
 from path_dispatcher import PathDispatcher
 from simulation import SimulationController
@@ -22,7 +22,7 @@ from tests.train_test_helpers import set_train_span
 def _build_three_block_network() -> RailwayNetwork:
     network = RailwayNetwork()
     for x in range(6):
-        network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+        network.add_track(Tile(x, 0, track_bits=TRACK_EW))
     network.create_block_with_tracks(
         block_id="BLK_A", positions=[(0, 0), (1, 0)], name="A", length_cm=200.0
     )

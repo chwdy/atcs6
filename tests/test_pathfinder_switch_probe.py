@@ -2,7 +2,7 @@
 
 design_new.md "Switch Entity": the `Switch.position` mutation workflow is
 validate -> write -> notify -> throw, owned by `SwitchManager`, and "nothing
-writes `Switch.position` without that pairing". `TrackSegment.switch_state`'s
+writes `Switch.position` without that pairing". `Tile.switch_state`'s
 setter writes through to that canonical field, so a pathfinding query that
 probes "which state would allow this traversal?" must answer it without
 assigning the state — not even transiently.
@@ -13,7 +13,7 @@ import pytest
 from enums import SwitchState
 from network import RailwayNetwork
 from switch import Switch
-from track import TrackSegment
+from track import Tile
 
 TRACK_NS = 1 << 0
 TRACK_NE = 1 << 2
@@ -21,7 +21,7 @@ TRACK_NE = 1 << 2
 
 def _switch_tile():
     network = RailwayNetwork()
-    tile = TrackSegment(x=0, y=0, track_bits=TRACK_NS | TRACK_NE)
+    tile = Tile(x=0, y=0, track_bits=TRACK_NS | TRACK_NE)
     tile.switch_id = "SW1"
     network.add_track(tile)
     switch = Switch(switch_id="SW1", x=0, y=0)
@@ -48,7 +48,7 @@ def test_probe_leaves_the_switch_intact_when_get_exits_raises(monkeypatch):
     def boom(*_args, **_kwargs):
         raise RuntimeError("geometry lookup failed mid-probe")
 
-    monkeypatch.setattr(TrackSegment, "get_exits", boom)
+    monkeypatch.setattr(Tile, "get_exits", boom)
 
     with pytest.raises(RuntimeError):
         tile.get_required_switch_state("N", "S")

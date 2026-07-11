@@ -6,7 +6,7 @@ Run with: pytest tests/test_trains_routes.py -v
 
 import pytest
 
-from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NW
+from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
 from enums import BlockState, Direction
@@ -42,14 +42,14 @@ class TestBlockTileSyncValidation:
         network = RailwayNetwork()
 
         # Create track with blocks
-        from track import TrackSegment, TRACK_EW
+        from track import Tile, TRACK_EW
 
         # v1: Block.state is read-only; new blocks are FREE by default.
         block = Block(block_id="B1", length_cm=300.0)
         network.blocks["B1"] = block
 
         for x in range(6):
-            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            track = Tile(x=x, y=0, track_bits=TRACK_EW)
             track.block_section_id = "B1"
             network.add_track(track)
 
@@ -125,7 +125,7 @@ class TestMultiTilePlatformStopping:
         # Create vertical track layout: (9,0) to (9,4)
         # Train will travel NORTH from (9,0) to station at (9,3)-(9,4)
         for y in range(5):
-            track = TrackSegment(9, y, track_bits=TRACK_NS)
+            track = Tile(9, y, track_bits=TRACK_NS)
             network.add_track(track)
 
         # Create blocks

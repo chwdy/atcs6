@@ -12,7 +12,7 @@ from block import Block
 from enums import Direction
 from network import RailwayNetwork
 from simulation import SimulationController
-from track import TrackSegment, TRACK_EW
+from track import Tile, TRACK_EW
 from train import Train, TrainCar
 
 
@@ -20,7 +20,7 @@ def build_line(num_tiles: int = 6) -> RailwayNetwork:
     """A straight E-W line, one block per tile (BLK_0 .. BLK_{n-1})."""
     network = RailwayNetwork()
     for x in range(num_tiles):
-        track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+        track = Tile(x=x, y=0, track_bits=TRACK_EW)
         track.block_section_id = f"BLK_{x}"
         network.add_track(track)
         network.blocks[f"BLK_{x}"] = Block(block_id=f"BLK_{x}", length_cm=100.0)

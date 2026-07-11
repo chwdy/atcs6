@@ -118,7 +118,7 @@ def validate_track_for_block(track, network) -> Tuple[bool, str]:
     Stations are allowed in blocks - a block can exist fully within a station.
 
     Args:
-        track: TrackSegment to validate
+        track: Tile to validate
         network: RailwayNetwork instance for lookups
 
     Returns:

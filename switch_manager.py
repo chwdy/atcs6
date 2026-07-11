@@ -241,7 +241,7 @@ class SwitchManager:
                         reason=f"throw_unconfirmed: {fail_reason}",
                     )
             # Per design_new.md, `Switch.locks` is the canonical lock store.
-            # `TrackSegment` no longer exposes any lock surface; UI and API
+            # `Tile` no longer exposes any lock surface; UI and API
             # readers resolve the owning `Switch` (via
             # `network.switches[switch_id]`) and read `Switch.locks` directly,
             # so there is no Track-side mirror to maintain here.

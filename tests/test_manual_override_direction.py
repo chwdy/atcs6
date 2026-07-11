@@ -30,7 +30,7 @@ from block_manager import BlockManager, ReservedBlockTraversal
 from path_dispatcher import PathDispatcher
 from network import RailwayNetwork
 from simulation import SimulationController
-from track import TrackSegment, TRACK_EW
+from track import Tile, TRACK_EW
 from block import Block
 from train import Train, TrainCar
 from enums import Direction
@@ -46,7 +46,7 @@ from tests.train_test_helpers import set_train_span
 def linear_network():
     network = RailwayNetwork()
     for x in range(4):
-        network.add_track(TrackSegment(x=x, y=0, track_bits=TRACK_EW))
+        network.add_track(Tile(x=x, y=0, track_bits=TRACK_EW))
 
     block_a = network.create_block("BLOCK_A", "Block A")
     block_a.length_cm = 100.0

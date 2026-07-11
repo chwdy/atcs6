@@ -10,7 +10,7 @@ This format records the construction steps used to build a layout, making it:
 
 from typing import Dict, List, Optional, Set
 
-from track import TrackSegment
+from track import Tile
 
 
 class StepRecorder:
@@ -76,7 +76,7 @@ class StepRecorder:
         steps = []
 
         # Separate tracks by block assignment
-        tracks_by_block: Dict[Optional[str], List[TrackSegment]] = {}
+        tracks_by_block: Dict[Optional[str], List[Tile]] = {}
 
         for pos, track in network.tracks.items():
             block_id = track.block_section_id
@@ -163,7 +163,7 @@ class StepRecorder:
     def _generate_switch_steps(self, network: "RailwayNetwork") -> List[dict]:
         """Generate Switch-entity creation steps.
 
-        A switch TrackSegment is laid down by `add_track`, but the
+        A switch Tile is laid down by `add_track`, but the
         corresponding `Switch` entity (carrying lengths, radii, type, name)
         must be registered separately via `network.add_switch(...)`. Without
         this step, switches survive snapshot round-trip but vanish on the

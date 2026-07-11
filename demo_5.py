@@ -92,7 +92,7 @@ Performance note (expected, accepted):
 
 from network import RailwayNetwork
 from track import (
-    TrackSegment,
+    Tile,
     TRACK_NS,
     TRACK_EW,
     TRACK_NE,
@@ -142,7 +142,7 @@ def test_block_validation():
     test_network = RailwayNetwork()
 
     for x in range(8):
-        test_network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+        test_network.add_track(Tile(x, 0, track_bits=TRACK_EW))
 
     print("\n[TEST 1] Verifying disconnected tracks are rejected...")
     try:
@@ -157,7 +157,7 @@ def test_block_validation():
         print(f"  ✓ Correctly rejected: {e}")
 
     print("\n[TEST 2] Verifying switches cannot be in blocks...")
-    switch_track = TrackSegment(5, 0, track_bits=TRACK_EW | TRACK_NE)
+    switch_track = Tile(5, 0, track_bits=TRACK_EW | TRACK_NE)
     test_network.add_track(switch_track)
     switch = Switch(switch_id="SW_5_0", x=5, y=0)
     test_network.add_switch(switch)
@@ -301,7 +301,7 @@ def _add_plain_tracks(network: RailwayNetwork) -> None:
     """Place all non-switch main-line tiles for both tracks."""
     for tiles in (S_TRACK_TILES, N_TRACK_TILES):
         for (x, y, bits, _role) in tiles:
-            network.add_track(TrackSegment(x, y, track_bits=bits))
+            network.add_track(Tile(x, y, track_bits=bits))
 
 
 def _add_crossovers(network: RailwayNetwork) -> None:
@@ -314,7 +314,7 @@ def _add_crossovers(network: RailwayNetwork) -> None:
     """
     from enums import SwitchState
     for (sx, sy, sid) in ((2, 3, "SW_X1"), (12, 13, "SW_X2")):
-        tile = TrackSegment(sx, sy, track_bits=SCISSORS_BITS)
+        tile = Tile(sx, sy, track_bits=SCISSORS_BITS)
         network.add_track(tile)
         switch = Switch(switch_id=sid, x=sx, y=sy)
         # DIVERGE (1) = stay-on-track via NW/SE diagonals — the demo's
@@ -347,7 +347,7 @@ def _add_throat(network: RailwayNetwork) -> None:
         (8, 8, TRACK_SE | TRACK_EW, "SW_XOVER_S", SwitchState.DIVERGE),
     ]
     for (sx, sy, bits, sid, state) in throat:
-        tile = TrackSegment(sx, sy, track_bits=bits)
+        tile = Tile(sx, sy, track_bits=bits)
         network.add_track(tile)
         switch = Switch(switch_id=sid, x=sx, y=sy)
         switch.position = state
@@ -380,7 +380,7 @@ def _add_lead_crossover(network: RailwayNetwork) -> None:
         (8, 10, TRACK_SE | TRACK_EW, "SW_8_10", SwitchState.DIVERGE),
     ]
     for (sx, sy, bits, sid, state) in crossover:
-        tile = TrackSegment(sx, sy, track_bits=bits)
+        tile = Tile(sx, sy, track_bits=bits)
         network.add_track(tile)
         switch = Switch(switch_id=sid, x=sx, y=sy)
         switch.position = state
@@ -412,11 +412,11 @@ def _add_depot(network: RailwayNetwork) -> None:
         (8, 14, TRACK_NS),
         (8, 15, TRACK_SW),
     ]:
-        network.add_track(TrackSegment(x, y, track_bits=bits))
+        network.add_track(Tile(x, y, track_bits=bits))
 
     # Plain ladder connectors (NW corners) between consecutive turnouts.
     for (x, y) in [(3, 10), (4, 11), (5, 12), (6, 13), (7, 14)]:
-        network.add_track(TrackSegment(x, y, track_bits=TRACK_NW))
+        network.add_track(Tile(x, y, track_bits=TRACK_NW))
 
     # Single-direction ladder: lead enters at the right end (SW_LAD5) and each
     # turnout peels a platform off going up-left. Every turnout is SE|EW — SE
@@ -424,7 +424,7 @@ def _add_depot(network: RailwayNetwork) -> None:
     # branch — so none is a square corner. Default DIVERGE = ladder through.
     for k in range(6):
         ax, ay = 2 + k, 10 + k
-        at = TrackSegment(ax, ay, track_bits=TRACK_SE | TRACK_EW)
+        at = Tile(ax, ay, track_bits=TRACK_SE | TRACK_EW)
         network.add_track(at)
         sw = Switch(switch_id=f"SW_LAD{k}", x=ax, y=ay)
         sw.position = SwitchState.DIVERGE
@@ -434,9 +434,9 @@ def _add_depot(network: RailwayNetwork) -> None:
     # Six platforms (vertical NE/SW stubs, 3 tiles each), bases aligned on
     # screen-row -9, each branching up-left off its ladder turnout.
     for (bx, by) in DEPOT_PLATFORM_BASES:
-        network.add_track(TrackSegment(bx, by, track_bits=TRACK_NE))         # BOT
-        network.add_track(TrackSegment(bx, by + 1, track_bits=TRACK_SW))     # MID
-        network.add_track(TrackSegment(bx - 1, by + 1, track_bits=TRACK_NE)) # TOP
+        network.add_track(Tile(bx, by, track_bits=TRACK_NE))         # BOT
+        network.add_track(Tile(bx, by + 1, track_bits=TRACK_SW))     # MID
+        network.add_track(Tile(bx - 1, by + 1, track_bits=TRACK_NE)) # TOP
 
 
 # Each block: (block_id, positions, name, length_cm, speed_limit_kmh or None).

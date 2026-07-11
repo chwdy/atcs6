@@ -11,7 +11,7 @@ train's max_speed — wrong manual `power_percent` behaviour for any train whose
 """
 
 from network import RailwayNetwork
-from track import TrackSegment, TRACK_EW
+from track import Tile, TRACK_EW
 from path_dispatcher import PathDispatcher
 from simulation import SimulationController
 from train import Train
@@ -21,7 +21,7 @@ from train_physics import TrainPhysics
 def _two_block_line():
     net = RailwayNetwork()
     for x in range(0, 4):
-        net.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+        net.add_track(Tile(x, 0, track_bits=TRACK_EW))
     net.create_block_with_tracks(
         block_id="BLK_A", positions=[(0, 0), (1, 0)], name="Block A", length_cm=100.0
     )
