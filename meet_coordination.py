@@ -296,7 +296,6 @@ class MeetCoordinator:
                 source="RouteExecutor",
                 kind="diagnostic",
                 severity=Severity.WARNING,
-                event_time=getattr(sc, "simulation_time", 0.0) or 0.0,
                 train_id=train_id,
                 payload={
                     "message": (

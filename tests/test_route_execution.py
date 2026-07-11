@@ -603,3 +603,83 @@ class TestRouteCallbacksWrapAround:
         assert exec_state.task_runs[0].finished_at is not None, (
             "matching-direction entry must consume the waypoint"
         )
+
+
+class TestBrokenDwellHandling:
+    """A dwell whose `task_location` has left the network is BROKEN, not served.
+
+    design_new.md "RouteTaskRun schema": `missing_target` "applies to all task
+    kinds, including `dwell`". Phase Table step `c481` broken-skips such a dwell
+    and re-runs the lookup. Without this the train enters RUNNING_AT_STATION and
+    holds on the timer of a station that no longer exists.
+    """
+
+    def _executor_with_dwell(self, extra_tasks=()):
+        network = RailwayNetwork()
+        network.platforms["PLT_A"] = Platform(platform_id="PLT_A", name="A")
+
+        route = Route(
+            route_id="R_DWELL",
+            name="dwell route",
+            mode=RouteMode.ONE_OFF,
+            tasks=[
+                RouteTask(
+                    task_kind="dwell",
+                    task_location=PlatformTarget(platform_id="PLT_A"),
+                    task_time=10.0,
+                ),
+                *extra_tasks,
+            ],
+        )
+        route.activate(0.0)
+        route.assign_train("T_DWELL")
+
+        train = Train(train_id="T_DWELL")
+        network.trains[train.train_id] = train
+
+        executor = RouteExecutor(network)
+        executor.register_route(route)
+        executor.execution_states[train.train_id] = RouteExecutionState(
+            train_id=train.train_id,
+            route_id=route.route_id,
+            started_at=0.0,
+            task_runs=[RouteTaskRun(task_index=i) for i in range(len(route.tasks))],
+        )
+        return network, executor, route
+
+    def test_live_dwell_resolves_with_no_failure_kind(self):
+        _network, executor, _route = self._executor_with_dwell()
+        projection = executor._find_next_task_target("T_DWELL")
+        assert projection.task_kind == "dwell"
+        assert projection.failure_kind is None
+
+    def test_deleted_dwell_target_is_classified_missing_target(self):
+        from runtime_payloads import TargetResolutionFailureKind
+
+        network, executor, _route = self._executor_with_dwell()
+        del network.platforms["PLT_A"]  # operator deletes the platform mid-run
+
+        projection = executor._find_next_task_target("T_DWELL")
+        assert projection.task_kind == "dwell"
+        assert projection.failure_kind is TargetResolutionFailureKind.MISSING_TARGET
+        assert projection.resolved_target is None
+
+    def test_phase1_skips_the_broken_dwell_instead_of_entering_dwell(self):
+        network, executor, _route = self._executor_with_dwell()
+        exec_state = executor.execution_states["T_DWELL"]
+        train = network.trains["T_DWELL"]
+        controller = executor._get_controller(train)
+        # A powered-off train skips Phase 1 entirely, so power up first.
+        controller.commands.power_on_cmd()
+        controller.commands.cab = "A"
+        set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
+        assert controller.state != TrainState.OFF
+
+        del network.platforms["PLT_A"]
+        executor.tick_train_phase1("T_DWELL", 0.1)
+
+        # The broken dwell row is finished (skipped), carries its diagnostic, and
+        # the controller never entered a station dwell.
+        assert exec_state.task_runs[0].finished_at is not None
+        assert exec_state.task_runs[0].last_error is not None
+        assert controller.state != TrainState.RUNNING_AT_STATION

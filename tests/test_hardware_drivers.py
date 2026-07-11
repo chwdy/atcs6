@@ -411,3 +411,112 @@ def test_commission_reads_currents():
     with _pytest.raises(KeyError):
         sess.read_currents("nope")
     sess.close()
+
+
+# --- loss-of-control watchdog ---------------------------------------------
+# design_new.md "Power -> Hardware interface boundary": a real output
+# implementation arms a watchdog that drops the outputs to the safe state when
+# the control loop stops refreshing them.
+#
+# These tests run under pytest-xdist, so a scheduling hiccup can stretch any
+# wall-clock gap. Only the "it DOES fire" direction may race against a short
+# timeout (load can only delay it, and we poll). Every "it does NOT fire"
+# assertion uses a timeout long enough that load cannot reach it.
+_WATCHDOG_NEVER = 30.0     # cannot elapse during a test
+_WATCHDOG_SOON = 0.3       # long enough to assert on, short enough to poll out
+
+
+def test_watchdog_drops_outputs_to_safe_state_when_control_loop_stalls():
+    import time
+
+    fake = FakeCh347Device(present_addresses={0x40})
+    specs = [
+        ChipConfig("pwm1", "pca9685", i2c_address=0x40),
+        ChipConfig("sw1", "hc595", spi_select="cs0", chain_length=1),
+    ]
+    _inp, blk, sw = build_real_interfaces(
+        fake,
+        specs,
+        {"BLK_A": ("pwm1", 0)},
+        {},
+        {"SW_A": ("sw1", 1)},
+        watchdog_timeout_s=_WATCHDOG_SOON,
+    )
+
+    # The control loop drives the track and throws a switch.
+    assert blk.set_voltage("BLK_A", 9.0) is True
+    assert sw.set_throw("SW_A", 1) is True
+
+    # Then it stalls: no further writes land. Poll generously — load can only
+    # delay the watchdog, never prevent it.
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and blk.get_actual_voltage("BLK_A") != 0.0:
+        time.sleep(0.01)
+
+    # Both output interfaces reached the safe state, not just the track.
+    assert blk.get_actual_voltage("BLK_A") == 0.0
+    assert sw.get_last_throw("SW_A") is None
+
+
+def test_watchdog_does_not_fire_while_the_control_loop_refreshes():
+    fake = FakeCh347Device(present_addresses={0x40})
+    specs = [ChipConfig("pwm1", "pca9685", i2c_address=0x40)]
+    _inp, blk, _sw = build_real_interfaces(
+        fake, specs, {"BLK_A": ("pwm1", 0)}, {}, {}, watchdog_timeout_s=_WATCHDOG_NEVER
+    )
+
+    for _ in range(5):
+        assert blk.set_voltage("BLK_A", 9.0) is True
+
+    assert blk.get_actual_voltage("BLK_A") == 9.0
+    assert blk._watchdog.fired is False
+
+
+def test_watchdog_is_unarmed_by_default_so_test_harnesses_stay_inert():
+    fake = FakeCh347Device(present_addresses={0x40})
+    specs = [ChipConfig("pwm1", "pca9685", i2c_address=0x40)]
+    _inp, blk, _sw = build_real_interfaces(fake, specs, {"BLK_A": ("pwm1", 0)}, {}, {})
+    assert blk._watchdog is None
+
+
+def test_watchdog_never_fires_until_it_is_first_petted():
+    """It starts disarmed, so a build that never drives an output stays quiet."""
+    import time
+
+    from hardware.watchdog import OutputWatchdog
+
+    fired = []
+    wd = OutputWatchdog(lambda: fired.append(1), timeout_s=0.05)
+    try:
+        time.sleep(0.25)  # several timeout windows with no pet
+        assert fired == []
+        assert wd.fired is False
+    finally:
+        wd.stop()
+
+
+def test_disarm_clears_a_pending_deadline():
+    from hardware.watchdog import OutputWatchdog
+
+    fired = []
+    wd = OutputWatchdog(lambda: fired.append(1), timeout_s=_WATCHDOG_NEVER)
+    try:
+        wd.pet()
+        wd.disarm()
+        assert wd.fired is False
+        assert fired == []
+    finally:
+        wd.stop()
+
+
+def test_enter_safe_state_disarms_the_watchdog():
+    """`enter_safe_state()` IS the safe state, so the watchdog must stand down."""
+    fake = FakeCh347Device(present_addresses={0x40})
+    specs = [ChipConfig("pwm1", "pca9685", i2c_address=0x40)]
+    _inp, blk, _sw = build_real_interfaces(
+        fake, specs, {"BLK_A": ("pwm1", 0)}, {}, {}, watchdog_timeout_s=_WATCHDOG_NEVER
+    )
+    blk.set_voltage("BLK_A", 9.0)
+    blk.enter_safe_state()
+    assert blk.get_actual_voltage("BLK_A") == 0.0
+    assert blk._watchdog.fired is False

@@ -39,12 +39,10 @@ def emit_command_result(
         notification_center = getattr(sim_controller, "notification_center", None)
         if notification_center is None:
             return resolved_command_id
-        event_time = getattr(sim_controller, "simulation_time", 0.0) or 0.0
         notification_center.emit(
             source=source,
             kind="command_result",
             severity=Severity.INFO if success else Severity.WARNING,
-            event_time=event_time,
             payload={
                 "command_id": resolved_command_id,
                 "command_name": command_name,

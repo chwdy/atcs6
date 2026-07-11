@@ -999,23 +999,26 @@ class TestATODirectionDetection:
     def _attach_live_path(self, controller, train, tiles, path_id="test_path", end_block_id=None):
         """Attach dispatcher-backed live path tiles to the controller.
 
-        v1: controller.path_projection.received_path_plan reads from path_dispatcher.get_active_path(train_id).
-        Per design_new.md "Path field schema", `Path.path_tiles` is exposed as
-        the function `Path.get_path_tiles()`; the stub matches that contract.
+        v1: controller.path_projection.received_path_plan reads from
+        path_dispatcher.get_active_path(train_id) and narrows it to the
+        canonical **received_path_plan schema** (`path_id`,
+        `resource_sequence`, `authority_end_block_id`). Both `get_path_tiles()`
+        and `get_authority_end_block_id()` are *derived* from
+        `resource_sequence`, so the stub supplies that underlying data rather
+        than faking the derived accessors.
         """
+        class _StubResourceEntry:
+            def __init__(self, path_tiles, resource_id):
+                self.path_tiles = path_tiles
+                self.resource_id = resource_id
+
         class _StubPath:
             def __init__(self, path_tiles, path_id, end_block_id):
-                self._path_tiles = path_tiles
                 self.path_id = path_id
-                self.end_block_id = end_block_id
-                self.resource_sequence = []
                 self.status = None
-
-            def get_path_tiles(self):
-                return self._path_tiles
-
-            def get_authority_end_block_id(self):
-                return self.end_block_id or ""
+                self.resource_sequence = [
+                    _StubResourceEntry(path_tiles, end_block_id or "")
+                ]
 
         live_paths = {path_id: _StubPath(tiles, path_id, end_block_id)}
         # Map train_id -> active path for v1 contract.

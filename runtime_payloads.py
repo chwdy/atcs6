@@ -199,6 +199,13 @@ class PendingPathCancelRequest:
         — set only by the movement-derived deviation writer; it rides the latch
         payload so the Phase-3 commit can forward it into `cancel_path(...)` and
         onto the `path_cancellation` notification.
+      * `route_progress_kind: Optional["run_complete"]` — set only by Phase 1
+        run step `6a0d` after its timer elapses and service stopping begins.
+        `deviation_kind` and `route_progress_kind`, never `initiator`, drive
+        the only cancellation-callback classifications: `deviation_kind is
+        not None` produces the deviation diagnostic latch, while
+        `route_progress_kind == "run_complete"` marks a normal route-progress
+        release that must not set `RouteRun.path_cancelled`.
 
     Consumed by Phase 3 only when the train is fully stopped. While the train
     is still rolling, the latch survives across ticks and is reconsidered on
@@ -211,6 +218,7 @@ class PendingPathCancelRequest:
     deviation_kind: Optional[
         Literal["out_of_sequence", "beyond_authorized_target"]
     ] = None
+    route_progress_kind: Optional[Literal["run_complete"]] = None
 
 
 # Note: per design_new.md (Latch Table), `pending_route_abort` and
@@ -259,15 +267,21 @@ class PhaseLatches:
         deviation_kind: Optional[
             Literal["out_of_sequence", "beyond_authorized_target"]
         ] = None,
+        route_progress_kind: Optional[Literal["run_complete"]] = None,
     ) -> None:
         """Leaf writer for `path_cancel_request`.
 
         `deviation_kind` is set only by the movement-derived deviation writer
         (`initiator="deviation"`); it rides the latch payload into the Phase-3
-        `cancel_path(...)` commit per design_new.md line 270.
+        `cancel_path(...)` commit per design_new.md line 270. `route_progress_kind`
+        is set only by Phase 1 run step `6a0d`; this is the only writer permitted
+        to pass a non-`None` value for it.
         """
         self.path_cancel_request = PendingPathCancelRequest(
-            initiator=initiator, reason=reason, deviation_kind=deviation_kind
+            initiator=initiator,
+            reason=reason,
+            deviation_kind=deviation_kind,
+            route_progress_kind=route_progress_kind,
         )
 
     def set_route_abort(
@@ -459,7 +473,9 @@ class PathAcquisitionResult:
     requested_destination_block_id: Optional[str] = None
     requested_destination_direction: Optional[str] = None
     authority_end_block_id: Optional[str] = None
-    resource_sequence: List[Any] = field(default_factory=list)
+    # `None` on failure (the return contract nulls every field but
+    # `failure_kind` / `reason`); the full live sequence on success.
+    resource_sequence: Optional[List[Any]] = field(default_factory=list)
     reason: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -471,10 +487,14 @@ class PathAcquisitionResult:
             "requested_destination_block_id": self.requested_destination_block_id,
             "requested_destination_direction": self.requested_destination_direction,
             "authority_end_block_id": self.authority_end_block_id,
-            "resource_sequence": [
-                e.to_dict() if hasattr(e, "to_dict") else e
-                for e in self.resource_sequence
-            ],
+            "resource_sequence": (
+                None
+                if self.resource_sequence is None
+                else [
+                    e.to_dict() if hasattr(e, "to_dict") else e
+                    for e in self.resource_sequence
+                ]
+            ),
             "reason": self.reason,
         }
 

@@ -332,12 +332,23 @@ class OperatorCommands:
         """Set the `power_off` latch and disengage any active ATO run.
 
         Wraps `phase_latches.set_power_off(...)` together with the
-        controller-local side effect of clearing `ato_running`. The inclusive
-        `path_cancel_request` fan-out is applied automatically when a live
-        path exists, per design_new.md "Latch Table".
+        controller-local side effects of clearing `ato_running`, force-
+        clearing any service-stop override, and neutralizing propulsion:
+        `handle_position` goes to neutral and `manual.manual_power_percent`
+        is zeroed, so the rest of this tick's `TrainController.tick(...)`
+        cannot produce a non-neutral propulsion command while
+        `pending_power_off` is set (design_new.md step `98d3`). The
+        inclusive `path_cancel_request` fan-out is applied automatically
+        when a live path exists, per design_new.md "Latch Table".
         """
         c = self._c
         c.ato.running = False
+        c.ops.handle_position = HandlePosition.N
+        c.manual.reset_power_percent_for_safety()
+        # Force-clear through the service-stop teardown path so a run
+        # interrupted by power-off never leaves braking armed on a later
+        # route (design_new.md step `98d3`).
+        c.complete_service_stop(force=True)
         c.route_hooks.phase_latches.set_power_off(
             reason=reason,
             has_active_path=c.path_projection.received_path_plan is not None,
@@ -537,7 +548,7 @@ class OperatorCommands:
         if mode_type == "power_percent":
             c.ops.handle_position = HandlePosition.N
         else:
-            c.manual.manual_power_percent = 0
+            c.manual.reset_power_percent_for_safety()
 
         return CommandResult(True, f"Manual mode type set to {mode_type}")
 
@@ -568,5 +579,5 @@ class OperatorCommands:
             return CommandResult(False, f"Invalid power percent: {percent!r}")
 
         clamped = max(0, min(100, value))
-        c.manual.manual_power_percent = clamped
+        c.manual.set_power_percent(clamped)
         return CommandResult(True, f"Manual power percent set to {clamped}")

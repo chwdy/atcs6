@@ -27,6 +27,142 @@
     color: var(--text-secondary);
 }
 
+/* --- wiring reference diagram ----------------------------------------------
+   Static schematic (hardware-panel.ts buildWiringDiagramHtml) — not derived
+   from the user's configured chips, just the reference circuit so a bench
+   build can be traced wire-by-wire. Reuses the .tc-disclosure shell so it can
+   be collapsed out of the way once wiring is checked. */
+.hw-wiring {
+    margin: var(--space-12) 0;
+}
+
+.hw-wd-caption {
+    margin: 0 0 var(--space-6);
+    font-size: var(--font-size-body);
+    line-height: 1.5;
+    color: var(--text-secondary);
+}
+
+.hw-wd-svg {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+.hw-wd-svg text {
+    font-family: var(--font-mono);
+}
+
+.hw-wd-zone {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    fill: var(--text-tertiary);
+}
+
+.hw-wd-wire {
+    fill: none;
+    stroke: var(--text-tertiary);
+    stroke-width: 1.25;
+}
+
+.hw-wd-wlabel {
+    fill: var(--text-secondary);
+    font-size: 9px;
+}
+
+.hw-wd-junction,
+.hw-wd-arrowhead {
+    fill: var(--text-tertiary);
+}
+
+.hw-wd-rail rect {
+    fill: var(--bg-hover);
+    stroke: var(--border-color);
+    stroke-width: 1;
+}
+
+.hw-wd-rail text {
+    fill: var(--text-primary);
+    font-weight: 700;
+    font-size: 10px;
+}
+
+.hw-wd-r {
+    fill: var(--bg-hover);
+    stroke: var(--text-secondary);
+    stroke-width: 1;
+}
+
+.hw-wd-d {
+    fill: var(--text-secondary);
+}
+
+.hw-wd-d-bar {
+    stroke: var(--text-secondary);
+    stroke-width: 1.5;
+}
+
+.hw-wd-gnd {
+    stroke: var(--text-secondary);
+    stroke-width: 1.25;
+}
+
+.hw-wd-node rect {
+    fill: var(--bg-dark);
+    stroke: var(--border-color);
+    stroke-width: 1.25;
+}
+
+.hw-wd-node .hw-wd-name {
+    font-family: var(--font-main);
+    font-weight: 650;
+    font-size: 11px;
+    fill: var(--text-primary);
+}
+
+.hw-wd-node .hw-wd-sub {
+    font-size: 9px;
+    fill: var(--text-secondary);
+}
+
+.hw-wd-node.role-i2c rect { stroke: var(--info-color); }
+.hw-wd-node.role-spi rect { stroke: var(--accent-hover); }
+
+.hw-wd-node.role-hub rect {
+    fill: rgba(var(--accent-rgb), 0.1);
+    stroke: var(--accent-color);
+    stroke-width: 1.5;
+}
+
+.hw-wd-node.role-hub .hw-wd-name {
+    font-size: 13px;
+    fill: var(--accent-hover);
+}
+
+.hw-wd-gate {
+    fill: var(--bg-dark);
+    stroke: var(--border-color);
+    stroke-width: 1.25;
+}
+
+.hw-wd-gate-bubble {
+    fill: var(--bg-dark);
+    stroke: var(--border-color);
+    stroke-width: 1.25;
+}
+
+.hw-wd-pin {
+    font-size: 9px;
+    font-weight: 700;
+    fill: var(--text-primary);
+}
+
+.hw-wd-caption-inline {
+    font-size: 8.5px;
+    fill: var(--text-tertiary);
+}
+
 /* --- stage ---------------------------------------------------------------- */
 .hw-stage {
     padding: var(--space-16) 0;

@@ -175,6 +175,11 @@ class TrainController:
     path_dispatcher: Optional["PathDispatcher"] = None
     route_executor: Optional["RouteExecutor"] = None
 
+    # Edge trigger for the ATC diagnostic overspeed warning: True while the
+    # train sits above `OVERSPEED_WARN_THRESHOLD_KMH`, so one excursion emits
+    # one warning instead of one per tick. A plain transient flag, not a latch.
+    _overspeed_warned: bool = False
+
     # -------------------------------------------------------------------------
     # Power & Safety State
     # -------------------------------------------------------------------------
@@ -611,23 +616,10 @@ class TrainController:
         if not train:
             return
 
-        logger.debug(
-            "[TrainController %s] tick start: power=%s eb=%s mode=%s state=%s speed=%.2f",
-            self.train_id,
-            self.power_on,
-            self.eb.active,
-            self.commands.control_mode,
-            self.ops.state.value,
-            self.physics_sync.current_speed_kmh,
-        )
 
         # ===== 0. POWER CHECK =====
         if not self.power_on:
             self.ops.state = TrainState.OFF
-            logger.debug(
-                "[TrainController %s] power off -> state=off",
-                self.train_id,
-            )
             return
 
         # ===== 1. EMERGENCY BRAKE CHECK =====
@@ -635,11 +627,6 @@ class TrainController:
             self.ops.handle_position = HandlePosition.EB
             self.atc.speed_limit = 0.0
 
-            logger.debug(
-                "[TrainController %s] EB active -> handle=EB speed=%.2f",
-                self.train_id,
-                self.physics_sync.current_speed_kmh,
-            )
 
             # While EB is latched, controller does not run post-EB restart
             # logic. Explicit release_emergency_cmd() is required to clear
@@ -660,17 +647,9 @@ class TrainController:
         if self.commands.cab is None:
             self.atc.speed_limit = 0.0
             self.atc._last_limit_reason_code = AtcLimitReasonCode.NO_CAB
-            logger.debug(
-                "[TrainController %s] ATC blocked: no cab selected",
-                self.train_id,
-            )
         elif self._is_cab_wrong_direction():
             self.atc.speed_limit = 0.0
             self.atc._last_limit_reason_code = AtcLimitReasonCode.WRONG_DIRECTION_CAB
-            logger.debug(
-                "[TrainController %s] ATC blocked: cab opposite active authority",
-                self.train_id,
-            )
         else:
             # Get block speed limit for current block
             self.atc.current_block_speed_limit = self._get_current_block_speed_limit()
@@ -692,12 +671,6 @@ class TrainController:
             # reason the monitor/journey-harness already read.
             self.atc.speed_limit, self.atc._last_limit_reason_code = (
                 self._distance_zero_atc_anchor()
-            )
-            logger.debug(
-                "[TrainController %s] ATC: clearance=%.2f limit=%.2f",
-                self.train_id,
-                self.atc.clearance_ahead_cm,
-                self.atc.speed_limit,
             )
 
         # ===== 4. ATC ACTION =====
@@ -731,19 +704,19 @@ class TrainController:
                 if overspeed > OVERSPEED_EB_THRESHOLD_KMH
                 else "No movement authority: emergency brake"
             )
-            logger.debug(
-                "[TrainController %s] ATC EB: overspeed=%.2f no_authority_rolling=%s",
-                self.train_id,
-                overspeed,
-                no_authority_rolling,
-            )
             return
-        elif overspeed > OVERSPEED_WARN_THRESHOLD_KMH:
-            logger.debug(
-                "[TrainController %s] ATC warning: overspeed=%.2f",
-                self.train_id,
-                overspeed,
-            )
+
+        # ATC diagnostic overspeed warning, per the `overspeed_warn_threshold_kmh`
+        # runtime setting. Edge-triggered on entry into the warn band, so one
+        # excursion emits one warning rather than one per tick.
+        if overspeed > OVERSPEED_WARN_THRESHOLD_KMH:
+            if not self._overspeed_warned:
+                self._overspeed_warned = True
+                self.notifications.emit(
+                    f"ATC overspeed warning: {overspeed:.1f} km/h over the limit"
+                )
+        else:
+            self._overspeed_warned = False
 
         # ===== 5. ATO INFO =====
         self.ato.info = self.ato.compute_info()
@@ -776,12 +749,6 @@ class TrainController:
             if self.ato.running:
                 # ATO is running - calculate handle to reach target speed
                 self.ops.handle_position = self.ato.compute_handle(delta)
-                logger.debug(
-                    "[TrainController %s] ATO handle=%s target=%.2f",
-                    self.train_id,
-                    self.ops.handle_position.value,
-                    effective_limit,
-                )
             else:
                 # ATO not running - brake to stop. Transition to the
                 # state-machine-derived stopped ready state once stopped.
@@ -801,20 +768,34 @@ class TrainController:
                 self.ops.handle_position = self.ato.calculate_braking_notch_for_speed(
                     self.physics_sync.current_speed_kmh, self.atc.speed_limit
                 )
-                logger.debug(
-                    "[TrainController %s] Manual ATC brake: handle=%s",
-                    self.train_id,
-                    self.ops.handle_position.value,
+
+        # ===== 10a. ROUTE-OWNED SERVICE-STOP OVERRIDE (design_new.md `b41e`) =====
+        # Runs after ordinary ATO/manual command generation above and replaces
+        # this tick's effective command with service stopping while a Phase 1
+        # run task's timed stop is armed (TrainController.begin_service_stop()).
+        # EB and ATC, already applied above, always outrank this override.
+        # Persists across ticks until TrainController.complete_service_stop()
+        # clears it. Manual `power_percent` submode has no handle_position to
+        # write here; produce_physics_command() applies the canonical
+        # safety-cap ordering with a zero cap when service_stop_active is set.
+        if self.ops.service_stop_active:
+            if self.commands.control_mode == "ato":
+                self.ato.running = False
+                self.ops.handle_position = (
+                    self.ato.calculate_braking_notch_for_speed(
+                        self.physics_sync.current_speed_kmh, 0.0
+                    )
+                )
+            elif self.manual.manual_mode_type == "simulation":
+                self.ops.handle_position = (
+                    self.ato.calculate_braking_notch_for_speed(
+                        self.physics_sync.current_speed_kmh, 0.0
+                    )
                 )
 
         # ===== 7. EFFECTIVE LIMIT (target_speed property reads from lookahead) =====
         # Per design_new.md, target_speed and speed_limit_reason are derived
         # from lookahead at distance 0. We do NOT mirror them onto self/train.
-        logger.debug(
-            "[TrainController %s] effective_limit=%.2f",
-            self.train_id,
-            effective_limit,
-        )
 
         # `path_backed_run_active` is now a derived `@property`; no write here.
 
@@ -864,7 +845,7 @@ class TrainController:
         if not self.power_on:
             # Per design_new.md line 1755: clear manual_power_percent on
             # power-off so the set-and-forget contract holds.
-            self.manual.manual_power_percent = 0.0
+            self.manual.reset_power_percent_for_safety()
             return PhysicsCommand(
                 kind=PHYSICS_KIND_HANDLE,
                 handle=HandlePosition.N,
@@ -872,7 +853,7 @@ class TrainController:
             )
         if self.eb.active:
             # Per design_new.md line 1755: clear manual_power_percent on EB.
-            self.manual.manual_power_percent = 0.0
+            self.manual.reset_power_percent_for_safety()
             return PhysicsCommand(
                 kind=PHYSICS_KIND_EMERGENCY_BRAKE,
                 handle=HandlePosition.EB,
@@ -885,22 +866,39 @@ class TrainController:
             profile = self._get_speed_profile()
             pct = float(self.manual.manual_power_percent or 0.0)
             target = profile.power_percent_to_speed(pct) if profile else 0.0
-            atc = float(self.atc.speed_limit or 0.0)
-            if target > atc:
-                # Per design_new.md: when ATC intervenes — including a zero
-                # authority cap (no cab, wrong-direction cab, or no/at-end
-                # authority, all of which set atc.speed_limit = 0 earlier this
-                # tick) — the controller clamps the target to the ATC limit and
-                # forces manual_power_percent = 0 for the tick (set-and-forget).
-                # A zero cap therefore holds the train at rest instead of letting
-                # the stored percent command motion.
-                target = atc
-                self.manual.manual_power_percent = 0.0
+            # Per design_new.md "Canonical power-percent safety-cap ordering":
+            # a service-stop or EB override supplies a zero cap; otherwise ATC
+            # is the cap (already zero when no cab, wrong-direction cab, or
+            # no/at-end authority set atc.speed_limit = 0 earlier this tick).
+            cap = (
+                0.0
+                if self.ops.service_stop_active
+                else float(self.atc.speed_limit or 0.0)
+            )
+            # The commanded percent is the authoritative operating point for
+            # this tick, so physics maps it straight to track_voltage through
+            # voltage_power_curve (design_new.md:2424, 2431). A zero percent
+            # keeps the existing dead-rail outcome rather than the curve's
+            # 0%-power lighting anchor.
+            voltage_pct: Optional[float] = pct if pct > 0.0 else None
+            if target > cap:
+                # Per design_new.md: when the cap intervenes, the controller
+                # clamps the target to it and resets manual_power_percent for
+                # this tick (set-and-forget). A zero cap therefore holds the
+                # train at rest instead of letting the stored percent command
+                # motion.
+                target = cap
+                self.manual.reset_power_percent_for_safety()
+                # The cap outranks the manual command, so the capped speed —
+                # not the discarded percent — is this tick's authoritative
+                # operating point, and voltage derives from it.
+                voltage_pct = None
             target = max(0.0, target)
             return PhysicsCommand(
                 kind=PHYSICS_KIND_TARGET_SPEED,
                 target_speed_kmh=target,
                 voltage_source_speed_kmh=target,
+                voltage_source_power_percent=voltage_pct,
             )
         # ATO and manual `simulation` submode: handle integration.
         if self.commands.control_mode == "ato":
@@ -2169,6 +2167,49 @@ class TrainController:
         # path_backed_run_active is derived from path/route/destination context.
         self.ops.state = TrainState.READY
 
+    def begin_service_stop(self) -> None:
+        """Route-owned operational deceleration command (design_new.md
+        "TrainController.begin_service_stop() / complete_service_stop()").
+
+        Idempotent; valid while powered, in either control mode. Sets
+        `ops.service_stop_active = True` and clears `ato.running`. Does not
+        cancel authority or write route state — Controller tick step `b41e`
+        owns the actual per-mode braking override; the caller is
+        responsible for releasing authority separately.
+        """
+        if not self.power_on:
+            return
+        self.ops.service_stop_active = True
+        self.ato.running = False
+
+    def complete_service_stop(self, force: bool = False) -> bool:
+        """Clear the service-stop override (design_new.md "TrainController.
+        begin_service_stop() / complete_service_stop()").
+
+        Normal acceptance (``force=False``) requires
+        ``ops.service_stop_active == True``, ``is_stopped() == True``,
+        ``received_path_plan is None``, and no pending
+        ``pending_path_cancel_request``. ``force=True`` unconditionally
+        clears the override for an interrupted run — used by EB activation,
+        ``RouteExecutor.remove_train_route_run(...)``, and OFF cleanup so a
+        later route never inherits armed braking. Changes no operational
+        state either way; no other component assigns
+        ``ops.service_stop_active`` directly.
+        """
+        if force:
+            self.ops.service_stop_active = False
+            return True
+        if not self.ops.service_stop_active:
+            return False
+        if not self.is_stopped():
+            return False
+        if self.path_projection.received_path_plan is not None:
+            return False
+        if self.route_hooks.phase_latches.path_cancel_request is not None:
+            return False
+        self.ops.service_stop_active = False
+        return True
+
     def complete_power_off(self) -> None:
         """Controller-owned OFF-cleanup entry point (design_new.md:282, :1808).
 
@@ -2187,6 +2228,9 @@ class TrainController:
         # the EB Workflow stays the single writer of `eb.active`.
         self.eb.clear()
         self.ato.running = False
+        # Force-clear through the service-stop teardown path so an
+        # interrupted run never leaves braking armed on a later route.
+        self.complete_service_stop(force=True)
         self.route_hooks.phase_latches.consume_power_off()
 
     # -------------------------------------------------------------------------

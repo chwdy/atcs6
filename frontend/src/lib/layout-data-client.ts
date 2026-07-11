@@ -144,7 +144,6 @@ export interface SimClient {
 
   // --- Simulation + server ops ---
   controlSimulation(action: string, speed?: number | null): Promise<any>;
-  releaseFailedRuntime(): Promise<any>;
   restartServer(): Promise<any>;
   healthCheck(): Promise<any>;
 

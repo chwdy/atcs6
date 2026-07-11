@@ -62,6 +62,7 @@ export interface PendingPathCancelRequest {
   initiator: string;
   reason: string | null;
   deviation_kind: "out_of_sequence" | "beyond_authorized_target" | null;
+  route_progress_kind: "run_complete" | null;
 }
 
 export interface PhaseLatches {
@@ -86,7 +87,7 @@ export interface PathAcquisitionResult {
   requested_destination_block_id: string | null;
   requested_destination_direction: string | null;
   authority_end_block_id: string | null;
-  resource_sequence: unknown[];
+  resource_sequence: unknown[] | null;
   reason: string;
 }
 

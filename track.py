@@ -812,7 +812,12 @@ class TrackSegment:
         del resolver
         return self.get_entry_for_exit(exit_edge, use_switch_state=True)
 
-    def get_exits(self, entry_edge: str, use_switch_state: bool = True) -> List[str]:
+    def get_exits(
+        self,
+        entry_edge: str,
+        use_switch_state: bool = True,
+        switch_state_override: Optional[int] = None,
+    ) -> List[str]:
         """Return exit edges for a given entry edge.
 
         Uses global switch_state if this is a switch tile:
@@ -822,7 +827,15 @@ class TrackSegment:
         IMPORTANT: When use_switch_state=True and this is a switch, the entry edge
         must be part of the ACTIVE segment. If a train enters from an edge that's
         not part of the active segment, it's a derailment scenario (switch set against them).
+
+        `switch_state_override` answers "what would the exits be at state N?"
+        without touching live state. The pathfinder needs that question; writing
+        `switch_state` to ask it would drive the real point motor, because the
+        setter writes through to the canonical `Switch.position`.
         """
+        effective_switch_state = (
+            self.switch_state if switch_state_override is None else switch_state_override
+        )
         entry_norm = _normalize_edge(entry_edge)
         if not entry_norm:
             return []
@@ -914,7 +927,7 @@ class TrackSegment:
                 # Determine which segment is active based on switch state
                 active_segment = (
                     diverge_segments[0]
-                    if self.switch_state == 0
+                    if effective_switch_state == 0
                     else diverge_segments[1]
                 )
                 active_bit, active_e1, active_e2 = active_segment
@@ -935,7 +948,7 @@ class TrackSegment:
         # DIVERGE (1): only diverge segment exits are valid - entry from main path is BLOCKED
         #
         # The key insight: if entering from the WRONG path type, return [] (blocked)
-        if self.switch_state == 0:
+        if effective_switch_state == 0:
             # MAIN state: only allow exits via main (NS/EW) segments
             # If there are no main_exits, it means entry is from diverge path -> blocked
             if main_exits:
@@ -1158,13 +1171,14 @@ class TrackSegment:
         if not self.is_switch:
             return None
 
-        # Check if this entry→exit path exists at each state
+        # Probe each state without writing it. `switch_state`'s setter writes
+        # through to the canonical `Switch.position`, which is only ever written
+        # by `SwitchManager`'s validate -> write -> notify -> throw workflow, so
+        # a pathfinding query must never assign it — not even transiently.
         for state in [0, 1]:
-            old_state = self.switch_state
-            self.switch_state = state
-            exits = self.get_exits(entry_edge, use_switch_state=True)
-            self.switch_state = old_state
-
+            exits = self.get_exits(
+                entry_edge, use_switch_state=True, switch_state_override=state
+            )
             if exit_edge in exits:
                 return state
 

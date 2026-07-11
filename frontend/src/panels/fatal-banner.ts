@@ -3,11 +3,12 @@
  *
  * When the runtime is halted (failed_runtime), update() skips every train tick —
  * trains freeze at their last state (often RUNNING_MOVING / handle Px) while the
- * clock keeps advancing, and play/pause cannot recover it. This banner is the
- * only surface for that state and the only path to recovery (the Clear button
- * calls release-failed-runtime). The three helpers are pure derivations from the
- * conflict record; updateFatalBanner does the DOM + the canvas conflict-flash via
- * the passed renderer.
+ * clock keeps advancing, and play/pause cannot recover it. Per design_new.md
+ * "Fatal physical-entry conflict procedure", this state is terminal for the
+ * session in v1: there is no release path, so this banner's only action is to
+ * restart the server and begin a new session. The three helpers are pure
+ * derivations from the conflict record; updateFatalBanner does the DOM + the
+ * canvas conflict-flash via the passed renderer.
  */
 
 /** Minimal renderer surface this module needs (the collision strobe). */
@@ -79,7 +80,7 @@ export function updateFatalBanner(network: any, renderer: ConflictFlashRenderer)
   const detailEl = document.getElementById('fatal-banner-detail');
   const metaEl = document.getElementById('fatal-banner-meta');
   const c = network.failed_runtime_conflict;
-  const tail = ' All trains are halted — resolve the conflict on the layout, then clear to resume.';
+  const tail = ' All trains are halted for the rest of this session. Restart the server to begin a new one.';
 
   if (detailEl) {
     detailEl.textContent = c

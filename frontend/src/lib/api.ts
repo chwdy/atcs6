@@ -251,21 +251,6 @@ export class API implements LayoutDataClient, SimClient {
   }
 
   /**
-   * Clear a fatal physical-entry conflict halt after the operator has
-   * resolved the conflict. Returns { released, failed_runtime }; released
-   * is false (HTTP still 200) when the conflict still stands.
-   */
-  async releaseFailedRuntime(): Promise<any> {
-    return this._request(
-      '/simulation/release-failed-runtime',
-      {
-        method: 'POST',
-      },
-      'releaseFailedRuntime'
-    );
-  }
-
-  /**
    * Restart the server process. The server flushes autosave, then
    * replaces itself via os.execv. Caller should immediately switch
    * the UI into a reconnect-polling state.

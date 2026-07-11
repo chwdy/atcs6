@@ -136,3 +136,174 @@ def test_block_reoccupy_does_not_re_emit_block_entered():
 
     entered = [n for n in nc.peek_recent(20) if n.kind == EventKind.BLOCK_ENTERED]
     assert len(entered) == 1
+
+
+# --- Time sampling: the stream is wall-clock ---------------------------------
+# design_new.md "Time sampling": every site that records a notification
+# `event_time` samples wall-clock `time.time()` at the moment of the write.
+# Callers do not thread a timestamp across writers, and no site stamps with the
+# playback-scaled `simulation_time` (which restarts at 0.0 each run and would
+# not order against its wall-clock siblings).
+def test_emit_samples_wall_clock_when_no_event_time_is_passed():
+    import time
+
+    nc = NotificationCenter()
+    before = time.time()
+    n = nc.emit(source="X", kind="diagnostic", severity=Severity.INFO)
+    after = time.time()
+    assert before <= n.event_time <= after
+
+
+def test_emit_still_accepts_one_local_sample_shared_with_an_entity_write():
+    # The one case design_new.md allows: a single writer samples once locally
+    # and uses that value for both its notification and its entity write.
+    nc = NotificationCenter()
+    n = nc.emit(source="X", kind="diagnostic", severity=Severity.INFO, event_time=1234.5)
+    assert n.event_time == 1234.5
+
+
+def test_no_source_file_stamps_event_time_with_the_simulation_clock():
+    """Static guard: `simulation_time` must never reach an `event_time`.
+
+    The sim clock starts at 0.0 and scales with playback; wall clock is ~1.7e9.
+    Mixing them makes the persisted log non-orderable across event kinds. A
+    dynamic test cannot reach every emit site, so this scans the source instead.
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    # Matches `event_time=self.simulation_time` and
+    # `event_time=getattr(sc, "simulation_time", ...)` alike.
+    offender = re.compile(r"event_time\s*=[^\n]*simulation_time")
+    hits = []
+    for path in root.rglob("*.py"):
+        parts = path.parts
+        if ".claude" in parts or "tests" in parts:
+            continue
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if offender.search(line):
+                hits.append(f"{path.relative_to(root)}:{lineno}: {line.strip()}")
+    assert not hits, "event_time stamped with the simulation clock:\n" + "\n".join(hits)
+
+
+def test_detector_diagnostic_is_stamped_wall_clock():
+    """The detector notify path is one of the sites that used to stamp sim time."""
+    import time
+
+    from network import RailwayNetwork
+    from path_dispatcher import PathDispatcher
+    from simulation import SimulationController
+
+    network = RailwayNetwork()
+    sim = SimulationController(network, PathDispatcher(network))
+    sim.update(0.1)
+    assert sim.simulation_time > 0.0  # the sim clock is small and nonzero
+
+    sim.block_occupancy_detector.notify("block_attribution_unknown", "probe")
+    emitted = sim.notification_center.peek_recent(10)
+    assert emitted, "detector notify should have emitted a diagnostic"
+    assert emitted[-1].event_time > time.time() - 60.0
+
+
+# --- NotificationCenter is the only runtime sink -----------------------------
+# design_new.md "Out of Scope": "Logging beyond NotificationCenter | None |
+# NotificationCenter is the only runtime sink | Component-local logging is
+# forbidden by design." Routine traces must not exist in domain code. The
+# surviving `logger.warning/error/exception` calls are each the last-resort
+# fallback for a NotificationCenter emit that itself raised — without them an
+# emit failure would be silent — so they are allowed and asserted separately.
+_DOMAIN_MODULES = [
+    "simulation.py",
+    "route_executor.py",
+    "path_dispatcher.py",
+    "train_physics.py",
+    "block_manager.py",
+    "switch_manager.py",
+    "switch.py",
+    "block.py",
+    "meet_coordination.py",
+    "train_controller/__init__.py",
+    "train_controller/commands.py",
+    "train_controller/eb.py",
+    "train_controller/ato.py",
+    "train_controller/atc.py",
+]
+
+
+def _domain_sources():
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    for rel in _DOMAIN_MODULES:
+        path = root / rel
+        if path.exists():
+            yield rel, path.read_text()
+
+
+def test_domain_code_emits_no_routine_logger_traces():
+    import re
+
+    routine = re.compile(r"\blogger\.(debug|info)\s*\(")
+    hits = [
+        f"{rel}:{i}: {line.strip()}"
+        for rel, src in _domain_sources()
+        for i, line in enumerate(src.splitlines(), 1)
+        if routine.search(line)
+    ]
+    assert not hits, (
+        "domain code must not log routine traces to a second sink; route them "
+        "through NotificationCenter as kind='diagnostic':\n" + "\n".join(hits)
+    )
+
+
+def test_domain_code_does_not_print_to_stdout():
+    import re
+
+    printing = re.compile(r"(?<![\w.])print\s*\(")
+    hits = [
+        f"{rel}:{i}: {line.strip()}"
+        for rel, src in _domain_sources()
+        for i, line in enumerate(src.splitlines(), 1)
+        if printing.search(line)
+    ]
+    assert not hits, (
+        "domain code must not print; emit a NotificationCenter diagnostic "
+        "instead:\n" + "\n".join(hits)
+    )
+
+
+def test_notification_ids_stay_monotonic_across_sessions(tmp_path):
+    """design_new.md "Event log": the increasing `notification_id` is the order
+    the log reads back in. The log is append-only across process restarts, so a
+    fresh session must not restart numbering at 1 and duplicate ids on disk."""
+    path = str(tmp_path / "event_log.jsonl")
+
+    first = NotificationCenter()
+    first.enable_event_log(path)
+    first.emit(source="A", kind="diagnostic", severity=Severity.INFO)
+    first.emit(source="A", kind="diagnostic", severity=Severity.INFO)
+
+    # A restart builds a brand-new NotificationCenter against the same file.
+    second = NotificationCenter()
+    second.enable_event_log(path)
+    second.emit(source="B", kind="diagnostic", severity=Severity.INFO)
+
+    ids = [e.notification_id for e in NotificationCenter.read_event_log(path)]
+    assert ids == [1, 2, 3], ids
+    assert len(set(ids)) == len(ids), "duplicate notification_id on disk"
+
+
+def test_enable_event_log_on_a_fresh_path_numbers_from_one(tmp_path):
+    nc = NotificationCenter()
+    nc.enable_event_log(str(tmp_path / "fresh.jsonl"))
+    n = nc.emit(source="A", kind="diagnostic", severity=Severity.INFO)
+    assert n.notification_id == 1
+
+
+def test_corrupt_event_log_line_does_not_block_boot(tmp_path):
+    path = tmp_path / "corrupt.jsonl"
+    path.write_text('{"notification_id": 5}\nnot json at all\n{"no_id": true}\n')
+    nc = NotificationCenter()
+    nc.enable_event_log(str(path))
+    assert nc.emit(source="A", kind="diagnostic", severity=Severity.INFO).notification_id == 6

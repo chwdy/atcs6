@@ -736,6 +736,7 @@ def build_session_interfaces(
     try:
         from hardware.ch347_device import open_ch347_device
         from hardware.interfaces import build_real_interfaces
+        from hardware.watchdog import DEFAULT_WATCHDOG_TIMEOUT_S
     except ImportError as exc:
         raise HardwareBackendUnavailable(
             "real mode needs the hardware driver package (ch347api), which is "
@@ -759,6 +760,9 @@ def build_session_interfaces(
             block_occupancy_current=_current_binding_tuples(cfg.block_occupancy_current),
             output_enable=_binding_tuples(cfg.output_enable),
             idle_deadband_v=DEFAULT_IDLE_DEADBAND_V,
+            # A real session drives real track; arm the loss-of-control watchdog
+            # (design_new.md "Power -> Hardware interface boundary").
+            watchdog_timeout_s=DEFAULT_WATCHDOG_TIMEOUT_S,
         )
     except Exception as exc:
         try:

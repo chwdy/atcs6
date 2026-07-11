@@ -25,8 +25,9 @@ Architecture:
 import logging
 import time
 from datetime import datetime
-from typing import Any, Dict, Literal, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, Literal, Optional, Set, Tuple, TYPE_CHECKING
 
+from constants import UNKNOWN_TRAIN_ID
 from network import RailwayNetwork
 from train import Train, TrainCar
 from enums import TrainState, Direction, OperationMode
@@ -148,7 +149,6 @@ class SimulationController:
                 source="BlockOccupancyDetector",
                 kind=kind,
                 severity=Severity.WARNING,
-                event_time=self.simulation_time,
                 payload={"message": message},
             ),
         )
@@ -221,8 +221,9 @@ class SimulationController:
         self.simulation_time += delta_seconds
 
         # When a fatal physical-entry conflict has been reported, halt all
-        # train ticks (Phase 1/2/3 skipped) until the operator manually
-        # cleans up and calls release_failed_runtime_after_manual_cleanup().
+        # train ticks (Phase 1/2/3 skipped) for the rest of this session.
+        # There is no release path in v1: the operator restarts the server
+        # to begin a new session.
         if self.failed_runtime:
             return
 
@@ -356,6 +357,17 @@ class SimulationController:
         entered, vacated = detector.step()
         entered_by_train, vacated_by_train = detector.attribute(entered, vacated)
 
+        # An unmodeled occupant has no per-train Phase-3 transaction, so the
+        # preamble commits its slice here — entry through the single writer
+        # `BlockManager.occupy_blocks(...)`, which reports the fatal conflict
+        # itself when the block is already held by another train (design_new.md
+        # "Attribution"). Committed one block at a time so a conflict on one
+        # block does not roll back a clean entry on another.
+        self._commit_unknown_occupancy(
+            entered_by_train.pop(UNKNOWN_TRAIN_ID, set()),
+            vacated_by_train.pop(UNKNOWN_TRAIN_ID, set()),
+        )
+
         # Reset every train's slice, then write this tick's attributed sets.
         for controller in self.controllers.values():
             controller.physics_sync.pending_detected_entered_blocks = set()
@@ -380,6 +392,29 @@ class SimulationController:
             self._get_or_create_physics(train).reconcile_to_detected_occupancy(
                 train, controller
             )
+
+    def _commit_unknown_occupancy(
+        self, entered: Set[str], vacated: Set[str]
+    ) -> None:
+        """Commit the unmodeled-occupant slice of the Step-0 detector read.
+
+        Entry routes through `BlockManager.occupy_blocks(...)` so the
+        `occupied_by` single-writer rule holds and an entry onto a block another
+        train already holds raises the fatal physical-entry conflict rather than
+        silently clobbering its owner. The clear is a direct field write: an
+        unknown occupant carries no traversal direction, so it has no CAUTION
+        transition to run through `on_block_tail_vacated(...)`.
+        """
+        if self.block_manager is not None:
+            for block_id in sorted(entered):
+                if not self.block_manager.occupy_blocks([block_id], UNKNOWN_TRAIN_ID):
+                    # occupy_blocks already reported the conflict through
+                    # enter_failed_runtime(...), which halts the runtime.
+                    return
+        for block_id in sorted(vacated):
+            block = self.network.blocks.get(block_id)
+            if block is not None and block.occupied_by == UNKNOWN_TRAIN_ID:
+                block.occupied_by = None
 
     # =========================================================================
     # Per-train three-phase transaction
@@ -429,10 +464,7 @@ class SimulationController:
             if controller.route_hooks.phase_latches.path_cancel_request is None:
                 if self.path_dispatcher.active_path_id_by_train(train.train_id) is not None:
                     if controller.is_stopped_at_authority_end():
-                        event_time = time.time()
-                        self.path_dispatcher.try_complete_active_path(
-                            train.train_id, event_time
-                        )
+                        self.path_dispatcher.try_complete_active_path(train.train_id)
 
         # 3c. Consume Phase-3 latches in canonical order.
         self._consume_pending_path_cancel_request(controller, train)
@@ -484,6 +516,7 @@ class SimulationController:
                 initiator=payload.initiator,
                 reason=payload.reason,
                 deviation_kind=payload.deviation_kind,
+                route_progress_kind=payload.route_progress_kind,
             )
         else:
             # design_new.md fix #18: emit INFO notification instead of logger.debug.
@@ -912,11 +945,16 @@ class SimulationController:
     def enter_failed_runtime(self, payload: FatalPhysicalEntryConflict) -> None:
         """Halt further train ticks until manually released.
 
-        Sets :attr:`failed_runtime`, stores the typed fatal payload for
+        Before freezing, calls :meth:`enter_safe_state` on every configured
+        block and switch output interface, zeroing track voltage and
+        switching off point motors — the safe-state write touches hardware
+        outputs only, never controller/path/route/resource/occupancy state.
+        Then sets :attr:`failed_runtime`, stores the typed fatal payload for
         inspection, and emits a FATAL notification carrying the conflict
         details. While the flag is set, :meth:`update` only advances
         ``simulation_time`` and skips Phase 1/2/3 for every train.
         """
+        self.enter_safe_state()
         self.failed_runtime = True
         self.failed_runtime_payload: Optional[FatalPhysicalEntryConflict] = payload
         self.failed_runtime_at = self.simulation_time
@@ -937,107 +975,6 @@ class SimulationController:
             },
         )
 
-    def release_failed_runtime_after_manual_cleanup(self) -> bool:
-        """Clear the :attr:`failed_runtime` flag after verifying that the
-        conflicting condition reported in :attr:`failed_runtime_payload`
-        has actually been cleaned up.
-
-        Per design_new.md ~lines 264-265, this release helper must verify
-        that the fatal resource no longer has the conflicting physical
-        owner / disabled-entry condition recorded in the stored fatal
-        payload before clearing the flag and emitting the resume
-        notification. If verification fails, leave the runtime failed and
-        return ``False``; the operator must repair the underlying state
-        first.
-
-        Returns ``True`` when the flag was cleared, ``False`` when
-        verification failed.
-        """
-        if not self.failed_runtime:
-            return True
-        payload = self.failed_runtime_payload
-        if payload is None:
-            # Defensive: no stored payload means we cannot verify. Refuse
-            # to release rather than silently clear.
-            self.notification_center.emit(
-                source="SimulationController",
-                kind="failed_runtime_release_rejected",
-                severity=Severity.WARNING,
-                event_time=time.time(),
-                payload={"reason": "missing_fatal_payload"},
-            )
-            return False
-
-        ok, reason = self._verify_fatal_conflict_cleared(payload)
-        if not ok:
-            self.notification_center.emit(
-                source="SimulationController",
-                kind="failed_runtime_release_rejected",
-                severity=Severity.WARNING,
-                event_time=time.time(),
-                train_id=payload.incoming_train_id,
-                payload={
-                    "resource_type": payload.resource_type,
-                    "resource_id": payload.resource_id,
-                    "conflict_kind": payload.conflict_kind.value,
-                    "reason": reason,
-                },
-            )
-            return False
-
-        self.failed_runtime = False
-        self.failed_runtime_payload = None
-        self.failed_runtime_at = None
-        self.notification_center.emit(
-            source="SimulationController",
-            kind="failed_runtime_released",
-            severity=Severity.INFO,
-            event_time=time.time(),
-        )
-        return True
-
-    def _verify_fatal_conflict_cleared(
-        self, payload: FatalPhysicalEntryConflict
-    ) -> Tuple[bool, str]:
-        """Inspect live network state and verify the conflict described
-        by ``payload`` is no longer present. Returns ``(True, "")`` when
-        the resource is clean; ``(False, reason)`` otherwise.
-        """
-        kind = payload.conflict_kind
-        prior_owner = payload.prior_owner_train_id
-        if payload.resource_type == "block":
-            block = self.network.blocks.get(payload.resource_id)
-            if block is None:
-                return (False, "resource_missing")
-            if kind == FatalConflictKind.DISABLED_RESOURCE_ENTRY:
-                if block.disabled:
-                    return (False, "resource_still_disabled")
-                return (True, "")
-            if kind == FatalConflictKind.OCCUPIED_BY_OTHER_TRAIN:
-                if block.occupied_by == prior_owner:
-                    return (False, "block_still_occupied_by_prior_owner")
-                return (True, "")
-            if kind == FatalConflictKind.RESERVED_FOR_OTHER_TRAIN:
-                if block.reserved_for_train == prior_owner:
-                    return (False, "block_still_reserved_for_prior_owner")
-                return (True, "")
-            return (False, "unsupported_block_conflict_kind")
-        if payload.resource_type == "switch":
-            switches = getattr(self.network, "switches", None)
-            switch = switches.get(payload.resource_id) if switches else None
-            if switch is None:
-                return (False, "resource_missing")
-            if kind == FatalConflictKind.DISABLED_RESOURCE_ENTRY:
-                if getattr(switch, "disabled", False):
-                    return (False, "resource_still_disabled")
-                return (True, "")
-            if kind == FatalConflictKind.SWITCH_OCCUPIED_BY_OTHER_TRAIN:
-                if getattr(switch, "occupied_by", None) == prior_owner:
-                    return (False, "switch_still_occupied_by_prior_owner")
-                return (True, "")
-            return (False, "unsupported_switch_conflict_kind")
-        return (False, "unknown_resource_type")
-
     # =========================================================================
     # Path completion / cancellation delegation
     # =========================================================================
@@ -1048,23 +985,24 @@ class SimulationController:
         path_id: str,
         authority_end_block_id: str,
         requested_destination_direction: str,
-        event_time: float,
     ) -> None:
         """Forward a path-completion event to the RouteExecutor and emit a
         notification.
+
+        Carries no timestamp: per design_new.md "Time sampling" each writer
+        samples wall-clock time at its own write site, so `RouteExecutor` dates
+        `finished_at` itself and `emit(...)` dates the notification itself.
         """
         self.route_executor.handle_path_completion(
             train_id,
             path_id,
             authority_end_block_id,
             requested_destination_direction,
-            event_time,
         )
         self.notification_center.emit(
             source="SimulationController",
             kind="path_completion",
             severity=Severity.INFO,
-            event_time=event_time,
             train_id=train_id,
             path_id=path_id,
             payload={
@@ -1153,11 +1091,6 @@ def build_network_payload(
                     path_dispatcher.get_active_path_progress(train_id)
                 )
             except Exception as e:
-                logger.debug(
-                    "Failed to read dispatcher progress for train %s: %s",
-                    train_id,
-                    e,
-                )
                 dispatcher_progress_by_train_id[train_id] = None
         else:
             dispatcher_progress_by_train_id[train_id] = None
@@ -1168,22 +1101,12 @@ def build_network_payload(
                     route_executor.assigned_route_id_for(train_id)
                 )
             except Exception as e:
-                logger.debug(
-                    "Failed to resolve assigned route for train %s: %s",
-                    train_id,
-                    e,
-                )
                 assigned_routes_by_train_id[train_id] = None
             try:
                 route_runs_by_train_id[train_id] = (
                     route_executor.route_run_summary_for(train_id)
                 )
             except Exception as e:
-                logger.debug(
-                    "Failed to resolve route run summary for train %s: %s",
-                    train_id,
-                    e,
-                )
                 route_runs_by_train_id[train_id] = None
         else:
             assigned_routes_by_train_id[train_id] = None

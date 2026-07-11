@@ -776,6 +776,13 @@ instead of clipping. A long label is not a reason to reach for a dropdown.
 | **Select (dropdown)** | one of N | the set is large, variable-length, or data-driven | below |
 | **Tab strip** | which pane | the pick swaps the content shown, not a stored value | §3 |
 
+**Each shape has one chrome, and every instance uses it.** A checkbox is
+always `.checkbox-custom`, a select is always the 28px panel field ("Text,
+select, and number inputs" below), a segment is always the §3 segmented
+control — never a browser-default control or a one-off restyle. Pick the shape
+from the table, then take its chrome wholesale: a form that mixes a styled
+select with a browser-default one reads as two systems.
+
 **There is no radio-button control.** A single pick from a small fixed set
 *is* the segmented control — that is the radio button of this system. (One
 native `<input type="radio">` survives in the block-extend picker, which is
@@ -879,7 +886,8 @@ radius `var(--control-radius-sm)`, focus border `var(--accent-color)` —
 the same chrome as the ghost button, so a form field and the button
 next to it visually belong to the same family.
 
-Compose sidebar form rows from these primitives — `.input-large-*` for a
+**Every select in a panel is this 28px field** — there is no second dropdown
+chrome. Compose sidebar form rows from these primitives — `.input-large-*` for a
 prominent field (a name or id) and `.input-small-*` for a compact
 label-beside-input row — not from `.form-group`. `.form-group` is the
 **modal-body** form-row primitive (§13); it has no sidebar styling, so a
@@ -1688,6 +1696,37 @@ the time column swapped for an `Unassign` action button:
   unassign is reversible. Danger (red) is reserved for irreversible
   destructive actions (Delete Route). Mixing the two devalues the hue
   for the genuinely destructive case (§6).
+
+### Selected row (single-select lists)
+
+When a list lets the user pick one row and keeps that pick on screen — the
+saved-layout list, an entity picker, any future track / tile / hardware
+target list — the chosen row carries one standard mark: an `--accent-color`
+border and a faint `rgba(var(--accent-rgb), 0.15)` accent-tint fill. This is
+the panel-chrome "selection / active" purple (§1 Accents) — the same hue that
+marks the §11 multi-select summary — so "this one is picked" looks the same in
+every list.
+
+- **Border-plus-tint, never a solid fill.** The accent lives in the 1px
+  border and a 15%-alpha wash. A fully accent-filled row would out-shout its
+  own text and collide with the accent-tint CTA language (§3). Row hover stays
+  the ordinary `--bg-hover`, and the picked mark reads brighter than hover so a
+  hovered-but-unpicked row never looks chosen.
+- **One picked row at a time.** Choosing a row clears the mark on the previous
+  one. A list where several rows stay active at once is a different pattern — a
+  multi-select, whose §11 summary callout (not a per-row tint) carries the set.
+- **The mark is a state, not a layout.** This adds only the selected *state*;
+  the row's contents stay whatever container the data calls for — a §11
+  card-as-row or a §12 comparable-record row. Don't build a bespoke
+  selected-row layout.
+
+Today the saved-layout list is the only consumer; when a second list needs a
+picked-row state, promote the border-plus-tint into a shared class rather than
+re-authoring it per list (the promotion rule in "Where the primitives live").
+
+Reference: `.layout-item.selected` in
+[components/modals.css](../static/css/components/modals.css), applied by the
+Load-Layout list in [app.ts](../frontend/src/app.ts).
 
 ### Action modifiers must touch their action
 

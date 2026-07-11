@@ -444,7 +444,14 @@ class SwitchManager:
         switch = self._switch_registry.get(switch_id)
         if switch is None:
             return
-        switch.on_train_tail_vacated(train_id, network=self.network, route=route)
+        diagnostics = switch.on_train_tail_vacated(
+            train_id, network=self.network, route=route
+        )
+        # design_new.md "Runtime notifications": component-side runtime
+        # diagnostics flow through NotificationCenter, never a separate sink.
+        # `Switch` cannot reach it, so the manager emits on its behalf.
+        for message in diagnostics or ():
+            self._emit_diagnostic(message, switch_id=switch_id, train_id=train_id)
 
     # ------------------------------------------------------------------
     # Switch position change request (admin / API / UI)
@@ -558,6 +565,31 @@ class SwitchManager:
             return None
         return result.reason or "throw continuity check did not confirm"
 
+    def _emit_diagnostic(
+        self, message: str, switch_id: str, train_id: Optional[str] = None
+    ) -> None:
+        """Emit a switch-side runtime diagnostic through `NotificationCenter`.
+
+        `Switch` is a pure data entity with no runtime back-reference, so it
+        returns its diagnostic strings and this manager emits them — keeping
+        `NotificationCenter` the only runtime sink (design_new.md
+        "Runtime notifications"). Skipped when none is wired.
+        """
+        sc = self.simulation_controller
+        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        if nc is None:
+            return
+        try:
+            nc.emit(
+                source="SwitchManager",
+                kind="diagnostic",
+                severity=Severity.WARNING,
+                train_id=train_id,
+                payload={"message": message, "switch_id": switch_id},
+            )
+        except Exception:
+            pass
+
     def _emit_throw_diagnostic(self, switch_id: str, reason: str) -> None:
         """Emit an unconfirmed-throw warning through `NotificationCenter`.
 
@@ -576,7 +608,6 @@ class SwitchManager:
                 source="SwitchManager",
                 kind="diagnostic",
                 severity=Severity.WARNING,
-                event_time=getattr(sc, "simulation_time", None) or time.time(),
                 payload={
                     "message": f"switch {switch_id} throw unconfirmed: {reason}",
                     "switch_id": switch_id,

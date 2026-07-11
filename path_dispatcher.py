@@ -59,7 +59,7 @@ class PathDispatcher:
                     requested_destination_direction, acquisition_mode)
         cancel_path(path_id, initiator, reason)
         on_controller_progress(report)
-        try_complete_active_path(train_id, event_time)
+        try_complete_active_path(train_id)
         get_active_path(train_id)
         active_path_id_by_train(train_id)
         get_active_paths()
@@ -719,24 +719,32 @@ class PathDispatcher:
         """Build a `success=False` PathAcquisitionResult for create_path /
         extend_path validation guards.
 
-        Fills the fields every rejection shares (`success=False`, the caller's
-        requested direction, the structured `failure_kind`, and the `reason`
-        text) from the arguments; the per-guard fields that some rejections
-        omit (`requested_destination_block_id`, `path_id`,
-        `authority_end_block_id`) default to `None`, which matches the
-        `PathAcquisitionResult` field defaults, so a guard that did not set one
-        gets exactly the same value as before. Each call site passes its block
-        id with the same expression it used inline (plain pass-through vs
-        `... or None`), so an empty-string block id renders identically.
+        Per the **`create_path()` / `extend_path()` return contract**: on
+        failure only `failure_kind` and `reason` carry information. `path_id`,
+        `resource_sequence`, `authority_end_block_id`, `result_kind`, and both
+        target fields are `None`, so a caller can never mistake a rejection's
+        echoed request for authority the dispatcher actually stored.
+
+        The context each guard passes is folded into `reason` instead, so no
+        diagnostic is lost. `reason` is human-readable only — callers branch on
+        `success`, `result_kind`, and `failure_kind`, never on this text.
         """
+        context = []
+        if path_id:
+            context.append(f"path_id={path_id}")
+        if requested_destination_block_id:
+            context.append(f"target={requested_destination_block_id}")
+        if requested_destination_direction:
+            context.append(f"direction={requested_destination_direction}")
+        if authority_end_block_id:
+            context.append(f"authority_end={authority_end_block_id}")
+        detail = f"{reason} ({', '.join(context)})" if context else reason
+
         return PathAcquisitionResult(
             success=False,
             failure_kind=failure_kind,
-            path_id=path_id,
-            requested_destination_block_id=requested_destination_block_id,
-            requested_destination_direction=requested_destination_direction,
-            authority_end_block_id=authority_end_block_id,
-            reason=reason,
+            reason=detail,
+            resource_sequence=None,
         )
 
     def create_path(
@@ -854,7 +862,7 @@ class PathDispatcher:
                 failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
-                reason="destination block already covered by the train's span",
+                reason="destination block already contains the train head",
             )
 
         # Resolve the start-side block for candidate search (design_new.md
@@ -1517,6 +1525,7 @@ class PathDispatcher:
         initiator: Optional[str] = None,
         reason: Optional[str] = None,
         deviation_kind: Optional[str] = None,
+        route_progress_kind: Optional[str] = None,
     ) -> CancellationResult:
         """v1 cancel_path: release reservations, mark path CANCELLED.
 
@@ -1580,15 +1589,18 @@ class PathDispatcher:
             route_executor = self._get_route_executor()
             if route_executor is not None:
                 # design_new.md "route path-event callback schema" (1700, 1730):
-                # forward the optional `reason` and the single classification bit
-                # `was_deviation = initiator == "deviation"` so the route side
-                # projects DEVIATED vs CANCELLED. The free-form `initiator` stays
-                # on the notification emitted below.
+                # forward the optional `reason` and the two classification bits
+                # `was_deviation = initiator == "deviation"` and
+                # `was_run_completion = route_progress_kind == "run_complete"`
+                # so the route side projects DEVIATED vs CANCELLED vs (for a
+                # completing run) neither. The free-form `initiator` stays on
+                # the notification emitted below.
                 route_executor.handle_path_cancellation(
                     train_id,
                     path_id,
                     reason=reason,
                     was_deviation=(initiator == "deviation"),
+                    was_run_completion=(route_progress_kind == "run_complete"),
                 )
 
         # Emit the canonical `path_cancellation` notification.
@@ -2117,19 +2129,20 @@ class PathDispatcher:
         else:
             start = max(2, min(start_at_block_count, max_prefix))
         # Per the route-managed point-to-point planning rule in design_new.md
-        # "Path And PathDispatcher": resolve this run's waypoint target blocks so
-        # the loop never stores a live authority terminating on a waypoint target.
+        # "Path And PathDispatcher": resolve this run's waypoint and run
+        # target blocks so the loop never stores a live authority terminating
+        # on either kind of target.
         route_executor = self._get_route_executor()
-        waypoint_targets = (
-            route_executor.waypoint_target_blocks(train_id)
+        excluded_terminal_targets = (
+            route_executor.waypoint_and_run_target_blocks(train_id)
             if route_executor is not None
-            and hasattr(route_executor, "waypoint_target_blocks")
+            and hasattr(route_executor, "waypoint_and_run_target_blocks")
             else set()
         )
         for prefix_block_count in range(start, 1, -1):
             prefix_blocks = segment.blocks[:prefix_block_count]
             if not self._prefix_terminal_is_eligible(
-                segment, prefix_blocks, train_id, waypoint_targets
+                segment, prefix_blocks, train_id, excluded_terminal_targets
             ):
                 continue
             cutoff_tiles = self._compute_prefix_cutoff_tiles(
@@ -2153,12 +2166,15 @@ class PathDispatcher:
             if ok:
                 # Per the route-managed point-to-point planning rule in
                 # design_new.md "Path And PathDispatcher": never store an
-                # authority whose terminal block is a waypoint target. The loop
-                # is longest-first, so a
-                # waypoint terminal here means no longer, past-the-waypoint prefix
-                # was acquirable — roll back and fail (create_path's tail reports
-                # BLOCKED_BEFORE_TARGET) rather than land short of the waypoint.
-                if waypoint_targets and prefix_blocks[-1] in waypoint_targets:
+                # authority whose terminal block is a waypoint or run target.
+                # The loop is longest-first, so landing on one of these here
+                # means no longer, past-the-target prefix was acquirable —
+                # roll back and fail (create_path's tail reports
+                # BLOCKED_BEFORE_TARGET) rather than land short of the target.
+                if (
+                    excluded_terminal_targets
+                    and prefix_blocks[-1] in excluded_terminal_targets
+                ):
                     self._rollback_segment(truncated, path_id)
                     return None
                 return truncated
@@ -2170,7 +2186,7 @@ class PathDispatcher:
         segment: PathSegment,
         prefix_blocks: List[str],
         train_id: str,
-        waypoint_targets: Set[str],
+        excluded_terminal_targets: Set[str],
     ) -> bool:
         """Whether a best-effort prefix may terminate on its last block.
 
@@ -2191,9 +2207,9 @@ class PathDispatcher:
 
         A holding-point terminal is the operator's explicit safe-wait place,
         so it overrides the two-way-switch foul — except a holding point that
-        is a resolved ``waypoint`` target, which falls through to the ordinary
-        back-off (the waypoint-target exclusion stays absolute and is applied
-        after acquisition).
+        is a resolved ``waypoint`` or ``run`` target, which falls through to
+        the ordinary back-off (the waypoint/run-target exclusion stays
+        absolute and is applied after acquisition).
         """
         prefix_block_count = len(prefix_blocks)
         # `prefix_block_count` can equal the block count when `start` was
@@ -2210,7 +2226,7 @@ class PathDispatcher:
             return False
         terminal_is_holding_point = (
             self._block_is_holding_point(terminal_block_id)
-            and terminal_block_id not in waypoint_targets
+            and terminal_block_id not in excluded_terminal_targets
         )
         if (
             not terminal_is_holding_point
@@ -2917,9 +2933,13 @@ class PathDispatcher:
     # Completion handshake
     # ========================================================================
 
-    def try_complete_active_path(
-        self, train_id: str, event_time: float
-    ) -> PathCompletionResult:
+    def try_complete_active_path(self, train_id: str) -> PathCompletionResult:
+        # design_new.md "Time sampling": the writer samples wall-clock time
+        # itself. One local sample covers this writer's own two writes — the
+        # `Path.last_status_updated_time` status write and its `path_completed`
+        # notification. It is not threaded on to `RouteExecutor`, which is a
+        # separate writer and samples `finished_at` fresh.
+        event_time = time.time()
         path = self.get_active_path(train_id)
         if path is None:
             return PathCompletionResult(
@@ -3071,7 +3091,6 @@ class PathDispatcher:
                 path_id,
                 path.get_authority_end_block_id(),
                 path.requested_destination_direction,
-                event_time,
             )
         else:
             route_executor = self._get_route_executor()
@@ -3081,7 +3100,6 @@ class PathDispatcher:
                     path_id,
                     path.get_authority_end_block_id(),
                     path.requested_destination_direction,
-                    event_time,
                 )
 
         # Per design_new.md ~line 80: completed paths remain in

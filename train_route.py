@@ -338,6 +338,10 @@ class RouteTaskRun:
     finished_at: Optional[float] = None
     delay_class: Optional[Literal["early", "on_time", "late"]] = None
     last_error: Optional["ErrorRecord"] = None
+    # Stored simulated-time accumulator for a `task_kind == "run"` task's
+    # timer. Per design_new.md "RouteTaskRun schema": Phase 1 step `6a0d`
+    # is its only writer. Meaningless for every other task_kind.
+    run_elapsed_seconds: float = 0.0
 
 
 @dataclass

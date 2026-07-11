@@ -5,10 +5,52 @@ Shared dataclasses for `TrainController` and the helper modules
 modules keep a single import home.
 """
 
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, List, Optional
 
 from enums import HandlePosition, SignalState
+
+if TYPE_CHECKING:
+    from path import PathTileEntry, ResourceSequenceEntry
+
+
+@dataclass(frozen=True)
+class ReceivedPathPlan:
+    """The controller's read-only view of dispatcher-owned movement authority.
+
+    design_new.md "received_path_plan schema": the projection carries exactly
+    `path_id`, `resource_sequence`, and `authority_end_block_id`. The
+    dispatcher-only fields on the `Path` record — `requested_destination_block_id`,
+    `requested_destination_direction`, `status`, `current_resource_index`,
+    `last_status_updated_time` — are deliberately absent, because "the controller
+    does not see those fields."
+
+    `resource_sequence` is held by reference, not copied: `PathDispatcher` owns
+    the list, and this projection is rebuilt live on every read (cross-tick
+    projection caching is Out of Scope), so a per-read copy would be pure cost.
+    """
+
+    path_id: str
+    resource_sequence: List["ResourceSequenceEntry"] = field(default_factory=list)
+
+    @property
+    def authority_end_block_id(self) -> str:
+        """Terminal block of the live authority; `""` when the sequence is empty."""
+        if not self.resource_sequence:
+            return ""
+        return self.resource_sequence[-1].resource_id
+
+    def get_authority_end_block_id(self) -> str:
+        """Function form, matching `Path.get_authority_end_block_id()`."""
+        return self.authority_end_block_id
+
+    def get_path_tiles(self) -> List["PathTileEntry"]:
+        """Derived ordered tile list — `resource_sequence[*].path_tiles`
+        concatenated in `sequence_index` order. Computed live, never cached."""
+        tiles: List["PathTileEntry"] = []
+        for entry in self.resource_sequence:
+            tiles.extend(entry.path_tiles)
+        return tiles
 
 
 @dataclass
@@ -76,9 +118,16 @@ class PhysicsCommand:
     the train's current speed for the per-tick voltage scalar (typically
     the same as the physics solution, but for `power_percent` mode it is
     the calibrated speed even before integration converges).
+
+    `voltage_source_power_percent` is set only when the commanded power
+    percent is the authoritative operating point for the tick (manual
+    `power_percent` mode, no ATC clamp). Physics then maps it straight to
+    `track_voltage` through `voltage_power_curve`; inverting
+    `power_speed_curve` first would not round-trip on a calibrated curve.
     """
 
     kind: str
     handle: HandlePosition = HandlePosition.N
     target_speed_kmh: float = 0.0
     voltage_source_speed_kmh: float = 0.0
+    voltage_source_power_percent: Optional[float] = None

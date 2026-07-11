@@ -27,6 +27,7 @@ from hardware.chips.hc165 import HC165Chain
 from hardware.chips.hc595 import HC595Chain
 from hardware.chips.ina3221 import INA3221
 from hardware.chips.pca9685 import PCA9685
+from hardware.watchdog import OutputWatchdog
 
 # A binding map: logical id -> (chip_id, port).
 BindingMap = Dict[str, Tuple[str, int]]
@@ -98,10 +99,16 @@ def build_chip(device: Any, spec: Any) -> Any:
 class Ch347TrackOutputInterface(OutputInterface):
     """Block track voltage over PCA9685 channel pairs (H-bridge per port)."""
 
-    def __init__(self, chips_by_id: Dict[str, PCA9685], bindings: BindingMap) -> None:
+    def __init__(
+        self,
+        chips_by_id: Dict[str, PCA9685],
+        bindings: BindingMap,
+        watchdog: Optional[OutputWatchdog] = None,
+    ) -> None:
         self._chips = chips_by_id
         self._bindings = bindings
         self._voltages: Dict[str, float] = {}
+        self._watchdog = watchdog
 
     def set_voltage(self, block_id: str, voltage: float) -> bool:
         binding = self._bindings.get(block_id)
@@ -120,6 +127,9 @@ class Ch347TrackOutputInterface(OutputInterface):
             chip.set_duty_cycle(in1, 0.0)
             chip.set_duty_cycle(in2, duty)
         self._voltages[block_id] = voltage
+        # A landed write is proof the control loop is alive.
+        if self._watchdog is not None:
+            self._watchdog.pet()
         return True
 
     def get_actual_voltage(self, block_id: str) -> float:
@@ -129,6 +139,10 @@ class Ch347TrackOutputInterface(OutputInterface):
         return dict(self._voltages)
 
     def enter_safe_state(self) -> None:
+        # Disarm first: this call IS the safe state, so the watchdog must not
+        # also fire against a runtime that has deliberately stopped driving.
+        if self._watchdog is not None:
+            self._watchdog.disarm()
         for chip in self._chips.values():
             chip.all_off()
         for block_id in self._voltages:
@@ -138,10 +152,16 @@ class Ch347TrackOutputInterface(OutputInterface):
 class Ch347SwitchOutputInterface(SwitchOutputInterface):
     """Switch throw over 74HC595 output bits (one bit per switch)."""
 
-    def __init__(self, chips_by_id: Dict[str, HC595Chain], bindings: BindingMap) -> None:
+    def __init__(
+        self,
+        chips_by_id: Dict[str, HC595Chain],
+        bindings: BindingMap,
+        watchdog: Optional[OutputWatchdog] = None,
+    ) -> None:
         self._chips = chips_by_id
         self._bindings = bindings
         self._last: Dict[str, int] = {}
+        self._watchdog = watchdog
 
     def set_throw(self, switch_id: str, target_state: int) -> bool:
         binding = self._bindings.get(switch_id)
@@ -154,12 +174,16 @@ class Ch347SwitchOutputInterface(SwitchOutputInterface):
         state = 0 if target_state == 0 else 1
         chip.set_output(port, bool(state))
         self._last[switch_id] = state
+        if self._watchdog is not None:
+            self._watchdog.pet()
         return True
 
     def get_last_throw(self, switch_id: str) -> Optional[int]:
         return self._last.get(switch_id)
 
     def enter_safe_state(self) -> None:
+        if self._watchdog is not None:
+            self._watchdog.disarm()
         for chip in self._chips.values():
             chip.all_off()
         self._last.clear()
@@ -252,13 +276,18 @@ def build_real_interfaces(
     block_occupancy_current: Optional[CurrentBindingMap] = None,
     output_enable: Optional[BindingMap] = None,
     idle_deadband_v: float = _IDLE_DEADBAND_V,
+    watchdog_timeout_s: Optional[float] = None,
 ) -> Tuple[Optional[InputInterface], Optional[OutputInterface], Optional[SwitchOutputInterface]]:
     """Instantiate + initialize chips grouped by role and wire the three
     interfaces. A role with no chip returns `None` (its simulated default is
     used). Performs live init (PWM reset/freq, shift-register clear, INA3221
     channel enable) so hardware starts in a known state. Occupancy is the hybrid
     of the '165 digital detector and the INA3221 current channels; the returned
-    input interface selects between them per block by drive state."""
+    input interface selects between them per block by drive state.
+
+    `watchdog_timeout_s` arms the loss-of-control watchdog on both output
+    interfaces (design_new.md "Hardware interface boundary"); `None` leaves it
+    unarmed, which is what a test harness driving a fake device wants."""
     track_chips: Dict[str, PCA9685] = {}
     switch_chips: Dict[str, HC595Chain] = {}
     digital_chips: Dict[str, HC165Chain] = {}
@@ -285,11 +314,30 @@ def build_real_interfaces(
             else:
                 digital_chips[spec.chip_id] = chip
 
+    # One watchdog covers both output interfaces: loss of control must drop the
+    # track AND the point motors. The targets list is filled just below, before
+    # anything can pet the watchdog into an armed state.
+    watchdog_targets: List[Any] = []
+    watchdog: Optional[OutputWatchdog] = None
+    if watchdog_timeout_s is not None and (track_chips or switch_chips):
+        def _drop_to_safe_state() -> None:
+            for target in watchdog_targets:
+                target.enter_safe_state()
+
+        watchdog = OutputWatchdog(_drop_to_safe_state, timeout_s=watchdog_timeout_s)
+
     block_out = (
-        Ch347TrackOutputInterface(track_chips, block_track) if track_chips else None
+        Ch347TrackOutputInterface(track_chips, block_track, watchdog=watchdog)
+        if track_chips
+        else None
     )
     switch_out = (
-        Ch347SwitchOutputInterface(switch_chips, switch_output) if switch_chips else None
+        Ch347SwitchOutputInterface(switch_chips, switch_output, watchdog=watchdog)
+        if switch_chips
+        else None
+    )
+    watchdog_targets.extend(
+        iface for iface in (block_out, switch_out) if iface is not None
     )
 
     # Enable-and-hold each PCA's /OE (active-low): drive its '595 bit low once.

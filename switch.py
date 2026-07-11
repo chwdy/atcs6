@@ -11,7 +11,8 @@ Design Notes:
 - Switches are auto-created when switch tracks are placed
 - Default length is 0.0 cm (unconfigured) which triggers warnings but allows operation
 - Multi-owner future-authority locks: same-position path locks may co-exist; physical
-  occupancy (`occupied_by`) is single-owner
+  occupancy (`physical_occupants`) is route-keyed and may hold multiple trains on
+  non-conflicting routes. `occupied_by` is a lossy single-value projection of it.
 """
 
 from dataclasses import dataclass, field
@@ -97,7 +98,10 @@ class Switch(TrackResource):
       not stored as a separate key field.
     - `train_protection_claims` is the train-owned physical protection set used
       after the train head has entered a switch and consumed the path lock.
-    - Physical occupancy (`occupied_by`) is single-owner.
+    - Physical occupancy (`physical_occupants`) is route-keyed and may hold two
+      trains at once on non-conflicting routes (e.g. a scissors crossover).
+      `occupied_by` is a lossy single-value projection over it, not a stored
+      single-owner field.
     """
 
     switch_id: str  # Unique identifier (e.g., "SW_5_10")
@@ -258,11 +262,10 @@ class Switch(TrackResource):
     @property
     def occupied_by(self) -> Optional[str]:
         """Any train currently occupying this switch via ``route_owners``,
-        or ``None`` when unoccupied. Derived, not stored: for the
-        single-owner physical-occupancy contract it is exactly the lone
-        occupant; when two trains hold non-conflicting routes (e.g. NW and
-        SE on a scissors crossover) it returns one of them, so it stays a
-        diagnostic read — new consumers should query ``route_owners``.
+        or ``None`` when unoccupied. Derived, not stored, and lossy: when two
+        trains hold non-conflicting routes (e.g. NW and SE on a scissors
+        crossover) it returns only one of them, so it stays a diagnostic
+        read — new consumers should query ``route_owners`` directly.
         """
         return next(iter(self.route_owners.values()), None)
 
@@ -443,8 +446,13 @@ class Switch(TrackResource):
         train_id: str,
         network: Optional["RailwayNetwork"] = None,
         route: Optional[FrozenSet[str]] = None,
-    ) -> None:
+    ) -> List[str]:
         """Handle a tail-vacate event for `train_id` on this switch.
+
+        Returns the diagnostic messages this pass produced. `Switch` is a pure
+        data entity and holds no `simulation_controller` back-reference, so it
+        cannot reach `NotificationCenter` itself; `SwitchManager` — which owns
+        the switch-side runtime wiring — emits whatever this returns.
 
         Per design_new.md "Tail-vacate release" canonical home: when the
         supplied ``route`` matches a current ``route_owners`` entry owned by
@@ -464,6 +472,7 @@ class Switch(TrackResource):
         (`SwitchManager.on_switch_tail_vacated`) inject it. In editor / unit
         contexts where no neighbour walk is needed it may be omitted.
         """
+        diagnostics: List[str] = []
         cleared = False
 
         if route is not None and route in self.route_owners:
@@ -481,7 +490,7 @@ class Switch(TrackResource):
             ]
             if owned_routes:
                 if route is not None:
-                    print(
+                    diagnostics.append(
                         f"switch {self.switch_id} tail-vacate route key mismatch "
                         f"for train {train_id}: supplied {sorted(route) if route else route}, "
                         f"owned routes {[sorted(r) for r in owned_routes]}; "
@@ -498,12 +507,12 @@ class Switch(TrackResource):
         if not cleared:
             # No ownership at all by this train on this switch — diagnose.
             other = self.occupied_by if self.occupied_by != train_id else None
-            print(
+            diagnostics.append(
                 f"switch {self.switch_id} release for train {train_id} skipped: "
                 f"no route_owners entry held by this train"
                 + (f" (occupied_by={other})" if other is not None else "")
             )
-            return
+            return diagnostics
 
         # If this train still owns another route on the switch, don't
         # release its flank protection yet — it hasn't fully cleared.
@@ -511,7 +520,7 @@ class Switch(TrackResource):
             owner == train_id for owner in self.route_owners.values()
         )
         if any_routes_remaining_for_train:
-            return
+            return diagnostics
 
         # Release the train-owned protection that head-entry created on each
         # flank neighbour. This walks THIS switch's own `flank_protection`
@@ -526,10 +535,10 @@ class Switch(TrackResource):
         # harmless no-op. Without a network reference we cannot resolve
         # neighbours.
         if network is None:
-            return
+            return diagnostics
         switches = getattr(network, "switches", None)
         if not switches:
-            return
+            return diagnostics
         for neighbour_switch_id, _blocking_state in self.flank_protection:
             neighbour = switches.get(neighbour_switch_id)
             if neighbour is None:
@@ -537,6 +546,7 @@ class Switch(TrackResource):
             neighbour.release_train_protection_from(
                 source_switch_id=self.switch_id, train_id=train_id
             )
+        return diagnostics
 
     def apply_position_change(
         self, new_position: int, manual_override: bool = False

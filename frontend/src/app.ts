@@ -106,24 +106,32 @@ class App {
       }
     });
 
-    const clearFatalBtn = document.getElementById('btn-clear-fatal') as HTMLButtonElement | null;
-    if (clearFatalBtn) {
-      clearFatalBtn.addEventListener('click', async () => {
-        clearFatalBtn.disabled = true;
+    const restartFatalBtn = document.getElementById('btn-restart-fatal') as HTMLButtonElement | null;
+    if (restartFatalBtn) {
+      restartFatalBtn.addEventListener('click', async () => {
+        const confirmed = await showConfirmModal({
+          title: 'Restart Server?',
+          message: 'This session cannot continue after a fatal track conflict — the server process will exit and relaunch.',
+          detail: 'Unsaved layout edits will be flushed to autosave first. The page will reload automatically when the server is back (~3–5s).',
+          confirmText: 'Restart',
+          cancelText: 'Cancel',
+          confirmVariant: 'danger'
+        });
+        if (!confirmed) return;
+
+        restartFatalBtn.disabled = true;
         try {
-          const res = await api.releaseFailedRuntime();
-          if (res && res.released) {
-            showToast('Conflict cleared — simulation resumed', 'success', 3000);
-          } else {
-            showToast('Conflict still present — resolve it on the layout, then clear again', 'warning', 6000);
-          }
+          await api.restartServer();
         } catch (e: any) {
-          console.error('[App] Clear-fatal error:', e);
-          showToast(`Could not clear halt: ${e.message}`, 'error', 5000);
-        } finally {
-          clearFatalBtn.disabled = false;
-          this.refreshNetwork();
+          console.error('[App] Restart request failed:', e);
+          showToast('Could not reach server to restart.', 'error', 4000);
+          restartFatalBtn.disabled = false;
+          return;
         }
+
+        this.stopSimulationPolling();
+        this.updatePlaybackUI(false);
+        startRestartReconnectFlow();
       });
     }
 
