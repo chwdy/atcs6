@@ -27,11 +27,11 @@
     color: var(--text-secondary);
 }
 
-/* --- wiring reference diagram ----------------------------------------------
-   Static schematic (hardware-panel.ts buildWiringDiagramHtml) — not derived
-   from the user's configured chips, just the reference circuit so a bench
-   build can be traced wire-by-wire. Reuses the .tc-disclosure shell so it can
-   be collapsed out of the way once wiring is checked. */
+/* --- wiring overview diagram -----------------------------------------------
+   Built from the configured chips (hardware-panel.ts buildWiringDiagramSvg):
+   one lane per chip, each with its bus/address/ports and the reference support
+   wiring for its kind, so a bench build can be traced wire-by-wire. Reuses the
+   .tc-disclosure shell so it collapses out of the way once wiring is checked. */
 .hw-wiring {
     margin: var(--space-12) 0;
 }
@@ -161,6 +161,51 @@
 .hw-wd-caption-inline {
     font-size: 8.5px;
     fill: var(--text-tertiary);
+}
+
+.hw-wd-node.role-gpio rect { stroke: var(--warning-color); }
+
+/* Live health dot on each chip box — mirrors the self-test state shown on the
+   chip cards below (untested / responds / no response). */
+.hw-wd-dot.untested { fill: var(--text-tertiary); }
+.hw-wd-dot.alive { fill: var(--success-color); }
+.hw-wd-dot.noresp { fill: var(--danger-color); }
+
+/* Controller spine turns green once Detect proves it reachable. */
+.hw-wd-node.role-hub.ok rect {
+    fill: rgba(var(--success-rgb), 0.1);
+    stroke: var(--success-color);
+}
+.hw-wd-node.role-hub.ok .hw-wd-name { fill: var(--success-color); }
+
+/* Shift-out bit cells (74HC595 lane). */
+.hw-wd-bit rect {
+    fill: var(--bg-hover);
+    stroke: var(--border-color);
+    stroke-width: 1;
+}
+
+.hw-wd-bit text {
+    fill: var(--text-secondary);
+    font-size: 9px;
+}
+
+/* Hairline between stacked chip lanes. */
+.hw-wd-sep {
+    stroke: var(--border-color);
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
+}
+
+.hw-wd-empty {
+    padding: var(--space-16);
+    border: 1px dashed var(--border-color);
+    border-radius: var(--control-radius-sm);
+    background: var(--bg-dark);
+    font-size: var(--font-size-body);
+    line-height: 1.5;
+    color: var(--text-tertiary);
+    text-align: center;
 }
 
 /* --- stage ---------------------------------------------------------------- */

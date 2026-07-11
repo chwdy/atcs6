@@ -9,6 +9,9 @@
  * controller and the chip list and leaves the binding maps untouched.
  *
  * The flow, top to bottom:
+ *   0. Wiring overview     — a collapsible diagram built from the configured
+ *      chips (buildWiringDiagramSvg): one lane per chip showing its bus,
+ *      address/latch, ports, and reference support wiring, for bench-checking.
  *   1. Connect the bridge  — pick the controller, Detect it (scans the I2C bus).
  *   2. Your chips, by bus  — I2C / SPI / GPIO groups, each chip ordered by its
  *      address or latch line. Prove each chip: outputs Sweep, inputs Read live.
@@ -109,12 +112,15 @@ function coordSort(chip: ChipCfg): number {
   return latchLines(chip.bus).indexOf(chip.spi_select || '');
 }
 
-// --- wiring reference diagram (static reference schematic) -----------------
-// A fixed reference schematic for the track-drive + occupancy-detector
-// sub-circuit — PCA9685/DRV8873 track output with INA3221 current sense, plus
-// the LM339/74HC14 analog front end feeding the 74HC165 digital detector. It
-// does not read `state` (it is a wiring reference, not a live view of the
-// user's own chip instances), so it is built once and reused on every render.
+// --- wiring diagram (driven by the configured chips) -----------------------
+// One wiring lane per chip in `state.chips`: the chip drawn with its real bus,
+// address/latch line, and port count, plus the reference support wiring for
+// that chip kind (voltages, resistors, DRV8873/LM339/74HC14/…), all fanning
+// out from the controller on the left. It reads `state`, so it is rebuilt on
+// every render() and updates live as the user edits the chip list below.
+//
+// The low-level primitives below take absolute SVG coordinates; each per-kind
+// fragment (wdFrag*) lays itself out around a lane's vertical centre `mid`.
 function wdPath(pts: Array<[number, number]>, label?: string, arrow?: boolean): string {
   const d = pts.map((pt, i) => `${i === 0 ? 'M' : 'L'} ${pt[0]} ${pt[1]}`).join(' ');
   const line = `<path d="${d}" class="hw-wd-wire"${arrow ? ' marker-end="url(#hwWdArrow)"' : ''}/>`;
@@ -175,103 +181,193 @@ function wdGround(x: number, y: number): string {
     <line x1="${x - 2}" y1="${y + 15}" x2="${x + 2}" y2="${y + 15}" class="hw-wd-gnd"/>`;
 }
 
+// A configured chip drawn as a bus-coloured box: kind, its real coordinate
+// (I²C address or latch line) and port count, a live health dot mirroring the
+// self-test state, and its label if set.
+function wdChipBox(x: number, y: number, w: number, h: number, chip: ChipCfg): string {
+  const busCls = chip.bus === 'spi' ? 'role-spi' : chip.bus === 'gpio' ? 'role-gpio' : 'role-i2c';
+  const coord = coordText(chip) || (chip.bus === 'i2c' ? 'no addr' : 'no line');
+  const dir = chipDirection(chip) === 'output' ? 'out' : 'in';
+  const st = selfTest[chip.chip_id];
+  const dot = st ? (st.reachable ? 'alive' : 'noresp') : 'untested';
+  const cx = x + w / 2;
+  const label = chip.label
+    ? `<text x="${cx}" y="${y + 50}" text-anchor="middle" class="hw-wd-sub">${esc(chip.label)}</text>` : '';
+  return `<g class="hw-wd-node ${busCls}">
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="5"/>
+    <circle cx="${x + 12}" cy="${y + 14}" r="4" class="hw-wd-dot ${dot}"/>
+    <text x="${cx}" y="${y + 21}" text-anchor="middle" class="hw-wd-name">${esc(chip.kind)}</text>
+    <text x="${cx}" y="${y + 36}" text-anchor="middle" class="hw-wd-sub">${esc(coord)} · ${chipPorts(chip)} ${dir}</text>
+    ${label}
+  </g>`;
+}
+
+// --- per-kind support-wiring fragments (drawn to the right of the chip box) -
+// Each lays out around the lane centre `mid`; the chip box's right edge is at
+// x=346 (CHIP_X + CHIP_W). Values mirror the reference circuit the user gave.
+function wdFragTrack(mid: number): string {   // pca9685 -> DRV8873 -> rails
+  const s: string[] = [];
+  s.push(wdPath([[346, mid], [386, mid]], 'PWM', true));
+  s.push(`<text x="438" y="${mid - 27}" text-anchor="middle" class="hw-wd-wlabel">VM +12V</text>`);
+  s.push(wdBox(386, mid - 20, 104, 40, '', 'DRV8873', 'H-bridge'));
+  s.push(wdPath([[490, mid - 11], [524, mid - 11]], 'OUT1'));
+  s.push(wdBox(524, mid - 24, 62, 24, '', 'Rail A'));
+  s.push(wdPath([[490, mid + 11], [524, mid + 11]], 'OUT2'));
+  s.push(wdBox(524, mid + 2, 62, 24, '', 'Rail B'));
+  s.push(wdPath([[586, mid - 12], [636, mid - 12]], undefined, true));
+  s.push(`<text x="640" y="${mid - 9}" text-anchor="start" class="hw-wd-wlabel">to track</text>`);
+  s.push(wdPath([[586, mid + 12], [636, mid + 12]], undefined, true));
+  s.push(`<text x="640" y="${mid + 15}" text-anchor="start" class="hw-wd-wlabel">to track</text>`);
+  s.push(`<circle cx="612" cy="${mid + 12}" r="2.5" class="hw-wd-junction"/>`);
+  s.push(wdPath([[612, mid + 12], [612, mid + 28]]));
+  s.push(wdResistorV(612, mid + 28, 26, '10k'));
+  s.push(wdGround(612, mid + 54));
+  return s.join('');
+}
+function wdFragCurrentSense(mid: number): string {   // ina3221 series shunt in +12V feed
+  const s: string[] = [];
+  s.push(wdPill(366, mid - 23, 44, 18, '+12V'));
+  s.push(wdPath([[410, mid - 14], [432, mid - 14]]));
+  s.push(wdResistorH(432, mid - 14, 58, 'R shunt'));
+  s.push(wdPath([[490, mid - 14], [540, mid - 14]], undefined, true));
+  s.push(`<text x="544" y="${mid - 11}" text-anchor="start" class="hw-wd-wlabel">to track VM</text>`);
+  s.push(wdPath([[346, mid - 2], [424, mid - 2], [424, mid - 14]]));
+  s.push(`<text x="352" y="${mid - 6}" text-anchor="start" class="hw-wd-wlabel">IN+</text>`);
+  s.push(wdPath([[346, mid + 10], [498, mid + 10], [498, mid - 14]]));
+  s.push(`<text x="352" y="${mid + 22}" text-anchor="start" class="hw-wd-wlabel">IN−</text>`);
+  return s.join('');
+}
+function wdFragSwitch(chip: ChipCfg, mid: number): string {   // hc595 shift-out bits
+  const s: string[] = [];
+  const n = chipPorts(chip);
+  const shown = Math.min(n, 8);
+  s.push(wdPath([[346, mid], [372, mid]], undefined, true));
+  const cellW = 30, gap = 3;
+  let x = 372;
+  for (let i = 0; i < shown; i++) {
+    s.push(`<g class="hw-wd-bit"><rect x="${x}" y="${mid - 11}" width="${cellW}" height="22" rx="3"/>` +
+      `<text x="${x + cellW / 2}" y="${mid + 4}" text-anchor="middle">Q${i}</text></g>`);
+    x += cellW + gap;
+  }
+  if (n > 8) { s.push(`<text x="${x + 2}" y="${mid + 4}" text-anchor="start" class="hw-wd-wlabel">+${n - 8}</text>`); x += 26; }
+  s.push(wdPath([[x + 2, mid], [x + 38, mid]], undefined, true));
+  s.push(`<text x="${x + 42}" y="${mid - 4}" text-anchor="start" class="hw-wd-wlabel">to switch</text>`);
+  s.push(`<text x="${x + 42}" y="${mid + 9}" text-anchor="start" class="hw-wd-wlabel">drivers</text>`);
+  return s.join('');
+}
+function wdFragOccupancy(mid: number): string {   // hc165 <- 74HC14 <- LM339 <- photodiode
+  const s: string[] = [];
+  const nodeX = 468;
+  s.push(wdPath([[372, mid], [346, mid]], 'bit', true));
+  s.push(wdBox(372, mid - 15, 82, 30, '', '74HC14', 'Schmitt'));
+  s.push(wdPath([[454, mid], [nodeX, mid]]));
+  s.push(`<circle cx="${nodeX}" cy="${mid}" r="2.5" class="hw-wd-junction"/>`);
+  s.push(wdPill(nodeX - 29, mid - 76, 58, 16, '3.3V/5V'));
+  s.push(wdPath([[nodeX, mid - 60], [nodeX, mid - 40]]));
+  s.push(wdResistorV(nodeX, mid - 40, 24, '10k'));
+  s.push(wdPath([[nodeX, mid - 16], [nodeX, mid]]));
+  s.push(wdPath([[560, mid], [nodeX, mid]], 'OUT'));
+  s.push(`<g class="hw-wd-node">
+    <rect x="560" y="${mid - 22}" width="92" height="44" rx="5"/>
+    <text x="606" y="${mid - 2}" text-anchor="middle" class="hw-wd-name">LM339</text>
+    <text x="606" y="${mid + 12}" text-anchor="middle" class="hw-wd-sub">VCC +12V</text>
+    <text x="646" y="${mid - 6}" text-anchor="end" class="hw-wd-pin">+</text>
+    <text x="646" y="${mid + 17}" text-anchor="end" class="hw-wd-pin">−</text>
+  </g>`);
+  // + input: photodiode chain  5V -100k- D1 -47k- (+)
+  s.push(wdPath([[652, mid - 10], [668, mid - 10], [668, mid - 46]]));
+  s.push(wdResistorH(668, mid - 46, 32, '47k'));
+  s.push(wdDiodeH(700, mid - 46, 28, 'D1'));
+  s.push(wdResistorH(728, mid - 46, 34, '100k'));
+  s.push(wdPill(762, mid - 54, 34, 16, '5V'));
+  // − input: threshold divider (compact)
+  s.push(wdPath([[652, mid + 12], [676, mid + 12]]));
+  s.push(`<text x="680" y="${mid + 9}" text-anchor="start" class="hw-wd-wlabel">22k → 5V</text>`);
+  s.push(`<text x="680" y="${mid + 21}" text-anchor="start" class="hw-wd-wlabel">10k → GND</text>`);
+  s.push(`<text x="560" y="${mid + 40}" text-anchor="start" class="hw-wd-caption-inline">one input channel shown — repeat per block</text>`);
+  return s.join('');
+}
+function wdFragment(chip: ChipCfg, mid: number): string {
+  switch (chip.kind) {
+    case 'pca9685': return wdFragTrack(mid);
+    case 'ina3221': return wdFragCurrentSense(mid);
+    case 'hc595': return wdFragSwitch(chip, mid);
+    case 'hc165': return wdFragOccupancy(mid);
+    default: return '';
+  }
+}
+
+// Stack lanes in signal-flow order (track power, current sense, switches,
+// occupancy), then by coordinate within a kind so identical chips group.
+const WD_KIND_ORDER = ['pca9685', 'ina3221', 'hc595', 'hc165'];
+const WD_LANE_H: Record<string, number> = { pca9685: 150, ina3221: 118, hc595: 110, hc165: 176 };
+const WD_DEFAULT_LANE_H = 118;
+
+function wdOrderedChips(): ChipCfg[] {
+  const rank = (k: string) => { const i = WD_KIND_ORDER.indexOf(k); return i < 0 ? WD_KIND_ORDER.length : i; };
+  return [...state.chips].sort((a, b) => rank(a.kind) - rank(b.kind) || coordSort(a) - coordSort(b));
+}
+
 function buildWiringDiagramSvg(): string {
+  const chips = wdOrderedChips();
+  if (!chips.length) {
+    return `<div class="hw-wd-empty">Add a chip below and its wiring appears here — the voltages, resistors, and support parts it connects to — so you can check it against your board before going live.</div>`;
+  }
+  const W = 800, PAD = 14;
+  const SPINE_X = 16, SPINE_W = 116, SPINE_R = SPINE_X + SPINE_W;   // right edge = 132
+  const CHIP_X = 196, CHIP_W = 150, CHIP_H = 58;
+
+  const heights = chips.map((c) => WD_LANE_H[c.kind] ?? WD_DEFAULT_LANE_H);
+  let y = PAD;
+  const tops = heights.map((h) => { const t = y; y += h; return t; });
+  const totalH = y + PAD;
+
   const p: string[] = [];
   p.push(`<defs>
     <marker id="hwWdArrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M0,0 L8,4 L0,8 Z" class="hw-wd-arrowhead"/>
     </marker>
   </defs>`);
-  p.push(`<text x="30" y="14" class="hw-wd-zone">TRACK POWER + CURRENT SENSE</text>`);
-  p.push(`<text x="420" y="14" class="hw-wd-zone">BLOCK OCCUPANCY SENSOR — ANALOG FRONT END</text>`);
 
-  // track power + current sense: +12V -> INA3221 (series current sense) ->
-  // DRV8873 VM, PCA9685 PWM drives DRV8873's logic inputs, OUT1/OUT2 feed the
-  // two rails (Rail B carries a 10k bleeder to GND).
-  p.push(wdPill(235, 16, 50, 18, '+12V'));
-  p.push(wdPath([[260, 34], [260, 48]], 'IN+'));
-  p.push(wdBox(200, 48, 120, 40, 'role-i2c', 'INA3221', 'CH1 · I²C'));
-  p.push(wdPath([[260, 88], [260, 104]], 'IN−'));
-  p.push(wdBox(200, 104, 120, 44, '', 'DRV8873', 'H-bridge driver'));
-  p.push(wdBox(30, 104, 140, 44, 'role-i2c', 'PCA9685', '16-ch PWM · I²C'));
-  p.push(wdPath([[170, 126], [200, 126]], undefined, true));
-  p.push(`<text x="185" y="96" text-anchor="middle" class="hw-wd-wlabel">PWM → IN1/IN2</text>`);
-  p.push(wdPath([[215, 148], [215, 174]], 'OUT1'));
-  p.push(wdPath([[305, 148], [305, 174]], 'OUT2'));
-  p.push(wdBox(180, 174, 70, 30, '', 'Rail A'));
-  p.push(wdBox(270, 174, 70, 30, '', 'Rail B'));
-  p.push(wdPath([[215, 204], [215, 234]], undefined, true));
-  p.push(`<circle cx="305" cy="204" r="2.5" class="hw-wd-junction"/>`);
-  p.push(wdPath([[305, 204], [305, 234]], undefined, true));
-  p.push(`<text x="260" y="228" text-anchor="middle" class="hw-wd-wlabel">to track</text>`);
-  p.push(wdPath([[305, 204], [345, 204]]));
-  p.push(wdResistorV(345, 204, 40, '10k'));
-  p.push(wdGround(345, 244));
-
-  // occupancy sensor analog front end: a photodiode (D1) sets the LM339's +
-  // input, a fixed divider sets its - input; the comparator's open-collector
-  // output is pulled up and cleaned by a 74HC14 Schmitt trigger into the
-  // 74HC165 shift-in register (design_new.md block occupancy detector).
-  p.push(wdPill(420, 16, 40, 18, '5V'));
-  p.push(wdPath([[440, 34], [440, 50]]));
-  p.push(wdResistorH(440, 50, 60, '100k'));
-  p.push(wdDiodeH(500, 50, 50, 'D1'));
-  p.push(wdPath([[550, 50], [615, 50]]));
-  p.push(wdResistorV(615, 50, 58, '47k'));
-  p.push(wdPill(675, 16, 40, 18, '5V'));
-  p.push(wdPath([[695, 34], [695, 50]]));
-  p.push(wdResistorV(695, 50, 58, '22k'));
-  p.push(`<circle cx="695" cy="108" r="2.5" class="hw-wd-junction"/>`);
-  p.push(wdPath([[695, 108], [735, 108]]));
-  p.push(wdResistorV(735, 108, 42, '10k'));
-  p.push(wdGround(735, 150));
-  // LM339 carries more internal text (name + pins + power caption) than the
-  // generic 2-line wdBox handles, so its interior is hand-laid-out on a taller
-  // box for clear vertical separation between the four lines.
-  p.push(`<g class="hw-wd-node">
-    <rect x="600" y="108" width="110" height="64" rx="5"/>
-    <text x="615" y="122" text-anchor="middle" class="hw-wd-pin">+</text>
-    <text x="695" y="122" text-anchor="middle" class="hw-wd-pin">−</text>
-    <text x="655" y="136" text-anchor="middle" class="hw-wd-name">LM339</text>
-    <text x="655" y="151" text-anchor="middle" class="hw-wd-sub">comparator</text>
-    <text x="655" y="165" text-anchor="middle" class="hw-wd-caption-inline">VCC=+12V  GND=GND</text>
+  // Controller spine — one bridge every chip fans out from. Turns green once
+  // Detect has proven it reachable (mirrors the connection banner below).
+  const ctrl = catalog?.controllers.find((c) => c.kind === state.controller.kind) || catalog?.controllers[0];
+  const parts = (ctrl?.label || 'CH347 · USB-HID bridge').split('·');
+  const ctrlName = (parts[0] || 'CH347').trim();
+  const ctrlSub = (parts[1] || '').trim();
+  const sTop = PAD, sBot = totalH - PAD, sMid = (sTop + sBot) / 2, sCx = SPINE_X + SPINE_W / 2;
+  p.push(`<g class="hw-wd-node role-hub${controllerReachable ? ' ok' : ''}">
+    <rect x="${SPINE_X}" y="${sTop}" width="${SPINE_W}" height="${sBot - sTop}" rx="6"/>
+    <text x="${sCx}" y="${sTop + 18}" text-anchor="middle" class="hw-wd-zone">BRIDGE</text>
+    <text x="${sCx}" y="${sMid - 2}" text-anchor="middle" class="hw-wd-name">${esc(ctrlName)}</text>
+    <text x="${sCx}" y="${sMid + 13}" text-anchor="middle" class="hw-wd-sub">${esc(ctrlSub)}</text>
   </g>`);
-  p.push(wdPath([[630, 172], [630, 240]], 'OUT'));
-  p.push(wdPill(700, 180, 60, 18, '3.3V/5V'));
-  p.push(wdResistorV(730, 198, 42, '10k'));
-  p.push(wdPath([[730, 240], [630, 240]]));
-  p.push(`<circle cx="630" cy="240" r="2.5" class="hw-wd-junction"/>`);
-  p.push(wdPath([[630, 240], [630, 258]], undefined, true));
-  p.push(`<g class="hw-wd-node">
-    <polygon points="630,258 630,298 695,278" class="hw-wd-gate"/>
-    <circle cx="702" cy="278" r="5" class="hw-wd-gate-bubble"/>
-    <text x="662" y="252" text-anchor="middle" class="hw-wd-name">74HC14 · Schmitt trigger</text>
-  </g>`);
-  p.push(wdPath([[707, 278], [707, 350]], 'port 3', true));
-  p.push(wdBox(630, 350, 140, 44, 'role-spi', '74HC165', 'shift-in · SPI'));
 
-  // bus wiring to the CH347 bridge
-  p.push(wdPath([[100, 148], [100, 430], [340, 430], [340, 450]], 'I²C', true));
-  p.push(wdPath([[320, 68], [410, 68], [410, 450]], 'I²C', true));
-  p.push(wdPath([[700, 394], [700, 430], [480, 430], [480, 450]], 'SPI', true));
-  p.push(wdBox(280, 450, 260, 50, 'role-hub', 'CH347', 'USB-HID bridge'));
+  chips.forEach((chip, i) => {
+    const mid = tops[i] + heights[i] / 2;
+    p.push(wdPath([[SPINE_R, mid], [CHIP_X, mid]], BUS_LABEL[chip.bus] || chip.bus));
+    p.push(wdChipBox(CHIP_X, mid - CHIP_H / 2, CHIP_W, CHIP_H, chip));
+    p.push(wdFragment(chip, mid));
+    if (i < chips.length - 1) {
+      const sepY = tops[i] + heights[i];
+      p.push(`<line x1="${CHIP_X - 8}" y1="${sepY}" x2="${W - 8}" y2="${sepY}" class="hw-wd-sep"/>`);
+    }
+  });
 
-  return `<svg viewBox="0 0 800 520" class="hw-wd-svg" role="img" aria-label="Reference wiring diagram for track power, current sense, and the occupancy detector">${p.join('')}</svg>`;
+  return `<svg viewBox="0 0 ${W} ${totalH}" class="hw-wd-svg" role="img" aria-label="Wiring diagram of your configured chips">${p.join('')}</svg>`;
 }
 
-// Cached — the diagram itself never changes. Only the <details> open/closed
-// state (tracked below) varies across the many render() calls this panel
-// makes (detect, self-test, sweep polling, ...), so that wrapper is rebuilt
-// fresh each time while the expensive SVG body is reused.
-const WIRING_DIAGRAM_SVG: string = buildWiringDiagramSvg();
+// The <details> open/closed state must survive the many render() calls this
+// panel makes (detect, self-test, sweep polling, ...), which each rebuild
+// #hw-body; `wiringOpen` (set by the toggle listener in setup) carries it.
 let wiringOpen = false;
 
 function wiringDiagramHtml(): string {
   return `<details class="tc-disclosure hw-wiring"${wiringOpen ? ' open' : ''}>
-    <summary>Wiring reference</summary>
+    <summary>Wiring overview</summary>
     <div class="tc-disclosure-body">
-      <p class="hw-wd-caption">Reference wiring for the track-drive and occupancy-sensor circuit — trace a line to confirm a voltage, resistor value, or port before you wire it on the bench. Box color matches the bus badges below (I²C blue, SPI purple).</p>
-      ${WIRING_DIAGRAM_SVG}
+      <p class="hw-wd-caption">Your configured chips and how each one wires up — the voltages, resistors, and support parts it connects to — so you can double-check against your board. Box colour matches the bus badges below (I²C blue, SPI purple, GPIO amber); it updates as you edit the list.</p>
+      ${buildWiringDiagramSvg()}
     </div>
   </details>`;
 }
