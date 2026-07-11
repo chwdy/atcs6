@@ -1,21 +1,19 @@
 """
-Block Management System
+Block — power + occupancy + reservation + availability unit.
 
-Definition:
-This module provides the Block class for centralized block management. A Block
-represents an electrically isolated track section with physical properties
-(length, radius limits, speed). Blocks are the minimum control unit for train
-movement in model railway layouts.
+Definition (design_new.md "block"):
+A `Block` is the power + occupancy + reservation unit: a switch-free connected
+run of one or more `segment`s that share one power feed (one `track voltage`)
+and admit one train at a time. It is the unit the dispatcher reserves and the
+train occupies. It groups its geometry through `segments` (its member
+`Segment`s) and owns the occupancy, reservation, availability, and power state.
 
 Key concepts:
-- Block = electrically isolated track section (all tracks share voltage/current)
-- Tracks reference blocks via track.block_section_id
-- Block has physical properties set at block level, not per-tile
-- Tiles are for UI layout; a block might have different physical length than tile count
-- Signals mark block boundaries and monitor block occupancy
-- Switches are block boundaries (connect blocks but not IN blocks)
-
-v1 model:
+- Geometry (`ordered_tiles`, `length_cm`, `min_radius_cm`, `grade_percent`,
+  `speed_limit_kmh`) lives on the member `Segment`s. The block exposes those as
+  derived reads (concatenate / sum / min across its segments) so callers can
+  keep reading `block.<geom>`. A single-segment block reads through to that one
+  segment unchanged.
 - `state` is computed from underlying primitive fields. Priority order:
   OCCUPIED > CAUTION > RESERVED > FREE.
 - Underlying primitives: `occupied_by`, `caution: Optional[CautionState]`,
@@ -26,31 +24,21 @@ v1 model:
   and CAUTION transitions.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, NamedTuple, Optional, Dict, Any, Set
 from enums import BlockState
 from track_resource import TrackResource
+from segment import Segment, TileEntry
 
 
 # Block-relative directions used in the static block-level travel policy.
 _BLOCK_RELATIVE_DIRECTIONS: Set[str] = {"forward", "reverse"}
 
 
-class BlockTileEntry(NamedTuple):
-    """One tile entry in `Block.ordered_tiles`.
-
-    Per design_new.md "Block model" — each entry carries `(x, y, entry_edge)`,
-    where `entry_edge` is the external edge through which forward traversal
-    enters that tile. `Block.ordered_tiles[0].entry_edge` is the canonical
-    forward-entry anchor for the block.
-
-    Defined as a NamedTuple so existing code that unpacks `(x, y, edge)` keeps
-    working while typed callers can reach `.x`, `.y`, `.entry_edge` by name.
-    """
-
-    x: int
-    y: int
-    entry_edge: str
+# `ordered_tiles` entries are `TileEntry` (x, y, entry_edge) records owned by
+# `Segment`. `BlockTileEntry` remains as an alias so existing importers keep
+# working.
+BlockTileEntry = TileEntry
 
 
 class CautionState(NamedTuple):
@@ -102,59 +90,89 @@ class BlockReservation:
         )
 
 
-@dataclass
 class Block(TrackResource):
     """
-    Centralized block entity for track section management.
+    Power + occupancy + reservation + availability unit (design_new.md "block").
 
-    A Block is an electrically isolated track section where all tracks
-    share voltage/current. It represents the minimum control unit for
-    train movement.
+    Groups one or more `Segment`s (its geometry) and owns the runtime state:
+    occupancy, reservation, CAUTION, availability, and power. It represents the
+    minimum control unit for train movement.
     """
 
-    block_id: str  # Unique ID (e.g., "BLK_001")
-    name: str = ""  # Human-readable name
+    def __init__(
+        self,
+        block_id: str,
+        name: str = "",
+        length_cm: float = 0.0,
+        min_radius_cm: Optional[float] = None,
+        grade_percent: Optional[float] = None,
+        speed_limit_kmh: Optional[float] = None,
+        is_holding_point: bool = False,
+        occupied_seconds: float = 0.0,
+        occupied_by: Optional[str] = None,
+        caution: Optional[CautionState] = None,
+        reservation: Optional[BlockReservation] = None,
+        disabled: bool = False,
+        manual: bool = False,
+        current_voltage: float = 0.0,
+        allowed_travel_directions: Optional[Set[str]] = None,
+        ordered_tiles: Optional[List[TileEntry]] = None,
+        segments: Optional[List[Segment]] = None,
+    ) -> None:
+        self.block_id = block_id  # Unique ID (e.g., "BLK_001")
+        self.name = name  # Human-readable name
 
-    # Physical properties (set on BLOCK, not tiles)
-    length_cm: float = 0.0  # Total track length in cm
-    min_radius_cm: Optional[float] = None  # Tightest curve radius
-    grade_percent: Optional[float] = None  # Track gradient as percent (+ uphill / - downhill)
-    speed_limit_kmh: Optional[float] = None  # Speed limit for block
-    # Static config flag: operator-marked safe wait place (design_new.md
-    # "Block" field schema, line 848). Never written by runtime; its only
-    # consumer is the best-effort truncation holding-point preference (item 11
-    # under "Path And PathDispatcher").
-    is_holding_point: bool = False
+        # Static config flag: operator-marked safe wait place (design_new.md
+        # "Block" field schema). Never written by runtime; its only consumer is
+        # the best-effort truncation holding-point preference (item 11 under
+        # "Path And PathDispatcher").
+        self.is_holding_point = is_holding_point
 
-    # Maintenance counter: total simulated seconds a train has occupied this
-    # block. Written once per tick by SimulationController.update(...) and
-    # persisted with the layout (see design_new.md "Maintenance counters").
-    occupied_seconds: float = 0.0
+        # Maintenance counter: total simulated seconds a train has occupied this
+        # block. Written once per tick by SimulationController.update(...) and
+        # persisted with the layout (see design_new.md "Maintenance counters").
+        self.occupied_seconds = occupied_seconds
 
-    # Underlying primitive state fields. `state` is a computed @property
-    # derived from these (see below).
-    occupied_by: Optional[str] = None  # Train ID currently physically present
-    # Single Optional caution record. The `_is_caution` and `caution_exit_edge`
-    # reads are derived @properties below.
-    caution: Optional[CautionState] = None
-    # Single Optional reservation record. The reserved_by_path,
-    # reserved_for_train, reserved_direction reads are derived @properties below.
-    reservation: Optional[BlockReservation] = None
-    disabled: bool = False  # Static availability flag (physical-absence; no override)
-    manual: bool = False  # Virtual-disable flag (auto blocks; manual_override bypasses)
+        # Underlying primitive state fields. `state` is a computed @property
+        # derived from these (see below).
+        self.occupied_by = occupied_by  # Train ID currently physically present
+        # Single Optional caution record. The `_is_caution` and
+        # `caution_exit_edge` reads are derived @properties below.
+        self.caution = caution
+        # Single Optional reservation record. The reserved_by_path,
+        # reserved_for_train, reserved_direction reads are derived @properties.
+        self.reservation = reservation
+        self.disabled = disabled  # Static availability flag (physical-absence)
+        self.manual = manual  # Virtual-disable flag (manual_override bypasses)
 
-    # Voltage control (Phase 2 - DC analog control)
-    current_voltage: float = 0.0
+        # Voltage control (DC analog control)
+        self.current_voltage = current_voltage
 
-    # Static block-level travel policy. Defaults to both directions allowed.
-    allowed_travel_directions: Set[str] = field(
-        default_factory=lambda: {"forward", "reverse"}
-    )
+        # Static block-level travel policy. Defaults to both directions allowed.
+        self.allowed_travel_directions: Set[str] = (
+            set(allowed_travel_directions)
+            if allowed_travel_directions is not None
+            else {"forward", "reverse"}
+        )
 
-    # Canonical local traversal order. Each entry is a `BlockTileEntry`
-    # (x, y, entry_edge); `ordered_tiles[0].entry_edge` is the forward-entry
-    # anchor for the block.
-    ordered_tiles: List[BlockTileEntry] = field(default_factory=list)
+        # Member segments own this block's geometry. A block created with
+        # geometry keywords (length_cm / ordered_tiles / ...) gets one auto
+        # segment carrying them; the geometry reads below aggregate across all
+        # members so a multi-segment block just works.
+        if segments is not None:
+            self.segments: List[Segment] = list(segments)
+        else:
+            self.segments = [
+                Segment(
+                    segment_id=block_id,
+                    name=name,
+                    length_cm=length_cm,
+                    min_radius_cm=min_radius_cm,
+                    grade_percent=grade_percent,
+                    speed_limit_kmh=speed_limit_kmh,
+                    ordered_tiles=list(ordered_tiles) if ordered_tiles else [],
+                )
+            ]
 
     # ========================================================================
     # TrackResource identity
@@ -167,6 +185,82 @@ class Block(TrackResource):
     @property
     def resource_type(self) -> str:
         return "block"
+
+    # ========================================================================
+    # Derived geometry reads (canonical storage lives on member `Segment`s)
+    # ========================================================================
+
+    @property
+    def segment_ids(self) -> List[str]:
+        """Ids of this block's member segments, in order."""
+        return [s.segment_id for s in self.segments]
+
+    @property
+    def ordered_tiles(self) -> List[TileEntry]:
+        """Canonical local traversal order across all member segments.
+
+        Concatenates each segment's `ordered_tiles`; `ordered_tiles[0]` is the
+        forward-entry anchor for the block.
+        """
+        out: List[TileEntry] = []
+        for seg in self.segments:
+            out.extend(seg.ordered_tiles)
+        return out
+
+    @ordered_tiles.setter
+    def ordered_tiles(self, value: List[TileEntry]) -> None:
+        # Geometry edits (build / extend / split) operate on a single segment;
+        # a block being edited has exactly one member in v1.
+        if self.segments:
+            self.segments[0].ordered_tiles = list(value)
+
+    @property
+    def length_cm(self) -> float:
+        """Total track length: the sum of the member segments' lengths."""
+        return sum(s.length_cm for s in self.segments)
+
+    @length_cm.setter
+    def length_cm(self, value: float) -> None:
+        if self.segments:
+            self.segments[0].length_cm = value
+
+    @property
+    def min_radius_cm(self) -> Optional[float]:
+        """Tightest curve radius across member segments (None if unset)."""
+        vals = [s.min_radius_cm for s in self.segments if s.min_radius_cm is not None]
+        return min(vals) if vals else None
+
+    @min_radius_cm.setter
+    def min_radius_cm(self, value: Optional[float]) -> None:
+        if self.segments:
+            self.segments[0].min_radius_cm = value
+
+    @property
+    def speed_limit_kmh(self) -> Optional[float]:
+        """Lowest segment speed limit across member segments (None if unset)."""
+        vals = [
+            s.speed_limit_kmh for s in self.segments if s.speed_limit_kmh is not None
+        ]
+        return min(vals) if vals else None
+
+    @speed_limit_kmh.setter
+    def speed_limit_kmh(self, value: Optional[float]) -> None:
+        if self.segments:
+            self.segments[0].speed_limit_kmh = value
+
+    @property
+    def grade_percent(self) -> Optional[float]:
+        """Track gradient. First member segment's grade that is set (None if
+        none). Single-segment blocks read through to that segment."""
+        for seg in self.segments:
+            if seg.grade_percent is not None:
+                return seg.grade_percent
+        return None
+
+    @grade_percent.setter
+    def grade_percent(self, value: Optional[float]) -> None:
+        if self.segments:
+            self.segments[0].grade_percent = value
 
     # ========================================================================
     # Derived reservation reads
@@ -306,7 +400,7 @@ class Block(TrackResource):
             allowed = {str(d) for d in atd}
 
         raw_tiles = data.get("ordered_tiles") or []
-        ordered_tiles: List[BlockTileEntry] = []
+        ordered_tiles: List[TileEntry] = []
         for entry in raw_tiles:
             if isinstance(entry, dict):
                 x = int(entry["x"])
@@ -316,7 +410,7 @@ class Block(TrackResource):
                 x = int(entry[0])
                 y = int(entry[1])
                 edge = str(entry[2])
-            ordered_tiles.append(BlockTileEntry(x=x, y=y, entry_edge=edge))
+            ordered_tiles.append(TileEntry(x=x, y=y, entry_edge=edge))
 
         if "length_cm" not in data:
             raise ValueError(
@@ -607,20 +701,21 @@ class Block(TrackResource):
         if lower not in _BLOCK_RELATIVE_DIRECTIONS:
             return upper if upper else None
 
-        if not self.ordered_tiles:
+        ordered = self.ordered_tiles
+        if not ordered:
             return None
 
-        if len(self.ordered_tiles) == 1:
-            entry_edge = str(self.ordered_tiles[0][2]).upper()
+        if len(ordered) == 1:
+            entry_edge = str(ordered[0][2]).upper()
             opposite = {"N": "S", "S": "N", "E": "W", "W": "E"}
             if lower == "forward":
                 return opposite.get(entry_edge)
             return entry_edge
 
-        last = self.ordered_tiles[-1]
-        second_last = self.ordered_tiles[-2]
-        first = self.ordered_tiles[0]
-        second = self.ordered_tiles[1]
+        last = ordered[-1]
+        second_last = ordered[-2]
+        first = ordered[0]
+        second = ordered[1]
         if lower == "forward":
             return _compass_from_delta(
                 last[0] - second_last[0], last[1] - second_last[1]
