@@ -572,10 +572,6 @@ class FatalConflictKind(Enum):
     # compatible main lock for the route it occupies; entering with no such lock
     # (and not a same-train already-covered seeded span) is a fatal intrusion.
     SWITCH_INTRUSION = "switch_intrusion"
-    # design_new.md "Power district" (line 2397): a second train physically
-    # drawing power in a district already held by another train — the
-    # power-level analogue of two trains in one block.
-    POWER_DISTRICT_INTRUSION = "power_district_intrusion"
 
 
 @dataclass

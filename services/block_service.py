@@ -127,28 +127,42 @@ def update_block(state: AppState, block_id: str, *, data: Dict[str, Any]):
         # min_radius_cm and speed_limit_kmh accept None = "no limit". All
         # non-None values must be numbers >= 0. The UI enters length / radius
         # as whole millimetres and converts to cm before sending.
-        if "length_cm" in data:
-            if data["length_cm"] is None:
-                raise ValidationError("length_cm is required and cannot be empty")
-            block.length_cm = coerce_nonneg(data["length_cm"], "length_cm")
-        if "min_radius_cm" in data:
-            raw = data["min_radius_cm"]
-            block.min_radius_cm = None if raw is None else coerce_nonneg(raw, "min_radius_cm")
-        if "grade_percent" in data:
-            raw = data["grade_percent"]
-            if raw is None:
-                block.grade_percent = None
-            else:
-                try:
-                    block.grade_percent = float(raw)
-                except (TypeError, ValueError):
-                    raise ValidationError("grade_percent must be a number")
-        if "speed_limit_kmh" in data:
-            raw = data["speed_limit_kmh"]
-            block.speed_limit_kmh = None if raw is None else coerce_nonneg(raw, "speed_limit_kmh")
-        elif "max_speed_kmh" in data:
-            raw = data["max_speed_kmh"]
-            block.speed_limit_kmh = None if raw is None else coerce_nonneg(raw, "max_speed_kmh")
+        # A block that groups several segments has no single block-level value
+        # for any of these, so `Block` rejects the write. Report that as a
+        # validation error rather than letting it surface as a server fault.
+        try:
+            if "length_cm" in data:
+                if data["length_cm"] is None:
+                    raise ValidationError("length_cm is required and cannot be empty")
+                block.length_cm = coerce_nonneg(data["length_cm"], "length_cm")
+            if "min_radius_cm" in data:
+                raw = data["min_radius_cm"]
+                block.min_radius_cm = (
+                    None if raw is None else coerce_nonneg(raw, "min_radius_cm")
+                )
+            if "grade_percent" in data:
+                raw = data["grade_percent"]
+                if raw is None:
+                    block.grade_percent = None
+                else:
+                    try:
+                        block.grade_percent = float(raw)
+                    except (TypeError, ValueError):
+                        raise ValidationError("grade_percent must be a number")
+            if "speed_limit_kmh" in data:
+                raw = data["speed_limit_kmh"]
+                block.speed_limit_kmh = (
+                    None if raw is None else coerce_nonneg(raw, "speed_limit_kmh")
+                )
+            elif "max_speed_kmh" in data:
+                raw = data["max_speed_kmh"]
+                block.speed_limit_kmh = (
+                    None if raw is None else coerce_nonneg(raw, "max_speed_kmh")
+                )
+        except ValidationError:
+            raise
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
         if "state" in data:
             # Block state is owned by BlockManager / ResourceCoordinator in
             # v1 and computed from `occupied_by` / `_is_caution` /

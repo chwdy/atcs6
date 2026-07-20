@@ -55,6 +55,15 @@ class BlockGeometryManager:
         if block is None:
             return
 
+        # A block that groups several segments has no tile list of its own:
+        # `Block.ordered_tiles` is the concatenation of its members', which is
+        # always current. Rebuilding here would flatten every member's tiles
+        # into one walk and write it to a single segment, duplicating tiles and
+        # destroying the others. Tile membership inside a grouped block is
+        # edited per segment, so there is nothing to rebuild at block level.
+        if len(block.segments) > 1:
+            return
+
         # `ordered_tiles` feeds the cached per-block traversal direction
         # (`block_direction`) in the pathfinding walk cache, so recomputing it
         # invalidates those cached walks. Editor/build-only; never in the tick.
@@ -118,6 +127,45 @@ class BlockGeometryManager:
                 BlockTileEntry(x=tile[0], y=tile[1], entry_edge=entry_edge)
             )
         block.ordered_tiles = entries
+
+    def reverse_segment_orientation(self, segment_id: str) -> bool:
+        """Flip a segment's stored tile order end-for-end.
+
+        `Segment.ordered_tiles` is built per segment from a deterministic
+        coordinate rule, so two segments that sit next to each other on the
+        layout can be stored running towards each other. Grouping them into one
+        block needs every member to run the same way (design_new.md **Block
+        grouping**: member orientations all align with increasing block order,
+        and grouping itself never reverses a segment). This is the geometry-side
+        write that makes them align, so grouping can keep its no-reversal rule.
+
+        Each `entry_edge` is recomputed for the new direction. Returns False
+        when the segment is unknown or has fewer than two tiles.
+        """
+        from block import BlockTileEntry
+
+        segment = self._n.get_segment(segment_id)
+        if segment is None or len(segment.ordered_tiles) < 2:
+            return False
+
+        tiles = [(e.x, e.y) for e in reversed(segment.ordered_tiles)]
+        member_set = set(tiles)
+        entries = []
+        for i, tile in enumerate(tiles):
+            if i == 0:
+                entry_edge = self._external_entry_edge(tile, member_set)
+            else:
+                prev_tile = tiles[i - 1]
+                edge_from_prev = self._edge_for_delta(
+                    tile[0] - prev_tile[0], tile[1] - prev_tile[1]
+                )
+                entry_edge = self._OPPOSITE_EDGE.get(edge_from_prev or "", "") or ""
+            entries.append(
+                BlockTileEntry(x=tile[0], y=tile[1], entry_edge=entry_edge)
+            )
+        segment.ordered_tiles = entries
+        self._n.invalidate_pathfinding_cache()
+        return True
 
     def _external_entry_edge(
         self, tile: Tuple[int, int], in_block_set: set

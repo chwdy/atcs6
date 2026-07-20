@@ -1587,23 +1587,12 @@ class TrainPhysics:
         """Every block that carries this train's `track_voltage` this tick.
 
         Per design_new.md "Power", Block power-controller role: the train drives
-        its one voltage onto every power district it holds, and because a
-        district shares one feed the whole district carries that voltage — not
-        only the held blocks. So this is the held set (`_held_blocks_for_train`:
-        occupied + reserved-ahead) expanded to each held block's full power
-        district through the canonical `RailwayNetwork.district_block_ids(...)`
-        lookup. With no grouping applied every block is its own single-block
-        district, so this is exactly the held set — the same blocks the runtime
-        drives today.
+        its one voltage onto every block it holds. A block is one power feed —
+        it owns the one `track voltage` its member segments share — so the
+        energized set is exactly the held set (`_held_blocks_for_train`:
+        occupied + reserved-ahead).
         """
-        held = self._held_blocks_for_train(train)
-        district_lookup = getattr(self.network, "district_block_ids", None)
-        if district_lookup is None:
-            return held
-        energized: Set[str] = set()
-        for block_id in held:
-            energized.update(district_lookup(block_id))
-        return energized
+        return self._held_blocks_for_train(train)
 
     # =========================================================================
     # Track Geometry Helpers

@@ -21,7 +21,7 @@ from enums import TrackType, Direction
 from constants import FLANK_PROTECTION_DISTANCE_CM
 from railway_signal import Signal, SignalType, SignalState
 from station import Station
-from power_district import PowerDistrict
+from segment import Segment
 from train_roster import TrainRoster
 from railway_platform import Platform
 from speed_profile import SpeedProfileRegistry
@@ -84,12 +84,12 @@ class RailwayNetwork:
         self.stations = self.platforms
         self.station_groups: Dict[str, Station] = {}
         self.switches: Dict[str, "Switch"] = {}  # NEW: Switch entity management
-        # Power districts: block groupings that share one power feed
-        # (design_new.md "Power district"). `_block_to_district` is the derived
-        # reverse index (block_id -> district_id) rebuilt from `power_districts`;
-        # a block absent from it is its own single-block district.
-        self.power_districts: Dict[str, PowerDistrict] = {}
-        self._block_to_district: Dict[str, str] = {}
+        # Segments are geometry; they live inside their owning `Block`
+        # (design_new.md "Block": a block is a switch-free connected run of one
+        # or more segments sharing one power feed). `self.segments` and
+        # `segment_to_block_id(...)` below are the network-level registry reads
+        # derived from `Block.segment_ids`, so they can never drift from the
+        # blocks themselves.
         # Train roster: the operator's catalog of owned locomotives (design_new.md
         # "Train Roster"). Configuration data persisted with the layout snapshot;
         # a placement may import an entry to seed a fresh Train's defaults.
@@ -163,7 +163,7 @@ class RailwayNetwork:
         self._signal_calculator = None
         self._block_geometry_manager = None
         self._station_registry = None
-        self._power_district_registry = None
+        self._block_grouping_manager = None
         self._flank_protection_calculator = None
         self._signal_registry = None
         self._train_placement = None
@@ -205,16 +205,16 @@ class RailwayNetwork:
             self._station_registry = StationRegistry(self)
         return self._station_registry
 
-    def _get_power_district_registry(self):
-        """Lazy-init `PowerDistrictRegistry`. Power-district CRUD lives there;
-        the `power_districts` dict and `_block_to_district` index stay on the
-        network; the registry reads / writes them through its back-reference.
+    def _get_block_grouping_manager(self):
+        """Lazy-init `BlockGroupingManager`. Block membership (`segment_ids`)
+        CRUD lives there; the `blocks` dict that holds the grouping stays on the
+        network; the manager reads / writes them through its back-reference.
         """
-        if self._power_district_registry is None:
-            from power_district_registry import PowerDistrictRegistry
+        if self._block_grouping_manager is None:
+            from block_grouping_manager import BlockGroupingManager
 
-            self._power_district_registry = PowerDistrictRegistry(self)
-        return self._power_district_registry
+            self._block_grouping_manager = BlockGroupingManager(self)
+        return self._block_grouping_manager
 
     def _get_flank_protection_calculator(self):
         """Lazy-init `FlankProtectionCalculator`. The flank-protection graph
@@ -355,14 +355,12 @@ class RailwayNetwork:
         self.station_groups.clear()
         self.switches.clear()
         self.tunnels.clear()
-        self.power_districts.clear()
         self.train_roster.clear()
         # Derived tile -> owner reverse indices. Not held on any entity dict,
         # so they must be cleared explicitly to avoid stale block/platform
         # membership on reused tiles.
         self._tile_to_block.clear()
         self._tile_to_platform.clear()
-        self._block_to_district.clear()
         # Drops _walk_cache + _block_index_cache.
         self.invalidate_pathfinding_cache()
 
@@ -1343,43 +1341,121 @@ class RailwayNetwork:
         """Forward to `FlankProtectionCalculator.recompute_all_flank_protection()`."""
         return self._get_flank_protection_calculator().recompute_all_flank_protection()
 
-    # ── Power districts (design_new.md "Power district") ───────────────────
+    # ── Block grouping (design_new.md "Block grouping") ────────────────────
 
-    def district_block_ids(self, block_id: str) -> List[str]:
-        """Forward to `PowerDistrictRegistry.district_block_ids(block_id)`."""
-        return self._get_power_district_registry().district_block_ids(block_id)
+    @property
+    def segments(self) -> Dict[str, Segment]:
+        """Every `Segment` in the network, keyed by `segment_id`.
 
-    def create_power_district(
-        self, district_id: str, block_ids: List[str], name: str = ""
-    ) -> "PowerDistrict":
-        """Forward to `PowerDistrictRegistry.create_power_district(...)`."""
-        return self._get_power_district_registry().create_power_district(
-            district_id, block_ids, name
+        Derived on read from `Block.segment_ids` — segments are stored inside
+        their owning block, so this registry view can never drift from the
+        blocks. `RailwayNetwork` owns the lookup; callers resolve segment
+        membership through here rather than reaching into a block.
+        """
+        out: Dict[str, Segment] = {}
+        for block in self.blocks.values():
+            for seg in block.segments:
+                out[seg.segment_id] = seg
+        return out
+
+    def get_segment(self, segment_id: str) -> Optional[Segment]:
+        """Forward to `BlockGroupingManager.get_segment(segment_id)`."""
+        return self._get_block_grouping_manager().get_segment(segment_id)
+
+    def segment_to_block_id(self, segment_id: str) -> Optional[str]:
+        """Forward to `BlockGroupingManager.segment_to_block_id(segment_id)`."""
+        return self._get_block_grouping_manager().segment_to_block_id(segment_id)
+
+    def add_segment_to_block(self, block_id: str, segment_id: str) -> bool:
+        """Forward to `BlockGroupingManager.add_segment_to_block(...)`."""
+        return self._get_block_grouping_manager().add_segment_to_block(
+            block_id, segment_id
         )
 
-    def delete_power_district(self, district_id: str) -> bool:
-        """Forward to `PowerDistrictRegistry.delete_power_district(district_id)`."""
-        return self._get_power_district_registry().delete_power_district(district_id)
-
-    def add_block_to_power_district(self, district_id: str, block_id: str) -> bool:
-        """Forward to `PowerDistrictRegistry.add_block_to_power_district(...)`."""
-        return self._get_power_district_registry().add_block_to_power_district(
-            district_id, block_id
+    def remove_segment_from_block(self, block_id: str, segment_id: str) -> bool:
+        """Forward to `BlockGroupingManager.remove_segment_from_block(...)`."""
+        return self._get_block_grouping_manager().remove_segment_from_block(
+            block_id, segment_id
         )
 
-    def remove_block_from_power_district(
-        self, district_id: str, block_id: str
-    ) -> bool:
-        """Forward to `PowerDistrictRegistry.remove_block_from_power_district(...)`."""
-        return self._get_power_district_registry().remove_block_from_power_district(
-            district_id, block_id
+    def segments_form_switch_free_run(self, segment_ids: List[str]) -> bool:
+        """Forward to `BlockGroupingManager.segments_form_switch_free_run(...)`."""
+        return self._get_block_grouping_manager().segments_form_switch_free_run(
+            segment_ids
         )
 
-    def power_district_blocks_connected(self, block_ids: List[str]) -> bool:
-        """Forward to `PowerDistrictRegistry.power_district_blocks_connected(...)`."""
-        return self._get_power_district_registry().power_district_blocks_connected(
-            block_ids
-        )
+    def _fold_grouped_blocks(self, groups: List[dict]) -> None:
+        """Fold each stored grouping record into the one block it describes.
+
+        A save written before blocks grouped segments kept the power grouping in
+        its own list, naming the blocks that shared one feed. Each of those
+        members has already loaded as its own one-segment block, so folding
+        means: take those members' segments, in a connected run order, and make
+        them the member segments of a single block named after the grouping.
+        The emptied member blocks are dropped by the grouping manager.
+
+        The stored member list carries no traversal order, so the order is
+        recovered from tile adjacency. A grouping whose members do not chain
+        into one clean run is still folded, with a warning: dropping it would
+        turn one single-train feed back into several independent feeds, which
+        is the less safe reading of the same layout.
+        """
+        if not groups:
+            return
+        grouping = self._get_block_grouping_manager()
+        for record in groups:
+            group_id = str(record.get("district_id") or "")
+            member_ids = [str(b) for b in record.get("block_ids", [])]
+            members = [b for b in member_ids if b in self.blocks]
+            if not group_id or not members:
+                continue
+
+            # An editor-authored block is saved with no tile order — its
+            # membership rides on the tracks instead — so its segment has no
+            # tiles to chain until the order is rebuilt from that membership.
+            # Each member is still its own one-segment block here, so this is
+            # the ordinary single-segment rebuild.
+            geometry = self._get_block_geometry_manager()
+            for member_id in members:
+                if not self.blocks[member_id].ordered_tiles:
+                    geometry.rebuild_block_ordered_tiles(member_id)
+
+            segment_ids: List[str] = []
+            for member_id in members:
+                segment_ids.extend(self.blocks[member_id].segment_ids)
+            try:
+                grouping.group_into_block(
+                    block_id=group_id,
+                    segment_ids=segment_ids,
+                    name=str(record.get("name", "")),
+                )
+            except ValueError as exc:
+                # The stored grouping does not describe one connected
+                # switch-free run. Fold it anyway: dropping it would turn one
+                # single-train feed back into several independent feeds, which
+                # is the less safe reading of the same layout.
+                logger.warning(
+                    "Grouping %s is not one connected switch-free run (%s); "
+                    "folding it into a single block anyway to preserve its "
+                    "one-train power domain.",
+                    group_id,
+                    exc,
+                )
+                ordered, _ = grouping.plan_run(segment_ids)
+                try:
+                    grouping.create_block(
+                        block_id=group_id,
+                        segment_ids=ordered,
+                        name=str(record.get("name", "")),
+                        validate=False,
+                    )
+                except ValueError as exc2:
+                    logger.warning(
+                        "Could not fold grouping %s into a block: %s. Its "
+                        "member blocks stay independent feeds.",
+                        group_id,
+                        exc2,
+                    )
 
     def to_dict(self) -> dict:
         """Convert network to dictionary for the live frontend payload.
@@ -1410,7 +1486,6 @@ class RailwayNetwork:
                 p.to_dict_with_orientation(self) for p in self.platforms.values()
             ],
             "station_groups": [s.to_dict() for s in self.station_groups.values()],
-            "power_districts": [d.to_dict() for d in self.power_districts.values()],
             "train_roster": self.train_roster.to_dict(),
             "switches": {
                 k: v.to_dict() for k, v in self.switches.items()
@@ -1452,7 +1527,6 @@ class RailwayNetwork:
                 p.to_dict_with_orientation(self) for p in self.platforms.values()
             ],
             "station_groups": [s.to_dict() for s in self.station_groups.values()],
-            "power_districts": [d.to_dict() for d in self.power_districts.values()],
             "train_roster": self.train_roster.to_dict(),
             "switches": {
                 k: v.to_layout_dict() for k, v in self.switches.items()
@@ -1514,13 +1588,13 @@ class RailwayNetwork:
             station = Station.from_dict(station_data)
             self.station_groups[station.station_id] = station
 
-        # Rebuild power districts (optional; absent in legacy saves = every
-        # block is its own single-block district). Rebuild the reverse index
-        # once all districts are loaded.
-        for district_data in data.get("power_districts", []):
-            district = PowerDistrict.from_dict(district_data)
-            self.power_districts[district.district_id] = district
-        self._get_power_district_registry()._rebuild_district_index()
+        # Fold any grouping from an older save. Those snapshots stored the
+        # power grouping separately from the blocks it grouped, so each grouped
+        # member loaded above as its own one-segment block; folding replaces
+        # that set with the one block the grouping always described, owning each
+        # member's geometry as a member segment. Runs after every block exists
+        # (a grouping may name a platform block).
+        self._fold_grouped_blocks(data.get("power_districts", []))
 
         # Rebuild the train roster (config; absent in legacy saves = empty).
         self.train_roster = TrainRoster.from_dict(data.get("train_roster", []))

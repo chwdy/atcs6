@@ -209,10 +209,7 @@ class Block(TrackResource):
 
     @ordered_tiles.setter
     def ordered_tiles(self, value: List[TileEntry]) -> None:
-        # Geometry edits (build / extend / split) operate on a single segment;
-        # a block being edited has exactly one member in v1.
-        if self.segments:
-            self.segments[0].ordered_tiles = list(value)
+        self._geometry_write_target("ordered_tiles").ordered_tiles = list(value)
 
     @property
     def length_cm(self) -> float:
@@ -221,8 +218,7 @@ class Block(TrackResource):
 
     @length_cm.setter
     def length_cm(self, value: float) -> None:
-        if self.segments:
-            self.segments[0].length_cm = value
+        self._geometry_write_target("length_cm").length_cm = value
 
     @property
     def min_radius_cm(self) -> Optional[float]:
@@ -232,8 +228,7 @@ class Block(TrackResource):
 
     @min_radius_cm.setter
     def min_radius_cm(self, value: Optional[float]) -> None:
-        if self.segments:
-            self.segments[0].min_radius_cm = value
+        self._geometry_write_target("min_radius_cm").min_radius_cm = value
 
     @property
     def speed_limit_kmh(self) -> Optional[float]:
@@ -245,8 +240,7 @@ class Block(TrackResource):
 
     @speed_limit_kmh.setter
     def speed_limit_kmh(self, value: Optional[float]) -> None:
-        if self.segments:
-            self.segments[0].speed_limit_kmh = value
+        self._geometry_write_target("speed_limit_kmh").speed_limit_kmh = value
 
     @property
     def grade_percent(self) -> Optional[float]:
@@ -259,8 +253,27 @@ class Block(TrackResource):
 
     @grade_percent.setter
     def grade_percent(self, value: Optional[float]) -> None:
-        if self.segments:
-            self.segments[0].grade_percent = value
+        self._geometry_write_target("grade_percent").grade_percent = value
+
+    def _geometry_write_target(self, field: str) -> Segment:
+        """The member segment a block-level geometry write lands on.
+
+        Geometry belongs to a `Segment`, so a write through the block's derived
+        geometry property is only well-defined when the block has exactly one
+        member: the block and that segment are then the same run. A block that
+        groups several segments has no single place to put the value — the
+        reads are a concatenation (`ordered_tiles`), a sum (`length_cm`) or a
+        minimum (`speed_limit_kmh`, `min_radius_cm`), none of which invert — so
+        the write is rejected and the caller must address the segment it means.
+        """
+        if len(self.segments) != 1:
+            raise ValueError(
+                f"Block {self.block_id} groups {len(self.segments)} segments, "
+                f"so '{field}' has no single block-level value to write. "
+                f"Geometry lives on the member segments "
+                f"({', '.join(self.segment_ids) or 'none'}); write it there."
+            )
+        return self.segments[0]
 
     # ========================================================================
     # Derived reservation reads
@@ -357,6 +370,12 @@ class Block(TrackResource):
             "ordered_tiles": [
                 [int(x), int(y), str(edge)] for (x, y, edge) in self.ordered_tiles
             ],
+            # Member segments in `segment_ids` order. The block's geometry keys
+            # above are the derived aggregate reads; these carry each member's
+            # own length / speed limit / radius so a multi-segment block keeps
+            # its per-segment geometry.
+            "segment_ids": self.segment_ids,
+            "segments": [s.to_dict() for s in self.segments],
         }
 
     def to_layout_dict(self) -> Dict[str, Any]:
@@ -366,6 +385,10 @@ class Block(TrackResource):
         state | In-memory only"), this writes block geometry and config only.
         Runtime fields (occupied_by, caution, reservation, current_voltage,
         computed state) are excluded.
+
+        Member segments nest under the block, so one `blocks` key carries the
+        whole grouping — the block's power/occupancy identity plus each member
+        segment's own geometry.
         """
         return {
             "block_id": self.block_id,
@@ -382,6 +405,8 @@ class Block(TrackResource):
             "ordered_tiles": [
                 [int(x), int(y), str(edge)] for (x, y, edge) in self.ordered_tiles
             ],
+            "segment_ids": self.segment_ids,
+            "segments": [s.to_layout_dict() for s in self.segments],
         }
 
     @classmethod
@@ -392,7 +417,41 @@ class Block(TrackResource):
         `current_voltage`, computed `state`) are not loaded from disk —
         they default-initialize and the engine populates them at run time.
         Legacy snapshots that carry those keys are silently ignored.
+
+        Member segments come from the nested `segments` list. A snapshot
+        written before segments were nested carries the block's geometry inline
+        instead; that block loads as a one-segment block built from the inline
+        geometry, which is the default one-feed-per-segment grouping.
         """
+        raw_segments = data.get("segments")
+        if raw_segments:
+            # Same rule as the inline-geometry path below: length must be
+            # supplied explicitly (0 is allowed), with no silent default. The
+            # block's own `length_cm` is the sum across its members, so the
+            # snapshot must carry it for the block as well as for each segment.
+            if "length_cm" not in data:
+                raise ValueError(
+                    f"Block.from_dict: block '{data.get('block_id')}' is missing "
+                    "required 'length_cm'. Length must be supplied explicitly (0 "
+                    "is allowed); there is no silent default."
+                )
+            segments = [Segment.from_dict(s) for s in raw_segments]
+            atd_nested = data.get("allowed_travel_directions")
+            return cls(
+                block_id=data["block_id"],
+                name=data.get("name", ""),
+                is_holding_point=bool(data.get("is_holding_point", False)),
+                disabled=bool(data.get("disabled", False)),
+                manual=bool(data.get("manual", False)),
+                allowed_travel_directions=(
+                    {str(d) for d in atd_nested}
+                    if atd_nested is not None
+                    else {"forward", "reverse"}
+                ),
+                occupied_seconds=float(data.get("occupied_seconds", 0.0)),
+                segments=segments,
+            )
+
         atd = data.get("allowed_travel_directions")
         if atd is None:
             allowed = {"forward", "reverse"}
