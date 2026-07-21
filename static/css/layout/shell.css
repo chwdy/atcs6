@@ -917,6 +917,7 @@ textarea {
 /* Per-entity-type number tints — match the chip hues below so the colour reads
    as the legend. Tile is the neutral substrate. */
 .ms-count-tile { color: var(--text-primary); }
+.ms-count-segment { color: var(--accent-hover); }
 .ms-count-block { color: var(--accent-hover); }
 .ms-count-platform { color: var(--info-color); }
 .ms-count-switch { color: var(--warning-color); }

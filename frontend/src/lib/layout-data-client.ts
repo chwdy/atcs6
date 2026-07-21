@@ -8,9 +8,12 @@
 //
 // The surface is split in two:
 //   - `LayoutDataClient` — everything needed to view and edit the *layout*
-//     (track geometry, blocks, platforms, stations, switches, signals, tunnels,
-//     speed profiles, layout persistence, scale, and the network fetch the
-//     renderer draws from). This is the contract the reusable component needs.
+//     (track geometry, segments, blocks, platforms, stations, switches,
+//     signals, tunnels, speed profiles, layout persistence, scale, and the
+//     network fetch the renderer draws from). The track model is tile ->
+//     segment -> block: a `Segment` carries geometry, a `Block` groups segments
+//     and carries power / occupancy. This is the contract the reusable
+//     component needs.
 //   - `SimClient` — everything that drives or inspects the *simulation* (trains,
 //     control handles, ATO, paths, routes, route-runs, ops). The sim is a plugin
 //     on top of the layout component; only the sim plugin needs this surface.
@@ -35,16 +38,37 @@ export interface LayoutDataClient {
   addTracksBulk(tracks: unknown): Promise<any>;
   deleteTracksBulk(positions: unknown, opts?: { force?: boolean }): Promise<any>;
 
-  // --- Blocks ---
+  // --- Segments (the geometry axis; ids here are SEGMENT ids) ---
+  getSegments(): Promise<any>;
+  getSegment(segmentId: string): Promise<any>;
+  createSegment(
+    segmentId?: string | null,
+    positions?: unknown,
+    name?: string,
+    options?: Record<string, unknown>
+  ): Promise<any>;
+  updateSegment(segmentId: string, data: unknown): Promise<any>;
+  deleteSegment(segmentId: string): Promise<any>;
+  addTracksToSegment(segmentId: string, positions: unknown, force?: boolean): Promise<any>;
+  removeSegmentTiles(segmentId: string, positions: unknown): Promise<any>;
+  extendSegment(
+    segmentId: string,
+    positions: unknown,
+    force?: boolean,
+    forceOverwrite?: boolean
+  ): Promise<any>;
+  canExtendSegment(segmentId: string, x: number, y: number): Promise<any>;
+  getSegmentEndTiles(segmentId: string): Promise<any>;
+
+  // --- Blocks (grouping + power + occupancy; ids here are BLOCK ids) ---
   getBlocks(): Promise<any>;
-  createBlock(blockId?: string | null, name?: string, options?: Record<string, unknown>): Promise<any>;
+  createBlock(segmentIds: string[], name?: string, blockId?: string | null): Promise<any>;
   getBlock(blockId: string): Promise<any>;
   updateBlock(blockId: string, data: unknown): Promise<any>;
   deleteBlock(blockId: string): Promise<any>;
-  addTracksToBlock(blockId: string, positions: unknown, force?: boolean): Promise<any>;
-  extendBlock(blockId: string, positions: unknown, force?: boolean, forceOverwrite?: boolean): Promise<any>;
-  canExtendBlock(blockId: string, x: number, y: number): Promise<any>;
-  removeBlockTiles(blockId: string, positions: unknown): Promise<any>;
+  addSegmentToBlock(blockId: string, segmentId: string): Promise<any>;
+  removeSegmentFromBlock(blockId: string, segmentId: string): Promise<any>;
+  getBlockVoltage(blockId: string): Promise<any>;
 
   // --- Signals (placement / geometry) ---
   createSignal(
@@ -81,16 +105,6 @@ export interface LayoutDataClient {
   updateStationGroup(stationId: string, patch: unknown): Promise<any>;
   addPlatformToStation(stationId: string, platformId: string, force?: boolean): Promise<any>;
   removePlatformFromStation(stationId: string, platformId: string): Promise<any>;
-
-  // --- Power districts ---
-  createPowerDistrict(data: unknown): Promise<any>;
-  listPowerDistricts(): Promise<any>;
-  getPowerDistrict(districtId: string): Promise<any>;
-  updatePowerDistrict(districtId: string, patch: unknown): Promise<any>;
-  deletePowerDistrict(districtId: string): Promise<any>;
-  addBlockToDistrict(districtId: string, blockId: string): Promise<any>;
-  addBlocksToDistrict(districtId: string, blockIds: string[]): Promise<any>;
-  removeBlockFromDistrict(districtId: string, blockId: string): Promise<any>;
 
   // --- Switches (geometry / config) ---
   getSwitches(): Promise<any>;

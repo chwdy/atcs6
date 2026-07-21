@@ -49,21 +49,33 @@ export interface DragBuildHost {
     setBuildPreview(preview: unknown): void;
     requestRedraw(): void;
   };
+  // Drag-build lays track geometry, so its block/segment surface is the
+  // SEGMENT (geometry) axis — never the block grouping axis.
   api: {
     addTracksBulk(tracks: any[]): Promise<any>;
-    createBlock(id: string, name: string, options: Record<string, unknown>): Promise<any>;
-    addTracksToBlock(blockId: string, positions: number[][]): Promise<any>;
-    extendBlock(blockId: string, positions: number[][], hasSignals: boolean, hasOtherBlocks: boolean): Promise<any>;
+    createSegment(
+      id: string | null,
+      positions: number[][],
+      name: string,
+      options: Record<string, unknown>
+    ): Promise<any>;
+    addTracksToSegment(segmentId: string, positions: number[][], force?: boolean): Promise<any>;
+    extendSegment(
+      segmentId: string,
+      positions: number[][],
+      hasSignals: boolean,
+      hasOtherSegments: boolean
+    ): Promise<any>;
     createPlatform(payload: any): Promise<any>;
     extendPlatform(platformId: any, positions: number[][]): Promise<any>;
     removePlatformTile(stationId: any, x: number, y: number): Promise<any>;
-    removeBlockTiles(blockId: string, positions: number[][]): Promise<{ removed?: number; errors?: string[] }>;
+    removeSegmentTiles(segmentId: string, positions: number[][]): Promise<{ removed?: number; errors?: string[] }>;
   };
 
   _tracksByKey(): Map<string, any>;
-  showBlockModal(opts: any): Promise<any>;
+  showSegmentModal(opts: any): Promise<any>;
   showPlatformModal(opts: any): Promise<any>;
-  refreshBlocksList(): Promise<void>;
+  refreshSegmentsList(): Promise<void>;
   refreshAndSelect(target: any): Promise<void>;
 }
 

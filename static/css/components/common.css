@@ -294,7 +294,7 @@
    lists (DESIGN_LANGUAGE.md §11/§12). The only district-specific mark is the
    color swatch in each row's title, which matches that district's canvas
    overlay color (see frontend/src/lib/district-color.ts). */
-.pd-create-form {
+.bg-create-form {
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -303,21 +303,21 @@
     border-bottom: 1px solid var(--border-color);
 }
 
-.pd-create-form .control-section-header {
+.bg-create-form .control-section-header {
     margin-bottom: 0;
 }
 
-.pd-list {
+.bg-list {
     display: flex;
     flex-direction: column;
     gap: 8px;
 }
 
-.pd-row {
+.bg-row {
     cursor: pointer;
 }
 
-.pd-row-name {
+.bg-row-name {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -331,7 +331,7 @@
 }
 
 /* Color key dot: the district's overlay color, so the list reads as a legend. */
-.pd-swatch {
+.bg-swatch {
     flex: 0 0 auto;
     width: 10px;
     height: 10px;
@@ -339,7 +339,7 @@
     border: 1px solid var(--border-color);
 }
 
-.pd-row-meta {
+.bg-row-meta {
     margin-top: 4px;
 }
 
@@ -590,7 +590,7 @@
 }
 
 /* Block Modal Dialog - Floating Style */
-.block-modal-overlay {
+.segment-modal-overlay {
     position: fixed;
     top: 0;
     left: 0;
@@ -607,7 +607,7 @@
     to { opacity: 1; }
 }
 
-.block-modal {
+.segment-modal {
     position: fixed;
     top: 50%;
     left: 50%;
@@ -640,11 +640,11 @@
 /* Anchored variant — the dialog hovers over the tiles on the canvas and follows
    pan/zoom. The card's left/top are set inline by anchorToTiles(); the backdrop
    stays transparent and click-through so the canvas underneath stays usable. */
-.block-modal-overlay.anchored {
+.segment-modal-overlay.anchored {
     background: transparent;
 }
 
-.block-modal.anchored {
+.segment-modal.anchored {
     position: fixed;
     top: 0;
     left: 0;
@@ -660,18 +660,18 @@
 }
 
 /* Two compact fields side by side (min radius + slope) inside the popover. */
-.block-modal .form-row {
+.segment-modal .form-row {
     display: flex;
     gap: 12px;
 }
 
-.block-modal .form-row .form-group {
+.segment-modal .form-row .form-group {
     flex: 1;
     min-width: 0;
 }
 
 /* Keep both row labels on one line so the two inputs start at the same height. */
-.block-modal .form-row .form-group label {
+.segment-modal .form-row .form-group label {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -679,29 +679,29 @@
 
 /* Compact spacing so the anchored popover stays short enough to hug its block
    (the centered modal keeps its roomier default padding). */
-.block-modal.anchored h3 {
+.segment-modal.anchored h3 {
     padding: 14px 18px 10px;
     font-size: 15px;
 }
 
-.block-modal.anchored .modal-body {
+.segment-modal.anchored .modal-body {
     padding: 14px 18px;
 }
 
-.block-modal.anchored .modal-info {
+.segment-modal.anchored .modal-info {
     margin-bottom: 12px;
 }
 
-.block-modal.anchored .form-group {
+.segment-modal.anchored .form-group {
     margin-bottom: 12px;
 }
 
-.block-modal.anchored .modal-footer {
+.segment-modal.anchored .modal-footer {
     padding: 12px 18px 14px;
 }
 
 /* Additional modal classes used by JavaScript */
-.block-modal h3 {
+.segment-modal h3 {
     margin: 0 0 16px 0;
     padding: 20px 24px 16px;
     font-size: 18px;
@@ -741,12 +741,12 @@
     border-left: 3px solid var(--warning-color);
 }
 
-.block-selection-list {
+.segment-selection-list {
     max-height: 200px;
     overflow-y: auto;
 }
 
-.block-selection-item {
+.segment-selection-item {
     padding: 12px;
     background: var(--bg-dark);
     border: 1px solid var(--border-color);
@@ -759,17 +759,17 @@
     gap: 12px;
 }
 
-.block-selection-item:hover {
+.segment-selection-item:hover {
     border-color: var(--accent-color);
 }
 
-.block-selection-item input[type="radio"] {
+.segment-selection-item input[type="radio"] {
     width: auto;
     margin: 0;
     accent-color: var(--accent-color);
 }
 
-.block-selection-item label {
+.segment-selection-item label {
     flex: 1;
     cursor: pointer;
     display: flex;
@@ -777,19 +777,19 @@
     gap: 4px;
 }
 
-.block-selection-item .block-id {
+.segment-selection-item .block-id {
     font-family: var(--font-mono);
     font-size: 11px;
     font-weight: bold;
     color: var(--text-primary);
 }
 
-.block-selection-item .block-name {
+.segment-selection-item .block-name {
     font-size: 12px;
     color: var(--text-secondary);
 }
 
-.block-selection-item .block-track-count {
+.segment-selection-item .segment-track-count {
     font-size: 11px;
     color: var(--accent-color);
 }

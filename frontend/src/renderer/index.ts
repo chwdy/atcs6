@@ -11,6 +11,7 @@ import './renderer-signals';
 import './renderer-stations';
 import './renderer-routes';
 import './renderer-blocks';
+import './renderer-segments';
 import './renderer-platforms';
 import './renderer-tracks';
 import './renderer-trains';
@@ -42,8 +43,11 @@ export type { Station, StationHandlerRenderer } from './renderer-stations';
 export { RendererRouteHandler } from './renderer-routes';
 export type { Route, RouteHandlerRenderer } from './renderer-routes';
 
-export { RendererBlockHandler } from './renderer-blocks';
+export { RendererBlockHandler, UNGROUPED_BLOCK_COLOR } from './renderer-blocks';
 export type { BlockInfo, BlockTrack, BlockHandlerRenderer } from './renderer-blocks';
+
+export { RendererSegmentHandler } from './renderer-segments';
+export type { SegmentInfo, SegmentTrack, SegmentHandlerRenderer } from './renderer-segments';
 
 export { RendererPlatformHandler } from './renderer-platforms';
 export type { Platform, PlatformHandlerRenderer } from './renderer-platforms';

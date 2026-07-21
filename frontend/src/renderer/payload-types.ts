@@ -11,6 +11,7 @@
 
 import type { Track } from './renderer-tracks';
 import type { BlockInfo } from './renderer-blocks';
+import type { SegmentInfo } from './renderer-segments';
 import type { Platform } from './renderer-platforms';
 import type { Station } from './renderer-stations';
 
@@ -29,14 +30,14 @@ export interface SwitchPayloadEntry {
   diverge_length_cm?: number;
 }
 
-/** A power district in the network payload: an id + name + member block ids. */
-export interface PowerDistrictPayloadEntry {
-  district_id: string;
-  name?: string;
-  block_ids?: string[];
-}
-
-/** The layout half: geometry + config the reusable component draws and edits. */
+/**
+ * The layout half: geometry + config the reusable component draws and edits.
+ *
+ * The track model is tile -> segment -> block. `blocks` is the only entity map
+ * the server sends for the track model: each `BlockInfo` carries its power /
+ * occupancy state plus its member `segments` (the geometry). Per-segment
+ * geometry is read by flattening those members — see `segmentsFromBlocks`.
+ */
 export interface LayoutPayload {
   tracks?: Track[];
   blocks?: Record<string, BlockInfo>;
@@ -44,7 +45,25 @@ export interface LayoutPayload {
   stations?: Station[];
   switches?: Record<string, SwitchPayloadEntry | undefined>;
   tunnels?: TunnelPayloadEntry[];
-  power_districts?: PowerDistrictPayloadEntry[];
+}
+
+/**
+ * Flatten every block's member segments into a `segment_id -> SegmentInfo` map.
+ *
+ * The network payload nests geometry under the owning block, so this is the one
+ * place that derives the geometry index the segment overlays read. Keeping it a
+ * derived read means block membership and segment geometry can never drift.
+ */
+export function segmentsFromBlocks(
+  blocks: Record<string, BlockInfo> | null | undefined,
+): Record<string, SegmentInfo> {
+  const out: Record<string, SegmentInfo> = {};
+  for (const block of Object.values(blocks || {})) {
+    for (const segment of block?.segments || []) {
+      if (segment?.segment_id) out[segment.segment_id] = segment;
+    }
+  }
+  return out;
 }
 
 /** The simulation half: the runtime overlay the sim plugin draws on top. */

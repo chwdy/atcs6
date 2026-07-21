@@ -40,6 +40,9 @@ interface TrackData {
   type?: string;
   station_id?: string;
   signal_state?: unknown;
+  // A tile carries both axes: `segment_id` is its geometry membership,
+  // `block_section_id` is the block that owns that segment.
+  segment_id?: string;
   block_section_id?: string;
   is_switch?: boolean;
 }
@@ -325,7 +328,7 @@ export class ConstructionPathfinder {
   // facing edge to count as connected. Cost is 1 per hop (shortest = fewest
   // tiles). With stopAtSwitches / stopAtCrossings the walk refuses to enter (or
   // leave) switch / crossing tiles — used by block/platform, which cannot
-  // contain them (see validateBlockTile).
+  // contain them (see validateSegmentTile).
   followExistingNeighbors(
     trackByKey: Map<string, TrackData>,
     opts: { stopAtSwitches?: boolean; stopAtCrossings?: boolean } = {}
@@ -1421,7 +1424,7 @@ export function isCrossingForBlock(trackBits: number): boolean {
   return trackBits === 24 || trackBits === 36;
 }
 
-export function validateBlockTile(track: TrackData | null | undefined): {
+export function validateSegmentTile(track: TrackData | null | undefined): {
   valid: boolean;
   reason: string | null;
 } {
@@ -1440,7 +1443,7 @@ export function validateBlockTile(track: TrackData | null | undefined): {
   return { valid: true, reason: null };
 }
 
-export function validateBlockPath(
+export function validateSegmentPath(
   path: Point[],
   tracks: TrackData[] | null | undefined,
   mode = 'create'
@@ -1448,12 +1451,12 @@ export function validateBlockPath(
   valid: boolean;
   warnings: string[];
   errors: string[];
-  blocksInPath: string[];
+  segmentsInPath: string[];
   signalsInPath: Array<{ x: number; y: number; track: TrackData }>;
 } {
   const warnings: string[] = [];
   const errors: string[] = [];
-  const blocksInPath = new Set<string>();
+  const segmentsInPath = new Set<string>();
   const signalsInPath: Array<{ x: number; y: number; track: TrackData }> = [];
   const trackMap = new Map<string, TrackData>();
 
@@ -1464,15 +1467,18 @@ export function validateBlockPath(
   let hasSignal = false;
   for (const pos of path) {
     const track = trackMap.get(`${pos.x},${pos.y}`);
-    const validation = validateBlockTile(track);
+    const validation = validateSegmentTile(track);
 
     if (!validation.valid) {
       errors.push(`(${pos.x},${pos.y}): ${validation.reason}`);
       continue;
     }
 
-    if (track && track.block_section_id) {
-      blocksInPath.add(track.block_section_id);
+    // Geometry membership is the SEGMENT axis — every tile also has an owning
+    // block, so reading `block_section_id` here would report "already assigned"
+    // for tiles that carry no geometry yet.
+    if (track && track.segment_id) {
+      segmentsInPath.add(track.segment_id);
     }
 
     if (track && (track.signal_state || track.type === 'signal')) {
@@ -1482,13 +1488,13 @@ export function validateBlockPath(
   }
 
   if (mode === 'create') {
-    if (blocksInPath.size > 0) {
-      errors.push(`Path contains tracks already assigned to block(s): ${[...blocksInPath].join(', ')}`);
+    if (segmentsInPath.size > 0) {
+      errors.push(`Path contains tracks already assigned to segment(s): ${[...segmentsInPath].join(', ')}`);
     }
   } else if (mode === 'extend') {
     const startTrack = trackMap.get(`${path[0].x},${path[0].y}`);
-    if (!startTrack || !startTrack.block_section_id) {
-      errors.push('Extend mode must start on a track that already has a block assigned');
+    if (!startTrack || !startTrack.segment_id) {
+      errors.push('Extend mode must start on a track that already has a segment assigned');
     }
   }
 
@@ -1504,7 +1510,7 @@ export function validateBlockPath(
     valid: errors.length === 0,
     warnings,
     errors,
-    blocksInPath: [...blocksInPath],
+    segmentsInPath: [...segmentsInPath],
     signalsInPath,
   };
 }

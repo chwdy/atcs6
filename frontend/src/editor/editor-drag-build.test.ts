@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { pathToTracks, validateBlockPath } from '../lib/pathfinders';
+import { pathToTracks, validateSegmentPath } from '../lib/pathfinders';
 import { showToast } from '../lib/toast';
 import { DragBuildHandler } from './editor-drag-build';
 
@@ -17,7 +17,7 @@ vi.mock('../lib/graph-search', () => ({ graphSearch: vi.fn(() => ({ path: null, 
 vi.mock('../lib/pathfinders', () => ({
   pathToTracks: vi.fn(() => []),
   tileSkipsSegment: vi.fn(() => false),
-  validateBlockPath: vi.fn(() => ({ valid: true, errors: [], warnings: [], signalsInPath: [], blocksInPath: [] })),
+  validateSegmentPath: vi.fn(() => ({ valid: true, errors: [], warnings: [], signalsInPath: [], segmentsInPath: [] })),
   traceNodeKey: (n: any) => `${n.x},${n.y},${n.entry}`,
 }));
 
@@ -46,18 +46,18 @@ function makeDragEditor(overrides: any = {}): any {
     },
     api: {
       addTracksBulk: vi.fn().mockResolvedValue(undefined),
-      createBlock: vi.fn().mockResolvedValue(undefined),
-      addTracksToBlock: vi.fn().mockResolvedValue(undefined),
-      extendBlock: vi.fn().mockResolvedValue({}),
+      createSegment: vi.fn().mockResolvedValue(undefined),
+      addTracksToSegment: vi.fn().mockResolvedValue(undefined),
+      extendSegment: vi.fn().mockResolvedValue({}),
       createPlatform: vi.fn().mockResolvedValue(undefined),
       extendPlatform: vi.fn().mockResolvedValue(undefined),
       removePlatformTile: vi.fn().mockResolvedValue(undefined),
-      removeBlockTiles: vi.fn().mockResolvedValue({ removed: 0, errors: [] }),
+      removeSegmentTiles: vi.fn().mockResolvedValue({ removed: 0, errors: [] }),
       ...apiOverrides,
     },
-    showBlockModal: vi.fn().mockResolvedValue(null),
+    showSegmentModal: vi.fn().mockResolvedValue(null),
     showPlatformModal: vi.fn().mockResolvedValue(null),
-    refreshBlocksList: vi.fn().mockResolvedValue(undefined),
+    refreshSegmentsList: vi.fn().mockResolvedValue(undefined),
     refreshAndSelect: vi.fn().mockResolvedValue(undefined),
     ...rest,
   };
@@ -66,8 +66,8 @@ function makeDragEditor(overrides: any = {}): any {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(pathToTracks).mockReturnValue([]);
-  vi.mocked(validateBlockPath).mockReturnValue({
-    valid: true, errors: [], warnings: [], signalsInPath: [], blocksInPath: [],
+  vi.mocked(validateSegmentPath).mockReturnValue({
+    valid: true, errors: [], warnings: [], signalsInPath: [], segmentsInPath: [],
   } as any);
 });
 
@@ -99,7 +99,7 @@ describe('updatePreviewPath — preview dispatch by tool', () => {
 
   it('a build-tool drag with no legal route shows the red "invalid" attempt-line', () => {
     const ed = makeDragEditor({
-      selectedTool: 'block',
+      selectedTool: 'segment',
       dragStart: { x: 0, y: 0 },
       dragEnd: { x: 3, y: 0 },
       _tracksByKey: vi.fn(() => new Map()), // endpoints not on existing track → no route
@@ -140,33 +140,33 @@ describe('commitDragBuild — commit dispatch and safety gates', () => {
     expect(ed.refreshAndSelect).toHaveBeenCalledWith(null);
   });
 
-  it('block tool refuses an invalid block — toasts and creates nothing', async () => {
-    vi.mocked(validateBlockPath).mockReturnValue({
-      valid: false, errors: ['bad block'], warnings: [], signalsInPath: [], blocksInPath: [],
+  it('segment tool refuses an invalid segment — toasts and creates nothing', async () => {
+    vi.mocked(validateSegmentPath).mockReturnValue({
+      valid: false, errors: ['bad segment'], warnings: [], signalsInPath: [], segmentsInPath: [],
     } as any);
     const ed = makeDragEditor({
-      selectedTool: 'block',
+      selectedTool: 'segment',
       previewPath: [{ x: 0, y: 0 }, { x: 1, y: 0 }],
     });
 
     await new DragBuildHandler(ed).commitDragBuild();
 
     expect(showToast).toHaveBeenCalled();
-    expect(ed.api.createBlock).not.toHaveBeenCalled();
+    expect(ed.api.createSegment).not.toHaveBeenCalled();
     expect(ed.refreshAndSelect).not.toHaveBeenCalled();
   });
 
-  it('block tool creates nothing when the create dialog is cancelled', async () => {
+  it('segment tool creates nothing when the create dialog is cancelled', async () => {
     const ed = makeDragEditor({
-      selectedTool: 'block',
+      selectedTool: 'segment',
       previewPath: [{ x: 0, y: 0 }, { x: 1, y: 0 }],
-      showBlockModal: vi.fn().mockResolvedValue(null), // user cancelled
+      showSegmentModal: vi.fn().mockResolvedValue(null), // user cancelled
     });
 
     await new DragBuildHandler(ed).commitDragBuild();
 
-    expect(ed.showBlockModal).toHaveBeenCalled();
-    expect(ed.api.createBlock).not.toHaveBeenCalled();
+    expect(ed.showSegmentModal).toHaveBeenCalled();
+    expect(ed.api.createSegment).not.toHaveBeenCalled();
   });
 
   it('an empty drag commits nothing', async () => {

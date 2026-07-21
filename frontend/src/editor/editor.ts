@@ -18,7 +18,7 @@ import {
   ConstructionPathfinder,
   pathToTracks,
   tileSkipsSegment,
-  validateBlockPath,
+  validateSegmentPath,
   getValidSignalDirections,
 } from '../lib/pathfinders';
 import {
@@ -28,10 +28,11 @@ import {
   applyStructuralLock,
 } from '../lib/helpers';
 import { FORBIDDEN_TRACK_BITS, isSquareCornerSwitch } from '../lib/constants';
-import { BlockEditorHandler } from './editor-blocks';
+import { blockColorCss } from '../lib/block-color';
+import { SegmentEditorHandler } from './editor-segments';
 import { SignalEditorHandler } from './editor-signals';
 import { PlatformEditorHandler, StationGroupEditorHandler } from './editor-stations';
-import { PowerDistrictEditorHandler } from './editor-power-districts';
+import { BlockGroupingEditorHandler } from './editor-block-grouping';
 // Sim-editor handlers are provided by the SimEditorPlugin (sim-plugin.ts), not
 // instantiated by the core editor — imported as types only so a layout-only
 // build does not pull in their code.
@@ -95,8 +96,13 @@ export class Editor {
   lastMouseY: number;
   selectedElement: any;
   cachedNetwork: any;
+  cachedSegments: any[];
+  selectedSegmentId: string | null;
+  // Lazy per-block cache on the OTHER axis (power / occupancy). Signals monitor
+  // blocks, so the signal editor fills this from `getBlock` on demand; it is
+  // deliberately separate from `cachedSegments` so a block id and a segment id
+  // can never be looked up in the same map.
   cachedBlocks: any[];
-  selectedBlockId: string | null;
   hoverPosition: any;
   hoverValid: boolean;
   previewSignalDirection: string | null;
@@ -113,13 +119,13 @@ export class Editor {
   traceSelectState: any;
   activeMode: any;
   pathfinder: ConstructionPathfinder;
-  blockHandler: BlockEditorHandler;
+  segmentHandler: SegmentEditorHandler;
   signalHandler: SignalEditorHandler;
   platformHandler: PlatformEditorHandler;
   stationGroupHandler: StationGroupEditorHandler;
-  powerDistrictHandler: PowerDistrictEditorHandler;
-  // The district the assign tool targets (set when a district detail is open).
-  _activeDistrictId: string | null = null;
+  blockGroupingHandler: BlockGroupingEditorHandler;
+  // The block the assign tool targets (set when a block detail is open).
+  _activeBlockId: string | null = null;
   // Sim handlers — present only when the SimEditorPlugin is registered.
   trainHandler?: TrainEditorHandler;
   pathHandler?: PathEditorHandler;
@@ -182,8 +188,9 @@ export class Editor {
     this._networkReady = new Promise<void>((resolve) => {
       this._resolveNetworkReady = resolve;
     });
-    this.cachedBlocks = []; // Block Manager cache
-    this.selectedBlockId = null; // Currently selected block in Block Manager
+    this.cachedSegments = []; // Segment geometry cache
+    this.selectedSegmentId = null; // Currently selected segment
+    this.cachedBlocks = []; // Lazy block cache (power / occupancy axis)
 
     // Hover preview for signal/platform tools
     this.hoverPosition = null;
@@ -237,11 +244,11 @@ export class Editor {
     this.activeMode = null;
 
     this.pathfinder = new ConstructionPathfinder();
-    this.blockHandler = new BlockEditorHandler(this);
+    this.segmentHandler = new SegmentEditorHandler(this);
     this.signalHandler = new SignalEditorHandler(this);
     this.platformHandler = new PlatformEditorHandler(this);
     this.stationGroupHandler = new StationGroupEditorHandler(this);
-    this.powerDistrictHandler = new PowerDistrictEditorHandler(this);
+    this.blockGroupingHandler = new BlockGroupingEditorHandler(this);
     // Sim handlers (train/path/route/routeRun/speedProfile) are instantiated by
     // the SimEditorPlugin via registerPlugin(), not here — see sim-plugin.ts.
     this.switchHandler = new SwitchEditorHandler(this);
@@ -268,8 +275,8 @@ export class Editor {
     // the scale (zoom buttons, wheel, Fit, initial framing). The camera emits
     // onChange on every viewport mutation.
     this.renderer.camera.onChange(() => this._syncZoomLabel());
-    this.setupBlockManager();
-    this._currentEditorType = null; // 'block', 'signal', or 'platform'
+    this.setupSegmentManager();
+    this._currentEditorType = null; // 'segment', 'signal', or 'platform'
     this._currentEditorId = null; // The ID of the item being edited
 
     this.setupSecondarySidebar();
@@ -338,15 +345,15 @@ export class Editor {
   // the set — the dispatcher edits those freely while simulating.
   reapplyStructuralLock(): void {
     const STRUCTURAL = new Set([
-      'block',
+      'segment',
       'switch',
       'signal',
       'tunnel',
       'platform',
       'station-group-list',
       'station-group-detail',
-      'power-district-list',
-      'power-district-detail',
+      'block-list',
+      'block-detail',
     ]);
     if (this._currentEditorType && STRUCTURAL.has(this._currentEditorType)) {
       applyStructuralLock(this.$id('secondary-sidebar-content'));
@@ -392,9 +399,9 @@ export class Editor {
         this.showTileEditor(tile);
         return true;
       }
-      case 'block':
+      case 'segment':
         if (!id) return false;
-        await this.showBlockEditor(id);
+        await this.showSegmentEditor(id);
         return true;
       case 'signal':
         if (!id) return false;
@@ -439,12 +446,12 @@ export class Editor {
       case 'station-group-list':
         await this.showStationsPanel();
         return true;
-      case 'power-district-detail':
+      case 'block-detail':
         if (!id) return false;
-        await this.powerDistrictHandler.showDetail(id);
+        await this.blockGroupingHandler.showDetail(id);
         return true;
-      case 'power-district-list':
-        await this.showPowerDistrictsPanel();
+      case 'block-list':
+        await this.showBlocksPanel();
         return true;
       case 'routes-list':
         await this.showRoutesPanel();
@@ -483,10 +490,10 @@ export class Editor {
     const id = entityView?.editorId || entityView?.id || null;
 
     switch (type) {
-      case 'block':
+      case 'segment':
         return [
-          { label: 'Blocks', editorType: null, editorId: null },
-          { label: id || 'Block', editorType: 'block', editorId: id },
+          { label: 'Segments', editorType: null, editorId: null },
+          { label: id || 'Segment', editorType: 'segment', editorId: id },
         ];
       case 'signal':
         return [
@@ -589,9 +596,11 @@ export class Editor {
     let itemExists: any = false;
 
     switch (this._currentEditorType) {
-      case 'block':
+      case 'segment':
         if (!id) return;
-        itemExists = this.cachedNetwork?.blocks && id in this.cachedNetwork.blocks;
+        itemExists = Object.values(this.cachedNetwork?.blocks || {}).some((b: any) =>
+          (b?.segment_ids || []).includes(id)
+        );
         break;
       case 'signal':
         if (!id) return;
@@ -610,11 +619,9 @@ export class Editor {
           Array.isArray(this.cachedNetwork?.station_groups) &&
           this.cachedNetwork.station_groups.some((s: any) => s.station_id === id);
         break;
-      case 'power-district-detail':
+      case 'block-detail':
         if (!id) return;
-        itemExists =
-          Array.isArray(this.cachedNetwork?.power_districts) &&
-          this.cachedNetwork.power_districts.some((d: any) => d.district_id === id);
+        itemExists = !!this.cachedNetwork?.blocks?.[id];
         break;
       case 'train':
       case 'train-control':
@@ -662,8 +669,8 @@ export class Editor {
     }
   }
 
-  async showBlockEditor(blockId: any): Promise<any> {
-    return this.blockHandler.showEditor(blockId);
+  async showSegmentEditor(segmentId: any): Promise<any> {
+    return this.segmentHandler.showEditor(segmentId);
   }
 
   showPlatformEditor(platformId: any): any {
@@ -678,8 +685,8 @@ export class Editor {
     return this.stationGroupHandler.showPanel();
   }
 
-  async showPowerDistrictsPanel(): Promise<any> {
-    return this.powerDistrictHandler.showPanel();
+  async showBlocksPanel(): Promise<any> {
+    return this.blockGroupingHandler.showPanel();
   }
 
   showAddTrainDialog(): any {
@@ -795,29 +802,29 @@ export class Editor {
       },
 
       {
-        id: 'block', label: 'New', icon: 'ti ti-plus', title: 'Create New Block',
-        group: 'Block', availableIn: ['edit'], kind: { type: 'tool' },
+        id: 'segment', label: 'New', icon: 'ti ti-plus', title: 'Create New Segment',
+        group: 'Segment', availableIn: ['edit'], kind: { type: 'tool' },
       },
       {
-        id: 'extend-block', label: 'Extend', icon: 'ti ti-arrows-horizontal',
-        title: 'Extend Existing Block',
-        group: 'Block', availableIn: ['edit'], kind: { type: 'tool' },
+        id: 'extend-segment', label: 'Extend', icon: 'ti ti-arrows-horizontal',
+        title: 'Extend Existing Segment',
+        group: 'Segment', availableIn: ['edit'], kind: { type: 'tool' },
       },
       {
-        id: 'remove-block-tile', label: 'Remove', icon: 'ti ti-minus',
-        title: 'Remove Block Tile',
-        group: 'Block', availableIn: ['edit'], kind: { type: 'tool' },
+        id: 'remove-segment-tile', label: 'Remove', icon: 'ti ti-minus',
+        title: 'Remove Segment Tile',
+        group: 'Segment', availableIn: ['edit'], kind: { type: 'tool' },
       },
 
       {
-        id: 'power-districts-panel', label: 'Districts', icon: 'ti ti-bolt',
-        title: 'Power Districts — group blocks onto one power feed',
+        id: 'blocks-panel', label: 'Blocks', icon: 'ti ti-bolt',
+        title: 'Blocks — group segments onto one power feed',
         group: 'Power', availableIn: ['edit', 'sim'],
-        kind: { type: 'action', run: () => this.showPowerDistrictsPanel() },
+        kind: { type: 'action', run: () => this.showBlocksPanel() },
       },
       {
-        id: 'power-district-assign', label: 'Assign', icon: 'ti ti-click',
-        title: 'Assign blocks to the open power district (click a block to add it, click a member again to remove it)',
+        id: 'block-assign', label: 'Assign', icon: 'ti ti-click',
+        title: 'Assign segments to the open block (click a segment to add it, click a member again to remove it)',
         group: 'Power', availableIn: ['edit'], kind: { type: 'tool' },
       },
     ];
@@ -1023,7 +1030,7 @@ export class Editor {
       // Left mouse + path-based tools = start drag
       else if (
         e.button === 0 &&
-        ['track', 'block', 'extend-block', 'platform', 'extend-platform', 'remove-platform-tile', 'remove-block-tile'].includes(
+        ['track', 'segment', 'extend-segment', 'platform', 'extend-platform', 'remove-platform-tile', 'remove-segment-tile'].includes(
           this.selectedTool
         )
       ) {
@@ -1226,12 +1233,12 @@ export class Editor {
           const isSingleClick = this.dragStart.x === this.dragEnd.x && this.dragStart.y === this.dragEnd.y;
 
           if (
-            ['remove-platform-tile', 'remove-block-tile'].includes(this.selectedTool) &&
+            ['remove-platform-tile', 'remove-segment-tile'].includes(this.selectedTool) &&
             isSingleClick
           ) {
             await this.handleRemovalClick(this.dragStart);
           } else if (
-            ['block', 'track', 'extend-block', 'platform', 'extend-platform', 'remove-platform-tile', 'remove-block-tile'].includes(
+            ['segment', 'track', 'extend-segment', 'platform', 'extend-platform', 'remove-platform-tile', 'remove-segment-tile'].includes(
               this.selectedTool
             )
           ) {
@@ -1332,10 +1339,10 @@ export class Editor {
         if (handled) return;
       }
 
-      // Power-district assign tool: click a block to toggle its membership in
-      // the district open in the detail panel.
-      if (this.selectedTool === 'power-district-assign') {
-        await this.powerDistrictHandler.handleAssignClick(gridPos);
+      // Block assign tool: click a segment to toggle its membership in the
+      // block open in the detail panel.
+      if (this.selectedTool === 'block-assign') {
+        await this.blockGroupingHandler.handleAssignClick(gridPos);
         return;
       }
 
@@ -1600,7 +1607,7 @@ export class Editor {
     this.isDraggingBuild = false;
     this.hoverPosition = null;
     this.hoverValid = false;
-    this.renderer.showBlockColorsOnly = false;
+    this.renderer.showSegmentColorsOnly = false;
     this.renderer.setBuildPreview(null);
     this.renderer.setHoverPreview(null);
   }
@@ -1651,21 +1658,22 @@ export class Editor {
   }
 
   // Group the selected tiles by the entity each belongs to, so the renderer can
-  // trace one coloured perimeter per entity (block / platform / switch / signal)
-  // instead of a field of tiles. A tile can land in several groups (a switch
-  // tile is also in a block); each group carries only its own tiles, so its
-  // outline is exactly that entity's footprint. Colours match the
-  // selection-panel chips. The block outline is thin, light, and drawn last
+  // trace one coloured perimeter per entity (segment / platform / switch /
+  // signal) instead of a field of tiles. A tile can land in several groups (a
+  // switch tile is also in a segment); each group carries only its own tiles, so
+  // its outline is exactly that entity's footprint. Colours match the
+  // selection-panel chips. The segment outline is thin, light, and drawn last
   // (on top) so it stays a delicate border; platform / switch / signal are a
-  // touch wider and drawn first, so they still peek around the block when they
-  // share its tiles.
+  // touch wider and drawn first, so they still peek around the segment when they
+  // share its tiles. The outlined geometry unit is the SEGMENT — a block groups
+  // segments and has no footprint of its own to trace.
   _buildSelectionOutlineGroups(keys: Set<string>): any[] {
     if (!keys || keys.size === 0) return [];
     const tracks = this.cachedNetwork?.tracks || [];
     const byKey = new Map<string, any>();
     for (const t of tracks) byKey.set(`${t.x},${t.y}`, t);
 
-    const blocks = new Map<string, Set<string>>();
+    const segments = new Map<string, Set<string>>();
     const platforms = new Map<string, Set<string>>();
     const switches = new Map<string, Set<string>>();
     const signals = new Map<string, Set<string>>();
@@ -1680,7 +1688,7 @@ export class Editor {
     for (const key of keys) {
       const t = byKey.get(key);
       if (!t) continue;
-      if (t.block_section_id) add(blocks, t.block_section_id, key);
+      if (t.segment_id) add(segments, t.segment_id, key);
       // A tile's `station_id` holds the platform it belongs to (historically
       // named; see _summarize in editor-multi-select.ts).
       if (t.station_id) add(platforms, t.station_id, key);
@@ -1696,7 +1704,7 @@ export class Editor {
         return fallback;
       }
     };
-    // Mix a hex colour toward white so the block border reads light, not bold.
+    // Mix a hex colour toward white so the segment border reads light, not bold.
     const lighten = (hex: string, amt: number): string => {
       const m = hex.trim().replace('#', '');
       const full = m.length === 3 ? m.split('').map((c) => c + c).join('') : m;
@@ -1705,19 +1713,19 @@ export class Editor {
       const mix = (c: number): number => Math.round(c + (255 - c) * amt);
       return `rgb(${mix(ch(0))}, ${mix(ch(2))}, ${mix(ch(4))})`;
     };
-    const blockColor = lighten(hue('--accent-hover', '#9466ff'), 0.45);
+    const segmentColor = lighten(hue('--accent-hover', '#9466ff'), 0.45);
     const platformColor = hue('--info-color', '#00d4ff');
     const switchColor = hue('--warning-color', '#ffcd1e');
     const signalColor = hue('--success-color', '#04d361');
 
-    // Draw platform / switch / signal first (a touch wider) and the block last
-    // (thin + light, on top) so the block stays a delicate border that never
+    // Draw platform / switch / signal first (a touch wider) and the segment last
+    // (thin + light, on top) so the segment stays a delicate border that never
     // hides the entities sharing its tiles.
     const groups: any[] = [];
     for (const s of platforms.values()) groups.push({ keys: s, color: platformColor, width: 3.5, dash: [7, 5] });
     for (const s of switches.values()) groups.push({ keys: s, color: switchColor, width: 3.5, dash: [2, 4] });
     for (const s of signals.values()) groups.push({ keys: s, color: signalColor, width: 3.5, dash: [7, 4, 2, 4] });
-    for (const s of blocks.values()) groups.push({ keys: s, color: blockColor, width: 2, dash: [] });
+    for (const s of segments.values()) groups.push({ keys: s, color: segmentColor, width: 2, dash: [] });
     return groups;
   }
 
@@ -1740,24 +1748,24 @@ export class Editor {
     this.renderer.requestRedraw();
   }
 
-  setupBlockManager(): void {
-    this.blockHandler.setup();
+  setupSegmentManager(): void {
+    this.segmentHandler.setup();
   }
 
-  async refreshBlocksList(): Promise<any> {
-    return this.blockHandler.refreshList();
+  async refreshSegmentsList(): Promise<any> {
+    return this.segmentHandler.refreshList();
   }
 
-  async deleteBlock(blockId: any): Promise<any> {
-    return this.blockHandler.delete(blockId);
+  async deleteSegment(segmentId: any): Promise<any> {
+    return this.segmentHandler.delete(segmentId);
   }
 
-  getBlockColor(blockId: any): any {
-    return this.blockHandler.getColor(blockId);
+  getSegmentColor(segmentId: any): any {
+    return this.segmentHandler.getColor(segmentId);
   }
 
-  showBlockModal(options: any): any {
-    return this.blockHandler.showModal(options);
+  showSegmentModal(options: any): any {
+    return this.segmentHandler.showModal(options);
   }
 
   showPlatformModal(options: any): any {
@@ -1841,24 +1849,24 @@ export class Editor {
         } catch (err: any) {
           showToast(`Failed to remove platform tile: ${err.message}`, 'error', 5000);
         }
-      } else if (this.selectedTool === 'remove-block-tile') {
-        if (!existingTrack.block_section_id) {
-          showToast('No block at this position', 'error', 3000);
+      } else if (this.selectedTool === 'remove-segment-tile') {
+        if (!existingTrack.segment_id) {
+          showToast('No segment at this position', 'error', 3000);
           return;
         }
 
         try {
-          const result = await this.api.removeBlockTiles(existingTrack.block_section_id, [
+          const result = await this.api.removeSegmentTiles(existingTrack.segment_id, [
             [gridPos.x, gridPos.y],
           ]);
 
           if (result.removed > 0) {
-            showToast('Block tile removed', 'success');
+            showToast('Segment tile removed', 'success');
           } else if (result.errors && result.errors.length > 0) {
             showToast(`Cannot remove: ${result.errors[0]}`, 'error', 5000);
           }
         } catch (err: any) {
-          showToast(`Failed to remove block tile: ${err.message}`, 'error', 5000);
+          showToast(`Failed to remove segment tile: ${err.message}`, 'error', 5000);
         }
       }
 
@@ -2155,12 +2163,22 @@ export class Editor {
         onSelect: () => this.signalHandler.showSignalEditor(signal.signal_id),
       });
     }
+    // A tile belongs to a segment (geometry) and to the block that owns it
+    // (power / occupancy). Offer both, each opening its own editor.
+    if (track.segment_id) {
+      entityItems.push({
+        label: track.segment_id,
+        detail: 'Segment',
+        icon: 'ti ti-square-dashed',
+        onSelect: () => this.segmentHandler.showEditor(track.segment_id),
+      });
+    }
     if (track.block_section_id) {
       entityItems.push({
         label: track.block_section_id,
         detail: 'Block',
-        icon: 'ti ti-square-dashed',
-        onSelect: () => this.blockHandler.showEditor(track.block_section_id),
+        icon: 'ti ti-bolt',
+        onSelect: () => this.blockGroupingHandler.showDetail(track.block_section_id),
       });
     }
     if (track.station_id) {
@@ -2253,7 +2271,7 @@ export class Editor {
         }
 
         if (track.signals && track.signals.length > 0) {
-          await this.refreshBlocksList();
+          await this.refreshSegmentsList();
         }
 
         this.selectedElement = track;
@@ -2479,10 +2497,30 @@ export class Editor {
             }
 
             ${
+              track.segment_id
+                ? (() => {
+                    const segmentColor = this.getSegmentColor(track.segment_id);
+                    return `
+                <div class="property-group-header">Segment</div>
+                <div class="property-item-row">
+                    <div class="entity-card" style="--card-accent: ${segmentColor}">
+                        <div class="entity-card-body">
+                            <span class="entity-card-id">${track.segment_id}</span>
+                            <span class="entity-card-meta">geometry</span>
+                        </div>
+                        <button class="edit-btn edit-segment-btn" data-segment-id="${track.segment_id}">Edit</button>
+                    </div>
+                </div>
+                `;
+                  })()
+                : ''
+            }
+
+            ${
               track.block_section_id
                 ? (() => {
-                    const block = this.cachedBlocks && this.cachedBlocks.find((b: any) => b.block_id === track.block_section_id);
-                    const blockColor = this.getBlockColor(track.block_section_id);
+                    const block = this.cachedNetwork?.blocks?.[track.block_section_id];
+                    const blockColor = blockColorCss(track.block_section_id);
                     const stateColor = block ? getBlockStateColor(block.state) : 'var(--text-secondary)';
                     return `
                 <div class="property-group-header">Block</div>
@@ -2595,17 +2633,30 @@ export class Editor {
     return this.signalHandler.showSignalEditor(signalId);
   }
 
-  // Initialize block summary edit button handler
+  // Initialize the segment (geometry) and block (grouping) summary edit buttons.
+  // A tile belongs to both: its segment carries geometry, its block carries
+  // power/occupancy, so each card opens its own editor.
   initBlockEditor(track: any): void {
-    if (!track.block_section_id) return;
+    if (track.segment_id) {
+      const segmentBtn = this.$q(
+        `.edit-segment-btn[data-segment-id="${track.segment_id}"]`
+      ) as HTMLElement | null;
+      if (segmentBtn) {
+        segmentBtn.onclick = () => {
+          this.showSegmentEditor(track.segment_id);
+        };
+      }
+    }
 
-    const editBtn = this.$q(
-      `.edit-block-btn[data-block-id="${track.block_section_id}"]`
-    ) as HTMLElement | null;
-    if (editBtn) {
-      editBtn.onclick = () => {
-        this.showBlockEditor(track.block_section_id);
-      };
+    if (track.block_section_id) {
+      const blockBtn = this.$q(
+        `.edit-block-btn[data-block-id="${track.block_section_id}"]`
+      ) as HTMLElement | null;
+      if (blockBtn) {
+        blockBtn.onclick = () => {
+          this.blockGroupingHandler.showDetail(track.block_section_id);
+        };
+      }
     }
   }
 

@@ -14,7 +14,7 @@ import { showConfirmModal } from '../lib/helpers';
 import {
   pathToTracks,
   tileSkipsSegment,
-  validateBlockPath,
+  validateSegmentPath,
   traceNodeKey,
   type TraceNode,
 } from '../lib/pathfinders';
@@ -32,7 +32,7 @@ export class DragBuildHandler {
     if (!this.editor.dragStart || !this.editor.dragEnd) return;
 
     const dragToolSet = [
-      'track', 'block', 'extend-block', 'platform', 'extend-platform', 'remove-platform-tile', 'remove-block-tile',
+      'track', 'segment', 'extend-segment', 'platform', 'extend-platform', 'remove-platform-tile', 'remove-segment-tile',
     ];
     if (dragToolSet.includes(this.editor.selectedTool)) {
       const isTrackTool = this.editor.selectedTool === 'track';
@@ -113,15 +113,15 @@ export class DragBuildHandler {
       } else if (this.editor.previewTracks && this.editor.previewTracks.length > 0) {
         this.editor.renderer.setBuildPreview({ kind: 'tracks', tracks: this.editor.previewTracks });
       } else if (
-        ['remove-platform-tile', 'remove-block-tile'].includes(this.editor.selectedTool) &&
+        ['remove-platform-tile', 'remove-segment-tile'].includes(this.editor.selectedTool) &&
         this.editor.previewPath
       ) {
         const tracks = this.editor.cachedNetwork?.tracks || [];
         const trackKeys = new Set(tracks.map((t: any) => `${t.x},${t.y}`));
         const filtered = this.editor.previewPath.filter((p: any) => trackKeys.has(`${p.x},${p.y}`));
         this.editor.renderer.setBuildPreview({ kind: 'eraser', path: filtered });
-      } else if (['block', 'extend-block', 'platform', 'extend-platform'].includes(this.editor.selectedTool) && this.editor.previewPath) {
-        this.editor.renderer.setBuildPreview({ kind: 'block', path: this.editor.previewPath });
+      } else if (['segment', 'extend-segment', 'platform', 'extend-platform'].includes(this.editor.selectedTool) && this.editor.previewPath) {
+        this.editor.renderer.setBuildPreview({ kind: 'segment', path: this.editor.previewPath });
       } else if (this.editor.previewPath) {
         this.editor.renderer.setBuildPreview({ kind: 'path', path: this.editor.previewPath });
       } else {
@@ -152,23 +152,23 @@ export class DragBuildHandler {
           forcedEndSegment: this.editor.forcedEndSegment,
         });
         await this.editor.api.addTracksBulk(tracks);
-      } else if (this.editor.selectedTool === 'block') {
+      } else if (this.editor.selectedTool === 'segment') {
         if (!this.editor.previewPath || this.editor.previewPath.length === 0) return;
 
         const tracks = this.editor.cachedNetwork?.tracks || [];
-        const validation = validateBlockPath(this.editor.previewPath, tracks, 'create');
+        const validation = validateSegmentPath(this.editor.previewPath, tracks, 'create');
 
         if (!validation.valid) {
-          const errorMsg = 'Cannot create block:\n' + validation.errors.join('\n');
+          const errorMsg = 'Cannot create segment:\n' + validation.errors.join('\n');
           showToast(errorMsg, 'error', 5000);
-          console.error('[Editor] Block creation validation failed:', validation.errors);
+          console.error('[Editor] Segment creation validation failed:', validation.errors);
           return;
         }
 
         if (validation.warnings.length > 0) {
           const proceed = await showConfirmModal({
             title: 'Proceed with Warnings',
-            message: 'Block creation reported warnings.',
+            message: 'Segment creation reported warnings.',
             detail: `${validation.warnings.join('\n')}\n\nProceed anyway?`,
             confirmText: 'Proceed',
             confirmVariant: 'primary',
@@ -176,7 +176,7 @@ export class DragBuildHandler {
           if (!proceed) return;
         }
 
-        const result = await this.editor.showBlockModal({
+        const result = await this.editor.showSegmentModal({
           mode: 'create',
           trackCount: this.editor.previewPath.length,
           anchorTiles: this.editor.previewPath.map((p: any) => ({ x: p.x, y: p.y })),
@@ -185,31 +185,37 @@ export class DragBuildHandler {
         if (!result) return; // Cancelled
 
         try {
-          const blockOptions: Record<string, unknown> = {};
-          if (result.maxSpeed) blockOptions.speed_limit_kmh = result.maxSpeed;
-          if (result.minRadius != null) blockOptions.min_radius_cm = result.minRadius;
-          if (result.slope != null) blockOptions.grade_percent = result.slope;
-          await this.editor.api.createBlock(result.blockId, result.name || '', blockOptions);
+          const segmentOptions: Record<string, unknown> = {};
+          if (result.maxSpeed) segmentOptions.speed_limit_kmh = result.maxSpeed;
+          if (result.minRadius != null) segmentOptions.min_radius_cm = result.minRadius;
+          if (result.slope != null) segmentOptions.grade_percent = result.slope;
 
+          // POST /api/segments creates the segment holding these tiles in one
+          // call, so there is no separate "add tracks" round trip.
           const positions = this.editor.previewPath.map((p: any) => [p.x, p.y]);
-          await this.editor.api.addTracksToBlock(result.blockId, positions);
+          await this.editor.api.createSegment(
+            result.segmentId,
+            positions,
+            result.name || '',
+            segmentOptions
+          );
 
-          await this.editor.refreshBlocksList();
+          await this.editor.refreshSegmentsList();
         } catch (err: any) {
-          console.error('[Editor] Failed to create block:', err);
-          showToast('Failed to create block: ' + err.message, 'error', 5000);
+          console.error('[Editor] Failed to create segment:', err);
+          showToast('Failed to create segment: ' + err.message, 'error', 5000);
           return;
         }
-      } else if (this.editor.selectedTool === 'extend-block') {
+      } else if (this.editor.selectedTool === 'extend-segment') {
         if (!this.editor.previewPath || this.editor.previewPath.length === 0) return;
 
         const tracks = this.editor.cachedNetwork?.tracks || [];
-        const validation = validateBlockPath(this.editor.previewPath, tracks, 'extend');
+        const validation = validateSegmentPath(this.editor.previewPath, tracks, 'extend');
 
         if (!validation.valid) {
-          const errorMsg = 'Cannot extend block:\n' + validation.errors.join('\n');
+          const errorMsg = 'Cannot extend segment:\n' + validation.errors.join('\n');
           showToast(errorMsg, 'error', 5000);
-          console.error('[Editor] Block extension validation failed:', validation.errors);
+          console.error('[Editor] Segment extension validation failed:', validation.errors);
           return;
         }
 
@@ -230,39 +236,39 @@ export class DragBuildHandler {
         const trackMap = new Map<string, any>();
         tracks.forEach((t: any) => trackMap.set(`${t.x},${t.y}`, t));
 
-        const targetBlockId = validation.blocksInPath.length > 0 ? validation.blocksInPath[0] : null;
+        const targetSegmentId = validation.segmentsInPath.length > 0 ? validation.segmentsInPath[0] : null;
         let newTileCount = this.editor.previewPath.length;
-        if (targetBlockId) {
+        if (targetSegmentId) {
           newTileCount = this.editor.previewPath.filter((pos: any) => {
             const track = trackMap.get(`${pos.x},${pos.y}`);
-            return !track || track.block_section_id !== targetBlockId;
+            return !track || track.segment_id !== targetSegmentId;
           }).length;
         }
 
-        const result = await this.editor.showBlockModal({
+        const result = await this.editor.showSegmentModal({
           mode: 'extend',
           trackCount: newTileCount,
-          existingBlocks: validation.blocksInPath,
+          existingSegments: validation.segmentsInPath,
         });
 
         if (!result) return; // Cancelled
 
         try {
           const positions = this.editor.previewPath.map((p: any) => [p.x, p.y]);
-          const hasOtherBlocks =
-            validation.blocksInPath.length > 1 ||
-            (validation.blocksInPath.length === 1 && validation.blocksInPath[0] !== result.blockId);
-          const apiResult = await this.editor.api.extendBlock(result.blockId, positions, hasSignals, hasOtherBlocks);
+          const hasOtherSegments =
+            validation.segmentsInPath.length > 1 ||
+            (validation.segmentsInPath.length === 1 && validation.segmentsInPath[0] !== result.segmentId);
+          const apiResult = await this.editor.api.extendSegment(result.segmentId, positions, hasSignals, hasOtherSegments);
 
           if (apiResult.invalidated_signals && apiResult.invalidated_signals.length > 0) {
             const count = apiResult.invalidated_signals.length;
-            showToast(`Block extended. ${count} signal(s) need reconfiguration.`, 'warning');
+            showToast(`Segment extended. ${count} signal(s) need reconfiguration.`, 'warning');
           }
 
-          await this.editor.refreshBlocksList();
+          await this.editor.refreshSegmentsList();
         } catch (err: any) {
-          console.error('[Editor] Failed to extend block:', err);
-          showToast('Failed to extend block: ' + err.message, 'error', 5000);
+          console.error('[Editor] Failed to extend segment:', err);
+          showToast('Failed to extend segment: ' + err.message, 'error', 5000);
           return;
         }
       } else if (this.editor.selectedTool === 'platform') {
@@ -374,44 +380,44 @@ export class DragBuildHandler {
         if (errorCount > 0) {
           showToast(`Failed to remove ${errorCount} tile(s):\n${errors.slice(0, 3).join('\n')}`, 'error', 5000);
         }
-      } else if (this.editor.selectedTool === 'remove-block-tile') {
+      } else if (this.editor.selectedTool === 'remove-segment-tile') {
         if (!this.editor.previewPath || this.editor.previewPath.length === 0) return;
 
         const tracks = this.editor.cachedNetwork?.tracks || [];
 
-        const blockGroups = new Map<string, any[]>();
+        const segmentGroups = new Map<string, any[]>();
         for (const pos of this.editor.previewPath) {
           const track = tracks.find((t: any) => t.x === pos.x && t.y === pos.y);
-          if (track && track.block_section_id) {
-            if (!blockGroups.has(track.block_section_id)) {
-              blockGroups.set(track.block_section_id, []);
+          if (track && track.segment_id) {
+            if (!segmentGroups.has(track.segment_id)) {
+              segmentGroups.set(track.segment_id, []);
             }
-            blockGroups.get(track.block_section_id)!.push([pos.x, pos.y]);
+            segmentGroups.get(track.segment_id)!.push([pos.x, pos.y]);
           }
         }
 
-        if (blockGroups.size === 0) {
-          showToast('No block tiles in selected path', 'error', 3000);
+        if (segmentGroups.size === 0) {
+          showToast('No segment tiles in selected path', 'error', 3000);
           return;
         }
 
         let totalSuccess = 0;
         const totalErrors = [];
 
-        for (const [blockId, positions] of blockGroups.entries()) {
+        for (const [segmentId, positions] of segmentGroups.entries()) {
           try {
-            const result = await this.editor.api.removeBlockTiles(blockId, positions);
+            const result = await this.editor.api.removeSegmentTiles(segmentId, positions);
             totalSuccess += result.removed || 0;
             if (result.errors && result.errors.length > 0) {
               totalErrors.push(...result.errors);
             }
           } catch (err: any) {
-            totalErrors.push(`Block ${blockId}: ${err.message}`);
+            totalErrors.push(`Segment ${segmentId}: ${err.message}`);
           }
         }
 
         if (totalSuccess > 0) {
-          showToast(`Removed ${totalSuccess} block tile(s)`, 'success');
+          showToast(`Removed ${totalSuccess} segment tile(s)`, 'success');
         }
         if (totalErrors.length > 0) {
           showToast(`Errors:\n${totalErrors.slice(0, 3).join('\n')}`, 'error', 5000);
@@ -427,7 +433,7 @@ export class DragBuildHandler {
   // Path for a block/platform/eraser drag: these operate ON existing track, so
   // they follow existing connectivity (never an empty tile) via graphSearch.
   // Blocks additionally cannot contain switches or crossings (see
-  // validateBlockTile), so the block tools stop at them — a drag that can only
+  // validateSegmentTile), so the segment tools stop at them — a drag that can only
   // be completed by crossing one finds no path, which surfaces as the red line.
   private _followExistingDragPath(): Array<{ x: number; y: number }> | null {
     const byKey = this.editor._tracksByKey();
@@ -435,7 +441,7 @@ export class DragBuildHandler {
     const g = this.editor.dragEnd;
     if (!byKey.has(`${s.x},${s.y}`) || !byKey.has(`${g.x},${g.y}`)) return null;
 
-    const isBlock = this.editor.selectedTool === 'block' || this.editor.selectedTool === 'extend-block';
+    const isBlock = this.editor.selectedTool === 'segment' || this.editor.selectedTool === 'extend-segment';
     const { path } = graphSearch<TraceNode>({
       seeds: [{ x: s.x, y: s.y, entry: '' }],
       key: traceNodeKey,

@@ -1,7 +1,15 @@
-// editor-blocks.ts — Block Editor Handler.
+// editor-segments.ts — Segment Editor Handler (the geometry editor).
 //
-// Migrated from static/js/editor-blocks.js (longterm_todo.md item #7, Wave 2).
-// Behavior is unchanged. Owned by the Editor (`new BlockEditorHandler(this)`).
+// A `Segment` is the geometry unit: the run of tiles you draw, plus its length,
+// min radius, grade and speed limit. Those edits go to `/api/segments`.
+//
+// Availability (disabled / manual), allowed travel direction and occupancy are
+// NOT geometry — they belong to the `Block` that owns this segment, so the
+// panel routes those reads/writes to `/api/blocks/<blockId>`. The two ids are
+// tracked separately throughout (`segmentId` vs `blockId`): for a single-segment
+// block they happen to be equal, which is exactly why they must never be mixed.
+//
+// Owned by the Editor (`new SegmentEditorHandler(this)`).
 
 import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
@@ -31,7 +39,7 @@ import {
   BLOCK_HW_SLOTS,
 } from '../ui/hardware-binding';
 
-export class BlockEditorHandler {
+export class SegmentEditorHandler {
   editor: EditorHost;
   _unsubscribe: (() => void) | null;
   _isUserInteracting: boolean;
@@ -46,46 +54,45 @@ export class BlockEditorHandler {
   get api(): any {
     return this.editor.api;
   }
-  get cachedBlocks(): any {
-    return this.editor.cachedBlocks;
+  get cachedSegments(): any {
+    return this.editor.cachedSegments;
   }
-  set cachedBlocks(value: any) {
-    this.editor.cachedBlocks = value;
+  set cachedSegments(value: any) {
+    this.editor.cachedSegments = value;
   }
-  get selectedBlockId(): any {
-    return this.editor.selectedBlockId;
+  get selectedSegmentId(): any {
+    return this.editor.selectedSegmentId;
   }
-  set selectedBlockId(value: any) {
-    this.editor.selectedBlockId = value;
+  set selectedSegmentId(value: any) {
+    this.editor.selectedSegmentId = value;
   }
   get selectedElement(): any {
     return this.editor.selectedElement;
   }
 
-  // === Block Manager Methods ===
+  // === Segment cache ===
 
   setup(): void {
-    // Block Manager UI has been removed - blocks are now managed via
-    // the secondary sidebar block editor. Keep the block cache refresh.
+    // There is no Segment Manager panel — segments are edited through the
+    // secondary sidebar editor below. Keep the segment cache refreshed.
     this.refreshList();
   }
 
   async refreshList(): Promise<void> {
     try {
-      const blocks = await this.api.getBlocks();
-      this.cachedBlocks = blocks;
-      // No longer renders to UI - Block Manager panel removed
+      const segments = await this.api.getSegments();
+      this.cachedSegments = segments;
     } catch (err) {
-      console.error('[BlockEditorHandler] Failed to refresh blocks:', err);
+      console.error('[SegmentEditorHandler] Failed to refresh segments:', err);
     }
   }
 
-  getColor(blockId: string): string {
+  getColor(segmentId: string): string {
     // Match renderer's HSL hash-based color generation
-    if (!blockId) return '#666';
+    if (!segmentId) return '#666';
     let hash = 0;
-    for (let i = 0; i < blockId.length; i++) {
-      hash = blockId.charCodeAt(i) + ((hash << 5) - hash);
+    for (let i = 0; i < segmentId.length; i++) {
+      hash = segmentId.charCodeAt(i) + ((hash << 5) - hash);
     }
     const hue = Math.abs(hash) % 360;
     return `hsl(${hue}, 70%, 50%)`;
@@ -108,53 +115,74 @@ export class BlockEditorHandler {
     return map[(state || '').toLowerCase()] || { accentClass: 'accent-info', chipClass: 'chip-info' };
   }
 
-  // === Block Editor Panel ===
+  // === Segment Editor Panel ===
 
-  async showEditor(blockId: string): Promise<void> {
+  async showEditor(segmentId: string): Promise<void> {
     // Track this editor for auto-refresh
-    this.editor._currentEditorType = 'block';
-    this.editor._currentEditorId = blockId;
+    this.editor._currentEditorType = 'segment';
+    this.editor._currentEditorId = segmentId;
 
-    // Fetch fresh block data from the API to ensure we have current state
-    let block;
+    // Fetch fresh segment geometry from the API to ensure we have current state
+    let segment;
     try {
-      block = await this.api.getBlock(blockId);
-      if (block.error) {
-        console.warn('[BlockEditorHandler] Block not found for editor:', blockId, block.error);
+      segment = await this.api.getSegment(segmentId);
+      if (segment.error) {
+        console.warn('[SegmentEditorHandler] Segment not found for editor:', segmentId, segment.error);
         return;
       }
     } catch (err) {
       // Fallback to cached data if API fails
-      block = this.cachedBlocks?.find((b: any) => b.block_id === blockId);
-      if (!block) {
-        console.warn('[BlockEditorHandler] Block not found for editor:', blockId);
+      segment = this.cachedSegments?.find((s: any) => s.segment_id === segmentId);
+      if (!segment) {
+        console.warn('[SegmentEditorHandler] Segment not found for editor:', segmentId);
         return;
       }
+    }
+
+    // The owning block carries availability, travel direction and occupancy —
+    // none of which are geometry. `block_id` comes off the segment payload; for
+    // a single-segment block it equals `segmentId`, but it is read explicitly so
+    // a grouped segment still edits the right block.
+    const blockId: string = segment.block_id || segmentId;
+    let block: any = {};
+    try {
+      const fetched = await this.api.getBlock(blockId);
+      if (fetched && !fetched.error) block = fetched;
+    } catch (err) {
+      console.warn('[SegmentEditorHandler] Owning block not readable:', blockId, err);
     }
 
     // Per-entity hardware binding (occupancy + track port). Null when hardware
     // is off or the fetch fails, in which case the section renders nothing.
     const hwCfg = await fetchHardwareConfig();
 
+    // Occupancy / availability state comes from the owning block.
     const stateText = (block.state || 'free').toUpperCase();
     const { accentClass, chipClass } = this.getBlockStateAccent(block.state);
-    const trackCount = block.track_count || 0;
-    const lengthCm = block.length_cm || 0;
+    // Geometry comes from the segment.
+    const trackCount = segment.track_count || 0;
+    const lengthCm = segment.length_cm || 0;
 
     // Lengths and radii are shown in millimetres at the UI boundary; the
     // backend stays in centimetres, so the panel converts on display (×10)
     // and on save (÷10). Speed stays km/h. An unset radius/speed means
     // "no limit" (null), shown as a placeholder rather than a number.
     const lengthMm = Math.round(lengthCm * 10);
-    const radiusMm = block.min_radius_cm != null ? Math.round(block.min_radius_cm * 10) : '';
-    const speedKmh = block.speed_limit_kmh != null ? block.speed_limit_kmh : '';
+    const radiusMm = segment.min_radius_cm != null ? Math.round(segment.min_radius_cm * 10) : '';
+    const speedKmh = segment.speed_limit_kmh != null ? segment.speed_limit_kmh : '';
 
     // Predict the next tile each Extend button would add so the button shows
     // the coordinate instead of a generic "Start/End". calculateNextTile
     // throws when there's no clean single extension (edge tile lacks two
-    // exits, or both neighbours already belong to the block) — fall back to a
+    // exits, or both neighbours already belong to the segment) — fall back to a
     // disabled button whose tooltip carries the reason.
-    const sortedPositions = block.sorted_positions || block.track_positions || [];
+    // `ordered_tiles` is the segment's traversal order ([x, y, edge] entries);
+    // fall back to the unordered position list when it is absent.
+    const sortedPositions: Array<[number, number]> =
+      (segment.ordered_tiles || []).map((t: [number, number, string]) => [t[0], t[1]] as [number, number]);
+    if (sortedPositions.length === 0) {
+      for (const pos of segment.track_positions || []) sortedPositions.push([pos[0], pos[1]]);
+    }
     const tracks = this.editor.cachedNetwork?.tracks || [];
     const predictExtend = (
       dir: 'start' | 'end'
@@ -166,7 +194,7 @@ export class BlockEditorHandler {
         return {
           label: `Extend tiles (${next.x}, ${next.y})`,
           disabled: false,
-          title: `Add tile (${next.x}, ${next.y}) to this block`,
+          title: `Add tile (${next.x}, ${next.y}) to this segment`,
           icon: '',
         };
       } catch (err: any) {
@@ -180,25 +208,25 @@ export class BlockEditorHandler {
     };
 
     const content = `
-            <div class="block-editor-panel" data-block-id="${blockId}">
+            <div class="segment-editor-panel" data-segment-id="${segmentId}" data-block-id="${blockId}">
                 <!-- §11 Status header — identity + state pill, dynamic accent.
                      The display name is editable inline here (auto-saves on
                      blur), so identity lives in the title rather than being
                      buried in a property field. -->
                 <div class="status-header ${accentClass}">
                     <div class="status-header-row">
-                        <div class="status-header-id font-mono" title="${escapeAttr(blockId)}">${blockId}</div>
+                        <div class="status-header-id font-mono" title="${escapeAttr(segmentId)}">${segmentId}</div>
                         <span class="chip chip-state ${chipClass}">${stateText}</span>
                     </div>
-                    <input type="text" id="block-name-input" class="status-header-name-input"
-                        value="${escapeAttr(block.name || '')}" placeholder="Add a name…"
-                        title="Display name — click to edit" aria-label="Block display name">
+                    <input type="text" id="segment-name-input" class="status-header-name-input"
+                        value="${escapeAttr(segment.name || '')}" placeholder="Add a name…"
+                        title="Display name — click to edit" aria-label="Segment display name">
                     <div class="status-header-ident">
-                        <span class="status-header-role">Block</span>
+                        <span class="status-header-role">Segment</span>
                         <span class="status-sep">·</span>
                         <span class="font-mono">${trackCount} tile${trackCount === 1 ? '' : 's'}</span>
                         <span class="status-sep">·</span>
-                        <span class="font-mono" id="block-length-summary">${lengthMm} mm</span>
+                        <span class="font-mono" id="segment-length-summary">${lengthMm} mm</span>
                     </div>
                 </div>
 
@@ -219,10 +247,10 @@ export class BlockEditorHandler {
                      Click a tile row to flash it on the layout. -->
                 <div class="control-section mt-12">
                     ${renderTileList(sortedPositions, {
-                      entityType: 'block',
-                      extendStartBtnId: 'extend-block-start-btn',
-                      extendEndBtnId: 'extend-block-end-btn',
-                      removeBtnClass: 'delete-block-tile-btn',
+                      entityType: 'segment',
+                      extendStartBtnId: 'extend-segment-start-btn',
+                      extendEndBtnId: 'extend-segment-end-btn',
+                      removeBtnClass: 'delete-segment-tile-btn',
                       headerLabel: 'Tiles',
                       extendStart: predictExtend('start'),
                       extendEnd: predictExtend('end'),
@@ -236,20 +264,24 @@ export class BlockEditorHandler {
                     <h4 class="text-sm text-muted mb-8">Properties</h4>
 
                     <div class="input-small-row mb-8">
-                        <label class="input-small-label input-small-label-inline" for="block-length-input">Length (mm)</label>
-                        <input type="number" id="block-length-input" class="input-small-field input-small-field-compact" value="${lengthMm}" min="0" step="1" inputmode="numeric">
+                        <label class="input-small-label input-small-label-inline" for="segment-length-input">Length (mm)</label>
+                        <input type="number" id="segment-length-input" class="input-small-field input-small-field-compact" value="${lengthMm}" min="0" step="1" inputmode="numeric">
                     </div>
 
                     <div class="input-small-row mb-8">
-                        <label class="input-small-label input-small-label-inline" for="block-radius-input">Min Radius (mm)</label>
-                        <input type="number" id="block-radius-input" class="input-small-field input-small-field-compact" value="${radiusMm}" min="0" step="1" inputmode="numeric" placeholder="No limit" title="Tightest curve on this block. Empty = no curve limit (any train may pass).">
+                        <label class="input-small-label input-small-label-inline" for="segment-radius-input">Min Radius (mm)</label>
+                        <input type="number" id="segment-radius-input" class="input-small-field input-small-field-compact" value="${radiusMm}" min="0" step="1" inputmode="numeric" placeholder="No limit" title="Tightest curve on this segment. Empty = no curve limit (any train may pass).">
                     </div>
 
                     <div class="input-small-row mb-8">
-                        <label class="input-small-label input-small-label-inline" for="block-speed-input">Max Speed (km/h)</label>
-                        <input type="number" id="block-speed-input" class="input-small-field input-small-field-compact" value="${speedKmh}" min="0" step="1" inputmode="numeric" placeholder="No limit">
+                        <label class="input-small-label input-small-label-inline" for="segment-speed-input">Max Speed (km/h)</label>
+                        <input type="number" id="segment-speed-input" class="input-small-field input-small-field-compact" value="${speedKmh}" min="0" step="1" inputmode="numeric" placeholder="No limit">
                     </div>
 
+                    <!-- Availability and travel direction are BLOCK policy, not
+                         segment geometry: they apply to the whole block this
+                         segment belongs to, so they read and write the owning
+                         block. -->
                     ${renderAvailabilitySegment('block', block, {
                       idBase: 'block-availability',
                       explanations: {
@@ -270,7 +302,8 @@ export class BlockEditorHandler {
                 ${hardwareSectionHtml(hwCfg, blockId, BLOCK_HW_SLOTS)}
 
                 <!-- Maintenance — read-only usage counter (design_new.md
-                     "Maintenance counters"); accrues while the simulation runs. -->
+                     "Maintenance counters"); accrues while the simulation runs.
+                     Occupancy time is measured on the owning block. -->
                 <div class="control-section control-section-divider mt-12 pt-12">
                     <h4 class="text-sm text-muted mb-8">Maintenance</h4>
                     <div class="input-small-row">
@@ -279,20 +312,20 @@ export class BlockEditorHandler {
                     </div>
                 </div>
 
-                <!-- Deleting the whole block is a block-level action, not a
+                <!-- Deleting the whole segment is a segment-level action, not a
                      property edit — kept apart at the foot as a quiet danger
                      button. The confirm modal is the §19 backstop. -->
                 <div class="control-section control-section-divider mt-12 pt-12">
-                    <button id="delete-block-btn" class="btn btn-danger-ghost btn-sm w-full"><i class="ti ti-trash"></i> Delete block</button>
+                    <button id="delete-segment-btn" class="btn btn-danger-ghost btn-sm w-full"><i class="ti ti-trash"></i> Delete segment</button>
                 </div>
             </div>
         `;
 
-    this.editor.showSecondarySidebar(`Block Editor`, content);
+    this.editor.showSecondarySidebar(`Segment Editor`, content);
 
-    // Focus the block direction arrows on this block so its F / R arrows show
-    // on the map while the editor is open (the renderer derives them from the
-    // block's tile geometry).
+    // Focus the block direction arrows on the owning block so its F / R arrows
+    // show on the map while the editor is open (the renderer derives them from
+    // the block's tile geometry).
     if (this.editor.renderer?.setBlockDirectionFocus) {
       this.editor.renderer.setBlockDirectionFocus(blockId);
     }
@@ -301,16 +334,21 @@ export class BlockEditorHandler {
     this._setupSubscription(blockId);
 
     // Initialize event handlers after content is rendered
-    setTimeout(() => this.initEditorHandlers(blockId, hwCfg), 0);
+    setTimeout(() => this.initEditorHandlers(segmentId, blockId, hwCfg), 0);
   }
 
-  async initEditorHandlers(blockId: string, hwCfg: any = null): Promise<void> {
+  async initEditorHandlers(
+    segmentId: string,
+    blockId: string,
+    hwCfg: any = null,
+  ): Promise<void> {
+    // Hardware binding is per BLOCK (occupancy detector + track feed).
     bindHardwareSection(hwCfg, blockId);
-    const deleteBtn = this.editor.$id('delete-block-btn') as HTMLButtonElement | null;
-    const nameInput = this.editor.$id('block-name-input') as HTMLInputElement | null;
-    const lengthInput = this.editor.$id('block-length-input') as HTMLInputElement | null;
-    const radiusInput = this.editor.$id('block-radius-input') as HTMLInputElement | null;
-    const speedInput = this.editor.$id('block-speed-input') as HTMLInputElement | null;
+    const deleteBtn = this.editor.$id('delete-segment-btn') as HTMLButtonElement | null;
+    const nameInput = this.editor.$id('segment-name-input') as HTMLInputElement | null;
+    const lengthInput = this.editor.$id('segment-length-input') as HTMLInputElement | null;
+    const radiusInput = this.editor.$id('segment-radius-input') as HTMLInputElement | null;
+    const speedInput = this.editor.$id('segment-speed-input') as HTMLInputElement | null;
 
     // Availability segment (normal / manual / disabled). Auto-applies on click
     // (§5C); no success toast. On reject, re-render so the active cell rolls
@@ -320,14 +358,14 @@ export class BlockEditorHandler {
         const result = await this.api.updateBlock(blockId, flags);
         if (result && result.error) {
           showToast(`Cannot change availability: ${result.error}`, 'error', 4000);
-          this.showEditor(blockId);
+          this.showEditor(segmentId);
         } else {
           await this.editor.host?.refreshNetwork();
         }
       } catch (err: any) {
         console.error('Failed to update block availability:', err);
         showToast(`Cannot change availability: ${err.message || err}`, 'error', 4000);
-        this.showEditor(blockId);
+        this.showEditor(segmentId);
       }
     });
 
@@ -338,14 +376,14 @@ export class BlockEditorHandler {
         const result = await this.api.updateBlock(blockId, payload);
         if (result && result.error) {
           showToast(`Cannot change travel direction: ${result.error}`, 'error', 4000);
-          this.showEditor(blockId);
+          this.showEditor(segmentId);
         } else {
           await this.editor.host?.refreshNetwork();
         }
       } catch (err: any) {
         console.error('Failed to update block travel direction:', err);
         showToast(`Cannot change travel direction: ${err.message || err}`, 'error', 4000);
-        this.showEditor(blockId);
+        this.showEditor(segmentId);
       }
     });
 
@@ -354,10 +392,10 @@ export class BlockEditorHandler {
     // `bindFieldAutoSave` wiring — no Save button, no success toast, a flash as
     // the ack. The panel is never re-rendered on a field save, so focus and
     // scroll survive. `refreshAfterSave` repaints the canvas and keeps the main
-    // Properties pane in sync if it shows this block.
+    // Properties pane in sync if it shows this segment.
     const refreshAfterSave = async (): Promise<void> => {
       await this.editor.host?.refreshNetwork();
-      if (this.selectedElement?.block_section_id === blockId) {
+      if (this.selectedElement?.segment_id === segmentId) {
         await this.editor.selectElement({ x: this.selectedElement.x, y: this.selectedElement.y });
       }
     };
@@ -365,16 +403,16 @@ export class BlockEditorHandler {
     // Name — optional free text; empty is allowed (identity falls back to id).
     bindFieldAutoSave(nameInput, {
       parse: parseText,
-      commit: (value) => this.api.updateBlock(blockId, { name: value }),
+      commit: (value) => this.api.updateSegment(segmentId, { name: value }),
       onApplied: refreshAfterSave,
     });
 
     // Length — required whole millimetres ≥ 0, stored as cm (÷10).
     bindFieldAutoSave(lengthInput, {
       parse: parseRequiredMmToCm('Length'),
-      commit: (value) => this.api.updateBlock(blockId, { length_cm: value }),
+      commit: (value) => this.api.updateSegment(segmentId, { length_cm: value }),
       onApplied: async () => {
-        const summary = this.editor.$id('block-length-summary');
+        const summary = this.editor.$id('segment-length-summary');
         if (summary && lengthInput) {
           summary.textContent = `${parseInt(lengthInput.value || '0', 10) || 0} mm`;
         }
@@ -386,14 +424,14 @@ export class BlockEditorHandler {
     // limit" (null), NOT 0 — 0 would reject every train.
     bindFieldAutoSave(radiusInput, {
       parse: parseOptionalMmToCm('Min radius'),
-      commit: (value) => this.api.updateBlock(blockId, { min_radius_cm: value }),
+      commit: (value) => this.api.updateSegment(segmentId, { min_radius_cm: value }),
       onApplied: refreshAfterSave,
     });
 
     // Max speed — optional whole km/h ≥ 0. Empty means "no limit" (null).
     bindFieldAutoSave(speedInput, {
       parse: parseOptionalInt('Max speed'),
-      commit: (value) => this.api.updateBlock(blockId, { speed_limit_kmh: value }),
+      commit: (value) => this.api.updateSegment(segmentId, { speed_limit_kmh: value }),
       onApplied: refreshAfterSave,
     });
 
@@ -401,9 +439,9 @@ export class BlockEditorHandler {
     if (deleteBtn) {
       deleteBtn.onclick = async () => {
         const confirmed = await showConfirmModal({
-          title: 'Delete block',
-          message: `Delete block "${blockId}"?`,
-          detail: 'Tracks assigned to this block will be unassigned.',
+          title: 'Delete segment',
+          message: `Delete segment "${segmentId}"?`,
+          detail: 'Tiles assigned to this segment will be unassigned.',
           confirmText: 'Delete',
           confirmVariant: 'danger',
         });
@@ -414,55 +452,55 @@ export class BlockEditorHandler {
         const selectedPos = this.selectedElement
           ? { x: this.selectedElement.x, y: this.selectedElement.y }
           : null;
-        const wasShowingThisBlock = this.selectedElement?.block_section_id === blockId;
+        const wasShowingThisSegment = this.selectedElement?.segment_id === segmentId;
         try {
-          await this.api.deleteBlock(blockId);
+          await this.api.deleteSegment(segmentId);
           await this.editor.host?.refreshNetwork();
           this.editor.hideSecondarySidebar();
-          // Refresh main properties panel if it was showing this block
-          if (wasShowingThisBlock && selectedPos) {
+          // Refresh main properties panel if it was showing this segment
+          if (wasShowingThisSegment && selectedPos) {
             await this.editor.selectElement(selectedPos);
           }
         } catch (err: any) {
-          console.error('Failed to delete block:', err);
-          showToast('Failed to delete block: ' + err.message, 'error', 5000);
+          console.error('Failed to delete segment:', err);
+          showToast('Failed to delete segment: ' + err.message, 'error', 5000);
         }
       };
     }
 
     // Extend Start button
-    const extendBlockStartBtn = this.editor.$id('extend-block-start-btn') as HTMLButtonElement | null;
-    if (extendBlockStartBtn) {
-      extendBlockStartBtn.onclick = () => {
-        this.extendBlock(blockId, 'start');
+    const extendSegmentStartBtn = this.editor.$id('extend-segment-start-btn') as HTMLButtonElement | null;
+    if (extendSegmentStartBtn) {
+      extendSegmentStartBtn.onclick = () => {
+        this.extendSegment(segmentId, 'start');
       };
     }
 
     // Extend End button
-    const extendBlockEndBtn = this.editor.$id('extend-block-end-btn') as HTMLButtonElement | null;
-    if (extendBlockEndBtn) {
-      extendBlockEndBtn.onclick = () => {
-        this.extendBlock(blockId, 'end');
+    const extendSegmentEndBtn = this.editor.$id('extend-segment-end-btn') as HTMLButtonElement | null;
+    if (extendSegmentEndBtn) {
+      extendSegmentEndBtn.onclick = () => {
+        this.extendSegment(segmentId, 'end');
       };
     }
 
     // Tile delete buttons
-    const deleteBlockTileBtns = document.querySelectorAll<HTMLElement>('.delete-block-tile-btn');
-    deleteBlockTileBtns.forEach((btn) => {
+    const deleteSegmentTileBtns = document.querySelectorAll<HTMLElement>('.delete-segment-tile-btn');
+    deleteSegmentTileBtns.forEach((btn) => {
       const x = parseInt(btn.dataset.x ?? '');
       const y = parseInt(btn.dataset.y ?? '');
       btn.onclick = async () => {
         try {
-          await this.api.removeBlockTiles(blockId, [{ x, y }]);
+          await this.api.removeSegmentTiles(segmentId, [{ x, y }]);
           await this.editor.host?.refreshNetwork();
-          // Refresh block editor
-          this.showEditor(blockId);
+          // Refresh segment editor
+          this.showEditor(segmentId);
           // Refresh main properties panel if showing this tile
           if (this.selectedElement?.x === x && this.selectedElement?.y === y) {
             await this.editor.selectElement({ x, y });
           }
         } catch (err: any) {
-          console.error('Failed to remove block tile:', err);
+          console.error('Failed to remove segment tile:', err);
           showToast(`Failed to remove tile: ${err.message}`, 'error', 5000);
         }
       };
@@ -471,7 +509,7 @@ export class BlockEditorHandler {
     // Click a tile row (anywhere but the Remove button) → center the layout on
     // that tile and flash it, so a coordinate in the list maps to a place on
     // the map.
-    const tileRows = document.querySelectorAll<HTMLElement>('.block-editor-panel .tile-list-item');
+    const tileRows = document.querySelectorAll<HTMLElement>('.segment-editor-panel .tile-list-item');
     tileRows.forEach((row) => {
       row.addEventListener('click', (e) => {
         if ((e.target as HTMLElement).closest('button')) return; // let Remove handle its own click
@@ -490,102 +528,108 @@ export class BlockEditorHandler {
     applyStructuralLock(this.editor.$id('secondary-sidebar-content'));
   }
 
-  // Auto-extend a block by one tile in the given direction.
-  async extendBlock(blockId: string, direction: string): Promise<void> {
-    console.log(`[BlockEditorHandler] Auto-extending block: ${blockId} (${direction})`);
+  // Auto-extend a segment by one tile in the given direction.
+  async extendSegment(segmentId: string, direction: string): Promise<void> {
+    console.log(`[SegmentEditorHandler] Auto-extending segment: ${segmentId} (${direction})`);
 
     try {
-      const block = await this.api.getBlock(blockId);
-      if (!block || block.error) {
-        throw new Error('Block not found');
+      const segment = await this.api.getSegment(segmentId);
+      if (!segment || segment.error) {
+        throw new Error('Segment not found');
       }
 
-      const sortedPositions = block.sorted_positions || block.track_positions;
-      if (!sortedPositions || sortedPositions.length === 0) {
-        throw new Error('Block has no positions');
+      const sortedPositions: Array<[number, number]> =
+        (segment.ordered_tiles || []).map(
+          (t: [number, number, string]) => [t[0], t[1]] as [number, number],
+        );
+      if (sortedPositions.length === 0) {
+        for (const pos of segment.track_positions || []) sortedPositions.push([pos[0], pos[1]]);
+      }
+      if (sortedPositions.length === 0) {
+        throw new Error('Segment has no positions');
       }
 
       const tracks = this.editor.cachedNetwork?.tracks || [];
       const orientation = detectOrientation(sortedPositions, tracks);
-      console.log(`[BlockEditorHandler] Detected block orientation: ${orientation}`);
+      console.log(`[SegmentEditorHandler] Detected segment orientation: ${orientation}`);
 
       const nextTile = calculateNextTile(sortedPositions, orientation, direction, tracks);
       console.log(
-        `[BlockEditorHandler] Auto-extending to tile (${nextTile.x}, ${nextTile.y}) with track bits ${nextTile.trackBits}`
+        `[SegmentEditorHandler] Auto-extending to tile (${nextTile.x}, ${nextTile.y}) with track bits ${nextTile.trackBits}`
       );
 
-      await this.api.extendBlock(blockId, [[nextTile.x, nextTile.y]], false);
+      await this.api.extendSegment(segmentId, [[nextTile.x, nextTile.y]], false);
       await this.editor.host?.refreshNetwork();
 
-      this.showEditor(blockId);
+      this.showEditor(segmentId);
 
       if (this.selectedElement?.x === nextTile.x && this.selectedElement?.y === nextTile.y) {
         await this.editor.selectElement({ x: nextTile.x, y: nextTile.y });
       }
 
-      showToast(`Block extended ${direction} to (${nextTile.x}, ${nextTile.y})`, 'success', 3000);
+      showToast(`Segment extended ${direction} to (${nextTile.x}, ${nextTile.y})`, 'success', 3000);
     } catch (err: any) {
-      console.error('Failed to auto-extend block:', err);
-      showToast(`Failed to extend block: ${err.message}`, 'error', 5000);
+      console.error('Failed to auto-extend segment:', err);
+      showToast(`Failed to extend segment: ${err.message}`, 'error', 5000);
     }
   }
 
-  async delete(blockId: string): Promise<void> {
+  async delete(segmentId: string): Promise<void> {
     const confirmed = await showConfirmModal({
-      title: 'Delete Block',
-      message: `Delete block "${blockId}"?`,
-      detail: 'Tracks assigned to this block will be unassigned.',
+      title: 'Delete Segment',
+      message: `Delete segment "${segmentId}"?`,
+      detail: 'Tiles assigned to this segment will be unassigned.',
       confirmText: 'Delete',
       confirmVariant: 'danger',
     });
     if (!confirmed) return;
 
     try {
-      await this.api.deleteBlock(blockId);
-      if (this.selectedBlockId === blockId) {
-        this.selectedBlockId = null;
+      await this.api.deleteSegment(segmentId);
+      if (this.selectedSegmentId === segmentId) {
+        this.selectedSegmentId = null;
       }
       await this.refreshList();
       await this.editor.host?.refreshNetwork();
     } catch (err: any) {
-      console.error('[BlockEditorHandler] Failed to delete block:', err);
-      showToast('Failed to delete block: ' + err.message, 'error', 5000);
+      console.error('[SegmentEditorHandler] Failed to delete segment:', err);
+      showToast('Failed to delete segment: ' + err.message, 'error', 5000);
     }
   }
 
-  // === Block Modal Dialogs ===
+  // === Segment Modal Dialogs ===
 
-  /** Show a modal dialog for block creation or extension. */
+  /** Show a modal dialog for segment creation or extension. */
   showModal(options: {
     mode: string;
     trackCount: number;
-    existingBlocks?: string[];
+    existingSegments?: string[];
     anchorTiles?: Array<{ x: number; y: number }>;
   }): Promise<any> {
     return new Promise((resolve) => {
-      const { mode, trackCount, existingBlocks = [], anchorTiles } = options;
+      const { mode, trackCount, existingSegments = [], anchorTiles } = options;
 
       // Create modal overlay
       const overlay = document.createElement('div');
-      overlay.className = 'block-modal-overlay';
+      overlay.className = 'segment-modal-overlay';
 
       let modalContent = '';
 
       if (mode === 'create') {
-        // Create new block form
-        const defaultId = `BLK_${Date.now().toString(16).toUpperCase().slice(-6)}`;
+        // Create new segment form
+        const defaultId = `SEG_${Date.now().toString(16).toUpperCase().slice(-6)}`;
         modalContent = `
-                    <div class="block-modal">
-                        <h3>Create New Block</h3>
+                    <div class="segment-modal">
+                        <h3>Create New Segment</h3>
                         <div class="modal-body">
-                            <p class="modal-info">Creating block with <strong>${trackCount}</strong> tracks</p>
+                            <p class="modal-info">Creating segment with <strong>${trackCount}</strong> tracks</p>
                             <div class="form-group">
-                                <label for="modal-block-id">Block ID</label>
-                                <input type="text" id="modal-block-id" value="${defaultId}" autocomplete="off">
+                                <label for="modal-segment-id">Segment ID</label>
+                                <input type="text" id="modal-segment-id" value="${defaultId}" autocomplete="off">
                             </div>
                             <div class="form-group">
-                                <label for="modal-block-name">Block Name (optional)</label>
-                                <input type="text" id="modal-block-name" placeholder="e.g., Main Line West" autocomplete="off">
+                                <label for="modal-segment-name">Segment Name (optional)</label>
+                                <input type="text" id="modal-segment-name" placeholder="e.g., Main Line West" autocomplete="off">
                             </div>
                             <div class="form-group">
                                 <label for="modal-max-speed">Max Speed km/h (optional)</label>
@@ -603,49 +647,49 @@ export class BlockEditorHandler {
                             </div>
                         </div>
                         <div class="modal-footer">
-                            <button class="btn btn-primary" id="modal-confirm">Create Block</button>
+                            <button class="btn btn-primary" id="modal-confirm">Create Segment</button>
                             <button class="btn btn-secondary" id="modal-cancel">Cancel</button>
                         </div>
                     </div>
                 `;
       } else if (mode === 'extend') {
-        // Extend existing block
-        if (existingBlocks.length === 0) {
-          // No existing blocks - shouldn't happen in extend mode
+        // Extend existing segment
+        if (existingSegments.length === 0) {
+          // No existing segments - shouldn't happen in extend mode
           resolve(null);
           return;
-        } else if (existingBlocks.length === 1) {
-          // Single block to extend
-          const blockId = existingBlocks[0];
-          const block = this.cachedBlocks?.find((b: any) => b.block_id === blockId);
+        } else if (existingSegments.length === 1) {
+          // Single segment to extend
+          const segmentId = existingSegments[0];
+          const segment = this.cachedSegments?.find((s: any) => s.segment_id === segmentId);
           modalContent = `
-                        <div class="block-modal">
-                            <h3>Extend Block</h3>
+                        <div class="segment-modal">
+                            <h3>Extend Segment</h3>
                             <div class="modal-body">
-                                <p class="modal-info">Extending block <strong>${blockId}</strong></p>
-                                ${block?.name ? `<p class="modal-subinfo">${block.name}</p>` : ''}
-                                <p class="modal-detail">Adding <strong>${trackCount}</strong> tracks to this block.</p>
-                                ${block ? `<p class="modal-detail">Current size: ${block.track_count || 0} tracks</p>` : ''}
+                                <p class="modal-info">Extending segment <strong>${segmentId}</strong></p>
+                                ${segment?.name ? `<p class="modal-subinfo">${segment.name}</p>` : ''}
+                                <p class="modal-detail">Adding <strong>${trackCount}</strong> tracks to this segment.</p>
+                                ${segment ? `<p class="modal-detail">Current size: ${segment.track_count || 0} tracks</p>` : ''}
                             </div>
                             <div class="modal-footer">
-                                <button class="btn btn-primary" id="modal-confirm" data-block-id="${blockId}">Extend Block</button>
+                                <button class="btn btn-primary" id="modal-confirm" data-segment-id="${segmentId}">Extend Segment</button>
                                 <button class="btn btn-secondary" id="modal-cancel">Cancel</button>
                             </div>
                         </div>
                     `;
         } else {
-          // Multiple blocks - user must choose
-          const blockOptions = existingBlocks
-            .map((blockId) => {
-              const block = this.cachedBlocks?.find((b: any) => b.block_id === blockId);
+          // Multiple segments - user must choose
+          const segmentOptions = existingSegments
+            .map((segmentId) => {
+              const segment = this.cachedSegments?.find((s: any) => s.segment_id === segmentId);
               return `
-                            <div class="block-selection-item" data-block-id="${blockId}">
-                                <input type="radio" name="extend-block" value="${blockId}" id="block-${blockId}">
-                                <label for="block-${blockId}">
-                                    <span class="block-id">${blockId}</span>
-                                    ${block?.name ? `<span class="block-name">${block.name}</span>` : ''}
-                                    ${block?.station_names ? `<span class="block-name block-station-names">[${block.station_names.join(', ')}]</span>` : ''}
-                                    <span class="block-track-count">${block?.track_count || 0} tracks</span>
+                            <div class="segment-selection-item" data-segment-id="${segmentId}">
+                                <input type="radio" name="extend-segment" value="${segmentId}" id="segment-${segmentId}">
+                                <label for="segment-${segmentId}">
+                                    <span class="segment-id">${segmentId}</span>
+                                    ${segment?.name ? `<span class="segment-name">${segment.name}</span>` : ''}
+                                    ${segment?.station_names ? `<span class="segment-name segment-station-names">[${segment.station_names.join(', ')}]</span>` : ''}
+                                    <span class="segment-track-count">${segment?.track_count || 0} tracks</span>
                                 </label>
                             </div>
                         `;
@@ -653,13 +697,13 @@ export class BlockEditorHandler {
             .join('');
 
           modalContent = `
-                        <div class="block-modal">
-                            <h3>Extend Block</h3>
+                        <div class="segment-modal">
+                            <h3>Extend Segment</h3>
                             <div class="modal-body">
-                                <p class="modal-info">Path covers <strong>${existingBlocks.length}</strong> blocks</p>
-                                <p class="modal-warning">Select which block to extend. Other block assignments will be overwritten.</p>
-                                <div class="block-selection-list">
-                                    ${blockOptions}
+                                <p class="modal-info">Path covers <strong>${existingSegments.length}</strong> segments</p>
+                                <p class="modal-warning">Select which segment to extend. Other segment assignments will be overwritten.</p>
+                                <div class="segment-selection-list">
+                                    ${segmentOptions}
                                 </div>
                             </div>
                             <div class="modal-footer">
@@ -678,7 +722,7 @@ export class BlockEditorHandler {
       // follows pan/zoom, instead of a full-screen centered modal. Falls back to
       // the centered modal when no anchor tiles are supplied.
       let anchorCleanup = (): void => {};
-      const card = overlay.querySelector<HTMLElement>('.block-modal');
+      const card = overlay.querySelector<HTMLElement>('.segment-modal');
       if (anchorTiles && anchorTiles.length > 0 && card) {
         overlay.classList.add('anchored');
         card.classList.add('anchored');
@@ -697,15 +741,15 @@ export class BlockEditorHandler {
         setTimeout(() => firstInput.focus(), 50);
       }
 
-      // Handle radio button selection for multi-block extend
-      const radioButtons = overlay.querySelectorAll<HTMLInputElement>('input[name="extend-block"]');
+      // Handle radio button selection for multi-segment extend
+      const radioButtons = overlay.querySelectorAll<HTMLInputElement>('input[name="extend-segment"]');
       const confirmBtn = overlay.querySelector<HTMLButtonElement>('#modal-confirm');
 
       radioButtons.forEach((radio) => {
         radio.addEventListener('change', () => {
           if (confirmBtn) {
             confirmBtn.disabled = false;
-            confirmBtn.dataset.blockId = radio.value;
+            confirmBtn.dataset.segmentId = radio.value;
           }
         });
       });
@@ -713,37 +757,37 @@ export class BlockEditorHandler {
       // Handle confirm
       confirmBtn?.addEventListener('click', () => {
         if (mode === 'create') {
-          const blockId = overlay.querySelector<HTMLInputElement>('#modal-block-id')?.value?.trim();
-          const name = overlay.querySelector<HTMLInputElement>('#modal-block-name')?.value?.trim();
+          const segmentId = overlay.querySelector<HTMLInputElement>('#modal-segment-id')?.value?.trim();
+          const name = overlay.querySelector<HTMLInputElement>('#modal-segment-name')?.value?.trim();
           const maxSpeed = overlay.querySelector<HTMLInputElement>('#modal-max-speed')?.value;
           const minRadius = overlay.querySelector<HTMLInputElement>('#modal-min-radius')?.value;
           const slope = overlay.querySelector<HTMLInputElement>('#modal-slope')?.value;
 
-          if (!blockId) {
-            showToast('Block ID is required', 'error', 5000);
+          if (!segmentId) {
+            showToast('Segment ID is required', 'error', 5000);
             return;
           }
 
           close();
           resolve({
             action: 'create',
-            blockId,
+            segmentId,
             name: name || '',
             maxSpeed: maxSpeed ? parseFloat(maxSpeed) : null,
             minRadius: minRadius ? parseFloat(minRadius) : null,
             slope: slope !== undefined && slope !== '' ? parseFloat(slope) : null,
           });
         } else if (mode === 'extend') {
-          const blockId = confirmBtn!.dataset.blockId;
-          if (!blockId) {
-            showToast('Please select a block', 'error', 5000);
+          const segmentId = confirmBtn!.dataset.segmentId;
+          if (!segmentId) {
+            showToast('Please select a segment', 'error', 5000);
             return;
           }
 
           close();
           resolve({
             action: 'extend',
-            blockId,
+            segmentId,
           });
         }
       });
@@ -787,6 +831,9 @@ export class BlockEditorHandler {
   // SUBSCRIPTION METHODS (Phase 4)
   // ═══════════════════════════════════════════════════════════════
 
+  // The panel tracks its OWNING BLOCK in the state manager: `blocks` is the
+  // only track-model collection the network payload publishes, and it is what
+  // carries the occupancy/availability this panel shows.
   _setupSubscription(blockId: string): void {
     this._cleanup();
 
@@ -801,7 +848,7 @@ export class BlockEditorHandler {
 
   _onBlockUpdate(newBlock: any, oldBlock: any): void {
     if (!newBlock) {
-      showToast('Block was deleted', 'warning');
+      showToast('Segment was deleted', 'warning');
       this.editor.hideSecondarySidebar();
       return;
     }

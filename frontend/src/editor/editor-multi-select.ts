@@ -3,12 +3,15 @@
 // Migrated from static/js/editor-multi-select.js (longterm_todo.md item #7,
 // Wave 2). Behavior is unchanged. Renders the sidebar panel that appears while
 // box/lasso/brush-select has a non-empty selection. Phases:
-//   1. Selection summary (tile count, block count, affected-block chips, clear)
-//   2. Block-membership actions: create-from-selection, add-to-existing,
-//      remove-from-blocks
-//   3. Block-property batch edits (max speed, min radius, disabled, manual)
-//      with mixed-value detection and parallel PATCH apply.
-//   4. Destructive: delete the selected tiles (tracks) or delete every block
+//   1. Selection summary (tile / segment / block counts, entity chips, clear)
+//   2. Segment-membership actions (geometry): create-from-selection,
+//      add-to-existing, remove-from-segments
+//   3. Block-grouping actions (power/occupancy): group the selection's segments
+//      into a block, or add them to an existing block
+//   4. Property batch edits with mixed-value detection and parallel PATCH apply.
+//      Max speed / min radius are SEGMENT geometry; disabled / manual are BLOCK
+//      config, so each field is applied on its own axis.
+//   5. Destructive: delete the selected tiles (tracks) or delete every segment
 //      the selection touches.
 //
 // Owned by the Editor (`new MultiSelectActionsHandler(this)`).
@@ -19,6 +22,7 @@ import { showConfirmModal } from '../lib/helpers';
 
 interface SelectionSummary {
   tiles: any[];
+  segmentIds: Set<string>;
   blockIds: Set<string>;
   platformIds: Set<string>;
   switchIds: Set<string>;
@@ -64,6 +68,7 @@ export class MultiSelectActionsHandler {
     const summary = this._summarize(selectedKeys);
     const sig = [
       summary.tiles.length,
+      [...summary.segmentIds].sort().join(','),
       [...summary.blockIds].sort().join(','),
       [...summary.platformIds].sort().join(','),
       [...summary.switchIds].sort().join(','),
@@ -96,6 +101,7 @@ export class MultiSelectActionsHandler {
     for (const t of tracks) byKey.set(`${t.x},${t.y}`, t);
 
     const tiles: any[] = [];
+    const segmentIds = new Set<string>();
     const blockIds = new Set<string>();
     const platformIds = new Set<string>();
     const switchIds = new Set<string>();
@@ -104,6 +110,9 @@ export class MultiSelectActionsHandler {
       const t = byKey.get(key);
       if (!t) continue;
       tiles.push(t);
+      // A tile carries both axes: `segment_id` is its geometry membership,
+      // `block_section_id` is the block that owns that segment.
+      if (t.segment_id) segmentIds.add(t.segment_id);
       if (t.block_section_id) blockIds.add(t.block_section_id);
       // A tile's `station_id` holds the platform it belongs to (the field is
       // historically named; see editor.ts removePlatformTile(track.station_id)).
@@ -111,13 +120,20 @@ export class MultiSelectActionsHandler {
       if (t.switch_id) switchIds.add(t.switch_id);
       for (const sid of t.signal_ids || []) signalIds.add(sid);
     }
-    return { tiles, blockIds, platformIds, switchIds, signalIds };
+    return { tiles, segmentIds, blockIds, platformIds, switchIds, signalIds };
   }
 
+  /** The segment payloads (geometry) the selection touches. */
+  _affectedSegments(segmentIdSet: Set<string>): any[] {
+    const cached = this.editor.cachedSegments || [];
+    const byId = new Map<string, any>(cached.map((s: any) => [s.segment_id, s]));
+    return [...segmentIdSet].map((id) => byId.get(id)).filter(Boolean);
+  }
+
+  /** The block payloads (power / occupancy) the selection touches. */
   _affectedBlocks(blockIdSet: Set<string>): any[] {
-    const cached = this.editor.cachedBlocks || [];
-    const byId = new Map<string, any>(cached.map((b: any) => [b.block_id, b]));
-    return [...blockIdSet].map((id) => byId.get(id)).filter(Boolean);
+    const blocks = this.editor.cachedNetwork?.blocks || {};
+    return [...blockIdSet].map((id) => blocks[id]).filter(Boolean);
   }
 
   // Render the panel body into `panel` and wire its controls. Used for the
@@ -131,8 +147,11 @@ export class MultiSelectActionsHandler {
   // Attach the action / property-input listeners to a freshly-rendered panel.
   _wire(panel: HTMLElement, summary: SelectionSummary): void {
     this._wireActions(panel);
+    const affectedSegments = this._affectedSegments(summary.segmentIds);
     const affectedBlocks = this._affectedBlocks(summary.blockIds);
-    if (affectedBlocks.length > 0) this._wirePropertyInputs(panel, affectedBlocks);
+    if (affectedSegments.length > 0 || affectedBlocks.length > 0) {
+      this._wirePropertyInputs(panel, affectedSegments, affectedBlocks);
+    }
   }
 
   // The panel markup. Wrapped in `.multi-select-panel` so the few CSS rules
@@ -141,16 +160,38 @@ export class MultiSelectActionsHandler {
   // so the body carries only the Clear dismiss, not a second heading.
   _buildHtml(summary: SelectionSummary): string {
     const tileCount = summary.tiles.length;
+    const segmentCount = summary.segmentIds.size;
     const blockCount = summary.blockIds.size;
     const tileWord = tileCount === 1 ? 'tile' : 'tiles';
-    const blockWord = blockCount === 1 ? 'block' : 'blocks';
+    const segmentWord = segmentCount === 1 ? 'segment' : 'segments';
 
-    const cachedBlocks = this.editor.cachedBlocks || [];
+    // Segment membership is the GEOMETRY axis: which tiles belong to which run.
+    const cachedSegments = this.editor.cachedSegments || [];
+    const segmentOptions =
+      cachedSegments.length === 0
+        ? '<option value="" disabled>No segments exist</option>'
+        : '<option value="" disabled selected>Pick a segment…</option>' +
+          cachedSegments
+            .slice()
+            .sort((a: any, b: any) => (a.segment_id || '').localeCompare(b.segment_id || ''))
+            .map((sg: any) => {
+              const id = this._escape(sg.segment_id);
+              const label = sg.name ? `${id} — ${this._escape(sg.name)}` : id;
+              return `<option value="${id}">${label}</option>`;
+            })
+            .join('');
+
+    const removeDisabled = segmentCount === 0 ? 'disabled' : '';
+    const addDisabled = cachedSegments.length === 0 ? 'disabled' : '';
+
+    // Block-grouping actions operate on the selection's distinct segments (a
+    // block groups whole segments, design_new.md "block").
+    const blocks: any[] = Object.values(this.editor.cachedNetwork?.blocks || {});
     const blockOptions =
-      cachedBlocks.length === 0
-        ? '<option value="" disabled>No blocks exist</option>'
+      blocks.length === 0
+        ? '<option value="" disabled>No blocks yet</option>'
         : '<option value="" disabled selected>Pick a block…</option>' +
-          cachedBlocks
+          blocks
             .slice()
             .sort((a: any, b: any) => (a.block_id || '').localeCompare(b.block_id || ''))
             .map((b: any) => {
@@ -159,32 +200,15 @@ export class MultiSelectActionsHandler {
               return `<option value="${id}">${label}</option>`;
             })
             .join('');
+    const bgCreateDisabled = segmentCount === 0 ? 'disabled' : '';
+    const bgAddDisabled = segmentCount === 0 || blocks.length === 0 ? 'disabled' : '';
 
-    const removeDisabled = blockCount === 0 ? 'disabled' : '';
-    const addDisabled = cachedBlocks.length === 0 ? 'disabled' : '';
-
-    // Power-district actions operate on the selection's distinct blocks (a
-    // district groups whole blocks, design_new.md "Power district").
-    const districts = this.editor.cachedNetwork?.power_districts || [];
-    const districtOptions =
-      districts.length === 0
-        ? '<option value="" disabled>No districts yet</option>'
-        : '<option value="" disabled selected>Pick a district…</option>' +
-          districts
-            .slice()
-            .sort((a: any, b: any) => (a.district_id || '').localeCompare(b.district_id || ''))
-            .map((d: any) => {
-              const id = this._escape(d.district_id);
-              const label = d.name ? `${id} — ${this._escape(d.name)}` : id;
-              return `<option value="${id}">${label}</option>`;
-            })
-            .join('');
-    const pdCreateDisabled = blockCount === 0 ? 'disabled' : '';
-    const pdAddDisabled = blockCount === 0 || districts.length === 0 ? 'disabled' : '';
-
+    const affectedSegments = this._affectedSegments(summary.segmentIds);
     const affectedBlocks = this._affectedBlocks(summary.blockIds);
     const propertiesSection =
-      affectedBlocks.length === 0 ? '' : this._renderPropertiesSection(affectedBlocks);
+      affectedSegments.length === 0 && affectedBlocks.length === 0
+        ? ''
+        : this._renderPropertiesSection(affectedSegments, affectedBlocks);
 
     return `
             <div class="multi-select-panel">
@@ -199,33 +223,33 @@ export class MultiSelectActionsHandler {
                 ${propertiesSection}
 
                 <div class="ms-group">
-                    <div class="ms-group-label">Block membership</div>
-                    <button type="button" class="btn btn-outline ms-btn-block" data-action="create-block">
-                        New block from selection
+                    <div class="ms-group-label">Segment membership</div>
+                    <button type="button" class="btn btn-outline ms-btn-block" data-action="create-segment">
+                        New segment from selection
                     </button>
                     <div class="ms-row">
-                        <select class="ms-input" data-field="add-target-block" ${addDisabled}>
-                            ${blockOptions}
+                        <select class="ms-input" data-field="add-target-segment" ${addDisabled}>
+                            ${segmentOptions}
                         </select>
-                        <button type="button" class="btn btn-outline" data-action="add-to-block" ${addDisabled}>
+                        <button type="button" class="btn btn-outline" data-action="add-to-segment" ${addDisabled}>
                             Add
                         </button>
                     </div>
-                    <button type="button" class="btn btn-outline ms-btn-block" data-action="remove-from-blocks" ${removeDisabled}>
-                        Remove from ${blockCount === 1 ? 'block' : 'blocks'}
+                    <button type="button" class="btn btn-outline ms-btn-block" data-action="remove-from-segments" ${removeDisabled}>
+                        Remove from ${segmentCount === 1 ? 'segment' : 'segments'}
                     </button>
                 </div>
 
                 <div class="ms-group">
-                    <div class="ms-group-label">Power district</div>
-                    <button type="button" class="btn btn-outline ms-btn-block" data-action="create-power-district" ${pdCreateDisabled}>
-                        New district from ${blockCount} ${blockWord}
+                    <div class="ms-group-label">Block grouping</div>
+                    <button type="button" class="btn btn-outline ms-btn-block" data-action="create-block" ${bgCreateDisabled}>
+                        New block from ${segmentCount} ${segmentWord}
                     </button>
                     <div class="ms-row">
-                        <select class="ms-input" data-field="add-target-district" ${pdAddDisabled}>
-                            ${districtOptions}
+                        <select class="ms-input" data-field="add-target-block" ${bgAddDisabled}>
+                            ${blockOptions}
                         </select>
-                        <button type="button" class="btn btn-outline" data-action="add-to-power-district" ${pdAddDisabled}>
+                        <button type="button" class="btn btn-outline" data-action="add-to-block" ${bgAddDisabled}>
                             Add
                         </button>
                     </div>
@@ -237,12 +261,12 @@ export class MultiSelectActionsHandler {
                         <button type="button" class="btn btn-danger" data-action="delete-tiles">
                             Delete ${tileCount} ${tileWord}
                         </button>
-                        <button type="button" class="btn btn-danger" data-action="delete-blocks" ${blockCount === 0 ? 'disabled' : ''}>
-                            Delete ${blockCount} ${blockWord}
+                        <button type="button" class="btn btn-danger" data-action="delete-segments" ${segmentCount === 0 ? 'disabled' : ''}>
+                            Delete ${segmentCount} ${segmentWord}
                         </button>
                     </div>
                     <p class="ms-hint">
-                        "Delete tiles" removes the tracks. "Delete blocks" tears down the block grouping but keeps the tiles.
+                        "Delete tiles" removes the tracks. "Delete segments" tears down the segment geometry but keeps the tiles.
                     </p>
                 </div>
             </div>
@@ -259,6 +283,7 @@ export class MultiSelectActionsHandler {
       segs.push(`<strong class="ms-count ${cls}">${n}</strong> ${n === 1 ? sing : plur}`);
     };
     add(summary.tiles.length, 'tile', 'tiles', 'ms-count-tile');
+    add(summary.segmentIds.size, 'segment', 'segments', 'ms-count-segment');
     add(summary.blockIds.size, 'block', 'blocks', 'ms-count-block');
     add(summary.platformIds.size, 'platform', 'platforms', 'ms-count-platform');
     add(summary.switchIds.size, 'switch', 'switches', 'ms-count-switch');
@@ -286,6 +311,9 @@ export class MultiSelectActionsHandler {
       `<span class="chip ${cls}" title="${this._escape(title)}">${this._escape(label)}</span>`;
     const parts: string[] = [];
 
+    [...summary.segmentIds]
+      .sort()
+      .forEach((id) => parts.push(chip(id, 'chip-accent', `Segment ${id}`)));
     [...summary.blockIds].sort().forEach((id) => parts.push(chip(id, 'chip-accent', `Block ${id}`)));
     [...summary.platformIds]
       .sort()
@@ -311,9 +339,12 @@ export class MultiSelectActionsHandler {
     return parts.join('');
   }
 
-  _renderPropertiesSection(blocks: any[]): string {
-    const speeds = new Set(blocks.map((b) => b.speed_limit_kmh ?? null));
-    const radii = new Set(blocks.map((b) => b.min_radius_cm ?? null));
+  // Max speed / min radius are SEGMENT geometry; disabled / manual are BLOCK
+  // availability. One section, but each field reads (and later writes) the axis
+  // it actually belongs to.
+  _renderPropertiesSection(segments: any[], blocks: any[]): string {
+    const speeds = new Set(segments.map((sg) => sg.speed_limit_kmh ?? null));
+    const radii = new Set(segments.map((sg) => sg.min_radius_cm ?? null));
     const disabledSet = new Set(blocks.map((b) => !!b.disabled));
     const manualSet = new Set(blocks.map((b) => !!b.manual));
 
@@ -332,7 +363,7 @@ export class MultiSelectActionsHandler {
 
     return `
             <div class="ms-group">
-                <div class="ms-group-label">Block properties (${blocks.length} block${blocks.length !== 1 ? 's' : ''})</div>
+                <div class="ms-group-label">Properties (${segments.length} segment${segments.length !== 1 ? 's' : ''}, ${blocks.length} block${blocks.length !== 1 ? 's' : ''})</div>
                 <div class="ms-field">
                     <label class="ms-field-label" for="ms-speed">Max speed</label>
                     <div class="ms-field-control">
@@ -362,7 +393,7 @@ export class MultiSelectActionsHandler {
                     </label>
                 </div>
                 <button type="button" class="btn btn-accent ms-btn-block" data-action="apply-properties">
-                    Apply to ${blocks.length} block${blocks.length !== 1 ? 's' : ''}
+                    Apply
                 </button>
             </div>
         `;
@@ -371,6 +402,23 @@ export class MultiSelectActionsHandler {
   _wireActions(panel: HTMLElement): void {
     panel.querySelector('[data-action="clear"]')?.addEventListener('click', () => {
       this.editor.clearMultiSelection();
+    });
+    panel.querySelector('[data-action="create-segment"]')?.addEventListener('click', () => {
+      this._createSegmentFromSelection().catch((err) => this._reportError('create segment', err));
+    });
+    panel.querySelector('[data-action="add-to-segment"]')?.addEventListener('click', () => {
+      const sel = panel.querySelector<HTMLSelectElement>('[data-field="add-target-segment"]');
+      const targetId = sel?.value;
+      if (!targetId) {
+        showToast('Pick a segment first', 'info', 2000);
+        return;
+      }
+      this._addSelectionToSegment(targetId).catch((err) => this._reportError('add to segment', err));
+    });
+    panel.querySelector('[data-action="remove-from-segments"]')?.addEventListener('click', () => {
+      this._removeSelectionFromSegments().catch((err) =>
+        this._reportError('remove from segments', err)
+      );
     });
     panel.querySelector('[data-action="create-block"]')?.addEventListener('click', () => {
       this._createBlockFromSelection().catch((err) => this._reportError('create block', err));
@@ -384,34 +432,15 @@ export class MultiSelectActionsHandler {
       }
       this._addSelectionToBlock(targetId).catch((err) => this._reportError('add to block', err));
     });
-    panel.querySelector('[data-action="remove-from-blocks"]')?.addEventListener('click', () => {
-      this._removeSelectionFromBlocks().catch((err) => this._reportError('remove from blocks', err));
-    });
-    panel.querySelector('[data-action="create-power-district"]')?.addEventListener('click', () => {
-      this._createPowerDistrictFromSelection().catch((err) =>
-        this._reportError('create power district', err)
-      );
-    });
-    panel.querySelector('[data-action="add-to-power-district"]')?.addEventListener('click', () => {
-      const sel = panel.querySelector<HTMLSelectElement>('[data-field="add-target-district"]');
-      const targetId = sel?.value;
-      if (!targetId) {
-        showToast('Pick a district first', 'info', 2000);
-        return;
-      }
-      this._addSelectionToPowerDistrict(targetId).catch((err) =>
-        this._reportError('add to power district', err)
-      );
-    });
     panel.querySelector('[data-action="delete-tiles"]')?.addEventListener('click', () => {
       this._deleteSelectedTiles().catch((err) => this._reportError('delete tiles', err));
     });
-    panel.querySelector('[data-action="delete-blocks"]')?.addEventListener('click', () => {
-      this._deleteAffectedBlocks().catch((err) => this._reportError('delete blocks', err));
+    panel.querySelector('[data-action="delete-segments"]')?.addEventListener('click', () => {
+      this._deleteAffectedSegments().catch((err) => this._reportError('delete segments', err));
     });
   }
 
-  _wirePropertyInputs(panel: HTMLElement, affectedBlocks: any[]): void {
+  _wirePropertyInputs(panel: HTMLElement, affectedSegments: any[], affectedBlocks: any[]): void {
     // Mark mixed-value checkboxes as indeterminate (a visual "third state").
     const disabledSet = new Set(affectedBlocks.map((b) => !!b.disabled));
     const manualSet = new Set(affectedBlocks.map((b) => !!b.manual));
@@ -426,7 +455,7 @@ export class MultiSelectActionsHandler {
 
     // Track which inputs the user has explicitly touched. Only touched
     // fields end up in the PATCH payload — untouched ones leave existing
-    // block values untouched even if their displayed value is empty/mixed.
+    // values untouched even if their displayed value is empty/mixed.
     const propertyFields = ['speed_limit_kmh', 'min_radius_cm', 'disabled', 'manual'];
     propertyFields.forEach((field) => {
       const el = panel.querySelector<HTMLInputElement>(`[data-field="${field}"]`);
@@ -439,19 +468,19 @@ export class MultiSelectActionsHandler {
     });
 
     panel.querySelector('[data-action="apply-properties"]')?.addEventListener('click', () => {
-      this._applyPropertiesToBlocks(affectedBlocks).catch((err) =>
+      this._applyProperties(affectedSegments, affectedBlocks).catch((err) =>
         this._reportError('apply properties', err)
       );
     });
   }
 
-  // === Block-membership actions ===
+  // === Segment-membership actions (geometry) ===
 
-  async _createBlockFromSelection(): Promise<void> {
+  async _createSegmentFromSelection(): Promise<void> {
     const positions = this._selectedPositions();
     if (positions.length === 0) return;
 
-    const result = await this.editor.showBlockModal({
+    const result = await this.editor.showSegmentModal({
       mode: 'create',
       trackCount: positions.length,
       anchorTiles: positions.map(([x, y]) => ({ x, y })),
@@ -462,97 +491,97 @@ export class MultiSelectActionsHandler {
     if (result.maxSpeed) options.speed_limit_kmh = result.maxSpeed;
     if (result.minRadius != null) options.min_radius_cm = result.minRadius;
     if (result.slope != null) options.grade_percent = result.slope;
-    await this.api.createBlock(result.blockId, result.name || '', options);
-    // force=true so tiles already in another block get reassigned, matching
-    // the existing "Block New" tool's behaviour.
-    await this.api.addTracksToBlock(result.blockId, positions, true);
+    // POST /api/segments creates the segment holding these tiles in one call.
+    await this.api.createSegment(result.segmentId, positions, result.name || '', options);
 
     showToast(
-      `Created block ${result.blockId} with ${positions.length} tile${positions.length !== 1 ? 's' : ''}`,
+      `Created segment ${result.segmentId} with ${positions.length} tile${positions.length !== 1 ? 's' : ''}`,
       'success',
       3000
     );
     await this._afterMutation();
   }
 
-  async _addSelectionToBlock(targetBlockId: string): Promise<void> {
+  async _addSelectionToSegment(targetSegmentId: string): Promise<void> {
     const positions = this._selectedPositions();
     if (positions.length === 0) return;
 
     const proceed = await this._confirm({
-      title: `Add ${positions.length} tile${positions.length !== 1 ? 's' : ''} to ${targetBlockId}?`,
-      message: 'Tiles already assigned to another block will be reassigned.',
+      title: `Add ${positions.length} tile${positions.length !== 1 ? 's' : ''} to ${targetSegmentId}?`,
+      message: 'Tiles already assigned to another segment will be reassigned.',
       confirmText: 'Add',
       confirmVariant: 'primary',
     });
     if (!proceed) return;
 
-    const resp = await this.api.addTracksToBlock(targetBlockId, positions, true);
+    const resp = await this.api.addTracksToSegment(targetSegmentId, positions, true);
     const added = resp?.added ?? 0;
     const reassigned = resp?.reassigned ?? 0;
-    const parts = [`Added ${added} to ${targetBlockId}`];
+    const parts = [`Added ${added} to ${targetSegmentId}`];
     if (reassigned) parts.push(`(${reassigned} reassigned)`);
     showToast(parts.join(' '), 'success', 3000);
     await this._afterMutation();
   }
 
-  // === Power-district actions ===
+  // === Block-grouping actions (power / occupancy) ===
 
-  /** Distinct blocks the current selection touches (a district groups whole
-   *  blocks, so selecting any tile of a block selects that whole block). */
-  _selectedBlockIds(): string[] {
-    return [...this._summarize(this.editor.boxSelectState.selectedKeys).blockIds];
+  /** Distinct segments the current selection touches (a block groups whole
+   *  segments, so selecting any tile of a segment selects that whole segment). */
+  _selectedSegmentIds(): string[] {
+    return [...this._summarize(this.editor.boxSelectState.selectedKeys).segmentIds];
   }
 
-  async _createPowerDistrictFromSelection(): Promise<void> {
-    const blockIds = this._selectedBlockIds();
-    if (blockIds.length === 0) {
-      showToast('Select tiles that belong to blocks first', 'info', 3000);
+  async _createBlockFromSelection(): Promise<void> {
+    const segmentIds = this._selectedSegmentIds();
+    if (segmentIds.length === 0) {
+      showToast('Select tiles that belong to segments first', 'info', 3000);
       return;
     }
-    const resp = await this.api.createPowerDistrict({ block_ids: blockIds });
+    const resp = await this.api.createBlock(segmentIds);
     if (resp?.error) {
-      showToast(`Failed to create district: ${resp.error}`, 'error', 5000);
+      showToast(`Failed to create block: ${resp.error}`, 'error', 5000);
       return;
     }
     showToast(
-      `Created power district ${resp.district_id} from ${blockIds.length} block${blockIds.length !== 1 ? 's' : ''}`,
+      `Created block ${resp.block_id} from ${segmentIds.length} segment${segmentIds.length !== 1 ? 's' : ''}`,
       'success',
       3000
     );
     await this._afterMutation();
-    // Open the new district so the user can name it / keep editing.
-    await this.editor.powerDistrictHandler?.showDetail(resp.district_id);
+    // Open the new block so the user can name it / keep editing.
+    await this.editor.blockGroupingHandler?.showDetail(resp.block_id);
   }
 
-  async _addSelectionToPowerDistrict(targetDistrictId: string): Promise<void> {
-    const blockIds = this._selectedBlockIds();
-    if (blockIds.length === 0) {
-      showToast('Select tiles that belong to blocks first', 'info', 3000);
+  async _addSelectionToBlock(targetBlockId: string): Promise<void> {
+    const segmentIds = this._selectedSegmentIds();
+    if (segmentIds.length === 0) {
+      showToast('Select tiles that belong to segments first', 'info', 3000);
       return;
     }
     const proceed = await this._confirm({
-      title: `Add ${blockIds.length} block${blockIds.length !== 1 ? 's' : ''} to ${targetDistrictId}?`,
+      title: `Add ${segmentIds.length} segment${segmentIds.length !== 1 ? 's' : ''} to ${targetBlockId}?`,
       message:
-        'Blocks already in another district will be moved here. They must stay one connected run with the district (no switch between them).',
+        'Segments already in another block will be moved here. They must stay one connected run with the block (no switch between them).',
       confirmText: 'Add',
       confirmVariant: 'primary',
     });
     if (!proceed) return;
 
-    // One atomic call: the backend validates the whole union stays connected, so
-    // a multi-block add is order-independent and rejects a switch/gap as a unit.
-    await this.api.addBlocksToDistrict(targetDistrictId, blockIds);
+    // The block surface adds one member at a time; each call re-validates that
+    // the run stays connected, so a rejected segment leaves the rest intact.
+    for (const segmentId of segmentIds) {
+      await this.api.addSegmentToBlock(targetBlockId, segmentId);
+    }
     showToast(
-      `Added ${blockIds.length} block${blockIds.length !== 1 ? 's' : ''} to ${targetDistrictId}`,
+      `Added ${segmentIds.length} segment${segmentIds.length !== 1 ? 's' : ''} to ${targetBlockId}`,
       'success',
       3000
     );
     await this._afterMutation();
-    await this.editor.powerDistrictHandler?.showDetail(targetDistrictId);
+    await this.editor.blockGroupingHandler?.showDetail(targetBlockId);
   }
 
-  async _removeSelectionFromBlocks(): Promise<void> {
+  async _removeSelectionFromSegments(): Promise<void> {
     const positions = this._selectedPositions();
     if (positions.length === 0) return;
 
@@ -560,54 +589,54 @@ export class MultiSelectActionsHandler {
     const byKey = new Map<string, any>();
     for (const t of tracks) byKey.set(`${t.x},${t.y}`, t);
 
-    const byBlock = new Map<string, number[][]>();
+    const bySegment = new Map<string, number[][]>();
     for (const [x, y] of positions) {
       const t = byKey.get(`${x},${y}`);
-      if (!t || !t.block_section_id) continue;
-      const list = byBlock.get(t.block_section_id) || [];
+      if (!t || !t.segment_id) continue;
+      const list = bySegment.get(t.segment_id) || [];
       list.push([x, y]);
-      byBlock.set(t.block_section_id, list);
+      bySegment.set(t.segment_id, list);
     }
-    if (byBlock.size === 0) {
-      showToast('No selected tiles are in a block', 'info', 3000);
+    if (bySegment.size === 0) {
+      showToast('No selected tiles are in a segment', 'info', 3000);
       return;
     }
 
-    const tileTotal = [...byBlock.values()].reduce((n, list) => n + list.length, 0);
+    const tileTotal = [...bySegment.values()].reduce((n, list) => n + list.length, 0);
     const proceed = await this._confirm({
-      title: `Remove ${tileTotal} tile${tileTotal !== 1 ? 's' : ''} from ${byBlock.size} block${byBlock.size !== 1 ? 's' : ''}?`,
+      title: `Remove ${tileTotal} tile${tileTotal !== 1 ? 's' : ''} from ${bySegment.size} segment${bySegment.size !== 1 ? 's' : ''}?`,
       message: 'Only edge tiles can be removed. The server will reject interior tiles.',
       confirmText: 'Remove',
       confirmVariant: 'danger',
     });
     if (!proceed) return;
 
-    const tasks = [...byBlock.entries()].map(([blockId, posList]) =>
+    const tasks = [...bySegment.entries()].map(([segmentId, posList]) =>
       this.api
-        .removeBlockTiles(blockId, posList)
-        .then((resp: any) => ({ blockId, resp, err: null }))
-        .catch((err: any) => ({ blockId, resp: null, err }))
+        .removeSegmentTiles(segmentId, posList)
+        .then((resp: any) => ({ segmentId, resp, err: null }))
+        .catch((err: any) => ({ segmentId, resp: null, err }))
     );
     const results = await Promise.all(tasks);
 
     let removed = 0;
-    const errorBlocks: string[] = [];
-    for (const { blockId, resp, err } of results) {
+    const errorSegments: string[] = [];
+    for (const { segmentId, resp, err } of results) {
       if (err) {
-        errorBlocks.push(blockId);
+        errorSegments.push(segmentId);
         continue;
       }
       removed += Array.isArray(resp?.removed) ? resp.removed.length : resp?.removed ?? 0;
     }
-    if (errorBlocks.length === 0) {
+    if (errorSegments.length === 0) {
       showToast(
-        `Removed ${removed} tile${removed !== 1 ? 's' : ''} from ${byBlock.size} block${byBlock.size !== 1 ? 's' : ''}`,
+        `Removed ${removed} tile${removed !== 1 ? 's' : ''} from ${bySegment.size} segment${bySegment.size !== 1 ? 's' : ''}`,
         'success',
         3000
       );
     } else {
       showToast(
-        `Removed ${removed} tile${removed !== 1 ? 's' : ''}, but ${errorBlocks.length} block${errorBlocks.length !== 1 ? 's' : ''} failed: ${errorBlocks.join(', ')}`,
+        `Removed ${removed} tile${removed !== 1 ? 's' : ''}, but ${errorSegments.length} segment${errorSegments.length !== 1 ? 's' : ''} failed: ${errorSegments.join(', ')}`,
         'warning',
         5000
       );
@@ -634,22 +663,22 @@ export class MultiSelectActionsHandler {
     await this._afterMutation();
   }
 
-  async _deleteAffectedBlocks(): Promise<void> {
+  async _deleteAffectedSegments(): Promise<void> {
     const summary = this._summarize(this.editor.boxSelectState.selectedKeys);
-    const blockIds = [...summary.blockIds];
-    if (blockIds.length === 0) return;
+    const segmentIds = [...summary.segmentIds];
+    if (segmentIds.length === 0) return;
 
     const proceed = await this._confirm({
-      title: `Delete ${blockIds.length} block${blockIds.length !== 1 ? 's' : ''}?`,
-      message: 'The block groupings will be removed. The tiles stay in place but become unassigned.',
-      confirmText: 'Delete blocks',
+      title: `Delete ${segmentIds.length} segment${segmentIds.length !== 1 ? 's' : ''}?`,
+      message: 'The segment geometry will be removed. The tiles stay in place but become unassigned.',
+      confirmText: 'Delete segments',
       confirmVariant: 'danger',
     });
     if (!proceed) return;
 
-    const tasks = blockIds.map((id) =>
+    const tasks = segmentIds.map((id) =>
       this.api
-        .deleteBlock(id)
+        .deleteSegment(id)
         .then(() => ({ id, err: null }))
         .catch((err: any) => ({ id, err }))
     );
@@ -658,7 +687,7 @@ export class MultiSelectActionsHandler {
     const failed = results.filter((r) => r.err);
 
     if (failed.length === 0) {
-      showToast(`Deleted ${ok.length} block${ok.length !== 1 ? 's' : ''}`, 'success', 3000);
+      showToast(`Deleted ${ok.length} segment${ok.length !== 1 ? 's' : ''}`, 'success', 3000);
     } else {
       const sample = failed
         .slice(0, 3)
@@ -673,19 +702,24 @@ export class MultiSelectActionsHandler {
     await this._afterMutation();
   }
 
-  // === Block-property batch edit ===
+  // === Property batch edit (split across both axes) ===
 
-  async _applyPropertiesToBlocks(affectedBlocks: any[]): Promise<void> {
+  // Max speed and min radius are segment geometry (`PATCH /api/segments/<id>`);
+  // disabled and manual are block availability (`PATCH /api/blocks/<id>`). Each
+  // touched field is sent only to the entities that own it.
+  async _applyProperties(affectedSegments: any[], affectedBlocks: any[]): Promise<void> {
     const panel = this.panel;
     if (!panel) return;
 
-    const payload: Record<string, unknown> = {};
+    const segmentPayload: Record<string, unknown> = {};
+    const blockPayload: Record<string, unknown> = {};
+
     const speedEl = panel.querySelector<HTMLInputElement>('[data-field="speed_limit_kmh"]');
     if (speedEl?.dataset.touched === 'true') {
       const v = speedEl.value.trim();
       if (v !== '') {
         const num = Number(v);
-        if (Number.isFinite(num)) payload.speed_limit_kmh = num;
+        if (Number.isFinite(num)) segmentPayload.speed_limit_kmh = num;
       }
     }
     const radiusEl = panel.querySelector<HTMLInputElement>('[data-field="min_radius_cm"]');
@@ -693,40 +727,57 @@ export class MultiSelectActionsHandler {
       const v = radiusEl.value.trim();
       if (v !== '') {
         const num = Number(v);
-        if (Number.isFinite(num)) payload.min_radius_cm = num;
+        if (Number.isFinite(num)) segmentPayload.min_radius_cm = num;
       }
     }
     const disabledEl = panel.querySelector<HTMLInputElement>('[data-field="disabled"]');
     if (disabledEl?.dataset.touched === 'true') {
-      payload.disabled = disabledEl.checked;
+      blockPayload.disabled = disabledEl.checked;
     }
     const manualEl = panel.querySelector<HTMLInputElement>('[data-field="manual"]');
     if (manualEl?.dataset.touched === 'true') {
-      payload.manual = manualEl.checked;
+      blockPayload.manual = manualEl.checked;
     }
 
-    if (Object.keys(payload).length === 0) {
+    const hasSegmentEdit = Object.keys(segmentPayload).length > 0;
+    const hasBlockEdit = Object.keys(blockPayload).length > 0;
+    if (!hasSegmentEdit && !hasBlockEdit) {
       showToast('Nothing to apply — touch a field first', 'info', 2500);
       return;
     }
 
-    const tasks = affectedBlocks.map((b) =>
-      this.api
-        .updateBlock(b.block_id, payload)
-        .then(() => ({ blockId: b.block_id, err: null }))
-        .catch((err: any) => ({ blockId: b.block_id, err }))
-    );
+    const tasks: Array<Promise<{ id: string; err: any }>> = [];
+    if (hasSegmentEdit) {
+      for (const sg of affectedSegments) {
+        tasks.push(
+          this.api
+            .updateSegment(sg.segment_id, segmentPayload)
+            .then(() => ({ id: sg.segment_id, err: null }))
+            .catch((err: any) => ({ id: sg.segment_id, err }))
+        );
+      }
+    }
+    if (hasBlockEdit) {
+      for (const b of affectedBlocks) {
+        tasks.push(
+          this.api
+            .updateBlock(b.block_id, blockPayload)
+            .then(() => ({ id: b.block_id, err: null }))
+            .catch((err: any) => ({ id: b.block_id, err }))
+        );
+      }
+    }
     const results = await Promise.all(tasks);
 
     const ok = results.filter((r) => !r.err);
     const failed = results.filter((r) => r.err);
 
     if (failed.length === 0) {
-      showToast(`Applied to ${ok.length} block${ok.length !== 1 ? 's' : ''}`, 'success', 3000);
+      showToast(`Applied to ${ok.length} entit${ok.length !== 1 ? 'ies' : 'y'}`, 'success', 3000);
     } else {
       const sample = failed
         .slice(0, 3)
-        .map((r) => `${r.blockId}: ${r.err.message || r.err}`)
+        .map((r) => `${r.id}: ${r.err.message || r.err}`)
         .join('; ');
       const more = failed.length > 3 ? ` +${failed.length - 3} more` : '';
       showToast(
@@ -736,10 +787,10 @@ export class MultiSelectActionsHandler {
       );
     }
 
-    // Refresh cached blocks so the next render shows new values. Don't
+    // Refresh cached segments so the next render shows new values. Don't
     // clear the selection — user may want to make several adjustments.
-    if (typeof this.editor.refreshBlocksList === 'function') {
-      await this.editor.refreshBlocksList();
+    if (typeof this.editor.refreshSegmentsList === 'function') {
+      await this.editor.refreshSegmentsList();
     }
     this._lastSignature = null;
     this.update(this.editor.boxSelectState.selectedKeys);
@@ -758,8 +809,8 @@ export class MultiSelectActionsHandler {
     this.editor.boxSelectState.selectedKeys = new Set();
     this.editor._applyBoxSelection(new Set());
     await this.editor.refreshAndSelect(null);
-    if (typeof this.editor.refreshBlocksList === 'function') {
-      await this.editor.refreshBlocksList();
+    if (typeof this.editor.refreshSegmentsList === 'function') {
+      await this.editor.refreshSegmentsList();
     }
   }
 

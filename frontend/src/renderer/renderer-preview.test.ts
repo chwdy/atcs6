@@ -22,7 +22,7 @@ function fakeRenderer(over: Record<string, unknown> = {}): any {
       drawPreviewPath: vi.fn(),
       drawHoverPreview: vi.fn(),
     },
-    blockHandler: { drawBlockPreviewPath: vi.fn() },
+    segmentHandler: { drawSegmentPreviewPath: vi.fn() },
     ...over,
   };
 }
@@ -37,7 +37,7 @@ describe('renderer build preview overlay', () => {
     expect(r.trackHandler.drawPreviewTracks).not.toHaveBeenCalled();
     expect(r.trackHandler.drawPreviewPath).not.toHaveBeenCalled();
     expect(r.trackHandler.drawEraserPreviewPath).not.toHaveBeenCalled();
-    expect(r.blockHandler.drawBlockPreviewPath).not.toHaveBeenCalled();
+    expect(r.segmentHandler.drawSegmentPreviewPath).not.toHaveBeenCalled();
   });
 
   it('routes a track-tool preview to drawPreviewTracks (the regressed path)', () => {
@@ -47,16 +47,16 @@ describe('renderer build preview overlay', () => {
     expect(r.trackHandler.drawPreviewTracks).toHaveBeenCalledWith(tracks);
   });
 
-  it('routes eraser / block / path previews to their handlers', () => {
+  it('routes eraser / segment / path previews to their handlers', () => {
     const path = [{ x: 1, y: 2 }];
 
     const eraser = fakeRenderer({ buildPreview: { kind: 'eraser', path } });
     drawBuild(eraser);
     expect(eraser.trackHandler.drawEraserPreviewPath).toHaveBeenCalledWith(path);
 
-    const block = fakeRenderer({ buildPreview: { kind: 'block', path } });
-    drawBuild(block);
-    expect(block.blockHandler.drawBlockPreviewPath).toHaveBeenCalledWith(path);
+    const segment = fakeRenderer({ buildPreview: { kind: 'segment', path } });
+    drawBuild(segment);
+    expect(segment.segmentHandler.drawSegmentPreviewPath).toHaveBeenCalledWith(path);
 
     const plain = fakeRenderer({ buildPreview: { kind: 'path', path } });
     drawBuild(plain);
