@@ -200,12 +200,38 @@ def test_deleting_one_member_keeps_the_block_and_its_other_member(net):
         assert net.get_track(x, y).block_id == "BLK_YARD"
 
 
-def test_deleting_the_block_takes_every_member_segment(net):
+def test_deleting_the_block_ungroups_and_rehomes_every_member(net):
+    """design_new.md "Block grouping": deleting a block dissolves the power
+    grouping only. Its segments survive and are each re-homed into their own
+    single-segment block, since a segment always belongs to exactly one block.
+    """
     assert net.delete_block("BLK_YARD") is True
 
+    # The grouping is gone; the geometry is not.
+    assert "BLK_YARD" not in net.blocks
+    assert net.get_segment("SEG_WEST") is not None
+    assert net.get_segment("SEG_EAST") is not None
+
+    # Each freed segment is now its own single-segment block.
+    for segment_id in ("SEG_WEST", "SEG_EAST"):
+        owner = net.segment_to_block_id(segment_id)
+        assert owner is not None
+        assert net.blocks[owner].segment_ids == [segment_id]
+
+    # Tiles keep their own segment and follow it to its new block.
+    for x, y in ALL_TILES:
+        track = net.get_track(x, y)
+        assert track.segment_id is not None
+        assert track.block_id == net.segment_to_block_id(track.segment_id)
+
+
+def test_deleting_every_segment_removes_the_block(net):
+    """Removing the geometry — not the grouping — is what takes the tiles and,
+    with the last member, the block itself (Non-empty parent rule)."""
+    assert net.delete_segment("SEG_WEST") is True
+    assert net.delete_segment("SEG_EAST") is True
+
     assert net.blocks == {}
-    assert net.get_segment("SEG_WEST") is None
-    assert net.get_segment("SEG_EAST") is None
     for x, y in ALL_TILES:
         assert net.get_track(x, y).segment_id is None
 

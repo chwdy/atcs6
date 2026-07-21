@@ -835,22 +835,14 @@ class RailwayNetwork:
         )
 
     def delete_block(self, block_id: str) -> bool:
-        """Delete a block and every segment it groups.
+        """Forward to `BlockGroupingManager.delete_block(block_id)`.
 
-        The grouping-side delete: the operator removed the block, so its
-        geometry goes with it. Deleting one member segment while keeping the
-        block is `delete_segment`.
+        The grouping-side delete: it dissolves the power grouping only. Every
+        member segment survives and is re-homed into its own single-segment
+        block, because a segment always belongs to exactly one block. Removing
+        a segment's geometry is `delete_segment`.
         """
-        block = self.blocks.get(block_id)
-        if block is None:
-            return False
-        geometry = self._get_segment_geometry_manager()
-        for segment_id in list(block.segment_ids):
-            geometry.delete_segment(segment_id)
-        # A block whose last member goes is dropped by delete_segment; a block
-        # that had no members to begin with is dropped here.
-        self.blocks.pop(block_id, None)
-        return True
+        return self._get_block_grouping_manager().delete_block(block_id)
 
     def get_block(self, block_id: str) -> Optional[Block]:
         return self.blocks.get(block_id)

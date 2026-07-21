@@ -293,7 +293,7 @@
 /* Power Districts panel — same .rr-card list shell as the stations/switches
    lists (DESIGN_LANGUAGE.md §11/§12). The only district-specific mark is the
    color swatch in each row's title, which matches that district's canvas
-   overlay color (see frontend/src/lib/district-color.ts). */
+   overlay color (see frontend/src/lib/block-color.ts). */
 .bg-create-form {
     display: flex;
     flex-direction: column;

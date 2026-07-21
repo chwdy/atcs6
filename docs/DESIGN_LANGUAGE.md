@@ -920,8 +920,8 @@ carries its own Save button. Give it the italic `--text-tertiary`
 placeholder invitation ("Add a name…") so an empty value still teaches what
 the field is (§19). Reference: `.status-header-name-input` in
 [components/status-blocks.css](../static/css/components/status-blocks.css),
-consumed by the block-editor header in
-[editor-blocks.ts](../frontend/src/editor/editor-blocks.ts).
+consumed by the segment-editor header in
+[editor-segments.ts](../frontend/src/editor/editor-segments.ts).
 
 ### Checkbox
 

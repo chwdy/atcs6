@@ -305,9 +305,18 @@ class StationRegistry:
                     f"[Station Delete] Block {block_id} is fully within station {station_id}, will be deleted"
                 )
 
-        # Delete all blocks that are fully within the station
+        # Delete all blocks that are fully within the station. Deleting the
+        # station removes its track, so this deletes each member segment's
+        # geometry rather than calling `delete_block`, which only dissolves the
+        # power grouping and re-homes the segments (design_new.md "Block
+        # grouping"). The block itself is dropped once its last member goes,
+        # through the Non-empty parent rule.
         for block_id in blocks_to_delete:
-            self._n.delete_block(block_id)
+            block = self._n.blocks.get(block_id)
+            if block is None:
+                continue
+            for segment_id in list(block.segment_ids):
+                self._n.delete_segment(segment_id)
             print(f"[Station Delete] Deleted block {block_id}")
 
         # Clear station_id from all tracks in this station and drop
