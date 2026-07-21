@@ -29,12 +29,48 @@ from app_state import AppState
 import hardware_config
 
 
+def _develop_opener(cfg):
+    """When the persisted configuration has the develop flag set, an
+    `open_device` callable that creates a transient seeded `FakeCh347Device`;
+    None means "open the real CH347". Gated on the persisted `develop` flag
+    alone — NOT `is_develop`, because commissioning (Detect / self-test) runs
+    on the fake BEFORE the user can enable hardware (enabling requires a passing
+    self-test), so it must not also require `enabled`. A PUT commits the flag
+    live, so the fake is used right after the first Save, no restart. Seeded
+    from the payload `cfg` under test (the edit-in-progress chip list is what
+    self-test probes)."""
+    if not hardware_config.get_hardware_config().develop:
+        return None
+    from hardware.fake import FakeCh347Device
+
+    def _open():
+        dev = FakeCh347Device(
+            present_addresses={
+                c.i2c_address for c in cfg.chips if c.i2c_address is not None
+            }
+        )
+        dev.open()
+        return dev
+
+    return _open
+
+
 def register(app, state: AppState) -> None:
     """Register the hardware-configuration routes."""
 
     @app.route("/api/hardware/config", methods=["GET"])
     def get_hardware_configuration():
-        return jsonify({"config": hardware_config.as_dict()})
+        return jsonify({
+            "config": hardware_config.as_dict(),
+            # What the RUNNING session actually is (the config above only says
+            # what the next session will be): the operation mode the session
+            # booted with (honest about a sim fallback) and whether it runs on
+            # the fake device (the develop badge + dev section key off this).
+            "session": {
+                "operation_mode": state.sim_controller.operation_mode.value,
+                "develop_active": hardware_config.get_session_device() is not None,
+            },
+        })
 
     @app.route("/api/hardware/config", methods=["PUT"])
     def update_hardware_configuration():
@@ -65,7 +101,11 @@ def register(app, state: AppState) -> None:
         from hardware import self_test
 
         # Optional: limit the probe to one chip (the per-chip Self-test button).
-        return jsonify(self_test.run_self_test(cfg, chip_id=data.get("chip_id")))
+        return jsonify(
+            self_test.run_self_test(
+                cfg, open_device=_develop_opener(cfg), chip_id=data.get("chip_id")
+            )
+        )
 
     @app.route("/api/hardware/port-test", methods=["POST"])
     def hardware_port_test():
@@ -79,7 +119,7 @@ def register(app, state: AppState) -> None:
         chip_id = data.get("chip_id")
         port = data.get("port")
         action = data.get("action")
-        actions = ("pulse_output", "read_input", "drive_sequence")
+        actions = ("pulse_output", "read_input")
         if not chip_id or port is None or action not in actions:
             return (
                 jsonify({
@@ -90,7 +130,11 @@ def register(app, state: AppState) -> None:
             )
         from hardware import self_test
 
-        return jsonify(self_test.run_port_test(cfg, chip_id, int(port), action))
+        return jsonify(
+            self_test.run_port_test(
+                cfg, chip_id, int(port), action, open_device=_develop_opener(cfg)
+            )
+        )
 
     @app.route("/api/hardware/occupancy-test", methods=["POST"])
     def hardware_occupancy_test():
@@ -110,7 +154,17 @@ def register(app, state: AppState) -> None:
             return jsonify({"status": "error", "error": "block_id is required"}), 400
         from hardware import self_test
 
-        return jsonify(self_test.run_occupancy_test(cfg, str(block_id)))
+        # In develop mode prefer the live session's fake device, so the verdict
+        # reflects state injected via /api/debug/hw (reads only, never drives;
+        # a passed-in device is never closed by run_occupancy_test).
+        return jsonify(
+            self_test.run_occupancy_test(
+                cfg,
+                str(block_id),
+                device=hardware_config.get_session_device(),
+                open_device=_develop_opener(cfg),
+            )
+        )
 
     @app.route("/api/hardware/binding", methods=["PUT"])
     def update_hardware_binding():
@@ -163,7 +217,7 @@ def register(app, state: AppState) -> None:
         from hardware import commission
 
         try:
-            commission.get_session().open(cfg)
+            commission.get_session().open(cfg, open_device=_develop_opener(cfg))
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)})
         return jsonify({"ok": True})
@@ -234,3 +288,159 @@ def register(app, state: AppState) -> None:
 
         commission.get_session().close()
         return jsonify({"ok": True})
+
+    # -- develop-mode fake-input debug surface ------------------------------
+    # These act on the LIVE session's FakeCh347Device (develop mode only): the
+    # dev panel injects occupancy bits / currents here and the real occupancy
+    # pipeline reads them back on its next tick.
+
+    def _require_fake():
+        """The live session's fake device, or None (caller answers 409)."""
+        return hardware_config.get_session_device()
+
+    def _chip_spec(cfg, chip_id):
+        return next((c for c in cfg.chips if c.chip_id == chip_id), None)
+
+    _NOT_DEVELOP = {"status": "error", "error": "session is not running in develop mode"}
+
+    @app.route("/api/debug/hw", methods=["GET"])
+    def debug_hw_state():
+        """Read-back of the fake device's per-block / per-switch state for the
+        dev panel poll. Fields are null where the entity has no binding of that
+        kind."""
+        device = _require_fake()
+        if device is None:
+            return jsonify(_NOT_DEVELOP), 409
+        from block_power import MAX_TRACK_VOLTAGE
+        from hardware.interfaces import build_chip
+
+        cfg = hardware_config.get_hardware_config()
+        with state.simulation_lock:
+            chips = {}
+
+            def chip_for(chip_id):
+                if chip_id not in chips:
+                    spec = _chip_spec(cfg, chip_id)
+                    try:
+                        chips[chip_id] = build_chip(device, spec) if spec else None
+                    except Exception:
+                        chips[chip_id] = None
+                return chips[chip_id]
+
+            try:
+                occupied = state.sim_controller.input_interface.read_block_currents()
+            except Exception:
+                occupied = {}
+
+            blocks = {}
+            for block_id in (
+                set(cfg.block_occupancy)
+                | set(cfg.block_occupancy_current)
+                | set(cfg.block_track)
+            ):
+                entry = {"occupancy_bit": None, "current_ma": None, "volts": None,
+                         "occupied": occupied.get(block_id)}
+                binding = cfg.block_occupancy.get(block_id)
+                if binding is not None:
+                    chip = chip_for(binding.chip_id)
+                    if chip is not None:
+                        entry["occupancy_bit"] = bool(chip.read_bit(binding.port))
+                cbind = cfg.block_occupancy_current.get(block_id)
+                if cbind is not None:
+                    chip = chip_for(cbind.chip_id)
+                    if chip is not None:
+                        try:
+                            entry["current_ma"] = round(
+                                chip.read_current(cbind.port + 1) * 1000.0, 3
+                            )
+                        except Exception:
+                            pass
+                tbind = cfg.block_track.get(block_id)
+                if tbind is not None:
+                    chip = chip_for(tbind.chip_id)
+                    if chip is not None:
+                        fwd = device.duty_cycle(chip.address, 2 * tbind.port)
+                        rev = device.duty_cycle(chip.address, 2 * tbind.port + 1)
+                        entry["volts"] = round((fwd - rev) * MAX_TRACK_VOLTAGE, 2)
+                blocks[block_id] = entry
+
+            switches = {}
+            for switch_id, sbind in cfg.switch_output.items():
+                chip = chip_for(sbind.chip_id)
+                if chip is None:
+                    continue
+                switches[switch_id] = {
+                    "main": device.latched_bit(chip.select, sbind.port_main),
+                    "diverge": device.latched_bit(chip.select, sbind.port_diverge),
+                    "standby": (
+                        device.latched_bit(chip.select, sbind.port_standby)
+                        if sbind.port_standby is not None else None
+                    ),
+                }
+
+        return jsonify({"develop_active": True, "blocks": blocks, "switches": switches})
+
+    @app.route("/api/debug/hw/occupancy", methods=["POST"])
+    def debug_hw_set_occupancy():
+        """Set a block's fake '165 occupancy bit. Body: {block_id, occupied}."""
+        device = _require_fake()
+        if device is None:
+            return jsonify(_NOT_DEVELOP), 409
+        data = request.get_json(silent=True) or {}
+        block_id = data.get("block_id")
+        occupied = data.get("occupied")
+        if not block_id or occupied is None:
+            return jsonify({"status": "error", "error": "block_id and occupied are required"}), 400
+        from hardware.interfaces import build_chip
+
+        cfg = hardware_config.get_hardware_config()
+        binding = cfg.block_occupancy.get(str(block_id))
+        spec = _chip_spec(cfg, binding.chip_id) if binding else None
+        if binding is None or spec is None:
+            return jsonify({
+                "status": "error",
+                "error": f"block {block_id!r} has no occupancy detector binding",
+            }), 404
+        with state.simulation_lock:
+            # Resolve the chip's latch line the same way the driver does, so the
+            # bit lands where the runtime's read will look.
+            chip = build_chip(device, spec)
+            device.set_input_bit(
+                chip.select, binding.port, bool(occupied), width=spec.chain_length
+            )
+        return jsonify({"ok": True, "block_id": block_id, "occupied": bool(occupied)})
+
+    @app.route("/api/debug/hw/current", methods=["POST"])
+    def debug_hw_set_current():
+        """Set a block's fake current-sense reading in mA. Body: {block_id,
+        current_ma}. Current decides occupancy only while the block is driven
+        (see `Ch347OccupancyInputInterface`); an idle block reads its '165 bit."""
+        device = _require_fake()
+        if device is None:
+            return jsonify(_NOT_DEVELOP), 409
+        data = request.get_json(silent=True) or {}
+        block_id = data.get("block_id")
+        current_ma = data.get("current_ma")
+        if not block_id or current_ma is None:
+            return jsonify({"status": "error", "error": "block_id and current_ma are required"}), 400
+        cfg = hardware_config.get_hardware_config()
+        binding = cfg.block_occupancy_current.get(str(block_id))
+        spec = _chip_spec(cfg, binding.chip_id) if binding else None
+        if binding is None or spec is None:
+            return jsonify({
+                "status": "error",
+                "error": f"block {block_id!r} has no current-sense binding",
+            }), 404
+        from hardware.interfaces import build_chip
+
+        amps = float(current_ma) / 1000.0
+        with state.simulation_lock:
+            # Resolve the address through the driver so a spec without an
+            # explicit i2c_address lands on the catalog default, the same
+            # address the runtime reads.
+            addr = build_chip(device, spec).address
+            if spec.kind == "ina219":
+                device.set_ina219_current(addr, amps)
+            else:
+                device.set_ina3221_current(addr, binding.port + 1, amps)
+        return jsonify({"ok": True, "block_id": block_id, "current_ma": float(current_ma)})

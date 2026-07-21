@@ -46,10 +46,25 @@ function optionsOf(html: string, selectClass: string): string[] {
 }
 
 describe('block hardware section', () => {
-  it('renders nothing when hardware is off, so a simulated layout never sees it', () => {
-    expect(section(cfg({ enabled: false }))).toBe('');
+  it('renders nothing when no chip is configured, so a simulated layout never sees it', () => {
+    // Gated on chips, not on the enabled flag: a pure-sim layout has no chips.
     expect(section(null)).toBe('');
     expect(section(cfg({ chips: [] }))).toBe('');
+    expect(section(cfg({ chips: [], enabled: true }))).toBe('');
+  });
+
+  it('shows the section for binding before hardware is enabled', () => {
+    // The port bindings are bench configuration, so they must not wait on the
+    // real-hardware enable gate — the section renders with enabled off.
+    const html = section(cfg({ enabled: false }));
+    expect(html).toContain('hw-bind-section');
+    expect(html).toContain('Track power');
+    expect(html).toContain('Test occupancy');
+  });
+
+  it('warns that hardware is not live only while it is disabled', () => {
+    expect(section(cfg({ enabled: false }))).toContain('Hardware is not live yet');
+    expect(section(cfg({ enabled: true }))).not.toContain('Hardware is not live yet');
   });
 
   it('names the two rails each track port drives', () => {
@@ -235,14 +250,21 @@ describe('switch hardware section', () => {
     [SWITCH]: { chip_id: 'sw0', port_main: 2, port_diverge: 3, ...extra },
   });
 
-  it('renders nothing when hardware is off, so a simulated layout never sees it', () => {
-    expect(switchHardwareSectionHtml(swCfg({ enabled: false }), SWITCH)).toBe('');
+  it('renders nothing when no chip can drive a coil, so a simulated layout never sees it', () => {
     expect(switchHardwareSectionHtml(null, SWITCH)).toBe('');
-  });
-
-  it('renders nothing when no chip can drive a coil', () => {
     const trackOnly = swCfg({ chips: swCfg().chips.filter((c) => c.role !== 'switch_output') });
     expect(switchHardwareSectionHtml(trackOnly, SWITCH)).toBe('');
+  });
+
+  it('shows the section for coil wiring before hardware is enabled', () => {
+    // Coil wiring is bench configuration, so — like the block section — it does
+    // not wait on the real-hardware enable gate.
+    const html = switchHardwareSectionHtml(swCfg({ enabled: false }), SWITCH);
+    expect(html).toContain('hw-switch-section');
+    expect(html).toContain('data-side="main"');
+    expect(html).toContain('Hardware is not live yet');
+    expect(switchHardwareSectionHtml(swCfg({ enabled: true }), SWITCH))
+      .not.toContain('Hardware is not live yet');
   });
 
   it('offers a coil row per side, listing only switch-role ports', () => {

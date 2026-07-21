@@ -779,7 +779,7 @@ class TestPlatformRoutes:
             json={"x": 0, "y": 0},
         )
         assert unassigned.status_code == 200
-        assert unassigned.get_json()["block_assignments"] == []
+        assert unassigned.get_json()["platform"]["block_assignments"] == {}
 
 
 class TestStationGroupRoutes:
@@ -1116,6 +1116,7 @@ class TestMiscRoutes:
 
     def test_static_spa_fallback(self, client):
         assert client.get("/some/client/side/route").status_code == 200
+        assert client.get("/missing-client-bundle.js").status_code == 404
 
     def test_network_stats(self, client):
         """GET /api/network/stats should return network statistics."""

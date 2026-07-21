@@ -6,9 +6,10 @@ This store answers three questions for the next operation session:
 - **What is wired?** A `controller` (the transport bridge) plus a list of `chips`
   (each a PWM driver, shift-out, or shift-in), every chip carrying the parameters
   the user set: an I2C address, or an SPI select line + cascade length.
-- **What connects to what?** The `bindings` — maps from a logical id to a chip
-  port: `block_track` (block_id -> track port), `switch_output` (switch_id -> the
-  two coil ports plus an optional standby port), and two occupancy sources for
+- **What connects to what?** The `bindings` — maps from a logical id to chip
+  ports: `block_track` (block_id -> the two PWM channels driving its rails,
+  `forward` + `reverse`), `switch_output` (switch_id -> the two coil ports plus
+  an optional standby port), and two occupancy sources for
   the hybrid detector — `block_occupancy` (block_id -> '165 digital-detector port) and
   `block_occupancy_current` (block_id -> INA3221 current channel, with its
   per-channel baseline/threshold). `output_enable` optionally names the '595 bit
@@ -42,6 +43,7 @@ from hardware.catalog import (
     ROLE_SWITCH,
     ROLE_TRACK,
     latch_lines_for,
+    lines_for_chip,
     ports_for_chip,
 )
 
@@ -120,6 +122,26 @@ class PortBinding:
 
 
 @dataclass
+class TrackBinding:
+    """A block's track wiring: the two PWM channels driving its two rails.
+
+    A block's track is an H-bridge whose two inputs are driven by two PCA9685
+    PWM channels — `forward` drives the block's nominal-positive direction,
+    `reverse` the other. They are chosen independently (not a fixed adjacent
+    pair), so the two rails may sit on any two of the chip's 16 channels. Voltage
+    magnitude sets duty on whichever channel matches the sign; the other rests at
+    zero, so the two inputs are never driven together."""
+
+    chip_id: str
+    forward: int
+    reverse: int
+
+    @property
+    def channels(self) -> List[int]:
+        return [self.forward, self.reverse]
+
+
+@dataclass
 class SwitchBinding:
     """A switch's throw wiring: one output bit per coil, on one chip.
 
@@ -162,9 +184,13 @@ class HardwareConfig:
     """The whole selection. Defaults are the all-virtual sim-mode configuration."""
 
     enabled: bool = False
+    # Develop mode: run the real-mode stack against the in-memory
+    # `FakeCh347Device` (no USB hardware, watchdog unarmed). Only meaningful
+    # when `is_real()`; restart-to-apply like `enabled`.
+    develop: bool = False
     controller: ControllerConfig = field(default_factory=ControllerConfig)
     chips: List[ChipConfig] = field(default_factory=list)
-    block_track: Dict[str, PortBinding] = field(default_factory=dict)
+    block_track: Dict[str, TrackBinding] = field(default_factory=dict)
     # Two occupancy sources per the hybrid detector: `block_occupancy` is the
     # digital detector ('165, read when a block is idle) and
     # `block_occupancy_current` is the INA3221 channel (read when the block is
@@ -181,16 +207,34 @@ class HardwareConfig:
 
 _config = HardwareConfig()
 
+# The develop-mode session's FakeCh347Device, set by `build_session_interfaces`
+# when it wires the real-mode stack onto the fake. None in sim mode and in real
+# mode on the physical device. The `/api/debug/hw` endpoints poke this device's
+# input state on the live session.
+_session_device: Optional[Any] = None
+
 
 def get_hardware_config() -> HardwareConfig:
     """Return the live hardware-configuration singleton."""
     return _config
 
 
+def get_session_device() -> Optional[Any]:
+    """The live session's fake device (develop mode only); None otherwise."""
+    return _session_device
+
+
 def is_real(cfg: Optional[HardwareConfig] = None) -> bool:
     """True when the session should wire real hardware: enabled with >=1 chip."""
     cfg = cfg if cfg is not None else _config
     return bool(cfg.enabled and cfg.chips)
+
+
+def is_develop(cfg: Optional[HardwareConfig] = None) -> bool:
+    """True when a real-mode session should run on the fake device: real mode
+    selected (`is_real`) with the `develop` flag set."""
+    cfg = cfg if cfg is not None else _config
+    return is_real(cfg) and cfg.develop
 
 
 def derive_operation_mode(cfg: Optional[HardwareConfig] = None) -> OperationMode:
@@ -203,6 +247,13 @@ def derive_operation_mode(cfg: Optional[HardwareConfig] = None) -> OperationMode
 # ---------------------------------------------------------------------------
 def _binding_dict(m: Dict[str, PortBinding]) -> Dict[str, Dict[str, Any]]:
     return {lid: {"chip_id": b.chip_id, "port": b.port} for lid, b in m.items()}
+
+
+def _track_binding_dict(m: Dict[str, TrackBinding]) -> Dict[str, Dict[str, Any]]:
+    return {
+        lid: {"chip_id": b.chip_id, "forward": b.forward, "reverse": b.reverse}
+        for lid, b in m.items()
+    }
 
 
 def _switch_binding_dict(m: Dict[str, SwitchBinding]) -> Dict[str, Dict[str, Any]]:
@@ -245,9 +296,10 @@ def _persist_dict(cfg: HardwareConfig) -> Dict[str, Any]:
     """Minimal on-disk form — only user-set fields (no derived data)."""
     return {
         "enabled": cfg.enabled,
+        "develop": cfg.develop,
         "controller": {"kind": cfg.controller.kind, "device_port": cfg.controller.device_port},
         "chips": [_chip_persist(c) for c in cfg.chips],
-        "block_track": _binding_dict(cfg.block_track),
+        "block_track": _track_binding_dict(cfg.block_track),
         "block_occupancy": _binding_dict(cfg.block_occupancy),
         "block_occupancy_current": _current_binding_dict(cfg.block_occupancy_current),
         "switch_output": _switch_binding_dict(cfg.switch_output),
@@ -265,6 +317,9 @@ def as_dict() -> Dict[str, Any]:
         chip_payload["role"] = chip.role
         chip_payload["direction"] = ck.direction if ck else None
         chip_payload["port_count"] = ports_for_chip(chip.kind, chip.chain_length) if ck else 0
+        # The picker addresses raw lines: same as ports for every chip except a
+        # bipolar-pair PWM, whose port is a channel pair (see lines_for_chip).
+        chip_payload["line_count"] = lines_for_chip(chip.kind, chip.chain_length) if ck else 0
         chip_payload["port_kind"] = ck.port_kind if ck else None
     return payload
 
@@ -341,6 +396,20 @@ def _req_port(raw: Dict[str, Any], key: str, logical_id: str, what: str) -> int:
         ) from exc
 
 
+def _parse_track_bindings(data: Any) -> Dict[str, TrackBinding]:
+    data = data if isinstance(data, dict) else {}
+    out: Dict[str, TrackBinding] = {}
+    for logical_id, raw in data.items():
+        raw = raw if isinstance(raw, dict) else {}
+        lid = str(logical_id)
+        out[lid] = TrackBinding(
+            chip_id=str(raw.get("chip_id", "")).strip(),
+            forward=_req_port(raw, "forward", lid, "track binding"),
+            reverse=_req_port(raw, "reverse", lid, "track binding"),
+        )
+    return out
+
+
 def _parse_switch_bindings(data: Any) -> Dict[str, SwitchBinding]:
     data = data if isinstance(data, dict) else {}
     out: Dict[str, SwitchBinding] = {}
@@ -391,6 +460,7 @@ def _merged_from_updates(updates: Dict[str, Any]) -> HardwareConfig:
     replaces that section; absent keys keep the current singleton's value."""
     merged = HardwareConfig(
         enabled=_config.enabled,
+        develop=_config.develop,
         controller=ControllerConfig(**vars(_config.controller)),
         chips=list(_config.chips),
         block_track=dict(_config.block_track),
@@ -401,12 +471,14 @@ def _merged_from_updates(updates: Dict[str, Any]) -> HardwareConfig:
     )
     if "enabled" in updates:
         merged.enabled = bool(updates["enabled"])
+    if "develop" in updates:
+        merged.develop = bool(updates["develop"])
     if "controller" in updates:
         merged.controller = _parse_controller(updates["controller"])
     if "chips" in updates:
         merged.chips = [_parse_chip(c) for c in (updates["chips"] or [])]
     if "block_track" in updates:
-        merged.block_track = _parse_bindings(updates["block_track"])
+        merged.block_track = _parse_track_bindings(updates["block_track"])
     if "block_occupancy" in updates:
         merged.block_occupancy = _parse_bindings(updates["block_occupancy"])
     if "block_occupancy_current" in updates:
@@ -480,7 +552,7 @@ def _validate(cfg: HardwareConfig) -> None:
             )
 
     chips_by_id = {c.chip_id: c for c in cfg.chips}
-    _validate_bindings(cfg.block_track, ROLE_TRACK, chips_by_id, "block_track")
+    _validate_track_bindings(cfg.block_track, chips_by_id)
     _validate_switch_bindings(cfg.switch_output, chips_by_id)
     # The two occupancy maps share the occupancy role but split by port kind: the
     # digital detector ('165) vs the current-sense channel (INA3221).
@@ -535,6 +607,48 @@ def _validate_bindings(
                 f"{name}: port {b.port} on chip {b.chip_id!r} is bound more than once"
             )
         used.add(key)
+
+
+def _validate_track_bindings(
+    m: Dict[str, TrackBinding],
+    chips_by_id: Dict[str, ChipConfig],
+) -> None:
+    """Each block names one track-role chip and two distinct PWM channels (its
+    two rails). Driving both channels of one block at once would short the
+    H-bridge, so forward and reverse must differ; and a channel used by one block
+    cannot drive another, so channels are unique across the whole map."""
+    used: set = set()
+    for logical_id, b in m.items():
+        chip = chips_by_id.get(b.chip_id)
+        if chip is None:
+            raise HardwareConfigError(
+                f"block_track[{logical_id!r}] references unknown chip {b.chip_id!r}"
+            )
+        ck = CHIP_CATALOG[chip.kind]
+        if ck.role != ROLE_TRACK:
+            raise HardwareConfigError(
+                f"block_track[{logical_id!r}] chip {b.chip_id!r} is {ck.role}, needs {ROLE_TRACK}"
+            )
+        count = lines_for_chip(chip.kind, chip.chain_length)
+        seen_here: set = set()
+        for label, channel in (("forward", b.forward), ("reverse", b.reverse)):
+            if not (0 <= channel < count):
+                raise HardwareConfigError(
+                    f"block_track[{logical_id!r}] {label} channel {channel} out of range "
+                    f"0..{count - 1} on chip {b.chip_id!r}"
+                )
+            if channel in seen_here:
+                raise HardwareConfigError(
+                    f"block_track[{logical_id!r}] uses channel {channel} for both "
+                    f"forward and reverse"
+                )
+            seen_here.add(channel)
+            key = (b.chip_id, channel)
+            if key in used:
+                raise HardwareConfigError(
+                    f"block_track: channel {channel} on chip {b.chip_id!r} is bound more than once"
+                )
+            used.add(key)
 
 
 def _validate_switch_bindings(
@@ -670,10 +784,10 @@ def apply_updates(updates: Dict[str, Any], *, persist: bool = True) -> HardwareC
     return _config
 
 
-# The maps a plain (chip_id, port) binding covers. `switch_output` and
-# `block_occupancy_current` carry more than one field per entry, so each has its
-# own setter below.
-BINDING_MAPS = ("block_track", "block_occupancy")
+# The maps a plain (chip_id, port) binding covers. `block_track`, `switch_output`,
+# and `block_occupancy_current` carry more than one field per entry, so each has
+# its own setter below.
+BINDING_MAPS = ("block_occupancy",)
 
 
 def _copy_config() -> HardwareConfig:
@@ -681,6 +795,7 @@ def _copy_config() -> HardwareConfig:
     the containers fresh) for validate-before-commit edits."""
     return HardwareConfig(
         enabled=_config.enabled,
+        develop=_config.develop,
         controller=ControllerConfig(**vars(_config.controller)),
         chips=list(_config.chips),
         block_track=dict(_config.block_track),
@@ -713,6 +828,38 @@ def set_binding(
         if port is None:
             raise HardwareConfigError("port is required when chip_id is set")
         target[logical_id] = PortBinding(chip_id=str(chip_id), port=int(port))
+    _validate(candidate)
+    _apply(candidate)
+    if persist:
+        save_to_disk()
+    return _config
+
+
+def set_track_binding(
+    block_id: str,
+    chip_id: Optional[str] = None,
+    forward: Optional[int] = None,
+    reverse: Optional[int] = None,
+    *,
+    persist: bool = True,
+) -> HardwareConfig:
+    """Set or clear one block's track wiring (the per-entity block editor's
+    Hardware section). `chip_id` None/empty clears it; otherwise both the forward
+    and reverse PWM channels are required. The whole configuration is
+    re-validated, so an out-of-range, role-mismatched, equal, or already-used
+    channel is rejected and nothing is committed."""
+    candidate = _copy_config()
+    target = candidate.block_track
+    if chip_id in (None, ""):
+        target.pop(block_id, None)
+    else:
+        if forward is None or reverse is None:
+            raise HardwareConfigError(
+                "forward and reverse channels are both required when chip_id is set"
+            )
+        target[block_id] = TrackBinding(
+            chip_id=str(chip_id), forward=int(forward), reverse=int(reverse)
+        )
     _validate(candidate)
     _apply(candidate)
     if persist:
@@ -797,9 +944,10 @@ def config_from_payload(payload: Dict[str, Any]) -> HardwareConfig:
     payload = payload if isinstance(payload, dict) else {}
     cfg = HardwareConfig(
         enabled=bool(payload.get("enabled", False)),
+        develop=bool(payload.get("develop", False)),
         controller=_parse_controller(payload.get("controller", {})),
         chips=[_parse_chip(c) for c in (payload.get("chips") or [])],
-        block_track=_parse_bindings(payload.get("block_track", {})),
+        block_track=_parse_track_bindings(payload.get("block_track", {})),
         block_occupancy=_parse_bindings(payload.get("block_occupancy", {})),
         block_occupancy_current=_parse_current_bindings(payload.get("block_occupancy_current", {})),
         switch_output=_parse_switch_bindings(payload.get("switch_output", {})),
@@ -840,8 +988,9 @@ def load_from_disk(path: Optional[str] = None) -> HardwareConfig:
 def reset_to_defaults() -> HardwareConfig:
     """Restore the all-virtual defaults on the singleton (used by tests). Does
     not touch the on-disk file."""
-    global _config
+    global _config, _session_device
     _config = HardwareConfig()
+    _session_device = None
     return _config
 
 
@@ -850,6 +999,14 @@ def reset_to_defaults() -> HardwareConfig:
 # ---------------------------------------------------------------------------
 def _binding_tuples(m: Dict[str, PortBinding]) -> Dict[str, Tuple[str, int]]:
     return {lid: (b.chip_id, b.port) for lid, b in m.items()}
+
+
+def _track_binding_tuples(
+    m: Dict[str, TrackBinding],
+) -> Dict[str, Tuple[str, int, int]]:
+    """Resolve each block's track to (chip_id, forward, reverse) for the driver,
+    which addresses the two rails by PWM channel number."""
+    return {lid: (b.chip_id, b.forward, b.reverse) for lid, b in m.items()}
 
 
 def _switch_binding_tuples(
@@ -894,6 +1051,41 @@ def build_session_interfaces(
     if not is_real(cfg):
         return None, None, None
 
+    global _session_device
+    if cfg.develop:
+        # Develop mode: the same real-mode stack on the in-memory fake device.
+        # No ch347api needed, and the loss-of-control watchdog stays unarmed —
+        # there is no physical track to protect, and a paused dev session must
+        # not have its outputs zeroed under it.
+        from hardware.fake import FakeCh347Device
+        from hardware.interfaces import build_real_interfaces
+
+        device = FakeCh347Device(
+            present_addresses={
+                c.i2c_address for c in cfg.chips if c.i2c_address is not None
+            }
+        )
+        device.open()
+        try:
+            interfaces = build_real_interfaces(
+                device,
+                cfg.chips,
+                _track_binding_tuples(cfg.block_track),
+                _binding_tuples(cfg.block_occupancy),
+                _switch_binding_tuples(cfg.switch_output),
+                block_occupancy_current=_current_binding_tuples(cfg.block_occupancy_current),
+                output_enable=_binding_tuples(cfg.output_enable),
+                idle_deadband_v=DEFAULT_IDLE_DEADBAND_V,
+                watchdog_timeout_s=None,
+            )
+        except Exception as exc:
+            raise HardwareBackendUnavailable(
+                f"failed to initialize fake hardware chips: {exc}"
+            ) from exc
+        _session_device = device
+        atexit.register(device.close)
+        return interfaces
+
     try:
         from hardware.ch347_device import open_ch347_device
         from hardware.interfaces import build_real_interfaces
@@ -915,7 +1107,7 @@ def build_session_interfaces(
         interfaces = build_real_interfaces(
             device,
             cfg.chips,
-            _binding_tuples(cfg.block_track),
+            _track_binding_tuples(cfg.block_track),
             _binding_tuples(cfg.block_occupancy),
             _switch_binding_tuples(cfg.switch_output),
             block_occupancy_current=_current_binding_tuples(cfg.block_occupancy_current),

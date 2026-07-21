@@ -459,6 +459,37 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
+  /**
+   * Develop mode (fake hardware) input-poke surface. These act on the LIVE
+   * session's fake device, so the real occupancy pipeline reads the injected
+   * state back on its next tick. Available only when the running session booted
+   * on the fake device (`session.develop_active`); otherwise they answer 409.
+   */
+
+  /** Read the fake device's per-block / per-switch state for the dev panel. */
+  async getHwDebugState(): Promise<any> {
+    return this._request('/debug/hw', {}, 'getHwDebugState');
+  }
+
+  /** Set a block's fake '165 occupancy bit. */
+  async setHwDebugOccupancy(blockId: string, occupied: boolean): Promise<any> {
+    return this._request(
+      '/debug/hw/occupancy',
+      { method: 'POST', body: { block_id: blockId, occupied } },
+      'setHwDebugOccupancy'
+    );
+  }
+
+  /** Set a block's fake current-sense reading (mA); decides occupancy only
+   * while the block is driven. */
+  async setHwDebugCurrent(blockId: string, currentMa: number): Promise<any> {
+    return this._request(
+      '/debug/hw/current',
+      { method: 'POST', body: { block_id: blockId, current_ma: currentMa } },
+      'setHwDebugCurrent'
+    );
+  }
+
   // === Block Management ===
 
   /** Get all blocks. */

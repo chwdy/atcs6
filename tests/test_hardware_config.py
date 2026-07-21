@@ -77,7 +77,7 @@ def test_defaults_are_all_virtual_sim_mode():
 def test_as_dict_shape():
     keys = set(hardware_config.as_dict().keys())
     assert keys == {
-        "enabled", "controller", "chips",
+        "enabled", "develop", "controller", "chips",
         "block_track", "block_occupancy", "block_occupancy_current",
         "switch_output", "output_enable",
     }

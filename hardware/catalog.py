@@ -186,6 +186,20 @@ def ports_for_chip(kind: str, chain_length: int) -> int:
     return ck.ports_per_unit * units
 
 
+def lines_for_chip(kind: str, chain_length: int) -> int:
+    """Number of individually-addressable hardware lines a configured chip
+    exposes — the granularity the port picker and the track binding select at.
+
+    This equals `ports_for_chip` for every chip except a bipolar-pair PWM
+    (`pca9685`), whose *port* is a pair of PWM channels (an H-bridge's two
+    inputs). The picker addresses those 16 channels one at a time so a block's
+    two rails can be wired to any two of them, not only the fixed adjacent pair,
+    so a bipolar-pair chip reports twice its port count."""
+    ck = CHIP_CATALOG[kind]
+    ports = ports_for_chip(kind, chain_length)
+    return ports * 2 if ck.port_kind == PORT_BIPOLAR_PAIR else ports
+
+
 def catalog_payload() -> dict:
     """JSON-serializable catalog for `GET /api/hardware/catalog` (frontend
     dropdowns)."""

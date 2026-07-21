@@ -815,6 +815,156 @@
 }
 
 /* ---------------------------------------------------------------------------
+   DEVELOP MODE — the fake-hardware toggle, its truth badge, and the Fake-inputs
+   section (hardware-panel.ts devSectionHtml). The toggle is tinted with the
+   accent colour to set it apart from the green Enable toggle; the badge appears
+   only when the RUNNING session is actually on the fake device.
+   --------------------------------------------------------------------------- */
+.hw-develop {
+    display: flex;
+    align-items: center;
+    gap: var(--space-8);
+    padding: var(--space-6) var(--space-10);
+    border-radius: var(--control-radius-sm);
+    border: 1px solid var(--border-color);
+    background: var(--bg-panel);
+    cursor: pointer;
+}
+
+.hw-develop-text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.hw-develop-label {
+    font-size: var(--font-size-value);
+    font-weight: 650;
+    color: var(--text-primary);
+}
+
+.hw-develop-sub {
+    font-size: var(--font-size-label);
+    color: var(--text-secondary);
+}
+
+.hw-develop.on .hw-toggle {
+    background: rgba(var(--accent-rgb), 0.4);
+    border-color: rgba(var(--accent-rgb), 0.65);
+}
+
+.hw-develop.on .hw-toggle::after {
+    transform: translateX(18px);
+    background: var(--text-primary);
+}
+
+.hw-develop-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-4);
+    font-size: var(--font-size-label);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 3px var(--space-8);
+    border-radius: var(--radius-pill);
+    color: var(--accent-color);
+    border: 1px solid rgba(var(--accent-rgb), 0.5);
+    background: rgba(var(--accent-rgb), 0.12);
+}
+
+.hw-develop-hint {
+    display: inline-flex;
+    align-items: center;
+    font-size: var(--font-size-label);
+    font-weight: 550;
+    color: var(--accent-color);
+}
+
+.hw-dev-section {
+    padding: var(--space-16) 0;
+    border-top: 1px solid var(--border-color);
+}
+
+.hw-dev-empty {
+    margin: 0 0 0 28px;
+    font-size: var(--font-size-body);
+    color: var(--text-tertiary);
+}
+
+.hw-dev-rows {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    margin-left: 28px;
+}
+
+.hw-dev-row {
+    display: grid;
+    grid-template-columns: minmax(80px, 1fr) auto auto minmax(160px, 1.4fr);
+    align-items: center;
+    gap: var(--space-10);
+    padding: var(--space-4) var(--space-8);
+    border-radius: var(--control-radius-sm);
+}
+
+.hw-dev-row:not(.hw-dev-head):nth-child(odd) {
+    background: var(--bg-panel);
+}
+
+.hw-dev-head {
+    font-size: var(--font-size-label);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-tertiary);
+    font-weight: 600;
+}
+
+.hw-dev-block {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.hw-dev-ctl {
+    display: flex;
+    align-items: center;
+}
+
+.hw-dev-cur {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-4);
+}
+
+.hw-dev-cur-in {
+    width: 68px;
+}
+
+.hw-dev-unit {
+    font-size: var(--font-size-label);
+    color: var(--text-tertiary);
+}
+
+.hw-dev-na {
+    color: var(--text-tertiary);
+}
+
+.hw-dev-read {
+    font-size: var(--font-size-label);
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+}
+
+.hw-dev-read strong {
+    color: var(--text-secondary);
+    font-weight: 650;
+}
+
+.hw-dev-read strong.occ {
+    color: var(--danger-color);
+}
+
+/* ---------------------------------------------------------------------------
    SWITCH COIL ROWS — the switch editor's Hardware section (hardware-binding.ts)
 
    A switch binds one coil bit per side. During the bench test the row of the

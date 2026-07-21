@@ -35,6 +35,9 @@ from hardware.watchdog import OutputWatchdog
 
 # A binding map: logical id -> (chip_id, port).
 BindingMap = Dict[str, Tuple[str, int]]
+# A track binding map: block_id -> (chip_id, forward_channel, reverse_channel) —
+# the two PWM channels driving that block's two rails.
+TrackBindingMap = Dict[str, Tuple[str, int, int]]
 # A switch binding map: switch_id -> (chip_id, port_main, port_diverge, port_standby).
 # `port_standby` is None when the motor driver needs no standby/enable bit.
 SwitchBindingMap = Dict[str, Tuple[str, int, int, Optional[int]]]
@@ -105,12 +108,13 @@ def build_chip(device: Any, spec: Any) -> Any:
 
 
 class Ch347TrackOutputInterface(OutputInterface):
-    """Block track voltage over PCA9685 channel pairs (H-bridge per port)."""
+    """Block track voltage over two PCA9685 PWM channels per block — the two
+    inputs of that block's H-bridge, chosen independently (not a fixed pair)."""
 
     def __init__(
         self,
         chips_by_id: Dict[str, PCA9685],
-        bindings: BindingMap,
+        bindings: "TrackBindingMap",
         watchdog: Optional[OutputWatchdog] = None,
     ) -> None:
         self._chips = chips_by_id
@@ -122,18 +126,19 @@ class Ch347TrackOutputInterface(OutputInterface):
         binding = self._bindings.get(block_id)
         if binding is None:
             return False
-        chip_id, port = binding
+        chip_id, forward, reverse = binding
         chip = self._chips.get(chip_id)
         if chip is None:
             return False
         duty = min(abs(voltage) / MAX_TRACK_VOLTAGE, 1.0) if MAX_TRACK_VOLTAGE else 0.0
-        in1, in2 = 2 * port, 2 * port + 1   # H-bridge inputs
+        # Drive the channel matching the sign; the other rests at zero, so the
+        # two H-bridge inputs are never driven together.
         if voltage >= 0:
-            chip.set_duty_cycle(in1, duty)
-            chip.set_duty_cycle(in2, 0.0)
+            chip.set_duty_cycle(forward, duty)
+            chip.set_duty_cycle(reverse, 0.0)
         else:
-            chip.set_duty_cycle(in1, 0.0)
-            chip.set_duty_cycle(in2, duty)
+            chip.set_duty_cycle(forward, 0.0)
+            chip.set_duty_cycle(reverse, duty)
         self._voltages[block_id] = voltage
         # A landed write is proof the control loop is alive.
         if self._watchdog is not None:
@@ -320,7 +325,7 @@ class Ch347OccupancyInputInterface(InputInterface):
 def build_real_interfaces(
     device: Any,
     chip_specs: List[Any],
-    block_track: BindingMap,
+    block_track: TrackBindingMap,
     block_occupancy: BindingMap,
     switch_output: SwitchBindingMap,
     block_occupancy_current: Optional[CurrentBindingMap] = None,

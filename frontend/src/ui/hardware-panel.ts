@@ -49,14 +49,38 @@ interface ChipCfg {
 }
 interface HwState {
   enabled: boolean;
+  develop: boolean;
   controller: { kind: string; device_port: string | null };
   chips: ChipCfg[];
 }
 interface PortResult { port: number; available: boolean; }
 type SelfTest = Record<string, { reachable: boolean; ports: PortResult[] }>;
 
+// Develop mode (fake hardware) — the running session's mode info and the raw
+// binding maps the "Fake inputs" section pokes. See devRows() for the row model.
+interface SessionInfo { operation_mode: string; develop_active: boolean; }
+interface DevBindings {
+  block_occupancy: Record<string, any>;
+  block_occupancy_current: Record<string, any>;
+}
+interface DevReadback {
+  develop_active?: boolean;
+  blocks?: Record<string, { occupancy_bit: boolean | null; current_ma: number | null; volts: number | null; occupied: boolean | null }>;
+  switches?: Record<string, any>;
+}
+export interface DevRow {
+  blockId: string;
+  hasDigital: boolean;
+  hasCurrent: boolean;
+  occupancyBit: boolean | null;
+  currentMa: number | null;
+  volts: number | null;
+  occupied: boolean | null;
+}
+
 const DEFAULT_STATE: HwState = {
   enabled: false,
+  develop: false,
   controller: { kind: 'ch347', device_port: null },
   chips: [],
 };
@@ -68,6 +92,13 @@ let i2cScan: string[] = [];
 let controllerReachable = false;
 let savedSinceEdit = false;
 let adding = false;
+
+// Develop mode: the running session's mode info, the binding maps the Fake-input
+// section pokes, its latest read-back, and the 1 s poll while the modal is open.
+let sessionInfo: SessionInfo | null = null;
+let devBindings: DevBindings = { block_occupancy: {}, block_occupancy_current: {} };
+let devReadback: DevReadback | null = null;
+let devPollTimer: any = null;
 
 // Commissioning — a held device for the live input view and the output sweep.
 // Only one activity runs at a time; it is stopped on modal close / refresh.
@@ -85,6 +116,28 @@ function el<T extends HTMLElement = HTMLElement>(id: string): T | null {
   return document.getElementById(id) as T | null;
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// --- develop-mode fake-input rows (pure; unit-tested) ----------------------
+// The Fake-inputs section lists every block with an occupancy detector and/or a
+// current-sense binding, joined to the latest read-back from the fake device.
+export function devRows(bindings: DevBindings, readback: DevReadback | null): DevRow[] {
+  const digital = bindings.block_occupancy || {};
+  const current = bindings.block_occupancy_current || {};
+  const ids = Array.from(new Set([...Object.keys(digital), ...Object.keys(current)])).sort();
+  const blocks = readback?.blocks || {};
+  return ids.map((blockId) => {
+    const rb = blocks[blockId] || {};
+    return {
+      blockId,
+      hasDigital: blockId in digital,
+      hasCurrent: blockId in current,
+      occupancyBit: rb.occupancy_bit ?? null,
+      currentMa: rb.current_ma ?? null,
+      volts: rb.volts ?? null,
+      occupied: rb.occupied ?? null,
+    };
+  });
+}
 
 // --- catalog-derived chip facts --------------------------------------------
 function catalogChip(kind: string): CatalogChip | undefined {
@@ -559,21 +612,34 @@ export async function refreshHardwarePanel(): Promise<void> {
   selfTest = {};
   i2cScan = [];
   controllerReachable = false;
+  sessionInfo = null;
+  devReadback = null;
+  devBindings = { block_occupancy: {}, block_occupancy_current: {} };
   try {
     const [cat, cfg] = await Promise.all([api.getHardwareCatalog(), api.getHardwareConfig()]);
     catalog = cat as Catalog;
-    state = normalizeConfig(cfg?.config || {});
+    const raw = cfg?.config || {};
+    state = normalizeConfig(raw);
+    sessionInfo = cfg?.session || null;
+    // Capture the raw binding maps before normalizeConfig strips them — the
+    // Fake-inputs section pokes blocks by their occupancy / current bindings.
+    devBindings = {
+      block_occupancy: raw.block_occupancy || {},
+      block_occupancy_current: raw.block_occupancy_current || {},
+    };
   } catch (e) {
     console.error('[App] Failed to load hardware setup:', e);
     showToast('Failed to load hardware setup.', 'error');
     state = clone(DEFAULT_STATE);
   }
   render();
+  startDevPoll();
 }
 
 function normalizeConfig(cfg: any): HwState {
   return {
     enabled: !!cfg.enabled,
+    develop: !!cfg.develop,
     controller: { kind: cfg.controller?.kind || 'ch347', device_port: cfg.controller?.device_port ?? null },
     chips: (cfg.chips || []).map((c: any): ChipCfg => ({
       chip_id: String(c.chip_id),
@@ -591,6 +657,7 @@ function normalizeConfig(cfg: any): HwState {
 function payload(): any {
   return {
     enabled: state.enabled,
+    develop: state.develop,
     controller: { kind: state.controller.kind, device_port: state.controller.device_port },
     chips: state.chips.map((c) => ({
       chip_id: c.chip_id, kind: c.kind, bus: c.bus, i2c_address: c.i2c_address,
@@ -626,8 +693,48 @@ function render(): void {
   const gate = el('hw-gate');
   if (!body || !gate || !catalog) return;
   const scan = `<datalist id="hw-i2c-scan">${i2cScan.map((a) => `<option value="${esc(a)}"></option>`).join('')}</datalist>`;
-  body.innerHTML = wiringDiagramHtml() + controllerStageHtml() + chipsStageHtml() + scan;
+  body.innerHTML = wiringDiagramHtml() + controllerStageHtml() + chipsStageHtml() + devSectionHtml() + scan;
   gate.innerHTML = gateHtml();
+}
+
+// --- develop-mode "Fake inputs" section ------------------------------------
+// Rendered only when the RUNNING session is on the fake device
+// (`session.develop_active`): a row per bound block with an Occupied toggle, a
+// current-mA field, and the live read-back the 1 s poll refreshes.
+function devSectionHtml(): string {
+  if (!sessionInfo?.develop_active) return '';
+  const head = `<div class="hw-stage-head"><span class="hw-stage-num"><i class="ti ti-flask" aria-hidden="true"></i></span>
+      <span class="hw-stage-title">Fake inputs</span></div>
+    <p class="hw-stage-desc">This session runs on the in-memory fake device. Poke a block's occupancy detector or current channel and watch the real occupancy pipeline react. Current decides only while a block is driven; an idle block reads its digital bit.</p>`;
+  const rows = devRows(devBindings, devReadback);
+  if (!rows.length) {
+    return `<section class="hw-dev-section">${head}
+      <p class="hw-dev-empty">No block has an occupancy detector or current-sense binding yet. Bind one in a block's editor to poke it here.</p></section>`;
+  }
+  const rowHtml = rows.map((r) => {
+    const occ = r.hasDigital
+      ? `<button type="button" class="btn hw-btn-sm ${r.occupancyBit ? 'btn-accent' : 'btn-secondary'}" data-hw="dev-occ" data-id="${esc(r.blockId)}">${r.occupancyBit ? 'Occupied' : 'Clear'}</button>`
+      : `<span class="hw-dev-na">—</span>`;
+    const cur = r.hasCurrent
+      ? `<span class="hw-dev-cur"><input type="number" class="setting-input-compact hw-dev-cur-in" data-hw="dev-current-in" data-id="${esc(r.blockId)}" value="${r.currentMa ?? 0}" step="1" /><span class="hw-dev-unit">mA</span>
+          <button type="button" class="btn hw-btn-sm btn-secondary" data-hw="dev-current" data-id="${esc(r.blockId)}">Set</button></span>`
+      : `<span class="hw-dev-na">—</span>`;
+    const bit = r.occupancyBit == null ? '—' : (r.occupancyBit ? '1' : '0');
+    const ma = r.currentMa == null ? '—' : `${r.currentMa} mA`;
+    const volts = r.volts == null ? '—' : `${r.volts} V`;
+    const verdict = r.occupied == null ? '—' : (r.occupied ? 'occupied' : 'clear');
+    return `<div class="hw-dev-row">
+      <span class="hw-dev-block">${esc(r.blockId)}</span>
+      <span class="hw-dev-ctl">${occ}</span>
+      <span class="hw-dev-ctl">${cur}</span>
+      <span class="hw-dev-read">bit ${bit} · ${ma} · ${volts} · <strong class="${r.occupied ? 'occ' : ''}">${verdict}</strong></span>
+    </div>`;
+  }).join('');
+  return `<section class="hw-dev-section">${head}
+    <div class="hw-dev-rows">
+      <div class="hw-dev-row hw-dev-head"><span>Block</span><span>Occupancy</span><span>Current</span><span>Reads back</span></div>
+      ${rowHtml}
+    </div></section>`;
 }
 
 function controllerStageHtml(): string {
@@ -881,8 +988,23 @@ function gateHtml(): string {
     ? `<span class="hw-restart-note">Applies after a restart.</span>
        <button type="button" class="btn btn-primary" data-hw="restart">Restart now</button>`
     : `<button type="button" class="btn ${effEnabled ? 'btn-accent' : 'btn-secondary'}" data-hw="save">Save</button>`;
-  return `<div class="hw-checklist">${pills}</div>
+  const devActive = !!sessionInfo?.develop_active;
+  // Truth badge: this session is really running on the fake device.
+  const badge = devActive
+    ? `<span class="hw-develop-badge" title="This session is running on the in-memory fake device — no USB hardware.">
+        <i class="ti ti-flask" aria-hidden="true"></i> DEVELOP · fake hardware</span>`
+    : (state.develop ? `<span class="hw-develop-hint">develop saved — restart to apply</span>` : '');
+  // The develop toggle is NOT gated by the readiness checklist: its purpose is
+  // hardware-free work, so it can be flipped and saved before any chip responds.
+  const devToggle = `<label class="hw-develop ${state.develop ? 'on' : ''}" data-hw="develop"
+      title="Run the real-mode stack against an in-memory fake device — build and test with no hardware attached. Applies after restart.">
+      <span class="hw-toggle"></span>
+      <span class="hw-develop-text"><span class="hw-develop-label">Develop mode</span>
+        <span class="hw-develop-sub">fake hardware</span></span>
+    </label>`;
+  return `<div class="hw-checklist">${pills}${badge}</div>
     <div class="hw-gate-actions">
+      ${devToggle}
       <label class="hw-enable ${effEnabled ? 'on' : ''} ${ready ? '' : 'locked'}" data-hw="enable">
         <span class="hw-enable-text"><span class="hw-enable-label">${enableTitle}</span>
           <span class="hw-enable-sub">${enableSub}</span></span>
@@ -909,6 +1031,9 @@ async function onClick(e: Event): Promise<void> {
     case 'add-cancel': adding = false; render(); return;
     case 'add-commit': return commitAdd();
     case 'enable': return toggleEnable();
+    case 'develop': return toggleDevelop();
+    case 'dev-occ': return void toggleDevOccupancy(id);
+    case 'dev-current': return void setDevCurrent(id);
     case 'save': return void save();
     case 'restart': return void restart();
     case 'jump': return jumpTo(target.dataset.key || '');
@@ -964,6 +1089,57 @@ function toggleEnable(): void {
   state.enabled = !state.enabled;
   onEdit();
   render();
+}
+
+function toggleDevelop(): void {
+  state.develop = !state.develop;
+  onEdit();
+  render();
+  if (state.develop) {
+    showToast('Develop mode on — Save, then Detect runs against the fake device.', 'info', 4000);
+  }
+}
+
+// --- develop-mode fake-input poking ----------------------------------------
+async function toggleDevOccupancy(id: string): Promise<void> {
+  const cur = devReadback?.blocks?.[id]?.occupancy_bit ?? false;
+  try {
+    await api.setHwDebugOccupancy(id, !cur);
+    await pollDev();
+  } catch (e: any) {
+    showToast(e?.message || 'Failed to set occupancy.', 'error', 3000);
+  }
+}
+
+async function setDevCurrent(id: string): Promise<void> {
+  const input = Array.from(document.querySelectorAll<HTMLInputElement>('[data-hw="dev-current-in"]'))
+    .find((i) => i.dataset.id === id);
+  const ma = Number(input?.value) || 0;
+  try {
+    await api.setHwDebugCurrent(id, ma);
+    await pollDev();
+  } catch (e: any) {
+    showToast(e?.message || 'Failed to set current.', 'error', 3000);
+  }
+}
+
+function startDevPoll(): void {
+  if (devPollTimer || !sessionInfo?.develop_active) return;
+  void pollDev();
+  devPollTimer = setInterval(() => void pollDev(), 1000);
+}
+
+async function pollDev(): Promise<void> {
+  if (!sessionInfo?.develop_active) return;
+  try {
+    const res = await api.getHwDebugState();
+    if (res?.develop_active) {
+      devReadback = res;
+      // Don't clobber a current-mA field the user is editing.
+      const active = document.activeElement as HTMLElement | null;
+      if (active?.getAttribute?.('data-hw') !== 'dev-current-in') render();
+    }
+  } catch { /* transient */ }
 }
 
 function jumpTo(key: string): void {
@@ -1040,6 +1216,7 @@ async function ensureCommission(): Promise<boolean> {
 async function stopCommissioning(): Promise<void> {
   sweepAbort = true;
   if (activityTimer) { clearInterval(activityTimer); activityTimer = null; }
+  if (devPollTimer) { clearInterval(devPollTimer); devPollTimer = null; }
   activity = null;
   if (commissionActive) {
     commissionActive = false;

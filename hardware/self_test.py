@@ -18,7 +18,6 @@ from block_power import MAX_TRACK_VOLTAGE
 
 from hardware.catalog import (
     CHIP_CATALOG,
-    PORT_BIPOLAR_PAIR,
     PORT_CURRENT_SENSE,
     SWITCH_THROW_PULSE_S,
     ports_for_chip,
@@ -126,9 +125,11 @@ def run_port_test(
     device: Optional[Any] = None,
     open_device: Optional[Callable[[], Any]] = None,
 ) -> Dict[str, Any]:
-    """Pulse one output port ('595 bit / PCA9685 pair), run the bipolar track
-    direction sequence, or read one input port ('165 bit / current channel) so
-    the user can confirm the wire physically responds."""
+    """Pulse one output line ('595 bit / PCA9685 channel) or read one input line
+    ('165 bit / current channel) so the user can confirm the wire physically
+    responds. `port` is the raw line — a channel on a PWM chip, a bit on a shift
+    register — so the port picker can drive any single channel (its double-click
+    pulse). The whole-block track direction sweep is `run_track_test`."""
     spec = next((c for c in cfg.chips if c.chip_id == chip_id), None)
     if spec is None:
         return {"ok": False, "error": f"unknown chip {chip_id!r}"}
@@ -159,14 +160,6 @@ def run_port_test(
         if action == "pulse_output":
             _pulse(spec.kind, chip, port)
             return {"ok": True}
-        if action == "drive_sequence":
-            if CHIP_CATALOG[spec.kind].port_kind != PORT_BIPOLAR_PAIR:
-                return {
-                    "ok": False,
-                    "error": f"chip kind {spec.kind!r} has no bipolar track port to sweep",
-                }
-            _drive_sequence(chip, port)
-            return {"ok": True, "volts": MAX_TRACK_VOLTAGE, "hold_s": TRACK_TEST_HOLD_S}
         return {"ok": False, "error": f"unknown action {action!r}"}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
@@ -178,55 +171,97 @@ def run_port_test(
                 pass
 
 
-def _pulse(kind: str, chip: Any, port: int, hold_s: float = 0.4) -> None:
-    """Briefly drive an output port, then return it to the off state.
+def _pulse(kind: str, chip: Any, line: int, hold_s: float = 0.4) -> None:
+    """Briefly drive one output line, then return it to the off state — the port
+    picker's double-click "does this wire respond" pulse.
 
-    A shift-out bit gets the much shorter switch-coil pulse instead of `hold_s`:
-    the bit under test may be wired to a solenoid point motor, which burns out if
-    its coil is held energized."""
+    `line` is the raw channel/bit: a single PWM channel on a PCA9685 (0..15, not
+    a pair), a single output bit on a '595. A shift-out bit gets the much shorter
+    switch-coil pulse instead of `hold_s`, because it may be wired to a solenoid
+    point motor, which burns out if its coil is held energized."""
     if kind == "hc595":
-        chip.set_output(port, True)
+        chip.set_output(line, True)
         time.sleep(SWITCH_THROW_PULSE_S)
-        chip.set_output(port, False)
+        chip.set_output(line, False)
     elif kind == "pca9685":
         chip.configure()
-        chip.set_duty_cycle(2 * port, 0.5)   # forward input at half power
+        chip.set_duty_cycle(line, 0.5)       # this one channel at half power
         time.sleep(hold_s)
-        chip.set_duty_cycle(2 * port, 0.0)
+        chip.set_duty_cycle(line, 0.0)
     else:
         raise ValueError(f"chip kind {kind!r} has no pulse-output test")
 
 
 def _drive_sequence(
     chip: Any,
-    port: int,
+    forward: int,
+    reverse: int,
     volts: float = MAX_TRACK_VOLTAGE,
     hold_s: float = TRACK_TEST_HOLD_S,
 ) -> None:
     """Drive a block's two rails through both polarities so the user can watch a
     loco move: full voltage one way, both rails off, full voltage the other way.
 
-    The port is an H-bridge input pair — `2*port` = IN1, `2*port+1` = IN2 — so a
-    polarity is one input at duty with the other at zero. Only one input is ever
-    driven at a time; both high would shoot through the bridge. The track is
-    returned to zero in a `finally` so an exception mid-sequence (a dropped USB
-    bridge, an interrupted request) still leaves the rails dead.
+    `forward` and `reverse` are the block's two bound PWM channels (its H-bridge
+    inputs). A polarity is one channel at duty with the other at zero; only one is
+    ever driven at a time, since both high would shoot through the bridge. The
+    track is returned to zero in a `finally` so an exception mid-sequence (a
+    dropped USB bridge, an interrupted request) still leaves the rails dead.
     """
     chip.configure()
-    in1, in2 = 2 * port, 2 * port + 1
     duty = min(abs(volts) / MAX_TRACK_VOLTAGE, 1.0) if MAX_TRACK_VOLTAGE else 0.0
     try:
-        chip.set_duty_cycle(in2, 0.0)          # rail A hot, rail B at ground
-        chip.set_duty_cycle(in1, duty)
+        chip.set_duty_cycle(reverse, 0.0)      # forward rail hot, reverse at ground
+        chip.set_duty_cycle(forward, duty)
         time.sleep(hold_s)
-        chip.set_duty_cycle(in1, 0.0)          # both rails off
-        chip.set_duty_cycle(in2, 0.0)
+        chip.set_duty_cycle(forward, 0.0)      # both rails off
+        chip.set_duty_cycle(reverse, 0.0)
         time.sleep(hold_s)
-        chip.set_duty_cycle(in2, duty)         # rail B hot, rail A at ground
+        chip.set_duty_cycle(reverse, duty)     # reverse rail hot, forward at ground
         time.sleep(hold_s)
     finally:
-        chip.set_duty_cycle(in1, 0.0)
-        chip.set_duty_cycle(in2, 0.0)
+        chip.set_duty_cycle(forward, 0.0)
+        chip.set_duty_cycle(reverse, 0.0)
+
+
+def run_track_test(
+    cfg: Any,
+    block_id: str,
+    device: Optional[Any] = None,
+    open_device: Optional[Callable[[], Any]] = None,
+) -> Dict[str, Any]:
+    """Sweep a block's track through both polarities (the block editor's track
+    Test button). Reads the block's `block_track` binding, then drives its two
+    bound channels forward / off / reverse so a loco on the block runs, stops,
+    and reverses. Leaves the track de-energized."""
+    binding = cfg.block_track.get(block_id)
+    if binding is None:
+        return {"ok": False, "error": f"block {block_id!r} has no track binding"}
+    spec = _spec_for(cfg, binding.chip_id)
+    if spec is None:
+        return {"ok": False, "error": f"unknown chip {binding.chip_id!r}"}
+
+    close_after = False
+    if device is None:
+        opener = open_device or (lambda: _open_real_device(cfg))
+        try:
+            device = opener()
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+        close_after = True
+
+    try:
+        chip = build_chip(device, spec)
+        _drive_sequence(chip, binding.forward, binding.reverse)
+        return {"ok": True, "volts": MAX_TRACK_VOLTAGE, "hold_s": TRACK_TEST_HOLD_S}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        if close_after:
+            try:
+                device.close()
+            except Exception:
+                pass
 
 
 def run_occupancy_test(
@@ -310,22 +345,23 @@ def _spec_for(cfg: Any, chip_id: str) -> Optional[Any]:
 
 
 def _read_track_state(device: Any, cfg: Any, block_id: str) -> Dict[str, Any]:
-    """The voltage the block's track port is currently outputting, read back from
-    the PWM chip. Signed: positive when the forward H-bridge input is driven."""
+    """The voltage the block's track is currently outputting, read back from the
+    two bound PWM channels. Signed: positive when the forward channel is driven."""
     binding = cfg.block_track.get(block_id)
     if binding is None:
         return {"bound": False, "volts": 0.0}
     spec = _spec_for(cfg, binding.chip_id)
     result: Dict[str, Any] = {
-        "bound": True, "chip_id": binding.chip_id, "port": binding.port, "volts": 0.0,
+        "bound": True, "chip_id": binding.chip_id,
+        "forward": binding.forward, "reverse": binding.reverse, "volts": 0.0,
     }
     if spec is None:
         result["error"] = f"unknown chip {binding.chip_id!r}"
         return result
     try:
         chip = build_chip(device, spec)
-        forward = chip.read_duty_cycle(2 * binding.port)
-        reverse = chip.read_duty_cycle(2 * binding.port + 1)
+        forward = chip.read_duty_cycle(binding.forward)
+        reverse = chip.read_duty_cycle(binding.reverse)
         result["volts"] = (forward - reverse) * MAX_TRACK_VOLTAGE
     except Exception as exc:
         result["error"] = str(exc)

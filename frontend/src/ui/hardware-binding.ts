@@ -97,9 +97,15 @@ function slotChips(cfg: HwConfig, slot: HwSlot): HwChip[] {
   );
 }
 
-/** Section HTML, or '' when hardware is off or no chip fills any slot. */
+/** Section HTML, or '' when no chip fills any slot.
+ *
+ * Gated on chips existing, not on the real-hardware `enabled` flag: binding a
+ * port to a block is bench configuration you do before the rig is powered or
+ * even attached, so it must not wait on going live. A pure-simulation layout has
+ * no chips, so it still sees nothing. `enabled` only governs whether the running
+ * simulation drives the hardware — see `notLiveNoteHtml`. */
 export function hardwareSectionHtml(cfg: HwConfig | null, logicalId: string, slots: HwSlot[]): string {
-  if (!cfg || !cfg.enabled) return '';
+  if (!cfg) return '';
   const usable = slots.filter((s) => slotChips(cfg, s).length > 0);
   if (!usable.length) return '';
   const rowHtml = (s: HwSlot) =>
@@ -117,7 +123,18 @@ export function hardwareSectionHtml(cfg: HwConfig | null, logicalId: string, slo
       <div class="control-section-header">Hardware</div>
       ${rows}
       <p class="text-muted text-xs">Pick a port, then Test to confirm the wire responds.</p>
+      ${notLiveNoteHtml(cfg)}
     </div>`;
+}
+
+/** A one-line reminder shown while chips are configured but real hardware is not
+ * yet enabled. Bindings save and the Test buttons work now (they open the
+ * controller directly, for commissioning), but the running simulation will not
+ * drive or read the hardware until it is enabled in Hardware Setup. Empty once
+ * enabled. */
+function notLiveNoteHtml(cfg: HwConfig): string {
+  if (cfg.enabled) return '';
+  return `<p class="text-warning text-xs mt-4">Hardware is not live yet — these save now and Test works, but the simulation uses them only after you enable it in Hardware&nbsp;Setup.</p>`;
 }
 
 function channelOptions(
@@ -275,9 +292,13 @@ function coilRowHtml(side: CoilSide, chips: HwChip[], current: Binding | undefin
     </div>`;
 }
 
-/** Switch Hardware section, or '' when hardware is off or no switch chip exists. */
+/** Switch Hardware section, or '' when no switch chip exists.
+ *
+ * Gated on a switch-output chip existing, not on the real-hardware `enabled`
+ * flag — coil wiring is bench configuration, the same reasoning as
+ * `hardwareSectionHtml`. */
 export function switchHardwareSectionHtml(cfg: HwConfig | null, switchId: string): string {
-  if (!cfg || !cfg.enabled) return '';
+  if (!cfg) return '';
   const chips = switchChips(cfg);
   if (!chips.length) return '';
   const b = cfg.switch_output[switchId];
@@ -304,6 +325,7 @@ export function switchHardwareSectionHtml(cfg: HwConfig | null, switchId: string
       <p class="text-muted text-xs">Pick a coil bit per side — a switch is wired once both are set.
         Test throws it main / diverge once a second and lights the coil it just fired.
         Each throw energizes the coil for 10&nbsp;ms only, so the motor cannot burn out.</p>
+      ${notLiveNoteHtml(cfg)}
     </div>`;
 }
 

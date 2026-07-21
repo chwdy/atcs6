@@ -329,6 +329,17 @@ class RailwayPathfinder:
         """
         candidates: List[GraphWalkCandidate] = []
         for rank, walk in enumerate(raw_walks):
+            dest_block_id = walk.blocks[-1] if walk.blocks else None
+            dest_block = (
+                self.network.blocks.get(dest_block_id)
+                if dest_block_id is not None
+                else None
+            )
+            terminal_direction = (
+                self._terminal_direction(walk, dest_block)
+                if dest_block is not None
+                else None
+            )
             candidates.append(
                 GraphWalkCandidate(
                     tile_count=len(walk.tiles),
@@ -339,6 +350,8 @@ class RailwayPathfinder:
                     ordered_walk=self._build_ordered_walk(walk),
                     ordered_tiles=list(walk.tiles) if request.return_tiles else None,
                     ordered_blocks=list(walk.blocks) if request.return_blocks else None,
+                    terminal_block_id=dest_block_id,
+                    terminal_block_direction=terminal_direction,
                 )
             )
         return candidates
@@ -1087,13 +1100,12 @@ class RailwayPathfinder:
                 if step.block_direction not in allowed:
                     return False
 
-        # Requested terminal-direction filter.
+        # Requested terminal-direction filter. `terminal_block_direction` is
+        # precomputed once per candidate at cache-build time (_build_candidates)
+        # from static walk/block geometry -- never recomputed here.
         if not walk.blocks:
             return True
-        dest_block = self.network.blocks.get(walk.blocks[-1])
-        if dest_block is None:
-            return True
-        terminal_direction = self._terminal_direction(walk, dest_block)
+        terminal_direction = candidate.terminal_block_direction
         if (
             direction_constraint is not None
             and terminal_direction is not None
@@ -1110,7 +1122,11 @@ class RailwayPathfinder:
         Compares the walk's first tile in the destination block against
         ``Block.ordered_tiles`` to decide ``"forward"`` / ``"reverse"``.
         Returns ``None`` when geometry is insufficient to decide (caller
-        treats that as "allowed").
+        treats that as "allowed"). Pure function of static walk/block
+        geometry -- called only from ``_build_candidates`` at cache-build
+        time; ``_walk_passes_filters`` reads the result off
+        ``GraphWalkCandidate.terminal_block_direction`` instead of calling
+        this again per query.
         """
         ordered_tiles = getattr(dest_block, "ordered_tiles", None) or []
         if not ordered_tiles or len(walk.tiles) < 2:
