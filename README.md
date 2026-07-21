@@ -180,6 +180,21 @@ Several worked layouts ship as "scenes" you can boot with `--scene`:
 - **`demo_4`** — the same loop closed into a continuous circle through a pair of tunnels.
 - **`demo_5`** *(default)* — the four-station loop plus a depot, with a one-way double-track corridor worked by convention.
 
+### Run the verification suite
+
+Activate the project environment, then run the canonical local gate:
+
+```bash
+conda activate general
+./run_all_tests.sh
+```
+
+It runs the complete Python suite, TypeScript typecheck, frontend unit tests,
+and the production frontend build. `npm test` is the frontend unit-suite alias;
+API tests use Flask's in-process test client and require no separately running
+server. See [the coverage and suite-splitting plan](docs/TEST_COVERAGE_AND_SUITE_PLAN.md)
+for the planned fast/integration/journey CI structure.
+
 ---
 
 ## Driving the demo train

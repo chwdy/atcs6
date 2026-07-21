@@ -203,7 +203,7 @@ class StepPlayer:
         return switch.switch_id
 
     def _op_create_block(self, op: dict, network: "RailwayNetwork") -> str:
-        """Execute create_block_with_tracks operation."""
+        """Execute create_segment_with_tracks operation."""
         block_id = op["block_id"]
         positions = [tuple(p) for p in op["positions"]]
         name = op.get("name", "")
@@ -217,8 +217,8 @@ class StepPlayer:
                 # This can happen if tracks were grouped separately
                 pass
 
-        network.create_block_with_tracks(
-            block_id=block_id,
+        network.create_segment_with_tracks(
+            segment_id=block_id,
             positions=positions,
             name=name,
             length_cm=length_cm,

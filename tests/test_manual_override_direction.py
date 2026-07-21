@@ -48,18 +48,18 @@ def linear_network():
     for x in range(4):
         network.add_track(Tile(x=x, y=0, track_bits=TRACK_EW))
 
-    block_a = network.create_block("BLOCK_A", "Block A")
+    block_a = network.create_segment("BLOCK_A", "Block A")
     block_a.length_cm = 100.0
-    network.get_track(0, 0).block_section_id = "BLOCK_A"
+    network.get_track(0, 0).segment_id = "BLOCK_A"
 
-    block_b = network.create_block("BLOCK_B", "Block B")
+    block_b = network.create_segment("BLOCK_B", "Block B")
     block_b.length_cm = 200.0
-    network.get_track(1, 0).block_section_id = "BLOCK_B"
-    network.get_track(2, 0).block_section_id = "BLOCK_B"
+    network.get_track(1, 0).segment_id = "BLOCK_B"
+    network.get_track(2, 0).segment_id = "BLOCK_B"
 
-    block_c = network.create_block("BLOCK_C", "Block C")
+    block_c = network.create_segment("BLOCK_C", "Block C")
     block_c.length_cm = 100.0
-    network.get_track(3, 0).block_section_id = "BLOCK_C"
+    network.get_track(3, 0).segment_id = "BLOCK_C"
 
     return network
 

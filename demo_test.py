@@ -232,8 +232,8 @@ def _add_platforms(network: RailwayNetwork) -> None:
 def _add_blocks(network: RailwayNetwork) -> None:
     """Create the non-platform blocks from their baked tile lists."""
     for (block_id, name, positions, length_cm, speed_limit_kmh) in BLOCKS:
-        network.create_block_with_tracks(
-            block_id=block_id,
+        network.create_segment_with_tracks(
+            segment_id=block_id,
             positions=positions,
             name=name,
             length_cm=length_cm,

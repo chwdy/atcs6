@@ -40,15 +40,15 @@ class TunnelScene:
         for x in range(10, 13):
             network.add_track(Tile(x, 0, track_bits=TRACK_EW))
 
-        network.create_block_with_tracks(
-            block_id=self.west_block_id,
+        network.create_segment_with_tracks(
+            segment_id=self.west_block_id,
             positions=[(0, 0), (1, 0), (2, 0)],
             name="west",
             length_cm=150.0,
             speed_limit_kmh=30.0,
         )
-        network.create_block_with_tracks(
-            block_id=self.east_block_id,
+        network.create_segment_with_tracks(
+            segment_id=self.east_block_id,
             positions=[(10, 0), (11, 0), (12, 0)],
             name="east",
             length_cm=150.0,

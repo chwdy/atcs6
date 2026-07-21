@@ -128,7 +128,7 @@ def _resolve_block_id_at_tile(s: Snapshot, tile: Tuple[int, int]) -> Optional[st
     track = s.network.get_track(*tile)
     if track is None:
         return None
-    return getattr(track, "block_section_id", None)
+    return getattr(track, "block_id", None)
 
 
 def assert_block_at_tile_occupied_by(

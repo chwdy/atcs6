@@ -137,18 +137,18 @@ def simple_linear_network(network):
         network.add_track(track)
 
     # Create blocks
-    block_a = network.create_block("BLOCK_A", "Block A")
+    block_a = network.create_segment("BLOCK_A", "Block A")
     block_a.length_cm = 100.0
-    network.get_track(0, 0).block_section_id = "BLOCK_A"
+    network.get_track(0, 0).segment_id = "BLOCK_A"
 
-    block_b = network.create_block("BLOCK_B", "Block B")
+    block_b = network.create_segment("BLOCK_B", "Block B")
     block_b.length_cm = 200.0
-    network.get_track(1, 0).block_section_id = "BLOCK_B"
-    network.get_track(2, 0).block_section_id = "BLOCK_B"
+    network.get_track(1, 0).segment_id = "BLOCK_B"
+    network.get_track(2, 0).segment_id = "BLOCK_B"
 
-    block_c = network.create_block("BLOCK_C", "Block C")
+    block_c = network.create_segment("BLOCK_C", "Block C")
     block_c.length_cm = 100.0
-    network.get_track(3, 0).block_section_id = "BLOCK_C"
+    network.get_track(3, 0).segment_id = "BLOCK_C"
 
     return network
 
@@ -167,9 +167,9 @@ def network_with_switch(network):
     # Block A - straight track
     track_a = Tile(x=0, y=0, track_bits=TRACK_EW)
     network.add_track(track_a)
-    block_a = network.create_block("BLOCK_A", "Block A")
+    block_a = network.create_segment("BLOCK_A", "Block A")
     block_a.length_cm = 100.0
-    track_a.block_section_id = "BLOCK_A"
+    track_a.segment_id = "BLOCK_A"
 
     # Switch at (1,0) - EW + NE = 2 + 4 = 6
     switch = Tile(x=1, y=0, track_bits=TRACK_EW | TRACK_NE)
@@ -179,18 +179,18 @@ def network_with_switch(network):
     # Block B - straight track
     track_b = Tile(x=2, y=0, track_bits=TRACK_EW)
     network.add_track(track_b)
-    block_b = network.create_block("BLOCK_B", "Block B")
+    block_b = network.create_segment("BLOCK_B", "Block B")
     block_b.length_cm = 100.0
-    track_b.block_section_id = "BLOCK_B"
+    track_b.segment_id = "BLOCK_B"
 
     # Block C - diagonal track leading up
     track_c = Tile(
         x=2, y=1, track_bits=TRACK_SW
     )  # Connects to switch via S edge
     network.add_track(track_c)
-    block_c = network.create_block("BLOCK_C", "Block C")
+    block_c = network.create_segment("BLOCK_C", "Block C")
     block_c.length_cm = 100.0
-    track_c.block_section_id = "BLOCK_C"
+    track_c.segment_id = "BLOCK_C"
 
     return network
 
@@ -505,8 +505,8 @@ class TestPathIDGeneration:
 
     def test_generate_path_id(self, network, dispatcher):
         """Test route ID generation."""
-        network.create_block("BLOCK_A", "Start")
-        network.create_block("BLOCK_B", "End")
+        network.create_segment("BLOCK_A", "Start")
+        network.create_segment("BLOCK_B", "End")
 
         path_id = dispatcher._generate_path_id("TRAIN_X", "BLOCK_B")
         assert path_id.startswith("PATH_")
@@ -515,8 +515,8 @@ class TestPathIDGeneration:
 
     def test_path_id_sequence(self, network, dispatcher):
         """Test route ID sequence increments."""
-        network.create_block("BLOCK_A")
-        network.create_block("BLOCK_B")
+        network.create_segment("BLOCK_A")
+        network.create_segment("BLOCK_B")
 
         id1 = dispatcher._generate_path_id("TRAIN_X", "BLOCK_B")
         id2 = dispatcher._generate_path_id("TRAIN_X", "BLOCK_B")
@@ -549,15 +549,15 @@ class TestPathSegmentfinding:
         # Create two disconnected blocks
         track_a = Tile(x=0, y=0, track_bits=TRACK_EW)
         network.add_track(track_a)
-        block_a = network.create_block("BLOCK_A")
-        track_a.block_section_id = "BLOCK_A"
+        block_a = network.create_segment("BLOCK_A")
+        track_a.segment_id = "BLOCK_A"
 
         track_b = Tile(
             x=10, y=10, track_bits=TRACK_EW
         )  # Far away, disconnected
         network.add_track(track_b)
-        block_b = network.create_block("BLOCK_B")
-        track_b.block_section_id = "BLOCK_B"
+        block_b = network.create_segment("BLOCK_B")
+        track_b.segment_id = "BLOCK_B"
 
         paths = dispatcher.find_paths("BLOCK_A", "BLOCK_B")
         assert len(paths) == 0
@@ -678,7 +678,7 @@ class TestPathValidation:
         """
         Test that routes can traverse switch tiles.
 
-        Switches are block boundaries and do NOT have block_section_id.
+        Switches are block boundaries and do NOT have segment_id.
         The path dispatcher should skip the block check for switches.
         """
         network = RailwayNetwork()
@@ -686,18 +686,18 @@ class TestPathValidation:
         # Block A: (0,0) to (2,0)
         for x in range(3):
             network.add_track(Tile(x, 0, track_bits=TRACK_EW))
-        network.create_block_with_tracks("BLOCK_A", [(0, 0), (1, 0), (2, 0)], name="A")
+        network.create_segment_with_tracks("BLOCK_A", [(0, 0), (1, 0), (2, 0)], name="A")
 
         # Switch at (3,0) - NOT in any block (boundary)
         switch = Tile(3, 0, track_bits=TRACK_EW | TRACK_NW)
         network.add_track(switch)
         assert switch.is_switch == True
-        assert switch.block_section_id is None
+        assert switch.block_id is None
 
         # Block B: (4,0) to (6,0)
         for x in range(4, 7):
             network.add_track(Tile(x, 0, track_bits=TRACK_EW))
-        network.create_block_with_tracks("BLOCK_B", [(4, 0), (5, 0), (6, 0)], name="B")
+        network.create_segment_with_tracks("BLOCK_B", [(4, 0), (5, 0), (6, 0)], name="B")
 
         dispatcher = PathDispatcher(network)
 
@@ -721,7 +721,7 @@ class TestPathValidation:
         """
         Test that routes can traverse signal tiles.
 
-        Signal tiles remain in their blocks (have block_section_id).
+        Signal tiles remain in their blocks (have segment_id).
         The path dispatcher should allow paths through signal tiles.
         """
         network = RailwayNetwork()
@@ -729,19 +729,19 @@ class TestPathValidation:
         # Block A: (0,0) to (2,0) with signal at (1,0)
         for x in range(3):
             network.add_track(Tile(x, 0, track_bits=TRACK_EW))
-        network.create_block_with_tracks("BLOCK_A", [(0, 0), (1, 0), (2, 0)], name="A")
+        network.create_segment_with_tracks("BLOCK_A", [(0, 0), (1, 0), (2, 0)], name="A")
 
         # Place signal at (1,0) - tile should remain in BLOCK_A
         signal = network.add_signal(1, 0, "E", auto_connect=False)
         signal_track = network.get_track(1, 0)
-        assert signal_track.block_section_id == "BLOCK_A", (
+        assert signal_track.block_id == "BLOCK_A", (
             "Signal tile should remain in block"
         )
 
         # Block B: (3,0) to (5,0)
         for x in range(3, 6):
             network.add_track(Tile(x, 0, track_bits=TRACK_EW))
-        network.create_block_with_tracks("BLOCK_B", [(3, 0), (4, 0), (5, 0)], name="B")
+        network.create_segment_with_tracks("BLOCK_B", [(3, 0), (4, 0), (5, 0)], name="B")
 
         dispatcher = PathDispatcher(network)
 
@@ -910,14 +910,14 @@ class TestATODirectionDetection:
         network = RailwayNetwork()
         for x in range(6):
             network.add_track(Tile(x, 0, track_bits=TRACK_EW))
-        network.create_block_with_tracks(
-            block_id="BLK_WEST", positions=[(0, 0), (1, 0)], name="West"
+        network.create_segment_with_tracks(
+            segment_id="BLK_WEST", positions=[(0, 0), (1, 0)], name="West"
         )
-        network.create_block_with_tracks(
-            block_id="BLK_MID", positions=[(2, 0), (3, 0)], name="Middle"
+        network.create_segment_with_tracks(
+            segment_id="BLK_MID", positions=[(2, 0), (3, 0)], name="Middle"
         )
-        network.create_block_with_tracks(
-            block_id="BLK_EAST", positions=[(4, 0), (5, 0)], name="East"
+        network.create_segment_with_tracks(
+            segment_id="BLK_EAST", positions=[(4, 0), (5, 0)], name="East"
         )
         return network
 
@@ -926,14 +926,14 @@ class TestATODirectionDetection:
         network = RailwayNetwork()
         for y in range(6):
             network.add_track(Tile(0, y, track_bits=TRACK_NS))
-        network.create_block_with_tracks(
-            block_id="BLK_SOUTH", positions=[(0, 0), (0, 1)], name="South"
+        network.create_segment_with_tracks(
+            segment_id="BLK_SOUTH", positions=[(0, 0), (0, 1)], name="South"
         )
-        network.create_block_with_tracks(
-            block_id="BLK_MID", positions=[(0, 2), (0, 3)], name="Middle"
+        network.create_segment_with_tracks(
+            segment_id="BLK_MID", positions=[(0, 2), (0, 3)], name="Middle"
         )
-        network.create_block_with_tracks(
-            block_id="BLK_NORTH", positions=[(0, 4), (0, 5)], name="North"
+        network.create_segment_with_tracks(
+            segment_id="BLK_NORTH", positions=[(0, 4), (0, 5)], name="North"
         )
         return network
 
@@ -956,23 +956,23 @@ class TestATODirectionDetection:
         network.add_track(Tile(2, 4, track_bits=TRACK_NW))
 
         # Blocks
-        network.create_block_with_tracks(
-            block_id="BLK_SOUTH",
+        network.create_segment_with_tracks(
+            segment_id="BLK_SOUTH",
             positions=[(0, 0), (0, 1)],
             name="South Block",
         )
-        network.create_block_with_tracks(
-            block_id="BLK_VERT",
+        network.create_segment_with_tracks(
+            segment_id="BLK_VERT",
             positions=[(0, 2), (0, 3)],
             name="Vertical Block",
         )
-        network.create_block_with_tracks(
-            block_id="BLK_DIAG",
+        network.create_segment_with_tracks(
+            segment_id="BLK_DIAG",
             positions=[(1, 3), (1, 4)],
             name="Diagonal Block",
         )
-        network.create_block_with_tracks(
-            block_id="BLK_END",
+        network.create_segment_with_tracks(
+            segment_id="BLK_END",
             positions=[(2, 4)],
             name="End Block",
         )
@@ -1353,11 +1353,11 @@ class TestATODirectionDetection:
             network.add_track(Tile(x, 0, track_bits=TRACK_EW))
         for x in range(10, 13):
             network.add_track(Tile(x, 0, track_bits=TRACK_EW))
-        network.create_block_with_tracks(
-            block_id="BLK_WEST", positions=[(0, 0), (1, 0), (2, 0)], name="W"
+        network.create_segment_with_tracks(
+            segment_id="BLK_WEST", positions=[(0, 0), (1, 0), (2, 0)], name="W"
         )
-        network.create_block_with_tracks(
-            block_id="BLK_EAST", positions=[(10, 0), (11, 0), (12, 0)], name="E"
+        network.create_segment_with_tracks(
+            segment_id="BLK_EAST", positions=[(10, 0), (11, 0), (12, 0)], name="E"
         )
         network.add_tunnel((2, 0, "E"), (10, 0, "W"))
 
@@ -1687,21 +1687,21 @@ class TestBestEffortAcquisitionContract:
             bits = (TRACK_EW | TRACK_NE) if x == 2 else TRACK_EW
             network.add_track(Tile(x=x, y=0, track_bits=bits))
 
-        block_a = network.create_block("BLOCK_A", "Block A")
+        block_a = network.create_segment("BLOCK_A", "Block A")
         block_a.length_cm = 100.0
-        network.get_track(0, 0).block_section_id = "BLOCK_A"
+        network.get_track(0, 0).segment_id = "BLOCK_A"
 
-        block_b = network.create_block("BLOCK_B", "Block B")
+        block_b = network.create_segment("BLOCK_B", "Block B")
         block_b.length_cm = 100.0
-        network.get_track(1, 0).block_section_id = "BLOCK_B"
+        network.get_track(1, 0).segment_id = "BLOCK_B"
 
         switch = Switch(switch_id="SW_X", x=2, y=0)
         network.add_switch(switch)
         network.get_track(2, 0).switch_id = "SW_X"
 
-        block_c = network.create_block("BLOCK_C", "Block C")
+        block_c = network.create_segment("BLOCK_C", "Block C")
         block_c.length_cm = 100.0
-        network.get_track(3, 0).block_section_id = "BLOCK_C"
+        network.get_track(3, 0).segment_id = "BLOCK_C"
 
         self._make_probe_train(network, dispatcher)
 
@@ -1746,9 +1746,9 @@ class TestSameBlockRejected:
     def _rebuild_geometry(self, network):
         """Populate `Block.ordered_tiles` the way a real edited network does,
         so block-relative `forward`/`reverse` resolve to real compass edges."""
-        gm = network._get_block_geometry_manager()
+        gm = network._get_segment_geometry_manager()
         for block_id in list(network.blocks.keys()):
-            gm.rebuild_block_ordered_tiles(block_id)
+            gm.rebuild_segment_ordered_tiles(block_id)
 
     def _seed_train_in_block(
         self,
@@ -1855,10 +1855,10 @@ class TestSameBlockRejected:
         invalid_request (the same-block rule, not a cab-direction question)."""
         network.add_track(Tile(x=0, y=0, track_bits=TRACK_EW))
         network.add_track(Tile(x=1, y=0, track_bits=TRACK_EW))
-        network.create_block("BLOCK_A", "Block A")
-        network.get_track(0, 0).block_section_id = "BLOCK_A"
-        network.create_block("BLOCK_B", "Block B")
-        network.get_track(1, 0).block_section_id = "BLOCK_B"
+        network.create_segment("BLOCK_A", "Block A")
+        network.get_track(0, 0).segment_id = "BLOCK_A"
+        network.create_segment("BLOCK_B", "Block B")
+        network.get_track(1, 0).segment_id = "BLOCK_B"
         self._rebuild_geometry(network)
 
         self._seed_train_in_block(
@@ -1884,10 +1884,10 @@ class TestSameBlockRejected:
         (design_new.md:982)."""
         network.add_track(Tile(x=0, y=0, track_bits=TRACK_EW))
         network.add_track(Tile(x=1, y=0, track_bits=TRACK_EW))
-        network.create_block("BLOCK_A", "Block A")
-        network.get_track(0, 0).block_section_id = "BLOCK_A"
-        network.create_block("BLOCK_B", "Block B")
-        network.get_track(1, 0).block_section_id = "BLOCK_B"
+        network.create_segment("BLOCK_A", "Block A")
+        network.get_track(0, 0).segment_id = "BLOCK_A"
+        network.create_segment("BLOCK_B", "Block B")
+        network.get_track(1, 0).segment_id = "BLOCK_B"
         self._rebuild_geometry(network)
 
         self._seed_train_in_block(
@@ -2002,9 +2002,9 @@ class TestSameBlockRejected:
             ("BLOCK_A", [0]), ("BLOCK_B", [1, 2]),
             ("BLOCK_C", [3, 4]), ("BLOCK_D", [5]),
         ]:
-            network.create_block(bid, bid)
+            network.create_segment(bid, bid)
             for x in xs:
-                network.get_track(x, 0).block_section_id = bid
+                network.get_track(x, 0).segment_id = bid
         self._rebuild_geometry(network)
         train, _ = self._seed_train_in_block(
             network,

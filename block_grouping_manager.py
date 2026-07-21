@@ -254,7 +254,7 @@ class BlockGroupingManager:
 
         Returns ``(ordered_ids, ids_to_reverse)``. This only plans — it writes
         nothing. Reversing a segment is a geometry write
-        (`BlockGeometryManager.reverse_segment_orientation`), so the caller
+        (`SegmentGeometryManager.reverse_segment_orientation`), so the caller
         applies the reversals and then calls `create_block`, which keeps its own
         no-reversal rule.
 
@@ -345,7 +345,7 @@ class BlockGroupingManager:
 
         The one entry point for turning an unordered member list into a block:
         `plan_run` decides the order and which members are stored backwards,
-        `BlockGeometryManager.reverse_segment_orientation` flips those, and
+        `SegmentGeometryManager.reverse_segment_orientation` flips those, and
         `create_block` does the grouping under its ordinary validation. Used by
         baked scenes and by loading a save whose grouping was stored separately
         from the blocks it grouped.
@@ -354,7 +354,7 @@ class BlockGroupingManager:
         switch-free run after alignment.
         """
         ordered, to_reverse = self.plan_run(segment_ids)
-        geometry = self._n._get_block_geometry_manager()
+        geometry = self._n._get_segment_geometry_manager()
         for segment_id in to_reverse:
             geometry.reverse_segment_orientation(segment_id)
         return self.create_block(block_id=block_id, segment_ids=ordered, name=name)
@@ -426,10 +426,16 @@ class BlockGroupingManager:
         self._reindex_block_tiles(block)
 
     def _reindex_block_tiles(self, block: Block) -> None:
-        """Point every tile of `block` at it, on both the network reverse index
-        and the tile's own `block_section_id`."""
-        for entry in block.ordered_tiles:
-            self._n._set_tile_block(entry.x, entry.y, block.block_id)
-            track = self._n.get_track(entry.x, entry.y)
-            if track is not None:
-                track.block_section_id = block.block_id
+        """Point every tile of `block` at the member segment that holds it.
+
+        A tile belongs to a segment, so the reverse index stores the segment
+        id; "which block owns this tile?" is then resolved through
+        `segment_to_block_id`. Writing the block id here would make every tile
+        of a grouped block claim membership of a segment that does not exist.
+        """
+        for segment in block.segments:
+            for entry in segment.ordered_tiles:
+                self._n._set_tile_segment(entry.x, entry.y, segment.segment_id)
+                track = self._n.get_track(entry.x, entry.y)
+                if track is not None:
+                    track.segment_id = segment.segment_id

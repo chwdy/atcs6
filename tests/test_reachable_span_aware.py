@@ -35,10 +35,10 @@ def _depot_ladder() -> RailwayNetwork:
     net.add_track(Tile(x=3, y=1, track_bits=EW))        # MAIN
     net.add_track(Tile(x=1, y=2, track_bits=1))         # SIDE1 (N-S stub)
     net.add_track(Tile(x=2, y=2, track_bits=1))         # SIDE2 (N-S stub)
-    net.create_block_with_tracks(block_id="LEAD", positions=[(0, 1)])
-    net.create_block_with_tracks(block_id="MAIN", positions=[(3, 1)])
-    net.create_block_with_tracks(block_id="SIDE1", positions=[(1, 2)])
-    net.create_block_with_tracks(block_id="SIDE2", positions=[(2, 2)])
+    net.create_segment_with_tracks(segment_id="LEAD", positions=[(0, 1)])
+    net.create_segment_with_tracks(segment_id="MAIN", positions=[(3, 1)])
+    net.create_segment_with_tracks(segment_id="SIDE1", positions=[(1, 2)])
+    net.create_segment_with_tracks(segment_id="SIDE2", positions=[(2, 2)])
     return net
 
 
@@ -159,9 +159,9 @@ def _curved_platform() -> RailwayNetwork:
     net.add_track(Tile(x=1, y=0, track_bits=NW))   # south end, edges {N,W}
     net.add_track(Tile(x=2, y=2, track_bits=NS))   # NORTH exit
     net.add_track(Tile(x=0, y=0, track_bits=EW))   # WEST exit
-    net.create_block_with_tracks(block_id="PLATFORM", positions=[(2, 1), (1, 1), (1, 0)])
-    net.create_block_with_tracks(block_id="NORTH", positions=[(2, 2)])
-    net.create_block_with_tracks(block_id="WEST", positions=[(0, 0)])
+    net.create_segment_with_tracks(segment_id="PLATFORM", positions=[(2, 1), (1, 1), (1, 0)])
+    net.create_segment_with_tracks(segment_id="NORTH", positions=[(2, 2)])
+    net.create_segment_with_tracks(segment_id="WEST", positions=[(0, 0)])
     return net
 
 

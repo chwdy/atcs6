@@ -35,8 +35,8 @@ def _linear_network():
         ("BLOCK_D", (6, 7)),
         ("BLOCK_E", (8, 9)),
     ]:
-        net.create_block_with_tracks(
-            block_id=bid, positions=[(a, 0), (b, 0)], name=bid, length_cm=100.0
+        net.create_segment_with_tracks(
+            segment_id=bid, positions=[(a, 0), (b, 0)], name=bid, length_cm=100.0
         )
     return net
 

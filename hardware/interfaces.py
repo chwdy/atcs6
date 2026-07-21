@@ -8,6 +8,7 @@ id -> (chip_id, port)) is passed in from persisted config; this is the only plac
 that consumes it.
 """
 
+import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from block_occupancy import InputInterface
@@ -17,20 +18,26 @@ from switch_power import SwitchOutputInterface
 from hardware.catalog import (
     BUS_GPIO,
     CHIP_CATALOG,
+    PORT_CURRENT_SENSE,
     ROLE_OCCUPANCY,
     ROLE_SWITCH,
     ROLE_TRACK,
     SPI_SELECT_LINES,
+    SWITCH_THROW_PULSE_S,
     latch_lines_for,
 )
 from hardware.chips.hc165 import HC165Chain
 from hardware.chips.hc595 import HC595Chain
+from hardware.chips.ina219 import INA219
 from hardware.chips.ina3221 import INA3221
 from hardware.chips.pca9685 import PCA9685
 from hardware.watchdog import OutputWatchdog
 
 # A binding map: logical id -> (chip_id, port).
 BindingMap = Dict[str, Tuple[str, int]]
+# A switch binding map: switch_id -> (chip_id, port_main, port_diverge, port_standby).
+# `port_standby` is None when the motor driver needs no standby/enable bit.
+SwitchBindingMap = Dict[str, Tuple[str, int, int, Optional[int]]]
 # A current-sense binding map: block_id -> (chip_id, port, baseline_a, threshold_a).
 # Thresholds arrive already resolved to amps by the config layer.
 CurrentBindingMap = Dict[str, Tuple[str, int, float, float]]
@@ -90,9 +97,10 @@ def build_chip(device: Any, spec: Any) -> Any:
         # SPI peripheral either way.
         cls = HC595Chain if spec.kind == "hc595" else HC165Chain
         return cls(device, select=_resolved_latch(spec, ck), chain_length=spec.chain_length)
-    if spec.kind == "ina3221":
+    if spec.kind in ("ina3221", "ina219"):
         address = spec.i2c_address if spec.i2c_address is not None else ck.default_i2c_address
-        return INA3221(device, address=address)
+        cls = INA3221 if spec.kind == "ina3221" else INA219
+        return cls(device, address=address)
     raise ValueError(f"unknown chip kind {spec.kind!r}")
 
 
@@ -150,29 +158,70 @@ class Ch347TrackOutputInterface(OutputInterface):
 
 
 class Ch347SwitchOutputInterface(SwitchOutputInterface):
-    """Switch throw over 74HC595 output bits (one bit per switch)."""
+    """Switch throw over 74HC595 output bits — two coil bits per switch, pulsed.
+
+    A solenoid point motor is a momentary device: one coil throws toward MAIN,
+    the other toward DIVERGE, and either burns out if left energized. So a throw
+    drives its coil for `SWITCH_THROW_PULSE_S` and then de-energizes; both coils
+    rest low between throws, and the alignment is held by the points themselves,
+    not by a held output. When the binding names a standby bit (a motor driver
+    such as the TB6612 ignores its inputs until that pin is high), it is raised
+    for the pulse and dropped with it, so the driver idles disabled.
+
+    The write order is the sequence proven on the bench not to burn a motor:
+
+      1. standby high — enable the bridge
+      2. target coil high
+      3. **other coil low** — the two coil bits are the bridge's two inputs, and
+         leaving the previous throw's input high would drive both at once. This
+         is asserted every throw rather than assumed, so a throw is correct from
+         any prior bit pattern, including the one a chain powers up in.
+      4. wait the pulse width
+      5. **standby low first** — one write puts the outputs in high impedance.
+         Dropping a coil input first would leave the bridge enabled with both
+         inputs low, which is its brake mode: a short across the coil.
+      6. coil low — the bridge is already off, so this only settles the resting
+         pattern for the next throw.
+
+    Steps 5-6 run in a `finally`, so a failure part-way through still leaves no
+    coil driven. A driver with no standby bit de-energizes at step 6 instead,
+    which is why that write is unconditional.
+    """
 
     def __init__(
         self,
         chips_by_id: Dict[str, HC595Chain],
-        bindings: BindingMap,
+        bindings: SwitchBindingMap,
         watchdog: Optional[OutputWatchdog] = None,
+        pulse_s: float = SWITCH_THROW_PULSE_S,
     ) -> None:
         self._chips = chips_by_id
         self._bindings = bindings
         self._last: Dict[str, int] = {}
         self._watchdog = watchdog
+        self._pulse_s = pulse_s
 
     def set_throw(self, switch_id: str, target_state: int) -> bool:
         binding = self._bindings.get(switch_id)
         if binding is None:
             return False
-        chip_id, port = binding
+        chip_id, port_main, port_diverge, port_standby = binding
         chip = self._chips.get(chip_id)
         if chip is None:
             return False
         state = 0 if target_state == 0 else 1
-        chip.set_output(port, bool(state))
+        coil = port_main if state == 0 else port_diverge
+        other_coil = port_diverge if state == 0 else port_main
+        try:
+            if port_standby is not None:
+                chip.set_output(port_standby, True)
+            chip.set_output(coil, True)
+            chip.set_output(other_coil, False)
+            time.sleep(self._pulse_s)
+        finally:
+            if port_standby is not None:
+                chip.set_output(port_standby, False)
+            chip.set_output(coil, False)
         self._last[switch_id] = state
         if self._watchdog is not None:
             self._watchdog.pet()
@@ -191,17 +240,18 @@ class Ch347SwitchOutputInterface(SwitchOutputInterface):
 
 class Ch347OccupancyInputInterface(InputInterface):
     """Hybrid block occupancy: a digital detector ('165) plus a current-sense
-    channel (INA3221), selected per block by whether the block is being driven.
+    channel (INA3221 or INA219), selected per block by whether the block is being
+    driven.
 
     While a block is powered its rail voltage is a poor occupancy signal, so the
-    INA3221 current channel decides (abs current above the block's threshold). When
-    the block is idle the '165 detector decides. `voltage_of` reports the last
+    current channel decides (abs current above the block's threshold). When the
+    block is idle the '165 detector decides. `voltage_of` reports the last
     commanded block voltage (from the real track interface); a block over the
     deadband is "driven". A block may have both sources, only one, or neither:
 
-      - driven + has current  -> INA3221 current
+      - driven + has current   -> current channel
       - otherwise + has digital -> '165 bit
-      - idle + only current    -> INA3221 (reads ~0 with no drive; best effort)
+      - idle + only current    -> current channel (reads ~0 with no drive; best effort)
       - no binding             -> not detected (False)
 
     This all stays below `read_block_currents()`, so the detector above the
@@ -212,7 +262,7 @@ class Ch347OccupancyInputInterface(InputInterface):
         self,
         digital_chips: Dict[str, HC165Chain],
         digital_bindings: BindingMap,
-        current_chips: Optional[Dict[str, INA3221]] = None,
+        current_chips: Optional[Dict[str, Any]] = None,
         current_bindings: Optional[CurrentBindingMap] = None,
         voltage_of: Optional[Callable[[str], float]] = None,
         idle_deadband_v: float = _IDLE_DEADBAND_V,
@@ -261,7 +311,7 @@ class Ch347OccupancyInputInterface(InputInterface):
         if chip is None:
             return False
         try:
-            current = chip.read_current(port + 1)   # port 0 -> INA3221 channel 1
+            current = chip.read_current(port + 1)   # port 0 -> sensor channel 1
         except Exception:
             return False
         return abs(current - baseline_a) >= threshold_a
@@ -272,7 +322,7 @@ def build_real_interfaces(
     chip_specs: List[Any],
     block_track: BindingMap,
     block_occupancy: BindingMap,
-    switch_output: BindingMap,
+    switch_output: SwitchBindingMap,
     block_occupancy_current: Optional[CurrentBindingMap] = None,
     output_enable: Optional[BindingMap] = None,
     idle_deadband_v: float = _IDLE_DEADBAND_V,
@@ -291,7 +341,7 @@ def build_real_interfaces(
     track_chips: Dict[str, PCA9685] = {}
     switch_chips: Dict[str, HC595Chain] = {}
     digital_chips: Dict[str, HC165Chain] = {}
-    current_chips: Dict[str, INA3221] = {}
+    current_chips: Dict[str, Any] = {}
 
     # A GPIO-latched chip borrows a chip-select pad for its SPI transfer. Choose a
     # safe one before any chip is built, because the first `all_off()` latches.
@@ -308,7 +358,7 @@ def build_real_interfaces(
             chip.all_off()
             switch_chips[spec.chip_id] = chip
         elif ck.role == ROLE_OCCUPANCY:
-            if spec.kind == "ina3221":
+            if ck.port_kind == PORT_CURRENT_SENSE:
                 chip.configure()               # reset + enable all three channels
                 current_chips[spec.chip_id] = chip
             else:

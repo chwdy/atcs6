@@ -132,8 +132,8 @@ def update_track(
                 "message": f"Invalid track_bits: {new_bits}",
             }
 
-        if track.is_switch and track.block_section_id:
-            state.network.remove_tile_from_block(x, y)
+        if track.is_switch and track.segment_id:
+            state.network.remove_tile_from_segment(x, y)
         _ensure_switch_for_tile(state, track, x, y)
 
     if "dead_end_ports" in data:
@@ -178,12 +178,12 @@ def update_track(
     if "station_name" in data:
         track.station_name = data["station_name"]
 
-    if "block_section_id" in data:
-        track.block_section_id = data["block_section_id"]
+    if "segment_id" in data:
+        track.segment_id = data["segment_id"]
 
     state.network.propagate_from_tile(x, y)
 
-    if "switch_state" in data or "block_section_id" in data:
+    if "switch_state" in data or "segment_id" in data:
         state.network.update_signals_from_blocks()
 
     if track.track_bits == 0 and len(track.dead_end_ports) == 0:
@@ -245,8 +245,8 @@ def add_tracks_bulk(
                 continue
             existing_track.set_track_bits(merged_bits)
 
-            if existing_track.is_switch and existing_track.block_section_id:
-                state.network.remove_tile_from_block(tx, ty)
+            if existing_track.is_switch and existing_track.segment_id:
+                state.network.remove_tile_from_segment(tx, ty)
             _ensure_switch_for_tile(state, existing_track, tx, ty)
 
             state.network.propagate_from_tile(tx, ty)

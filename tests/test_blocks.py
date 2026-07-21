@@ -21,11 +21,11 @@ from block import Block
 from railway_signal import Signal, SignalType, SignalState
 from enums import BlockState, PlatformSide, Direction, TrainState
 from tests.train_test_helpers import set_train_span
-from block_validation import (
+from segment_validation import (
     is_crossing,
-    crossing_disallowed_in_block,
-    validate_track_for_block,
-    validate_block_assignment_continuity,
+    crossing_disallowed_in_segment,
+    validate_track_for_segment,
+    validate_segment_assignment_continuity,
     get_adjacent_positions,
 )
 from signal_validation import (
@@ -250,13 +250,13 @@ class TestBlockExtension:
         network = RailwayNetwork()
         for i in range(4):
             network.add_track(Tile(0, i, TRACK_NS))
-        network.create_block("BLOCK_A")
-        network.assign_track_to_block(0, 0, "BLOCK_A")
-        network.assign_track_to_block(0, 1, "BLOCK_A")
+        network.create_segment("BLOCK_A")
+        network.assign_track_to_segment(0, 0, "BLOCK_A")
+        network.assign_track_to_segment(0, 1, "BLOCK_A")
         signal = network.add_signal(0, 2, "N")
         signal.monitored_block_id = "BLOCK_A"
 
-        block = network.extend_block("BLOCK_A", [(0, 2)], force=True)
+        block = network.extend_segment("BLOCK_A", [(0, 2)], force=True)
         positions = network.get_block_positions("BLOCK_A")
         assert (0, 2) in positions
         assert len(positions) == 3
@@ -269,15 +269,15 @@ class TestBlockExtension:
             network.add_track(Tile(x, 0, TRACK_EW))
         network.add_station(0, 0, station_id="STA_TEST", name="Test Station")
         network.extend_station("STA_TEST", [(1, 0), (2, 0), (3, 0)])
-        network.create_block("PLATFORM_1")
-        network.extend_block("PLATFORM_1", [(0, 0), (1, 0)], force_overwrite=True)
+        network.create_segment("PLATFORM_1")
+        network.extend_segment("PLATFORM_1", [(0, 0), (1, 0)], force_overwrite=True)
         block = network.get_block("PLATFORM_1")
         assert block is not None
         assert len(network.get_block_positions("PLATFORM_1")) == 2
 
 
 class TestBlockValidation:
-    """Tests for block_validation.py functions"""
+    """Tests for segment_validation.py functions"""
 
     def test_is_crossing(self):
         assert is_crossing(TRACK_NS | TRACK_EW) == True
@@ -286,34 +286,34 @@ class TestBlockValidation:
         assert is_crossing(TRACK_NS) == False
         assert is_crossing(TRACK_NS | TRACK_NE) == False
 
-    def test_crossing_disallowed_in_block(self):
+    def test_crossing_disallowed_in_segment(self):
         # The orthogonal NS+EW crossing (3) is allowed inside a block.
-        assert crossing_disallowed_in_block(TRACK_NS | TRACK_EW) == False
+        assert crossing_disallowed_in_segment(TRACK_NS | TRACK_EW) == False
         # Diagonal crossings remain disallowed.
-        assert crossing_disallowed_in_block(TRACK_NW | TRACK_SE) == True
-        assert crossing_disallowed_in_block(TRACK_NE | TRACK_SW) == True
+        assert crossing_disallowed_in_segment(TRACK_NW | TRACK_SE) == True
+        assert crossing_disallowed_in_segment(TRACK_NE | TRACK_SW) == True
         # Non-crossings are unaffected.
-        assert crossing_disallowed_in_block(TRACK_NS) == False
+        assert crossing_disallowed_in_segment(TRACK_NS) == False
 
-    def test_validate_track_for_block_allows_orthogonal_crossing(self, diamond_crossing):
+    def test_validate_track_for_segment_allows_orthogonal_crossing(self, diamond_crossing):
         # The orthogonal NS+EW crossing (track_bits 3) may belong to a block.
         network = diamond_crossing
         track = network.get_track(1, 1)
-        is_valid, _ = validate_track_for_block(track, network)
+        is_valid, _ = validate_track_for_segment(track, network)
         assert is_valid == True
 
-    def test_validate_track_for_block_rejects_diagonal_crossing(self, network):
+    def test_validate_track_for_segment_rejects_diagonal_crossing(self, network):
         # Diagonal crossings (NW+SE, NE+SW) stay out of blocks.
         network.add_track(Tile(x=0, y=0, track_bits=TRACK_NW | TRACK_SE))
         track = network.get_track(0, 0)
-        is_valid, msg = validate_track_for_block(track, network)
+        is_valid, msg = validate_track_for_segment(track, network)
         assert is_valid == False
         assert "crossing" in msg.lower()
 
-    def test_validate_track_for_block_rejects_switch(self, y_switch):
+    def test_validate_track_for_segment_rejects_switch(self, y_switch):
         network = y_switch
         track = network.get_track(1, 1)
-        result = validate_track_for_block(track, network)
+        result = validate_track_for_segment(track, network)
         assert result == False or "switch" in str(result).lower()
 
     def test_get_adjacent_positions(self):
@@ -365,7 +365,7 @@ class TestMultiBlockOccupancy:
     def test_short_train_single_block(self):
         network = RailwayNetwork()
         track1 = Tile(0, 0, track_bits=TRACK_EW, length=1.0)
-        track1.block_section_id = "BLOCK_1"
+        track1.segment_id = "BLOCK_1"
         network.add_track(track1)
         block1 = Block(block_id="BLOCK_1", length_cm=1000.0)
         network.blocks["BLOCK_1"] = block1
@@ -395,10 +395,10 @@ class TestMultiBlockOccupancy:
     def test_long_train_two_blocks(self):
         network = RailwayNetwork()
         track1 = Tile(0, 0, track_bits=TRACK_EW, length=1.0)
-        track1.block_section_id = "BLOCK_1"
+        track1.segment_id = "BLOCK_1"
         network.add_track(track1)
         track2 = Tile(1, 0, track_bits=TRACK_EW, length=1.0)
-        track2.block_section_id = "BLOCK_2"
+        track2.segment_id = "BLOCK_2"
         network.add_track(track2)
         block1 = Block(block_id="BLOCK_1", length_cm=10000.0)
         block2 = Block(block_id="BLOCK_2", length_cm=10000.0)
@@ -506,7 +506,7 @@ class TestBlockManager:
     def test_block_manager_integration_with_network(self):
         network = RailwayNetwork()
         assert network.block_manager is None
-        block = network.create_block("B1", "Block 1")
+        block = network.create_segment("B1", "Block 1")
         assert network.block_manager is not None
         assert network.block_manager.get_block_state("B1") == BlockState.FREE
         network.block_manager.occupy_block("B1", "TRAIN_1")
@@ -693,12 +693,12 @@ class TestDirectionalCaution:
         for x in range(3):
             network.add_track(Tile(x=x, y=0, track_bits=TRACK_EW))
         # Assign each tile to its own block.
-        a = network.create_block("A", "A")
-        b = network.create_block("B", "B")
-        c = network.create_block("C", "C")
-        network.assign_track_to_block(0, 0, "A")
-        network.assign_track_to_block(1, 0, "B")
-        network.assign_track_to_block(2, 0, "C")
+        a = network.create_segment("A", "A")
+        b = network.create_segment("B", "B")
+        c = network.create_segment("C", "C")
+        network.assign_track_to_segment(0, 0, "A")
+        network.assign_track_to_segment(1, 0, "B")
+        network.assign_track_to_segment(2, 0, "C")
         # ordered_tiles records (x, y, entry_edge) for forward traversal.
         a.ordered_tiles = [(0, 0, "W")]
         b.ordered_tiles = [(1, 0, "W")]

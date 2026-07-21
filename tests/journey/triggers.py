@@ -122,7 +122,7 @@ def block_at_tile_entered(tile: Tuple[int, int]) -> Predicate:
             track = s.network.get_track(*tile)
             if track is None:
                 return False
-            block_id = getattr(track, "block_section_id", None)
+            block_id = getattr(track, "block_id", None)
             if not block_id:
                 return False
             state["resolved_block_id"] = block_id
@@ -141,7 +141,7 @@ def block_at_tile_vacated(tile: Tuple[int, int]) -> Predicate:
             track = s.network.get_track(*tile)
             if track is None:
                 return False
-            block_id = getattr(track, "block_section_id", None)
+            block_id = getattr(track, "block_id", None)
             if not block_id:
                 return False
             state["resolved_block_id"] = block_id

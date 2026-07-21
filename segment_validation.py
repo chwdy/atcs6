@@ -1,8 +1,10 @@
 """
-Block validation module for the railway signaling system.
+Segment validation module for the railway signaling system.
 
-Validates that blocks are created and modified correctly according to
-railway signaling rules.
+Validates that track geometry — which tiles a `Segment` may hold, and that
+they form one continuous run — is created and modified correctly according to
+railway signaling rules. Blocks group validated segments; that grouping is
+checked by `BlockGroupingManager`.
 """
 
 from typing import Tuple, List, Optional, Set
@@ -84,7 +86,7 @@ def is_crossing(track_bits: int) -> bool:
 BLOCK_ALLOWED_CROSSINGS = frozenset({3})
 
 
-def crossing_disallowed_in_block(track_bits: int) -> bool:
+def crossing_disallowed_in_segment(track_bits: int) -> bool:
     """
     Check if track_bits is a crossing that cannot belong to a block.
 
@@ -101,15 +103,15 @@ def crossing_disallowed_in_block(track_bits: int) -> bool:
     return is_crossing(track_bits) and track_bits not in BLOCK_ALLOWED_CROSSINGS
 
 
-def validate_track_for_block(track, network) -> Tuple[bool, str]:
+def validate_track_for_segment(track, network) -> Tuple[bool, str]:
     """
-    Validate if a track can be added to a block.
+    Validate if a track can be added to a segment.
 
     Rules:
     1. Track must exist
     2. Track cannot be a switch (switches are block boundaries)
     3. Track cannot be a disallowed crossing (diagonal crossings isolate paths;
-       the orthogonal NS+EW crossing is allowed - see crossing_disallowed_in_block)
+       the orthogonal NS+EW crossing is allowed - see crossing_disallowed_in_segment)
 
     Note: This function does NOT validate station boundaries. Station boundary
     validation is performed separately by validate_station_boundary(), which
@@ -131,8 +133,8 @@ def validate_track_for_block(track, network) -> Tuple[bool, str]:
         return False, "Cannot add switch to block - switches are block boundaries"
 
     # Rule 3: Disallowed crossings. The orthogonal NS+EW crossing may belong to
-    # a block; diagonal crossings may not (see crossing_disallowed_in_block).
-    if crossing_disallowed_in_block(track.track_bits):
+    # a block; diagonal crossings may not (see crossing_disallowed_in_segment).
+    if crossing_disallowed_in_segment(track.track_bits):
         return (
             False,
             "Cannot add crossing to block - crossings isolate paths and blocks cannot span them",
@@ -141,7 +143,7 @@ def validate_track_for_block(track, network) -> Tuple[bool, str]:
     return True, ""
 
 
-def validate_block_assignment_continuity(
+def validate_segment_assignment_continuity(
     existing_positions: List[Tuple[int, int]],
     new_positions: List[Tuple[int, int]],
     network,
@@ -285,22 +287,22 @@ def _get_edges_from_track_bits(track_bits: int) -> Set[str]:
     return edges
 
 
-def validate_block_properties(
-    block_id: str, name: str, length_cm: float, speed_limit_kmh: Optional[float]
+def validate_segment_properties(
+    segment_id: str, name: str, length_cm: float, speed_limit_kmh: Optional[float]
 ) -> Tuple[bool, List[str]]:
     """
-    Validate block properties are reasonable.
+    Validate segment properties are reasonable.
 
     Rules:
-    1. block_id must be non-empty and valid format
+    1. segment_id must be non-empty and valid format
     2. name should be non-empty (warning only)
     3. length_cm must be >= 0
     4. speed_limit_kmh must be > 0 if provided
     """
     errors = []
 
-    if not block_id or not block_id.strip():
-        errors.append("block_id cannot be empty")
+    if not segment_id or not segment_id.strip():
+        errors.append("segment_id cannot be empty")
 
     if length_cm < 0:
         errors.append(f"length_cm cannot be negative: {length_cm}")

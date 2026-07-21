@@ -241,7 +241,7 @@ class SignalRegistry:
             # Validate: If monitoring own block, signal MUST be on entry tile
             if new_block_id:
                 signal_track = self._n.get_track(*signal.position)
-                if signal_track and signal_track.block_section_id == new_block_id:
+                if signal_track and signal_track.block_id == new_block_id:
                     if not self._n.is_signal_on_entry_tile(signal):
                         raise ValueError(
                             f"Signal cannot monitor block '{new_block_id}' from the middle. "
@@ -292,7 +292,7 @@ class SignalRegistry:
 
         # Get the signal's own block (the block at the signal's position)
         signal_track = self._n.get_track(*signal.position)
-        signal_own_block = signal_track.block_section_id if signal_track else None
+        signal_own_block = signal_track.block_id if signal_track else None
 
         # Check if trying to monitor own block
         if signal_own_block and block_id == signal_own_block:

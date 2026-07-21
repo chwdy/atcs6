@@ -9,11 +9,24 @@ Run with:
 
 import pytest
 
-from hardware_config import ChipConfig, ControllerConfig, HardwareConfig
+from hardware_config import (
+    ChipConfig,
+    ControllerConfig,
+    CurrentBinding,
+    HardwareConfig,
+    PortBinding,
+)
+from hardware import interfaces as hw_interfaces
 from hardware import self_test
-from hardware.catalog import CHIP_CATALOG, catalog_payload, ports_for_chip
+from hardware.catalog import (
+    CHIP_CATALOG,
+    SWITCH_THROW_PULSE_S,
+    catalog_payload,
+    ports_for_chip,
+)
 from hardware.chips.hc165 import HC165Chain
 from hardware.chips.hc595 import HC595Chain
+from hardware.chips.ina219 import INA219
 from hardware.chips.ina3221 import INA3221
 from hardware.chips.pca9685 import PCA9685
 from hardware.fake import FakeCh347Device
@@ -40,7 +53,9 @@ def test_catalog_roles_and_ports():
 
 def test_catalog_payload_serializable():
     payload = catalog_payload()
-    assert {c["kind"] for c in payload["chips"]} == {"pca9685", "hc595", "hc165", "ina3221"}
+    assert {c["kind"] for c in payload["chips"]} == {
+        "pca9685", "hc595", "hc165", "ina3221", "ina219",
+    }
     ina = next(c for c in payload["chips"] if c["kind"] == "ina3221")
     assert ina["role"] == "occupancy_input" and ina["buses"] == ["i2c"]
     assert ina["port_kind"] == "current_sense" and ina["direction"] == "input"
@@ -139,7 +154,8 @@ def wired():
         dev, specs,
         block_track={"B1": ("pwm1", 0), "B2": ("pwm1", 3)},
         block_occupancy={"B1": ("in1", 2), "B2": ("in1", 7)},
-        switch_output={"SW_A": ("sw1", 5)},
+        # main coil on bit 5, diverge on bit 6, TB6612 standby on bit 4
+        switch_output={"SW_A": ("sw1", 5, 6, 4)},
     )
     return dev, inp, blk, sw
 
@@ -160,15 +176,125 @@ def test_track_voltage_bipolar_h_bridge(wired):
     assert blk.set_voltage("NOPE", 5.0) is False
 
 
-def test_switch_throw_bit(wired):
+def test_switch_throw_pulses_the_side_coil_and_rests_low(wired):
+    """A solenoid point motor burns out if a coil is held, so a throw is a pulse:
+    the commanded coil ends the call de-energized, as does the standby bit."""
     dev, _inp, _blk, sw = wired
     assert isinstance(sw, Ch347SwitchOutputInterface)
     assert sw.set_throw("SW_A", 1) is True
-    assert dev.latched_bit("cs0", 5) is True
     assert sw.get_last_throw("SW_A") == 1
-    sw.set_throw("SW_A", 0)
-    assert dev.latched_bit("cs0", 5) is False
+    # Nothing is left driven once the throw returns.
+    assert dev.latched_bit("cs0", 5) is False    # main coil
+    assert dev.latched_bit("cs0", 6) is False    # diverge coil
+    assert dev.latched_bit("cs0", 4) is False    # standby
+    assert sw.set_throw("SW_A", 0) is True
+    assert sw.get_last_throw("SW_A") == 0
     assert sw.set_throw("UNBOUND", 1) is False
+
+
+class _SleepSpy:
+    """Stands in for the `time` module inside `hardware.interfaces`, so the
+    latched state can be sampled during the pulse without a real wait."""
+
+    def __init__(self, on_sleep):
+        self._on_sleep = on_sleep
+
+    def sleep(self, seconds):
+        self._on_sleep(seconds)
+
+
+def test_switch_throw_energizes_only_the_target_coil(wired, monkeypatch):
+    """Sample the latched state mid-pulse: exactly one coil is up, with standby."""
+    dev, _inp, _blk, sw = wired
+    seen = []
+    monkeypatch.setattr(
+        hw_interfaces,
+        "time",
+        _SleepSpy(lambda seconds: seen.append({
+            "pulse_s": seconds,
+            **{bit: dev.latched_bit("cs0", bit) for bit in (4, 5, 6)},
+        })),
+    )
+    sw.set_throw("SW_A", 0)          # MAIN -> bit 5
+    sw.set_throw("SW_A", 1)          # DIVERGE -> bit 6
+
+    assert seen[0] == {"pulse_s": SWITCH_THROW_PULSE_S, 4: True, 5: True, 6: False}
+    assert seen[1] == {"pulse_s": SWITCH_THROW_PULSE_S, 4: True, 5: False, 6: True}
+
+
+def test_switch_throw_write_order_matches_the_bench_proven_sequence(wired, monkeypatch):
+    """The order of the individual bit writes is the safety contract, not just
+    the end state: standby rises first, the other coil is forced low while the
+    target is driven, and standby falls *before* the coil — dropping the coil
+    first would leave the bridge enabled with both inputs low, its brake mode,
+    which shorts the coil.
+    """
+    _dev, _inp, _blk, sw = wired
+    writes = []
+    chip = sw._chips["sw1"]
+    real_set = chip.set_output
+    monkeypatch.setattr(
+        chip, "set_output", lambda port, level: (writes.append((port, level)), real_set(port, level))[1]
+    )
+    monkeypatch.setattr(hw_interfaces, "time", _SleepSpy(lambda _s: writes.append("PULSE")))
+
+    sw.set_throw("SW_A", 0)          # MAIN: coil 5, other coil 6, standby 4
+    assert writes == [
+        (4, True),    # standby high — enable the bridge
+        (5, True),    # target coil high
+        (6, False),   # other input low, asserted every throw
+        "PULSE",
+        (4, False),   # standby low FIRST -> outputs high-impedance
+        (5, False),   # coil low — bridge already off, settles the resting pattern
+    ]
+
+
+def test_switch_without_standby_still_de_energizes_its_coil():
+    """With no standby bit the coil write is the only de-energize, so it must
+    happen unconditionally."""
+    dev = FakeCh347Device()
+    specs = [ChipConfig("sw1", "hc595", spi_select="cs0")]
+    _inp, _blk, sw = build_real_interfaces(
+        dev, specs, block_track={}, block_occupancy={},
+        switch_output={"SW_A": ("sw1", 0, 1, None)},
+    )
+    assert sw.set_throw("SW_A", 1) is True
+    assert dev.latched_bit("cs0", 0) is False
+    assert dev.latched_bit("cs0", 1) is False
+
+
+def test_switch_throw_is_correct_from_a_stale_bit_pattern(wired, monkeypatch):
+    """A throw must not depend on how the previous one left the chain: with the
+    opposite coil's bit already high, the throw still drives only its own side."""
+    dev, _inp, _blk, sw = wired
+    sw._chips["sw1"].set_output(6, True)     # stale DIVERGE bit, as if left high
+    assert dev.latched_bit("cs0", 6) is True
+
+    seen = {}
+    monkeypatch.setattr(
+        hw_interfaces,
+        "time",
+        _SleepSpy(lambda _s: seen.update({bit: dev.latched_bit("cs0", bit) for bit in (4, 5, 6)})),
+    )
+    sw.set_throw("SW_A", 0)                  # throw MAIN
+
+    assert seen == {4: True, 5: True, 6: False}   # stale bit cleared during the pulse
+    assert dev.latched_bit("cs0", 5) is False
+    assert dev.latched_bit("cs0", 6) is False
+
+
+def test_switch_throw_de_energizes_even_when_the_pulse_raises(wired, monkeypatch):
+    """The de-energize runs in a finally, so a failed throw leaves no coil driven."""
+    dev, _inp, _blk, sw = wired
+
+    def boom(_seconds):
+        raise RuntimeError("bus glitch")
+
+    monkeypatch.setattr(hw_interfaces, "time", _SleepSpy(boom))
+    with pytest.raises(RuntimeError):
+        sw.set_throw("SW_A", 1)
+    assert dev.latched_bit("cs0", 6) is False
+    assert dev.latched_bit("cs0", 4) is False
 
 
 def test_occupancy_read_maps_bound_blocks(wired):
@@ -333,6 +459,30 @@ def test_port_test_read_input():
     }
 
 
+def test_port_test_read_input_on_gpio_latched_hc165():
+    # A '165 is wired on either bus: a chip-select pad (spi) or a plain pin
+    # (gpio). Only ch347_device branches on the pad name — everything above it
+    # is bus-agnostic — so the same read must work with a gpio load line.
+    dev = FakeCh347Device()
+    dev.set_input_bit("gpio5", 4, True, width=1)
+    cfg = _cfg(ChipConfig("in1", "hc165", bus="gpio", spi_select="gpio5"))
+    assert self_test.run_port_test(cfg, "in1", 4, "read_input", device=dev) == {
+        "ok": True, "value": True
+    }
+
+
+def test_gpio_transfer_pad_may_be_an_hc165_load_line():
+    # With a '595 on cs0 and a '165 on cs1, a gpio-latched chip has to borrow a
+    # pad for its transfer. cs1 is the only one left, and borrowing a '165 load
+    # line is safe: the transfer just freezes and re-loads its parallel inputs.
+    specs = [
+        ChipConfig("sw1", "hc595", spi_select="cs0"),
+        ChipConfig("in1", "hc165", spi_select="cs1"),
+        ChipConfig("sw2", "hc595", bus="gpio", spi_select="gpio2"),
+    ]
+    assert hw_interfaces.gpio_transfer_cs(specs) == "cs1"
+
+
 def test_port_test_read_current_returns_ma():
     dev = FakeCh347Device(present_addresses={0x41})
     dev.set_ina3221_current(0x41, 2, 0.025)     # port 1 -> INA channel 2, 25 mA
@@ -439,7 +589,7 @@ def test_watchdog_drops_outputs_to_safe_state_when_control_loop_stalls():
         specs,
         {"BLK_A": ("pwm1", 0)},
         {},
-        {"SW_A": ("sw1", 1)},
+        {"SW_A": ("sw1", 1, 2, None)},
         watchdog_timeout_s=_WATCHDOG_SOON,
     )
 
@@ -520,3 +670,252 @@ def test_enter_safe_state_disarms_the_watchdog():
     blk.enter_safe_state()
     assert blk.get_actual_voltage("BLK_A") == 0.0
     assert blk._watchdog.fired is False
+
+
+# --- INA219 (the single-channel current sensor) ----------------------------
+def test_ina219_current_sign_and_probe():
+    dev = FakeCh347Device(present_addresses={0x45})
+    chip = INA219(dev, address=0x45, shunt_ohms=0.1)
+    chip.configure()
+    assert chip.probe() is True
+    # One shunt LSB is 10 uV / 0.1 ohm = 0.1 mA, so reads are exact to +/-0.1 mA.
+    lsb_a = INA219.SHUNT_LSB_V / 0.1
+    dev.set_ina219_current(0x45, 0.045)           # 45 mA forward
+    assert abs(chip.read_current() - 0.045) <= lsb_a
+    dev.set_ina219_current(0x45, -0.030)          # 30 mA reverse (regeneration)
+    assert abs(chip.read_current() + 0.030) <= lsb_a
+    assert INA219(FakeCh347Device(), address=0x45).probe() is False
+
+
+def test_ina219_configure_sets_continuous_shunt_bus():
+    dev = FakeCh347Device(present_addresses={0x45})
+    INA219(dev, address=0x45).configure()
+    assert dev.registers[0x45][0x00] & 0x0007 == 0x0007
+
+
+def test_ina219_bus_voltage():
+    dev = FakeCh347Device(present_addresses={0x45})
+    chip = INA219(dev, address=0x45)
+    dev.set_ina219_bus_voltage(0x45, 11.8)
+    assert abs(chip.read_bus_voltage() - 11.8) < 0.05
+
+
+def test_ina219_rejects_a_second_channel():
+    # The occupancy interface addresses every current sensor as `port + 1`, so a
+    # port past the chip's one channel must fail loudly rather than alias to it.
+    chip = INA219(FakeCh347Device(present_addresses={0x45}), address=0x45)
+    with pytest.raises(ValueError):
+        chip.read_current(2)
+
+
+def test_ina219_fills_the_current_sense_occupancy_slot():
+    ck = CHIP_CATALOG["ina219"]
+    assert (ck.role, ck.port_kind, ck.ports_per_unit) == ("occupancy_input", "current_sense", 1)
+    assert ck.direction == "input"
+    assert ports_for_chip("ina219", chain_length=4) == 1     # not cascadable
+
+    dev = FakeCh347Device(present_addresses={0x40, 0x45})
+    specs = [
+        ChipConfig("pwm1", "pca9685", i2c_address=0x40),
+        ChipConfig("cur1", "ina219", i2c_address=0x45),
+    ]
+    inp, blk, _sw = build_real_interfaces(
+        dev, specs,
+        block_track={"B1": ("pwm1", 0)},
+        block_occupancy={},
+        switch_output={},
+        block_occupancy_current={"B1": ("cur1", 0, 0.0, 0.015)},
+    )
+    dev.set_ina219_current(0x45, 0.002)                      # 2 mA, under threshold
+    assert inp.read_block_currents() == {"B1": False}
+    dev.set_ina219_current(0x45, 0.120)                      # 120 mA, a loco
+    assert inp.read_block_currents() == {"B1": True}
+
+
+# --- PWM readback + the track direction sweep ------------------------------
+def test_pca9685_read_duty_cycle_round_trip():
+    dev = FakeCh347Device(present_addresses={0x40})
+    chip = PCA9685(dev, address=0x40)
+    chip.configure()
+    chip.set_duty_cycle(3, 0.75)
+    assert abs(chip.read_duty_cycle(3) - 0.75) < 0.001
+    chip.set_duty_cycle(3, 0.0)
+    assert chip.read_duty_cycle(3) == 0.0
+
+
+def _writes(chip):
+    """Record every (channel, duty) write a chip receives, in order."""
+    seen = []
+    original = chip.set_duty_cycle
+
+    def spy(channel, duty):
+        seen.append((channel, round(duty, 3)))
+        original(channel, duty)
+
+    chip.set_duty_cycle = spy
+    return seen
+
+
+def test_drive_sequence_runs_both_polarities_and_ends_de_energized():
+    dev = FakeCh347Device(present_addresses={0x40})
+    chip = PCA9685(dev, address=0x40)
+    seen = _writes(chip)
+    self_test._drive_sequence(chip, port=2, hold_s=0.0)
+    # Port 2 is the H-bridge pair (ch4, ch5): forward, both off, then reverse.
+    assert (4, 1.0) in seen and (5, 1.0) in seen
+    assert seen.index((4, 1.0)) < seen.index((5, 1.0))
+    assert seen[-2:] == [(4, 0.0), (5, 0.0)]
+    assert chip.read_duty_cycle(4) == 0.0 and chip.read_duty_cycle(5) == 0.0
+
+
+def test_drive_sequence_never_drives_both_bridge_inputs_at_once():
+    # Both H-bridge inputs high is a shoot-through across the driver, so no
+    # moment of the sweep may leave both channels of the pair energized.
+    dev = FakeCh347Device(present_addresses={0x40})
+    chip = PCA9685(dev, address=0x40)
+    live = {4: 0.0, 5: 0.0}
+    original = chip.set_duty_cycle
+
+    def spy(channel, duty):
+        original(channel, duty)
+        if channel in live:
+            live[channel] = duty
+        assert not (live[4] > 0 and live[5] > 0), f"both inputs driven: {live}"
+
+    chip.set_duty_cycle = spy
+    self_test._drive_sequence(chip, port=2, hold_s=0.0)
+
+
+def test_drive_sequence_de_energizes_when_a_write_raises():
+    dev = FakeCh347Device(present_addresses={0x40})
+    chip = PCA9685(dev, address=0x40)
+    chip.configure()
+    original = chip.set_duty_cycle
+    calls = {"n": 0}
+
+    def flaky(channel, duty):
+        calls["n"] += 1
+        if calls["n"] == 3:          # fail partway through, with a rail hot
+            raise IOError("bridge dropped")
+        original(channel, duty)
+
+    chip.set_duty_cycle = flaky
+    with pytest.raises(IOError):
+        self_test._drive_sequence(chip, port=0, hold_s=0.0)
+    # The finally clause still ran, so the track is dead.
+    assert chip.read_duty_cycle(0) == 0.0 and chip.read_duty_cycle(1) == 0.0
+
+
+def test_port_test_drive_sequence_reports_what_it_drove(monkeypatch):
+    monkeypatch.setattr(self_test, "TRACK_TEST_HOLD_S", 0.0)
+    dev = FakeCh347Device(present_addresses={0x40})
+    cfg = _cfg(ChipConfig("pwm1", "pca9685", i2c_address=0x40))
+    res = self_test.run_port_test(cfg, "pwm1", 0, "drive_sequence", device=dev)
+    assert res["ok"] is True and res["volts"] == 12.0
+
+
+def test_port_test_drive_sequence_rejects_a_non_track_chip():
+    dev = FakeCh347Device()
+    cfg = _cfg(ChipConfig("in1", "hc165", spi_select="cs1"))
+    res = self_test.run_port_test(cfg, "in1", 0, "drive_sequence", device=dev)
+    assert res["ok"] is False and "bipolar" in res["error"]
+
+
+# --- the block occupancy test ----------------------------------------------
+def _occupancy_cfg():
+    """A block wired to both detectors plus track power."""
+    return HardwareConfig(
+        controller=ControllerConfig(kind="ch347"),
+        chips=[
+            ChipConfig("pwm1", "pca9685", i2c_address=0x40),
+            ChipConfig("in1", "hc165", spi_select="cs1"),
+            ChipConfig("cur1", "ina3221", i2c_address=0x41),
+        ],
+        block_track={"B1": PortBinding("pwm1", 0)},
+        block_occupancy={"B1": PortBinding("in1", 3)},
+        block_occupancy_current={
+            "B1": CurrentBinding("cur1", 1, baseline_ma=0.0, threshold_ma=15.0)
+        },
+    )
+
+
+def _occupancy_device():
+    return FakeCh347Device(present_addresses={0x40, 0x41})
+
+
+def test_occupancy_test_idle_block_is_decided_by_the_digital_detector():
+    dev = _occupancy_device()
+    dev.set_input_bit("cs1", 3, True)                    # detector: occupied
+    dev.set_ina3221_current(0x41, 2, 0.001)              # 1 mA, under threshold
+    res = self_test.run_occupancy_test(_occupancy_cfg(), "B1", device=dev)
+    assert res["ok"] is True
+    assert res["driven"] is False and res["track"]["volts"] == 0.0
+    assert res["source"] == "digital" and res["occupied"] is True
+    # Both detectors are still reported, so a disagreement is visible.
+    assert res["digital"]["occupied"] is True
+    assert res["current"]["occupied"] is False
+
+
+def test_occupancy_test_driven_block_is_decided_by_the_current_detector():
+    dev = _occupancy_device()
+    dev.set_input_bit("cs1", 3, True)                    # detector still says occupied
+    dev.set_ina3221_current(0x41, 2, 0.001)              # but almost no current
+    PCA9685(dev, address=0x40).set_duty_cycle(0, 1.0)    # block driven at full
+    res = self_test.run_occupancy_test(_occupancy_cfg(), "B1", device=dev)
+    assert res["driven"] is True and abs(res["track"]["volts"] - 12.0) < 0.01
+    assert res["source"] == "current" and res["occupied"] is False
+
+
+def test_occupancy_test_reads_reverse_polarity_as_driven():
+    dev = _occupancy_device()
+    dev.set_ina3221_current(0x41, 2, 0.120)              # 120 mA -> occupied
+    PCA9685(dev, address=0x40).set_duty_cycle(1, 0.75)   # reverse rail at 75%
+    res = self_test.run_occupancy_test(_occupancy_cfg(), "B1", device=dev)
+    assert res["track"]["volts"] < 0 and abs(res["track"]["volts"] + 9.0) < 0.05
+    assert res["driven"] is True
+    assert res["source"] == "current" and res["occupied"] is True
+
+
+def test_occupancy_test_below_the_deadband_still_counts_as_idle():
+    dev = _occupancy_device()
+    dev.set_input_bit("cs1", 3, False)
+    dev.set_ina3221_current(0x41, 2, 0.120)              # current says occupied
+    PCA9685(dev, address=0x40).set_duty_cycle(0, 0.01)   # 0.12 V, under deadband
+    res = self_test.run_occupancy_test(_occupancy_cfg(), "B1", device=dev)
+    assert res["driven"] is False
+    assert res["source"] == "digital" and res["occupied"] is False
+
+
+def test_occupancy_test_current_only_block_uses_current_when_idle():
+    cfg = _occupancy_cfg()
+    cfg.block_occupancy = {}                             # no digital detector wired
+    dev = _occupancy_device()
+    dev.set_ina3221_current(0x41, 2, 0.120)
+    res = self_test.run_occupancy_test(cfg, "B1", device=dev)
+    assert res["digital"]["bound"] is False
+    assert res["source"] == "current" and res["occupied"] is True
+
+
+def test_occupancy_test_unbound_block_reports_no_source():
+    res = self_test.run_occupancy_test(_occupancy_cfg(), "B9", device=_occupancy_device())
+    assert res["ok"] is True
+    assert res["source"] == "none" and res["occupied"] is False
+    assert res["digital"]["bound"] is False and res["current"]["bound"] is False
+
+
+def test_occupancy_test_survives_an_unreadable_detector():
+    cfg = _occupancy_cfg()
+    dev = FakeCh347Device(present_addresses={0x40})      # INA3221 at 0x41 absent
+    dev.set_input_bit("cs1", 3, True)
+    res = self_test.run_occupancy_test(cfg, "B1", device=dev)
+    assert res["ok"] is True
+    assert "error" in res["current"]                     # the failure is reported
+    assert res["source"] == "digital" and res["occupied"] is True
+
+
+def test_occupancy_test_reports_a_busy_controller():
+    def _boom():
+        raise RuntimeError("busy")
+
+    res = self_test.run_occupancy_test(_occupancy_cfg(), "B1", open_device=_boom)
+    assert res["ok"] is False and "busy" in res["error"]

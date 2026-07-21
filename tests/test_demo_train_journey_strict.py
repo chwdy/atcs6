@@ -119,7 +119,7 @@ def test_demo_block_main_east_1_not_released_while_train_inside():
         if (5, 0) in occupied_tiles:
             saw_head_at_5_0 = True
             track = network.get_track(5, 0)
-            block_id = track.block_section_id
+            block_id = track.block_id
             block = network.blocks.get(block_id)
             assert block is not None, f"missing block at (5,0)"
             assert block.occupied_by == train_id, (

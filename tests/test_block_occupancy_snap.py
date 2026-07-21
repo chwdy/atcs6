@@ -21,7 +21,7 @@ def build_line(num_tiles: int = 6) -> RailwayNetwork:
     network = RailwayNetwork()
     for x in range(num_tiles):
         track = Tile(x=x, y=0, track_bits=TRACK_EW)
-        track.block_section_id = f"BLK_{x}"
+        track.segment_id = f"BLK_{x}"
         network.add_track(track)
         network.blocks[f"BLK_{x}"] = Block(block_id=f"BLK_{x}", length_cm=100.0)
     return network

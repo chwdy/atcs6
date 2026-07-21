@@ -42,8 +42,8 @@ def test_measure_distance_unreachable_is_none():
 
 def test_measure_distance_resolves_block_id():
     network = _seven_tile_ew_line()
-    network.create_block_with_tracks(
-        block_id="BLK_LEFT", positions=[(0, 0), (1, 0), (2, 0)]
+    network.create_segment_with_tracks(
+        segment_id="BLK_LEFT", positions=[(0, 0), (1, 0), (2, 0)]
     )
     pf = RailwayPathfinder(network)
     # From tile (5,0) the closest block tile is (2,0) — 3 hops away.
@@ -78,8 +78,8 @@ def test_block_split_reassigns_signals_to_closer_side():
     """Two signals on opposite ends of one block; remove a middle tile so
     the block splits; each signal should land on the closer new block."""
     network = _seven_tile_ew_line()
-    network.create_block_with_tracks(
-        block_id="BLK_TEST",
+    network.create_segment_with_tracks(
+        segment_id="BLK_TEST",
         positions=[(x, 0) for x in range(7)],
     )
 
@@ -92,14 +92,14 @@ def test_block_split_reassigns_signals_to_closer_side():
     sig_left.monitored_block_id = "BLK_TEST"
     sig_right.monitored_block_id = "BLK_TEST"
 
-    # Remove the middle tile — triggers split inside remove_tile_from_block.
+    # Remove the middle tile — triggers split inside remove_tile_from_segment.
     network.remove_track(3, 0)
 
     # Original block is gone.
     assert "BLK_TEST" not in network.blocks
 
-    left_block = network.get_track(1, 0).block_section_id
-    right_block = network.get_track(5, 0).block_section_id
+    left_block = network.get_track(1, 0).block_id
+    right_block = network.get_track(5, 0).block_id
     assert left_block is not None
     assert right_block is not None
     assert left_block != right_block
@@ -112,8 +112,8 @@ def test_block_split_picks_closest_when_both_reachable():
     """A signal on a tile that has BFS access to both new blocks should
     pick the one with smaller hop count, not just the first listed."""
     network = _seven_tile_ew_line()
-    network.create_block_with_tracks(
-        block_id="BLK_TEST",
+    network.create_segment_with_tracks(
+        segment_id="BLK_TEST",
         positions=[(x, 0) for x in range(7)],
     )
     # Signal at (5,0) — once we remove (3,0), it sits inside the right block.
@@ -124,5 +124,5 @@ def test_block_split_picks_closest_when_both_reachable():
 
     network.remove_track(3, 0)
 
-    right_block = network.get_track(5, 0).block_section_id
+    right_block = network.get_track(5, 0).block_id
     assert sig.monitored_block_id == right_block

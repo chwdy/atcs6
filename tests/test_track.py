@@ -314,16 +314,16 @@ class TestRailwayNetwork:
 
         block = Block(block_id="BLK_REMOVAL_TEST")
         network.blocks["BLK_REMOVAL_TEST"] = block
-        network.assign_track_to_block(0, 0, "BLK_REMOVAL_TEST")
-        network.assign_track_to_block(0, 1, "BLK_REMOVAL_TEST")
+        network.assign_track_to_segment(0, 0, "BLK_REMOVAL_TEST")
+        network.assign_track_to_segment(0, 1, "BLK_REMOVAL_TEST")
 
-        assert track1.block_section_id == "BLK_REMOVAL_TEST"
+        assert track1.block_id == "BLK_REMOVAL_TEST"
 
         network.remove_track(0, 0)
         assert network.get_track(0, 0) is None
         remaining = network.get_track(0, 1)
         assert remaining is not None
-        assert remaining.block_section_id == "BLK_REMOVAL_TEST"
+        assert remaining.block_id == "BLK_REMOVAL_TEST"
 
 
 if __name__ == "__main__":

@@ -218,8 +218,8 @@ def _add_stations(network: RailwayNetwork) -> None:
 def _add_blocks(network: RailwayNetwork) -> None:
     """Create the non-platform blocks from their baked tile lists."""
     for (block_id, name, positions, length_cm, speed_limit_kmh) in BLOCKS:
-        network.create_block_with_tracks(
-            block_id=block_id,
+        network.create_segment_with_tracks(
+            segment_id=block_id,
             positions=positions,
             name=name,
             length_cm=length_cm,
@@ -335,7 +335,7 @@ def _fingerprint(net) -> dict:
             t.track_bits,
             tuple(sorted(t.dead_end_ports or [])),
             t.switch_id,
-            t.block_section_id,
+            t.segment_id,
             t.station_id,
             tuple(sorted(t.signal_ids or [])),
         )

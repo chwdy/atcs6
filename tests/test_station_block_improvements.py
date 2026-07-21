@@ -81,7 +81,7 @@ class TestStationBlockLengthCalculation:
             network.add_track(Tile(0, y, TRACK_NS))
 
         # Create a block with 500cm length covering all 5 tiles
-        block = network.create_block_with_tracks(
+        block = network.create_segment_with_tracks(
             "BLK_001", [(0, y) for y in range(5)], length_cm=500.0
         )
 
@@ -141,7 +141,7 @@ class TestBlockSplittingWithLengthCalculation:
             network.add_track(Tile(0, y, TRACK_NS))
 
         # Create block with 700cm length
-        block = network.create_block_with_tracks(
+        block = network.create_segment_with_tracks(
             "BLK_001", [(0, y) for y in range(7)], length_cm=700.0
         )
 
@@ -183,7 +183,7 @@ class TestBlockSplittingWithLengthCalculation:
             network.add_track(Tile(0, y, TRACK_NS))
 
         # Create block with 1000cm length
-        block = network.create_block_with_tracks(
+        block = network.create_segment_with_tracks(
             "BLK_001", [(0, y) for y in range(10)], length_cm=1000.0
         )
 
@@ -219,7 +219,7 @@ class TestBlockSplittingWithLengthCalculation:
 
         # Create block with 600cm length
         original_length = 600.0
-        block = network.create_block_with_tracks(
+        block = network.create_segment_with_tracks(
             "BLK_001", [(0, y) for y in range(6)], length_cm=original_length
         )
 
@@ -251,7 +251,7 @@ class TestChildBlockNaming:
             network.add_track(Tile(0, y, TRACK_NS))
 
         # Create block with custom name
-        block = network.create_block_with_tracks(
+        block = network.create_segment_with_tracks(
             "BLK_MAIN",
             [(0, y) for y in range(5)],
             name="Main Line Block",
@@ -279,7 +279,7 @@ class TestChildBlockNaming:
             network.add_track(Tile(0, y, TRACK_NS))
 
         # Create block
-        block = network.create_block_with_tracks(
+        block = network.create_segment_with_tracks(
             "BLK_001", [(0, y) for y in range(4)], length_cm=400.0
         )
 
@@ -301,7 +301,7 @@ class TestEdgeCases:
         network.add_track(Tile(0, 0, TRACK_NS))
 
         # Create single-tile block with 100cm
-        block = network.create_block_with_tracks("BLK_001", [(0, 0)], length_cm=100.0)
+        block = network.create_segment_with_tracks("BLK_001", [(0, 0)], length_cm=100.0)
 
         # Place station on it
         station = network.add_station(
@@ -326,7 +326,7 @@ class TestEdgeCases:
             network.add_track(Tile(0, y, TRACK_NS))
 
         # Create block with zero length
-        block = network.create_block_with_tracks(
+        block = network.create_segment_with_tracks(
             "BLK_001", [(0, y) for y in range(3)], length_cm=0.0
         )
 
@@ -366,7 +366,7 @@ class TestRealWorldScenarios:
             network.add_track(Tile(0, y, TRACK_NS))
 
         # Create mainline block: 10 tiles, 100000cm (1km)
-        block = network.create_block_with_tracks(
+        block = network.create_segment_with_tracks(
             "BLK_MAINLINE",
             [(0, y) for y in range(10)],
             name="Main Line",
@@ -417,7 +417,7 @@ class TestRealWorldScenarios:
             network.add_track(Tile(0, y, TRACK_NS))
 
         # Create block with 900cm
-        block = network.create_block_with_tracks(
+        block = network.create_segment_with_tracks(
             "BLK_001", [(0, y) for y in range(9)], length_cm=900.0
         )
 

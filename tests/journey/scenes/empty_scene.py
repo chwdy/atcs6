@@ -34,8 +34,8 @@ class EmptyScene:
         # requires at least one connected neighbour in the facing direction).
         for x in range(3):
             network.add_track(Tile(x, 0, track_bits=TRACK_EW))
-        network.create_block_with_tracks(
-            block_id="EMPTY_BLOCK",
+        network.create_segment_with_tracks(
+            segment_id="EMPTY_BLOCK",
             positions=[(0, 0), (1, 0), (2, 0)],
             name="empty",
             length_cm=150.0,

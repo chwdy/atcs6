@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Railway simulation system",
   "scripts": {
-    "test": "node tests/test_api.js",
+    "test": "npm run test:unit",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",

@@ -334,8 +334,8 @@ def prepare_path_for_train(
             success=False, error=f"No track at path start {path_start}"
         )
 
-    train_block_id = train_track.block_section_id
-    path_start_block_id = path_start_track.block_section_id
+    train_block_id = train_track.block_id
+    path_start_block_id = path_start_track.block_id
 
     if not train_block_id:
         return PathPrepareResult(
@@ -430,7 +430,7 @@ def _get_block_positions(network, block_id: str) -> List[Tuple[int, int]]:
     """Get all track positions in a block."""
     positions = []
     for pos, track in network.tracks.items():
-        if track.block_section_id == block_id:
+        if track.block_id == block_id:
             positions.append(pos)
     return positions
 
@@ -600,7 +600,7 @@ def append_destination_block_tiles(
         return list(path_tiles), None  # No track, return as-is
 
     # Get block ID of the last tile
-    block_id = track.block_section_id
+    block_id = track.block_id
     if not block_id:
         return list(path_tiles), None  # No block, return as-is
 

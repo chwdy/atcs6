@@ -62,8 +62,8 @@ class _StubPlatform:
 
 
 class _StubTrack:
-    def __init__(self, block_section_id: str) -> None:
-        self.block_section_id = block_section_id
+    def __init__(self, block_id: str) -> None:
+        self.block_id = block_id
 
 
 class _StubNetwork:

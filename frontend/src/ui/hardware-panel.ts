@@ -115,7 +115,7 @@ function coordSort(chip: ChipCfg): number {
 // --- wiring diagram (driven by the configured chips) -----------------------
 // One wiring lane per chip in `state.chips`: the chip drawn with its real bus,
 // address/latch line, and port count, plus the reference support wiring for
-// that chip kind (voltages, resistors, DRV8873/LM339/74HC14/…), all fanning
+// that chip kind (voltages, resistors, DRV8871/LM339/shunts/…), all fanning
 // out from the controller on the left. It reads `state`, so it is rebuilt on
 // every render() and updates live as the user edits the chip list below.
 //
@@ -152,12 +152,15 @@ function wdPill(x: number, y: number, w: number, h: number, text: string): strin
     <text x="${x + w / 2}" y="${y + h / 2 + 4}" text-anchor="middle">${esc(text)}</text>
   </g>`;
 }
-function wdResistorV(x: number, y: number, len: number, label: string): string {
+// `side` puts the value label left of the body instead of right, for risers
+// close enough to the canvas edge that a right-hand label would overflow.
+function wdResistorV(x: number, y: number, len: number, label: string, side: 1 | -1 = 1): string {
   const rw = 10, rh = 22, ry = y + (len - rh) / 2;
+  const lx = side === 1 ? x + rw / 2 + 5 : x - rw / 2 - 5;
   return `<line x1="${x}" y1="${y}" x2="${x}" y2="${ry}" class="hw-wd-wire"/>
     <rect x="${x - rw / 2}" y="${ry}" width="${rw}" height="${rh}" class="hw-wd-r"/>
     <line x1="${x}" y1="${ry + rh}" x2="${x}" y2="${y + len}" class="hw-wd-wire"/>
-    <text x="${x + rw / 2 + 5}" y="${ry + rh / 2 + 3}" text-anchor="start" class="hw-wd-wlabel">${esc(label)}</text>`;
+    <text x="${lx}" y="${ry + rh / 2 + 3}" text-anchor="${side === 1 ? 'start' : 'end'}" class="hw-wd-wlabel">${esc(label)}</text>`;
 }
 function wdResistorH(x: number, y: number, len: number, label: string): string {
   const rw = 22, rh = 10, rx = x + (len - rw) / 2;
@@ -166,13 +169,26 @@ function wdResistorH(x: number, y: number, len: number, label: string): string {
     <line x1="${rx + rw}" y1="${y}" x2="${x + len}" y2="${y}" class="hw-wd-wire"/>
     <text x="${x + len / 2}" y="${y - rh / 2 - 5}" text-anchor="middle" class="hw-wd-wlabel">${esc(label)}</text>`;
 }
-function wdDiodeH(x: number, y: number, len: number, label: string): string {
-  const dw = 16, dx = x + (len - dw) / 2, tip = dx + dw - 3;
+// `dir` is the direction current passes: 1 points the triangle +x, -1 points it
+// -x, for a chain drawn right-to-left (a supply on the right feeding a node on
+// the left). Anode is the flat base, cathode the barred tip.
+function wdDiodeH(x: number, y: number, len: number, label: string, dir: 1 | -1 = 1): string {
+  const dw = 16, dx = x + (len - dw) / 2;
+  const base = dir === 1 ? dx : dx + dw;
+  const tip = dir === 1 ? dx + dw - 3 : dx + 3;
   return `<line x1="${x}" y1="${y}" x2="${dx}" y2="${y}" class="hw-wd-wire"/>
-    <polygon points="${dx},${y - 6} ${dx},${y + 6} ${tip},${y}" class="hw-wd-d"/>
+    <polygon points="${base},${y - 6} ${base},${y + 6} ${tip},${y}" class="hw-wd-d"/>
     <line x1="${tip}" y1="${y - 7}" x2="${tip}" y2="${y + 7}" class="hw-wd-d-bar"/>
     <line x1="${dx + dw}" y1="${y}" x2="${x + len}" y2="${y}" class="hw-wd-wire"/>
     <text x="${x + len / 2}" y="${y + 17}" text-anchor="middle" class="hw-wd-wlabel">${esc(label)}</text>`;
+}
+
+// A circled path number, keyed to the path list printed under the same lane.
+function wdPathNum(x: number, y: number, n: number): string {
+  return `<g class="hw-wd-pnum">
+    <circle cx="${x}" cy="${y}" r="7.5"/>
+    <text x="${x}" y="${y + 3.5}" text-anchor="middle">${n}</text>
+  </g>`;
 }
 function wdGround(x: number, y: number): string {
   return `<line x1="${x}" y1="${y}" x2="${x}" y2="${y + 7}" class="hw-wd-wire"/>
@@ -205,39 +221,81 @@ function wdChipBox(x: number, y: number, w: number, h: number, chip: ChipCfg): s
 // --- per-kind support-wiring fragments (drawn to the right of the chip box) -
 // Each lays out around the lane centre `mid`; the chip box's right edge is at
 // x=346 (CHIP_X + CHIP_W). Values mirror the reference circuit the user gave.
-function wdFragTrack(mid: number): string {   // pca9685 -> DRV8873 -> rails
+//
+// A fragment may also publish `anchors`: named points where a net leaves or
+// enters its lane. Two lanes naming the same net get a tie drawn between them
+// (WD_TIES), which is how the diagram shows that separate lanes are one circuit.
+type WdAnchors = Record<string, [number, number]>;
+interface WdFrag { svg: string; anchors: WdAnchors; }
+
+const WD_W = 800;   // canvas width every fragment lays out against
+
+// The H-bridge box sits at the same x in the track and current-sense lanes, so
+// the +12V tie between them is a straight drop and reads as one supply net.
+const WD_HB_X = 528, WD_HB_W = 104, WD_HB_CX = WD_HB_X + WD_HB_W / 2;
+
+function wdFragTrack(mid: number): WdFrag {   // pca9685 -> DRV8871 -> rails
   const s: string[] = [];
-  s.push(wdPath([[346, mid], [386, mid]], 'PWM', true));
-  s.push(`<text x="438" y="${mid - 27}" text-anchor="middle" class="hw-wd-wlabel">VM +12V</text>`);
-  s.push(wdBox(386, mid - 20, 104, 40, '', 'DRV8873', 'H-bridge'));
-  s.push(wdPath([[490, mid - 11], [524, mid - 11]], 'OUT1'));
-  s.push(wdBox(524, mid - 24, 62, 24, '', 'Rail A'));
-  s.push(wdPath([[490, mid + 11], [524, mid + 11]], 'OUT2'));
-  s.push(wdBox(524, mid + 2, 62, 24, '', 'Rail B'));
-  s.push(wdPath([[586, mid - 12], [636, mid - 12]], undefined, true));
-  s.push(`<text x="640" y="${mid - 9}" text-anchor="start" class="hw-wd-wlabel">to track</text>`);
-  s.push(wdPath([[586, mid + 12], [636, mid + 12]], undefined, true));
-  s.push(`<text x="640" y="${mid + 15}" text-anchor="start" class="hw-wd-wlabel">to track</text>`);
-  s.push(`<circle cx="612" cy="${mid + 12}" r="2.5" class="hw-wd-junction"/>`);
-  s.push(wdPath([[612, mid + 12], [612, mid + 28]]));
-  s.push(wdResistorV(612, mid + 28, 26, '10k'));
-  s.push(wdGround(612, mid + 54));
-  return s.join('');
+  s.push(wdPath([[346, mid], [WD_HB_X, mid]], 'PWM · IN1/IN2', true));
+  s.push(`<text x="${WD_HB_CX + 9}" y="${mid - 25}" text-anchor="start" class="hw-wd-wlabel">VM +12V</text>`);
+  s.push(wdBox(WD_HB_X, mid - 20, WD_HB_W, 40, '', 'DRV8871', 'H-bridge'));
+  // Rail A is drawn lower so its underside is free for the tie down to the
+  // detector lane, which reads Rail A. Stacking it above Rail B would make that
+  // tie leave a Rail B edge and land on a Rail A box — a connection that is not
+  // there. Which output feeds which rail is carried by the OUT1 / OUT2 labels.
+  s.push(wdPath([[632, mid - 11], [666, mid - 11]], 'OUT2'));
+  s.push(wdBox(666, mid - 24, 62, 24, '', 'Rail B'));
+  s.push(wdPath([[632, mid + 11], [666, mid + 11]], 'OUT1'));
+  s.push(wdBox(666, mid + 2, 62, 24, '', 'Rail A'));
+  s.push(wdPath([[728, mid - 12], [752, mid - 12]], undefined, true));
+  s.push(`<text x="756" y="${mid - 9}" text-anchor="start" class="hw-wd-wlabel">to track</text>`);
+  s.push(wdPath([[728, mid + 12], [752, mid + 12]], undefined, true));
+  s.push(`<text x="756" y="${mid + 15}" text-anchor="start" class="hw-wd-wlabel">to track</text>`);
+  return { svg: s.join(''), anchors: { vm_in: [WD_HB_CX, mid - 20], rails_out: [697, mid + 26] } };
 }
-function wdFragCurrentSense(mid: number): string {   // ina3221 series shunt in +12V feed
+// ina3221 / ina219: the chip sits high-side on the +12V feed, one channel per
+// block, each channel measuring its own shunt just before that block's DRV8871
+// supply pin. Channel count is the only thing that separates the two kinds —
+// three for the ina3221, one for the ina219 — so both render through here.
+function wdFragCurrentSense(chip: ChipCfg, mid: number): WdFrag {
   const s: string[] = [];
-  s.push(wdPill(366, mid - 23, 44, 18, '+12V'));
-  s.push(wdPath([[410, mid - 14], [432, mid - 14]]));
-  s.push(wdResistorH(432, mid - 14, 58, 'R shunt'));
-  s.push(wdPath([[490, mid - 14], [540, mid - 14]], undefined, true));
-  s.push(`<text x="544" y="${mid - 11}" text-anchor="start" class="hw-wd-wlabel">to track VM</text>`);
-  s.push(wdPath([[346, mid - 2], [424, mid - 2], [424, mid - 14]]));
-  s.push(`<text x="352" y="${mid - 6}" text-anchor="start" class="hw-wd-wlabel">IN+</text>`);
-  s.push(wdPath([[346, mid + 10], [498, mid + 10], [498, mid - 14]]));
-  s.push(`<text x="352" y="${mid + 22}" text-anchor="start" class="hw-wd-wlabel">IN−</text>`);
-  return s.join('');
+  const n = chipPorts(chip);
+  const rowA = mid - 26, rowB = mid + 20;
+
+  // What the chip contributes: one sense channel per block.
+  s.push(wdPath([[346, rowA], [372, rowA]], undefined, true));
+  const cellW = 38, gap = 4;
+  let x = 372;
+  for (let i = 0; i < n; i++) {
+    s.push(`<g class="hw-wd-bit"><rect x="${x}" y="${rowA - 11}" width="${cellW}" height="22" rx="3"/>` +
+      `<text x="${x + cellW / 2}" y="${rowA + 4}" text-anchor="middle">CH${i + 1}</text></g>`);
+    x += cellW + gap;
+  }
+  s.push(`<text x="${x + 4}" y="${rowA + 4}" text-anchor="start" class="hw-wd-wlabel">` +
+    `${n === 1 ? 'one block' : `${n} blocks`}</text>`);
+  // The destructive-mistake warning rides this row, not the shunt row below:
+  // the +12V tie drops through the shunt row on its way to the H-bridge lane.
+  s.push(`<text x="${WD_W - 8}" y="${rowA + 4}" text-anchor="end" class="hw-wd-caption-inline">` +
+    `never in series with Rail A / Rail B</text>`);
+
+  // One channel expanded: +12V in, across the shunt, out to that block's
+  // H-bridge supply pin. The H-bridge — not the sense chip — drives the rails.
+  s.push(wdPill(372, rowB - 9, 44, 18, '+12V'));
+  s.push(wdPath([[416, rowB], [434, rowB]]));
+  s.push(wdResistorH(434, rowB, 56, 'R shunt'));
+  s.push(wdPath([[490, rowB], [WD_HB_X, rowB]], 'VM', true));
+  s.push(wdBox(WD_HB_X, rowB - 13, WD_HB_W, 26, '', 'DRV8871'));
+  s.push(wdPath([[632, rowB], [664, rowB]], undefined, true));
+  s.push(`<text x="668" y="${rowB + 3}" text-anchor="start" class="hw-wd-wlabel">to rails</text>`);
+  s.push(wdPath([[434, rowB], [434, rowB + 13]]));
+  s.push(`<text x="434" y="${rowB + 24}" text-anchor="middle" class="hw-wd-wlabel">IN+</text>`);
+  s.push(wdPath([[490, rowB], [490, rowB + 13]]));
+  s.push(`<text x="490" y="${rowB + 24}" text-anchor="middle" class="hw-wd-wlabel">IN−</text>`);
+  s.push(`<text x="372" y="${rowB + 36}" text-anchor="start" class="hw-wd-caption-inline">` +
+    `one channel shown</text>`);
+  return { svg: s.join(''), anchors: { vm_out: [WD_HB_CX, rowB + 13] } };
 }
-function wdFragSwitch(chip: ChipCfg, mid: number): string {   // hc595 shift-out bits
+function wdFragSwitch(chip: ChipCfg, mid: number): WdFrag {   // hc595 shift-out bits
   const s: string[] = [];
   const n = chipPorts(chip);
   const shown = Math.min(n, 8);
@@ -253,54 +311,89 @@ function wdFragSwitch(chip: ChipCfg, mid: number): string {   // hc595 shift-out
   s.push(wdPath([[x + 2, mid], [x + 38, mid]], undefined, true));
   s.push(`<text x="${x + 42}" y="${mid - 4}" text-anchor="start" class="hw-wd-wlabel">to switch</text>`);
   s.push(`<text x="${x + 42}" y="${mid + 9}" text-anchor="start" class="hw-wd-wlabel">drivers</text>`);
-  return s.join('');
+  return { svg: s.join(''), anchors: {} };
 }
-function wdFragOccupancy(mid: number): string {   // hc165 <- 74HC14 <- LM339 <- photodiode
+// hc165 <- LM339 <- Rail A / Rail B. The detector is four current paths off one
+// +5V rail; each is numbered here and listed again under the lane, so a bench
+// check can follow them one at a time.
+function wdFragOccupancy(mid: number): WdFrag {
   const s: string[] = [];
-  const nodeX = 468;
-  s.push(wdPath([[372, mid], [346, mid]], 'bit', true));
-  s.push(wdBox(372, mid - 15, 82, 30, '', '74HC14', 'Schmitt'));
-  s.push(wdPath([[454, mid], [nodeX, mid]]));
-  s.push(`<circle cx="${nodeX}" cy="${mid}" r="2.5" class="hw-wd-junction"/>`);
-  s.push(wdPill(nodeX - 29, mid - 76, 58, 16, '3.3V/5V'));
-  s.push(wdPath([[nodeX, mid - 60], [nodeX, mid - 40]]));
-  s.push(wdResistorV(nodeX, mid - 40, 24, '10k'));
-  s.push(wdPath([[nodeX, mid - 16], [nodeX, mid]]));
-  s.push(wdPath([[560, mid], [nodeX, mid]], 'OUT'));
+  const V5 = mid - 82;                       // bottom edge of the +5V rail
+  const PIN_P = mid - 16, PIN_N = mid + 16;  // LM339 input pins
+  const NODE = 430;                          // pull-up / OUT / HC165 bit junction
+
+  s.push(wdPill(392, mid - 100, 400, 18, '+5V'));
+
+  // The comparator. Its output is open-collector, so the path-4 pull-up is what
+  // actually drives the HC165 input high.
   s.push(`<g class="hw-wd-node">
-    <rect x="560" y="${mid - 22}" width="92" height="44" rx="5"/>
-    <text x="606" y="${mid - 2}" text-anchor="middle" class="hw-wd-name">LM339</text>
-    <text x="606" y="${mid + 12}" text-anchor="middle" class="hw-wd-sub">VCC +12V</text>
-    <text x="646" y="${mid - 6}" text-anchor="end" class="hw-wd-pin">+</text>
-    <text x="646" y="${mid + 17}" text-anchor="end" class="hw-wd-pin">−</text>
+    <rect x="500" y="${mid - 26}" width="104" height="52" rx="5"/>
+    <text x="552" y="${mid - 4}" text-anchor="middle" class="hw-wd-name">LM339</text>
+    <text x="552" y="${mid + 10}" text-anchor="middle" class="hw-wd-sub">VCC +12V</text>
+    <text x="598" y="${PIN_P + 3}" text-anchor="end" class="hw-wd-pin">+</text>
+    <text x="598" y="${PIN_N + 3}" text-anchor="end" class="hw-wd-pin">−</text>
   </g>`);
-  // + input: photodiode chain  5V -100k- D1 -47k- (+)
-  s.push(wdPath([[652, mid - 10], [668, mid - 10], [668, mid - 46]]));
-  s.push(wdResistorH(668, mid - 46, 32, '47k'));
-  s.push(wdDiodeH(700, mid - 46, 28, 'D1'));
-  s.push(wdResistorH(728, mid - 46, 34, '100k'));
-  s.push(wdPill(762, mid - 54, 34, 16, '5V'));
-  // − input: threshold divider (compact)
-  s.push(wdPath([[652, mid + 12], [676, mid + 12]]));
-  s.push(`<text x="680" y="${mid + 9}" text-anchor="start" class="hw-wd-wlabel">22k → 5V</text>`);
-  s.push(`<text x="680" y="${mid + 21}" text-anchor="start" class="hw-wd-wlabel">10k → GND</text>`);
-  s.push(`<text x="560" y="${mid + 40}" text-anchor="start" class="hw-wd-caption-inline">one input channel shown — repeat per block</text>`);
-  return s.join('');
+
+  // 4 — +5V through the pull-up to the open-collector output, then to the bit.
+  s.push(wdResistorV(NODE, V5, 82, '10k'));
+  s.push(`<circle cx="${NODE}" cy="${mid}" r="2.5" class="hw-wd-junction"/>`);
+  s.push(wdPath([[500, mid], [NODE, mid]], 'OUT'));
+  s.push(wdPath([[NODE, mid], [346, mid]], 'bit', true));
+  s.push(wdPathNum(414, mid - 41, 4));
+
+  // 2 — +5V through the dropper and diode onto Rail A, which the + input reads.
+  s.push(wdPath([[604, PIN_P], [622, PIN_P]]));
+  s.push(wdBox(622, PIN_P - 19, 58, 38, '', 'Rail A', 'OUT1'));
+  s.push(wdDiodeH(680, PIN_P, 30, 'D1', -1));
+  s.push(wdResistorH(710, PIN_P, 38, '47k'));
+  s.push(wdPath([[748, PIN_P], [748, V5]]));
+  s.push(wdPathNum(695, mid - 34, 2));
+
+  // 3 — the fixed threshold the + input is compared against: an even divider,
+  // so the − input sits at half the +5V rail.
+  s.push(wdPath([[604, PIN_N], [786, PIN_N]]));
+  s.push(`<circle cx="786" cy="${PIN_N}" r="2.5" class="hw-wd-junction"/>`);
+  s.push(wdResistorV(786, V5, 98, '10k', -1));
+  s.push(wdResistorV(786, PIN_N, 40, '10k', -1));
+  s.push(wdGround(786, PIN_N + 40));
+  s.push(wdPathNum(752, PIN_N, 3));   // on the − wire, clear of the D1 label above
+
+  // 1 — the bleed resistor that pulls Rail B down, so an empty block sits at a
+  // known level instead of floating.
+  s.push(wdBox(622, mid + 34, 58, 38, '', 'Rail B', 'OUT2'));
+  s.push(wdResistorV(651, mid + 72, 28, '10k', -1));
+  s.push(wdGround(651, mid + 100));
+  s.push(wdPathNum(676, mid + 86, 1));
+
+  const cap = (y: number, t: string) =>
+    `<text x="346" y="${y}" text-anchor="start" class="hw-wd-caption-inline">${t}</text>`;
+  s.push(cap(mid + 128, '① Rail B → 10k → GND     ② +5V → 47k → D1 → Rail A → LM339 +'));
+  s.push(cap(mid + 138, '③ +5V → 10k → LM339 − → 10k → GND     ④ +5V → 10k → LM339 OUT → HC165 bit'));
+  s.push(cap(mid + 148, 'Rail A / Rail B are this block’s H-bridge outputs — one detector per block.'));
+  return { svg: s.join(''), anchors: { rails_in: [651, PIN_P - 19] } };
 }
-function wdFragment(chip: ChipCfg, mid: number): string {
+function wdFragment(chip: ChipCfg, mid: number): WdFrag {
   switch (chip.kind) {
     case 'pca9685': return wdFragTrack(mid);
-    case 'ina3221': return wdFragCurrentSense(mid);
+    case 'ina3221':
+    case 'ina219': return wdFragCurrentSense(chip, mid);
     case 'hc595': return wdFragSwitch(chip, mid);
     case 'hc165': return wdFragOccupancy(mid);
-    default: return '';
+    default: return { svg: '', anchors: {} };
   }
 }
 
-// Stack lanes in signal-flow order (track power, current sense, switches,
-// occupancy), then by coordinate within a kind so identical chips group.
-const WD_KIND_ORDER = ['pca9685', 'ina3221', 'hc595', 'hc165'];
-const WD_LANE_H: Record<string, number> = { pca9685: 150, ina3221: 118, hc595: 110, hc165: 176 };
+// Stack lanes so the track-power circuit reads top to bottom the way the current
+// flows — measured, then driven, then read back — and the cross-lane ties below
+// join lanes that sit next to each other. Switches are an independent subsystem,
+// so they go last. Within a kind, order by coordinate so identical chips group.
+const WD_KIND_ORDER = ['ina3221', 'ina219', 'pca9685', 'hc165', 'hc595'];
+// A lane is centred on its chip box, so its height must cover twice the
+// fragment's deepest side. The detector lane is the tall one: its four paths
+// reach ~150 below centre, most of it the path list printed under the schematic.
+const WD_LANE_H: Record<string, number> = {
+  pca9685: 116, ina3221: 128, ina219: 128, hc595: 110, hc165: 304,
+};
 const WD_DEFAULT_LANE_H = 118;
 
 function wdOrderedChips(): ChipCfg[] {
@@ -308,12 +401,52 @@ function wdOrderedChips(): ChipCfg[] {
   return [...state.chips].sort((a, b) => rank(a.kind) - rank(b.kind) || coordSort(a) - coordSort(b));
 }
 
+// One physical net shared by two lanes. A tie is drawn only when both ends are
+// present, so removing a chip removes the claim that the net is wired — the
+// picture never asserts a connection the configured board does not have.
+const WD_TIES: { from: string; to: string; label: string }[] = [
+  { from: 'vm_out', to: 'vm_in', label: 'one +12V net — shunt, then VM' },
+  { from: 'rails_out', to: 'rails_in', label: 'Rail A (Rail B pairs alike)' },
+];
+
+// Ties are drawn before the lanes, so one that passes a supply rail or a chip
+// box is hidden behind it — the standard reading for a wire crossing without
+// joining. Each tie runs from the lowest lane publishing `from` that still sits
+// above the lane publishing `to`, which is the nearest end of the shared net.
+function wdTies(laneAnchors: WdAnchors[]): string {
+  const out: string[] = [];
+  for (const tie of WD_TIES) {
+    const toIdx = laneAnchors.findIndex((a) => a[tie.to]);
+    if (toIdx < 0) continue;
+    let fromIdx = -1;
+    for (let i = 0; i < toIdx; i++) if (laneAnchors[i][tie.from]) fromIdx = i;
+    if (fromIdx < 0) continue;
+
+    const [x1, y1] = laneAnchors[fromIdx][tie.from];
+    const [x2, y2] = laneAnchors[toIdx][tie.to];
+    const endY = y2 - 3;                       // stop short so the arrowhead clears the box
+    const jogY = Math.round((y1 + endY) / 2);
+    const pts: Array<[number, number]> = x1 === x2
+      ? [[x1, y1], [x2, endY]]
+      : [[x1, y1], [x1, jogY], [x2, jogY], [x2, endY]];
+    const d = pts.map((pt, i) => `${i === 0 ? 'M' : 'L'} ${pt[0]} ${pt[1]}`).join(' ');
+    out.push(`<path d="${d}" class="hw-wd-tie" marker-end="url(#hwWdTieArrow)"/>`);
+    // Label to the right of the tie, unless that would run off the canvas — the
+    // 8.5px mono face is ~5.1px per character, so the width is predictable.
+    const right = Math.max(x1, x2) + 9;
+    const fits = right + tie.label.length * 5.1 <= WD_W - 8;
+    out.push(`<text x="${fits ? right : Math.min(x1, x2) - 9}" y="${jogY - 4}" ` +
+      `text-anchor="${fits ? 'start' : 'end'}" class="hw-wd-tielabel">${esc(tie.label)}</text>`);
+  }
+  return out.join('');
+}
+
 function buildWiringDiagramSvg(): string {
   const chips = wdOrderedChips();
   if (!chips.length) {
     return `<div class="hw-wd-empty">Add a chip below and its wiring appears here — the voltages, resistors, and support parts it connects to — so you can check it against your board before going live.</div>`;
   }
-  const W = 800, PAD = 14;
+  const W = WD_W, PAD = 14;
   const SPINE_X = 16, SPINE_W = 116, SPINE_R = SPINE_X + SPINE_W;   // right edge = 132
   const CHIP_X = 196, CHIP_W = 150, CHIP_H = 58;
 
@@ -326,6 +459,9 @@ function buildWiringDiagramSvg(): string {
   p.push(`<defs>
     <marker id="hwWdArrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M0,0 L8,4 L0,8 Z" class="hw-wd-arrowhead"/>
+    </marker>
+    <marker id="hwWdTieArrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L8,4 L0,8 Z" class="hw-wd-tie-arrowhead"/>
     </marker>
   </defs>`);
 
@@ -343,11 +479,22 @@ function buildWiringDiagramSvg(): string {
     <text x="${sCx}" y="${sMid + 13}" text-anchor="middle" class="hw-wd-sub">${esc(ctrlSub)}</text>
   </g>`);
 
-  chips.forEach((chip, i) => {
+  // Build every lane first so the ties can be laid out from the anchors, then
+  // paint ties underneath the lanes (see wdTies for why the order matters).
+  const lanes = chips.map((chip, i) => {
     const mid = tops[i] + heights[i] / 2;
-    p.push(wdPath([[SPINE_R, mid], [CHIP_X, mid]], BUS_LABEL[chip.bus] || chip.bus));
-    p.push(wdChipBox(CHIP_X, mid - CHIP_H / 2, CHIP_W, CHIP_H, chip));
-    p.push(wdFragment(chip, mid));
+    const frag = wdFragment(chip, mid);
+    return {
+      svg: wdPath([[SPINE_R, mid], [CHIP_X, mid]], BUS_LABEL[chip.bus] || chip.bus)
+        + wdChipBox(CHIP_X, mid - CHIP_H / 2, CHIP_W, CHIP_H, chip)
+        + frag.svg,
+      anchors: frag.anchors,
+    };
+  });
+
+  p.push(wdTies(lanes.map((l) => l.anchors)));
+  lanes.forEach((lane, i) => {
+    p.push(lane.svg);
     if (i < chips.length - 1) {
       const sepY = tops[i] + heights[i];
       p.push(`<line x1="${CHIP_X - 8}" y1="${sepY}" x2="${W - 8}" y2="${sepY}" class="hw-wd-sep"/>`);
@@ -915,15 +1062,24 @@ async function runSweep(id: string): Promise<void> {
   if (!chip) return;
   const count = chipPorts(chip);
   const duties = chip.bus === 'i2c' ? [0.3, 0.6, 1.0] : [1.0];   // PWM steps vs on/off
+  // A shift-out bit may be wired to a solenoid point-motor coil, which burns out
+  // if held energized, so the marquee pulses those bits server-side for the
+  // switch-coil width instead of driving them for the whole visual step.
+  const isShiftOut = chip.kind === 'hc595';
   let pass = 0;
   while (!sweepAbort && activity?.chipId === id) {
     const duty = duties[pass % duties.length];
     pass++;
     for (let p = 0; p < count && !sweepAbort && activity?.chipId === id; p++) {
-      try { await api.commissionOutput(id, p, duty); } catch { /* ignore */ }
+      try {
+        if (isShiftOut) await api.commissionPulse(id, p);
+        else await api.commissionOutput(id, p, duty);
+      } catch { /* ignore */ }
       if (activity) { activity.port = p; render(); }
       await sleep(450);
-      try { await api.commissionOutput(id, p, 0); } catch { /* ignore */ }
+      if (!isShiftOut) {
+        try { await api.commissionOutput(id, p, 0); } catch { /* ignore */ }
+      }
     }
   }
 }

@@ -7,9 +7,9 @@ This store answers three questions for the next operation session:
   (each a PWM driver, shift-out, or shift-in), every chip carrying the parameters
   the user set: an I2C address, or an SPI select line + cascade length.
 - **What connects to what?** The `bindings` — maps from a logical id to a chip
-  port: `block_track` (block_id -> track port), `switch_output` (switch_id ->
-  throw port), and two occupancy sources for the hybrid detector —
-  `block_occupancy` (block_id -> '165 digital-detector port) and
+  port: `block_track` (block_id -> track port), `switch_output` (switch_id -> the
+  two coil ports plus an optional standby port), and two occupancy sources for
+  the hybrid detector — `block_occupancy` (block_id -> '165 digital-detector port) and
   `block_occupancy_current` (block_id -> INA3221 current channel, with its
   per-channel baseline/threshold). `output_enable` optionally names the '595 bit
   wired to each PCA's /OE. This is the logical id -> physical channel map; the
@@ -120,6 +120,31 @@ class PortBinding:
 
 
 @dataclass
+class SwitchBinding:
+    """A switch's throw wiring: one output bit per coil, on one chip.
+
+    A solenoid point motor has two coils — energize one to throw toward MAIN,
+    the other toward DIVERGE — so a switch takes two bits, not a level on one.
+    `port_standby` is the optional bit wired to a motor driver's standby/enable
+    pin (a TB6612 needs it high before either coil does anything); leave it None
+    when the driver is always enabled in hardware.
+    """
+
+    chip_id: str
+    port_main: int
+    port_diverge: int
+    port_standby: Optional[int] = None
+
+    @property
+    def ports(self) -> List[int]:
+        """Every port this switch occupies, standby included."""
+        used = [self.port_main, self.port_diverge]
+        if self.port_standby is not None:
+            used.append(self.port_standby)
+        return used
+
+
+@dataclass
 class CurrentBinding:
     """A block's INA3221 current-sense channel plus its per-channel calibration.
 
@@ -146,7 +171,7 @@ class HardwareConfig:
     # powered). A block may appear in either or both.
     block_occupancy: Dict[str, PortBinding] = field(default_factory=dict)
     block_occupancy_current: Dict[str, CurrentBinding] = field(default_factory=dict)
-    switch_output: Dict[str, PortBinding] = field(default_factory=dict)
+    switch_output: Dict[str, SwitchBinding] = field(default_factory=dict)
     # Optional per-PCA output-enable line: key = track (pca9685) chip_id, value =
     # the '595 bit wired to that PCA's /OE. Driven to enable once at session
     # build and held; there is no per-tick coast window. Empty when /OE is tied
@@ -178,6 +203,18 @@ def derive_operation_mode(cfg: Optional[HardwareConfig] = None) -> OperationMode
 # ---------------------------------------------------------------------------
 def _binding_dict(m: Dict[str, PortBinding]) -> Dict[str, Dict[str, Any]]:
     return {lid: {"chip_id": b.chip_id, "port": b.port} for lid, b in m.items()}
+
+
+def _switch_binding_dict(m: Dict[str, SwitchBinding]) -> Dict[str, Dict[str, Any]]:
+    return {
+        lid: {
+            "chip_id": b.chip_id,
+            "port_main": b.port_main,
+            "port_diverge": b.port_diverge,
+            "port_standby": b.port_standby,
+        }
+        for lid, b in m.items()
+    }
 
 
 def _current_binding_dict(m: Dict[str, CurrentBinding]) -> Dict[str, Dict[str, Any]]:
@@ -213,7 +250,7 @@ def _persist_dict(cfg: HardwareConfig) -> Dict[str, Any]:
         "block_track": _binding_dict(cfg.block_track),
         "block_occupancy": _binding_dict(cfg.block_occupancy),
         "block_occupancy_current": _current_binding_dict(cfg.block_occupancy_current),
-        "switch_output": _binding_dict(cfg.switch_output),
+        "switch_output": _switch_binding_dict(cfg.switch_output),
         "output_enable": _binding_dict(cfg.output_enable),
     }
 
@@ -294,6 +331,31 @@ def _parse_bindings(data: Any) -> Dict[str, PortBinding]:
     return out
 
 
+def _req_port(raw: Dict[str, Any], key: str, logical_id: str, what: str) -> int:
+    """Read a required integer port field off a binding payload."""
+    try:
+        return int(raw.get(key))
+    except (TypeError, ValueError) as exc:
+        raise HardwareConfigError(
+            f"{what} {logical_id!r} needs an integer {key}"
+        ) from exc
+
+
+def _parse_switch_bindings(data: Any) -> Dict[str, SwitchBinding]:
+    data = data if isinstance(data, dict) else {}
+    out: Dict[str, SwitchBinding] = {}
+    for logical_id, raw in data.items():
+        raw = raw if isinstance(raw, dict) else {}
+        lid = str(logical_id)
+        out[lid] = SwitchBinding(
+            chip_id=str(raw.get("chip_id", "")).strip(),
+            port_main=_req_port(raw, "port_main", lid, "switch binding"),
+            port_diverge=_req_port(raw, "port_diverge", lid, "switch binding"),
+            port_standby=_opt_int(raw.get("port_standby")),
+        )
+    return out
+
+
 def _opt_float(value: Any) -> Optional[float]:
     if value is None or value == "":
         return None
@@ -350,7 +412,7 @@ def _merged_from_updates(updates: Dict[str, Any]) -> HardwareConfig:
     if "block_occupancy_current" in updates:
         merged.block_occupancy_current = _parse_current_bindings(updates["block_occupancy_current"])
     if "switch_output" in updates:
-        merged.switch_output = _parse_bindings(updates["switch_output"])
+        merged.switch_output = _parse_switch_bindings(updates["switch_output"])
     if "output_enable" in updates:
         merged.output_enable = _parse_bindings(updates["output_enable"])
     return merged
@@ -419,7 +481,7 @@ def _validate(cfg: HardwareConfig) -> None:
 
     chips_by_id = {c.chip_id: c for c in cfg.chips}
     _validate_bindings(cfg.block_track, ROLE_TRACK, chips_by_id, "block_track")
-    _validate_bindings(cfg.switch_output, ROLE_SWITCH, chips_by_id, "switch_output")
+    _validate_switch_bindings(cfg.switch_output, chips_by_id)
     # The two occupancy maps share the occupancy role but split by port kind: the
     # digital detector ('165) vs the current-sense channel (INA3221).
     _validate_bindings(
@@ -473,6 +535,55 @@ def _validate_bindings(
                 f"{name}: port {b.port} on chip {b.chip_id!r} is bound more than once"
             )
         used.add(key)
+
+
+def _validate_switch_bindings(
+    m: Dict[str, SwitchBinding],
+    chips_by_id: Dict[str, ChipConfig],
+) -> None:
+    """Each switch names one switch-role chip and two distinct coil bits on it,
+    plus an optional distinct standby bit. Two coils sharing a bit would drive
+    both directions at once, so a repeat within an entry is rejected the same way
+    a repeat across entries is."""
+    used: set = set()
+    for logical_id, b in m.items():
+        chip = chips_by_id.get(b.chip_id)
+        if chip is None:
+            raise HardwareConfigError(
+                f"switch_output[{logical_id!r}] references unknown chip {b.chip_id!r}"
+            )
+        ck = CHIP_CATALOG[chip.kind]
+        if ck.role != ROLE_SWITCH:
+            raise HardwareConfigError(
+                f"switch_output[{logical_id!r}] chip {b.chip_id!r} is {ck.role}, "
+                f"needs {ROLE_SWITCH}"
+            )
+        count = ports_for_chip(chip.kind, chip.chain_length)
+        seen_here: set = set()
+        for label, port in (
+            ("main", b.port_main),
+            ("diverge", b.port_diverge),
+            ("standby", b.port_standby),
+        ):
+            if port is None:
+                continue
+            if not (0 <= port < count):
+                raise HardwareConfigError(
+                    f"switch_output[{logical_id!r}] {label} port {port} out of range "
+                    f"0..{count - 1} on chip {b.chip_id!r}"
+                )
+            if port in seen_here:
+                raise HardwareConfigError(
+                    f"switch_output[{logical_id!r}] uses port {port} for more than "
+                    f"one of main / diverge / standby"
+                )
+            seen_here.add(port)
+            key = (b.chip_id, port)
+            if key in used:
+                raise HardwareConfigError(
+                    f"switch_output: port {port} on chip {b.chip_id!r} is bound more than once"
+                )
+            used.add(key)
 
 
 def _validate_output_enable(
@@ -559,7 +670,10 @@ def apply_updates(updates: Dict[str, Any], *, persist: bool = True) -> HardwareC
     return _config
 
 
-BINDING_MAPS = ("block_track", "block_occupancy", "switch_output")
+# The maps a plain (chip_id, port) binding covers. `switch_output` and
+# `block_occupancy_current` carry more than one field per entry, so each has its
+# own setter below.
+BINDING_MAPS = ("block_track", "block_occupancy")
 
 
 def _copy_config() -> HardwareConfig:
@@ -599,6 +713,42 @@ def set_binding(
         if port is None:
             raise HardwareConfigError("port is required when chip_id is set")
         target[logical_id] = PortBinding(chip_id=str(chip_id), port=int(port))
+    _validate(candidate)
+    _apply(candidate)
+    if persist:
+        save_to_disk()
+    return _config
+
+
+def set_switch_binding(
+    switch_id: str,
+    chip_id: Optional[str] = None,
+    port_main: Optional[int] = None,
+    port_diverge: Optional[int] = None,
+    *,
+    port_standby: Any = None,
+    persist: bool = True,
+) -> HardwareConfig:
+    """Set or clear one switch's throw wiring (the per-entity switch editor's
+    Hardware section). `chip_id` None/empty clears it; otherwise both coil ports
+    are required and `port_standby` None means the driver needs no standby bit.
+    The whole configuration is re-validated, so an out-of-range, role-mismatched,
+    repeated, or already-used port is rejected and nothing is committed."""
+    candidate = _copy_config()
+    target = candidate.switch_output
+    if chip_id in (None, ""):
+        target.pop(switch_id, None)
+    else:
+        if port_main is None or port_diverge is None:
+            raise HardwareConfigError(
+                "port_main and port_diverge are both required when chip_id is set"
+            )
+        target[switch_id] = SwitchBinding(
+            chip_id=str(chip_id),
+            port_main=int(port_main),
+            port_diverge=int(port_diverge),
+            port_standby=_opt_int(port_standby),
+        )
     _validate(candidate)
     _apply(candidate)
     if persist:
@@ -652,7 +802,7 @@ def config_from_payload(payload: Dict[str, Any]) -> HardwareConfig:
         block_track=_parse_bindings(payload.get("block_track", {})),
         block_occupancy=_parse_bindings(payload.get("block_occupancy", {})),
         block_occupancy_current=_parse_current_bindings(payload.get("block_occupancy_current", {})),
-        switch_output=_parse_bindings(payload.get("switch_output", {})),
+        switch_output=_parse_switch_bindings(payload.get("switch_output", {})),
         output_enable=_parse_bindings(payload.get("output_enable", {})),
     )
     _validate(cfg)
@@ -700,6 +850,17 @@ def reset_to_defaults() -> HardwareConfig:
 # ---------------------------------------------------------------------------
 def _binding_tuples(m: Dict[str, PortBinding]) -> Dict[str, Tuple[str, int]]:
     return {lid: (b.chip_id, b.port) for lid, b in m.items()}
+
+
+def _switch_binding_tuples(
+    m: Dict[str, SwitchBinding],
+) -> Dict[str, Tuple[str, int, int, Optional[int]]]:
+    """Resolve each switch to (chip_id, port_main, port_diverge, port_standby)
+    for the driver, which addresses coils by port number only."""
+    return {
+        lid: (b.chip_id, b.port_main, b.port_diverge, b.port_standby)
+        for lid, b in m.items()
+    }
 
 
 def _current_binding_tuples(
@@ -756,7 +917,7 @@ def build_session_interfaces(
             cfg.chips,
             _binding_tuples(cfg.block_track),
             _binding_tuples(cfg.block_occupancy),
-            _binding_tuples(cfg.switch_output),
+            _switch_binding_tuples(cfg.switch_output),
             block_occupancy_current=_current_binding_tuples(cfg.block_occupancy_current),
             output_enable=_binding_tuples(cfg.output_enable),
             idle_deadband_v=DEFAULT_IDLE_DEADBAND_V,

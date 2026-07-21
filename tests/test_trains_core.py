@@ -82,11 +82,11 @@ class TestSimulationController:
         network.add_station(0, 0, station_id="STA_A", name="A", length_cm=50.0, top_speed_kmh=80.0)
         network.add_station(3, 0, station_id="STA_B", name="B", length_cm=50.0, top_speed_kmh=80.0)
         network.add_station(6, 0, station_id="STA_C", name="C", length_cm=50.0, top_speed_kmh=80.0)
-        network.create_block_with_tracks(
-            block_id="BLK_A", positions=[(1, 0), (2, 0)], name="A-B", length_cm=100.0
+        network.create_segment_with_tracks(
+            segment_id="BLK_A", positions=[(1, 0), (2, 0)], name="A-B", length_cm=100.0
         )
-        network.create_block_with_tracks(
-            block_id="BLK_C", positions=[(4, 0), (5, 0)], name="B-C", length_cm=100.0
+        network.create_segment_with_tracks(
+            segment_id="BLK_C", positions=[(4, 0), (5, 0)], name="B-C", length_cm=100.0
         )
         for block in network.blocks.values():
             block.speed_limit_kmh = 80.0
@@ -177,7 +177,7 @@ class TestTrainPlacement:
     def test_place_train_head_at_exit_edge(self, network):
         for x in range(3):
             network.add_track(Tile(x, 0, track_bits=TRACK_EW))
-        network.create_block_with_tracks(
+        network.create_segment_with_tracks(
             "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
         )
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=30.0)

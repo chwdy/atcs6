@@ -1021,7 +1021,7 @@ class BlockManager:
             if tile is None or not (tile.track_bits & edge_mask):
                 continue
             neighbour = self.network.get_neighbor(tx, ty, direction)
-            if neighbour is None or neighbour.block_section_id != block.block_id:
+            if neighbour is None or neighbour.block_id != block.block_id:
                 exit_tile = (tx, ty)
                 break
         if exit_tile is None:
@@ -1050,12 +1050,12 @@ class BlockManager:
             if tile is None:
                 return (None, None)
             # Plain block tile: this is the next reachable block.
-            if tile.block_section_id and not tile.is_switch:
-                return (self._block_registry.get(tile.block_section_id), entry_edge)
-            if tile.block_section_id and tile.is_switch:
+            if tile.block_id and not tile.is_switch:
+                return (self._block_registry.get(tile.block_id), entry_edge)
+            if tile.block_id and tile.is_switch:
                 # Block-internal switch tile: still part of a block; treat as
                 # reaching that block.
-                return (self._block_registry.get(tile.block_section_id), entry_edge)
+                return (self._block_registry.get(tile.block_id), entry_edge)
             # Bare switch tile (boundary between blocks). Cross via the live
             # active exit determined by the current Switch.position.
             if tile.is_switch:

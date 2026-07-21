@@ -173,7 +173,7 @@ def _project_tiles_to_blocks(
         track = network.get_track(x, y)
         if track is None:
             continue
-        bid = track.block_section_id
+        bid = track.block_id
         if bid and bid != exclude_block:
             blocks.add(bid)
     return blocks
@@ -206,10 +206,10 @@ def test_bfs_reachability_respects_crossing_segment_isolation():
     network.add_track(Tile(x=2, y=1, track_bits=2))
     network.add_track(Tile(x=0, y=1, track_bits=2))
 
-    network.create_block_with_tracks(block_id="A", positions=[(1, 2)])
-    network.create_block_with_tracks(block_id="D", positions=[(1, 0)])
-    network.create_block_with_tracks(block_id="B", positions=[(2, 1)])
-    network.create_block_with_tracks(block_id="C", positions=[(0, 1)])
+    network.create_segment_with_tracks(segment_id="A", positions=[(1, 2)])
+    network.create_segment_with_tracks(segment_id="D", positions=[(1, 0)])
+    network.create_segment_with_tracks(segment_id="B", positions=[(2, 1)])
+    network.create_segment_with_tracks(segment_id="C", positions=[(0, 1)])
 
     pf = RailwayPathfinder(network)
 

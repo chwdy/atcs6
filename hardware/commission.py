@@ -19,6 +19,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+from hardware.catalog import SWITCH_THROW_PULSE_S
 from hardware.interfaces import build_chip
 
 # Reclaim a session left open by an abandoned client after this long idle.
@@ -63,6 +64,47 @@ class CommissionSession:
                 chip.set_duty_cycle(2 * port + 1, 0.0)
             else:
                 chip.set_output(port, float(duty) > 0.0)
+            self._touch()
+
+    def pulse_output(
+        self,
+        chip_id: str,
+        port: int,
+        standby_port: Optional[int] = None,
+        off_port: Optional[int] = None,
+        pulse_s: float = SWITCH_THROW_PULSE_S,
+    ) -> None:
+        """Drive one shift-out bit for the switch-coil pulse width.
+
+        This is how a switch coil must be driven — a solenoid point motor burns
+        out if a coil is held — so this runs the same write order as
+        `Ch347SwitchOutputInterface.set_throw` (documented there): standby high,
+        target bit high, `off_port` (the bridge's other input) low, wait, then
+        standby low before the bit. What the user confirms at the bench is
+        therefore the drive the runtime issues.
+
+        The Hardware Setup output sweep also runs through here rather than
+        `set_output`, because a bit it walks across may be wired to a coil; it
+        names no `off_port`, having no notion of a coil pair. De-energizing runs
+        in a `finally` so a failure leaves nothing driven."""
+        with self._lock:
+            self._require_open()
+            chip = self._chips.get(chip_id)
+            if chip is None:
+                raise KeyError(f"chip {chip_id!r} not in session")
+            if not hasattr(chip, "set_output"):
+                raise KeyError(f"chip {chip_id!r} is not a shift-out chip")
+            try:
+                if standby_port is not None:
+                    chip.set_output(standby_port, True)
+                chip.set_output(port, True)
+                if off_port is not None:
+                    chip.set_output(off_port, False)
+                time.sleep(pulse_s)
+            finally:
+                if standby_port is not None:
+                    chip.set_output(standby_port, False)
+                chip.set_output(port, False)
             self._touch()
 
     def read_inputs(self, chip_id: str) -> List[bool]:

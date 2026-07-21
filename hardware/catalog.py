@@ -52,6 +52,14 @@ _PORT_DIRECTION: Dict[str, str] = {
 SPI_SELECT_LINES: List[str] = ["cs0", "cs1"]
 GPIO_LINES: List[str] = [f"gpio{i}" for i in range(8)]
 
+# How long a switch coil stays energized on one throw, in seconds. A solenoid
+# point motor is a momentary device: it throws on a short pulse and burns out if
+# a coil is left driven, so every throw is a pulse and both coils rest low. This
+# is the only place the width is set — the runtime driver and the commissioning
+# pulse both read it, so a bench test energizes the coil for exactly as long as
+# an operating session does.
+SWITCH_THROW_PULSE_S = 0.01
+
 
 def latch_lines_for(bus: str) -> List[str]:
     """Valid latch lines for a bus (empty for I2C, which addresses instead)."""
@@ -105,7 +113,10 @@ CHIP_CATALOG: Dict[str, ChipKind] = {
         ports_per_unit=8,
         cascadable=True,
         port_kind=PORT_DIGITAL_OUT,
-        port_help="One output bit per port; level = MAIN(0)/DIVERGE(1).",
+        port_help=(
+            "One output bit per port. A switch takes two — one coil per side — "
+            "plus an optional bit for a driver standby/enable pin."
+        ),
     ),
     "hc165": ChipKind(
         kind="hc165",
@@ -131,6 +142,20 @@ CHIP_CATALOG: Dict[str, ChipKind] = {
         port_kind=PORT_CURRENT_SENSE,
         default_i2c_address=0x40,
         port_help="One INA3221 channel per port (port 0 = CH1); abs(current) above threshold = occupied.",
+    ),
+    "ina219": ChipKind(
+        kind="ina219",
+        label="INA219 · 1-ch current sense",
+        buses=(BUS_I2C,),
+        role=ROLE_OCCUPANCY,
+        # The single-channel current sensor: one chip covers one block. Same
+        # driving-occupancy signal as the INA3221, so it fills the same binding
+        # map; add more chips at 0x40..0x4f for more blocks.
+        ports_per_unit=1,
+        cascadable=False,
+        port_kind=PORT_CURRENT_SENSE,
+        default_i2c_address=0x40,
+        port_help="One current-sense channel; abs(current) above threshold = occupied.",
     ),
 }
 

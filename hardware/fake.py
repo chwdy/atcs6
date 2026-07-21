@@ -65,6 +65,15 @@ class FakeCh347Device:
             value = regs[reg]
             raw = bytes([(value >> 8) & 0xFF, value & 0xFF])
             return True, (raw + bytes(length))[:length]
+        # Serve a PCA9685 LEDn_ON_L group back from the recorded PWM state, so a
+        # driver can read its own commanded duty back (the occupancy test's
+        # drive-state check).
+        if reg is not None and reg >= 0x06:
+            channel, offset = divmod(reg - 0x06, 4)
+            if offset == 0 and channel in self.pwm.get(addr, {}):
+                on, off = self.pwm[addr][channel]
+                raw = bytes([on & 0xFF, (on >> 8) & 0xFF, off & 0xFF, (off >> 8) & 0xFF])
+                return True, (raw + bytes(length))[:length]
         return True, bytes(length)   # benign zeros; enough for a MODE1 probe
 
     def i2c_scan(self) -> List[int]:
@@ -131,3 +140,17 @@ class FakeCh347Device:
         returns ~`volts` (8 mV LSB, unsigned 13-bit)."""
         counts = max(0, min(0x1FFF, int(round(volts / 8e-3))))
         self.set_register(addr, self._INA_BUS_REG[channel], counts << 3)
+
+    # -- INA219 helpers --------------------------------------------------
+    def set_ina219_current(self, addr: int, amps: float, shunt_ohms: float = 0.1) -> None:
+        """Set the INA219's shunt register so `read_current()` returns ~`amps`
+        for a driver reading the same `shunt_ohms` (10 uV LSB, signed 16-bit)."""
+        counts = int(round(amps * shunt_ohms / 10e-6))
+        counts = max(-32768, min(32767, counts))
+        self.set_register(addr, 0x01, counts & 0xFFFF)
+
+    def set_ina219_bus_voltage(self, addr: int, volts: float) -> None:
+        """Set the INA219's bus register so `read_bus_voltage()` returns
+        ~`volts` (4 mV LSB, unsigned 13-bit)."""
+        counts = max(0, min(0x1FFF, int(round(volts / 4e-3))))
+        self.set_register(addr, 0x02, counts << 3)

@@ -144,7 +144,7 @@ def build_tunnel_journey(
 
 
 def _assert_east_block_is_authority_end(s, east_tile):
-    east_block_id = s.network.get_track(*east_tile).block_section_id
+    east_block_id = s.network.get_track(*east_tile).block_id
     assert s.active_path_authority_end_block_id == east_block_id, (
         f"path authority_end={s.active_path_authority_end_block_id!r}, "
         f"expected east block {east_block_id!r}"
@@ -152,9 +152,9 @@ def _assert_east_block_is_authority_end(s, east_tile):
 
 
 def _assert_head_in_east_block(s, east_tile):
-    east_block_id = s.network.get_track(*east_tile).block_section_id
+    east_block_id = s.network.get_track(*east_tile).block_id
     head_track = s.network.get_track(*s.head_tile)
-    head_block = getattr(head_track, "block_section_id", None)
+    head_block = getattr(head_track, "block_id", None)
     assert head_block == east_block_id, (
         f"train stopped with head in block {head_block!r}, "
         f"expected east block {east_block_id!r}"

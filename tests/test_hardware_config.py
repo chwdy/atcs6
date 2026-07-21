@@ -56,7 +56,9 @@ def _real_payload(**overrides):
             {"chip_id": "in1", "kind": "hc165", "spi_select": "cs1"},
         ],
         "block_track": {"B1": {"chip_id": "pwm1", "port": 0}},
-        "switch_output": {"SW_A": {"chip_id": "sw1", "port": 5}},
+        "switch_output": {
+            "SW_A": {"chip_id": "sw1", "port_main": 5, "port_diverge": 6},
+        },
         "block_occupancy": {"B1": {"chip_id": "in1", "port": 2}},
     }
     payload.update(overrides)
@@ -299,7 +301,7 @@ def test_set_current_binding_sets_and_clears():
 def test_binding_unknown_chip_rejected():
     with pytest.raises(hardware_config.HardwareConfigError):
         hardware_config.config_from_payload(
-            {"switch_output": {"SW": {"chip_id": "ghost", "port": 0}}}
+            {"switch_output": {"SW": {"chip_id": "ghost", "port_main": 0, "port_diverge": 1}}}
         )
 
 
@@ -307,7 +309,8 @@ def test_binding_port_out_of_range_rejected():
     with pytest.raises(hardware_config.HardwareConfigError):
         hardware_config.config_from_payload({
             "chips": [{"chip_id": "s", "kind": "hc595", "spi_select": "cs0"}],
-            "switch_output": {"SW": {"chip_id": "s", "port": 8}},  # 0..7 only
+            # 0..7 only
+            "switch_output": {"SW": {"chip_id": "s", "port_main": 8, "port_diverge": 1}},
         })
 
 
@@ -315,7 +318,8 @@ def test_binding_role_mismatch_rejected():
     with pytest.raises(hardware_config.HardwareConfigError):
         hardware_config.config_from_payload({
             "chips": [{"chip_id": "p", "kind": "pca9685", "i2c_address": "0x40"}],
-            "switch_output": {"SW": {"chip_id": "p", "port": 0}},  # PWM is track, not switch
+            # PWM is track, not switch
+            "switch_output": {"SW": {"chip_id": "p", "port_main": 0, "port_diverge": 1}},
         })
 
 
@@ -324,10 +328,49 @@ def test_double_bound_port_rejected():
         hardware_config.config_from_payload({
             "chips": [{"chip_id": "s", "kind": "hc595", "spi_select": "cs0"}],
             "switch_output": {
-                "SW_A": {"chip_id": "s", "port": 3},
-                "SW_B": {"chip_id": "s", "port": 3},
+                "SW_A": {"chip_id": "s", "port_main": 3, "port_diverge": 4},
+                "SW_B": {"chip_id": "s", "port_main": 3, "port_diverge": 5},
             },
         })
+
+
+def test_switch_coils_sharing_a_port_rejected():
+    """Both coils on one bit would drive main and diverge at once."""
+    with pytest.raises(hardware_config.HardwareConfigError):
+        hardware_config.config_from_payload({
+            "chips": [{"chip_id": "s", "kind": "hc595", "spi_select": "cs0"}],
+            "switch_output": {"SW": {"chip_id": "s", "port_main": 2, "port_diverge": 2}},
+        })
+
+
+def test_switch_standby_sharing_a_coil_port_rejected():
+    with pytest.raises(hardware_config.HardwareConfigError):
+        hardware_config.config_from_payload({
+            "chips": [{"chip_id": "s", "kind": "hc595", "spi_select": "cs0"}],
+            "switch_output": {
+                "SW": {"chip_id": "s", "port_main": 2, "port_diverge": 3, "port_standby": 2},
+            },
+        })
+
+
+def test_switch_standby_port_round_trips():
+    cfg = hardware_config.config_from_payload({
+        "chips": [{"chip_id": "s", "kind": "hc595", "spi_select": "cs0"}],
+        "switch_output": {
+            "SW": {"chip_id": "s", "port_main": 0, "port_diverge": 1, "port_standby": 7},
+        },
+    })
+    assert cfg.switch_output["SW"].port_standby == 7
+    assert cfg.switch_output["SW"].ports == [0, 1, 7]
+
+
+def test_switch_binding_without_standby_is_none():
+    cfg = hardware_config.config_from_payload({
+        "chips": [{"chip_id": "s", "kind": "hc595", "spi_select": "cs0"}],
+        "switch_output": {"SW": {"chip_id": "s", "port_main": 0, "port_diverge": 1}},
+    })
+    assert cfg.switch_output["SW"].port_standby is None
+    assert cfg.switch_output["SW"].ports == [0, 1]
 
 
 def test_hex_and_decimal_addresses_coerce():
@@ -399,7 +442,9 @@ def test_load_invalid_config_keeps_defaults():
     # the runtime into a broken real mode.
     with open(hardware_config.CONFIG_PATH, "w") as fh:
         json.dump({"enabled": True, "chips": [],
-                   "switch_output": {"SW": {"chip_id": "ghost", "port": 0}}}, fh)
+                   "switch_output": {
+                       "SW": {"chip_id": "ghost", "port_main": 0, "port_diverge": 1},
+                   }}, fh)
     hardware_config.load_from_disk()
     assert hardware_config.derive_operation_mode() == OperationMode.SIM
 
@@ -511,7 +556,7 @@ def test_get_catalog(client):
     assert resp.status_code == 200
     body = resp.get_json()
     kinds = {c["kind"] for c in body["chips"]}
-    assert kinds == {"pca9685", "hc595", "hc165", "ina3221"}
+    assert kinds == {"pca9685", "hc595", "hc165", "ina3221", "ina219"}
     assert "cs0" in body["spi_select_lines"] and "gpio0" in body["gpio_lines"]
 
 
@@ -574,19 +619,41 @@ def test_port_test_endpoint_read_input(client, monkeypatch):
 def test_binding_endpoint_set_and_clear(client):
     client.put("/api/hardware/config", json=_real_payload())
     r = client.put("/api/hardware/binding", json={
-        "map": "switch_output", "logical_id": "SW_Z", "chip_id": "sw1", "port": 2,
+        "map": "switch_output", "logical_id": "SW_Z", "chip_id": "sw1",
+        "port_main": 2, "port_diverge": 3, "port_standby": 4,
     })
     assert r.status_code == 200
-    assert hardware_config.get_hardware_config().switch_output["SW_Z"].port == 2
+    bound = hardware_config.get_hardware_config().switch_output["SW_Z"]
+    assert (bound.port_main, bound.port_diverge, bound.port_standby) == (2, 3, 4)
     r2 = client.put("/api/hardware/binding", json={"map": "switch_output", "logical_id": "SW_Z"})
     assert r2.status_code == 200
+    assert "SW_Z" not in hardware_config.get_hardware_config().switch_output
+
+
+def test_binding_endpoint_switch_without_standby(client):
+    client.put("/api/hardware/config", json=_real_payload())
+    r = client.put("/api/hardware/binding", json={
+        "map": "switch_output", "logical_id": "SW_Z", "chip_id": "sw1",
+        "port_main": 2, "port_diverge": 3,
+    })
+    assert r.status_code == 200
+    assert hardware_config.get_hardware_config().switch_output["SW_Z"].port_standby is None
+
+
+def test_binding_endpoint_switch_needs_both_coils(client):
+    client.put("/api/hardware/config", json=_real_payload())
+    r = client.put("/api/hardware/binding", json={
+        "map": "switch_output", "logical_id": "SW_Z", "chip_id": "sw1", "port_main": 2,
+    })
+    assert r.status_code == 400
     assert "SW_Z" not in hardware_config.get_hardware_config().switch_output
 
 
 def test_binding_endpoint_rejects_out_of_range(client):
     client.put("/api/hardware/config", json=_real_payload())
     r = client.put("/api/hardware/binding", json={
-        "map": "switch_output", "logical_id": "SW_Z", "chip_id": "sw1", "port": 99,
+        "map": "switch_output", "logical_id": "SW_Z", "chip_id": "sw1",
+        "port_main": 99, "port_diverge": 1,
     })
     assert r.status_code == 400
 

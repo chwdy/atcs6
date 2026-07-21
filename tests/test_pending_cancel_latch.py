@@ -10,7 +10,6 @@ The doc rule (Latch Table): pending_path_cancel_request is consumed only
 when the train is stopped; while the train is still rolling, it survives.
 """
 
-import pytest
 from runtime_payloads import (
     PendingPathCancelRequest,
 )
@@ -27,14 +26,14 @@ def _build_three_block_network() -> RailwayNetwork:
     network = RailwayNetwork()
     for x in range(6):
         network.add_track(Tile(x, 0, track_bits=TRACK_EW))
-    network.create_block_with_tracks(
-        block_id="BLK_A", positions=[(0, 0), (1, 0)], name="A", length_cm=200.0
+    network.create_segment_with_tracks(
+        segment_id="BLK_A", positions=[(0, 0), (1, 0)], name="A", length_cm=200.0
     )
-    network.create_block_with_tracks(
-        block_id="BLK_B", positions=[(2, 0), (3, 0)], name="B", length_cm=200.0
+    network.create_segment_with_tracks(
+        segment_id="BLK_B", positions=[(2, 0), (3, 0)], name="B", length_cm=200.0
     )
-    network.create_block_with_tracks(
-        block_id="BLK_C", positions=[(4, 0), (5, 0)], name="C", length_cm=200.0
+    network.create_segment_with_tracks(
+        segment_id="BLK_C", positions=[(4, 0), (5, 0)], name="C", length_cm=200.0
     )
     return network
 
@@ -59,15 +58,8 @@ def test_activate_emergency_with_path_sets_pending_cancel():
         train_id=train.train_id,
         requested_destination_block_id="BLK_C",
     )
-    if not result.success:
-        pytest.skip(
-            "v1: dispatcher's _compute_block_traversals omits the destination "
-            "block, so create_path returns missing_direction here. The latch "
-            "behavior under EB still holds; covered by integration tests."
-        )
-
     result.path = dispatcher.get_path(result.path_id) if result.path_id else None
-    assert result.success
+    assert result.success, f"Failed to create path: {result.reason}"
     assert controller.path_projection.received_path_plan is not None
 
     # Pre-condition: no latch.
@@ -131,14 +123,8 @@ def test_pending_cancel_latch_survives_while_moving():
         train_id=train.train_id,
         requested_destination_block_id="BLK_C",
     )
-    if not result.success:
-        pytest.skip(
-            "v1: dispatcher's _compute_block_traversals omits the destination "
-            "block, so create_path returns missing_direction here."
-        )
-
     result.path = dispatcher.get_path(result.path_id) if result.path_id else None
-    assert result.success
+    assert result.success, f"Failed to create path: {result.reason}"
 
     # Set the train as moving and activate EB.
     controller.physics_sync.current_speed_kmh = 30.0

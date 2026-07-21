@@ -93,8 +93,8 @@ def _build_switch_network() -> Tuple[RailwayNetwork, Switch]:
 
     network.add_track(Tile(0, 0, track_bits=TRACK_EW))
     network.add_track(Tile(1, 0, track_bits=TRACK_EW))
-    network.create_block_with_tracks(
-        block_id="BLK_A", positions=[(0, 0), (1, 0)], name="A", length_cm=200.0
+    network.create_segment_with_tracks(
+        segment_id="BLK_A", positions=[(0, 0), (1, 0)], name="A", length_cm=200.0
     )
 
     # Switch tile at (2, 0): EW (straight, main) + NW (diverge). Must be a real
@@ -107,11 +107,11 @@ def _build_switch_network() -> Tuple[RailwayNetwork, Switch]:
 
     for x in (3, 4, 5, 6):
         network.add_track(Tile(x, 0, track_bits=TRACK_EW))
-    network.create_block_with_tracks(
-        block_id="BLK_C", positions=[(3, 0), (4, 0)], name="C", length_cm=200.0
+    network.create_segment_with_tracks(
+        segment_id="BLK_C", positions=[(3, 0), (4, 0)], name="C", length_cm=200.0
     )
-    network.create_block_with_tracks(
-        block_id="BLK_D", positions=[(5, 0), (6, 0)], name="D", length_cm=200.0
+    network.create_segment_with_tracks(
+        segment_id="BLK_D", positions=[(5, 0), (6, 0)], name="D", length_cm=200.0
     )
 
     return network, switch

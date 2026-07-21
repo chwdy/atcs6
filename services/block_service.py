@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 import uuid
 
 from app_state import AppState
-from block_validation import crossing_disallowed_in_block
+from segment_validation import crossing_disallowed_in_segment
 from services.exceptions import (
     ConflictError,
     GoneError,
@@ -81,7 +81,9 @@ def create_block(
     """
     resolved_id = block_id or f"BLK_{uuid.uuid4().hex[:8].upper()}"
     try:
-        block = state.network.create_block(resolved_id, name)
+        # A newly created block holds one fresh segment; block and segment take
+        # the same id until the operator groups other segments into it.
+        block = state.network.create_segment(resolved_id, name)
         if length_cm is not None:
             block.length_cm = float(length_cm)
         if min_radius_cm is not None:
@@ -270,13 +272,16 @@ def create_block_with_tracks(
 ):
     """Create a block and assign the given tile positions to it.
 
+    The tiles land in one fresh segment, and that segment gets its own block
+    because nothing is grouped with it — so block and segment share `block_id`.
+
     Raises:
         ValidationError when the network rejects the positions/geometry.
     """
     try:
         tuple_positions = [tuple(pos) for pos in positions]
-        return state.network.create_block_with_tracks(
-            block_id=block_id,
+        return state.network.create_segment_with_tracks(
+            segment_id=block_id,
             positions=tuple_positions,
             name=name,
             length_cm=length_cm,
@@ -304,8 +309,11 @@ def extend_block(
     """
     try:
         tuple_positions = [tuple(pos) for pos in positions]
-        return state.network.extend_block(
-            block_id, tuple_positions, force=force, force_overwrite=force_overwrite
+        return state.network.extend_segment(
+            _geometry_segment_id(state, block_id),
+            tuple_positions,
+            force=force,
+            force_overwrite=force_overwrite,
         )
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
@@ -323,6 +331,8 @@ def add_tracks_to_block(
     """
     require_block(state, block_id)
 
+    target_segment_id = _geometry_segment_id(state, block_id)
+
     added: List[List[int]] = []
     reassigned: List[Dict[str, Any]] = []
 
@@ -331,12 +341,12 @@ def add_tracks_to_block(
             continue
         x, y = pos[0], pos[1]
 
-        # Track already assigned to a different block?
+        # Track already assigned to a different segment?
         track = state.network.get_track(x, y)
-        if track and track.block_section_id and track.block_section_id != block_id:
+        if track and track.segment_id and track.segment_id != target_segment_id:
             if force:
-                old_block_id = track.block_section_id
-                track.block_section_id = None
+                old_block_id = track.block_id
+                track.segment_id = None
                 reassigned.append(
                     {"position": [x, y], "from": old_block_id, "to": block_id}
                 )
@@ -344,7 +354,7 @@ def add_tracks_to_block(
                 continue
 
         try:
-            state.network.assign_track_to_block(x, y, block_id)
+            state.network.assign_track_to_segment(x, y, target_segment_id)
             added.append([x, y])
         except ValueError:
             pass
@@ -357,6 +367,30 @@ def add_tracks_to_block(
         "reassignment_details": reassigned,
         "block_id": block_id,
     }
+
+
+def _geometry_segment_id(state: AppState, block_id: str) -> str:
+    """The segment a block-addressed geometry edit lands on.
+
+    Tiles belong to segments, so adding or removing a tile through a
+    block-addressed endpoint is only well defined when the block owns exactly
+    one segment. A block that groups several has no single member to edit —
+    the caller must address the segment it means.
+
+    Raises:
+        ValidationError when the block is unknown or groups more than one
+        segment.
+    """
+    block = state.network.blocks.get(block_id)
+    if block is None:
+        raise ValidationError(f"Block {block_id} not found")
+    if len(block.segments) != 1:
+        raise ValidationError(
+            f"Block {block_id} groups {len(block.segments)} segments, so a "
+            f"tile edit has no single member to apply to. Edit the segment "
+            f"directly (members: {', '.join(block.segment_ids) or 'none'})."
+        )
+    return block.segments[0].segment_id
 
 
 def remove_tracks_from_block(
@@ -373,10 +407,12 @@ def remove_tracks_from_block(
     """
     require_block(state, block_id)
 
+    target_segment_id = _geometry_segment_id(state, block_id)
+
     removed: List[List[int]] = []
     errors: List[str] = []
 
-    current_positions = state.network.get_block_positions(block_id)
+    current_positions = state.network.get_segment_positions(target_segment_id)
     position_set = set((x, y) for x, y in current_positions)
 
     for pos in positions:
@@ -385,7 +421,7 @@ def remove_tracks_from_block(
         x, y = pos[0], pos[1]
 
         track = state.network.get_track(x, y)
-        if not track or track.block_section_id != block_id:
+        if not track or track.segment_id != target_segment_id:
             errors.append(f"Position ({x}, {y}) is not part of block {block_id}")
             continue
 
@@ -415,16 +451,16 @@ def remove_tracks_from_block(
             continue
 
         # Temporarily remove to check continuity.
-        original_block_id = track.block_section_id
-        track.block_section_id = None
+        original_segment_id = track.segment_id
+        track.segment_id = None
 
-        remaining_tracks = state.network.get_block_tracks(block_id)
+        remaining_tracks = state.network.get_segment_tracks(target_segment_id)
         if len(remaining_tracks) > 1:
             is_continuous, _validation_errors = (
-                state.network.validate_block_continuity(block_id)
+                state.network.validate_segment_continuity(target_segment_id)
             )
             if not is_continuous:
-                track.block_section_id = original_block_id
+                track.segment_id = original_segment_id
                 errors.append(
                     f"Cannot remove tile ({x}, {y}): would break block continuity"
                 )
@@ -469,7 +505,7 @@ def can_extend_block(
     if not track:
         return {"can_extend": False, "reason": "No track at position"}
 
-    if crossing_disallowed_in_block(track.track_bits):
+    if crossing_disallowed_in_segment(track.track_bits):
         return {
             "can_extend": False,
             "reason": "Cannot add crossing to block - crossings isolate paths",
@@ -488,11 +524,11 @@ def can_extend_block(
             "requires_force": True,
         }
 
-    if track.block_section_id and track.block_section_id != block_id:
+    if track.block_id and track.block_id != block_id:
         return {
             "can_extend": False,
             "reason": (
-                f"Tile already in block {track.block_section_id} - "
+                f"Tile already in block {track.block_id} - "
                 "use force_overwrite=true"
             ),
             "requires_force_overwrite": True,

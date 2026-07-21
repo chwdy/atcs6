@@ -148,8 +148,15 @@ def register(app, state: AppState) -> None:
 
         if platform_names:
             result["platform_names"] = sorted(list(platform_names))
-        is_valid, errors = state.network.validate_block_continuity(block_id)
-        result["is_continuous"] = is_valid
+        # Continuity is a per-segment property, so a block is continuous when
+        # every member segment is.
+        errors: list = []
+        for segment_id in block.segment_ids:
+            _seg_valid, seg_errors = state.network.validate_segment_continuity(
+                segment_id
+            )
+            errors.extend(seg_errors)
+        result["is_continuous"] = not errors
         result["validation_errors"] = errors
 
         # Find signals monitoring this block
@@ -296,7 +303,7 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/blocks/<block_id>/tracks", methods=["DELETE"])
     def remove_tracks_from_block(block_id):
-        """Remove tracks from a block (clear their block_section_id) with edge validation"""
+        """Remove tracks from a block (clear their segment_id) with edge validation"""
         data = request.json or {}
         try:
             result = block_service.remove_tracks_from_block(

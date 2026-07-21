@@ -63,11 +63,11 @@ def connected_network(app_state, client):
     for x in range(4):
         net.add_track(Tile(x=x, y=0, track_bits=2))  # EW
 
-    net.create_block_with_tracks(
-        block_id="BLK_A", positions=[(0, 0), (1, 0)], name="Block A"
+    net.create_segment_with_tracks(
+        segment_id="BLK_A", positions=[(0, 0), (1, 0)], name="Block A"
     )
-    net.create_block_with_tracks(
-        block_id="BLK_B", positions=[(2, 0), (3, 0)], name="Block B"
+    net.create_segment_with_tracks(
+        segment_id="BLK_B", positions=[(2, 0), (3, 0)], name="Block B"
     )
 
     assert client.post(

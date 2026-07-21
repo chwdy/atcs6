@@ -325,12 +325,25 @@ export class API implements LayoutDataClient, SimClient {
     config: any,
     chipId: string,
     port: number,
-    action: 'pulse_output' | 'read_input'
+    action: 'pulse_output' | 'read_input' | 'drive_sequence'
   ): Promise<any> {
     return this._request(
       '/hardware/port-test',
       { method: 'POST', body: { config, chip_id: chipId, port, action } },
       'runHardwarePortTest'
+    );
+  }
+
+  /**
+   * Read both of one block's occupancy detectors and report which decides.
+   * Returns the '165 bit, the current-sense reading, the drive state read back
+   * off the PWM chip, and the verdict that follows. Drives nothing.
+   */
+  async runHardwareOccupancyTest(config: any, blockId: string): Promise<any> {
+    return this._request(
+      '/hardware/occupancy-test',
+      { method: 'POST', body: { config, block_id: blockId } },
+      'runHardwareOccupancyTest'
     );
   }
 
@@ -350,6 +363,32 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
+  /** Set (or clear, when chipId is null) one switch's throw wiring: a coil port
+   * per side plus an optional motor-driver standby bit. */
+  async updateSwitchBinding(
+    switchId: string,
+    chipId: string | null,
+    portMain: number | null,
+    portDiverge: number | null,
+    portStandby: number | null
+  ): Promise<any> {
+    return this._request(
+      '/hardware/binding',
+      {
+        method: 'PUT',
+        body: {
+          map: 'switch_output',
+          logical_id: switchId,
+          chip_id: chipId,
+          port_main: portMain,
+          port_diverge: portDiverge,
+          port_standby: portStandby,
+        },
+      },
+      'updateSwitchBinding'
+    );
+  }
+
   /** Open a held commissioning session on the controller (for live input / sweep). */
   async commissionOpen(config: any): Promise<any> {
     return this._request(
@@ -365,6 +404,31 @@ export class API implements LayoutDataClient, SimClient {
       '/hardware/commission/output',
       { method: 'POST', body: { chip_id: chipId, port, duty } },
       'commissionOutput'
+    );
+  }
+
+  /** Pulse one shift-out bit for the switch-coil pulse width on the held session,
+   * raising `standbyPort` for the pulse when the motor driver needs one and
+   * holding `offPort` (the driver's other input) low. A coil must never be held
+   * energized, so every '595 bit is driven this way. */
+  async commissionPulse(
+    chipId: string,
+    port: number,
+    standbyPort?: number | null,
+    offPort?: number | null
+  ): Promise<any> {
+    return this._request(
+      '/hardware/commission/pulse',
+      {
+        method: 'POST',
+        body: {
+          chip_id: chipId,
+          port,
+          standby_port: standbyPort ?? null,
+          off_port: offPort ?? null,
+        },
+      },
+      'commissionPulse'
     );
   }
 

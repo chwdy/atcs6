@@ -558,7 +558,7 @@ class RouteTargetResolver:
         track = network.get_track(*head_tile)
         if not track:
             return None
-        return getattr(track, "block_section_id", None)
+        return getattr(track, "block_id", None)
 
     # ------------------------------------------------------------------
     # Next-task-index computation (pure)
@@ -670,8 +670,8 @@ class RouteTargetResolver:
         network = self._e.network
         for x, y in getattr(platform, "positions", []):
             track = network.get_track(x, y)
-            if track and track.block_section_id:
-                return track.block_section_id
+            if track and track.block_id:
+                return track.block_id
         return None
 
     def _find_paths_cached(

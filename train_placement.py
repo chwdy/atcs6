@@ -128,8 +128,8 @@ class TrainPlacement:
         seen_blocks = set()
         for tile in occupied_tiles:
             tile_track = self._n.get_track(*tile)
-            if tile_track and tile_track.block_section_id:
-                block_id = tile_track.block_section_id
+            if tile_track and tile_track.block_id:
+                block_id = tile_track.block_id
                 if block_id not in seen_blocks:
                     occupied_blocks.append(block_id)
                     seen_blocks.add(block_id)
@@ -383,7 +383,7 @@ class TrainPlacement:
             tile_track = self._n.get_track(*tile)
             tile_length = self._n._get_tile_length_cm(*tile)
 
-            block_id = tile_track.block_section_id if tile_track else None
+            block_id = tile_track.block_id if tile_track else None
 
             # Determine segment boundaries based on position in list
             is_first = i == 0

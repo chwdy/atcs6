@@ -39,9 +39,9 @@ def _line_network() -> RailwayNetwork:
     net = RailwayNetwork()
     for x in range(6):
         net.add_track(Tile(x=x, y=0, track_bits=2))  # EW straight, all joined
-    net.create_block_with_tracks("A", [(0, 0), (1, 0)], name="A")
-    net.create_block_with_tracks("B", [(2, 0), (3, 0)], name="B")
-    net.create_block_with_tracks("C", [(4, 0), (5, 0)], name="C")
+    net.create_segment_with_tracks("A", [(0, 0), (1, 0)], name="A")
+    net.create_segment_with_tracks("B", [(2, 0), (3, 0)], name="B")
+    net.create_segment_with_tracks("C", [(4, 0), (5, 0)], name="C")
     return net
 
 
@@ -299,7 +299,7 @@ def test_block_geometry_write_still_works_on_a_one_segment_block():
 
 
 def test_rebuilding_tile_order_leaves_a_grouped_block_intact():
-    """`rebuild_block_ordered_tiles` builds one flat walk from the tiles that
+    """`rebuild_segment_ordered_tiles` builds one flat walk from the tiles that
     name a block. On a grouped block every member tile names the block, so a
     rebuild would flatten all members into one segment. It must be a no-op
     there — the grouped block's order is already the members' concatenation."""
@@ -308,7 +308,7 @@ def test_rebuilding_tile_order_leaves_a_grouped_block_intact():
     before = list(block.ordered_tiles)
     per_segment_before = [len(s.ordered_tiles) for s in block.segments]
 
-    net._get_block_geometry_manager().rebuild_block_ordered_tiles("G")
+    net._get_segment_geometry_manager().rebuild_segment_ordered_tiles("G")
 
     assert [len(s.ordered_tiles) for s in block.segments] == per_segment_before
     assert list(block.ordered_tiles) == before

@@ -46,8 +46,8 @@ class DockTurnaroundScene:
                 default_route.is_active = False
                 default_route.unassign_train(train_id)
 
-        east_block_id = network.get_track(5, 0).block_section_id
-        west_block_id = network.get_track(0, 0).block_section_id
+        east_block_id = network.get_track(5, 0).block_id
+        west_block_id = network.get_track(0, 0).block_id
         north_platform = next(
             station
             for station in network.stations.values()

@@ -78,6 +78,30 @@ class PCA9685:
         duty = max(0.0, min(1.0, duty))
         self.set_pwm(channel, 0, int(duty * 4095))
 
+    def read_duty_cycle(self, channel: int) -> float:
+        """Duty the chip is currently outputting on a channel, 0.0..1.0, read
+        back from its own registers.
+
+        This is what the block occupancy test uses to tell whether a block is
+        being driven: the chip itself is the truth, so the answer holds even when
+        the drive was commanded by some other process.
+        """
+        reg = self.LED0_ON_L + 4 * channel
+        if not self.device.i2c_write(self.address, bytes([reg])):
+            raise IOError(f"PCA9685@{hex(self.address)} set reg ptr {hex(reg)} failed (no ACK)")
+        status, raw = self.device.i2c_read(self.address, 4)
+        if not status or len(raw) < 4:
+            raise IOError(f"PCA9685@{hex(self.address)} read channel {channel} failed (no ACK)")
+        on = raw[0] | (raw[1] << 8)
+        off = raw[2] | (raw[3] << 8)
+        # Bit 12 of either word is the full-off / full-on flag, which overrides
+        # the 12-bit count. Full-off wins when both are set.
+        if off & 0x1000:
+            return 0.0
+        if on & 0x1000:
+            return 1.0
+        return min(1.0, (off & 0x0FFF) / 4095.0)
+
     def all_off(self) -> None:
         for channel in range(self.NUM_CHANNELS):
             self.set_duty_cycle(channel, 0.0)

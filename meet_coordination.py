@@ -255,7 +255,7 @@ class MeetCoordinator:
         if tile is None or self._re.network is None:
             return None
         track = self._re.network.get_track(*tile)
-        return getattr(track, "block_section_id", None) if track else None
+        return getattr(track, "block_id", None) if track else None
 
     # -- helpers ----------------------------------------------------------
 

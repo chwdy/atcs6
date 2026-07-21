@@ -163,6 +163,40 @@
     fill: var(--text-tertiary);
 }
 
+/* Cross-lane ties: one physical net that two chips' lanes share (the +12V that
+   passes through the sense shunt on its way to the H-bridge; the rails the
+   H-bridge drives and the detector reads). Dashed and accented so they read as
+   "same wire, drawn twice" rather than as part of either lane's own circuit. */
+.hw-wd-tie {
+    fill: none;
+    stroke: var(--accent-color);
+    stroke-width: 1.25;
+    stroke-dasharray: 4 3;
+}
+
+.hw-wd-tie-arrowhead {
+    fill: var(--accent-color);
+}
+
+.hw-wd-tielabel {
+    fill: var(--accent-hover);
+    font-size: 8.5px;
+}
+
+/* Circled path numbers on the detector schematic, keyed to the path list
+   printed under that lane. */
+.hw-wd-pnum circle {
+    fill: var(--bg-dark);
+    stroke: var(--text-tertiary);
+    stroke-width: 1;
+}
+
+.hw-wd-pnum text {
+    font-size: 9px;
+    font-weight: 700;
+    fill: var(--text-secondary);
+}
+
 .hw-wd-node.role-gpio rect { stroke: var(--warning-color); }
 
 /* Live health dot on each chip box — mirrors the self-test state shown on the
@@ -778,6 +812,118 @@
     font-size: var(--font-size-body);
     color: var(--warning-color);
     white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------------------
+   SWITCH COIL ROWS — the switch editor's Hardware section (hardware-binding.ts)
+
+   A switch binds one coil bit per side. During the bench test the row of the
+   side being thrown is marked, and the coil that just fired lights up. The
+   pulse itself is 10 ms, so the lit state is stretched to a readable flash
+   rather than being tied to the real output window.
+   --------------------------------------------------------------------------- */
+.hw-coil-dot {
+    width: 8px;
+    height: 8px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--bg-hover);
+    border: 1px solid var(--border-color);
+    transition: background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+/* The side the test last threw toward — a steady marker, not an output state. */
+.hw-coil-row.is-thrown .input-small-label {
+    color: var(--text-primary);
+}
+
+.hw-coil-row.is-thrown .hw-coil-dot {
+    background: var(--accent-color);
+    border-color: var(--accent-color);
+}
+
+/* The coil is energized right now (stretched from the 10 ms pulse). */
+.hw-coil-row.is-energized .hw-coil-dot {
+    background: var(--success-color);
+    border-color: var(--success-color);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--success-color) 30%, transparent);
+}
+
+.hw-coil-row.is-energized .input-small-field {
+    border-color: var(--success-color);
+}
+
+/* --- Block occupancy test report -------------------------------------------
+   One row per detector plus the verdict. The row the drive state makes
+   authoritative is marked; the others are shown but dimmed, so the user can see
+   a disagreeing detector without mistaking it for the answer. */
+.hw-occ-result {
+    margin-bottom: var(--space-8);
+    padding: var(--space-8);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-dark);
+}
+
+.hw-occ-row {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-8);
+    padding: 2px 0;
+    font-size: var(--font-size-micro);
+    color: var(--text-secondary);
+}
+
+.hw-occ-key {
+    flex: 0 0 40%;
+    color: var(--text-tertiary);
+}
+
+.hw-occ-val {
+    flex: 1 1 auto;
+    word-break: break-word;
+}
+
+.hw-occ-row.is-source {
+    color: var(--text-primary);
+}
+
+.hw-occ-pill {
+    flex: 0 0 auto;
+    padding: 0 6px;
+    border-radius: var(--radius-pill);
+    background: rgba(var(--accent-rgb), 0.22);
+    color: var(--accent-color);
+    font-size: var(--font-size-micro);
+    white-space: nowrap;
+}
+
+.hw-occ-verdict {
+    margin-top: var(--space-8);
+    padding-top: var(--space-8);
+    border-top: 1px solid var(--border-color);
+    font-size: var(--font-size-micro);
+    font-weight: 600;
+}
+
+/* Occupied is a danger state (an occupied block is), clear is not. */
+.hw-occ-verdict.is-occupied {
+    color: var(--danger-color);
+}
+
+.hw-occ-verdict.is-clear {
+    color: var(--success-color);
+}
+
+.hw-occ-verdict.is-unbound {
+    color: var(--text-tertiary);
+    font-weight: 400;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .hw-coil-dot {
+        transition: none;
+    }
 }
 
 @media (max-width: 640px) {

@@ -23,14 +23,14 @@ def _build_three_block_network() -> RailwayNetwork:
     network = RailwayNetwork()
     for x in range(6):
         network.add_track(Tile(x, 0, track_bits=TRACK_EW))
-    network.create_block_with_tracks(
-        block_id="BLK_A", positions=[(0, 0), (1, 0)], name="A", length_cm=200.0
+    network.create_segment_with_tracks(
+        segment_id="BLK_A", positions=[(0, 0), (1, 0)], name="A", length_cm=200.0
     )
-    network.create_block_with_tracks(
-        block_id="BLK_B", positions=[(2, 0), (3, 0)], name="B", length_cm=200.0
+    network.create_segment_with_tracks(
+        segment_id="BLK_B", positions=[(2, 0), (3, 0)], name="B", length_cm=200.0
     )
-    network.create_block_with_tracks(
-        block_id="BLK_C", positions=[(4, 0), (5, 0)], name="C", length_cm=200.0
+    network.create_segment_with_tracks(
+        segment_id="BLK_C", positions=[(4, 0), (5, 0)], name="C", length_cm=200.0
     )
     return network
 

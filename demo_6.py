@@ -84,8 +84,8 @@ def test_block_validation():
 
     print("\n[TEST 1] Verifying disconnected tracks are rejected...")
     try:
-        test_network.create_block_with_tracks(
-            block_id="TEST_DISCONNECTED",
+        test_network.create_segment_with_tracks(
+            segment_id="TEST_DISCONNECTED",
             positions=[(0, 0), (4, 0)],
             name="Test",
         )
@@ -101,8 +101,8 @@ def test_block_validation():
     test_network.add_switch(switch)
     switch_track.switch_id = switch.switch_id
     try:
-        test_network.create_block_with_tracks(
-            block_id="TEST_WITH_SWITCH",
+        test_network.create_segment_with_tracks(
+            segment_id="TEST_WITH_SWITCH",
             positions=[(3, 0), (4, 0), (5, 0)],
             name="Test",
         )
@@ -112,12 +112,12 @@ def test_block_validation():
         print(f"  ✓ Correctly rejected: {e}")
 
     print("\n[TEST 3] Verifying duplicate block IDs are rejected...")
-    test_network.create_block_with_tracks(
-        block_id="TEST_BLOCK_1", positions=[(0, 0), (1, 0)], name="Test Block 1"
+    test_network.create_segment_with_tracks(
+        segment_id="TEST_BLOCK_1", positions=[(0, 0), (1, 0)], name="Test Block 1"
     )
     try:
-        test_network.create_block_with_tracks(
-            block_id="TEST_BLOCK_1",
+        test_network.create_segment_with_tracks(
+            segment_id="TEST_BLOCK_1",
             positions=[(6, 0)],
             name="Test",
         )
@@ -665,7 +665,7 @@ SWITCHES = [
 
 
 # Blocks created on top of the platform blocks. Each entry:
-# (block_id, name, [positions], length_cm, speed_limit_kmh). create_block_with_tracks
+# (block_id, name, [positions], length_cm, speed_limit_kmh). create_segment_with_tracks
 # assigns the tiles, validates continuity, and rebuilds the block's ordered_tiles.
 BLOCKS = [
     # Yard approach blocks: the road between each platform and its
@@ -1026,8 +1026,8 @@ def _add_stations(network: RailwayNetwork) -> None:
 def _add_blocks(network: RailwayNetwork) -> None:
     """Create the approach and running-line blocks from their baked tile lists."""
     for (block_id, name, positions, length_cm, speed_limit_kmh) in BLOCKS:
-        network.create_block_with_tracks(
-            block_id=block_id,
+        network.create_segment_with_tracks(
+            segment_id=block_id,
             positions=positions,
             name=name,
             length_cm=length_cm,
@@ -1093,7 +1093,7 @@ def _yard_train_placement(network: RailwayNetwork, platform_id: str):
             neighbor = network.get_neighbor(x, y, edge)
             if neighbor is None or (neighbor.x, neighbor.y) in tile_set:
                 continue
-            if neighbor.block_section_id == approach_id:
+            if neighbor.block_id == approach_id:
                 return edge_to_dir[edge], (x, y)
     raise ValueError(
         f"No throat tile for {platform_id!r}: none of its tiles border "

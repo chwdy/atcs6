@@ -52,7 +52,7 @@ def _placeable_network():
     net = RailwayNetwork()
     for x in range(3):
         net.add_track(Tile(x, 0, track_bits=TRACK_EW))
-    net.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0)
+    net.create_segment_with_tracks("BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0)
     return net
 
 

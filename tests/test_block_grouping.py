@@ -35,9 +35,9 @@ def _line_network() -> RailwayNetwork:
     net = RailwayNetwork()
     for x in range(6):
         net.add_track(Tile(x=x, y=0, track_bits=2))  # EW straight, all joined
-    net.create_block_with_tracks("A", [(0, 0), (1, 0)], name="A")
-    net.create_block_with_tracks("B", [(2, 0), (3, 0)], name="B")
-    net.create_block_with_tracks("C", [(4, 0), (5, 0)], name="C")
+    net.create_segment_with_tracks("A", [(0, 0), (1, 0)], name="A")
+    net.create_segment_with_tracks("B", [(2, 0), (3, 0)], name="B")
+    net.create_segment_with_tracks("C", [(4, 0), (5, 0)], name="C")
     return net
 
 

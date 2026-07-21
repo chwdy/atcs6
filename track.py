@@ -206,17 +206,17 @@ class Tile:
     signal_ids: List[str] = field(
         default_factory=list
     )  # Max 2 signals per tile (one per direction)
-    # station_id / block_section_id are exposed as @property below; the
+    # station_id / segment_id are exposed as @property below; the
     # _-prefixed fields are local fallbacks used only when the track is not
     # attached to a RailwayNetwork (e.g. unit tests that construct a bare
     # Tile). When the track is attached, the network's reverse
-    # indices (tile_to_platform_id / tile_to_block_id) are the source of
+    # indices (tile_to_platform_id / tile_to_segment_id) are the source of
     # truth and these locals stay None.
     _station_id_local: Optional[str] = None
-    _block_section_id_local: Optional[str] = None
+    _segment_id_local: Optional[str] = None
     switch_id: Optional[str] = None  # Reference to Switch.switch_id (if is_switch)
     # Back-reference to the owning RailwayNetwork. Set by
-    # RailwayNetwork.add_track. Used by the station_id / block_section_id
+    # RailwayNetwork.add_track. Used by the station_id / segment_id
     # properties to resolve membership through the network reverse indices.
     network: Optional[Any] = None
 
@@ -295,24 +295,51 @@ class Tile:
         self._station_id_local = value
 
     @property
-    def block_section_id(self) -> Optional[str]:
+    def segment_id(self) -> Optional[str]:
+        """Id of the `Segment` this tile belongs to, or None.
+
+        A tile belongs to a segment (design_new.md "segment"); the segment is
+        grouped into a `Block` by `BlockGroupingManager`. This is the stored
+        membership — `block_id` below is derived from it.
+        """
+        if self.network is not None:
+            try:
+                return self.network.tile_to_segment_id(self.x, self.y)
+            except AttributeError:
+                pass
+        return self._segment_id_local
+
+    @segment_id.setter
+    def segment_id(self, value: Optional[str]) -> None:
+        if self.network is not None:
+            try:
+                self.network._set_tile_segment(self.x, self.y, value)
+                self._segment_id_local = None
+                return
+            except AttributeError:
+                pass
+        self._segment_id_local = value
+
+    @property
+    def block_id(self) -> Optional[str]:
+        """Id of the `Block` that owns this tile, or None.
+
+        Derived, never stored: the tile belongs to a `Segment` and the segment
+        is grouped into a `Block`, so this resolves tile -> segment -> block
+        through `RailwayNetwork.tile_to_block_id`. Read-only — block membership
+        is decided by grouping the segment (`BlockGroupingManager`), not by
+        assigning a tile.
+
+        For a detached tile (no network) there is no grouping information at
+        all, so this reports the local segment fallback: with nothing to group
+        into, a segment is its own block.
+        """
         if self.network is not None:
             try:
                 return self.network.tile_to_block_id(self.x, self.y)
             except AttributeError:
                 pass
-        return self._block_section_id_local
-
-    @block_section_id.setter
-    def block_section_id(self, value: Optional[str]) -> None:
-        if self.network is not None:
-            try:
-                self.network._set_tile_block(self.x, self.y, value)
-                self._block_section_id_local = None
-                return
-            except AttributeError:
-                pass
-        self._block_section_id_local = value
+        return self._segment_id_local
 
     # ========== Computed properties ==========
     @property
@@ -466,9 +493,9 @@ class Tile:
             if switch is not None:
                 return getattr(switch, "occupied_by", None)
         # Block tiles: read through the owning block.
-        bsid = self.block_section_id
-        if bsid is not None and hasattr(self.network, "blocks"):
-            block = self.network.blocks.get(bsid)
+        bid = self.block_id
+        if bid is not None and hasattr(self.network, "blocks"):
+            block = self.network.blocks.get(bid)
             if block is not None:
                 return getattr(block, "occupied_by", None)
         return self._occupied_by_local
@@ -495,9 +522,9 @@ class Tile:
         """
         if self.network is None:
             return self._reserved_by_local
-        bsid = self.block_section_id
-        if bsid is not None and hasattr(self.network, "blocks"):
-            block = self.network.blocks.get(bsid)
+        bid = self.block_id
+        if bid is not None and hasattr(self.network, "blocks"):
+            block = self.network.blocks.get(bid)
             if block is not None:
                 return getattr(block, "reserved_for_train", None)
         return self._reserved_by_local
@@ -1093,7 +1120,12 @@ class Tile:
             "switch_state": self.switch_state if self.is_switch else None,
             "signal_ids": self.signal_ids,
             "station_id": self.station_id,
-            "block_section_id": self.block_section_id,
+            # `block_section_id` is the wire name for the owning BLOCK id (the
+            # frontend indexes the `blocks` payload with it). `segment_id` is
+            # the tile's stored geometry membership; the two differ only for a
+            # block that groups several segments.
+            "block_section_id": self.block_id,
+            "segment_id": self.segment_id,
             "switch_id": self.switch_id,  # NEW: Reference to Switch entity
             "length": self.length,
             # Computed
@@ -1125,7 +1157,9 @@ class Tile:
             "dead_end_ports": sorted(self.dead_end_ports),
             "signal_ids": self.signal_ids,
             "station_id": self.station_id,
-            "block_section_id": self.block_section_id,
+            # Persistence stores the tile's segment membership. Block grouping
+            # is restored from each `Block`'s own `segment_ids`.
+            "segment_id": self.segment_id,
             "switch_id": self.switch_id,
             "length": self.length,
         }
@@ -1137,18 +1171,18 @@ class Tile:
         Runtime fields (the dispatcher `switch_state` mirror) are not loaded
         from disk; they default to state 0 and the engine repopulates them.
         """
-        segment = cls(
+        tile = cls(
             x=data["x"],
             y=data["y"],
             track_bits=data.get("track_bits", 0),
             dead_end_ports=set(data.get("dead_end_ports", [])),
         )
-        segment.signal_ids = data.get("signal_ids", [])
-        segment.station_id = data.get("station_id")
-        segment.block_section_id = data.get("block_section_id")
-        segment.switch_id = data.get("switch_id")
-        segment.length = data.get("length", 1.0)
-        return segment
+        tile.signal_ids = data.get("signal_ids", [])
+        tile.station_id = data.get("station_id")
+        tile.segment_id = data.get("segment_id")
+        tile.switch_id = data.get("switch_id")
+        tile.length = data.get("length", 1.0)
+        return tile
 
     # ========== Utility ==========
     def get_required_switch_state(

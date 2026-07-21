@@ -1,12 +1,12 @@
 """
-BlockGeometryManager — owns Block topology / geometry mutation pulled out of
+SegmentGeometryManager — owns Block topology / geometry mutation pulled out of
 `RailwayNetwork`.
 
 Per design_new.md, `Block` is a data container; `BlockManager` is the sole
 mutator for runtime state (`occupied_by`, `_is_caution`, `reservation`);
 this module is the sole writer of geometry / topology fields
 (`length_cm`, `speed_limit_kmh`, `ordered_tiles`) and of
-`track.block_section_id` for block lifecycle. The `RailwayNetwork` keeps
+`track.segment_id` for block lifecycle. The `RailwayNetwork` keeps
 the doc-canonical method names as forwarders so existing callers (UI,
 scenario setup, tests) continue to work without change.
 """
@@ -17,13 +17,14 @@ from typing import TYPE_CHECKING, List, Optional, Set, Tuple
 
 from block import Block
 from railway_signal import SignalState, SignalType
+from segment import Segment, TileEntry
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
     from railway_signal import Signal
 
 
-class BlockGeometryManager:
+class SegmentGeometryManager:
     """Owns block topology / geometry mutation for one `RailwayNetwork`."""
 
     _EDGE_OFFSETS = {"N": (0, 1), "E": (1, 0), "S": (0, -1), "W": (-1, 0)}
@@ -36,32 +37,28 @@ class BlockGeometryManager:
     # ordered_tiles maintenance
     # ------------------------------------------------------------------
 
-    def rebuild_block_ordered_tiles(self, block_id: str) -> None:
-        """Recompute `Block.ordered_tiles` from the block's current tile members.
+    def rebuild_segment_ordered_tiles(self, segment_id: str) -> None:
+        """Recompute `Segment.ordered_tiles` from the segment's current tiles.
 
-        Per design_new.md "Block model": `ordered_tiles` is a list of
+        Per design_new.md "segment": `ordered_tiles` is a list of
         `(x, y, entry_edge)` entries giving the canonical local traversal
         order. Each `entry_edge` is the external edge through which forward
         traversal enters that tile. `ordered_tiles[0]` is the canonical
         forward-entry anchor.
 
-        Every geometry mutation that adds or removes a tile from a block
+        Every geometry mutation that adds or removes a tile from a segment
         must call this so consumers (path completion direction check,
         block-direction helper, etc.) see the live order.
+
+        This works on exactly one segment, so a block that groups several
+        segments rebuilds correctly: each member is walked over its own tiles
+        and written back to itself, and the block's `ordered_tiles` read stays
+        the concatenation of its members.
         """
-        from block import BlockTileEntry
+        from segment import TileEntry
 
-        block = self._n.blocks.get(block_id)
-        if block is None:
-            return
-
-        # A block that groups several segments has no tile list of its own:
-        # `Block.ordered_tiles` is the concatenation of its members', which is
-        # always current. Rebuilding here would flatten every member's tiles
-        # into one walk and write it to a single segment, duplicating tiles and
-        # destroying the others. Tile membership inside a grouped block is
-        # edited per segment, so there is nothing to rebuild at block level.
-        if len(block.segments) > 1:
+        segment = self._n.get_segment(segment_id)
+        if segment is None:
             return
 
         # `ordered_tiles` feeds the cached per-block traversal direction
@@ -73,11 +70,11 @@ class BlockGeometryManager:
         for (x, y), track in self._n.tracks.items():
             if track is None or track.is_switch:
                 continue
-            if getattr(track, "block_section_id", None) == block_id:
+            if getattr(track, "segment_id", None) == segment_id:
                 in_block.append((x, y))
 
         if not in_block:
-            block.ordered_tiles = []
+            segment.ordered_tiles = []
             return
 
         # Build adjacency over same-block neighbours.
@@ -124,9 +121,9 @@ class BlockGeometryManager:
                 edge_from_prev = self._edge_for_delta(dx, dy)
                 entry_edge = self._OPPOSITE_EDGE.get(edge_from_prev or "", "") or ""
             entries.append(
-                BlockTileEntry(x=tile[0], y=tile[1], entry_edge=entry_edge)
+                TileEntry(x=tile[0], y=tile[1], entry_edge=entry_edge)
             )
-        block.ordered_tiles = entries
+        segment.ordered_tiles = entries
 
     def reverse_segment_orientation(self, segment_id: str) -> bool:
         """Flip a segment's stored tile order end-for-end.
@@ -142,8 +139,6 @@ class BlockGeometryManager:
         Each `entry_edge` is recomputed for the new direction. Returns False
         when the segment is unknown or has fewer than two tiles.
         """
-        from block import BlockTileEntry
-
         segment = self._n.get_segment(segment_id)
         if segment is None or len(segment.ordered_tiles) < 2:
             return False
@@ -161,7 +156,7 @@ class BlockGeometryManager:
                 )
                 entry_edge = self._OPPOSITE_EDGE.get(edge_from_prev or "", "") or ""
             entries.append(
-                BlockTileEntry(x=tile[0], y=tile[1], entry_edge=entry_edge)
+                TileEntry(x=tile[0], y=tile[1], entry_edge=entry_edge)
             )
         segment.ordered_tiles = entries
         self._n.invalidate_pathfinding_cache()
@@ -209,30 +204,39 @@ class BlockGeometryManager:
             return "W"
         return None
 
-    def create_block(self, block_id: str, name: str = "") -> Block:
+    def create_segment(self, segment_id: str, name: str = "") -> Block:
         """
-        Create a new empty block.
+        Create a new empty segment and the block that owns it.
+
+        A fresh segment is not part of any grouping, so it gets its own block
+        under the default one-feed-per-segment rule, and that block takes the
+        segment's id. Grouping several segments under one block is a separate
+        operation on `BlockGroupingManager`.
 
         Args:
-            block_id: Unique identifier for the block
+            segment_id: Unique identifier for the segment
             name: Optional human-readable name
 
         Returns:
-            Created Block instance
+            The owning Block. Callers configure geometry (length, speed limit)
+            and block policy (holding point, disabled) through it; its geometry
+            properties delegate to the single member segment.
 
         Raises:
-            ValueError: If block_id already exists
+            ValueError: If segment_id already exists
         """
-        if block_id in self._n.blocks:
-            raise ValueError(f"Block {block_id} already exists")
-        block = Block(block_id=block_id, name=name)
-        self._n.blocks[block_id] = block
+        if segment_id in self._n.blocks:
+            raise ValueError(f"Block {segment_id} already exists")
+        if self._n.get_segment(segment_id) is not None:
+            raise ValueError(f"Segment {segment_id} already exists")
+        block = Block(block_id=segment_id, name=name)
+        self._n.blocks[segment_id] = block
         self._n._ensure_resource_managers()
         return block
 
-    def create_block_with_tracks(
+    def create_segment_with_tracks(
         self,
-        block_id: str,
+        segment_id: str,
         positions: List[Tuple[int, int]],
         name: str = "",
         length_cm: float = 0.0,
@@ -240,87 +244,89 @@ class BlockGeometryManager:
         validate: bool = True,
     ) -> Block:
         """
-        Create a new block and assign tracks to it with full validation.
+        Create a segment holding `positions`, with full validation.
 
-        This is the RECOMMENDED way to create blocks. Validates:
-        - Block ID uniqueness
-        - Block properties are valid
+        This is the RECOMMENDED way to lay down track geometry. Validates:
+        - Segment ID uniqueness
+        - Segment properties are valid
         - All positions have valid tracks
         - No tracks are switches, signals, or stations
-        - No tracks are already in other blocks
+        - No tracks are already in another segment
         - All tracks form a continuous path
 
         Args:
-            block_id: Unique block identifier
+            segment_id: Unique segment identifier
             positions: List of (x, y) track positions
-            name: Human-readable block name
+            name: Human-readable name
             length_cm: Physical track length
             speed_limit_kmh: Optional speed limit
             validate: If True, perform full validation (recommended)
 
         Returns:
-            Created Block instance
+            The Block that owns the new segment. A fresh segment gets its own
+            block under the default one-feed-per-segment rule, so that block
+            takes the segment's id.
 
         Raises:
             ValueError: If validation fails
 
         Example:
-            # Create a block with validated tracks
-            block = network.create_block_with_tracks(
-                block_id="BLOCK_MAIN_1",
+            # Create a segment with validated tracks
+            block = network.create_segment_with_tracks(
+                segment_id="BLOCK_MAIN_1",
                 positions=[(0,0), (1,0), (2,0)],
                 name="Main Line Section 1",
                 length_cm=150.0,
                 speed_limit_kmh=80.0
             )
         """
-        from block_validation import (
-            validate_block_properties,
-            validate_track_for_block,
-            validate_block_assignment_continuity,
+        from segment_validation import (
+            validate_segment_properties,
+            validate_track_for_segment,
+            validate_segment_assignment_continuity,
             validate_station_boundary,
         )
 
-        # Validate block properties
+        # Validate segment properties
         if validate:
-            is_valid, errors = validate_block_properties(
-                block_id, name, length_cm, speed_limit_kmh
+            is_valid, errors = validate_segment_properties(
+                segment_id, name, length_cm, speed_limit_kmh
             )
             if not is_valid:
                 raise ValueError(f"Invalid block properties: {', '.join(errors)}")
 
-            # Validate station boundaries - blocks cannot cross station boundaries
+            # Validate station boundaries - segments cannot cross station boundaries
             valid, error = validate_station_boundary(positions, self._n)
             if not valid:
                 raise ValueError(f"Station boundary violation: {error}")
 
-        # Check block doesn't already exist
-        if block_id in self._n.blocks:
-            raise ValueError(f"Block {block_id} already exists")
+        # Check segment doesn't already exist
+        if segment_id in self._n.blocks:
+            raise ValueError(f"Block {segment_id} already exists")
 
         # Validate all tracks
         if validate:
             for x, y in positions:
                 track = self._n.get_track(x, y)
-                is_valid, error = validate_track_for_block(track, self._n)
+                is_valid, error = validate_track_for_segment(track, self._n)
                 if not is_valid:
                     raise ValueError(f"Track at ({x}, {y}): {error}")
 
-                # Check not already in another block
-                if track.block_section_id:
+                # Check not already in another segment
+                if track.segment_id:
                     raise ValueError(
-                        f"Track at ({x}, {y}) already in block {track.block_section_id}"
+                        f"Track at ({x}, {y}) already in block {track.segment_id}"
                     )
 
             # Validate continuity
-            is_continuous, errors = validate_block_assignment_continuity(
+            is_continuous, errors = validate_segment_assignment_continuity(
                 [], positions, self._n
             )
             if not is_continuous:
                 raise ValueError(f"Block tracks not continuous: {', '.join(errors)}")
 
-        # Create block
-        block = self.create_block(block_id, name)
+        # Create the segment and its owning block
+        block = self.create_segment(segment_id, name)
         block.length_cm = length_cm
         if speed_limit_kmh:
             block.speed_limit_kmh = speed_limit_kmh
@@ -329,61 +335,65 @@ class BlockGeometryManager:
         for x, y in positions:
             track = self._n.get_track(x, y)
             if track:
-                track.block_section_id = block_id
+                track.segment_id = segment_id
 
-        # Populate Block.ordered_tiles per design_new.md "Block model" so
+        # Populate Segment.ordered_tiles per design_new.md "segment" so
         # path completion direction check and the block-direction helper
         # have geometry to work with.
-        self.rebuild_block_ordered_tiles(block_id)
+        self.rebuild_segment_ordered_tiles(segment_id)
 
         return block
 
-    def extend_block(
+    def extend_segment(
         self,
-        block_id: str,
+        segment_id: str,
         new_positions: List[Tuple[int, int]],
         force: bool = False,
         force_overwrite: bool = False,
     ) -> Block:
         """
-        Extend an existing block with new track positions.
+        Extend an existing segment with new track positions.
 
         Validates:
-        - Block exists
-        - All new tracks are valid for blocks (unless force=True for signals)
-        - New tracks are adjacent to existing block
-        - Extended block remains continuous
+        - Segment exists
+        - All new tracks are valid for segments (unless force=True for signals)
+        - New tracks are adjacent to the existing segment
+        - Extended segment remains continuous
 
         Args:
-            block_id: ID of block to extend
+            segment_id: ID of segment to extend
             new_positions: List of (x, y) positions to add
-            force: If True, removes signals from tiles to allow block extension.
-                   This allows extending a block past a signal boundary.
+            force: If True, removes signals from tiles to allow the extension.
+                   This allows extending a segment past a signal boundary.
             force_overwrite: If True, allows overwriting tracks that belong to
-                   other blocks (reassigns them to this block).
+                   other segments (reassigns them to this segment).
 
         Returns:
-            Updated Block instance
+            The Block that owns the extended segment.
 
         Raises:
             ValueError: If validation fails
         """
-        from block_validation import (
-            validate_track_for_block,
-            validate_block_assignment_continuity,
-            crossing_disallowed_in_block,
+        from segment_validation import (
+            validate_track_for_segment,
+            validate_segment_assignment_continuity,
+            crossing_disallowed_in_segment,
         )
 
-        if block_id not in self._n.blocks:
-            raise ValueError(f"Block {block_id} not found")
+        segment = self._n.get_segment(segment_id)
+        if segment is None:
+            raise ValueError(f"Block {segment_id} not found")
 
+        # Signals monitor blocks, so signal bookkeeping below is against the
+        # block that owns this segment, not the segment itself.
+        block_id = self._n.segment_to_block_id(segment_id)
         block = self._n.blocks[block_id]
-        existing_positions = self._n.get_block_positions(block_id)
+        existing_positions = self._n.get_segment_positions(segment_id)
 
         # Track signals that need to be removed when force=True
         signals_to_remove = []
-        # Track blocks that will be affected by force_overwrite
-        overwritten_blocks = set()
+        # Track segments that will be affected by force_overwrite
+        overwritten_segments = set()
 
         # Validate each new position
         for x, y in new_positions:
@@ -393,7 +403,7 @@ class BlockGeometryManager:
 
             # Disallowed crossings are never allowed, even with force. The
             # orthogonal NS+EW crossing may belong to a block.
-            if crossing_disallowed_in_block(track.track_bits):
+            if crossing_disallowed_in_segment(track.track_bits):
                 raise ValueError(
                     f"Track at ({x}, {y}): Cannot add crossing to block - crossings isolate paths"
                 )
@@ -421,13 +431,13 @@ class BlockGeometryManager:
                         f"Track at ({x}, {y}): Has signal(s) - use force=true to extend past signal"
                     )
 
-            if track.block_section_id and track.block_section_id != block_id:
+            if track.segment_id and track.segment_id != segment_id:
                 if force_overwrite:
-                    # Track the block that will lose this track
-                    overwritten_blocks.add(track.block_section_id)
+                    # Track the segment that will lose this track
+                    overwritten_segments.add(track.segment_id)
                 else:
                     raise ValueError(
-                        f"Track at ({x}, {y}) already in block {track.block_section_id}"
+                        f"Track at ({x}, {y}) already in block {track.segment_id}"
                     )
 
         # Check adjacency
@@ -443,8 +453,8 @@ class BlockGeometryManager:
         if not is_adjacent and len(existing_positions) > 0:
             raise ValueError("New positions must be adjacent to existing block")
 
-        # Validate station boundaries - block cannot cross station boundaries
-        from block_validation import validate_station_boundary
+        # Validate station boundaries - segment cannot cross station boundaries
+        from segment_validation import validate_station_boundary
 
         all_positions = existing_positions + new_positions
         valid, error = validate_station_boundary(all_positions, self._n)
@@ -476,7 +486,7 @@ class BlockGeometryManager:
                 signal.state = SignalState.RED
 
         # Validate continuity
-        is_continuous, errors = validate_block_assignment_continuity(
+        is_continuous, errors = validate_segment_assignment_continuity(
             existing_positions, new_positions, self._n
         )
         if not is_continuous:
@@ -486,93 +496,107 @@ class BlockGeometryManager:
         for x, y in new_positions:
             track = self._n.get_track(x, y)
             if track:
-                track.block_section_id = block_id
+                track.segment_id = segment_id
 
-        # Refresh ordered_tiles for both this block and any block we
+        # Refresh ordered_tiles for both this segment and any segment we
         # overwrote tiles from, so the geometry view stays in sync.
-        self.rebuild_block_ordered_tiles(block_id)
-        for ob in overwritten_blocks:
-            if ob != block_id and ob in self._n.blocks:
-                self.rebuild_block_ordered_tiles(ob)
+        self.rebuild_segment_ordered_tiles(segment_id)
+        for os_id in overwritten_segments:
+            if os_id != segment_id and self._n.get_segment(os_id) is not None:
+                self.rebuild_segment_ordered_tiles(os_id)
 
         # Store invalidated signals info on block for API response
         block._invalidated_signals = invalidated_signals
 
         return block
 
-    def delete_block(self, block_id: str) -> bool:
+    def delete_segment(self, segment_id: str) -> bool:
         """
-        Delete block and clear references from all tracks.
-        Also disconnects signals monitoring this block.
+        Delete a segment and clear its references from all tracks.
+
+        The segment is removed from the block that owned it. If that was the
+        block's last member the block goes too, and the signals monitoring it
+        are disconnected; a block that still has other members survives and
+        keeps its signals, because it is still a block those signals monitor.
 
         Args:
-            block_id: ID of block to delete
+            segment_id: ID of segment to delete
 
         Returns:
             True if deleted, False if not found
         """
-        if block_id not in self._n.blocks:
+        block_id = self._n.segment_to_block_id(segment_id)
+        if block_id is None:
             return False
 
-        # Clear block_section_id from all tracks in this block
+        # Clear segment membership from all tracks in this segment
         for track in self._n.tracks.values():
-            if track.block_section_id == block_id:
-                track.block_section_id = None
+            if track.segment_id == segment_id:
+                track.segment_id = None
 
-        # Disconnect signals monitoring this block (don't delete them)
-        for signal in self._n.signals.values():
-            if signal.monitored_block_id == block_id:
-                signal.monitored_block_id = None
+        block = self._n.blocks[block_id]
+        block.segments = [s for s in block.segments if s.segment_id != segment_id]
 
-        del self._n.blocks[block_id]
+        if not block.segments:
+            # Disconnect signals monitoring this block (don't delete them)
+            for signal in self._n.signals.values():
+                if signal.monitored_block_id == block_id:
+                    signal.monitored_block_id = None
+            del self._n.blocks[block_id]
+
+        self._n.invalidate_pathfinding_cache()
         return True
 
-    def assign_track_to_block(
-        self, x: int, y: int, block_id: Optional[str], validate_continuity: bool = True
+    def assign_track_to_segment(
+        self,
+        x: int,
+        y: int,
+        segment_id: Optional[str],
+        validate_continuity: bool = True,
     ) -> None:
         """
-        Assign a track to a block, validating block membership and continuity.
+        Assign a track to a segment, validating membership and continuity.
 
         Args:
             x, y: Track position
-            block_id: Block ID to assign (None to unassign)
+            segment_id: Segment ID to assign (None to unassign)
             validate_continuity: If True, check that assignment maintains continuity
 
         Raises:
             ValueError: If validation fails with detailed error message
         """
-        from block_validation import (
-            validate_track_for_block,
-            validate_block_assignment_continuity,
+        from segment_validation import (
+            validate_track_for_segment,
+            validate_segment_assignment_continuity,
         )
 
         track = self._n.get_track(x, y)
         if not track:
             raise ValueError(f"No track at position ({x}, {y})")
 
-        # If assigning to a block
-        if block_id:
-            # Check block exists
-            if block_id not in self._n.blocks:
-                raise ValueError(f"Block {block_id} does not exist")
+        # If assigning to a segment
+        if segment_id:
+            # Check segment exists
+            if self._n.get_segment(segment_id) is None:
+                raise ValueError(f"Block {segment_id} does not exist")
 
-            # Validate track can be in a block
-            is_valid, error = validate_track_for_block(track, self._n)
+            # Validate track can be in a segment
+            is_valid, error = validate_track_for_segment(track, self._n)
             if not is_valid:
                 raise ValueError(f"Cannot assign track at ({x}, {y}) to block: {error}")
 
-            # Check if already assigned to a different block
-            if track.block_section_id and track.block_section_id != block_id:
+            # Check if already assigned to a different segment
+            if track.segment_id and track.segment_id != segment_id:
                 raise ValueError(
-                    f"Track at ({x}, {y}) already assigned to block {track.block_section_id}. "
+                    f"Track at ({x}, {y}) already assigned to block {track.segment_id}. "
                     f"Unassign first or use reassign method."
                 )
 
             # Validate continuity if requested
             if validate_continuity:
-                existing_positions = self._n.get_block_positions(block_id)
+                existing_positions = self._n.get_segment_positions(segment_id)
                 if len(existing_positions) > 0:
-                    is_continuous, errors = validate_block_assignment_continuity(
+                    is_continuous, errors = validate_segment_assignment_continuity(
                         existing_positions, [(x, y)], self._n
                     )
                     if not is_continuous:
@@ -582,22 +606,24 @@ class BlockGeometryManager:
                         )
 
         # Assignment is valid - update
-        track.block_section_id = block_id
+        track.segment_id = segment_id
 
-    def validate_block_continuity(self, block_id: str) -> Tuple[bool, List[str]]:
+    def validate_segment_continuity(self, segment_id: str) -> Tuple[bool, List[str]]:
         """
-        Check if block tracks form a connected graph.
+        Check if a segment's tracks form a connected graph.
 
-        Uses BFS to verify all tracks in the block are reachable from
-        any starting track via edge connections.
+        Uses BFS to verify all tracks in the segment are reachable from
+        any starting track via edge connections. Continuity is a per-segment
+        property: a block groups segments that meet end to end, and that
+        grouping is checked by `BlockGroupingManager.plan_run`.
 
         Args:
-            block_id: Block ID to validate
+            segment_id: Segment ID to validate
 
         Returns:
             Tuple of (is_valid, list of error messages)
         """
-        tracks = self._n.get_block_tracks(block_id)
+        tracks = self._n.get_segment_tracks(segment_id)
         if len(tracks) <= 1:
             return True, []
 
@@ -631,113 +657,133 @@ class BlockGeometryManager:
 
         return True, []
 
-    def remove_tile_from_block(self, x: int, y: int) -> List[str]:
+    def remove_tile_from_segment(self, x: int, y: int) -> List[str]:
         """
-        Remove a tile from its block and handle connectivity check.
+        Remove a tile from its segment and handle the connectivity check.
 
-        This is the core lifecycle method for block management. When a tile
-        is removed from a block (due to station/signal placement, or track deletion),
-        this method:
-        1. Clears the tile's block_section_id
-        2. Checks if remaining block tiles are still connected
-        3. If disconnected, splits into new child blocks
+        This is the core lifecycle method for geometry management. When a tile
+        is removed from a segment (due to station/signal placement, or track
+        deletion), this method:
+        1. Clears the tile's segment_id
+        2. Checks if the remaining segment tiles are still connected
+        3. If disconnected, splits into new child segments
 
         Args:
-            x, y: Tile position to remove from its block
+            x, y: Tile position to remove from its segment
 
         Returns:
-            List of affected block IDs (original + any new child blocks created)
+            List of affected ids (the original + any new child ids created)
         """
         track = self._n.get_track(x, y)
-        if not track or not track.block_section_id:
+        if not track or not track.segment_id:
             return []
 
-        block_id = track.block_section_id
-        track.block_section_id = None
+        segment_id = track.segment_id
+        track.segment_id = None
 
-        # Check and potentially split the block
-        return self._check_block_connectivity(block_id)
+        # Check and potentially split the segment
+        return self._check_segment_connectivity(segment_id)
 
-    def remove_tiles_from_block(self, positions: List[Tuple[int, int]]) -> List[str]:
+    def remove_tiles_from_segment(self, positions: List[Tuple[int, int]]) -> List[str]:
         """
-        Remove multiple tiles from their block(s) and handle connectivity.
+        Remove multiple tiles from their segment(s) and handle connectivity.
 
-        This is a batch version of remove_tile_from_block for efficiency.
-        All tiles should belong to the same block for proper splitting.
+        This is a batch version of remove_tile_from_segment for efficiency.
 
         Args:
             positions: List of (x, y) positions to remove
 
         Returns:
-            List of affected block IDs
+            List of affected ids
         """
         if not positions:
             return []
 
-        # Group positions by block
-        blocks_affected = {}
+        # Group positions by segment
+        segments_affected = {}
         for x, y in positions:
             track = self._n.get_track(x, y)
-            if track and track.block_section_id:
-                block_id = track.block_section_id
-                if block_id not in blocks_affected:
-                    blocks_affected[block_id] = []
-                blocks_affected[block_id].append((x, y))
-                track.block_section_id = None
+            if track and track.segment_id:
+                segment_id = track.segment_id
+                if segment_id not in segments_affected:
+                    segments_affected[segment_id] = []
+                segments_affected[segment_id].append((x, y))
+                track.segment_id = None
 
-        # Check connectivity for each affected block
+        # Check connectivity for each affected segment
         all_affected = []
-        for block_id in blocks_affected:
-            affected = self._check_block_connectivity(block_id)
+        for segment_id in segments_affected:
+            affected = self._check_segment_connectivity(segment_id)
             all_affected.extend(affected)
 
         return all_affected
 
-    def _check_block_connectivity(self, block_id: str) -> List[str]:
+    def _check_segment_connectivity(self, segment_id: str) -> List[str]:
         """
-        Check block connectivity and split if disconnected.
+        Check segment connectivity and split if disconnected.
 
-        After tiles are removed from a block, this method:
+        After tiles are removed from a segment, this method:
         1. Gets remaining tile positions
         2. Finds connected components
-        3. If multiple components, deletes original and creates child blocks
+        3. If multiple components, replaces the segment with child segments
         4. Remaps orphaned signals to nearest reachable child block
 
         Args:
-            block_id: Block ID to check
+            segment_id: Segment ID to check
 
         Returns:
-            List of affected block IDs (may include new child block IDs)
+            List of affected ids (may include new child ids)
         """
-        block = self._n.blocks.get(block_id)
-        if not block:
+        segment = self._n.get_segment(segment_id)
+        if segment is None:
             return []
 
-        remaining_positions = self._n.get_block_positions(block_id)
+        block_id = self._n.segment_to_block_id(segment_id)
+        block = self._n.blocks[block_id]
+        remaining_positions = self._n.get_segment_positions(segment_id)
 
-        # Case 1: Block is now empty
+        # Case 1: Segment is now empty
         if not remaining_positions:
-            self._disconnect_signals_for_block(block_id)
-            self.delete_block(block_id)
-            return [block_id]
+            # delete_segment drops the owning block too when this was its last
+            # member, and only then are its signals orphaned.
+            was_last_member = len(block.segments) == 1
+            if was_last_member:
+                self._disconnect_signals_for_block_of_segment(block_id)
+            self.delete_segment(segment_id)
+            return [segment_id]
 
         # Find connected components
         components = self._find_connected_components(remaining_positions)
 
-        # Case 2: Single component - block is still connected
+        # Case 2: Single component - segment is still connected
         if len(components) == 1:
-            return [block_id]
+            return [segment_id]
 
-        # Case 3: Multiple components - split into child blocks
-        # Get signals monitoring this block before deletion
+        # Case 3: Multiple components - split into child segments.
+        # A block that groups several segments keeps its identity: the children
+        # replace the parent segment inside it, so the operator's power grouping
+        # and the signals monitoring that block both survive.
+        if len(block.segments) > 1:
+            new_ids = self._create_child_segments(
+                segment, block, components, install_in_parent_block=True
+            )
+            block.segments = [
+                sg for sg in block.segments if sg.segment_id != segment_id
+            ]
+            self._n.invalidate_pathfinding_cache()
+            return [segment_id] + new_ids
+
+        # The parent segment was the block's only member, so the block is
+        # replaced by one fresh block per child.
         orphaned_signals = [
             signal
             for signal in self._n.signals.values()
             if signal.monitored_block_id == block_id
         ]
 
-        # Create child blocks
-        new_block_ids = self._create_child_blocks(block, components)
+        new_block_ids = self._create_child_segments(
+            segment, block, components, install_in_parent_block=False
+        )
 
         # Delete original block (but don't disconnect signals yet - we'll remap them)
         if block_id in self._n.blocks:
@@ -746,9 +792,9 @@ class BlockGeometryManager:
         # Remap orphaned signals to nearest reachable child block
         self._remap_orphaned_signals(orphaned_signals, new_block_ids)
 
-        return [block_id] + new_block_ids
+        return [segment_id] + new_block_ids
 
-    def _disconnect_signals_for_block(self, block_id: str) -> None:
+    def _disconnect_signals_for_block_of_segment(self, block_id: str) -> None:
         """
         Disconnect all signals monitoring the specified block.
 
@@ -761,120 +807,130 @@ class BlockGeometryManager:
             if signal.monitored_block_id == block_id:
                 signal.monitored_block_id = None
 
-    # === Unified Block Lifecycle Management ===
+    # === Unified Segment Lifecycle Management ===
 
-    def _create_child_blocks(
-        self, parent_block: Block, components: List[List[Tuple[int, int]]]
+    def _create_child_segments(
+        self,
+        parent_segment: "Segment",
+        parent_block: Block,
+        components: List[List[Tuple[int, int]]],
+        install_in_parent_block: bool,
     ) -> List[str]:
         """
-        Create child blocks from connected components, inheriting parent properties.
+        Create child segments from connected components, inheriting properties.
 
-        Child blocks inherit:
+        Child segments inherit:
         - name: "{parent.name}_1", "{parent.name}_2", etc.
         - length_cm: Calculated based on tile count × length_per_tile_cm from parent
         - min_radius_cm, speed_limit_kmh (copied as-is)
-        - state: Reset to FREE (original occupancy doesn't transfer cleanly)
 
         Args:
-            parent_block: Original block being split
+            parent_segment: Original segment being split
+            parent_block: The block that owned it
             components: List of connected components (each is list of positions)
+            install_in_parent_block: When True the children join `parent_block`,
+                keeping its grouping and its signals. When False (the parent was
+                the block's only member) each child gets its own fresh block,
+                so occupancy resets to FREE — the parent's occupancy does not
+                transfer cleanly across a split.
 
         Returns:
-            List of new block IDs
+            List of new child IDs
         """
-        new_block_ids = []
-        base_name = parent_block.name if parent_block.name else parent_block.block_id
+        new_ids = []
+        base_name = (
+            parent_segment.name if parent_segment.name else parent_segment.segment_id
+        )
 
-        # Calculate length per tile from parent block
+        # Calculate length per tile from the parent segment
         # Check if parent has stored length_per_tile_cm (from station split)
         length_per_tile_cm = getattr(parent_block, "_length_per_tile_cm", None)
 
         if length_per_tile_cm is None:
-            if (
-                not hasattr(parent_block, "length_cm")
-                or parent_block.length_cm is None
-                or parent_block.length_cm <= 0
-            ):
-                parent_block.length_cm = 0.0
-            parent_positions = self._n.get_block_positions(parent_block.block_id)
-            if parent_positions and parent_block.length_cm > 0:
-                length_per_tile_cm = parent_block.length_cm / len(parent_positions)
+            if parent_segment.length_cm is None or parent_segment.length_cm <= 0:
+                parent_segment.length_cm = 0.0
+            parent_positions = self._n.get_segment_positions(
+                parent_segment.segment_id
+            )
+            if parent_positions and parent_segment.length_cm > 0:
+                length_per_tile_cm = parent_segment.length_cm / len(parent_positions)
             else:
                 total_tiles = sum(len(comp) for comp in components)
-                if total_tiles > 0 and parent_block.length_cm > 0:
-                    length_per_tile_cm = parent_block.length_cm / total_tiles
+                if total_tiles > 0 and parent_segment.length_cm > 0:
+                    length_per_tile_cm = parent_segment.length_cm / total_tiles
                 else:
                     length_per_tile_cm = 0.0
 
         for i, component_positions in enumerate(components, start=1):
-            # Generate child block ID and name
-            child_id = f"{parent_block.block_id}_{i}"
+            # Generate child segment ID and name
+            child_id = f"{parent_segment.segment_id}_{i}"
             child_name = f"{base_name}_{i}"
 
-            # Calculate child block length based on tile count
+            # Calculate child length based on tile count
             child_length_cm = (
                 len(component_positions) * length_per_tile_cm
                 if length_per_tile_cm > 0
                 else 0.0
             )
 
-            # Create child block with inherited properties
-            # v1: Block.state is a derived @property; do not pass it to the
-            # constructor. occupied_by defaults to None which yields FREE.
-            child_block = Block(
-                block_id=child_id,
+            child_segment = Segment(
+                segment_id=child_id,
                 name=child_name,
                 length_cm=child_length_cm,  # Calculated based on tile count
-                min_radius_cm=parent_block.min_radius_cm,
-                speed_limit_kmh=parent_block.speed_limit_kmh,
-                occupied_by=None,
+                min_radius_cm=parent_segment.min_radius_cm,
+                grade_percent=parent_segment.grade_percent,
+                speed_limit_kmh=parent_segment.speed_limit_kmh,
             )
 
-            self._n.blocks[child_id] = child_block
+            if install_in_parent_block:
+                parent_block.segments.append(child_segment)
+            else:
+                # v1: Block.state is a derived @property; do not pass it to the
+                # constructor. occupied_by defaults to None which yields FREE.
+                self._n.blocks[child_id] = Block(
+                    block_id=child_id,
+                    name=child_name,
+                    occupied_by=None,
+                    segments=[child_segment],
+                )
             self._n._ensure_resource_managers()
 
             for x, y in component_positions:
                 track = self._n.get_track(x, y)
                 if track:
-                    track.block_section_id = child_id
+                    track.segment_id = child_id
 
-            # Populate ordered_tiles per design_new.md "Block model".
-            # Inherit each tile's `entry_edge` from the parent block so the
+            # Populate ordered_tiles per design_new.md "segment".
+            # Inherit each tile's `entry_edge` from the parent segment so the
             # child's local traversal direction matches the parent's (this
-            # matters for single-tile child blocks where the connectivity
+            # matters for single-tile child segments where the connectivity
             # graph alone is ambiguous — picking the first cardinal
-            # neighbour can flip the block's forward direction).
-            self._rebuild_child_ordered_tiles(child_id, parent_block)
+            # neighbour can flip the forward direction).
+            self._rebuild_child_ordered_tiles(child_segment, parent_segment)
 
-            new_block_ids.append(child_id)
+            new_ids.append(child_id)
 
-        return new_block_ids
+        return new_ids
 
     def _rebuild_child_ordered_tiles(
-        self, child_id: str, parent_block: "Block"
+        self, child: "Segment", parent_segment: "Segment"
     ) -> None:
-        """Rebuild a child block's ordered_tiles using inherited entry_edges
-        from `parent_block.ordered_tiles` where possible.
+        """Rebuild a child segment's ordered_tiles using inherited entry_edges
+        from `parent_segment.ordered_tiles` where possible.
 
         Falls back to the standard rebuild for any tile the parent didn't
         record an entry_edge for.
         """
-        from block import BlockTileEntry
-
-        child = self._n.blocks.get(child_id)
-        if child is None:
-            return
-
         parent_entry_by_tile = {
             (entry.x, entry.y): entry.entry_edge
-            for entry in (parent_block.ordered_tiles or [])
+            for entry in (parent_segment.ordered_tiles or [])
         }
 
         child_tiles = []
         for (x, y), track in self._n.tracks.items():
             if track is None or track.is_switch:
                 continue
-            if getattr(track, "block_section_id", None) == child_id:
+            if getattr(track, "segment_id", None) == child.segment_id:
                 child_tiles.append((x, y))
 
         if not child_tiles:
@@ -885,7 +941,7 @@ class BlockGeometryManager:
         # parent listed first comes first here.
         parent_order = {
             (entry.x, entry.y): i
-            for i, entry in enumerate(parent_block.ordered_tiles or [])
+            for i, entry in enumerate(parent_segment.ordered_tiles or [])
         }
         child_tiles.sort(key=lambda t: (parent_order.get(t, 10**9), t))
 
@@ -894,13 +950,13 @@ class BlockGeometryManager:
             inherited = parent_entry_by_tile.get(tile)
             if inherited:
                 entries.append(
-                    BlockTileEntry(x=tile[0], y=tile[1], entry_edge=inherited)
+                    TileEntry(x=tile[0], y=tile[1], entry_edge=inherited)
                 )
             else:
                 # Fallback for tiles the parent didn't record (shouldn't
                 # happen, but stay safe).
                 entries.append(
-                    BlockTileEntry(
+                    TileEntry(
                         x=tile[0],
                         y=tile[1],
                         entry_edge=self._external_entry_edge(tile, set(child_tiles)),

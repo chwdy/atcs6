@@ -227,7 +227,7 @@ class TestMultiBlockStationAPI:
         network.add_track(Tile(0, 3, TRACK_NS))
         station = network.add_station(0, 1, station_id="STA_001", name="Test Station")
         network.extend_station("STA_001", [(0, 2), (0, 3)])
-        network.create_block("BLK_001")
+        network.create_segment("BLK_001")
         success = station.assign_tile_to_block(0, 2, "BLK_001")
         assert success
         assert station.get_block_for_tile(0, 2) == "BLK_001"
@@ -237,7 +237,7 @@ class TestMultiBlockStationAPI:
         network.add_track(Tile(0, 2, TRACK_NS))
         station = network.add_station(0, 1, station_id="STA_001", name="Test Station")
         network.extend_station("STA_001", [(0, 2)])
-        network.create_block("BLK_001")
+        network.create_segment("BLK_001")
         station.assign_tile_to_block(0, 1, "BLK_001")
         assert station.get_block_for_tile(0, 1) == "BLK_001"
         success = station.unassign_tile_from_block(0, 1)
@@ -250,8 +250,8 @@ class TestMultiBlockStationAPI:
         network.add_track(Tile(0, 3, TRACK_NS))
         station = network.add_station(0, 1, station_id="STA_001", name="Test Station")
         network.extend_station("STA_001", [(0, 2), (0, 3)])
-        network.create_block("BLK_001")
-        network.create_block("BLK_002")
+        network.create_segment("BLK_001")
+        network.create_segment("BLK_002")
         station.assign_tile_to_block(0, 1, "BLK_001")
         station.assign_tile_to_block(0, 2, "BLK_002")
         station.assign_tile_to_block(0, 3, "BLK_002")
@@ -263,7 +263,7 @@ class TestMultiBlockStationAPI:
         network.add_track(Tile(0, 2, TRACK_NS))
         station = network.add_station(0, 1, station_id="STA_001", name="Test Station")
         network.extend_station("STA_001", [(0, 2)])
-        network.create_block("BLK_001")
+        network.create_segment("BLK_001")
         station.assign_tile_to_block(0, 1, "BLK_001")
         station.assign_tile_to_block(0, 2, "BLK_001")
         data = station.to_dict()
@@ -300,31 +300,31 @@ class TestExtensionValidation:
         network.add_track(Tile(0, 0, TRACK_EW))
         network.add_track(Tile(1, 0, TRACK_EW))
         network.add_track(Tile(2, 0, TRACK_EW))
-        network.create_block("BLOCK_A")
-        network.assign_track_to_block(0, 0, "BLOCK_A")
-        network.assign_track_to_block(1, 0, "BLOCK_A")
-        network.assign_track_to_block(2, 0, "BLOCK_A")
+        network.create_segment("BLOCK_A")
+        network.assign_track_to_segment(0, 0, "BLOCK_A")
+        network.assign_track_to_segment(1, 0, "BLOCK_A")
+        network.assign_track_to_segment(2, 0, "BLOCK_A")
         network.add_track(Tile(5, 0, TRACK_EW))
         with pytest.raises(ValueError, match="must be adjacent to existing block"):
-            network.extend_block("BLOCK_A", [(5, 0)])
+            network.extend_segment("BLOCK_A", [(5, 0)])
 
     def test_block_extension_rejects_diagonal_crossings(self, network):
         # Diagonal crossings (NW+SE, NE+SW) cannot be extended into a block.
         network.add_track(Tile(0, 0, TRACK_EW))
-        network.create_block("BLOCK_A")
-        network.assign_track_to_block(0, 0, "BLOCK_A")
+        network.create_segment("BLOCK_A")
+        network.assign_track_to_segment(0, 0, "BLOCK_A")
         network.add_track(Tile(1, 0, TRACK_NW | TRACK_SE))
         with pytest.raises(ValueError, match="Cannot add crossing to block"):
-            network.extend_block("BLOCK_A", [(1, 0)])
+            network.extend_segment("BLOCK_A", [(1, 0)])
 
     def test_block_extension_allows_orthogonal_crossing(self, network):
         # The orthogonal NS+EW crossing (track_bits 3) may be extended into a block.
         network.add_track(Tile(0, 0, TRACK_EW))
-        network.create_block("BLOCK_A")
-        network.assign_track_to_block(0, 0, "BLOCK_A")
+        network.create_segment("BLOCK_A")
+        network.assign_track_to_segment(0, 0, "BLOCK_A")
         network.add_track(Tile(1, 0, TRACK_NS | TRACK_EW))
-        network.extend_block("BLOCK_A", [(1, 0)])
-        assert network.get_track(1, 0).block_section_id == "BLOCK_A"
+        network.extend_segment("BLOCK_A", [(1, 0)])
+        assert network.get_track(1, 0).block_id == "BLOCK_A"
 
 
 class TestStationStoppingBehavior:
@@ -415,8 +415,8 @@ class TestBlockStationIntegration:
         station.positions = [(0, 0), (0, 1)]
         track_0_2 = network.get_track(0, 2)
         track_0_2.station_id = None
-        if track_0_2.block_section_id == station_block_id:
-            track_0_2.block_section_id = None
+        if track_0_2.block_id == station_block_id:
+            track_0_2.segment_id = None
         block_positions = network.get_block_positions(station_block_id)
         assert len(block_positions) == 2
 

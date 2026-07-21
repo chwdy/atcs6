@@ -682,14 +682,14 @@ class TrainPhysics:
             if track is not None:
                 # block_id always reflects the block this tile sits inside,
                 # even when the primary resource for the tile is a switch.
-                if track.block_section_id:
-                    block_id = track.block_section_id
+                if track.block_id:
+                    block_id = track.block_id
                 if getattr(track, "is_switch", False) and track.switch_id:
                     resource_type = "switch"
                     resource_id = track.switch_id
-                elif track.block_section_id:
+                elif track.block_id:
                     resource_type = "block"
-                    resource_id = track.block_section_id
+                    resource_id = track.block_id
 
         return TileTraversal(
             tile_xy=tile,
@@ -1329,7 +1329,7 @@ class TrainPhysics:
             tiles = self._work.occupied_tiles or []
             for tile in tiles:
                 track = self.network.tracks.get(tile) if self.network else None
-                bid = getattr(track, "block_section_id", None) if track else None
+                bid = getattr(track, "block_id", None) if track else None
                 if bid and bid not in seen:
                     ordered_blocks.append(bid)
                     seen.add(bid)
@@ -1357,8 +1357,8 @@ class TrainPhysics:
         # Get block for each tile
         for tile in tiles:
             track = self.network.tracks.get(tile)
-            if track and track.block_section_id:
-                blocks.add(track.block_section_id)
+            if track and track.block_id:
+                blocks.add(track.block_id)
 
         return blocks
 
@@ -1460,7 +1460,7 @@ class TrainPhysics:
         seen: Set[str] = set()
         for tile in work.occupied_tiles or []:
             track = self.network.tracks.get(tile) if self.network else None
-            bid = getattr(track, "block_section_id", None) if track else None
+            bid = getattr(track, "block_id", None) if track else None
             if bid and bid not in seen:
                 ordered_blocks.append(bid)
                 seen.add(bid)

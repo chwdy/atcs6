@@ -1012,13 +1012,13 @@ class TrainController:
                 break
 
             # Check if this tile's block is obstructed (occupied by another train)
-            if track.block_section_id and track.block_section_id != current_block_id:
-                block = self.network.blocks.get(track.block_section_id)
-                if block and self._is_block_obstructed(block, track.block_section_id):
+            if track.block_id and track.block_id != current_block_id:
+                block = self.network.blocks.get(track.block_id)
+                if block and self._is_block_obstructed(block, track.block_id):
                     break
-                current_block_id = track.block_section_id
+                current_block_id = track.block_id
 
-            if track.block_section_id == dest_block_id:
+            if track.block_id == dest_block_id:
                 in_dest_block = True
 
             tile_length = self.network._get_tile_length_cm(tile_x, tile_y)
@@ -1031,7 +1031,7 @@ class TrainController:
                 )
                 if not has_more_station_tiles:
                     break
-            elif in_dest_block and track.block_section_id != dest_block_id:
+            elif in_dest_block and track.block_id != dest_block_id:
                 break
 
         return clearance
@@ -1223,7 +1223,7 @@ class TrainController:
 
         track = self.network.tracks.get(head_tile)
         if track:
-            return track.block_section_id
+            return track.block_id
 
         return None
 
@@ -1479,7 +1479,7 @@ class TrainController:
                 for t_idx in range(tile_start, len(resource.path_tiles)):
                     tile_entry = resource.path_tiles[t_idx]
                     track = self.network.get_track(tile_entry.x, tile_entry.y)
-                    if not track or track.block_section_id != current_block_id:
+                    if not track or track.block_id != current_block_id:
                         done = True
                         break
                     remaining += self.network._get_tile_length_cm(

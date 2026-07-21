@@ -384,7 +384,7 @@ class RailwayPathfinder:
         while i < n:
             track = net.get_track(*tiles[i])
             bid = (
-                track.block_section_id
+                track.block_id
                 if track is not None and not track.is_switch
                 else None
             )
@@ -394,7 +394,7 @@ class RailwayPathfinder:
             j = i
             while j < n:
                 t = net.get_track(*tiles[j])
-                if t is None or t.is_switch or t.block_section_id != bid:
+                if t is None or t.is_switch or t.block_id != bid:
                     break
                 j += 1
             direction = self._block_run_direction(bid, tiles[i], entry_edges[i])
@@ -433,7 +433,7 @@ class RailwayPathfinder:
                 # Block tile length matches `_get_tile_length_cm` (the
                 # block-divided per-tile length); static topology.
                 length_cm = self.network._get_tile_length_cm(tile[0], tile[1])
-                bid = track.block_section_id
+                bid = track.block_id
                 steps.append(
                     GraphWalkStep(
                         step_index=len(steps),
@@ -580,7 +580,7 @@ class RailwayPathfinder:
         """All blocks (and optionally stations) topologically reachable
         from ``start_block_id`` via tile-by-tile BFS.
 
-        Walks through switch tiles (which have ``block_section_id = None``)
+        Walks through switch tiles (which have ``block_id = None``)
         instead of treating them as barriers. Does not consult current
         switch state and does not apply ``Block.allowed_travel_directions``;
         use ``find_ordered_walk`` when direction filtering matters.
@@ -601,7 +601,7 @@ class RailwayPathfinder:
                 continue
             for edge in sorted(track.edges):
                 neighbor = self.network.get_neighbor(*pos, edge)
-                if neighbor and neighbor.block_section_id != start_block_id:
+                if neighbor and neighbor.block_id != start_block_id:
                     queue: deque = deque([(pos[0], pos[1], edge)])
                     while queue:
                         curr_x, curr_y, exit_edge = queue.popleft()
@@ -617,7 +617,7 @@ class RailwayPathfinder:
                         if not next_track:
                             continue
                         next_x, next_y = next_track.x, next_track.y
-                        next_block_id = next_track.block_section_id
+                        next_block_id = next_track.block_id
                         if next_block_id and next_block_id != start_block_id:
                             reachable_blocks.add(next_block_id)
                         entry_edge = OPPOSITE_EDGE.get(exit_edge)
@@ -634,7 +634,7 @@ class RailwayPathfinder:
             for station_id, station in self.network.stations.items():
                 for pos in station.positions:
                     track = self.network.get_track(*pos)
-                    if track and track.block_section_id in reachable_blocks:
+                    if track and track.block_id in reachable_blocks:
                         if station_id not in result:
                             result.append(station_id)
                         break
@@ -692,7 +692,7 @@ class RailwayPathfinder:
                 next_x, next_y = next_track.x, next_track.y
                 if (next_x, next_y) in occupied_tile_set:
                     continue  # never route back through our own body
-                next_block_id = next_track.block_section_id
+                next_block_id = next_track.block_id
                 if next_block_id and next_block_id not in occupied_block_set:
                     reachable_blocks.add(next_block_id)
                 entry_edge = OPPOSITE_EDGE.get(exit_edge)
@@ -707,7 +707,7 @@ class RailwayPathfinder:
             for station_id, station in self.network.stations.items():
                 for pos in station.positions:
                     track = self.network.get_track(*pos)
-                    if track and track.block_section_id in reachable_blocks:
+                    if track and track.block_id in reachable_blocks:
                         if station_id not in result:
                             result.append(station_id)
                         break
@@ -741,7 +741,7 @@ class RailwayPathfinder:
             # candidate_rank, so it must not depend on str-hash set order.
             for edge in sorted(track.edges):
                 neighbor = self.network.get_neighbor(*start_pos, edge)
-                if neighbor and neighbor.block_section_id != start_block_id:
+                if neighbor and neighbor.block_id != start_block_id:
                     raw_walks.extend(
                         self._bfs_walks_with_switch_mode(
                             start_pos,
@@ -778,7 +778,7 @@ class RailwayPathfinder:
                 that is currently active (``Switch.position``); when
                 ``False``, explores all topological exits.
             exclude_resources: Optional set of block or switch IDs to skip.
-                Any tile whose block_section_id or switch_id is in this set
+                Any tile whose block_id or switch_id is in this set
                 is not entered during BFS.
 
         Returns:
@@ -817,7 +817,7 @@ class RailwayPathfinder:
             next_x, next_y = next_track.x, next_track.y
 
             # Exclude-resources filter.
-            next_block_id = next_track.block_section_id
+            next_block_id = next_track.block_id
             next_switch_id = getattr(next_track, "switch_id", None)
             if next_block_id and next_block_id in _exclude:
                 continue
@@ -872,7 +872,7 @@ class RailwayPathfinder:
                     if fwd_track is None:
                         break
                     fx, fy = fwd_track.x, fwd_track.y
-                    if fwd_track.block_section_id != end_block_id:
+                    if fwd_track.block_id != end_block_id:
                         break
                     ext_distance += fwd_track.length * 100.0
                     ext_tiles.append((fx, fy))
@@ -1116,14 +1116,14 @@ class RailwayPathfinder:
         if not ordered_tiles or len(walk.tiles) < 2:
             return None
 
-        # `Block` carries its id as `block_id`; `block_section_id` is the
+        # `Block` carries its id as `block_id`; `block_id` is the
         # `Tile` field pointing to the owning block.
         dest_block_id = dest_block.block_id
         first_dest_tile: Optional[Tuple[int, int]] = None
         first_dest_idx: Optional[int] = None
         for idx, tile in enumerate(walk.tiles):
             track = self.network.get_track(*tile)
-            if track is not None and track.block_section_id == dest_block_id:
+            if track is not None and track.block_id == dest_block_id:
                 first_dest_tile = tile
                 first_dest_idx = idx
                 break

@@ -129,20 +129,25 @@ class RailwayNetwork:
         self.power_controller: Optional["BlockPowerController"] = None
         self.switch_power_controller: Optional["SwitchPowerController"] = None
 
-        # Reverse indices from tile -> owning block / platform.
-        # Maintained in sync by network mutators (block creation, deletion,
+        # Reverse indices from tile -> owning segment / platform.
+        # A tile belongs to a `Segment`; the segment is grouped into a `Block`.
+        # Maintained in sync by network mutators (segment creation, deletion,
         # platform creation, platform deletion, etc.). Readers should call
-        # tile_to_block_id / tile_to_platform_id / tile_to_station_id below.
-        self._tile_to_block: Dict[Tuple[int, int], str] = {}
+        # tile_to_segment_id (geometry) / tile_to_block_id (power, occupancy,
+        # reservation) / tile_to_platform_id / tile_to_station_id below.
+        self._tile_to_segment: Dict[Tuple[int, int], str] = {}
         self._tile_to_platform: Dict[Tuple[int, int], str] = {}
 
         # Reverse index block id -> its Tiles, derived from
-        # _tile_to_block and built lazily by _block_tiles_index(). Turns
+        # _tile_to_segment and built lazily by _block_tiles_index(). Turns
         # get_block_tracks() from an O(all tracks) scan into an O(block)
         # lookup; the lookahead calls it thousands of times per tick. None
         # means "rebuild on next read"; invalidate_pathfinding_cache() resets
         # it on every topology change (none of which run in the tick loop).
         self._block_index_cache: Optional[Dict[str, List["Tile"]]] = None
+        # Companion segment id -> Tiles index, built in the same pass as
+        # _block_index_cache and dropped by the same invalidation.
+        self._segment_index_cache: Optional[Dict[str, List["Tile"]]] = None
 
         # Cache of built topology-only walk CANDIDATES, keyed by
         # (start_block_id, end_block_id). Populated lazily by
@@ -161,7 +166,7 @@ class RailwayNetwork:
         # geometry mutation). Lazy-initialised on first access to keep
         # `__init__` cheap.
         self._signal_calculator = None
-        self._block_geometry_manager = None
+        self._segment_geometry_manager = None
         self._station_registry = None
         self._block_grouping_manager = None
         self._flank_protection_calculator = None
@@ -182,15 +187,15 @@ class RailwayNetwork:
             self._signal_calculator = SignalCalculator(self)
         return self._signal_calculator
 
-    def _get_block_geometry_manager(self):
-        """Lazy-init `BlockGeometryManager`. Block geometry / topology
-        mutation lives in `block_geometry_manager.py`; this network
+    def _get_segment_geometry_manager(self):
+        """Lazy-init `SegmentGeometryManager`. Segment geometry / topology
+        mutation lives in `segment_geometry_manager.py`; this network
         keeps doc-canonical method names as forwarders."""
-        if self._block_geometry_manager is None:
-            from block_geometry_manager import BlockGeometryManager
+        if self._segment_geometry_manager is None:
+            from segment_geometry_manager import SegmentGeometryManager
 
-            self._block_geometry_manager = BlockGeometryManager(self)
-        return self._block_geometry_manager
+            self._segment_geometry_manager = SegmentGeometryManager(self)
+        return self._segment_geometry_manager
 
     def _get_station_registry(self):
         """Lazy-init `StationRegistry`. Platform / station CRUD lives in
@@ -265,13 +270,32 @@ class RailwayNetwork:
 
     # === Tile -> owning entity reverse indices (v1) ===
 
+    def tile_to_segment_id(self, x: int, y: int) -> Optional[str]:
+        """Reverse index from tile coordinate to owning Segment id, or None.
+
+        Per design_new.md: a tile belongs to a `Segment`. This is the stored
+        membership; block membership is derived from it by `tile_to_block_id`.
+        Geometry callers (tile ordering, continuity, length) want this one.
+        """
+        return self._tile_to_segment.get((x, y))
+
     def tile_to_block_id(self, x: int, y: int) -> Optional[str]:
         """Reverse index from tile coordinate to owning Block id, or None.
 
-        Per design_new.md: Tile does not store block membership.
-        All "which block owns this tile?" lookups go through this method.
+        Resolves tile -> segment -> block: the tile's segment is looked up in
+        `_tile_to_segment`, then the block that groups that segment is found
+        via `segment_to_block_id`. For a block that owns a single segment the
+        two ids are equal; for a block grouping several segments they differ,
+        and this returns the grouping block.
+
+        All "which block owns this tile?" lookups go through this method —
+        occupancy, reservation, signalling, pathfinding, dispatch and physics
+        are block concerns.
         """
-        return self._tile_to_block.get((x, y))
+        segment_id = self._tile_to_segment.get((x, y))
+        if segment_id is None:
+            return None
+        return self.segment_to_block_id(segment_id)
 
     def tile_to_platform_id(self, x: int, y: int) -> Optional[str]:
         """Forward to `StationRegistry.tile_to_platform_id(x, y)`."""
@@ -281,19 +305,20 @@ class RailwayNetwork:
         """Forward to `StationRegistry.tile_to_station_id(x, y)`."""
         return self._get_station_registry().tile_to_station_id(x, y)
 
-    def _set_tile_block(self, x: int, y: int, block_id: Optional[str]) -> None:
-        """Update the tile -> block reverse index.
+    def _set_tile_segment(self, x: int, y: int, segment_id: Optional[str]) -> None:
+        """Update the tile -> segment reverse index.
 
-        Network-internal helper. Use this whenever a tile's block membership
-        changes (block creation, extension, deletion, station split, etc.).
+        Network-internal helper. Use this whenever a tile's segment membership
+        changes (segment creation, extension, deletion, station split, etc.).
         """
         key = (x, y)
-        if block_id is None:
-            self._tile_to_block.pop(key, None)
+        if segment_id is None:
+            self._tile_to_segment.pop(key, None)
         else:
-            self._tile_to_block[key] = block_id
-        # Block membership feeds the BFS walk enumeration; a change here makes
-        # any cached walk for the affected blocks stale.
+            self._tile_to_segment[key] = segment_id
+        # Segment membership resolves to block membership, which feeds the BFS
+        # walk enumeration; a change here makes any cached walk for the
+        # affected blocks stale.
         self.invalidate_pathfinding_cache()
 
     def _set_tile_platform(self, x: int, y: int, platform_id: Optional[str]) -> None:
@@ -324,17 +349,19 @@ class RailwayNetwork:
         membership, track add/remove, switch add/remove, tunnel changes, full
         reload). None of those run inside the sim tick loop, so the cache
         survives a whole `update()` storm and is rebuilt lazily after an edit."""
-        # Defensive getattr: the block_section_id setter routes through
-        # _set_tile_block -> here, which can fire on a Tile whose
+        # Defensive getattr: the segment_id setter routes through
+        # _set_tile_segment -> here, which can fire on a Tile whose
         # network back-reference was attached before __init__ finished wiring
         # the cache (e.g. unusual deserialization orders).
         cache = getattr(self, "_walk_cache", None)
         if cache:
             cache.clear()
-        # The block->tracks reverse index is derived from tile->block
-        # membership, so it is stale after any topology change. Drop it; the
-        # next get_block_tracks() rebuilds it from the new topology.
+        # The block->tracks / segment->tracks reverse indices are derived from
+        # tile->segment membership and the segment->block grouping, so they are
+        # stale after any topology change. Drop them; the next
+        # get_block_tracks() rebuilds both from the new topology.
         self._block_index_cache = None
+        self._segment_index_cache = None
 
     def clear(self) -> None:
         """Reset the network to empty.
@@ -359,7 +386,7 @@ class RailwayNetwork:
         # Derived tile -> owner reverse indices. Not held on any entity dict,
         # so they must be cleared explicitly to avoid stale block/platform
         # membership on reused tiles.
-        self._tile_to_block.clear()
+        self._tile_to_segment.clear()
         self._tile_to_platform.clear()
         # Drops _walk_cache + _block_index_cache.
         self.invalidate_pathfinding_cache()
@@ -370,13 +397,13 @@ class RailwayNetwork:
         self.tracks[key] = track
 
         # Move any pre-attachment local-fallback values for station_id /
-        # block_section_id into the network reverse indices so that reads
+        # segment_id into the network reverse indices so that reads
         # via the property continue to see the same value after attach.
-        local_block = track._block_section_id_local
+        local_segment = track._segment_id_local
         local_station = track._station_id_local
         track.network = self
-        if local_block is not None:
-            track.block_section_id = local_block
+        if local_segment is not None:
+            track.segment_id = local_segment
         if local_station is not None:
             track.station_id = local_station
 
@@ -728,7 +755,7 @@ class RailwayNetwork:
         consistent: any signals listed in `track.signal_ids`, the owning
         switch entity (if `track.switch_id` is set), and the owning
         platform (if `_tile_to_platform` has an entry) are removed first.
-        Block membership is reconciled via `remove_tile_from_block`.
+        Segment membership is reconciled via `remove_tile_from_segment`.
         """
         key = (x, y)
         if key not in self.tracks:
@@ -746,13 +773,13 @@ class RailwayNetwork:
         if plat_id:
             self.delete_station(plat_id)
 
-        if track.block_section_id:
+        if track.segment_id:
             # Block reconciliation can touch signals on OTHER tiles in the
             # block (split + remap). If that work fails, we still want the
             # tile itself to be removed so the caller doesn't end up with
             # an orphan entry in self.tracks.
             try:
-                self.remove_tile_from_block(x, y)
+                self.remove_tile_from_segment(x, y)
             except Exception:
                 logger.exception(
                     "Block reconciliation failed while removing track (%d, %d); "
@@ -777,61 +804,126 @@ class RailwayNetwork:
 
     # === Centralized Block Management ===
 
-    def create_block(self, block_id: str, name: str = "") -> Block:
-        """Forward to `BlockGeometryManager.create_block(block_id, name)`."""
-        return self._get_block_geometry_manager().create_block(block_id, name)
+    def create_segment(self, segment_id: str, name: str = "") -> Block:
+        """Forward to `SegmentGeometryManager.create_segment(segment_id, name)`."""
+        return self._get_segment_geometry_manager().create_segment(segment_id, name)
 
-    def create_block_with_tracks(self, *args, **kwargs):
-        """Forward to `BlockGeometryManager.create_block_with_tracks(...)`."""
-        return self._get_block_geometry_manager().create_block_with_tracks(*args, **kwargs)
+    def create_segment_with_tracks(self, *args, **kwargs):
+        """Forward to `SegmentGeometryManager.create_segment_with_tracks(...)`."""
+        return self._get_segment_geometry_manager().create_segment_with_tracks(
+            *args, **kwargs
+        )
 
-    def extend_block(self, *args, **kwargs):
-        """Forward to `BlockGeometryManager.extend_block(...)`."""
-        return self._get_block_geometry_manager().extend_block(*args, **kwargs)
+    def extend_segment(self, *args, **kwargs):
+        """Forward to `SegmentGeometryManager.extend_segment(...)`."""
+        return self._get_segment_geometry_manager().extend_segment(*args, **kwargs)
+
+    def delete_segment(self, segment_id: str) -> bool:
+        """Forward to `SegmentGeometryManager.delete_segment(segment_id)`."""
+        return self._get_segment_geometry_manager().delete_segment(segment_id)
+
+    def create_block(self, block_id: str, segment_ids: List[str], name: str = "",
+                     validate: bool = True) -> Block:
+        """Forward to `BlockGroupingManager.create_block(...)`.
+
+        The grouping-side create: it groups segments that already exist into
+        one block sharing one power feed. Laying down new track geometry is
+        `create_segment` / `create_segment_with_tracks`.
+        """
+        return self._get_block_grouping_manager().create_block(
+            block_id, segment_ids, name, validate
+        )
 
     def delete_block(self, block_id: str) -> bool:
-        """Forward to `BlockGeometryManager.delete_block(block_id)`."""
-        return self._get_block_geometry_manager().delete_block(block_id)
+        """Delete a block and every segment it groups.
+
+        The grouping-side delete: the operator removed the block, so its
+        geometry goes with it. Deleting one member segment while keeping the
+        block is `delete_segment`.
+        """
+        block = self.blocks.get(block_id)
+        if block is None:
+            return False
+        geometry = self._get_segment_geometry_manager()
+        for segment_id in list(block.segment_ids):
+            geometry.delete_segment(segment_id)
+        # A block whose last member goes is dropped by delete_segment; a block
+        # that had no members to begin with is dropped here.
+        self.blocks.pop(block_id, None)
+        return True
 
     def get_block(self, block_id: str) -> Optional[Block]:
         return self.blocks.get(block_id)
 
     def _block_tiles_index(self) -> Dict[str, List[Tile]]:
-        """Lazily-built reverse index: block id -> its Tiles.
+        """Lazily-built reverse indices: block id -> Tiles, segment id -> Tiles.
 
         Built by a single pass over ``self.tracks`` (preserving
         ``tracks.values()`` order, so ``get_block_tracks`` returns tracks in
-        the same order as the old full scan). Cached in ``_block_index_cache``
-        and invalidated by ``invalidate_pathfinding_cache`` on any topology
-        change — none of which run inside the sim tick loop, so it is built
-        once and reused across a whole ``update()`` storm.
+        the same order as the old full scan). A tile is filed under its own
+        segment and under the block that groups that segment, so a block that
+        groups several segments lists every member's tiles. Cached in
+        ``_block_index_cache`` and invalidated by
+        ``invalidate_pathfinding_cache`` on any topology change — none of which
+        run inside the sim tick loop, so it is built once and reused across a
+        whole ``update()`` storm.
         """
         idx = self._block_index_cache
         if idx is None:
-            idx = {}
+            by_block: Dict[str, List[Tile]] = {}
+            by_segment: Dict[str, List[Tile]] = {}
             for t in self.tracks.values():
-                bid = t.block_section_id
+                sid = t.segment_id
+                if sid is None:
+                    continue
+                by_segment.setdefault(sid, []).append(t)
+                bid = self.segment_to_block_id(sid)
                 if bid is not None:
-                    idx.setdefault(bid, []).append(t)
+                    by_block.setdefault(bid, []).append(t)
+            idx = by_block
             self._block_index_cache = idx
+            self._segment_index_cache = by_segment
         return idx
 
+    def _segment_tiles_index(self) -> Dict[str, List[Tile]]:
+        """Lazily-built reverse index: segment id -> its Tiles.
+
+        Built together with ``_block_tiles_index`` in one pass and dropped by
+        the same invalidation.
+        """
+        self._block_tiles_index()
+        return self._segment_index_cache or {}
+
     def get_block_tracks(self, block_id: str) -> List[Tile]:
-        """Get all tracks belonging to a block (O(block) via the reverse
-        index in ``_block_tiles_index``, not an O(all tracks) scan)."""
+        """Every tile owned by a block, across all its member segments
+        (O(block) via the reverse index in ``_block_tiles_index``, not an
+        O(all tracks) scan)."""
         return list(self._block_tiles_index().get(block_id, ()))
 
     def get_block_positions(self, block_id: str) -> List[Tuple[int, int]]:
-        """Get grid positions of all tracks in block"""
+        """Grid positions of every tile in a block, across all its segments."""
         return [(t.x, t.y) for t in self.get_block_tracks(block_id)]
 
-    def assign_track_to_block(self, *args, **kwargs):
-        """Forward to `BlockGeometryManager.assign_track_to_block(...)`."""
-        return self._get_block_geometry_manager().assign_track_to_block(*args, **kwargs)
+    def get_segment_tracks(self, segment_id: str) -> List[Tile]:
+        """Every tile of one segment. Geometry callers (tile ordering,
+        continuity, length) want this rather than `get_block_tracks`."""
+        return list(self._segment_tiles_index().get(segment_id, ()))
 
-    def validate_block_continuity(self, block_id: str) -> Tuple[bool, List[str]]:
-        """Forward to `BlockGeometryManager.validate_block_continuity(block_id)`."""
-        return self._get_block_geometry_manager().validate_block_continuity(block_id)
+    def get_segment_positions(self, segment_id: str) -> List[Tuple[int, int]]:
+        """Grid positions of every tile in one segment."""
+        return [(t.x, t.y) for t in self.get_segment_tracks(segment_id)]
+
+    def assign_track_to_segment(self, *args, **kwargs):
+        """Forward to `SegmentGeometryManager.assign_track_to_segment(...)`."""
+        return self._get_segment_geometry_manager().assign_track_to_segment(
+            *args, **kwargs
+        )
+
+    def validate_segment_continuity(self, segment_id: str) -> Tuple[bool, List[str]]:
+        """Forward to `SegmentGeometryManager.validate_segment_continuity(...)`."""
+        return self._get_segment_geometry_manager().validate_segment_continuity(
+            segment_id
+        )
 
     def _get_block_connected_neighbors(
         self, track: Tile
@@ -959,12 +1051,15 @@ class RailwayNetwork:
             # Do NOT fall back to DEFAULT_TILE_LENGTH_CM
             return 0.0
 
-        if track.block_section_id:
-            block = self.blocks.get(track.block_section_id)
-            if block and block.length_cm > 0:
-                positions = self.get_block_positions(track.block_section_id)
+        # Per-tile length is the segment's length spread over its tiles:
+        # length is segment geometry, so a grouped block must not average its
+        # members' combined length across all of their tiles.
+        if track.segment_id:
+            segment = self.get_segment(track.segment_id)
+            if segment and segment.length_cm > 0:
+                positions = self.get_segment_positions(track.segment_id)
                 tile_count = len(positions) if positions else 1
-                return block.length_cm / tile_count
+                return segment.length_cm / tile_count
             return DEFAULT_TILE_LENGTH_CM
 
         return DEFAULT_TILE_LENGTH_CM
@@ -1187,36 +1282,42 @@ class RailwayNetwork:
         return True, []
 
     def _disconnect_signals_for_block(self, block_id: str) -> None:
-        """Forward to `BlockGeometryManager._disconnect_signals_for_block(block_id)`."""
-        return self._get_block_geometry_manager()._disconnect_signals_for_block(block_id)
+        """Forward to `SegmentGeometryManager._disconnect_signals_for_block_of_segment`."""
+        return self._get_segment_geometry_manager()._disconnect_signals_for_block_of_segment(
+            block_id
+        )
 
-    def remove_tile_from_block(self, x: int, y: int) -> List[str]:
-        """Forward to `BlockGeometryManager.remove_tile_from_block(x, y)`."""
-        return self._get_block_geometry_manager().remove_tile_from_block(x, y)
+    def remove_tile_from_segment(self, x: int, y: int) -> List[str]:
+        """Forward to `SegmentGeometryManager.remove_tile_from_segment(x, y)`."""
+        return self._get_segment_geometry_manager().remove_tile_from_segment(x, y)
 
-    def remove_tiles_from_block(self, positions: List[Tuple[int, int]]) -> List[str]:
-        """Forward to `BlockGeometryManager.remove_tiles_from_block(positions)`."""
-        return self._get_block_geometry_manager().remove_tiles_from_block(positions)
+    def remove_tiles_from_segment(self, positions: List[Tuple[int, int]]) -> List[str]:
+        """Forward to `SegmentGeometryManager.remove_tiles_from_segment(positions)`."""
+        return self._get_segment_geometry_manager().remove_tiles_from_segment(positions)
 
-    def _check_block_connectivity(self, block_id: str) -> List[str]:
-        """Forward to `BlockGeometryManager._check_block_connectivity(block_id)`."""
-        return self._get_block_geometry_manager()._check_block_connectivity(block_id)
+    def _check_segment_connectivity(self, segment_id: str) -> List[str]:
+        """Forward to `SegmentGeometryManager._check_segment_connectivity(...)`."""
+        return self._get_segment_geometry_manager()._check_segment_connectivity(
+            segment_id
+        )
 
     def _find_connected_components(self, *args, **kwargs):
-        """Forward to `BlockGeometryManager._find_connected_components(...)`."""
-        return self._get_block_geometry_manager()._find_connected_components(*args, **kwargs)
+        """Forward to `SegmentGeometryManager._find_connected_components(...)`."""
+        return self._get_segment_geometry_manager()._find_connected_components(*args, **kwargs)
 
     def _get_track_connected_neighbors(self, *args, **kwargs):
-        """Forward to `BlockGeometryManager._get_track_connected_neighbors(...)`."""
-        return self._get_block_geometry_manager()._get_track_connected_neighbors(*args, **kwargs)
+        """Forward to `SegmentGeometryManager._get_track_connected_neighbors(...)`."""
+        return self._get_segment_geometry_manager()._get_track_connected_neighbors(*args, **kwargs)
 
-    def _create_child_blocks(self, *args, **kwargs):
-        """Forward to `BlockGeometryManager._create_child_blocks(...)`."""
-        return self._get_block_geometry_manager()._create_child_blocks(*args, **kwargs)
+    def _create_child_segments(self, *args, **kwargs):
+        """Forward to `SegmentGeometryManager._create_child_segments(...)`."""
+        return self._get_segment_geometry_manager()._create_child_segments(
+            *args, **kwargs
+        )
 
     def _remap_orphaned_signals(self, *args, **kwargs):
-        """Forward to `BlockGeometryManager._remap_orphaned_signals(...)`."""
-        return self._get_block_geometry_manager()._remap_orphaned_signals(*args, **kwargs)
+        """Forward to `SegmentGeometryManager._remap_orphaned_signals(...)`."""
+        return self._get_segment_geometry_manager()._remap_orphaned_signals(*args, **kwargs)
 
     def add_switch(self, switch: "Switch") -> None:
         """
@@ -1415,10 +1516,12 @@ class RailwayNetwork:
             # tiles to chain until the order is rebuilt from that membership.
             # Each member is still its own one-segment block here, so this is
             # the ordinary single-segment rebuild.
-            geometry = self._get_block_geometry_manager()
+            geometry = self._get_segment_geometry_manager()
             for member_id in members:
-                if not self.blocks[member_id].ordered_tiles:
-                    geometry.rebuild_block_ordered_tiles(member_id)
+                block = self.blocks[member_id]
+                if not block.ordered_tiles:
+                    for segment_id in block.segment_ids:
+                        geometry.rebuild_segment_ordered_tiles(segment_id)
 
             segment_ids: List[str] = []
             for member_id in members:
@@ -1580,8 +1683,8 @@ class RailwayNetwork:
             if not platform.block_assignments:
                 for px, py in platform.positions:
                     ptrack = self.get_track(px, py)
-                    if ptrack and ptrack.block_section_id:
-                        platform.block_assignments[(px, py)] = ptrack.block_section_id
+                    if ptrack and ptrack.block_id:
+                        platform.block_assignments[(px, py)] = ptrack.block_id
 
         # Rebuild logical station groups (optional in legacy saves)
         for station_data in data.get("station_groups", []):

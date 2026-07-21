@@ -75,8 +75,8 @@ def test_block_validation():
 
     print("\n[TEST 1] Verifying disconnected tracks are rejected...")
     try:
-        test_network.create_block_with_tracks(
-            block_id="TEST_DISCONNECTED",
+        test_network.create_segment_with_tracks(
+            segment_id="TEST_DISCONNECTED",
             positions=[(0, 0), (4, 0)],
             name="Test",
         )
@@ -92,8 +92,8 @@ def test_block_validation():
     test_network.add_switch(switch)
     switch_track.switch_id = switch.switch_id
     try:
-        test_network.create_block_with_tracks(
-            block_id="TEST_WITH_SWITCH",
+        test_network.create_segment_with_tracks(
+            segment_id="TEST_WITH_SWITCH",
             positions=[(3, 0), (4, 0), (5, 0)],
             name="Test",
         )
@@ -103,12 +103,12 @@ def test_block_validation():
         print(f"  ✓ Correctly rejected: {e}")
 
     print("\n[TEST 3] Verifying duplicate block IDs are rejected...")
-    test_network.create_block_with_tracks(
-        block_id="TEST_BLOCK_1", positions=[(0, 0), (1, 0)], name="Test Block 1"
+    test_network.create_segment_with_tracks(
+        segment_id="TEST_BLOCK_1", positions=[(0, 0), (1, 0)], name="Test Block 1"
     )
     try:
-        test_network.create_block_with_tracks(
-            block_id="TEST_BLOCK_1",
+        test_network.create_segment_with_tracks(
+            segment_id="TEST_BLOCK_1",
             positions=[(6, 0)],
             name="Test",
         )
@@ -234,17 +234,17 @@ BLOCKS = [
 
 
 def _add_blocks(network: RailwayNetwork) -> None:
-    """Register every block in BLOCKS via create_block_with_tracks."""
+    """Register every block in BLOCKS via create_segment_with_tracks."""
     for (block_id, positions, name, length_cm, speed) in BLOCKS:
         kwargs = {
-            "block_id": block_id,
+            "segment_id": block_id,
             "positions": positions,
             "name": name,
             "length_cm": length_cm,
         }
         if speed is not None:
             kwargs["speed_limit_kmh"] = speed
-        network.create_block_with_tracks(**kwargs)
+        network.create_segment_with_tracks(**kwargs)
 
 
 # Each station entry: (station_id, name, first_tile, extra_tiles, platform_side)

@@ -5,8 +5,10 @@ Definition:
 This module provides the SwitchPowerController class — the switch-side
 counterpart to BlockPowerController. It is the software-to-hardware boundary
 for switch *throw* output: it drives a switch's point motor to a target
-alignment (MAIN=0 / DIVERGE=1). On a DC point motor the target maps to drive
-polarity (one polarity throws toward MAIN, the reverse toward DIVERGE). This
+alignment (MAIN=0 / DIVERGE=1). It holds no wiring knowledge — how a target
+alignment reaches the motor belongs to the driver, and is defined in
+design_new.md "Power", Hardware configuration ("A switch throw is a pulse on one
+of two coils"). This
 throw voltage is a separate electrical output from the block ``track_voltage``
 emitted by ``BlockPowerController``; the two are different wires and are never
 compared to each other.
@@ -55,8 +57,9 @@ class SwitchOutputInterface(ABC):
     """Abstract interface for hardware switch-throw output.
 
     Implementations drive the point motor, whether to simulated storage or
-    real hardware (an H-bridge over GPIO, etc.). The target alignment maps to
-    drive polarity: 0 = MAIN, 1 = DIVERGE.
+    real hardware. The target alignment is 0 = MAIN, 1 = DIVERGE; how that
+    reaches the motor is the implementation's business (the real driver pulses
+    one of two coils — see ``hardware/interfaces.py``).
     """
 
     @abstractmethod

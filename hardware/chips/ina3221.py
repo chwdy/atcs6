@@ -1,7 +1,7 @@
 """INA3221 3-channel current/voltage monitor (I2C), ported from the hybrid demo.
 
 Reads block occupancy by current draw. The chip sits high-side on the 12 V feed
-into a block's H-bridge supply (DRV8873 VM), one channel per block, and reports
+into a block's H-bridge supply (DRV8871 VM), one channel per block, and reports
 the shunt voltage across an external sense resistor. Unlike the INA219 it has no
 current/power calibration registers — current is computed directly from the
 shunt reading:

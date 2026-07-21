@@ -178,7 +178,7 @@ class PathDispatcher:
         track = self.network.get_track(*head_tile)
         if track is None:
             return None
-        return track.block_section_id
+        return track.block_id
 
     def _resolve_create_start_block(
         self,
@@ -359,7 +359,7 @@ class PathDispatcher:
                 # Switch interrupts any in-progress block run.
                 prev_block_id = None
                 continue
-            block_id = getattr(track, "block_section_id", None)
+            block_id = getattr(track, "block_id", None)
             if not block_id:
                 continue
             if block_id == prev_block_id:
@@ -469,7 +469,7 @@ class PathDispatcher:
                 if not next_track:
                     continue
                 next_x, next_y = next_track.x, next_track.y
-                next_block_id = next_track.block_section_id
+                next_block_id = next_track.block_id
                 if next_block_id and next_block_id not in existing_blocks:
                     reachable_blocks.add(next_block_id)
                 next_entry_edge = OPPOSITE_EDGE.get(curr_exit)
@@ -486,7 +486,7 @@ class PathDispatcher:
             for station_id, station in self.network.stations.items():
                 for pos in station.positions:
                     track = self.network.get_track(*pos)
-                    if track and track.block_section_id in reachable_blocks:
+                    if track and track.block_id in reachable_blocks:
                         if station_id not in result:
                             result.append(station_id)
                         break
@@ -598,7 +598,7 @@ class PathDispatcher:
                 continue
             if track.is_switch:
                 continue
-            if not track.block_section_id:
+            if not track.block_id:
                 errors.append(
                     ValidationError(
                         type=ValidationErrorType.UNBLOCKED_TILE,
@@ -1927,7 +1927,7 @@ class PathDispatcher:
             track = self.network.get_track(x, y)
             if track is None:
                 continue
-            block_id = getattr(track, "block_section_id", None)
+            block_id = getattr(track, "block_id", None)
             if block_id and block_id in segment.blocks:
                 # `block_id` is acquirable; the first block to drop is the
                 # one AFTER this one in `segment.blocks`. _best_effort_truncate
@@ -2014,7 +2014,7 @@ class PathDispatcher:
             track = self.network.get_track(*tile)
             if track is None or track.is_switch:
                 continue
-            if track.block_section_id == terminal_block_id:
+            if track.block_id == terminal_block_id:
                 first_idx = idx
                 break
         if first_idx is None:
@@ -2242,7 +2242,7 @@ class PathDispatcher:
     ) -> List[Tuple[int, int]]:
         """Tiles of `segment` that fall inside `prefix_blocks`, in path order.
 
-        A block tile is kept while its `block_section_id` is in
+        A block tile is kept while its `block_id` is in
         `prefix_blocks`. A switch tile is kept only when the next non-switch
         tile in path order belongs to a kept block — i.e. the switch sits
         inside the prefix, not at the boundary to a dropped block. Per
@@ -2274,7 +2274,7 @@ class PathDispatcher:
                         j += 1
                         continue
                     next_in_prefix = (
-                        next_track.block_section_id in prefix_blocks
+                        next_track.block_id in prefix_blocks
                     )
                     break
                 if next_in_prefix:
@@ -2283,7 +2283,7 @@ class PathDispatcher:
                     continue
                 # Boundary switch to a dropped block: truncate here.
                 break
-            if track.block_section_id in prefix_blocks:
+            if track.block_id in prefix_blocks:
                 cutoff_tiles.append(tile)
                 i += 1
             else:
@@ -2329,9 +2329,9 @@ class PathDispatcher:
                 dx = curr[0] - prev[0]
                 dy = curr[1] - prev[1]
             track = self.network.get_track(*curr)
-            if track is None or not track.block_section_id:
+            if track is None or not track.block_id:
                 continue
-            block_id = track.block_section_id
+            block_id = track.block_id
             if block_id in result:
                 continue
             exit_edge = direction_from_delta(dx, dy)
@@ -2487,7 +2487,7 @@ class PathDispatcher:
                 continue
 
             # Block tiles: collect contiguous run with same block id.
-            block_id = track.block_section_id
+            block_id = track.block_id
             if not block_id:
                 i += 1
                 continue
@@ -2499,7 +2499,7 @@ class PathDispatcher:
                     if (
                         track2 is None
                         or track2.is_switch
-                        or track2.block_section_id != block_id
+                        or track2.block_id != block_id
                     ):
                         break
                     i += 1
@@ -2514,7 +2514,7 @@ class PathDispatcher:
                 track2 = self.network.get_track(*tile2)
                 if track2 is None or track2.is_switch:
                     break
-                if track2.block_section_id != block_id:
+                if track2.block_id != block_id:
                     break
                 ee = self._tile_entry_edge(segment.tiles, i)
                 xe = self._tile_exit_edge(segment.tiles, i)

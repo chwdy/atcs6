@@ -32,12 +32,14 @@ from tests.train_test_helpers import set_train_span
 
 
 @pytest.fixture
-def app_state():
+def app_state(tmp_path):
     """Create a fresh AppState with initialized components for testing."""
     network = RailwayNetwork()
     path_dispatcher = PathDispatcher(network)
     sim_controller = SimulationController(network, path_dispatcher)
-    persistence_manager = PersistenceManager(storage_dir="layouts")
+    # Keep route tests hermetic: save/load/delete must never write into the
+    # repository's real layouts directory.
+    persistence_manager = PersistenceManager(storage_dir=str(tmp_path))
 
     state = AppState(
         network=network,
@@ -207,7 +209,7 @@ class TestBlockRoutes:
 
     def test_get_block_success(self, client, app_state):
         """GET /api/blocks/<block_id> should return block details."""
-        block = app_state.network.create_block("BLK_001", "Test Block")
+        block = app_state.network.create_segment("BLK_001", "Test Block")
         response = client.get("/api/blocks/BLK_001")
         assert response.status_code == 200
         data = response.get_json()
@@ -220,7 +222,7 @@ class TestBlockRoutes:
 
     def test_update_block(self, client, app_state):
         """PATCH /api/blocks/<block_id> should update block properties."""
-        app_state.network.create_block("BLK_001", "Test")
+        app_state.network.create_segment("BLK_001", "Test")
         response = client.patch("/api/blocks/BLK_001", json={"name": "Updated"})
         assert response.status_code == 200
         data = response.get_json()
@@ -231,7 +233,7 @@ class TestBlockRoutes:
     ):
         """PATCH should set a one-way `allowed_travel_directions` policy and
         round-trip it through `to_dict` (sorted list)."""
-        block = app_state.network.create_block("BLK_001", "Test")
+        block = app_state.network.create_segment("BLK_001", "Test")
         response = client.patch(
             "/api/blocks/BLK_001",
             json={"allowed_travel_directions": ["forward"]},
@@ -246,7 +248,7 @@ class TestBlockRoutes:
         self, client, app_state
     ):
         """PATCH with both directions stores the full bidirectional policy."""
-        app_state.network.create_block("BLK_001", "Test")
+        app_state.network.create_segment("BLK_001", "Test")
         response = client.patch(
             "/api/blocks/BLK_001",
             json={"allowed_travel_directions": ["reverse", "forward"]},
@@ -260,7 +262,7 @@ class TestBlockRoutes:
     ):
         """An empty set is rejected with 400 — a block must allow at least
         one direction (design_new.md: defaults to both, never none)."""
-        block = app_state.network.create_block("BLK_001", "Test")
+        block = app_state.network.create_segment("BLK_001", "Test")
         response = client.patch(
             "/api/blocks/BLK_001",
             json={"allowed_travel_directions": []},
@@ -273,7 +275,7 @@ class TestBlockRoutes:
         self, client, app_state
     ):
         """An unknown direction token is rejected with 400."""
-        block = app_state.network.create_block("BLK_001", "Test")
+        block = app_state.network.create_segment("BLK_001", "Test")
         response = client.patch(
             "/api/blocks/BLK_001",
             json={"allowed_travel_directions": ["sideways"]},
@@ -283,7 +285,7 @@ class TestBlockRoutes:
 
     def test_delete_block(self, client, app_state):
         """DELETE /api/blocks/<block_id> should delete block."""
-        app_state.network.create_block("BLK_001", "Test")
+        app_state.network.create_segment("BLK_001", "Test")
         response = client.delete("/api/blocks/BLK_001")
         assert response.status_code == 200
         data = response.get_json()
@@ -298,14 +300,14 @@ class TestBlockRoutes:
         direct-mutation surface. The endpoint that used to expose this
         path is removed; calling it now returns 404.
         """
-        app_state.network.create_block("BLK_001", "Test")
+        app_state.network.create_segment("BLK_001", "Test")
         response = client.post("/api/blocks/BLK_001/cycle-state")
         # 404 if Flask doesn't know the route at all; 405 if Flask
         # matches the URL prefix but rejects the method. Either way the
         # admin shim is no longer reachable.
         assert response.status_code in (404, 405)
 
-    def test_create_block_with_tracks(self, client, network_with_tracks):
+    def test_create_segment_with_tracks(self, client, network_with_tracks):
         """POST /api/blocks/create-with-tracks should create block with tracks."""
         positions = [[0, 0], [1, 0], [2, 0]]
         response = client.post(
@@ -318,7 +320,7 @@ class TestBlockRoutes:
 
     def test_extend_block(self, client, app_state, network_with_tracks):
         """POST /api/blocks/<block_id>/extend should extend block."""
-        block = app_state.network.create_block_with_tracks("BLK_001", [(0, 0), (1, 0)])
+        block = app_state.network.create_segment_with_tracks("BLK_001", [(0, 0), (1, 0)])
         response = client.post(
             "/api/blocks/BLK_001/extend", json={"positions": [[2, 0]]}
         )
@@ -326,7 +328,7 @@ class TestBlockRoutes:
 
     def test_add_tracks_to_block(self, client, app_state, network_with_tracks):
         """POST /api/blocks/<block_id>/tracks should add tracks to block."""
-        block = app_state.network.create_block("BLK_001", "Test")
+        block = app_state.network.create_segment("BLK_001", "Test")
         response = client.post(
             "/api/blocks/BLK_001/tracks", json={"positions": [[0, 0]]}
         )
@@ -334,7 +336,7 @@ class TestBlockRoutes:
 
     def test_remove_tracks_from_block(self, client, app_state, network_with_tracks):
         """DELETE /api/blocks/<block_id>/tracks should remove tracks."""
-        block = app_state.network.create_block_with_tracks(
+        block = app_state.network.create_segment_with_tracks(
             "BLK_001", [(0, 0), (1, 0), (2, 0)]
         )
         response = client.delete(
@@ -344,7 +346,7 @@ class TestBlockRoutes:
 
     def test_get_block_voltage(self, client, app_state):
         """GET /api/blocks/<block_id>/voltage should return voltage."""
-        app_state.network.create_block("BLK_001", "Test")
+        app_state.network.create_segment("BLK_001", "Test")
         response = client.get("/api/blocks/BLK_001/voltage")
         assert response.status_code == 200
         data = response.get_json()
@@ -352,7 +354,7 @@ class TestBlockRoutes:
 
     def test_get_block_end_tiles(self, client, app_state, network_with_tracks):
         """GET /api/blocks/<block_id>/end_tiles should return start/end tiles."""
-        app_state.network.create_block_with_tracks("BLK_001", [(0, 0), (1, 0)])
+        app_state.network.create_segment_with_tracks("BLK_001", [(0, 0), (1, 0)])
         response = client.get("/api/blocks/BLK_001/end_tiles")
         assert response.status_code == 200
         data = response.get_json()
@@ -361,7 +363,7 @@ class TestBlockRoutes:
 
     def test_can_extend_block(self, client, app_state, network_with_tracks):
         """POST /api/blocks/<block_id>/can_extend should validate extension."""
-        app_state.network.create_block_with_tracks("BLK_001", [(0, 0), (1, 0)])
+        app_state.network.create_segment_with_tracks("BLK_001", [(0, 0), (1, 0)])
         response = client.post("/api/blocks/BLK_001/can_extend", json={"x": 2, "y": 0})
         assert response.status_code == 200
         data = response.get_json()
@@ -527,7 +529,7 @@ class TestPlatformRoutes:
         """Removing a platform tile should also remove stale tile block assignments."""
         platform = app_state.network.add_platform(0, 0, name="Test")
         app_state.network.extend_platform(platform.platform_id, [(1, 0)])
-        app_state.network.create_block("BLK_001", "Test")
+        app_state.network.create_segment("BLK_001", "Test")
 
         assign_response = client.post(
             f"/api/platform/{platform.platform_id}/assign_tile",
@@ -560,7 +562,7 @@ class TestPlatformRoutes:
     ):
         """POST /api/platform/<platform_id>/assign_tile should assign tile to block."""
         platform = app_state.network.add_platform(0, 0, name="Test")
-        block = app_state.network.create_block("BLK_001", "Test")
+        block = app_state.network.create_segment("BLK_001", "Test")
         response = client.post(
             f"/api/platform/{platform.platform_id}/assign_tile",
             json={"x": 0, "y": 0, "block_id": "BLK_001"},
@@ -574,6 +576,23 @@ class TestPlatformRoutes:
         platform = app_state.network.add_platform(0, 0, name="Test")
         response = client.get(f"/api/platform/{platform.platform_id}/block_assignments")
         assert response.status_code == 200
+
+    def test_unassign_platform_tile_from_block(
+        self, client, app_state, network_with_tracks
+    ):
+        platform = app_state.network.add_platform(0, 0, name="Test")
+        app_state.network.create_segment("BLK_001", "Test")
+        assigned = client.post(
+            f"/api/platform/{platform.platform_id}/assign_tile",
+            json={"x": 0, "y": 0, "block_id": "BLK_001"},
+        )
+        assert assigned.status_code == 200
+        unassigned = client.post(
+            f"/api/platform/{platform.platform_id}/unassign_tile",
+            json={"x": 0, "y": 0},
+        )
+        assert unassigned.status_code == 200
+        assert unassigned.get_json()["block_assignments"] == []
 
 
 class TestStationGroupRoutes:
@@ -775,8 +794,8 @@ class TestPathRoutes:
         `{start_block_id, end_block_id}` keys are no longer accepted; the handler
         returns 400 with a message naming the v1 fields (routes/paths.py:111).
         The success path is covered by `test_create_path_assigns_one_off_route`."""
-        app_state.network.create_block_with_tracks("BLK_001", [(0, 0)])
-        app_state.network.create_block_with_tracks("BLK_002", [(2, 0)])
+        app_state.network.create_segment_with_tracks("BLK_001", [(0, 0)])
+        app_state.network.create_segment_with_tracks("BLK_002", [(2, 0)])
         response = client.post(
             "/api/paths", json={"start_block_id": "BLK_001", "end_block_id": "BLK_002"}
         )
@@ -794,8 +813,8 @@ class TestPathRoutes:
         "one active path per train" invariant is enforced by the dispatcher in
         Phase 1 (create_path rejects a second active path), not by this handler.
         """
-        app_state.network.create_block_with_tracks("BLK_001", [(0, 0), (1, 0)])
-        app_state.network.create_block_with_tracks("BLK_002", [(2, 0), (3, 0)])
+        app_state.network.create_segment_with_tracks("BLK_001", [(0, 0), (1, 0)])
+        app_state.network.create_segment_with_tracks("BLK_002", [(2, 0), (3, 0)])
 
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0, max_speed=100.0)
         train = Train("TRAIN_001", consist=[car])
@@ -835,8 +854,8 @@ class TestPathRoutes:
 
     def test_find_dispatcher_paths(self, client, app_state, network_with_tracks):
         """POST /api/dispatcher/paths should find paths."""
-        app_state.network.create_block_with_tracks("BLK_001", [(0, 0)])
-        app_state.network.create_block_with_tracks("BLK_002", [(2, 0)])
+        app_state.network.create_segment_with_tracks("BLK_001", [(0, 0)])
+        app_state.network.create_segment_with_tracks("BLK_002", [(2, 0)])
         response = client.post(
             "/api/dispatcher/paths",
             json={"start_block_id": "BLK_001", "end_block_id": "BLK_002"},
@@ -845,7 +864,7 @@ class TestPathRoutes:
 
     def test_get_reachable_endpoints(self, client, app_state, network_with_tracks):
         """GET /api/dispatcher/reachable/<block_id> should return reachable blocks."""
-        app_state.network.create_block_with_tracks("BLK_001", [(0, 0)])
+        app_state.network.create_segment_with_tracks("BLK_001", [(0, 0)])
         response = client.get("/api/dispatcher/reachable/BLK_001")
         assert response.status_code == 200
 
@@ -899,6 +918,18 @@ class TestMiscRoutes:
         response = client.post("/api/layouts", json={"name": "test_layout"})
         assert response.status_code == 200
 
+    def test_save_load_and_delete_layout(self, client):
+        name = "migrated_api_layout"
+        assert client.post("/api/layouts", json={"name": name}).status_code == 200
+        loaded = client.post(f"/api/layouts/{name}/load")
+        assert loaded.status_code == 200
+        assert loaded.get_json()["status"] == "success"
+        assert client.delete(f"/api/layouts/{name}").status_code == 200
+        assert client.delete(f"/api/layouts/{name}").status_code == 404
+
+    def test_static_spa_fallback(self, client):
+        assert client.get("/some/client/side/route").status_code == 200
+
     def test_network_stats(self, client):
         """GET /api/network/stats should return network statistics."""
         response = client.get("/api/network/stats")
@@ -922,13 +953,13 @@ class TestRouteRedesignApis:
         for x in range(4):
             app_state.network.add_track(Tile(x=x, y=0, track_bits=2))
 
-        app_state.network.create_block_with_tracks(
-            block_id="BLK_A",
+        app_state.network.create_segment_with_tracks(
+            segment_id="BLK_A",
             positions=[(0, 0), (1, 0)],
             name="Block A",
         )
-        app_state.network.create_block_with_tracks(
-            block_id="BLK_B",
+        app_state.network.create_segment_with_tracks(
+            segment_id="BLK_B",
             positions=[(2, 0), (3, 0)],
             name="Block B",
         )
@@ -1003,7 +1034,7 @@ class TestRouteRedesignApis:
 
     def test_viability_traverses_switch_tile(self, client, app_state):
         """Switch-barrier regression: blocks separated by a tile whose
-        ``block_section_id`` is None (the way switches are modeled in v1)
+        ``segment_id`` is None (the way switches are modeled in v1)
         must still be reachable. The legacy ``build_block_graph``
         treated such tiles as graph barriers and chopped the network into
         disconnected components, marking valid pairs unviable."""
@@ -1011,15 +1042,15 @@ class TestRouteRedesignApis:
         for x in range(5):
             network.add_track(Tile(x=x, y=0, track_bits=2))
         # (2,0) is intentionally left out of both blocks; it has track
-        # geometry but no block_section_id — the same shape a switch tile
+        # geometry but no segment_id — the same shape a switch tile
         # has in v1.
-        network.create_block_with_tracks(
-            block_id="BLK_LEFT",
+        network.create_segment_with_tracks(
+            segment_id="BLK_LEFT",
             positions=[(0, 0), (1, 0)],
             name="Left",
         )
-        network.create_block_with_tracks(
-            block_id="BLK_RIGHT",
+        network.create_segment_with_tracks(
+            segment_id="BLK_RIGHT",
             positions=[(3, 0), (4, 0)],
             name="Right",
         )
@@ -1048,13 +1079,13 @@ class TestRouteRedesignApis:
         network = app_state.network
         network.add_track(Tile(x=0, y=0, track_bits=2))
         network.add_track(Tile(x=10, y=0, track_bits=2))
-        network.create_block_with_tracks(
-            block_id="BLK_X",
+        network.create_segment_with_tracks(
+            segment_id="BLK_X",
             positions=[(0, 0)],
             name="X",
         )
-        network.create_block_with_tracks(
-            block_id="BLK_Y",
+        network.create_segment_with_tracks(
+            segment_id="BLK_Y",
             positions=[(10, 0)],
             name="Y",
         )
@@ -1106,11 +1137,11 @@ class TestRouteRedesignApis:
         """
         for x in range(4):
             app_state.network.add_track(Tile(x=x, y=0, track_bits=2))
-        app_state.network.create_block_with_tracks(
-            block_id="BLK_A", positions=[(0, 0), (1, 0)], name="Block A"
+        app_state.network.create_segment_with_tracks(
+            segment_id="BLK_A", positions=[(0, 0), (1, 0)], name="Block A"
         )
-        app_state.network.create_block_with_tracks(
-            block_id="BLK_B", positions=[(2, 0), (3, 0)], name="Block B"
+        app_state.network.create_segment_with_tracks(
+            segment_id="BLK_B", positions=[(2, 0), (3, 0)], name="Block B"
         )
 
         train = app_state.sim_controller.add_train(
@@ -1301,6 +1332,194 @@ class TestEventLogRoute:
 
 
 # ============================================================================
+# Legacy JavaScript API-suite migration
+# ============================================================================
+
+
+class TestMigratedSwitchRoutes:
+    """Live switch HTTP contracts formerly covered only by test_api.js."""
+
+    @staticmethod
+    def _create_switch(client, app_state):
+        app_state.network.add_track(Tile(x=5, y=0, track_bits=0b000110))
+        response = client.post(
+            "/api/tracks/5/0/switch",
+            json={"main_length_cm": 60.0, "diverge_length_cm": 65.0},
+        )
+        assert response.status_code == 201
+        return response.get_json()
+
+    def test_list_create_get_update_and_delete_switch(self, client, app_state):
+        assert client.get("/api/switches").get_json() == []
+        created = self._create_switch(client, app_state)
+        switch_id = created["switch_id"]
+
+        assert client.get(f"/api/switches/{switch_id}").status_code == 200
+        updated = client.put(
+            f"/api/switches/{switch_id}",
+            json={"name": "Updated Switch", "main_length_cm": 70.0},
+        )
+        assert updated.status_code == 200
+        assert updated.get_json()["name"] == "Updated Switch"
+
+        deleted = client.delete(f"/api/switches/{switch_id}")
+        assert deleted.status_code == 200
+        assert client.get(f"/api/switches/{switch_id}").status_code == 404
+
+    def test_switch_creation_validation_and_idempotency(self, client, app_state):
+        assert client.post("/api/tracks/9/9/switch").status_code == 404
+        app_state.network.add_track(Tile(x=1, y=0, track_bits=2))
+        assert client.post("/api/tracks/1/0/switch").status_code == 400
+
+        created = self._create_switch(client, app_state)
+        repeated = client.post("/api/tracks/5/0/switch")
+        assert repeated.status_code == 200
+        assert repeated.get_json()["switch_id"] == created["switch_id"]
+
+    def test_switch_state_change_is_queued_and_validated(self, client, app_state):
+        switch_id = self._create_switch(client, app_state)["switch_id"]
+        queued = client.put(
+            f"/api/switches/{switch_id}/state",
+            json={"state": 1, "command_id": "CMD-MIGRATED"},
+        )
+        assert queued.status_code == 202
+        assert queued.get_json() == {
+            "command_id": "CMD-MIGRATED",
+            "status": "queued",
+        }
+        assert client.put(f"/api/switches/{switch_id}/state", json={}).status_code == 400
+        assert (
+            client.put(f"/api/switches/{switch_id}/state", json={"state": 2}).status_code
+            == 400
+        )
+        assert client.put("/api/switches/NOPE/state", json={"state": 0}).status_code == 404
+
+
+class TestMigratedSpeedProfileRoutes:
+    """Speed-profile CRUD migrated from the server-dependent JavaScript suite."""
+
+    def test_list_and_get_default_profile(self, client):
+        listing = client.get("/api/speed-profiles")
+        assert listing.status_code == 200
+        body = listing.get_json()
+        assert body["count"] == len(body["profiles"])
+        assert any(p["profile_id"] == "default" for p in body["profiles"])
+
+        default = client.get("/api/speed-profiles/default")
+        assert default.status_code == 200
+        assert default.get_json()["profile_id"] == "default"
+
+    def test_create_update_delete_and_conflicts(self, client):
+        payload = {"profile_id": "TEST_PROFILE", "name": "Migrated profile"}
+        created = client.post("/api/speed-profiles", json=payload)
+        assert created.status_code == 201
+        assert created.get_json()["profile_id"] == "TEST_PROFILE"
+        assert client.post("/api/speed-profiles", json=payload).status_code == 409
+
+        updated = client.put(
+            "/api/speed-profiles/TEST_PROFILE", json={"name": "Updated profile"}
+        )
+        assert updated.status_code == 200
+        assert updated.get_json()["name"] == "Updated profile"
+
+        assert client.delete("/api/speed-profiles/default").status_code == 409
+        assert client.delete("/api/speed-profiles/TEST_PROFILE").status_code == 204
+        assert client.get("/api/speed-profiles/TEST_PROFILE").status_code == 404
+
+    def test_profile_input_validation(self, client):
+        assert client.post("/api/speed-profiles", json={}).status_code == 400
+        assert client.get("/api/speed-profiles/NOPE").status_code == 404
+        assert client.put("/api/speed-profiles/NOPE", json={"name": "x"}).status_code == 404
+
+
+class TestMigratedScaleRoutes:
+    def test_get_and_put_scale(self, client):
+        from model_scale import get_model_scale, set_model_scale
+
+        original = get_model_scale()
+        try:
+            current = client.get("/api/scale")
+            assert current.status_code == 200
+            assert "presets" in current.get_json()
+
+            updated = client.put("/api/scale", json={"scale": 160.0})
+            assert updated.status_code == 200
+            assert updated.get_json()["scale"] == 160.0
+            assert client.put("/api/scale", json={"preset": "NOPE"}).status_code == 400
+        finally:
+            set_model_scale(original)
+
+
+class TestMigratedTrainRouteCrud:
+    def test_list_create_get_and_delete_route(self, client):
+        assert client.get("/api/train-routes").status_code == 200
+        created = client.post(
+            "/api/train-routes",
+            json={
+                "route_id": "ROUTE_MIGRATED",
+                "name": "Migrated route",
+                "mode": "one_way",
+                "tasks": [],
+            },
+        )
+        assert created.status_code == 200
+        route = created.get_json()["route"]
+        assert route["route_id"] == "ROUTE_MIGRATED"
+        assert route["mode"] == "one_off"
+
+        fetched = client.get("/api/train-routes/ROUTE_MIGRATED")
+        assert fetched.status_code == 200
+        assert fetched.get_json()["route_id"] == "ROUTE_MIGRATED"
+
+        assert client.delete("/api/train-routes/ROUTE_MIGRATED").status_code == 200
+        assert client.get("/api/train-routes/ROUTE_MIGRATED").status_code == 404
+
+
+class TestMigratedTrainPositionAndRetiredCommands:
+    def test_reposition_train_uses_current_position_contract(
+        self, client, app_state, network_with_tracks
+    ):
+        app_state.network.create_segment_with_tracks(
+            "BLK_POSITION", [(0, 0), (1, 0), (2, 0), (3, 0)]
+        )
+        created = client.post(
+            "/api/trains",
+            json={
+                "id": "TRAIN_POSITION",
+                "length": 0.4,
+                "position": {"x": 0, "y": 0},
+                "direction": "EAST",
+            },
+        )
+        assert created.status_code == 200
+
+        repositioned = client.put(
+            "/api/trains/TRAIN_POSITION/position",
+            json={"position": {"x": 2, "y": 0}, "direction": "EAST"},
+        )
+        assert repositioned.status_code == 200
+        controller = app_state.sim_controller.get_or_create_controller("TRAIN_POSITION")
+        assert controller._get_head_tile() == (2, 0)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/trains/T/clear-direction",
+            "/api/trains/T/set-direction",
+            "/api/trains/T/turn-around",
+            "/api/trains/T/enable-manual",
+            "/api/trains/T/disable-manual",
+            "/api/trains/T/emergency-stop",
+            "/api/trains/T/arrive",
+        ],
+    )
+    def test_v0_train_command_endpoint_is_retired(self, client, path):
+        # Flask resolves these URLs to the live /api/trains/<id> resource but
+        # correctly rejects POST because the v0 command method is absent.
+        assert client.post(path).status_code == 405
+
+
+# ============================================================================
 # Summary
 # ============================================================================
 
@@ -1317,10 +1536,8 @@ Test Coverage Summary:
 
 Total: 60+ tests covering the most critical functionality of all 108 routes.
 
-Additional tests can be added for:
-- Train control commands (ATO, manual control, speed control, etc.)
-- Switch operations
-- Train route management
-- Speed profile management
-- Extended error cases
+The former server-dependent JavaScript API checks have been migrated into this
+suite. Live switch, speed-profile, scale, train-route CRUD, and train-position
+contracts are covered above; removed v0 train commands are pinned as 404s so a
+stale compatibility surface cannot return silently.
 """
