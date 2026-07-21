@@ -400,6 +400,31 @@ def can_extend_segment(
     return {"can_extend": True}
 
 
+# --------------------------------------------------------------- reverse ----
+
+
+def reverse_segment(state: AppState, segment_id: str) -> bool:
+    """Flip a segment's stored tile order end-for-end. Returns True when flipped.
+
+    `Segment.ordered_tiles` is built per segment from a deterministic coordinate
+    rule, so two segments sitting next to each other on the layout can be stored
+    running towards each other. Grouping them into one block needs every member
+    to run the same way, and grouping itself never rewrites geometry — this is
+    the segment-axis write that aligns them.
+
+    Returns False when the segment has fewer than two tiles, where direction is
+    not meaningful.
+
+    Raises:
+        NotFoundError when no segment has that id.
+    """
+    if state.network.get_segment(segment_id) is None:
+        raise NotFoundError(f"Segment {segment_id} not found")
+    with state.simulation_lock:
+        geometry = state.network._get_segment_geometry_manager()
+        return geometry.reverse_segment_orientation(segment_id)
+
+
 # ---------------------------------------------------------------- delete ----
 
 

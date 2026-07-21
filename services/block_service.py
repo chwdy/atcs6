@@ -84,21 +84,39 @@ def create_block(
 ):
     """Group existing segments into one block sharing one power feed.
 
-    `segment_ids` is the ordered member list; the segments must already exist
-    and form one connected switch-free run in that order
-    (`BlockGroupingManager.create_block`). Every listed segment is moved out of
-    its prior block, and a prior block left with no segments is deleted.
+    `segment_ids` is the member list. The caller does not have to supply it in
+    run order: this works the order out itself (`BlockGroupingManager.plan_run`),
+    because an operator selecting segments on the canvas has no canonical order
+    to give.
+
+    Ordering is the only thing inferred. Grouping edits the power-grouping axis
+    (`segment_ids`) and nothing else — it must never rewrite a member's stored
+    geometry. So when a member is stored running the opposite way round the run,
+    this rejects rather than silently reversing its `ordered_tiles`: reversing is
+    a geometry write and belongs on the segment axis
+    (`POST /api/segments/<segment_id>/reverse`).
 
     Raises:
         ValidationError when the list is empty, a segment is unknown, the id is
-            taken, or the segments do not form one connected switch-free run.
+            taken, a member is stored in the opposite direction, or the segments
+            do not form one connected switch-free run.
     """
     resolved_id = block_id or f"BLK_{uuid.uuid4().hex[:8].upper()}"
     ids = list(segment_ids or [])
     if not ids:
         raise ValidationError("A block must group at least one segment")
+
+    grouping = state.network._get_block_grouping_manager()
+    ordered, to_reverse = grouping.plan_run(ids)
+    if to_reverse:
+        raise ValidationError(
+            "These segments are stored running the opposite way round the run: "
+            f"{', '.join(sorted(to_reverse))}. Grouping only edits block "
+            "membership, so it will not rewrite their geometry — reverse each "
+            "with POST /api/segments/<segment_id>/reverse, then group again."
+        )
     try:
-        return state.network.create_block(resolved_id, ids, name)
+        return state.network.create_block(resolved_id, ordered, name)
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
 

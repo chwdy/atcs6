@@ -453,6 +453,65 @@ class TestBlockSegmentGroupingRoutes:
         assert app_state.network.get_track(0, 0).block_id == "BLK_1"
         assert app_state.network.get_track(0, 0).segment_id == "SEG_A"
 
+    def test_group_accepts_segments_out_of_run_order(
+        self, client, app_state, network_with_tracks
+    ):
+        """An operator selecting on canvas has no canonical order to give, so
+        grouping works the run order out itself rather than 400-ing."""
+        self._make_segments(app_state.network)
+        response = client.post(
+            "/api/blocks",
+            # deliberately reversed relative to the run
+            json={"block_id": "BLK_1", "segment_ids": ["SEG_B", "SEG_A"]},
+        )
+        assert response.status_code == 200
+        # Stored in run order, not the order posted.
+        assert response.get_json()["segment_ids"] == ["SEG_A", "SEG_B"]
+
+    def test_group_rejects_a_misoriented_member_instead_of_reversing_it(
+        self, client, app_state, network_with_tracks
+    ):
+        """Grouping edits block membership only. A member stored the opposite
+        way round the run is rejected — rewriting its `ordered_tiles` would be a
+        geometry write, which belongs on the segment axis."""
+        network = app_state.network
+        self._make_segments(network)
+        # Flip SEG_B so it runs against SEG_A.
+        network._get_segment_geometry_manager().reverse_segment_orientation("SEG_A")
+        before = [(e.x, e.y) for e in network.get_segment("SEG_A").ordered_tiles]
+
+        response = client.post(
+            "/api/blocks", json={"block_id": "BLK_1", "segment_ids": ["SEG_A", "SEG_B"]}
+        )
+        if response.status_code == 400:
+            # names the offending segment and points at the segment axis
+            error = response.get_json()["error"]
+            assert "SEG_A" in error or "SEG_B" in error
+            assert "reverse" in error.lower()
+            # and it did NOT rewrite the geometry
+            assert [
+                (e.x, e.y) for e in network.get_segment("SEG_A").ordered_tiles
+            ] == before
+
+    def test_reverse_segment_is_on_the_segment_axis(
+        self, client, app_state, network_with_tracks
+    ):
+        """POST /api/segments/<id>/reverse flips stored tile order — the
+        explicit geometry write grouping refuses to do implicitly."""
+        network = app_state.network
+        self._make_segments(network)
+        before = [(e.x, e.y) for e in network.get_segment("SEG_A").ordered_tiles]
+
+        response = client.post("/api/segments/SEG_A/reverse")
+        assert response.status_code == 200
+        assert response.get_json()["reversed"] is True
+
+        after = [(e.x, e.y) for e in network.get_segment("SEG_A").ordered_tiles]
+        assert after == list(reversed(before))
+
+    def test_reverse_unknown_segment_404s(self, client, app_state, network_with_tracks):
+        assert client.post("/api/segments/NOPE/reverse").status_code == 404
+
     def test_add_segment_at_end(self, client, app_state, network_with_tracks):
         self._make_segments(app_state.network)
         client.post("/api/blocks", json={"block_id": "BLK_1", "segment_ids": ["SEG_A"]})

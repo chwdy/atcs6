@@ -349,3 +349,16 @@ def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
     )
 
     print(f"  Demo 7: 1 loco on a 4-block loop, mode={DEMO7_MODE!r}.")
+    if DEMO7_MODE == "continuous":
+        print(
+            "  WARNING: continuous mode laps correctly, then enters failed "
+            "runtime (~148 s) with route_completion_mismatch — it finishes at "
+            "BLK_AA6FB5 while its active path still targets BLK_AA866E. "
+            "Circular-route target resolution on this symmetric loop."
+        )
+    else:
+        print(
+            "  WARNING: stop_loop stalls after its first leg — the loco dwells "
+            "at the second block and never takes authority for the next one. "
+            "Circular-route target resolution on this symmetric loop."
+        )

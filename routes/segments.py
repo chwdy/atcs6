@@ -101,6 +101,28 @@ def register(app, state: AppState) -> None:
             {"status": "success", "message": f"Segment {segment_id} deleted"}
         )
 
+    @app.route("/api/segments/<segment_id>/reverse", methods=["POST"])
+    def reverse_segment(segment_id: str):
+        """Flip a segment's stored tile order end-for-end.
+
+        Geometry lives on the segment, so this is the segment-axis write that
+        aligns a member stored the opposite way round a run. Grouping
+        (`POST /api/blocks`) deliberately will not do this for you: it edits
+        block membership only and rejects a misoriented member instead of
+        rewriting its geometry.
+        """
+        try:
+            changed = segment_service.reverse_segment(state, segment_id)
+        except NotFoundError:
+            return jsonify({"error": "Segment not found"}), 404
+        return jsonify(
+            {
+                "status": "success",
+                "segment_id": segment_id,
+                "reversed": changed,
+            }
+        )
+
     @app.route("/api/segments/<segment_id>/extend", methods=["POST"])
     def extend_segment_endpoint(segment_id: str):
         """Extend a segment with new track positions.
