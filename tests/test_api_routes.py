@@ -189,7 +189,8 @@ class TestTrackRoutes:
 
 
 class TestBlockRoutes:
-    """Test block management endpoints."""
+    """Test block grouping + config + voltage endpoints (geometry lives on the
+    segment surface, see TestSegmentRoutes)."""
 
     def test_get_blocks(self, client):
         """GET /api/blocks should list all blocks."""
@@ -198,22 +199,16 @@ class TestBlockRoutes:
         data = response.get_json()
         assert isinstance(data, list)
 
-    def test_create_block(self, client):
-        """POST /api/blocks should create a new block."""
-        response = client.post(
-            "/api/blocks", json={"block_id": "BLK_TEST", "name": "Test Block"}
-        )
-        assert response.status_code == 200
-        data = response.get_json()
-        assert data["block_id"] == "BLK_TEST"
-
     def test_get_block_success(self, client, app_state):
-        """GET /api/blocks/<block_id> should return block details."""
-        block = app_state.network.create_segment("BLK_001", "Test Block")
+        """GET /api/blocks/<block_id> should return block details incl.
+        segment_ids."""
+        app_state.network.create_segment("BLK_001", "Test Block")
         response = client.get("/api/blocks/BLK_001")
         assert response.status_code == 200
         data = response.get_json()
         assert data["block_id"] == "BLK_001"
+        assert data["segment_ids"] == ["BLK_001"]
+        assert "occupied_by" in data and "state" in data
 
     def test_get_block_not_found(self, client):
         """GET /api/blocks/<block_id> should return 404 for nonexistent block."""
@@ -221,12 +216,19 @@ class TestBlockRoutes:
         assert response.status_code == 404
 
     def test_update_block(self, client, app_state):
-        """PATCH /api/blocks/<block_id> should update block properties."""
+        """PATCH /api/blocks/<block_id> should update block config."""
         app_state.network.create_segment("BLK_001", "Test")
         response = client.patch("/api/blocks/BLK_001", json={"name": "Updated"})
         assert response.status_code == 200
         data = response.get_json()
         assert data["name"] == "Updated"
+
+    def test_update_block_rejects_geometry(self, client, app_state):
+        """PATCH /api/blocks is config only — a geometry field is rejected and
+        points at the segment endpoint."""
+        app_state.network.create_segment("BLK_001", "Test")
+        response = client.patch("/api/blocks/BLK_001", json={"length_cm": 50.0})
+        assert response.status_code == 400
 
     def test_update_block_allowed_travel_directions_one_way(
         self, client, app_state
@@ -283,8 +285,8 @@ class TestBlockRoutes:
         assert response.status_code == 400
         assert block.allowed_travel_directions == {"forward", "reverse"}
 
-    def test_delete_block(self, client, app_state):
-        """DELETE /api/blocks/<block_id> should delete block."""
+    def test_delete_block_ungroups(self, client, app_state):
+        """DELETE /api/blocks/<block_id> dissolves the grouping (ungroup)."""
         app_state.network.create_segment("BLK_001", "Test")
         response = client.delete("/api/blocks/BLK_001")
         assert response.status_code == 200
@@ -307,43 +309,6 @@ class TestBlockRoutes:
         # admin shim is no longer reachable.
         assert response.status_code in (404, 405)
 
-    def test_create_segment_with_tracks(self, client, network_with_tracks):
-        """POST /api/blocks/create-with-tracks should create block with tracks."""
-        positions = [[0, 0], [1, 0], [2, 0]]
-        response = client.post(
-            "/api/blocks/create-with-tracks",
-            json={"block_id": "BLK_TEST", "positions": positions, "name": "Test Block"},
-        )
-        assert response.status_code == 200
-        data = response.get_json()
-        assert data["block_id"] == "BLK_TEST"
-
-    def test_extend_block(self, client, app_state, network_with_tracks):
-        """POST /api/blocks/<block_id>/extend should extend block."""
-        block = app_state.network.create_segment_with_tracks("BLK_001", [(0, 0), (1, 0)])
-        response = client.post(
-            "/api/blocks/BLK_001/extend", json={"positions": [[2, 0]]}
-        )
-        assert response.status_code == 200
-
-    def test_add_tracks_to_block(self, client, app_state, network_with_tracks):
-        """POST /api/blocks/<block_id>/tracks should add tracks to block."""
-        block = app_state.network.create_segment("BLK_001", "Test")
-        response = client.post(
-            "/api/blocks/BLK_001/tracks", json={"positions": [[0, 0]]}
-        )
-        assert response.status_code == 200
-
-    def test_remove_tracks_from_block(self, client, app_state, network_with_tracks):
-        """DELETE /api/blocks/<block_id>/tracks should remove tracks."""
-        block = app_state.network.create_segment_with_tracks(
-            "BLK_001", [(0, 0), (1, 0), (2, 0)]
-        )
-        response = client.delete(
-            "/api/blocks/BLK_001/tracks", json={"positions": [[2, 0]]}
-        )
-        assert response.status_code == 200
-
     def test_get_block_voltage(self, client, app_state):
         """GET /api/blocks/<block_id>/voltage should return voltage."""
         app_state.network.create_segment("BLK_001", "Test")
@@ -352,22 +317,244 @@ class TestBlockRoutes:
         data = response.get_json()
         assert "voltage" in data
 
-    def test_get_block_end_tiles(self, client, app_state, network_with_tracks):
-        """GET /api/blocks/<block_id>/end_tiles should return start/end tiles."""
-        app_state.network.create_segment_with_tracks("BLK_001", [(0, 0), (1, 0)])
-        response = client.get("/api/blocks/BLK_001/end_tiles")
+
+class TestSegmentRoutes:
+    """Test segment geometry endpoints (/api/segments)."""
+
+    def test_create_segment_with_tracks(self, client, network_with_tracks):
+        """POST /api/segments should create a segment holding the tracks."""
+        positions = [[0, 0], [1, 0], [2, 0]]
+        response = client.post(
+            "/api/segments",
+            json={"segment_id": "SEG_TEST", "positions": positions, "name": "T"},
+        )
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["segment_id"] == "SEG_TEST"
+        assert data["block_id"] == "SEG_TEST"  # fresh segment gets its own block
+
+    def test_get_segments_list(self, client, app_state, network_with_tracks):
+        """GET /api/segments should list all segments."""
+        app_state.network.create_segment_with_tracks("SEG_001", [(0, 0), (1, 0)])
+        response = client.get("/api/segments")
+        assert response.status_code == 200
+        assert any(s["segment_id"] == "SEG_001" for s in response.get_json())
+
+    def test_get_segment_success(self, client, app_state, network_with_tracks):
+        """GET /api/segments/<segment_id> should return geometry."""
+        app_state.network.create_segment_with_tracks("SEG_001", [(0, 0), (1, 0)])
+        response = client.get("/api/segments/SEG_001")
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["segment_id"] == "SEG_001"
+        assert data["is_continuous"] is True
+
+    def test_get_segment_not_found(self, client):
+        response = client.get("/api/segments/NONEXISTENT")
+        assert response.status_code == 404
+
+    def test_update_segment_geometry(self, client, app_state, network_with_tracks):
+        """PATCH /api/segments/<segment_id> should update geometry."""
+        app_state.network.create_segment_with_tracks("SEG_001", [(0, 0), (1, 0)])
+        response = client.patch(
+            "/api/segments/SEG_001", json={"length_cm": 120.0, "grade_percent": 2.0}
+        )
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["length_cm"] == 120.0
+        assert data["grade_percent"] == 2.0
+
+    def test_delete_segment(self, client, app_state, network_with_tracks):
+        """DELETE /api/segments/<segment_id> should delete the segment."""
+        app_state.network.create_segment_with_tracks("SEG_001", [(0, 0), (1, 0)])
+        response = client.delete("/api/segments/SEG_001")
+        assert response.status_code == 200
+        assert app_state.network.get_segment("SEG_001") is None
+
+    def test_extend_segment(self, client, app_state, network_with_tracks):
+        """POST /api/segments/<segment_id>/extend should extend the segment."""
+        app_state.network.create_segment_with_tracks("SEG_001", [(0, 0), (1, 0)])
+        response = client.post(
+            "/api/segments/SEG_001/extend", json={"positions": [[2, 0]]}
+        )
+        assert response.status_code == 200
+
+    def test_add_tracks_to_segment(self, client, app_state, network_with_tracks):
+        """POST /api/segments/<segment_id>/tracks should add tracks."""
+        app_state.network.create_segment("SEG_001", "Test")
+        response = client.post(
+            "/api/segments/SEG_001/tracks", json={"positions": [[0, 0]]}
+        )
+        assert response.status_code == 200
+
+    def test_remove_tracks_from_segment(self, client, app_state, network_with_tracks):
+        """DELETE /api/segments/<segment_id>/tracks should remove tracks."""
+        app_state.network.create_segment_with_tracks(
+            "SEG_001", [(0, 0), (1, 0), (2, 0)]
+        )
+        response = client.delete(
+            "/api/segments/SEG_001/tracks", json={"positions": [[2, 0]]}
+        )
+        assert response.status_code == 200
+
+    def test_get_segment_end_tiles(self, client, app_state, network_with_tracks):
+        """GET /api/segments/<segment_id>/end_tiles should return start/end."""
+        app_state.network.create_segment_with_tracks("SEG_001", [(0, 0), (1, 0)])
+        response = client.get("/api/segments/SEG_001/end_tiles")
         assert response.status_code == 200
         data = response.get_json()
         assert "start_tile" in data
         assert "end_tile" in data
 
-    def test_can_extend_block(self, client, app_state, network_with_tracks):
-        """POST /api/blocks/<block_id>/can_extend should validate extension."""
-        app_state.network.create_segment_with_tracks("BLK_001", [(0, 0), (1, 0)])
-        response = client.post("/api/blocks/BLK_001/can_extend", json={"x": 2, "y": 0})
+    def test_can_extend_segment(self, client, app_state, network_with_tracks):
+        """POST /api/segments/<segment_id>/can_extend should validate."""
+        app_state.network.create_segment_with_tracks("SEG_001", [(0, 0), (1, 0)])
+        response = client.post(
+            "/api/segments/SEG_001/can_extend", json={"x": 2, "y": 0}
+        )
+        assert response.status_code == 200
+        assert "can_extend" in response.get_json()
+
+
+class TestBlockSegmentGroupingRoutes:
+    """The block/segment split trap: group MULTIPLE segments with visibly
+    distinct ids into one block and exercise every grouping edge.
+
+    A single-segment block has block_id == segment_id, which hides an
+    id-aliasing bug. Every test here uses distinct ids so a confusion fails:
+
+        BLK_1  groups  SEG_A  +  SEG_B  ( +  SEG_C )
+    """
+
+    def _make_segments(self, network):
+        """Three connected EW segments on the shared network_with_tracks run.
+
+        SEG_A = (0,0),(1,0) ; SEG_B = (2,0) ; SEG_C = (3,0),(4,0).
+        """
+        network.create_segment_with_tracks("SEG_A", [(0, 0), (1, 0)], length_cm=100.0)
+        network.create_segment_with_tracks("SEG_B", [(2, 0)], length_cm=20.0)
+        network.create_segment_with_tracks("SEG_C", [(3, 0), (4, 0)], length_cm=60.0)
+
+    def test_group_multiple_segments_into_one_block(
+        self, client, app_state, network_with_tracks
+    ):
+        self._make_segments(app_state.network)
+        response = client.post(
+            "/api/blocks",
+            json={"block_id": "BLK_1", "segment_ids": ["SEG_A", "SEG_B"], "name": "Yard"},
+        )
         assert response.status_code == 200
         data = response.get_json()
-        assert "can_extend" in data
+        assert data["block_id"] == "BLK_1"
+        assert data["segment_ids"] == ["SEG_A", "SEG_B"]
+        # The members' prior single-segment blocks are gone; only BLK_1 groups
+        # them now. Distinct ids: a block id is not a segment id.
+        assert "SEG_A" not in app_state.network.blocks
+        assert app_state.network.get_track(0, 0).block_id == "BLK_1"
+        assert app_state.network.get_track(0, 0).segment_id == "SEG_A"
+
+    def test_add_segment_at_end(self, client, app_state, network_with_tracks):
+        self._make_segments(app_state.network)
+        client.post("/api/blocks", json={"block_id": "BLK_1", "segment_ids": ["SEG_A"]})
+        response = client.post(
+            "/api/blocks/BLK_1/segments", json={"segment_id": "SEG_B"}
+        )
+        assert response.status_code == 200
+        assert response.get_json()["segment_ids"] == ["SEG_A", "SEG_B"]
+
+    def test_add_non_joining_segment_rejected(
+        self, client, app_state, network_with_tracks
+    ):
+        """A segment that joins neither end of the run is rejected (end-only)."""
+        self._make_segments(app_state.network)
+        # SEG_FAR is a separate NS run at x=0, not connected to the EW run.
+        app_state.network.create_segment_with_tracks("SEG_FAR", [(0, 3), (0, 4)])
+        client.post("/api/blocks", json={"block_id": "BLK_1", "segment_ids": ["SEG_A"]})
+        response = client.post(
+            "/api/blocks/BLK_1/segments", json={"segment_id": "SEG_FAR"}
+        )
+        assert response.status_code == 400
+
+    def test_remove_end_segment_rehomes_it(
+        self, client, app_state, network_with_tracks
+    ):
+        self._make_segments(app_state.network)
+        client.post(
+            "/api/blocks",
+            json={"block_id": "BLK_1", "segment_ids": ["SEG_A", "SEG_B"]},
+        )
+        response = client.delete("/api/blocks/BLK_1/segments/SEG_B")
+        assert response.status_code == 200
+        assert response.get_json()["segment_ids"] == ["SEG_A"]
+        # SEG_B returned to its own single-segment block.
+        assert app_state.network.get_block("SEG_B") is not None
+        assert app_state.network.get_track(2, 0).block_id == "SEG_B"
+
+    def test_remove_middle_segment_rejected(
+        self, client, app_state, network_with_tracks
+    ):
+        """Removing a middle segment would split the run — rejected (400)."""
+        self._make_segments(app_state.network)
+        client.post(
+            "/api/blocks",
+            json={"block_id": "BLK_1", "segment_ids": ["SEG_A", "SEG_B", "SEG_C"]},
+        )
+        response = client.delete("/api/blocks/BLK_1/segments/SEG_B")
+        assert response.status_code == 400
+        # The grouping is untouched.
+        assert app_state.network.get_block("BLK_1").segment_ids == [
+            "SEG_A",
+            "SEG_B",
+            "SEG_C",
+        ]
+
+    def test_ungroup_rehomes_every_member(
+        self, client, app_state, network_with_tracks
+    ):
+        self._make_segments(app_state.network)
+        client.post(
+            "/api/blocks",
+            json={"block_id": "BLK_1", "segment_ids": ["SEG_A", "SEG_B"]},
+        )
+        response = client.delete("/api/blocks/BLK_1")
+        assert response.status_code == 200
+        # BLK_1 is gone; each freed segment is back in its own block.
+        assert client.get("/api/blocks/BLK_1").status_code == 404
+        assert client.get("/api/blocks/SEG_A").status_code == 200
+        assert client.get("/api/blocks/SEG_B").status_code == 200
+        # Geometry survived the ungroup.
+        assert app_state.network.get_segment("SEG_A") is not None
+
+    def test_geometry_patch_on_member_updates_only_that_segment(
+        self, client, app_state, network_with_tracks
+    ):
+        """A geometry PATCH addresses one member of a grouped block and touches
+        only that segment; the block length is the summed read."""
+        self._make_segments(app_state.network)
+        client.post(
+            "/api/blocks",
+            json={"block_id": "BLK_1", "segment_ids": ["SEG_A", "SEG_B"]},
+        )
+        response = client.patch("/api/segments/SEG_A", json={"length_cm": 99.0})
+        assert response.status_code == 200
+        assert app_state.network.get_segment("SEG_A").length_cm == 99.0
+        # SEG_B is untouched.
+        assert app_state.network.get_segment("SEG_B").length_cm == 20.0
+        # Block length is the sum across members.
+        assert app_state.network.get_block("BLK_1").length_cm == 119.0
+
+    def test_block_patch_rejects_geometry_on_grouped_block(
+        self, client, app_state, network_with_tracks
+    ):
+        """A block-level geometry PATCH on a grouped block is rejected — there
+        is no single member to write, and the config surface is not geometry."""
+        self._make_segments(app_state.network)
+        client.post(
+            "/api/blocks",
+            json={"block_id": "BLK_1", "segment_ids": ["SEG_A", "SEG_B"]},
+        )
+        response = client.patch("/api/blocks/BLK_1", json={"length_cm": 5.0})
+        assert response.status_code == 400
 
 
 # ============================================================================

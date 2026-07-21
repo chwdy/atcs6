@@ -73,15 +73,15 @@ def state():
     )
 
 
-def test_create_block_sets_holding_point(state):
-    block = block_service.create_block(
-        state, block_id="BLK_HP", length_cm=10.0, is_holding_point=True
-    )
-    assert block.is_holding_point is True
+def test_service_created_block_defaults_holding_point_false(state):
+    # A fresh single-segment block starts with the flag off; it is set through
+    # the block config PATCH surface, not at create time.
+    block = state.network.create_segment("BLK_HP")
+    assert block.is_holding_point is False
 
 
 def test_update_block_toggles_holding_point(state):
-    block_service.create_block(state, block_id="BLK_HP", length_cm=10.0)
+    state.network.create_segment("BLK_HP")
     assert state.network.get_block("BLK_HP").is_holding_point is False
     block_service.update_block(state, "BLK_HP", data={"is_holding_point": True})
     assert state.network.get_block("BLK_HP").is_holding_point is True

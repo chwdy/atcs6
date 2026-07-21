@@ -27,6 +27,7 @@ from services import ConflictError, GoneError, NotFoundError, ValidationError
 from services import (
     block_service,
     platform_service,
+    segment_service,
     speed_profile_service,
     switch_service,
     track_service,
@@ -461,27 +462,55 @@ class TestTrainService:
 # --------------------------------------------------------- block_service ----
 
 
+def _straight_ew(state, xs):
+    """Add a straight EW run of tracks at ``xs`` (all joined)."""
+    from track import TRACK_EW
+
+    for x in xs:
+        state.network.add_track(Tile(x, 0, TRACK_EW))
+
+
 class TestBlockService:
+    """Grouping + config surface. Geometry lives on segments (see below)."""
+
     def test_require_block_raises_not_found(self, state):
         assert block_service.get_block(state, "GHOST") is None
         with pytest.raises(NotFoundError):
             block_service.require_block(state, "GHOST")
 
-    def test_create_block(self, state):
+    def test_create_block_groups_segments(self, state):
+        _straight_ew(state, range(4))
+        state.network.create_segment_with_tracks("SEG_A", [(0, 0), (1, 0)])
+        state.network.create_segment_with_tracks("SEG_B", [(2, 0), (3, 0)])
         block = block_service.create_block(
-            state, block_id="BLK_T", name="Main", length_cm=150.0
+            state, block_id="BLK_1", segment_ids=["SEG_A", "SEG_B"], name="Yard"
         )
-        assert block.block_id == "BLK_T"
-        assert block.name == "Main"
-        assert block.length_cm == 150.0
-        assert state.network.get_block("BLK_T") is block
+        assert block.block_id == "BLK_1"
+        assert block.segment_ids == ["SEG_A", "SEG_B"]
+        # Grouping removes the members' prior single-segment blocks.
+        assert "SEG_A" not in state.network.blocks
+        assert "SEG_B" not in state.network.blocks
 
     def test_create_block_autogenerates_id(self, state):
-        block = block_service.create_block(state, name="auto")
+        _straight_ew(state, [0, 1])
+        state.network.create_segment_with_tracks("SEG_ONLY", [(0, 0), (1, 0)])
+        block = block_service.create_block(
+            state, segment_ids=["SEG_ONLY"], name="auto"
+        )
         assert block.block_id.startswith("BLK_")
 
+    def test_create_block_empty_segment_ids_raises(self, state):
+        with pytest.raises(ValidationError):
+            block_service.create_block(state, block_id="BLK_E", segment_ids=[])
+
+    def test_create_block_unknown_segment_raises(self, state):
+        with pytest.raises(ValidationError):
+            block_service.create_block(
+                state, block_id="BLK_U2", segment_ids=["GHOST"]
+            )
+
     def test_update_block_name(self, state):
-        block_service.create_block(state, block_id="BLK_U", name="old")
+        state.network.create_segment("BLK_U", "old")
         updated = block_service.update_block(state, "BLK_U", data={"name": "new"})
         assert updated.name == "new"
 
@@ -491,19 +520,26 @@ class TestBlockService:
 
     def test_update_block_state_field_raises_gone(self, state):
         """The removed direct `state` mutation surfaces as GoneError (410)."""
-        block_service.create_block(state, block_id="BLK_G")
+        state.network.create_segment("BLK_G")
         with pytest.raises(GoneError):
             block_service.update_block(state, "BLK_G", data={"state": "OCCUPIED"})
 
+    def test_update_block_rejects_geometry_field(self, state):
+        """A block config PATCH carrying geometry is rejected (edit the
+        segment)."""
+        state.network.create_segment("BLK_GEO")
+        with pytest.raises(ValidationError):
+            block_service.update_block(state, "BLK_GEO", data={"length_cm": 50.0})
+
     def test_disable_occupied_block_raises_conflict(self, state):
-        block = block_service.create_block(state, block_id="BLK_O")
+        block = state.network.create_segment("BLK_O")
         block.occupied_by = "TRAIN_A"
         with pytest.raises(ConflictError):
             block_service.update_block(state, "BLK_O", data={"disabled": True})
         assert block.disabled is False  # rejected, not applied
 
     def test_disable_free_block_succeeds(self, state):
-        block_service.create_block(state, block_id="BLK_F")
+        state.network.create_segment("BLK_F")
         updated = block_service.update_block(
             state, "BLK_F", data={"disabled": True, "manual": True}
         )
@@ -511,32 +547,101 @@ class TestBlockService:
         assert updated.manual is True
 
     def test_allowed_travel_directions_invalid_raises_validation(self, state):
-        block_service.create_block(state, block_id="BLK_D")
+        state.network.create_segment("BLK_D")
         with pytest.raises(ValidationError):
             block_service.update_block(
                 state, "BLK_D", data={"allowed_travel_directions": ["sideways"]}
             )
 
     def test_allowed_travel_directions_valid(self, state):
-        block_service.create_block(state, block_id="BLK_D2")
+        state.network.create_segment("BLK_D2")
         updated = block_service.update_block(
             state, "BLK_D2", data={"allowed_travel_directions": ["forward"]}
         )
         assert updated.allowed_travel_directions == {"forward"}
 
-    def test_delete_block(self, state):
-        block_service.create_block(state, block_id="BLK_X")
-        assert block_service.delete_block(state, "BLK_X") is True
-        assert block_service.get_block(state, "BLK_X") is None
+    def test_delete_block_ungroups_to_own_blocks(self, state):
+        """Dissolving a grouping re-homes each member into its own block; the
+        geometry survives."""
+        _straight_ew(state, range(4))
+        state.network.create_segment_with_tracks("SEG_A", [(0, 0), (1, 0)])
+        state.network.create_segment_with_tracks("SEG_B", [(2, 0), (3, 0)])
+        block_service.create_block(
+            state, block_id="BLK_1", segment_ids=["SEG_A", "SEG_B"]
+        )
+
+        assert block_service.delete_block(state, "BLK_1") is True
+
+        assert block_service.get_block(state, "BLK_1") is None
+        # Each freed segment is back in its own single-segment block; the tiles
+        # were never deleted.
+        assert state.network.get_segment("SEG_A") is not None
+        assert state.network.get_segment("SEG_B") is not None
+        assert "SEG_A" in state.network.blocks
+        assert "SEG_B" in state.network.blocks
+        assert state.network.get_track(0, 0).segment_id == "SEG_A"
 
     def test_delete_block_unknown_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
             block_service.delete_block(state, "GHOST")
 
-    def test_delete_block_cascades_to_owning_platform(self, state):
-        # A station/platform owning exactly one block: deleting that block must
-        # drop it from the platform's block_assignments and, since that empties
-        # the platform, delete the platform too (design_new.md:644).
+    def test_add_and_remove_member_segment(self, state):
+        _straight_ew(state, range(4))
+        state.network.create_segment_with_tracks("SEG_A", [(0, 0), (1, 0)])
+        state.network.create_segment_with_tracks("SEG_B", [(2, 0), (3, 0)])
+        block_service.create_block(state, block_id="BLK_1", segment_ids=["SEG_A"])
+
+        block = block_service.add_segment_to_block(state, "BLK_1", "SEG_B")
+        assert block.segment_ids == ["SEG_A", "SEG_B"]
+
+        assert block_service.remove_segment_from_block(state, "BLK_1", "SEG_B") is True
+        assert state.network.get_block("BLK_1").segment_ids == ["SEG_A"]
+        assert "SEG_B" in state.network.blocks  # re-homed to its own block
+
+    def test_add_segment_unknown_block_raises_not_found(self, state):
+        _straight_ew(state, [0, 1])
+        state.network.create_segment_with_tracks("SEG_A", [(0, 0), (1, 0)])
+        with pytest.raises(NotFoundError):
+            block_service.add_segment_to_block(state, "GHOST", "SEG_A")
+
+
+# ------------------------------------------------------- segment_service ----
+
+
+class TestSegmentService:
+    """Geometry surface: create-with-tracks, geometry PATCH, tiles, delete."""
+
+    def test_create_segment_with_tracks(self, state):
+        _straight_ew(state, range(3))
+        block = segment_service.create_segment_with_tracks(
+            state, segment_id="SEG_T", positions=[[0, 0], [1, 0], [2, 0]], name="T"
+        )
+        assert block.segment_ids == ["SEG_T"]
+        assert state.network.get_segment("SEG_T") is not None
+
+    def test_update_segment_geometry(self, state):
+        _straight_ew(state, [0, 1])
+        segment_service.create_segment_with_tracks(
+            state, segment_id="SEG_G", positions=[[0, 0], [1, 0]]
+        )
+        seg = segment_service.update_segment(
+            state,
+            "SEG_G",
+            data={"length_cm": 120.0, "min_radius_cm": 30.0, "grade_percent": 2.0},
+        )
+        assert seg.length_cm == 120.0
+        assert seg.min_radius_cm == 30.0
+        assert seg.grade_percent == 2.0
+
+    def test_update_segment_unknown_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            segment_service.update_segment(state, "GHOST", data={"length_cm": 1.0})
+
+    def test_delete_segment_cascades_to_owning_platform(self, state):
+        # A station/platform owning exactly one block: deleting the block's only
+        # segment empties the block, which must drop it from the platform's
+        # block_assignments and, since that empties the platform, delete the
+        # platform too (design_new.md:644).
         from track import TRACK_NS
 
         state.network.add_track(Tile(0, 0, TRACK_NS))
@@ -548,17 +653,18 @@ class TestBlockService:
         assert platform.platform_id in state.network.platforms
         assert block_id in platform.get_all_assigned_blocks()
 
-        assert block_service.delete_block(state, block_id) is True
+        # For a single-segment block, block_id == segment_id.
+        assert segment_service.delete_segment(state, block_id) is True
 
         assert block_id not in state.network.blocks
         # The platform held only this block, so the cascade removed it too.
         assert platform.platform_id not in state.network.platforms
 
     def test_remove_last_tile_cascades_to_owning_platform(self, state):
-        # Removing the LAST tile of a platform-owned block auto-deletes the
-        # block; that auto-delete must run the same downward platform cascade as
-        # delete_block, so the emptied platform is torn down instead of left with
-        # a dangling block_assignments entry (design_new.md:644).
+        # Removing the LAST tile of a platform-owned block empties its segment;
+        # the auto-delete must run the same downward platform cascade, so the
+        # emptied platform is torn down instead of left with a dangling
+        # block_assignments entry (design_new.md:644).
         from track import TRACK_NS
 
         state.network.add_track(Tile(0, 0, TRACK_NS))
@@ -569,25 +675,33 @@ class TestBlockService:
         assert block_id in state.network.blocks
         assert platform.platform_id in state.network.platforms
 
-        # Remove the block's only tile -> block becomes empty -> auto-deleted.
-        block_service.remove_tracks_from_block(state, block_id, positions=[[0, 0]])
+        # Remove the segment's only tile -> segment empties -> block auto-deleted.
+        segment_service.remove_tracks_from_segment(
+            state, block_id, positions=[[0, 0]]
+        )
 
         assert block_id not in state.network.blocks
         # The auto-delete cascaded through the service layer: the now-empty
         # platform is gone, not left dangling.
         assert platform.platform_id not in state.network.platforms
 
-    def test_add_tracks_unknown_block_raises_not_found(self, state):
+    def test_delete_segment_unknown_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
-            block_service.add_tracks_to_block(state, "GHOST", positions=[[0, 0]])
+            segment_service.delete_segment(state, "GHOST")
 
-    def test_remove_tracks_unknown_block_raises_not_found(self, state):
+    def test_add_tracks_unknown_segment_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
-            block_service.remove_tracks_from_block(state, "GHOST", positions=[[0, 0]])
+            segment_service.add_tracks_to_segment(state, "GHOST", positions=[[0, 0]])
 
-    def test_can_extend_unknown_block_raises_not_found(self, state):
+    def test_remove_tracks_unknown_segment_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
-            block_service.can_extend_block(state, "GHOST", x=0, y=0)
+            segment_service.remove_tracks_from_segment(
+                state, "GHOST", positions=[[0, 0]]
+            )
+
+    def test_can_extend_unknown_segment_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            segment_service.can_extend_segment(state, "GHOST", x=0, y=0)
 
 
 # --------------------------------------------------------- track_service ----

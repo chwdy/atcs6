@@ -1,21 +1,26 @@
-"""Block lifecycle and track-membership service.
+"""Block grouping + config service — the power/occupancy axis of the model.
 
-The HTTP layer in ``routes/blocks.py`` parses JSON and shapes the
-read-only serialization responses (`to_dict`, validation status,
-monitoring signals, sorted positions); this layer owns the block
-mutations:
+The HTTP layer in ``routes/blocks.py`` parses JSON and shapes the read-only
+serialization responses (`to_dict`, monitoring signals, sorted positions);
+this layer owns the block-side mutations:
 
-  * CRUD -- create, update (config + availability flags), delete.
-  * Bulk construction -- create-with-tracks, extend.
-  * Track membership -- add / remove tracks, with the edge-tile and
-    continuity validation that protects block geometry.
-  * ``can_extend`` -- the pure "may this tile join the block?" predicate.
+  * Grouping — create a block from a `segment_ids` list, dissolve (ungroup) a
+    block, and add / remove a member `Segment` at either end. These are the
+    four-method `BlockGroupingManager` surface (design_new.md **Block
+    grouping**), the replacement for the old power-district grouping API.
+  * Config + availability — name, holding-point flag, `disabled` / `manual`
+    availability flags, and the static `allowed_travel_directions` policy.
 
-Lookup raises ``NotFoundError``; bad input raises ``ValidationError``;
-a disabled-toggle blocked by occupancy/reservation/CAUTION raises
-``ConflictError``; the removed direct ``state`` mutation raises
-``GoneError`` (HTTP 410). ``update_block`` takes ``state.simulation_lock``
-(the PATCH route it replaces did); the other mutations do not.
+Geometry (length / radius / grade / speed-limit / tiles) is NOT edited here —
+it lives on the member segments and is written through
+``services.segment_service``. A config PATCH that carries a geometry field is
+rejected so the caller addresses the segment it means.
+
+Lookup raises ``NotFoundError``; bad input raises ``ValidationError``; a
+disabled-toggle blocked by occupancy/reservation/CAUTION raises
+``ConflictError``; the removed direct ``state`` mutation raises ``GoneError``
+(HTTP 410). ``update_block`` takes ``state.simulation_lock`` so the per-tick
+phase loop cannot observe a torn read.
 """
 
 from __future__ import annotations
@@ -24,15 +29,26 @@ from typing import Any, Dict, List, Optional
 import uuid
 
 from app_state import AppState
-from segment_validation import crossing_disallowed_in_segment
 from services.exceptions import (
     ConflictError,
     GoneError,
     NotFoundError,
     ValidationError,
 )
-from services.validation import coerce_nonneg
-from track import BIT_TO_EDGES
+
+
+# Geometry lives on the member segments; a block config PATCH that carries one
+# of these is rejected and pointed at the segment endpoint.
+_GEOMETRY_FIELDS = frozenset(
+    {
+        "length_cm",
+        "min_radius_cm",
+        "grade_percent",
+        "speed_limit_kmh",
+        "max_speed_kmh",
+        "ordered_tiles",
+    }
+)
 
 
 # --------------------------------------------------------------- lookups ----
@@ -56,68 +72,125 @@ def list_blocks(state: AppState) -> List[Any]:
     return list(state.network.blocks.values())
 
 
-# ------------------------------------------------------------------ CRUD ----
+# -------------------------------------------------------------- grouping ----
 
 
 def create_block(
     state: AppState,
     *,
     block_id: Optional[str] = None,
+    segment_ids: List[str],
     name: str = "",
-    length_cm: Optional[Any] = None,
-    min_radius_cm: Optional[Any] = None,
-    grade_percent: Optional[Any] = None,
-    speed_limit_kmh: Optional[Any] = None,
-    max_speed_kmh: Optional[Any] = None,
-    is_holding_point: Optional[Any] = None,
 ):
-    """Create a block and set its optional config fields.
+    """Group existing segments into one block sharing one power feed.
 
-    ``speed_limit_kmh`` wins over ``max_speed_kmh`` when both are given.
+    `segment_ids` is the ordered member list; the segments must already exist
+    and form one connected switch-free run in that order
+    (`BlockGroupingManager.create_block`). Every listed segment is moved out of
+    its prior block, and a prior block left with no segments is deleted.
 
     Raises:
-        ValidationError when the network rejects the id/name or a numeric
-            field does not parse.
+        ValidationError when the list is empty, a segment is unknown, the id is
+            taken, or the segments do not form one connected switch-free run.
     """
     resolved_id = block_id or f"BLK_{uuid.uuid4().hex[:8].upper()}"
+    ids = list(segment_ids or [])
+    if not ids:
+        raise ValidationError("A block must group at least one segment")
     try:
-        # A newly created block holds one fresh segment; block and segment take
-        # the same id until the operator groups other segments into it.
-        block = state.network.create_segment(resolved_id, name)
-        if length_cm is not None:
-            block.length_cm = float(length_cm)
-        if min_radius_cm is not None:
-            block.min_radius_cm = min_radius_cm
-        if grade_percent is not None:
-            block.grade_percent = grade_percent
-        if speed_limit_kmh is not None:
-            block.speed_limit_kmh = speed_limit_kmh
-        elif max_speed_kmh is not None:
-            block.speed_limit_kmh = max_speed_kmh
-        if is_holding_point is not None:
-            block.is_holding_point = bool(is_holding_point)
+        return state.network.create_block(resolved_id, ids, name)
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
-    return block
+
+
+def delete_block(state: AppState, block_id: str) -> bool:
+    """Dissolve a block grouping (ungroup). Returns True.
+
+    Every member segment is re-homed into its own single-segment block, the
+    default one-feed-per-segment layout (design_new.md:777) —
+    `BlockGroupingManager.delete_block`. This never deletes geometry; deleting a
+    segment's tiles is a segment-geometry operation
+    (``services.segment_service.delete_segment``).
+
+    Raises:
+        NotFoundError when no block has that id.
+    """
+    grouping = state.network._get_block_grouping_manager()
+    if not grouping.delete_block(block_id):
+        raise NotFoundError("Block not found")
+    return True
+
+
+def add_segment_to_block(state: AppState, block_id: str, segment_id: str):
+    """Add `segment_id` to either end of `block_id`'s run. Returns the block.
+
+    Raises:
+        NotFoundError when the block or the segment is unknown.
+        ValidationError when the add would break the switch-free run.
+    """
+    if state.network.get_block(block_id) is None:
+        raise NotFoundError("Block not found")
+    if state.network.get_segment(segment_id) is None:
+        raise NotFoundError("Segment not found")
+    try:
+        state.network.add_segment_to_block(block_id, segment_id)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    return state.network.get_block(block_id)
+
+
+def remove_segment_from_block(
+    state: AppState, block_id: str, segment_id: str
+) -> bool:
+    """Remove `segment_id` from either end of `block_id`'s run.
+
+    The segment returns to its own single-segment block; removing the block's
+    last member dissolves the block (design_new.md **Block grouping**). Returns
+    True when removed, False when the segment was not a member.
+
+    Raises:
+        NotFoundError when no block has that id.
+        ValidationError when the removal is not at an end (a middle segment).
+    """
+    if state.network.get_block(block_id) is None:
+        raise NotFoundError("Block not found")
+    try:
+        return state.network.remove_segment_from_block(block_id, segment_id)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+
+
+# -------------------------------------------------------- config + flags ----
 
 
 def update_block(state: AppState, block_id: str, *, data: Dict[str, Any]):
-    """Update a block's config and/or availability flags.
+    """Update a block's config and/or availability flags (NOT geometry).
 
-    Mutations happen under ``state.simulation_lock`` so the per-tick phase
-    loop cannot observe a torn read.
+    Handles ``name``, ``is_holding_point``, the ``disabled`` / ``manual``
+    availability flags, and the static ``allowed_travel_directions`` policy.
+    Geometry fields are rejected — they live on the member segments and are
+    written through ``services.segment_service.update_segment``.
+
+    Mutations happen under ``state.simulation_lock`` so the per-tick phase loop
+    cannot observe a torn read.
 
     Raises:
         NotFoundError when no block has that id.
         GoneError when the request carries the removed ``state`` field.
         ConflictError when enabling ``disabled`` while the block is
             occupied / reserved / in CAUTION.
-        ValidationError when ``allowed_travel_directions`` is malformed, or a
-            geometry field (``length_cm`` / ``min_radius_cm`` /
-            ``speed_limit_kmh``) is non-numeric or negative, or ``length_cm``
-            is sent as null.
+        ValidationError when a geometry field is present, or
+            ``allowed_travel_directions`` is malformed.
     """
     data = dict(data or {})
+
+    geometry_present = _GEOMETRY_FIELDS & set(data)
+    if geometry_present:
+        raise ValidationError(
+            f"Geometry field(s) {sorted(geometry_present)} are edited on the "
+            "segment, not the block. Use PATCH /api/segments/<segment_id>."
+        )
+
     with state.simulation_lock:
         block = state.network.get_block(block_id)
         if not block:
@@ -125,46 +198,7 @@ def update_block(state: AppState, block_id: str, *, data: Dict[str, Any]):
 
         if "name" in data:
             block.name = data["name"] if data["name"] is not None else ""
-        # Geometry fields. length_cm is required (a block must have a length);
-        # min_radius_cm and speed_limit_kmh accept None = "no limit". All
-        # non-None values must be numbers >= 0. The UI enters length / radius
-        # as whole millimetres and converts to cm before sending.
-        # A block that groups several segments has no single block-level value
-        # for any of these, so `Block` rejects the write. Report that as a
-        # validation error rather than letting it surface as a server fault.
-        try:
-            if "length_cm" in data:
-                if data["length_cm"] is None:
-                    raise ValidationError("length_cm is required and cannot be empty")
-                block.length_cm = coerce_nonneg(data["length_cm"], "length_cm")
-            if "min_radius_cm" in data:
-                raw = data["min_radius_cm"]
-                block.min_radius_cm = (
-                    None if raw is None else coerce_nonneg(raw, "min_radius_cm")
-                )
-            if "grade_percent" in data:
-                raw = data["grade_percent"]
-                if raw is None:
-                    block.grade_percent = None
-                else:
-                    try:
-                        block.grade_percent = float(raw)
-                    except (TypeError, ValueError):
-                        raise ValidationError("grade_percent must be a number")
-            if "speed_limit_kmh" in data:
-                raw = data["speed_limit_kmh"]
-                block.speed_limit_kmh = (
-                    None if raw is None else coerce_nonneg(raw, "speed_limit_kmh")
-                )
-            elif "max_speed_kmh" in data:
-                raw = data["max_speed_kmh"]
-                block.speed_limit_kmh = (
-                    None if raw is None else coerce_nonneg(raw, "max_speed_kmh")
-                )
-        except ValidationError:
-            raise
-        except ValueError as exc:
-            raise ValidationError(str(exc)) from exc
+
         if "state" in data:
             # Block state is owned by BlockManager / ResourceCoordinator in
             # v1 and computed from `occupied_by` / `_is_caution` /
@@ -225,323 +259,3 @@ def update_block(state: AppState, block_id: str, *, data: Dict[str, Any]):
             block.allowed_travel_directions = requested
 
         return block
-
-
-def delete_block(state: AppState, block_id: str) -> bool:
-    """Delete a block and clear its track references. Returns True.
-
-    Raises:
-        NotFoundError when no block has that id.
-    """
-    network = state.network
-    if not network.delete_block(block_id):
-        raise NotFoundError("Block not found")
-
-    # Downward auto-delete cascade (design_new.md:644): drop the deleted block
-    # from any owning Platform's `block_assignments`; if that leaves a platform
-    # with no assigned blocks, delete the platform too (which cascades to an
-    # emptied logical Station group). Done at the service layer rather than
-    # inside `network.delete_block` because Station teardown itself calls
-    # `network.delete_block` for its member blocks, and re-entering platform
-    # deletion there would double-delete the platform.
-    emptied_platform_ids: List[str] = []
-    for platform in list(network.platforms.values()):
-        assignments = getattr(platform, "block_assignments", None)
-        if not assignments:
-            continue
-        stale_positions = [pos for pos, bid in assignments.items() if bid == block_id]
-        if not stale_positions:
-            continue
-        for pos in stale_positions:
-            del assignments[pos]
-        if not platform.get_all_assigned_blocks():
-            emptied_platform_ids.append(platform.platform_id)
-    for platform_id in emptied_platform_ids:
-        network.delete_platform(platform_id)
-    return True
-
-
-def create_block_with_tracks(
-    state: AppState,
-    *,
-    block_id: str,
-    positions: List[Any],
-    name: str = "",
-    length_cm: float = 0.0,
-    speed_limit_kmh: Optional[Any] = None,
-):
-    """Create a block and assign the given tile positions to it.
-
-    The tiles land in one fresh segment, and that segment gets its own block
-    because nothing is grouped with it — so block and segment share `block_id`.
-
-    Raises:
-        ValidationError when the network rejects the positions/geometry.
-    """
-    try:
-        tuple_positions = [tuple(pos) for pos in positions]
-        return state.network.create_segment_with_tracks(
-            segment_id=block_id,
-            positions=tuple_positions,
-            name=name,
-            length_cm=length_cm,
-            speed_limit_kmh=speed_limit_kmh,
-        )
-    except ValueError as exc:
-        raise ValidationError(str(exc)) from exc
-
-
-def extend_block(
-    state: AppState,
-    block_id: str,
-    *,
-    positions: List[Any],
-    force: bool = False,
-    force_overwrite: bool = False,
-):
-    """Extend a block with new tile positions.
-
-    Returns the block; ``block._invalidated_signals`` (set by the network
-    when signals were cleared) is left in place for the caller to surface.
-
-    Raises:
-        ValidationError when the network rejects the extension.
-    """
-    try:
-        tuple_positions = [tuple(pos) for pos in positions]
-        return state.network.extend_segment(
-            _geometry_segment_id(state, block_id),
-            tuple_positions,
-            force=force,
-            force_overwrite=force_overwrite,
-        )
-    except ValueError as exc:
-        raise ValidationError(str(exc)) from exc
-
-
-def add_tracks_to_block(
-    state: AppState, block_id: str, *, positions: List[Any], force: bool = False
-) -> Dict[str, Any]:
-    """Assign tiles to a block, optionally reassigning from other blocks.
-
-    Returns a result dict (``added`` / ``reassigned`` counts + details).
-
-    Raises:
-        NotFoundError when no block has that id.
-    """
-    require_block(state, block_id)
-
-    target_segment_id = _geometry_segment_id(state, block_id)
-
-    added: List[List[int]] = []
-    reassigned: List[Dict[str, Any]] = []
-
-    for pos in positions:
-        if not isinstance(pos, (list, tuple)) or len(pos) < 2:
-            continue
-        x, y = pos[0], pos[1]
-
-        # Track already assigned to a different segment?
-        track = state.network.get_track(x, y)
-        if track and track.segment_id and track.segment_id != target_segment_id:
-            if force:
-                old_block_id = track.block_id
-                track.segment_id = None
-                reassigned.append(
-                    {"position": [x, y], "from": old_block_id, "to": block_id}
-                )
-            else:
-                continue
-
-        try:
-            state.network.assign_track_to_segment(x, y, target_segment_id)
-            added.append([x, y])
-        except ValueError:
-            pass
-
-    return {
-        "status": "success",
-        "added": len(added),
-        "reassigned": len(reassigned),
-        "positions": added,
-        "reassignment_details": reassigned,
-        "block_id": block_id,
-    }
-
-
-def _geometry_segment_id(state: AppState, block_id: str) -> str:
-    """The segment a block-addressed geometry edit lands on.
-
-    Tiles belong to segments, so adding or removing a tile through a
-    block-addressed endpoint is only well defined when the block owns exactly
-    one segment. A block that groups several has no single member to edit —
-    the caller must address the segment it means.
-
-    Raises:
-        ValidationError when the block is unknown or groups more than one
-        segment.
-    """
-    block = state.network.blocks.get(block_id)
-    if block is None:
-        raise ValidationError(f"Block {block_id} not found")
-    if len(block.segments) != 1:
-        raise ValidationError(
-            f"Block {block_id} groups {len(block.segments)} segments, so a "
-            f"tile edit has no single member to apply to. Edit the segment "
-            f"directly (members: {', '.join(block.segment_ids) or 'none'})."
-        )
-    return block.segments[0].segment_id
-
-
-def remove_tracks_from_block(
-    state: AppState, block_id: str, *, positions: List[Any]
-) -> Dict[str, Any]:
-    """Remove tiles from a block, enforcing edge-tile + continuity rules.
-
-    A tile may only be removed if it is an edge tile and its removal keeps
-    the remaining block continuous; emptying the block deletes it. Returns
-    a result dict (``removed`` / ``errors`` / ``block_deleted``).
-
-    Raises:
-        NotFoundError when no block has that id.
-    """
-    require_block(state, block_id)
-
-    target_segment_id = _geometry_segment_id(state, block_id)
-
-    removed: List[List[int]] = []
-    errors: List[str] = []
-
-    current_positions = state.network.get_segment_positions(target_segment_id)
-    position_set = set((x, y) for x, y in current_positions)
-
-    for pos in positions:
-        if not isinstance(pos, (list, tuple)) or len(pos) < 2:
-            continue
-        x, y = pos[0], pos[1]
-
-        track = state.network.get_track(x, y)
-        if not track or track.segment_id != target_segment_id:
-            errors.append(f"Position ({x}, {y}) is not part of block {block_id}")
-            continue
-
-        # Edge tiles have at least one exit that has no neighbor track, or a
-        # neighbor track outside the block.
-        exits = []
-        for bit in range(6):
-            if track.track_bits & (1 << bit):
-                e1, e2 = BIT_TO_EDGES[bit]
-                exits.extend([e1, e2])
-        exits = list(set(exits))
-
-        is_edge = False
-        for exit_edge in exits:
-            neighbor_pos = state.network._get_neighbor_coords(x, y, exit_edge)
-            if not neighbor_pos:
-                is_edge = True
-                break
-            nx, ny = neighbor_pos
-            neighbor_track = state.network.get_track(nx, ny)
-            if not neighbor_track or (nx, ny) not in position_set:
-                is_edge = True
-                break
-
-        if not is_edge:
-            errors.append(f"Cannot remove tile ({x}, {y}): not an edge tile")
-            continue
-
-        # Temporarily remove to check continuity.
-        original_segment_id = track.segment_id
-        track.segment_id = None
-
-        remaining_tracks = state.network.get_segment_tracks(target_segment_id)
-        if len(remaining_tracks) > 1:
-            is_continuous, _validation_errors = (
-                state.network.validate_segment_continuity(target_segment_id)
-            )
-            if not is_continuous:
-                track.segment_id = original_segment_id
-                errors.append(
-                    f"Cannot remove tile ({x}, {y}): would break block continuity"
-                )
-                continue
-
-        removed.append([x, y])
-        position_set.discard((x, y))
-
-    # Auto-delete the block when it has no tracks left. Route through the
-    # service-level `delete_block` so the downward platform cascade (drop the
-    # block from any owning Platform.block_assignments; delete a platform left
-    # empty) runs here too — a bare `network.delete_block` would leave a dangling
-    # block_assignments entry and an orphaned empty platform.
-    block_deleted = False
-    if len(state.network.get_block_tracks(block_id)) == 0:
-        delete_block(state, block_id)
-        block_deleted = True
-
-    return {
-        "status": "success" if removed else "partial" if errors else "no_changes",
-        "removed": len(removed),
-        "positions": removed,
-        "errors": errors,
-        "block_deleted": block_deleted,
-    }
-
-
-def can_extend_block(
-    state: AppState, block_id: str, *, x: int, y: int
-) -> Dict[str, Any]:
-    """Validate (without mutating) whether a tile may join the block.
-
-    Returns a result dict ``{can_extend: bool, ...}`` describing the
-    verdict and, when blocked, the reason and any required force flag.
-
-    Raises:
-        NotFoundError when no block has that id.
-    """
-    require_block(state, block_id)
-
-    track = state.network.get_track(x, y)
-    if not track:
-        return {"can_extend": False, "reason": "No track at position"}
-
-    if crossing_disallowed_in_segment(track.track_bits):
-        return {
-            "can_extend": False,
-            "reason": "Cannot add crossing to block - crossings isolate paths",
-        }
-
-    if track.is_switch:
-        return {
-            "can_extend": False,
-            "reason": "Cannot add switch to block - switches are block boundaries",
-        }
-
-    if track.signal_ids:
-        return {
-            "can_extend": False,
-            "reason": "Tile has signal(s) - use force=true to extend past signal",
-            "requires_force": True,
-        }
-
-    if track.block_id and track.block_id != block_id:
-        return {
-            "can_extend": False,
-            "reason": (
-                f"Tile already in block {track.block_id} - "
-                "use force_overwrite=true"
-            ),
-            "requires_force_overwrite": True,
-        }
-
-    existing_positions = state.network.get_block_positions(block_id)
-    is_adjacent = any(
-        abs(x - old_x) + abs(y - old_y) == 1 for old_x, old_y in existing_positions
-    )
-    if not is_adjacent and len(existing_positions) > 0:
-        return {
-            "can_extend": False,
-            "reason": "Position must be adjacent to existing block",
-        }
-
-    return {"can_extend": True}

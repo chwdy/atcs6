@@ -52,7 +52,19 @@ class BlockGroupingManager:
 
         Derived from `Block.segment_ids` on every read, so it can never drift
         from the blocks themselves.
+
+        An un-grouped segment is its own single-segment block sharing its id
+        (see module docstring), so that block is looked up directly first —
+        this resolves the overwhelmingly common case in O(1) instead of
+        scanning every block. Only a segment that was moved into a grouped
+        block, or rehomed under a suffixed id after a collision, falls
+        through to the full scan.
         """
+        same_id_block = self._n.blocks.get(segment_id)
+        if same_id_block is not None and any(
+            s.segment_id == segment_id for s in same_id_block.segments
+        ):
+            return segment_id
         for block_id, block in self._n.blocks.items():
             if segment_id in block.segment_ids:
                 return block_id

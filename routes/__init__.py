@@ -10,7 +10,8 @@ Module map:
 - simulation: server lifecycle, simulation control, /api/network*, /api/scale*
 - layouts: /api/layouts/* save/load/list/delete
 - tracks: /api/track* and /api/tracks/* CRUD and bulk operations
-- blocks: /api/blocks/* CRUD, state cycling, validation
+- segments: /api/segments/* geometry CRUD, tiles, extend, can_extend, end_tiles
+- blocks: /api/blocks/* grouping, config/availability, voltage
 - signals: /api/signal/* CRUD and validation
 - stations: /api/stations/*
 - platforms: /api/platforms/*
@@ -28,6 +29,7 @@ from routes import (
     simulation,
     layouts,
     tracks,
+    segments,
     blocks,
     signals,
     stations,
@@ -57,6 +59,7 @@ def register_all(app, state) -> None:
     simulation.register(app, state)
     layouts.register(app, state)
     tracks.register(app, state)
+    segments.register(app, state)
     blocks.register(app, state)
     signals.register(app, state)
     stations.register(app, state)

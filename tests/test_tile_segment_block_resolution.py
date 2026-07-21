@@ -239,18 +239,27 @@ def test_layout_round_trip_preserves_the_grouping(net):
         assert reloaded.get_track(x, y).block_id == "BLK_YARD"
 
 
-# --- block-addressed geometry edits -----------------------------------------
+# --- geometry edits are segment-addressed -----------------------------------
 
 
-def test_block_addressed_tile_edit_refuses_a_grouped_block(net):
-    """Adding a tile through a block-addressed endpoint has no single target.
+def test_block_level_geometry_write_refuses_a_grouped_block(net):
+    """A block-level geometry property write has no single target on a grouped
+    block.
 
-    Tiles belong to segments. A block that groups several has no one member the
-    edit obviously belongs to, so the service says so instead of silently
-    picking one.
+    Geometry belongs to a segment. A block that groups several has no one place
+    to put a summed / concatenated / minimised value, so the block property
+    setter refuses and names the members to edit instead
+    (`Block._geometry_write_target`).
     """
-    from services import block_service
-    from services.exceptions import ValidationError
+    with pytest.raises(ValueError) as exc:
+        net.blocks["BLK_YARD"].length_cm = 5.0
+    assert "SEG_WEST" in str(exc.value) and "SEG_EAST" in str(exc.value)
+
+
+def test_segment_addressed_tile_edit_targets_the_named_segment(net):
+    """A tile edit addresses the segment directly, so a member inside a grouped
+    block is edited without any block-level ambiguity."""
+    from services import segment_service
 
     class _State:
         pass
@@ -259,24 +268,10 @@ def test_block_addressed_tile_edit_refuses_a_grouped_block(net):
     state.network = net
     net.add_track(Tile(x=4, y=0, track_bits=2))
 
-    with pytest.raises(ValidationError) as exc:
-        block_service.add_tracks_to_block(state, "BLK_YARD", positions=[[4, 0]])
-    assert "SEG_WEST" in str(exc.value) and "SEG_EAST" in str(exc.value)
-
-
-def test_block_addressed_tile_edit_works_on_a_lone_segment(net):
-    """The same endpoint is unambiguous when the block owns one segment."""
-    from services import block_service
-
-    class _State:
-        pass
-
-    state = _State()
-    state.network = net
-    net.delete_segment("SEG_EAST")
-    net.add_track(Tile(x=2, y=0, track_bits=2))
-
-    result = block_service.add_tracks_to_block(state, "BLK_YARD", positions=[[2, 0]])
+    result = segment_service.add_tracks_to_segment(
+        state, "SEG_EAST", positions=[[4, 0]]
+    )
     assert result["added"] == 1
-    assert net.get_track(2, 0).segment_id == "SEG_WEST"
-    assert net.get_track(2, 0).block_id == "BLK_YARD"
+    assert net.get_track(4, 0).segment_id == "SEG_EAST"
+    # Still resolves up to the one grouping block.
+    assert net.get_track(4, 0).block_id == "BLK_YARD"
