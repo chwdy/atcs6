@@ -147,16 +147,37 @@ def gen_platforms(net, grouped: set) -> str:
         first, extras = positions[0], positions[1:]
         # The auto-created station block name is reproduced verbatim: a platform
         # renamed after creation keeps its original id-based block name, which
-        # ``add_station(name=...)`` would not regenerate.
+        # ``add_station(name=...)`` would not regenerate. `add_station` names the
+        # segment and its block together, so the segment carries the same stale
+        # name and has to be restored alongside it.
         block = net.blocks.get(f"{pid}_BLOCK")
         block_name = block.name if block is not None else ""
+        segment_name = (
+            block.segments[0].name if block is not None and block.segments else ""
+        )
         lines.append(
             f"    ({pid!r}, {p.name!r}, {_xy(first)}, {_xy_list(extras)}, "
             f"{_side_str(p.platform_side)!r}, {p.length_cm}, {p.top_speed_kmh}, "
-            f"{block_name!r}),"
+            f"{block_name!r}, {segment_name!r}),"
         )
     lines.append("]")
     return "\n".join(lines)
+
+
+def _is_grouped(block, bid: str) -> bool:
+    """True when `block`'s identity differs from its geometry, so it needs a fold.
+
+    A block is baked directly only when it IS its one same-named segment. Any
+    other shape — several segments on one feed, or a single segment under a
+    different id (an operator-named ``BLK_*`` owning a ``SEG_*``) — is baked as
+    its member segments plus a ``BLOCK_GROUPS`` entry that folds them back.
+
+    Every site that emits, counts, or verifies a grouping asks this one
+    question, so the emitted lists and the reported counts cannot disagree.
+    """
+    if not block.segments:
+        return False
+    return len(block.segments) > 1 or block.segments[0].segment_id != bid
 
 
 def gen_blocks(net) -> str:
@@ -166,12 +187,11 @@ def gen_blocks(net) -> str:
         if bid in platform_block_ids:
             continue  # auto-created by add_station
         b = net.blocks[bid]
-        if len(b.segments) > 1:
-            # A block that groups several segments is baked as its member
-            # segments — each as its own block, the default one-feed-per-segment
-            # layout — plus a BLOCK_GROUPS entry that folds them back together.
-            # Membership here comes from each segment's own tile order, because
-            # every member tile points at the grouped block, not the segment.
+        if _is_grouped(b, bid):
+            # A block whose identity differs from its geometry segment(s) is
+            # baked as the member segments first, then folded back to the
+            # original block by BLOCK_GROUPS. This includes a one-segment
+            # operator-named block such as BLK_* owning a SEG_* geometry.
             for seg in b.segments:
                 positions = [(e.x, e.y) for e in seg.ordered_tiles]
                 lines.append(
@@ -226,7 +246,7 @@ def gen_block_groups(net) -> str:
     lines = ["BLOCK_GROUPS = ["]
     for bid in sorted(net.blocks.keys()):
         b = net.blocks[bid]
-        if len(b.segments) < 2:
+        if not _is_grouped(b, bid):
             continue
         lines.append(f"    ({bid!r}, {b.name!r}, {list(b.segment_ids)!r}),")
     lines.append("]")
@@ -287,7 +307,7 @@ def _add_platforms(network: RailwayNetwork) -> None:
     ``create_station_group`` call. Each platform still auto-creates its
     ``{platform_id}_BLOCK``.
     """
-    for (platform_id, name, first_tile, extra_tiles, side, length_cm, top_speed_kmh, block_name) in PLATFORMS:
+    for (platform_id, name, first_tile, extra_tiles, side, length_cm, top_speed_kmh, block_name, segment_name) in PLATFORMS:
         platform = network.add_station(
             x=first_tile[0],
             y=first_tile[1],
@@ -299,9 +319,15 @@ def _add_platforms(network: RailwayNetwork) -> None:
         )
         for extra in extra_tiles:
             network.extend_station(platform.platform_id, [extra])
+        # add_station derives both names from the CURRENT platform name; a
+        # platform renamed after creation keeps the older name on its block and
+        # segment, so restore each from the layout rather than leaving the
+        # freshly derived one.
         station_block = network.blocks.get(f"{platform.platform_id}_BLOCK")
         if station_block is not None:
             station_block.name = block_name
+            if station_block.segments:
+                station_block.segments[0].name = segment_name
 
 
 def _add_blocks(network: RailwayNetwork) -> None:
@@ -343,14 +369,35 @@ def _add_block_groups(network: RailwayNetwork) -> None:
     exists as its own one-segment block from ``_add_blocks``; grouping moves
     those segments into one block and drops the emptied ones. Runs after every
     block exists (a grouping may name a platform block).
+
+    A grouping whose members do not chain into one clean run is folded anyway,
+    with a warning — the same reading `RailwayNetwork._fold_grouped_blocks`
+    takes on load: dropping it would turn one single-train feed back into
+    several independent feeds, which is the less safe reading of the layout.
     """
     if not BLOCK_GROUPS:
         return
     grouping = network._get_block_grouping_manager()
     for (block_id, name, segment_ids) in BLOCK_GROUPS:
-        grouping.group_into_block(
-            block_id=block_id, segment_ids=segment_ids, name=name
-        )
+        try:
+            grouping.group_into_block(
+                block_id=block_id, segment_ids=segment_ids, name=name
+            )
+        except ValueError as exc:
+            logging.getLogger(__name__).warning(
+                "Baked grouping %s is not one connected switch-free run (%s); "
+                "folding it into a single block anyway to preserve its "
+                "one-train power domain.",
+                block_id,
+                exc,
+            )
+            ordered, _ = grouping.plan_run(segment_ids)
+            grouping.create_block(
+                block_id=block_id,
+                segment_ids=ordered,
+                name=name,
+                validate=False,
+            )
 
 
 def create_comprehensive_demo() -> RailwayNetwork:
@@ -408,10 +455,12 @@ Auto-generated — do not hand-edit; re-run json_to_scene.py against the source
 layout instead. Layout only: {len(net.tracks)} tracks, {len(net.switches)} switches,
 {len(net.platforms)} platforms ({len(net.station_groups)} station groups),
 {len(net.blocks)} blocks ({n_platform_blocks} auto-created platform blocks),
-{sum(1 for b in net.blocks.values() if len(b.segments) > 1)} block groups, {len(net.tunnels) // 2} tunnels,
+{sum(1 for bid, b in net.blocks.items() if _is_grouped(b, bid))} block groups, {len(net.tunnels) // 2} tunnels,
 {len(net.signals)} signals. Trains/routes are not
 part of the layout JSON, so setup_demo_train() is a stub.
 """
+
+import logging
 
 from network import RailwayNetwork
 from track import (
@@ -476,10 +525,13 @@ def _fingerprint(net) -> dict:
         sid: (tuple(s.position), s.detection_direction, s.monitored_block_id)
         for sid, s in net.signals.items()
     }
+    # Compare the grouping of every block whose identity differs from its
+    # geometry — including the one-segment `BLK_* owns SEG_*` case, which a
+    # `len(segments) > 1` test would silently skip.
     block_groups = {
         bid: (b.name, tuple(b.segment_ids))
         for bid, b in net.blocks.items()
-        if len(b.segments) > 1
+        if _is_grouped(b, bid)
     }
     return {
         "tracks": tracks,
