@@ -232,19 +232,7 @@ def create_comprehensive_demo() -> RailwayNetwork:
 # AA6FB5 bottom-left -> back. Each is a one-segment block, so the id names both
 # the segment (its geometry) and the block (its power/occupancy).
 LOOP_ORDER = ["BLK_AA62D2", "BLK_AA866E", "BLK_AA7B7E", "BLK_AA6FB5"]
-# Both modes hit route-executor limits on this fully symmetric loop. The four
-# blocks themselves are sound — `continuous` laps all four in the right order
-# (AA62D2 -> AA866E -> AA7B7E -> AA6FB5), which proves the layout, paths and
-# authority all work. What breaks is route-target resolution when the loop
-# wraps:
-#   * `stop_loop` stalls after its first leg: the loco dwells at the second
-#     block and never takes authority for the next one. No fatal.
-#   * `continuous` completes a full lap, then at ~148 s enters failed runtime
-#     with `route_completion_mismatch` — it finished at BLK_AA6FB5 while its
-#     active path still targeted BLK_AA866E (a stale path across the wrap).
-# `stop_loop` is the default because it stalls rather than freezing the runtime.
-# Neither is a re-layer regression; both are circular-route resolution bugs.
-DEMO7_MODE = "stop_loop"
+DEMO7_MODE = "lap_stop"
 HOLD_SECONDS = 5.0
 
 
@@ -257,11 +245,17 @@ def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
     ``length_cm`` is the sum across its members.
 
     Modes (``DEMO7_MODE``):
-      * ``stop_loop`` (default): a CIRCULAR route that stops and holds
-        ``HOLD_SECONDS`` at each block. The run between blocks lasts however
-        long the loco takes to reach the next block at its speed profile.
-      * ``continuous``: a stops-free CIRCULAR waypoint route — the loco laps the
-        loop without stopping.
+      * ``lap_stop`` (default): the display pattern — one full lap, then a
+        ``HOLD_SECONDS`` stand at the starting block, then another lap, for as
+        long as the sim runs. The three blocks after the start are waypoints
+        the loco passes through, and the start block is a ``stop`` followed by
+        a ``dwell``. Because the lap ends on a stop, the path completes there
+        and the next lap starts from a fresh ``create_path`` — so the loco
+        stops once per lap, where the route says to, and nowhere else.
+      * ``continuous``: a stops-free CIRCULAR waypoint route — the loco laps
+        the loop without ever stopping. Nothing completes the path, so its
+        ``resource_sequence`` grows by one lap every lap; fine for a short
+        demo, not for an all-day display. Prefer ``lap_stop``.
     """
     import math
     from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
@@ -317,31 +311,40 @@ def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
     )
     train.speed_profile_id = profile.profile_id
 
-    # Build the CIRCULAR route for the selected mode. task_direction "either"
-    # lets the executor resolve a concrete direction each leg. Stops are listed
-    # in loop order so the loco keeps going one way around (a robust one-way
-    # loop needs a stop on each block; sparse stops that skip blocks hit a known
-    # reverse-resolution wrap-back stall on this symmetric loop).
+    # Build the CIRCULAR route for the selected mode. Tasks are listed in loop
+    # order so the loco keeps going one way around, and task_direction "either"
+    # lets the executor resolve a concrete direction each leg.
+    #
+    # `lap_stop` lists the three blocks after the start as waypoints and the
+    # start block last, as a stop plus a dwell. The loco therefore runs
+    # AA866E -> AA7B7E -> AA6FB5 without stopping, comes to rest back on
+    # AA62D2, holds HOLD_SECONDS, and the CIRCULAR wrap sends it round again.
     route = Route(
         route_id="ROUTE_LOOP", name="Loop", mode=RouteMode.CIRCULAR,
         is_active=True, start_mode=RouteStartMode.NEAREST,
     )
-    for block_id in LOOP_ORDER:
-        target = BlockTarget(block_id=block_id)
-        if DEMO7_MODE == "continuous":
+    if DEMO7_MODE == "continuous":
+        for block_id in LOOP_ORDER:
             route.add_task(RouteTask(
-                task_kind="waypoint", task_location=target,
+                task_kind="waypoint", task_location=BlockTarget(block_id=block_id),
                 task_direction="either",
             ))
-        else:  # "stop_loop"
+    else:  # "lap_stop"
+        start_block_id, *pass_through = LOOP_ORDER
+        for block_id in pass_through:
             route.add_task(RouteTask(
-                task_kind="stop", task_location=target,
+                task_kind="waypoint", task_location=BlockTarget(block_id=block_id),
                 task_direction="either",
             ))
-            route.add_task(RouteTask(
-                task_kind="dwell", task_location=target,
-                task_direction="either", task_time=HOLD_SECONDS,
-            ))
+        start_target = BlockTarget(block_id=start_block_id)
+        route.add_task(RouteTask(
+            task_kind="stop", task_location=start_target,
+            task_direction="either",
+        ))
+        route.add_task(RouteTask(
+            task_kind="dwell", task_location=start_target,
+            task_direction="either", task_time=HOLD_SECONDS,
+        ))
     sim_controller.route_executor.register_route(route)
     route.assign_train("T_LOOP")
     sim_controller.get_or_create_controller("T_LOOP").commands.enqueue_command(
@@ -351,14 +354,12 @@ def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
     print(f"  Demo 7: 1 loco on a 4-block loop, mode={DEMO7_MODE!r}.")
     if DEMO7_MODE == "continuous":
         print(
-            "  WARNING: continuous mode laps correctly, then enters failed "
-            "runtime (~148 s) with route_completion_mismatch — it finishes at "
-            "BLK_AA6FB5 while its active path still targets BLK_AA866E. "
-            "Circular-route target resolution on this symmetric loop."
+            "  Note: continuous mode never completes its path, so the path's "
+            "resource_sequence grows by one lap every lap. Use 'lap_stop' for "
+            "anything that runs longer than a short demo."
         )
     else:
         print(
-            "  WARNING: stop_loop stalls after its first leg — the loco dwells "
-            "at the second block and never takes authority for the next one. "
-            "Circular-route target resolution on this symmetric loop."
+            f"  One lap, then a {HOLD_SECONDS:.0f} s stand on "
+            f"{LOOP_ORDER[0]}, repeating."
         )

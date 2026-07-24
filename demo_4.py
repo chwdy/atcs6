@@ -34,7 +34,7 @@ Initial placement:
 """
 
 from network import RailwayNetwork
-from track import Tile, TRACK_NS, TRACK_EW, TRACK_NE, TRACK_NW, TRACK_SE
+from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW, TRACK_SE
 from path_dispatcher import PathDispatcher
 from switch import Switch
 
@@ -62,70 +62,6 @@ SCISSORS_BITS = TRACK_NS | TRACK_EW | TRACK_NW | TRACK_SE  # = 27
 
 
 # ============= Demo Functions =============
-
-
-def test_block_validation():
-    """Test that block validation rules are working correctly.
-
-    Same checks as demo_main.test_block_validation — kept verbatim so the
-    server's startup tests still pass after `import demo_4 as demo_main`.
-    """
-    print("\n" + "=" * 70)
-    print("Testing Block Validation Rules...")
-    print("=" * 70)
-
-    test_network = RailwayNetwork()
-
-    for x in range(8):
-        test_network.add_track(Tile(x, 0, track_bits=TRACK_EW))
-
-    print("\n[TEST 1] Verifying disconnected tracks are rejected...")
-    try:
-        test_network.create_segment_with_tracks(
-            segment_id="TEST_DISCONNECTED",
-            positions=[(0, 0), (4, 0)],
-            name="Test",
-        )
-        assert False, "Should have raised ValueError for disconnected tracks"
-    except ValueError as e:
-        assert "not continuous" in str(e).lower(), f"Wrong error message: {e}"
-        print(f"  ✓ Correctly rejected: {e}")
-
-    print("\n[TEST 2] Verifying switches cannot be in blocks...")
-    switch_track = Tile(5, 0, track_bits=TRACK_EW | TRACK_NE)
-    test_network.add_track(switch_track)
-    switch = Switch(switch_id="SW_5_0", x=5, y=0)
-    test_network.add_switch(switch)
-    switch_track.switch_id = switch.switch_id
-    try:
-        test_network.create_segment_with_tracks(
-            segment_id="TEST_WITH_SWITCH",
-            positions=[(3, 0), (4, 0), (5, 0)],
-            name="Test",
-        )
-        assert False, "Should have raised ValueError for switch in block"
-    except ValueError as e:
-        assert "switch" in str(e).lower(), f"Wrong error message: {e}"
-        print(f"  ✓ Correctly rejected: {e}")
-
-    print("\n[TEST 3] Verifying duplicate block IDs are rejected...")
-    test_network.create_segment_with_tracks(
-        segment_id="TEST_BLOCK_1", positions=[(0, 0), (1, 0)], name="Test Block 1"
-    )
-    try:
-        test_network.create_segment_with_tracks(
-            segment_id="TEST_BLOCK_1",
-            positions=[(6, 0)],
-            name="Test",
-        )
-        assert False, "Should have raised ValueError for duplicate block ID"
-    except ValueError as e:
-        assert "already exists" in str(e).lower(), f"Wrong error message: {e}"
-        print(f"  ✓ Correctly rejected: {e}")
-
-    print("\n" + "=" * 70)
-    print("✓ Block Validation Tests Passed")
-    print("=" * 70)
 
 
 # Track-tile layout. Each entry: (x, y, bits, role).
