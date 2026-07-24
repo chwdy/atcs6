@@ -32,8 +32,8 @@ from network import RailwayNetwork
 from train import Train, TrainCar
 from enums import TrainState, Direction, OperationMode
 from block_power import BlockPowerController
-from switch_power import SwitchPowerController
-from block_occupancy import SimulatedInputInterface, BlockOccupancyDetector
+from switch_power import SimulatedSwitchDriver
+from block_occupancy import SimulatedOccupancyDriver, BlockOccupancyDetector
 from notification_center import EventKind, NotificationCenter, Severity
 from route_executor import RouteExecutor
 
@@ -121,14 +121,12 @@ class SimulationController:
             else BlockPowerController(network)
         )
         network.power_controller = self.power_controller
-        self.switch_power_controller = (
-            SwitchPowerController(
-                network, output_interface=self._switch_output_interface_override
-            )
+        self.switch_output_interface = (
+            self._switch_output_interface_override
             if self._switch_output_interface_override is not None
-            else SwitchPowerController(network)
+            else SimulatedSwitchDriver()
         )
-        network.switch_power_controller = self.switch_power_controller
+        network.switch_output_interface = self.switch_output_interface
 
         # Block occupancy detection: the global per-block current sensor plus the
         # debounce/attribution detector (design_new.md "Power -> Block occupancy
@@ -138,7 +136,7 @@ class SimulationController:
         self.input_interface = (
             self._input_interface_override
             if self._input_interface_override is not None
-            else SimulatedInputInterface(network, self.controllers)
+            else SimulatedOccupancyDriver(network, self.controllers)
         )
         network.input_interface = self.input_interface
         self.block_occupancy_detector = BlockOccupancyDetector(
@@ -328,13 +326,14 @@ class SimulationController:
         Hardware interface boundary).
 
         The runtime issues this when it stops driving outputs (simulation stop
-        or process shutdown). It routes through the power controllers, the only
-        callers of the output interfaces.
+        or process shutdown). Track voltage routes through `BlockPowerController`;
+        switch throw goes straight to its output interface, which has no
+        controller above it.
         """
         if self.power_controller is not None:
             self.power_controller.enter_safe_state()
-        if self.switch_power_controller is not None:
-            self.switch_power_controller.enter_safe_state()
+        if self.switch_output_interface is not None:
+            self.switch_output_interface.enter_safe_state()
 
     def _detect_block_occupancy(self) -> None:
         """Step 0 of the tick: read every block's current detector, debounce,

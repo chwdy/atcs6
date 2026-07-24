@@ -8,9 +8,9 @@ boundary for block occupancy, plus the debounce + attribution layer that turns a
 noisy per-block current stream into confirmed, train-attributed entered/vacated
 block observations.
 
-Layers (mirrors the OutputInterface pattern in block_power.py):
-  - InputInterface: abstract per-block current read (raw booleans, no train id).
-  - SimulatedInputInterface: in-memory default; derives current from the model
+Layers (mirrors the TrackOutput pattern in block_power.py):
+  - OccupancyInput: abstract per-block current read (raw booleans, no train id).
+  - SimulatedOccupancyDriver: in-memory default; derives current from the model
     (a block reads current iff some train's live span covers it).
   - BlockOccupancyDetector: per-block debounce (on/off thresholds) producing the
     confirmed-occupied set each tick, plus model-based attribution of each
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from train_controller import TrainController
 
 
-class InputInterface(ABC):
+class OccupancyInput(ABC):
     """Read side for hardware sensors that no software output drives
     (design_new.md Power, Hardware interface boundary).
 
@@ -59,7 +59,7 @@ class InputInterface(ABC):
         raise NotImplementedError
 
 
-class SimulatedInputInterface(InputInterface):
+class SimulatedOccupancyDriver(OccupancyInput):
     """In-memory default used when no real hardware is connected.
 
     Derives the raw current map from the model: a block reads current iff some
@@ -112,7 +112,7 @@ class BlockOccupancyDetector:
     """
 
     network: "RailwayNetwork"
-    input_interface: InputInterface
+    input_interface: OccupancyInput
     controllers: Dict[str, "TrainController"] = field(default_factory=dict)
     on_threshold: int = OCCUPANCY_ON_THRESHOLD
     off_threshold: int = OCCUPANCY_OFF_THRESHOLD

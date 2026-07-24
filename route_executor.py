@@ -1992,23 +1992,32 @@ class RouteExecutor:
             success = False
 
         if not success:
-            # Auto-recover from extend_path's INVALID_REVERSE: the new
-            # destination needs the train to turn around at the current
-            # authority-end, which extend_path cannot grant. Latch a
+            # Auto-recover from a structural extend_path failure: the live path
+            # cannot be grown toward this target at all, whatever the live
+            # traffic does. INVALID_REVERSE means the new destination needs the
+            # train to turn around at the current authority end; NO_VIABLE_PATH
+            # means no legal forward suffix exists to it, including when the
+            # only route there runs back through a block this path still holds.
+            # Neither clears by waiting, so retrying against the same path would
+            # spin until the train ran out its authority and stopped. Latch a
             # cancellation so Phase 3 tears the stale path down once the train
             # stops; the next eligible Phase 1 will see no active path and
             # acquire via create_path from the train's current span instead.
-            # Per design_new.md latch-table rules this is the same pattern
-            # Phase 1 uses for any "live path must be replaced" condition:
-            # write the latch, stop planning this tick, let Phase 3 commit.
+            # Per the **Planning Kernel** section these are the failure kinds that
+            # "latch cancellation before a fresh create attempt", and per the
+            # latch-table rules this is the same pattern Phase 1 uses for any
+            # "live path must be replaced" condition: write the latch, stop
+            # planning this tick, let Phase 3 commit. BLOCKED_BEFORE_TARGET is
+            # deliberately not here — it is a temporary live conflict, and the
+            # path stays valid while Phase 1 retries.
             fkind = getattr(result, "failure_kind", None)
-            if (
-                active_path_id is not None
-                and fkind == PathAcquisitionFailureKind.INVALID_REVERSE
+            if active_path_id is not None and fkind in (
+                PathAcquisitionFailureKind.INVALID_REVERSE,
+                PathAcquisitionFailureKind.NO_VIABLE_PATH,
             ):
                 cancel_reason = (
                     getattr(result, "reason", None)
-                    or "extend would reverse at authority end"
+                    or "extend cannot grow this path toward the target"
                 )
                 controller.route_hooks.phase_latches.set_path_cancel_request(
                     initiator="revoked",
@@ -2164,12 +2173,25 @@ class RouteExecutor:
 
         # Successful create/extend: write
         # task_runs[walk_position].resolved_target.
+        #
+        # Take the pair from the dispatcher's own result rather than from this
+        # tick's projection. The result names what the dispatcher actually
+        # planned toward and is the authority on the live path's terminal
+        # direction. The projection is a fresh re-resolve of a task that may be
+        # authored `task_direction = "either"`, and it can name a direction the
+        # live authority does not have — notably once the head is already
+        # inside the target block, where the walk that reaches that block
+        # resolves the opposite way round. This field is the match key stop
+        # completion looks up, so it has to describe the authority the path
+        # holds, not the latest re-resolve.
+        result_block = getattr(result, "requested_destination_block_id", None)
+        result_dir = getattr(result, "requested_destination_direction", None)
         target_idx = projection.walk_position
         self._sync_task_runs(route, exec_state)
         if 0 <= target_idx < len(exec_state.task_runs):
             exec_state.task_runs[target_idx].resolved_target = ResolvedRouteTarget(
-                requested_destination_block_id=target_block,
-                requested_destination_direction=target_dir,
+                requested_destination_block_id=result_block or target_block,
+                requested_destination_direction=result_dir or target_dir,
             )
 
         # design_new.md "Event log": a fresh create (no prior active path) is a

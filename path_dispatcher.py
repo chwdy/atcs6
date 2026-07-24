@@ -449,7 +449,10 @@ class PathDispatcher:
         if not valid_exits:
             return ([], "No valid exits from path end tile")
 
-        existing_blocks = set(path.get_all_blocks())
+        # Blocks the path still holds cannot be extension destinations; ones it
+        # has already released can (see `_blocks_held_by`), so a loop's first
+        # block stays offerable as a destination once the train has passed it.
+        existing_blocks = self._blocks_held_by(path)
         reachable_blocks: Set[str] = set()
         visited: Set[Tuple[int, int, str]] = set()
 
@@ -1195,15 +1198,53 @@ class PathDispatcher:
                 reason="requested_destination_block_id required",
             )
 
-        existing_blocks = path.get_all_blocks()
-        if requested_destination_block_id in existing_blocks:
+        # The live authority already reaches this target block, so there is
+        # nothing to append. Per design_new.md "create_path() / extend_path()
+        # return contract" this is `reached_requested_target`, not a failure:
+        # Phase 1 re-requests the current target on every eligible tick while
+        # the train runs out its authority, and each of those calls is a
+        # successful no-op.
+        #
+        # The test is on the block alone, not on block + direction. A task
+        # authored `task_direction = "either"` is re-resolved from the train's
+        # live position every tick, and the resolved direction legitimately
+        # flips once the head enters the destination block — the walk that
+        # reaches a block you are already standing in comes out the other way
+        # round. Keying on direction would read that flip as a new request that
+        # extend cannot serve. The direction that matters for arrival is the
+        # one on the terminal frame this path already stored, and
+        # `try_complete_active_path(...)` checks that independently before it
+        # commits completion.
+        if requested_destination_block_id == path.get_authority_end_block_id():
+            # Report the direction the live authority actually has, not the
+            # one the caller asked with. Nothing was appended, so the terminal
+            # frame is unchanged, and the caller records this pair as the match
+            # key for stop completion.
+            return PathAcquisitionResult(
+                success=True,
+                result_kind=PathAcquisitionResultKind.REACHED_REQUESTED_TARGET,
+                path_id=path_id,
+                requested_destination_block_id=requested_destination_block_id,
+                requested_destination_direction=path.requested_destination_direction,
+                authority_end_block_id=path.get_authority_end_block_id(),
+                resource_sequence=list(path.resource_sequence),
+                reason=None,
+            )
+
+        # A block this path still holds cannot be authorized a second time —
+        # one path, one concurrent claim per block (see `_blocks_held_by`).
+        # This is the repeated-resource rule, so it classifies as
+        # `no_viable_path` per design_new.md "PathAcquisitionFailureKind".
+        if requested_destination_block_id in self._blocks_held_by(path):
             return self._reject(
-                failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
+                failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
                 authority_end_block_id=path.get_authority_end_block_id() or None,
-                reason=f"{requested_destination_block_id} is already in path",
+                reason=(
+                    f"{requested_destination_block_id} is still held by this path"
+                ),
             )
 
         train_id = path.train_id
@@ -1263,17 +1304,24 @@ class PathDispatcher:
             )
         candidates = forward_candidates
 
-        # Reject candidates whose tile walk would cause any block or switch
-        # to appear twice in the combined (existing path + appended segment)
-        # resource_sequence, per design_new.md "Path extension" lines
-        # 1040-1041, 1083 ("repeated resources in a single path are invalid
-        # and should be rejected during both create_path() and extend_path()").
-        # Without this, find_ordered_walk can return a candidate whose
-        # post-seam tile path re-enters the path's start block via the
-        # south tunnel (or any other connection that loops the network),
-        # BEST_EFFORT truncates that loop into a closed prefix, and
-        # extend_path appends one full loop to the path every Phase-1 tick.
-        existing_path_blocks = set(path.get_all_blocks())
+        # Reject candidates whose tile walk would make this path hold one block
+        # or switch twice at the same time, per the repeated-resource rule in
+        # design_new.md "Path invariants". Two separate checks live inside
+        # `_segment_would_revisit_resources`: the candidate must not repeat a
+        # resource within its own walk, and it must not land on a resource the
+        # path is still holding. Without them, find_ordered_walk can return a
+        # candidate whose post-seam tile path re-enters a block the path
+        # already holds (via the south tunnel, or any other connection that
+        # loops the network), BEST_EFFORT truncates that loop into a closed
+        # prefix, and extend_path appends one full loop every Phase-1 tick.
+        #
+        # Blocks are tested against the live holdings (`_blocks_held_by`)
+        # rather than the whole history, so a lap can close over a block the
+        # train has already released. Switches are still tested against the
+        # full history: a path holds its switch locks for its entire lifetime
+        # (they are released together in `release_path_resources`), so a
+        # switch never leaves the held set while the path is ACTIVE.
+        existing_path_blocks = self._blocks_held_by(path)
         existing_path_switches = {
             e.resource_id for e in path.resource_sequence
             if e.resource_type == "switch"
@@ -1781,6 +1829,36 @@ class PathDispatcher:
         if span is None:
             return False
         return block_id in (span.occupied_blocks or [])
+
+    def _blocks_held_by(self, path: "Path") -> Set[str]:
+        """The blocks this path holds *right now*.
+
+        `Path.resource_sequence` is a history: it keeps every block the path
+        has ever authorized, including ones the train has already rolled
+        through and let go of. A block leaves the path's live holdings in two
+        steps — head entry consumes the future reservation (`reserved_by_path`
+        cleared) and tail vacate clears `occupied_by`
+        (`BlockManager.on_block_tail_vacated()`), after which the block goes
+        CAUTION and then FREE.
+
+        The repeated-resource rule exists to stop one path holding one block
+        twice at the same time, so it is tested against this live set rather
+        than against the history. On a circular route that is what lets a lap
+        close: by the time the route walk wraps back to the first block, the
+        train has long since released it, so authorizing it again is an
+        ordinary acquisition rather than a double claim.
+        """
+        train_id = path.train_id
+        held: Set[str] = set()
+        for block_id in path.get_all_blocks():
+            block = self.network.blocks.get(block_id)
+            if block is None:
+                continue
+            if getattr(block, "reserved_by_path", None) == path.path_id:
+                held.add(block_id)
+            elif train_id and getattr(block, "occupied_by", None) == train_id:
+                held.add(block_id)
+        return held
 
     def _blocks_still_reserved_by(
         self, block_ids: List[str], path_id: str

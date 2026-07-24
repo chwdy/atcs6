@@ -127,7 +127,7 @@ class RailwayNetwork:
         self.switch_manager: Optional[SwitchManager] = None
         self.resource_coordinator: Optional[ResourceCoordinator] = None
         self.power_controller: Optional["BlockPowerController"] = None
-        self.switch_power_controller: Optional["SwitchPowerController"] = None
+        self.switch_output_interface: Optional["SwitchOutput"] = None
 
         # Reverse indices from tile -> owning segment / platform.
         # A tile belongs to a `Segment`; the segment is grouped into a `Block`.
@@ -1477,6 +1477,29 @@ class RailwayNetwork:
             segment_ids
         )
 
+    def _reconcile_segment_tile_membership(self) -> None:
+        """Re-establish tile -> segment ownership from a stored tile order.
+
+        Membership lives on the tile (`Tile.segment_id`, indexed by
+        `_tile_to_segment`); `Segment.ordered_tiles` is the derived read of it.
+        A save written before platform blocks claimed their tiles carries the
+        order but no tile ownership, so those segments would load owning
+        nothing: the block exists and lists its tiles, yet
+        `get_block_positions` is empty and the platform's `block_assignments`
+        never populate. Stamp the ownership back on from the order that
+        survived.
+
+        Only an unowned tile is claimed, so a tile already belonging to another
+        segment is never stolen, and a save that already carries tile ownership
+        is left untouched.
+        """
+        for block in self.blocks.values():
+            for segment in block.segments:
+                for entry in segment.ordered_tiles:
+                    track = self.get_track(entry.x, entry.y)
+                    if track is not None and track.segment_id is None:
+                        track.segment_id = segment.segment_id
+
     def _fold_grouped_blocks(self, groups: List[dict]) -> None:
         """Fold each stored grouping record into the one block it describes.
 
@@ -1644,6 +1667,10 @@ class RailwayNetwork:
         for t_data in data.get("tracks", []):
             track = Tile.from_dict(t_data)
             self.add_track(track)
+
+        # Tile ownership is knowable only now that both the blocks and the
+        # tracks are in place, so heal a save that stored only one of the two.
+        self._reconcile_segment_tile_membership()
 
         # Rebuild signals
         for signal_id, signal_data in data.get("signals", {}).items():
