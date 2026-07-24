@@ -2,7 +2,7 @@
 
 Drives track power: each block's bipolar track port is an H-bridge channel pair,
 so this class exposes per-channel duty control and the interface layer
-(`Ch347TrackOutputInterface`) turns a signed voltage into the two channel writes.
+(`TrackDriver`) turns a signed voltage into the two channel writes.
 """
 
 import time

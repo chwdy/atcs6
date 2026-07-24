@@ -76,7 +76,7 @@ from block_power import MAX_TRACK_VOLTAGE  # expected 12.0
 from hardware.chips.hc165 import HC165Chain
 from hardware.chips.hc595 import HC595Chain
 from hardware.chips.pca9685 import PCA9685
-from hardware.interfaces import Ch347TrackOutputInterface
+from hardware.interfaces import TrackDriver
 
 
 # ---- rig parameters --------------------------------------------------------
@@ -372,7 +372,7 @@ def mode_for_voltage(voltage: float, idle_deadband_v: float, skip_output: bool) 
 
 
 def run_demo(
-    track: Optional[Ch347TrackOutputInterface],
+    track: Optional[TrackDriver],
     oe_ctrl: PCAOutputEnableController,
     hc165: HC165Chain,
     ina: Optional[INA3221],
@@ -546,7 +546,7 @@ def main() -> None:
         ch347_device.REINIT_EACH_OP = True
 
     device = open_ch347_device()
-    track: Optional[Ch347TrackOutputInterface] = None
+    track: Optional[TrackDriver] = None
 
     try:
         oe_raw = HC595Chain(device, select=HC595_SELECT, chain_length=HC595_CHAIN)
@@ -569,7 +569,7 @@ def main() -> None:
             pca = PCA9685(device, address=PCA9685_ADDR)
             pca.configure()
             oe_ctrl.enable()  # guard against stale 595 /OE state before first PWM command
-            track = Ch347TrackOutputInterface(
+            track = TrackDriver(
                 {TRACK_CHIP_ID: pca},
                 {TRACK_BLOCK_ID: (TRACK_CHIP_ID, TRACK_PORT)},
             )

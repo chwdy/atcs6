@@ -1,19 +1,23 @@
-"""Real interface adapters: map a logical id to a chip + port.
+"""Real hardware drivers: map a logical id to a chip + port.
 
-These satisfy the existing abstract contracts unchanged — `OutputInterface`
-(block track voltage), `SwitchOutputInterface` (switch throw), and
-`InputInterface` (block current) — so the runtime keeps addressing hardware by
-`block_id` / `switch_id` and never sees a chip or port. The binding map (logical
-id -> (chip_id, port)) is passed in from persisted config; this is the only place
-that consumes it.
+These satisfy the abstract contracts — `TrackOutput` (block track voltage),
+`SwitchOutput` (switch throw), and `OccupancyInput` (block current) — so the
+runtime keeps addressing hardware by `block_id` / `switch_id` and never sees a
+chip or port. The binding map (logical id -> (chip_id, port)) is passed in from
+persisted config; this is the only place that consumes it.
+
+The drivers are board-agnostic. They hold chip objects and call chip methods,
+and never touch the transport, so what talks to the chips (`Ch347Device` today)
+is not their concern. Swapping the controller board replaces the device and
+leaves everything here unchanged.
 """
 
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from block_occupancy import InputInterface
-from block_power import MAX_TRACK_VOLTAGE, OutputInterface
-from switch_power import SwitchOutputInterface
+from block_occupancy import OccupancyInput
+from block_power import MAX_TRACK_VOLTAGE, TrackOutput
+from switch_power import SwitchOutput
 
 from hardware.catalog import (
     BUS_GPIO,
@@ -107,7 +111,7 @@ def build_chip(device: Any, spec: Any) -> Any:
     raise ValueError(f"unknown chip kind {spec.kind!r}")
 
 
-class Ch347TrackOutputInterface(OutputInterface):
+class TrackDriver(TrackOutput):
     """Block track voltage over two PCA9685 PWM channels per block — the two
     inputs of that block's H-bridge, chosen independently (not a fixed pair)."""
 
@@ -162,7 +166,7 @@ class Ch347TrackOutputInterface(OutputInterface):
             self._voltages[block_id] = 0.0
 
 
-class Ch347SwitchOutputInterface(SwitchOutputInterface):
+class SwitchDriver(SwitchOutput):
     """Switch throw over 74HC595 output bits — two coil bits per switch, pulsed.
 
     A solenoid point motor is a momentary device: one coil throws toward MAIN,
@@ -243,7 +247,7 @@ class Ch347SwitchOutputInterface(SwitchOutputInterface):
         self._last.clear()
 
 
-class Ch347OccupancyInputInterface(InputInterface):
+class OccupancyDriver(OccupancyInput):
     """Hybrid block occupancy: a digital detector ('165) plus a current-sense
     channel (INA3221 or INA219), selected per block by whether the block is being
     driven.
@@ -259,8 +263,16 @@ class Ch347OccupancyInputInterface(InputInterface):
       - idle + only current    -> current channel (reads ~0 with no drive; best effort)
       - no binding             -> not detected (False)
 
+    Detector polarity is resolved here too. A comparator with no inverter stage
+    (an LM339 driving the '165 directly) pulls its output LOW when a train draws
+    current, so its raw bit reads 0 occupied / 1 clear. `digital_active_low`
+    names the chips wired that way and this class flips their bits, so the
+    boolean leaving the interface always means "current detected" regardless of
+    how the detector is wired.
+
     This all stays below `read_block_currents()`, so the detector above the
-    interface still sees only a per-block boolean.
+    interface still sees only a per-block boolean — it never learns which source
+    answered, or what polarity the wiring uses.
     """
 
     def __init__(
@@ -271,6 +283,7 @@ class Ch347OccupancyInputInterface(InputInterface):
         current_bindings: Optional[CurrentBindingMap] = None,
         voltage_of: Optional[Callable[[str], float]] = None,
         idle_deadband_v: float = _IDLE_DEADBAND_V,
+        digital_active_low: Optional[Dict[str, bool]] = None,
     ) -> None:
         self._digital_chips = digital_chips
         self._digital = digital_bindings
@@ -278,6 +291,7 @@ class Ch347OccupancyInputInterface(InputInterface):
         self._current = current_bindings or {}
         self._voltage_of = voltage_of
         self._idle_deadband_v = idle_deadband_v
+        self._digital_active_low = digital_active_low or {}
 
     def read_block_currents(self) -> Dict[str, bool]:
         digital_cache: Dict[str, bytes] = {}
@@ -308,7 +322,12 @@ class Ch347OccupancyInputInterface(InputInterface):
             cache[chip_id] = chip.read_all()
         data = cache[chip_id]
         byte_idx, bit_idx = divmod(port, 8)
-        return bool(data[byte_idx] & (1 << bit_idx)) if byte_idx < len(data) else False
+        if byte_idx >= len(data):
+            return False
+        bit = bool(data[byte_idx] & (1 << bit_idx))
+        # Convert the wiring's polarity to the interface's meaning: True is
+        # always "current detected", whichever way the detector drives the line.
+        return not bit if self._digital_active_low.get(chip_id, False) else bit
 
     def _read_current(self, block_id: str) -> bool:
         chip_id, port, baseline_a, threshold_a = self._current[block_id]
@@ -332,7 +351,7 @@ def build_real_interfaces(
     output_enable: Optional[BindingMap] = None,
     idle_deadband_v: float = _IDLE_DEADBAND_V,
     watchdog_timeout_s: Optional[float] = None,
-) -> Tuple[Optional[InputInterface], Optional[OutputInterface], Optional[SwitchOutputInterface]]:
+) -> Tuple[Optional[OccupancyInput], Optional[TrackOutput], Optional[SwitchOutput]]:
     """Instantiate + initialize chips grouped by role and wire the three
     interfaces. A role with no chip returns `None` (its simulated default is
     used). Performs live init (PWM reset/freq, shift-register clear, INA3221
@@ -382,12 +401,12 @@ def build_real_interfaces(
         watchdog = OutputWatchdog(_drop_to_safe_state, timeout_s=watchdog_timeout_s)
 
     block_out = (
-        Ch347TrackOutputInterface(track_chips, block_track, watchdog=watchdog)
+        TrackDriver(track_chips, block_track, watchdog=watchdog)
         if track_chips
         else None
     )
     switch_out = (
-        Ch347SwitchOutputInterface(switch_chips, switch_output, watchdog=watchdog)
+        SwitchDriver(switch_chips, switch_output, watchdog=watchdog)
         if switch_chips
         else None
     )
@@ -402,14 +421,21 @@ def build_real_interfaces(
         if drive is not None:
             drive.set_output(port, False)
 
-    input_iface: Optional[InputInterface] = None
+    input_iface: Optional[OccupancyInput] = None
     if digital_chips or current_chips:
-        input_iface = Ch347OccupancyInputInterface(
+        input_iface = OccupancyDriver(
             digital_chips,
             block_occupancy,
             current_chips=current_chips,
             current_bindings=block_occupancy_current or {},
             voltage_of=(block_out.get_actual_voltage if block_out is not None else None),
             idle_deadband_v=idle_deadband_v,
+            # Which shift-in chains are wired active-low, so the interface can
+            # normalize their bits (design_new.md Power, Block occupancy detection).
+            digital_active_low={
+                spec.chip_id: bool(getattr(spec, "active_low", False))
+                for spec in chip_specs
+                if spec.chip_id in digital_chips
+            },
         )
     return input_iface, block_out, switch_out

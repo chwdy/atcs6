@@ -6,18 +6,21 @@
   the next session build (a restart), not the running session.
 - `GET /api/hardware/catalog` returns the selectable controller / chip metadata
   the Hardware Setup dropdowns read.
-- `POST /api/hardware/self-test` probes the controller + each configured chip so
-  every reachable port can join the bindable pool.
-- `POST /api/hardware/port-test` pulses one output port, sweeps a track port
-  through both polarities, or reads one input port, so a single wire can be
-  confirmed before binding.
+- `POST /api/hardware/scan` opens the controller and reports the I2C addresses
+  answering right now (Detect / Rescan). Shift registers cannot be detected, so
+  they are proven by the interactive port test instead.
+- `POST /api/hardware/port-test` pulses one output line or reads one input line,
+  so a single wire can be confirmed before binding (the port picker's per-channel
+  double-click).
+- `POST /api/hardware/track-test` sweeps a block's two bound track channels
+  through both polarities so a loco runs, stops, and reverses.
 - `POST /api/hardware/occupancy-test` reads both of one block's occupancy
   detectors and reports which one decides and what it says.
 - `POST /api/hardware/commission/pulse` drives one shift-out bit for the
   switch-coil pulse width on the held commissioning session, so the switch
   editor's throw test energizes a coil for exactly as long as the runtime does.
 
-Self-test / port-test open a transient device at commissioning time (sim mode,
+Scan / port-test open a transient device at commissioning time (sim mode,
 device free); if a real session already holds the CH347 they report it as
 unreachable rather than fighting for the handle, so they run outside the
 simulation lock.
@@ -33,12 +36,12 @@ def _develop_opener(cfg):
     """When the persisted configuration has the develop flag set, an
     `open_device` callable that creates a transient seeded `FakeCh347Device`;
     None means "open the real CH347". Gated on the persisted `develop` flag
-    alone — NOT `is_develop`, because commissioning (Detect / self-test) runs
-    on the fake BEFORE the user can enable hardware (enabling requires a passing
-    self-test), so it must not also require `enabled`. A PUT commits the flag
+    alone — NOT `is_develop`, because commissioning (Detect / port test) runs
+    on the fake BEFORE the user can enable hardware (enabling requires every
+    chip proven), so it must not also require `enabled`. A PUT commits the flag
     live, so the fake is used right after the first Save, no restart. Seeded
     from the payload `cfg` under test (the edit-in-progress chip list is what
-    self-test probes)."""
+    the scan is compared against)."""
     if not hardware_config.get_hardware_config().develop:
         return None
     from hardware.fake import FakeCh347Device
@@ -90,8 +93,10 @@ def register(app, state: AppState) -> None:
 
         return jsonify(catalog_payload())
 
-    @app.route("/api/hardware/self-test", methods=["POST"])
-    def hardware_self_test():
+    @app.route("/api/hardware/scan", methods=["POST"])
+    def hardware_scan():
+        """Open the controller and report the I2C addresses answering right now
+        (the Hardware Setup Detect / Rescan button)."""
         data = request.get_json(silent=True) or {}
         payload = data.get("config", data) if isinstance(data, dict) else {}
         try:
@@ -100,12 +105,7 @@ def register(app, state: AppState) -> None:
             return jsonify({"status": "error", "error": str(exc)}), 400
         from hardware import self_test
 
-        # Optional: limit the probe to one chip (the per-chip Self-test button).
-        return jsonify(
-            self_test.run_self_test(
-                cfg, open_device=_develop_opener(cfg), chip_id=data.get("chip_id")
-            )
-        )
+        return jsonify(self_test.run_bus_scan(cfg, open_device=_develop_opener(cfg)))
 
     @app.route("/api/hardware/port-test", methods=["POST"])
     def hardware_port_test():
@@ -166,6 +166,28 @@ def register(app, state: AppState) -> None:
             )
         )
 
+    @app.route("/api/hardware/track-test", methods=["POST"])
+    def hardware_track_test():
+        """Sweep a block's track through both polarities (the block editor's
+        track Test button). Body: {config, block_id}. Drives the block's two
+        bound PWM channels forward / off / reverse so a loco runs, stops, and
+        reverses, then leaves the track de-energized. Runs on a transient device
+        (commissioning), so it never fights a live session."""
+        data = request.get_json(silent=True) or {}
+        try:
+            cfg = hardware_config.config_from_payload(data.get("config", {}))
+        except hardware_config.HardwareConfigError as exc:
+            return jsonify({"status": "error", "error": str(exc)}), 400
+
+        block_id = data.get("block_id")
+        if not block_id:
+            return jsonify({"status": "error", "error": "block_id is required"}), 400
+        from hardware import self_test
+
+        return jsonify(
+            self_test.run_track_test(cfg, str(block_id), open_device=_develop_opener(cfg))
+        )
+
     @app.route("/api/hardware/binding", methods=["PUT"])
     def update_hardware_binding():
         """Set or clear one port binding (from the per-entity block/switch
@@ -179,7 +201,16 @@ def register(app, state: AppState) -> None:
             return jsonify({"status": "error", "error": "map and logical_id are required"}), 400
         try:
             with state.simulation_lock:
-                if map_name == "switch_output":
+                if map_name == "block_track":
+                    # A block's track binds two PWM channels (forward + reverse),
+                    # chosen independently (design_new.md Power, Hardware configuration).
+                    hardware_config.set_track_binding(
+                        str(logical_id),
+                        data.get("chip_id"),
+                        data.get("forward"),
+                        data.get("reverse"),
+                    )
+                elif map_name == "switch_output":
                     # A switch binds two coil ports plus an optional standby bit
                     # (design_new.md Power, Hardware configuration).
                     hardware_config.set_switch_binding(
@@ -359,8 +390,8 @@ def register(app, state: AppState) -> None:
                 if tbind is not None:
                     chip = chip_for(tbind.chip_id)
                     if chip is not None:
-                        fwd = device.duty_cycle(chip.address, 2 * tbind.port)
-                        rev = device.duty_cycle(chip.address, 2 * tbind.port + 1)
+                        fwd = device.duty_cycle(chip.address, tbind.forward)
+                        rev = device.duty_cycle(chip.address, tbind.reverse)
                         entry["volts"] = round((fwd - rev) * MAX_TRACK_VOLTAGE, 2)
                 blocks[block_id] = entry
 
@@ -414,7 +445,7 @@ def register(app, state: AppState) -> None:
     def debug_hw_set_current():
         """Set a block's fake current-sense reading in mA. Body: {block_id,
         current_ma}. Current decides occupancy only while the block is driven
-        (see `Ch347OccupancyInputInterface`); an idle block reads its '165 bit."""
+        (see `OccupancyDriver`); an idle block reads its '165 bit."""
         device = _require_fake()
         if device is None:
             return jsonify(_NOT_DEVELOP), 409

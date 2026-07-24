@@ -1,7 +1,7 @@
 """Commissioning session — a controller device held open across requests so the
 Hardware Setup UI can watch inputs live and run an output marquee.
 
-The one-shot self-test / port-test open a transient device per call. The live
+The one-shot bus scan / port-test open a transient device per call. The live
 input view and the output sweep instead need the device held between requests:
 the client opens a session, then drives many fast ops (set one output, read all
 inputs) on a JS timer, and closes it. This module holds one such session behind
@@ -9,7 +9,7 @@ a lock, with an idle timeout so an abandoned session is reclaimed by the next
 open, and an atexit close so shutdown always de-energizes.
 
 Only one session at a time. While it holds the controller, the transient
-self-test/port-test report the device busy — commissioning is one activity at a
+scan/port-test report the device busy — commissioning is one activity at a
 time. A real operation session (which holds its own device) likewise blocks a
 commissioning open; going live needs a restart, which frees this handle anyway.
 """
@@ -33,6 +33,9 @@ class CommissionSession:
         self._chips: Dict[str, Any] = {}
         self._kinds: Dict[str, str] = {}
         self._configured: set = set()
+        # Per PWM chip, the channel `set_output` last drove. Zeroed before the
+        # next channel is raised — see set_output.
+        self._driven: Dict[str, int] = {}
         self._last = 0.0
 
     def open(self, cfg: Any, open_device: Optional[Callable[[], Any]] = None) -> None:
@@ -45,11 +48,19 @@ class CommissionSession:
             self._chips = {c.chip_id: build_chip(self._device, c) for c in cfg.chips}
             self._kinds = {c.chip_id: c.kind for c in cfg.chips}
             self._configured = set()
+            self._driven = {}
             self._touch()
 
-    def set_output(self, chip_id: str, port: int, duty: float) -> None:
-        """Drive one output port. PWM chips take a duty 0..1 on the port's
-        forward channel (the H-bridge pair); shift-out chips take on/off."""
+    def set_output(self, chip_id: str, line: int, duty: float) -> None:
+        """Drive one output line. `line` is the raw hardware line the port grid
+        addresses — a single PWM channel (0..15 on a PCA9685, not a pair), a
+        single output bit on a shift register. PWM takes a duty 0..1; a shift-out
+        bit takes on/off.
+
+        Raising one PWM channel first drops whichever channel this chip was last
+        driving. Two channels of one H-bridge pair high together is a shoot-
+        through, and the caller walking channels one at a time must not be able
+        to cause that by skipping its own zeroing step."""
         with self._lock:
             self._require_open()
             chip = self._chips.get(chip_id)
@@ -60,10 +71,16 @@ class CommissionSession:
                     chip.configure()
                     self._configured.add(chip_id)
                 level = max(0.0, min(1.0, float(duty)))
-                chip.set_duty_cycle(2 * port, level)
-                chip.set_duty_cycle(2 * port + 1, 0.0)
+                previous = self._driven.get(chip_id)
+                if previous is not None and previous != line:
+                    chip.set_duty_cycle(previous, 0.0)
+                chip.set_duty_cycle(line, level)
+                if level > 0.0:
+                    self._driven[chip_id] = line
+                else:
+                    self._driven.pop(chip_id, None)
             else:
-                chip.set_output(port, float(duty) > 0.0)
+                chip.set_output(line, float(duty) > 0.0)
             self._touch()
 
     def pulse_output(
@@ -78,7 +95,7 @@ class CommissionSession:
 
         This is how a switch coil must be driven — a solenoid point motor burns
         out if a coil is held — so this runs the same write order as
-        `Ch347SwitchOutputInterface.set_throw` (documented there): standby high,
+        `SwitchDriver.set_throw` (documented there): standby high,
         target bit high, `off_port` (the bridge's other input) low, wait, then
         standby low before the bit. What the user confirms at the bench is
         therefore the drive the runtime issues.
@@ -190,6 +207,7 @@ class CommissionSession:
         self._chips = {}
         self._kinds = {}
         self._configured = set()
+        self._driven = {}
 
 
 _session = CommissionSession()

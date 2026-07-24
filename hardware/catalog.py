@@ -11,9 +11,9 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 # Interface roles a chip can fill (one per abstract interface).
-ROLE_TRACK = "track_output"        # OutputInterface        (block track voltage)
-ROLE_SWITCH = "switch_output"      # SwitchOutputInterface  (switch throw)
-ROLE_OCCUPANCY = "occupancy_input"  # InputInterface        (block current)
+ROLE_TRACK = "track_output"        # TrackOutput        (block track voltage)
+ROLE_SWITCH = "switch_output"      # SwitchOutput  (switch throw)
+ROLE_OCCUPANCY = "occupancy_input"  # OccupancyInput        (block current)
 ROLES = (ROLE_TRACK, ROLE_SWITCH, ROLE_OCCUPANCY)
 
 # Buses a chip can be wired on. A chip *type* declares which of these it supports
@@ -82,12 +82,32 @@ class ChipKind:
     cascadable: bool             # SPI/GPIO shift registers chain; the PCA9685 does not
     port_kind: str               # "bipolar_pair" | "digital_out" | "digital_in" | "current_sense"
     default_i2c_address: Optional[int] = None
+    i2c_address_range: Optional[Tuple[int, int]] = None  # inclusive; None for non-I2C chips
     port_help: str = ""
 
     @property
     def direction(self) -> str:
         """"output" (driven) or "input" (read), derived from the port kind."""
         return _PORT_DIRECTION[self.port_kind]
+
+    @property
+    def lines_per_unit(self) -> int:
+        """Individually-addressable hardware lines one physical chip exposes.
+
+        Equal to `ports_per_unit` everywhere except a bipolar-pair PWM, whose
+        port is a *pair* of PWM channels: one PCA9685 contributes 8 track ports
+        but 16 channels. Both the port picker and the Hardware Setup port grid
+        address a chip one line at a time, so both size themselves off this.
+        See `lines_for_chip` for the chain-aware total."""
+        return self.ports_per_unit * (2 if self.port_kind == PORT_BIPOLAR_PAIR else 1)
+
+    @property
+    def i2c_addresses(self) -> List[int]:
+        """Every address pin strap this chip can be set to, low to high."""
+        if self.i2c_address_range is None:
+            return []
+        lo, hi = self.i2c_address_range
+        return list(range(lo, hi + 1))
 
 
 CHIP_CATALOG: Dict[str, ChipKind] = {
@@ -103,6 +123,8 @@ CHIP_CATALOG: Dict[str, ChipKind] = {
         cascadable=False,
         port_kind=PORT_BIPOLAR_PAIR,
         default_i2c_address=0x40,
+        # 6 address pins (A0-A5) give 64 straps, 0x40..0x7F.
+        i2c_address_range=(0x40, 0x7F),
         port_help="H-bridge channel pair per port; magnitude→duty, sign→direction.",
     ),
     "hc595": ChipKind(
@@ -126,7 +148,11 @@ CHIP_CATALOG: Dict[str, ChipKind] = {
         ports_per_unit=8,
         cascadable=True,
         port_kind=PORT_DIGITAL_IN,
-        port_help="One input bit per port; 1 = current present on the block.",
+        port_help=(
+            "One input bit per port. 1 = current present on the block, unless "
+            "the chip is set active-low (a comparator with no inverter stage "
+            "pulls its line low when current flows), which flips it."
+        ),
     ),
     "ina3221": ChipKind(
         kind="ina3221",
@@ -141,6 +167,8 @@ CHIP_CATALOG: Dict[str, ChipKind] = {
         cascadable=False,
         port_kind=PORT_CURRENT_SENSE,
         default_i2c_address=0x40,
+        # 1 address pin (A0: GND/VS/SDA/SCL) gives 4 straps, 0x40..0x43.
+        i2c_address_range=(0x40, 0x43),
         port_help="One INA3221 channel per port (port 0 = CH1); abs(current) above threshold = occupied.",
     ),
     "ina219": ChipKind(
@@ -155,6 +183,8 @@ CHIP_CATALOG: Dict[str, ChipKind] = {
         cascadable=False,
         port_kind=PORT_CURRENT_SENSE,
         default_i2c_address=0x40,
+        # 2 address pins (A0, A1: GND/VS/SDA/SCL each) give 16 straps, 0x40..0x4F.
+        i2c_address_range=(0x40, 0x4F),
         port_help="One current-sense channel; abs(current) above threshold = occupied.",
     ),
 }
@@ -196,8 +226,8 @@ def lines_for_chip(kind: str, chain_length: int) -> int:
     two rails can be wired to any two of them, not only the fixed adjacent pair,
     so a bipolar-pair chip reports twice its port count."""
     ck = CHIP_CATALOG[kind]
-    ports = ports_for_chip(kind, chain_length)
-    return ports * 2 if ck.port_kind == PORT_BIPOLAR_PAIR else ports
+    units = max(1, int(chain_length)) if ck.cascadable else 1
+    return ck.lines_per_unit * units
 
 
 def catalog_payload() -> dict:
@@ -216,9 +246,11 @@ def catalog_payload() -> dict:
                 "role": ck.role,
                 "direction": ck.direction,
                 "ports_per_unit": ck.ports_per_unit,
+                "lines_per_unit": ck.lines_per_unit,
                 "cascadable": ck.cascadable,
                 "port_kind": ck.port_kind,
                 "default_i2c_address": ck.default_i2c_address,
+                "i2c_addresses": ck.i2c_addresses,
                 "port_help": ck.port_help,
             }
             for ck in CHIP_CATALOG.values()

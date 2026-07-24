@@ -1,14 +1,17 @@
-"""Self-test + interactive port-test for the Hardware Setup screen.
+"""Bus scan + interactive port-test for the Hardware Setup screen.
 
-`run_self_test` opens a transient device, scans the I2C bus, and probes each
-configured chip; every reachable chip contributes its ports to the bindable
-pool. `run_port_test` pulses one output port or reads one input port so the user
-can confirm an individual wire before binding it.
+`run_bus_scan` opens a transient device and reports every I2C address that
+answers right now. That scan is the whole of the automatic proof: an I2C chip is
+present when its address is on the bus, and a shift register (SPI / GPIO) cannot
+be detected at all — it has no acknowledgement and no ID register, so a '595 or
+'165 reads exactly the same unplugged as wired. Those are proven by hand
+instead: `run_port_test` pulses one output line or reads one input line so the
+user can watch a wire respond.
 
-Both accept an already-open `device` (the fake, in tests) or fall back to
-opening a real `Ch347Device`. If a real session already holds the CH347, opening
-fails and the result reports the device as unreachable ("busy") rather than
-raising — self-test is a commissioning-time (sim-mode) activity.
+Every entry point accepts an already-open `device` (the fake, in tests) or falls
+back to opening a real `Ch347Device`. If a real session already holds the CH347,
+opening fails and the result reports the device as unreachable ("busy") rather
+than raising — commissioning is a sim-mode activity.
 """
 
 import time
@@ -20,7 +23,6 @@ from hardware.catalog import (
     CHIP_CATALOG,
     PORT_CURRENT_SENSE,
     SWITCH_THROW_PULSE_S,
-    ports_for_chip,
 )
 from hardware.interfaces import build_chip
 
@@ -35,17 +37,22 @@ def _open_real_device(cfg: Any) -> Any:
     return open_ch347_device(getattr(cfg.controller, "device_port", None))
 
 
-def run_self_test(
+def run_bus_scan(
     cfg: Any,
     device: Optional[Any] = None,
     open_device: Optional[Callable[[], Any]] = None,
-    chip_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Probe the controller + configured chips. Returns a JSON-able report.
+    """Open the controller and report every I2C address answering right now.
 
-    `chip_id` limits the chip probe to that one chip (the per-chip Self-test
-    button, so testing one chip does not silently re-probe the others). The I2C
-    scan still runs, so the controller line of the report stays complete."""
+    This is the Hardware Setup screen's Detect / Rescan. It asks the bus what is
+    out there rather than asking each configured chip whether it is there, so the
+    answer includes addresses no chip is configured for yet — a chip strapped to
+    an address the user did not expect shows up as an unclaimed address instead
+    of as silence.
+
+    Addresses come back as lowercase hex strings (`"0x40"`), the same form the
+    address picker uses, so the caller compares them without re-formatting.
+    """
     controller_kind = getattr(cfg.controller, "kind", "ch347")
     close_after = False
     if device is None:
@@ -56,8 +63,7 @@ def run_self_test(
             return {
                 "ok": False,
                 "error": str(exc),
-                "controller": {"kind": controller_kind, "reachable": False},
-                "chips": [],
+                "controller": {"kind": controller_kind, "reachable": False, "i2c_scan": []},
             }
         close_after = True
 
@@ -66,55 +72,20 @@ def run_self_test(
             scan = device.i2c_scan()
         except Exception:
             scan = []
-        controller = {
-            "kind": controller_kind,
-            "reachable": True,
-            "i2c_scan": [f"0x{addr:02x}" for addr in scan],
+        return {
+            "ok": True,
+            "controller": {
+                "kind": controller_kind,
+                "reachable": True,
+                "i2c_scan": [f"0x{addr:02x}" for addr in scan],
+            },
         }
-        specs = (
-            cfg.chips if chip_id is None
-            else [c for c in cfg.chips if c.chip_id == chip_id]
-        )
-        chips = [_probe_chip(device, spec) for spec in specs]
-        return {"ok": True, "controller": controller, "chips": chips}
     finally:
         if close_after:
             try:
                 device.close()
             except Exception:
                 pass
-
-
-def _probe_chip(device: Any, spec: Any) -> Dict[str, Any]:
-    ck = CHIP_CATALOG[spec.kind]
-    count = ports_for_chip(spec.kind, getattr(spec, "chain_length", 1))
-    bus = getattr(spec, "bus", None) or ck.buses[0]
-    error = None
-    try:
-        chip = build_chip(device, spec)
-        reachable = bool(chip.probe())
-    except Exception as exc:
-        # A chip that cannot even be built or probed (a bad address, a latch line
-        # the bridge rejects) reports unreachable rather than failing the whole
-        # self-test for every other chip.
-        reachable = False
-        error = str(exc)
-    result: Dict[str, Any] = {
-        "chip_id": spec.chip_id,
-        "kind": spec.kind,
-        "role": ck.role,
-        "bus": bus,
-        "direction": ck.direction,
-        "label": getattr(spec, "label", "") or ck.label,
-        "reachable": reachable,
-        "port_count": count,
-        # A reachable chip's ports are all available; write-only chips ('595)
-        # cannot verify individual ports without an interactive pulse.
-        "ports": [{"port": p, "available": reachable} for p in range(count)],
-    }
-    if error:
-        result["error"] = error
-    return result
 
 
 def run_port_test(
@@ -274,7 +245,7 @@ def run_occupancy_test(
     decides, plus the verdict it gives.
 
     A block's occupancy comes from one of two sources depending on whether the
-    block is being driven (see `Ch347OccupancyInputInterface`): the digital
+    block is being driven (see `OccupancyDriver`): the digital
     detector ('165 bit) while the block is idle, the current-sense channel
     (INA3221 / INA219) while it is powered. This reads both regardless, reads the
     drive state back off the PWM chip's own registers, and applies that same rule

@@ -106,6 +106,12 @@ class ChipConfig:
     chain_length: int = 1               # hc595/hc165 cascade count
     spi_select: Optional[str] = None    # spi/gpio latch/load line, by pad
     label: str = ""
+    # Detector polarity for a shift-in chip: the comparator feeding it (an LM339
+    # with no inverter stage) pulls its output LOW when a train draws current, so
+    # a raw bit reads 0 occupied / 1 clear. The real input interface flips it
+    # below `read_block_currents()`, so nothing above the interface knows a
+    # polarity exists.
+    active_low: bool = False
 
     @property
     def role(self) -> Optional[str]:
@@ -289,6 +295,7 @@ def _chip_persist(c: ChipConfig) -> Dict[str, Any]:
         "chain_length": c.chain_length,
         "spi_select": c.spi_select,
         "label": c.label,
+        "active_low": c.active_low,
     }
 
 
@@ -367,6 +374,7 @@ def _parse_chip(data: Any) -> ChipConfig:
         chain_length=int(data.get("chain_length", 1) or 1),
         spi_select=_opt_str(data.get("spi_select")),
         label=str(data.get("label", "") or ""),
+        active_low=bool(data.get("active_low", False)),
     )
 
 
