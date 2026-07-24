@@ -224,7 +224,7 @@ Sample layout files are included in `layouts/` (loops and test plans) alongside 
 
 ## Toward real hardware
 
-The simulator is built to *become* a layout controller, not just imitate one. The voltage output sits behind a small abstract interface (`OutputInterface`):
+The simulator is built to *become* a layout controller, not just imitate one. The voltage output sits behind a small abstract interface (`TrackOutput`):
 
 - Today it ships a **simulated** implementation that keeps block voltages in memory.
 - The same control logic — block power, aspects, interlocking, ATO/ATC — is written to drive a **real DC layout** through a hardware backend (Serial / I²C / GPIO) by swapping in a different output implementation.
