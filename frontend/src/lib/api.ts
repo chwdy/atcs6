@@ -304,16 +304,18 @@ export class API implements LayoutDataClient, SimClient {
   }
 
   /**
-   * Probe the controller + each configured chip. Opens a transient device at
-   * commissioning time (returns `{ok:false}` gracefully if none is attached or
-   * a real session already holds it). `config` is the config being edited;
-   * `chipId` limits the probe to that one chip (the per-chip Self-test button).
+   * Open the controller and report the I2C addresses answering right now
+   * (Hardware Setup's Detect / Rescan). Opens a transient device at
+   * commissioning time, returning `{ok:false}` gracefully if none is attached or
+   * a real session already holds it. `config` is the config being edited.
+   * Shift registers do not answer a scan — they are proven with the interactive
+   * port test instead.
    */
-  async runHardwareSelfTest(config: any, chipId?: string): Promise<any> {
+  async scanHardwareBus(config: any): Promise<any> {
     return this._request(
-      '/hardware/self-test',
-      { method: 'POST', body: { config, ...(chipId ? { chip_id: chipId } : {}) } },
-      'runHardwareSelfTest'
+      '/hardware/scan',
+      { method: 'POST', body: { config } },
+      'scanHardwareBus'
     );
   }
 

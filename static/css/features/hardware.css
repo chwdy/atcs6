@@ -375,6 +375,19 @@
     color: var(--text-secondary);
 }
 
+/* An address answering the scan that a configured chip sits on. */
+.hw-addr-chip.claimed {
+    color: var(--success-color);
+    border-color: rgba(var(--success-rgb), 0.5);
+    background: rgba(var(--success-rgb), 0.14);
+}
+
+/* Answering, but nothing in the chip list uses it — a real chip on the board
+   the configuration does not know about. Informational, not a fault. */
+.hw-addr-chip.unclaimed {
+    border-style: dashed;
+}
+
 /* --- bus group ------------------------------------------------------------ */
 .hw-bus {
     margin-bottom: var(--space-8);
@@ -440,7 +453,6 @@
     align-self: start;
 }
 
-.hw-coord-input,
 .hw-coord-select {
     height: 26px;
     padding: 0 var(--space-6);
@@ -454,12 +466,6 @@
     outline: none;
 }
 
-.hw-coord-input {
-    width: 74px;
-    text-align: center;
-}
-
-.hw-coord-input:focus,
 .hw-coord-select:focus {
     border-color: var(--accent-color);
 }
@@ -575,6 +581,32 @@
     margin-top: var(--space-8);
 }
 
+/* Detector polarity for a shift-in chain — a statement about the wiring; the
+   hardware layer normalizes the bits so nothing above it sees a polarity. */
+.hw-polarity {
+    display: flex;
+    align-items: center;
+    gap: var(--space-10);
+    flex-wrap: wrap;
+    margin-top: var(--space-8);
+}
+
+.hw-polarity-opt {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-4);
+    font-size: var(--font-size-label);
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.hw-polarity-opt em {
+    font-style: normal;
+    font-family: var(--font-mono);
+    color: var(--text-tertiary);
+    margin-left: var(--space-4);
+}
+
 .hw-portcount-input {
     width: 66px;
     height: 26px;
@@ -683,7 +715,6 @@
 }
 
 .hw-add-fld .setting-select,
-.hw-add-fld .hw-coord-input,
 .hw-add-fld .hw-portcount-input {
     width: 100%;
 }
@@ -1089,4 +1120,191 @@
         width: 100%;
         justify-content: space-between;
     }
+}
+
+/* --- port picker popover (port-picker.ts) -----------------------------------
+   Choosing which hardware line an entity is wired to. Anchored to the binding
+   row it was opened from; the grid mirrors the Hardware tab's port cells so the
+   two screens read the same way. Named slots at the top show what is being
+   filled, because a track's two rails and a switch's two coils are not
+   interchangeable. */
+.pp-popover {
+    position: fixed;
+    z-index: var(--z-picker);
+    width: 340px;
+    max-height: 70vh;
+    display: flex;
+    flex-direction: column;
+    padding: var(--space-10);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-panel);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+}
+
+.pp-head {
+    margin-bottom: var(--space-8);
+}
+
+.pp-title {
+    font-size: var(--font-size-label);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-tertiary);
+}
+
+/* One button per named target; the active one is what a line click fills. */
+.pp-slots {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-6);
+    margin-bottom: var(--space-8);
+}
+
+.pp-slot {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: var(--space-6) var(--space-8);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    background: var(--bg-dark);
+    text-align: left;
+    cursor: pointer;
+}
+
+.pp-slot-label {
+    font-size: var(--font-size-micro);
+    color: var(--text-tertiary);
+}
+
+.pp-slot-value {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-micro);
+    color: var(--text-secondary);
+}
+
+.pp-slot.is-filled .pp-slot-value {
+    color: var(--text-primary);
+}
+
+.pp-slot.is-active {
+    border-color: var(--accent-color);
+    background: rgba(var(--accent-rgb), 0.12);
+}
+
+.pp-slot.is-active .pp-slot-label {
+    color: var(--accent-hover);
+}
+
+.pp-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+}
+
+.pp-chip + .pp-chip {
+    margin-top: var(--space-10);
+    padding-top: var(--space-10);
+    border-top: 1px solid var(--border-color);
+}
+
+.pp-chip-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-8);
+    margin-bottom: var(--space-6);
+}
+
+.pp-chip-name {
+    font-size: var(--font-size-body);
+    font-weight: 650;
+    color: var(--text-primary);
+}
+
+.pp-chip-meta {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-micro);
+    color: var(--text-tertiary);
+}
+
+/* The clickable line cells. Auto-fill so an 8-bit '595 and a 16-channel PWM
+   both lay out sensibly at this width. */
+.pp-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
+    gap: var(--space-4);
+}
+
+.pp-line {
+    padding: var(--space-6) 0;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-xs);
+    background: var(--bg-dark);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-micro);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: color 0.15s, background-color 0.15s, border-color 0.15s;
+}
+
+.pp-line:hover {
+    border-color: var(--accent-color);
+    color: var(--text-primary);
+}
+
+/* Chosen by one of this picker's own slots. */
+.pp-line.is-picked {
+    border-color: var(--accent-color);
+    background: rgba(var(--accent-rgb), 0.22);
+    color: var(--accent-hover);
+    font-weight: 700;
+}
+
+/* Already claimed by another entity — visible, but not selectable. */
+.pp-line.is-taken {
+    background: var(--bg-hover);
+    color: var(--text-tertiary);
+    border-style: dashed;
+    cursor: not-allowed;
+}
+
+.pp-line.is-taken:hover {
+    border-color: var(--border-color);
+    color: var(--text-tertiary);
+}
+
+/* Mid-pulse feedback for the double-click liveness check. */
+.pp-line.is-pulsing {
+    border-color: var(--success-color);
+    background: rgba(var(--success-rgb), 0.25);
+    color: var(--success-color);
+}
+
+.pp-hint {
+    margin: var(--space-8) 0 0;
+    font-size: var(--font-size-micro);
+    line-height: 1.45;
+    color: var(--text-tertiary);
+}
+
+.pp-empty {
+    margin: 0;
+    padding: var(--space-12);
+    border: 1px dashed var(--border-color);
+    border-radius: var(--control-radius-sm);
+    font-size: var(--font-size-micro);
+    color: var(--text-tertiary);
+    text-align: center;
+}
+
+.pp-foot {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-8);
+    margin-top: var(--space-10);
+    padding-top: var(--space-8);
+    border-top: 1px solid var(--border-color);
 }

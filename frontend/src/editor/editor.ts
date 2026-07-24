@@ -2117,8 +2117,11 @@ export class Editor {
 
     try {
       const track = await this.api.getTrack(gridPos.x, gridPos.y);
-      if (!track || track.error) return;
-      this.showTileContextMenu(gridPos, track, clientX, clientY);
+      const tile =
+        track && !track.error
+          ? track
+          : { x: gridPos.x, y: gridPos.y, track_bits: 0, directed_paths: [], edges: [], isVirtual: true };
+      this.showTileContextMenu(gridPos, tile, clientX, clientY);
     } catch (err) {
       console.error('Right-click action failed:', err);
     }
@@ -2207,7 +2210,8 @@ export class Editor {
       label: 'Inspect tile',
       icon: 'ti ti-info-circle',
       onSelect: () => {
-        void this.selectElement(gridPos);
+        // Explicitly asked for, so it shows even when the inspector is pinned.
+        void this.selectElement(gridPos, { force: true });
       },
     });
 
@@ -2260,52 +2264,51 @@ export class Editor {
     }
   }
 
-  async selectElement(gridPos: any): Promise<void> {
+  /**
+   * Select a tile and show it in the secondary inspector.
+   *
+   * Incidental selection — clicking around the canvas, resyncing after an edit —
+   * defers to whatever the inspector is already showing: a pinned panel keeps
+   * its content, and another entity's editor stays in place (see
+   * updateSecondaryEditorForTile). `force` is for the opposite case: the user
+   * asked for this tile by name through the right-click "Inspect tile" action,
+   * so the Tile Editor opens whatever else is on screen — landing in its own
+   * new window when the panel it would replace is pinned.
+   */
+  async selectElement(gridPos: any, options: { force?: boolean } = {}): Promise<void> {
     // Selecting a tile entity drops any tunnel highlight from a prior click.
     this.tunnelEditorHandler?.clearSelection();
+
+    const virtualTile = {
+      x: gridPos.x,
+      y: gridPos.y,
+      track_bits: 0,
+      directed_paths: [],
+      edges: [],
+      isVirtual: true,
+    };
+
+    let tile: any;
     try {
       const track = await this.api.getTrack(gridPos.x, gridPos.y);
       if (track && !track.error) {
-        if (track.signals && track.signals.length > 0) {
-          // The signals array contains {signal_id, direction, state, etc.}
-        }
-
+        tile = track;
         if (track.signals && track.signals.length > 0) {
           await this.refreshSegmentsList();
         }
-
-        this.selectedElement = track;
-
-        if (!this.uiHandler.isSecondaryPanelPinned()) {
-          this.updateSecondaryEditorForTile(track);
-        }
       } else {
-        this.selectedElement = {
-          x: gridPos.x,
-          y: gridPos.y,
-          track_bits: 0,
-          directed_paths: [],
-          edges: [],
-          isVirtual: true,
-        };
-
-        if (!this.uiHandler.isSecondaryPanelPinned()) {
-          this.updateSecondaryEditorForTile(this.selectedElement);
-        }
+        tile = virtualTile;
       }
     } catch (err) {
-      this.selectedElement = {
-        x: gridPos.x,
-        y: gridPos.y,
-        track_bits: 0,
-        directed_paths: [],
-        edges: [],
-        isVirtual: true,
-      };
+      tile = virtualTile;
+    }
 
-      if (!this.uiHandler.isSecondaryPanelPinned()) {
-        this.updateSecondaryEditorForTile(this.selectedElement);
-      }
+    this.selectedElement = tile;
+
+    if (options.force) {
+      this.uiHandler.showRequestedPanel(() => this.showTileEditor(tile));
+    } else if (!this.uiHandler.isSecondaryPanelPinned()) {
+      this.updateSecondaryEditorForTile(tile);
     }
   }
 

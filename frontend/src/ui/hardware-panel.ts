@@ -34,8 +34,8 @@ const BUS_ORDERED_BY: Record<string, string> = {
 
 interface CatalogChip {
   kind: string; label: string; buses: string[]; role: string; direction: string;
-  ports_per_unit: number; cascadable: boolean; port_kind: string;
-  default_i2c_address: number | null; port_help: string;
+  ports_per_unit: number; lines_per_unit: number; cascadable: boolean; port_kind: string;
+  default_i2c_address: number | null; i2c_addresses: number[]; port_help: string;
 }
 interface Catalog {
   controllers: { kind: string; label: string; needs_device_port: boolean }[];
@@ -46,6 +46,10 @@ interface Catalog {
 interface ChipCfg {
   chip_id: string; kind: string; bus: string;
   i2c_address: number | null; chain_length: number; spi_select: string | null; label: string;
+  // Shift-in chips only: the detector feeding this chain pulls its line LOW when
+  // current flows (a comparator with no inverter stage). The hardware layer
+  // flips those bits, so nothing above it sees a polarity.
+  active_low: boolean;
 }
 interface HwState {
   enabled: boolean;
@@ -53,8 +57,12 @@ interface HwState {
   controller: { kind: string; device_port: string | null };
   chips: ChipCfg[];
 }
-interface PortResult { port: number; available: boolean; }
-type SelfTest = Record<string, { reachable: boolean; ports: PortResult[] }>;
+// How sure we are that a configured chip is really on the board.
+//   alive    — an I²C address that answered the last scan, or a shift register
+//              the user has run a port test on.
+//   noresp   — an I²C address that did not answer a scan that did run.
+//   untested — no scan has run yet, or a shift register nobody has tested.
+type ChipState = 'alive' | 'noresp' | 'untested';
 
 // Develop mode (fake hardware) — the running session's mode info and the raw
 // binding maps the "Fake inputs" section pokes. See devRows() for the row model.
@@ -87,8 +95,14 @@ const DEFAULT_STATE: HwState = {
 
 let state: HwState = clone(DEFAULT_STATE);
 let catalog: Catalog | null = null;
-let selfTest: SelfTest = {};
+// The last bus scan: every I²C address that answered, as lowercase hex.
 let i2cScan: string[] = [];
+let scanned = false;
+// Shift registers (SPI / GPIO) cannot be scanned for — they have no
+// acknowledgement and no ID register, so a '595 or '165 reads exactly the same
+// unplugged as wired. The user running its port test is the only proof there
+// is, so the chips that have been tested this session are recorded here.
+let manualProven = new Set<string>();
 let controllerReachable = false;
 let savedSinceEdit = false;
 let adding = false;
@@ -148,6 +162,24 @@ function chipPorts(chip: ChipCfg): number {
   if (!ck) return 0;
   return ck.ports_per_unit * (ck.cascadable ? Math.max(1, chip.chain_length) : 1);
 }
+// The individually-addressable lines a chip exposes — what the port grid below
+// shows and what a click on one of those pills drives. This is NOT the port
+// count: one PCA9685 track port is a *pair* of PWM channels (an H-bridge's two
+// inputs), so the chip carries 8 ports but 16 channels, and the grid addresses
+// the channels. Mirrors `lines_for_chip` in hardware/catalog.py.
+function chipLines(chip: ChipCfg): number {
+  const ck = catalogChip(chip.kind);
+  if (!ck) return 0;
+  return ck.lines_per_unit * (ck.cascadable ? Math.max(1, chip.chain_length) : 1);
+}
+// What one line is called on this chip. Matches the port picker's naming
+// (port-picker.ts lineLabel) so a channel has one name across the whole app.
+function lineLabel(chip: ChipCfg, line: number): string {
+  const kind = catalogChip(chip.kind)?.port_kind;
+  if (kind === 'bipolar_pair') return `ch${line}`;
+  if (kind === 'current_sense') return `CH${line + 1}`;
+  return `P${line}`;
+}
 function chipDirection(chip: ChipCfg): string { return catalogChip(chip.kind)?.direction || 'output'; }
 function isCurrentSense(chip: ChipCfg): boolean { return catalogChip(chip.kind)?.port_kind === 'current_sense'; }
 function chipLabel(chip: ChipCfg): string { return catalogChip(chip.kind)?.label || chip.kind; }
@@ -156,9 +188,22 @@ function latchLines(bus: string): string[] {
   if (bus === 'gpio') return catalog?.gpio_lines || [];
   return [];
 }
+function hexAddr(addr: number): string { return '0x' + addr.toString(16).padStart(2, '0'); }
 function coordText(chip: ChipCfg): string {
-  if (chip.bus === 'i2c') return chip.i2c_address != null ? '0x' + chip.i2c_address.toString(16) : '';
+  if (chip.bus === 'i2c') return chip.i2c_address != null ? hexAddr(chip.i2c_address) : '';
   return (chip.spi_select || '').toUpperCase();
+}
+// Is this address answering on the bus right now (per the last scan)?
+function onBus(addr: number | null): boolean {
+  return addr != null && i2cScan.includes(hexAddr(addr));
+}
+// How sure we are this chip is really there. An I²C chip answers a scan or it
+// does not; a shift register cannot be scanned for at all, so the user's own
+// port test is what proves it (see `manualProven`).
+function chipState(chip: ChipCfg): ChipState {
+  if (chip.bus !== 'i2c') return manualProven.has(chip.chip_id) ? 'alive' : 'untested';
+  if (!scanned || chip.i2c_address == null) return 'untested';
+  return onBus(chip.i2c_address) ? 'alive' : 'noresp';
 }
 function coordSort(chip: ChipCfg): number {
   if (chip.bus === 'i2c') return chip.i2c_address ?? 9999;
@@ -257,8 +302,7 @@ function wdChipBox(x: number, y: number, w: number, h: number, chip: ChipCfg): s
   const busCls = chip.bus === 'spi' ? 'role-spi' : chip.bus === 'gpio' ? 'role-gpio' : 'role-i2c';
   const coord = coordText(chip) || (chip.bus === 'i2c' ? 'no addr' : 'no line');
   const dir = chipDirection(chip) === 'output' ? 'out' : 'in';
-  const st = selfTest[chip.chip_id];
-  const dot = st ? (st.reachable ? 'alive' : 'noresp') : 'untested';
+  const dot = chipState(chip);
   const cx = x + w / 2;
   const label = chip.label
     ? `<text x="${cx}" y="${y + 50}" text-anchor="middle" class="hw-wd-sub">${esc(chip.label)}</text>` : '';
@@ -609,8 +653,9 @@ export async function refreshHardwarePanel(): Promise<void> {
   await stopCommissioning();
   savedSinceEdit = false;
   adding = false;
-  selfTest = {};
   i2cScan = [];
+  scanned = false;
+  manualProven = new Set();
   controllerReachable = false;
   sessionInfo = null;
   devReadback = null;
@@ -649,6 +694,7 @@ function normalizeConfig(cfg: any): HwState {
       chain_length: Number(c.chain_length) || 1,
       spi_select: c.spi_select ?? null,
       label: c.label || '',
+      active_low: !!c.active_low,
     })),
   };
 }
@@ -662,6 +708,7 @@ function payload(): any {
     chips: state.chips.map((c) => ({
       chip_id: c.chip_id, kind: c.kind, bus: c.bus, i2c_address: c.i2c_address,
       chain_length: c.chain_length, spi_select: c.spi_select, label: c.label,
+      active_low: c.active_low,
     })),
   };
 }
@@ -678,10 +725,10 @@ function readiness(): Check[] {
     label: noCoord.length ? `Set ${noCoord.length} address/latch` : state.chips.length ? 'Addresses & latches set' : 'Add a chip',
   });
 
-  const unproven = state.chips.filter((c) => !selfTest[c.chip_id]?.reachable);
+  const unproven = state.chips.filter((c) => chipState(c) !== 'alive');
   checks.push({
     key: 'test', ok: state.chips.length > 0 && unproven.length === 0,
-    label: unproven.length ? `${unproven.length} chip${unproven.length > 1 ? 's' : ''} unproven` : 'Every port responds',
+    label: unproven.length ? `${unproven.length} chip${unproven.length > 1 ? 's' : ''} unproven` : 'Every chip proven',
   });
   return checks;
 }
@@ -692,8 +739,7 @@ function render(): void {
   const body = el('hw-body');
   const gate = el('hw-gate');
   if (!body || !gate || !catalog) return;
-  const scan = `<datalist id="hw-i2c-scan">${i2cScan.map((a) => `<option value="${esc(a)}"></option>`).join('')}</datalist>`;
-  body.innerHTML = wiringDiagramHtml() + controllerStageHtml() + chipsStageHtml() + devSectionHtml() + scan;
+  body.innerHTML = wiringDiagramHtml() + controllerStageHtml() + chipsStageHtml() + devSectionHtml();
   gate.innerHTML = gateHtml();
 }
 
@@ -744,23 +790,42 @@ function controllerStageHtml(): string {
         <input type="text" class="setting-input-compact" data-hw="device-port"
           placeholder="auto (USB VID/PID)" value="${esc(state.controller.device_port ?? '')}" spellcheck="false" /></div>`
     : '';
+  // Every address that answered, each saying whether a configured chip claims
+  // it. An unclaimed address is the useful half: a chip strapped somewhere the
+  // user did not expect shows up here instead of as silence.
+  const claimed = new Set(state.chips
+    .filter((c) => c.bus === 'i2c' && c.i2c_address != null)
+    .map((c) => hexAddr(c.i2c_address!)));
+  const addrChips = i2cScan.map((a) => {
+    const mine = claimed.has(a);
+    return `<span class="hw-addr-chip${mine ? ' claimed' : ' unclaimed'}" title="${mine ? 'A configured chip sits here' : 'Answering, but no configured chip uses this address'}">${esc(a)}</span>`;
+  }).join('');
+  const found = i2cScan.length
+    ? `${i2cScan.length} device${i2cScan.length === 1 ? '' : 's'} answering on the I²C bus.`
+    : 'Nothing answering on the I²C bus.';
   const conn = controllerReachable
     ? `<div class="hw-conn ok"><span class="hw-conn-dot"></span>
-        <span><strong>Connected.</strong> ${i2cScan.length} device${i2cScan.length === 1 ? '' : 's'} on the I²C bus.</span>
-        <span class="hw-scan-chips">${i2cScan.map((a) => `<span class="hw-addr-chip">${esc(a)}</span>`).join('')}</span></div>`
+        <span><strong>Connected.</strong> ${found}</span>
+        <span class="hw-scan-chips">${addrChips}</span></div>`
     : `<div class="hw-conn"><span class="hw-conn-dot"></span>
         <span>Not connected — running in <strong>simulation</strong>. Detect to talk to the board.</span></div>`;
   const done = controllerReachable ? ' done' : '';
+  // One button, two jobs: it opens the bridge the first time and re-reads the
+  // bus after that. It never re-opens chips or changes the configuration, so it
+  // is safe to press whenever the board has been re-plugged or re-strapped.
+  const scanBtn = controllerReachable
+    ? `<button type="button" class="btn btn-secondary hw-btn-sm" data-hw="detect" title="Read the I²C bus again — pick up a chip that was just plugged in or re-strapped"><i class="ti ti-refresh" aria-hidden="true"></i> Rescan bus</button>`
+    : `<button type="button" class="btn btn-accent hw-btn-sm" data-hw="detect"><i class="ti ti-plug-connected" aria-hidden="true"></i> Detect controller</button>`;
   return `<section class="hw-stage${done}">
     <div class="hw-stage-head"><span class="hw-stage-num">${controllerReachable ? '✓' : '1'}</span>
       <span class="hw-stage-title">Connect the bridge</span></div>
-    <p class="hw-stage-desc">The USB board every message travels through. Detect scans the I²C bus for chips.</p>
+    <p class="hw-stage-desc">The USB board every message travels through. Detect reads every I²C address that answers; rescan after plugging a chip in or changing its address straps.</p>
     <div class="hw-row hw-indent">
       <span class="hw-lbl">Bridge</span>
       <select class="setting-select" data-hw="controller-kind">
         ${catalog!.controllers.map((c) => `<option value="${esc(c.kind)}"${c.kind === state.controller.kind ? ' selected' : ''}>${esc(c.label)}</option>`).join('')}
       </select>
-      <button type="button" class="btn btn-accent hw-btn-sm" data-hw="detect"><i class="ti ti-plug-connected" aria-hidden="true"></i> ${controllerReachable ? 'Re-detect' : 'Detect controller'}</button>
+      ${scanBtn}
     </div>
     ${portRow ? `<div class="hw-indent">${portRow}</div>` : ''}
     <div class="hw-indent">${conn}</div>
@@ -773,7 +838,7 @@ function chipsStageHtml(): string {
   return `<section class="hw-stage${proven ? ' done' : ''}">
     <div class="hw-stage-head"><span class="hw-stage-num">${proven ? '✓' : '2'}</span>
       <span class="hw-stage-title"><i class="ti ti-cpu" aria-hidden="true"></i> Your chips, by bus</span></div>
-    <p class="hw-stage-desc">Every chip on the board — grouped by the bus it lives on, ordered by its address or latch line. Prove each one's ports respond.</p>
+    <p class="hw-stage-desc">Every chip on the board — grouped by the bus it lives on, ordered by its address or latch line. An I²C chip proves itself by answering the bus scan; a shift register answers nothing, so run its test and watch the board.</p>
     <div class="hw-indent">${groups}${addFormHtml()}</div>
   </section>`;
 }
@@ -790,13 +855,8 @@ function busGroupHtml(bus: string): string {
 function chipCardHtml(chip: ChipCfg): string {
   const ck = catalogChip(chip.kind);
   const dir = chipDirection(chip);
-  const st = selfTest[chip.chip_id];
-  const stateCls = st ? (st.reachable ? 'alive' : 'noresp') : 'untested';
-  const badge = st
-    ? (st.reachable
-      ? `<span class="hw-state-badge alive"><i class="ti ti-check" aria-hidden="true"></i> Responds</span>`
-      : `<span class="hw-state-badge noresp"><i class="ti ti-alert-triangle" aria-hidden="true"></i> No response</span>`)
-    : `<span class="hw-state-badge untested">Untested</span>`;
+  const stateCls = chipState(chip);
+  const badge = stateBadgeHtml(chip, stateCls);
   const dirBadge = `<span class="hw-dir ${dir === 'output' ? 'out' : 'in'}">${dir === 'output' ? 'OUTPUT' : 'INPUT'}</span>`;
   const chained = ck?.cascadable ? ` (${Math.max(1, chip.chain_length)} chip${chip.chain_length > 1 ? 's' : ''} chained)` : '';
   const on = activity?.chipId === chip.chip_id;
@@ -812,23 +872,68 @@ function chipCardHtml(chip: ChipCfg): string {
       </div>
       <div class="hw-chip-actions">
         ${badge}
-        <button type="button" class="hw-chip-action" data-hw="self-test" data-id="${esc(chip.chip_id)}"><i class="ti ti-test-pipe" aria-hidden="true"></i> Self-test</button>
         ${testBtn}
         <button type="button" class="hw-chip-remove" data-hw="remove" data-id="${esc(chip.chip_id)}" title="Remove chip" aria-label="Remove chip">&times;</button>
       </div>
     </div>
     ${chip.bus !== 'i2c' && ck?.cascadable ? portCountRowHtml(chip) : ''}
+    ${ck?.port_kind === 'digital_in' ? polarityRowHtml(chip) : ''}
     ${portsHtml(chip)}
+  </div>`;
+}
+
+// What the card says about whether the chip is really there, in the terms that
+// bus can actually prove. An I²C chip either answered the scan or it did not.
+// A shift register answers nothing, so its badge reports the only fact there
+// is — whether the user has run its test.
+function stateBadgeHtml(chip: ChipCfg, st: ChipState): string {
+  if (chip.bus !== 'i2c') {
+    return st === 'alive'
+      ? `<span class="hw-state-badge alive" title="You ran this chip's test. A shift register cannot be detected any other way — it has no address and no reply."><i class="ti ti-check" aria-hidden="true"></i> Tested by you</span>`
+      : `<span class="hw-state-badge untested" title="A shift register cannot be detected: it has no address and sends no reply, so it reads the same unplugged as wired. Run the test and watch the board.">Test to prove</span>`;
+  }
+  if (st === 'alive') {
+    return `<span class="hw-state-badge alive" title="This address answered the last bus scan"><i class="ti ti-check" aria-hidden="true"></i> On the bus</span>`;
+  }
+  if (st === 'noresp') {
+    return `<span class="hw-state-badge noresp" title="The scan ran and nothing answered at this address — check the wiring and the address straps"><i class="ti ti-alert-triangle" aria-hidden="true"></i> Not on the bus</span>`;
+  }
+  return `<span class="hw-state-badge untested">Not scanned yet</span>`;
+}
+
+// Detector polarity for a shift-in chain. A comparator with no inverter stage
+// (an LM339 straight into the '165) pulls its line LOW when a train draws
+// current, so the raw bit is backwards. The hardware layer flips it, so this is
+// purely a statement about the wiring — nothing above the interface sees it.
+function polarityRowHtml(chip: ChipCfg): string {
+  return `<div class="hw-polarity">
+    <span class="hw-lbl">Detector</span>
+    <label class="hw-polarity-opt">
+      <input type="radio" name="pol-${esc(chip.chip_id)}" data-hw="polarity" data-id="${esc(chip.chip_id)}"
+        value="high"${chip.active_low ? '' : ' checked'} />
+      <span>Active&nbsp;high <em>1 = occupied</em></span>
+    </label>
+    <label class="hw-polarity-opt">
+      <input type="radio" name="pol-${esc(chip.chip_id)}" data-hw="polarity" data-id="${esc(chip.chip_id)}"
+        value="low"${chip.active_low ? ' checked' : ''} />
+      <span>Active&nbsp;low <em>0 = occupied</em></span>
+    </label>
+    <span class="hw-hint-inline">LM339 with no inverter is active low</span>
   </div>`;
 }
 
 function coordCellHtml(chip: ChipCfg): string {
   if (chip.bus === 'i2c') {
-    const val = chip.i2c_address != null ? '0x' + chip.i2c_address.toString(16) : '';
-    return `<span class="hw-coord">
-      <input type="text" class="hw-coord-input" data-hw="addr" data-id="${esc(chip.chip_id)}"
-        list="hw-i2c-scan" placeholder="0x40" value="${esc(val)}" spellcheck="false" title="I²C address" />
-    </span>`;
+    const ck = catalogChip(chip.kind);
+    const addrs = ck?.i2c_addresses.length ? ck.i2c_addresses : chip.i2c_address != null ? [chip.i2c_address] : [];
+    // Addresses that answered the last scan are marked, so picking the strap the
+    // chip is actually set to is a matter of reading the list, not guessing.
+    const opts = addrs.map((a) =>
+      `<option value="${esc(hexAddr(a))}"${a === chip.i2c_address ? ' selected' : ''}>` +
+      `${esc(hexAddr(a))}${onBus(a) ? ' ●' : ''}</option>`).join('');
+    return `<span class="hw-coord"><select class="hw-coord-select" data-hw="addr" data-id="${esc(chip.chip_id)}" title="I²C address — ● marks an address answering on the bus">
+      ${opts}
+    </select></span>`;
   }
   const lines = latchLines(chip.bus);
   return `<span class="hw-coord"><select class="hw-coord-select" data-hw="latch" data-id="${esc(chip.chip_id)}" title="Latch line">
@@ -846,22 +951,29 @@ function portCountRowHtml(chip: ChipCfg): string {
   </div>`;
 }
 
+// The chip's lines, one pill each. This grid is at *line* granularity, not port
+// granularity: clicking a pill drives that one hardware line, so a PCA9685 shows
+// all 16 PWM channels rather than the 8 H-bridge pairs those channels make up.
+// A block's two rails can sit on any two channels, so every channel has to be
+// individually pulseable to check its wiring.
 function portsHtml(chip: ChipCfg): string {
   const ck = catalogChip(chip.kind);
-  const n = chipPorts(chip);
+  const n = chipLines(chip);
   const dir = chipDirection(chip);
   const current = isCurrentSense(chip);
   let legend: string;
-  if (ck?.port_kind === 'bipolar_pair') legend = `${n} bipolar ports · ±12V`;
+  if (ck?.port_kind === 'bipolar_pair') legend = `${n} PWM channels · ${chipPorts(chip)} bipolar ports, ±12V`;
   else if (ck?.port_kind === 'digital_out') legend = `${n} output bits · 0/1`;
   else if (ck?.port_kind === 'digital_in') legend = `${n} input bits`;
   else legend = `${n} current channels · mA`;
-  const hint = dir === 'output' ? 'click a port to pulse it' : 'Read live to watch these';
+  const hint = dir === 'output'
+    ? (ck?.port_kind === 'bipolar_pair' ? 'click a channel to pulse it' : 'click a port to pulse it')
+    : 'Read live to watch these';
 
   const act = activity?.chipId === chip.chip_id ? activity : null;
   const pills: string[] = [];
   for (let p = 0; p < n; p++) {
-    const name = current ? 'CH' + (p + 1) : 'P' + p;
+    const name = lineLabel(chip, p);
     let cls = 'hw-port', txt = name, extra = '';
     if (act?.kind === 'sweep' && act.port === p) cls += ' sweep';
     if (act?.kind === 'live') {
@@ -923,8 +1035,9 @@ function syncAddForm(): void {
     const bus = busSel!.value;
     if (bus === 'i2c') {
       coordLbl!.textContent = 'Address';
-      const def = ck!.default_i2c_address != null ? '0x' + ck!.default_i2c_address.toString(16) : '';
-      coord!.innerHTML = `<input type="text" class="hw-coord-input" id="hw-af-coord-val" list="hw-i2c-scan" placeholder="0x40" value="${esc(def)}" spellcheck="false" />`;
+      coord!.innerHTML = `<select class="setting-select hw-coord-select" id="hw-af-coord-val">
+        ${ck!.i2c_addresses.map((a) => `<option value="${esc(hexAddr(a))}"${a === ck!.default_i2c_address ? ' selected' : ''}>${esc(hexAddr(a))}</option>`).join('')}
+      </select>`;
     } else {
       coordLbl!.textContent = 'Latch line';
       const lines = latchLines(bus);
@@ -947,6 +1060,7 @@ function commitAdd(): void {
   const chip: ChipCfg = {
     chip_id: nextChipId(typeSel.value), kind: typeSel.value, bus,
     i2c_address: null, chain_length: 1, spi_select: null, label: '',
+    active_low: false,
   };
   if (bus === 'i2c') {
     const raw = (coordVal?.value || '').trim();
@@ -1021,8 +1135,7 @@ async function onClick(e: Event): Promise<void> {
   const act = target.dataset.hw;
   const id = target.dataset.id || '';
   switch (act) {
-    case 'detect': return void detect();
-    case 'self-test': return void selfTestChip(id);
+    case 'detect': return void scanBus();
     case 'remove': return removeChip(id);
     case 'sweep': return void toggleSweep(id);
     case 'live': return void toggleLive(id);
@@ -1048,6 +1161,9 @@ function onChange(e: Event): void {
   else if (t.dataset.hw === 'latch') { setChip(id, (c) => { c.spi_select = (t as HTMLSelectElement).value; }); }
   else if (t.dataset.hw === 'addr') { setAddress(id, (t as HTMLInputElement).value); }
   else if (t.dataset.hw === 'ports') { setPorts(id, (t as HTMLInputElement).value); }
+  else if (t.dataset.hw === 'polarity') {
+    setChip(id, (c) => { c.active_low = (t as HTMLInputElement).value === 'low'; });
+  }
 }
 
 function onInput(e: Event): void {
@@ -1059,7 +1175,9 @@ function setChip(id: string, mut: (c: ChipCfg) => void): void {
   const chip = state.chips.find((c) => c.chip_id === id);
   if (!chip) return;
   mut(chip);
-  delete selfTest[id];
+  // Re-strapping or re-wiring a chip retires the proof the user gathered for
+  // the old settings; the badge drops back to unproven until it is re-earned.
+  manualProven.delete(id);
   onEdit();
   render();
 }
@@ -1079,7 +1197,7 @@ function setPorts(id: string, raw: string): void {
 function removeChip(id: string): void {
   if (activity?.chipId === id) void stopCommissioning();
   state.chips = state.chips.filter((c) => c.chip_id !== id);
-  delete selfTest[id];
+  manualProven.delete(id);
   onEdit();
   render();
 }
@@ -1093,11 +1211,22 @@ function toggleEnable(): void {
 
 function toggleDevelop(): void {
   state.develop = !state.develop;
+  // Flipping the toggle changes which device a scan talks to, so whatever the
+  // last scan proved was proof about the OTHER device: fake addresses would go
+  // on reading as "Connected" after switching to real, and vice versa. Retire
+  // it the same way re-strapping a chip does (see `setChip`) — the bridge drops
+  // back to unproven until Detect is pressed against the device now selected.
+  controllerReachable = false;
+  scanned = false;
+  i2cScan = [];
+  manualProven = new Set();
   onEdit();
   render();
-  if (state.develop) {
-    showToast('Develop mode on — Save, then Detect runs against the fake device.', 'info', 4000);
-  }
+  showToast(
+    state.develop
+      ? 'Develop mode on — Save, then Detect runs against the fake device.'
+      : 'Develop mode off — Save, then Detect to check the real board.',
+    'info', 4000);
 }
 
 // --- develop-mode fake-input poking ----------------------------------------
@@ -1147,53 +1276,50 @@ function jumpTo(key: string): void {
   el('hw-body')?.querySelector(sel)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-// --- detect / self-test ----------------------------------------------------
-async function detect(): Promise<void> {
+// --- detect / rescan -------------------------------------------------------
+// Read the bus and repaint. This is the panel's only automatic proof, and it
+// asks the bus rather than the configuration: it re-reads which addresses are
+// answering right now, so a chip that was just plugged in, unplugged, or
+// re-strapped shows its new truth without touching the chip list.
+async function scanBus(): Promise<void> {
   const btn = document.querySelector<HTMLButtonElement>('[data-hw="detect"]');
   if (btn) btn.disabled = true;
   try {
-    const res = await api.runHardwareSelfTest(payload());
+    const res = await api.scanHardwareBus(payload());
     controllerReachable = !!res?.ok && !!res?.controller?.reachable;
     i2cScan = res?.controller?.i2c_scan || [];
-    selfTest = {};
-    for (const c of res?.chips || []) selfTest[c.chip_id] = { reachable: !!c.reachable, ports: c.ports || [] };
+    scanned = controllerReachable;
     render();
-    if (!controllerReachable) showToast(res?.error ? `Controller not reachable: ${res.error}` : 'Controller not reachable.', 'error', 4000);
-    else {
-      const reachable = Object.values(selfTest).filter((r) => r.reachable).length;
-      showToast(`Connected — ${reachable}/${state.chips.length} chips respond.`, 'success', 2500);
+    if (!controllerReachable) {
+      showToast(res?.error ? `Controller not reachable: ${res.error}` : 'Controller not reachable.', 'error', 4000);
+      return;
     }
+    const i2cChips = state.chips.filter((c) => c.bus === 'i2c');
+    const found = i2cChips.filter((c) => onBus(c.i2c_address)).length;
+    showToast(
+      i2cChips.length
+        ? `Bus scanned — ${found}/${i2cChips.length} configured I²C chips answered.`
+        : `Bus scanned — ${i2cScan.length} device${i2cScan.length === 1 ? '' : 's'} answering.`,
+      'success', 2500);
   } catch (e: any) {
-    showToast(e?.message || 'Detect failed.', 'error', 4000);
+    showToast(e?.message || 'Scan failed.', 'error', 4000);
   } finally {
     if (btn) btn.disabled = false;
   }
 }
 
-async function selfTestChip(id: string): Promise<void> {
-  const chip = state.chips.find((c) => c.chip_id === id);
-  if (!chip) return;
-  try {
-    const res = await api.runHardwareSelfTest(payload(), id);
-    if (!res?.ok) { showToast(res?.error ? `Controller not reachable: ${res.error}` : 'Controller not reachable.', 'error', 4000); return; }
-    controllerReachable = !!res?.controller?.reachable;
-    if (res.controller?.i2c_scan) i2cScan = res.controller.i2c_scan;
-    const c = (res.chips || []).find((x: any) => x.chip_id === id);
-    if (c) selfTest[id] = { reachable: !!c.reachable, ports: c.ports || [] };
-    render();
-    showToast(c?.reachable ? `${chip.kind} · all ${chipPorts(chip)} ports respond.` : `${chip.kind} did not respond.`,
-      c?.reachable ? 'success' : 'error', c?.reachable ? 2200 : 3500);
-  } catch (e: any) {
-    showToast(e?.message || 'Self-test failed.', 'error', 4000);
-  }
-}
-
-async function pulsePort(id: string, port: number): Promise<void> {
+// Drive one line for a moment — the "does this wire respond" check. `line` is
+// the raw hardware line the grid pill stands for (a PWM channel, a shift-out
+// bit), which is exactly what run_port_test drives.
+async function pulsePort(id: string, line: number): Promise<void> {
   if (activity) return;   // don't pulse while a sweep/live session holds the device
+  const chip = state.chips.find((c) => c.chip_id === id);
   try {
-    const res = await api.runHardwarePortTest(payload(), id, port, 'pulse_output');
+    const res = await api.runHardwarePortTest(payload(), id, line, 'pulse_output');
     if (!res?.ok) { showToast(res?.error || 'Port test failed.', 'error', 3500); return; }
-    showToast(`Pulsed port ${port}.`, 'success', 1600);
+    markProven(id);
+    render();
+    showToast(`Pulsed ${chip ? lineLabel(chip, line) : line}.`, 'success', 1600);
   } catch (e: any) {
     showToast(e?.message || 'Port test failed.', 'error', 3500);
   }
@@ -1230,14 +1356,25 @@ async function toggleSweep(id: string): Promise<void> {
   if (!(await ensureCommission())) return;
   activity = { chipId: id, kind: 'sweep', port: 0, values: [] };
   sweepAbort = false;
+  markProven(id);
   render();
   void runSweep(id);
+}
+
+// A shift register is proven by its owner watching it work, so running its test
+// is what earns its badge — nothing on the bus can report it (see chipState).
+// I²C chips answer a scan, so their badge is not this to give.
+function markProven(id: string): void {
+  const chip = state.chips.find((c) => c.chip_id === id);
+  if (chip && chip.bus !== 'i2c') manualProven.add(id);
 }
 
 async function runSweep(id: string): Promise<void> {
   const chip = state.chips.find((c) => c.chip_id === id);
   if (!chip) return;
-  const count = chipPorts(chip);
+  // Walk lines, not ports — a PCA9685 sweep visits each of its 16 PWM channels
+  // in turn, which is what the grid shows and what the user watches on the board.
+  const count = chipLines(chip);
   const duties = chip.bus === 'i2c' ? [0.3, 0.6, 1.0] : [1.0];   // PWM steps vs on/off
   // A shift-out bit may be wired to a solenoid point-motor coil, which burns out
   // if held energized, so the marquee pulses those bits server-side for the
@@ -1268,6 +1405,7 @@ async function toggleLive(id: string): Promise<void> {
   const chip = state.chips.find((c) => c.chip_id === id);
   const current = chip ? isCurrentSense(chip) : false;
   activity = { chipId: id, kind: 'live', port: -1, values: [] };
+  markProven(id);
   render();
   const poll = async () => {
     if (activity?.chipId !== id) return;

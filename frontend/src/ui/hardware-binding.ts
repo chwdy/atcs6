@@ -16,8 +16,12 @@
 import { api } from '../lib/api';
 import { flashField } from '../lib/helpers';
 import { showToast } from '../lib/toast';
+import { pickPorts } from './port-picker';
 
 interface Binding { chip_id: string; port: number; }
+/** A block's track wiring: the two PWM channels driving its rails, picked
+ * independently so they need not be an adjacent pair. */
+interface TrackBinding { chip_id: string; forward: number; reverse: number; }
 interface CurrentBinding extends Binding {
   baseline_ma?: number | null;
   threshold_ma?: number | null;
@@ -37,7 +41,7 @@ interface HwChip {
 export interface HwConfig {
   enabled: boolean;
   chips: HwChip[];
-  block_track: Record<string, Binding>;
+  block_track: Record<string, TrackBinding>;
   block_occupancy: Record<string, Binding>;
   block_occupancy_current: Record<string, CurrentBinding>;
   switch_output: Record<string, SwitchBinding>;
@@ -52,11 +56,9 @@ export interface HwSlot {
   portKind?: string;
   /** Current-sense calibration slot: renders channel + baseline/threshold mA. */
   current?: boolean;
-  /** When set, the row gets a Test button running this port-test action. The
-   * occupancy slots have none: they share one test that reads both at once. */
-  test?: 'pulse_output' | 'drive_sequence';
-  /** Label each port with the H-bridge channel pair it drives (the two rails). */
-  rails?: boolean;
+  /** Track slot: two independently-picked channels, chosen in the port picker
+   * rather than a dropdown (a dropdown could only offer fixed channel pairs). */
+  track?: boolean;
 }
 
 export const BLOCK_HW_SLOTS: HwSlot[] = [
@@ -65,7 +67,13 @@ export const BLOCK_HW_SLOTS: HwSlot[] = [
     map: 'block_occupancy_current', role: 'occupancy_input', label: 'Occupancy (driving)',
     portKind: 'current_sense', current: true,
   },
-  { map: 'block_track', role: 'track_output', label: 'Track power', test: 'drive_sequence', rails: true },
+  { map: 'block_track', role: 'track_output', label: 'Track power', track: true },
+];
+
+/** The two rails a block's track binding names, in picker-slot form. */
+const TRACK_SLOTS = [
+  { key: 'forward', label: 'Rail A (forward)' },
+  { key: 'reverse', label: 'Rail B (reverse)' },
 ];
 const SECTION_ID = 'hw-bind-section';
 const SWITCH_SECTION_ID = 'hw-switch-section';
@@ -109,7 +117,9 @@ export function hardwareSectionHtml(cfg: HwConfig | null, logicalId: string, slo
   const usable = slots.filter((s) => slotChips(cfg, s).length > 0);
   if (!usable.length) return '';
   const rowHtml = (s: HwSlot) =>
-    s.current ? currentRowHtml(cfg, logicalId, s) : portRowHtml(cfg, logicalId, s);
+    s.track ? trackRowHtml(cfg, logicalId, s)
+      : s.current ? currentRowHtml(cfg, logicalId, s)
+        : portRowHtml(cfg, logicalId, s);
   // The two occupancy sources share one test, so they are grouped together with
   // it before the remaining slots.
   const occupancy = usable.filter((s) => s.role === 'occupancy_input');
@@ -140,21 +150,14 @@ function notLiveNoteHtml(cfg: HwConfig): string {
 function channelOptions(
   chips: HwChip[],
   current: Binding | undefined,
-  currentSense: boolean,
-  rails = false
+  currentSense: boolean
 ): string {
   const opts = ['<option value="">— none —</option>'];
   for (const chip of chips) {
     for (let p = 0; p < (chip.port_count || 0); p++) {
       const val = `${chip.chip_id}::${p}`;
       const sel = current && current.chip_id === chip.chip_id && current.port === p ? ' selected' : '';
-      // A track port is an H-bridge input pair, so name the two channels it
-      // drives: those are the wires that reach the block's two rails.
-      const portLabel = currentSense
-        ? `CH${p + 1}`
-        : rails
-          ? `P${p} · rails ch${2 * p}/ch${2 * p + 1}`
-          : `P${p}`;
+      const portLabel = currentSense ? `CH${p + 1}` : `P${p}`;
       opts.push(`<option value="${esc(val)}"${sel}>${esc(chip.label || chip.kind)} · ${portLabel}</option>`);
     }
   }
@@ -163,14 +166,48 @@ function channelOptions(
 
 function portRowHtml(cfg: HwConfig, logicalId: string, slot: HwSlot): string {
   const current = (cfg[slot.map] as Record<string, Binding>)[logicalId];
-  const opts = channelOptions(slotChips(cfg, slot), current, false, slot.rails);
-  const test = slot.test
-    ? `<button type="button" class="btn btn-secondary btn-sm hw-bind-test" data-hw-map="${slot.map}" data-hw-action="${slot.test}"${current ? '' : ' disabled'}>Test</button>`
-    : '';
+  const opts = channelOptions(slotChips(cfg, slot), current, false);
   return `<div class="input-small-row mb-8">
       <label class="input-small-label input-small-label-inline">${esc(slot.label)}</label>
       <select class="input-small-field hw-bind-select" data-hw-map="${slot.map}">${opts}</select>
-      ${test}
+    </div>`;
+}
+
+/**
+ * Channels already driving some *other* block, keyed `chipId::line`. The picker
+ * greys these out, so a double-booked channel is caught while choosing rather
+ * than as a rejected save.
+ */
+function trackChannelsTakenByOthers(cfg: HwConfig, blockId: string): Record<string, string> {
+  const taken: Record<string, string> = {};
+  for (const [otherId, b] of Object.entries(cfg.block_track)) {
+    if (otherId === blockId) continue;
+    taken[`${b.chip_id}::${b.forward}`] = otherId;
+    taken[`${b.chip_id}::${b.reverse}`] = otherId;
+  }
+  return taken;
+}
+
+/** How a block's bound rails read back, e.g. "Main loop · ch3 → ch10". */
+export function trackBindingSummary(cfg: HwConfig, blockId: string): string {
+  const b = cfg.block_track[blockId];
+  if (!b) return 'not wired';
+  const chip = cfg.chips.find((c) => c.chip_id === b.chip_id);
+  const name = chip ? chip.label || chip.kind : b.chip_id;
+  return `${name} · ch${b.forward} → ch${b.reverse}`;
+}
+
+/**
+ * Track row: the two rails are two independently-chosen PWM channels, so this
+ * opens the port picker rather than offering a dropdown of fixed channel pairs.
+ * Test sweeps the block through both polarities so a loco visibly runs.
+ */
+function trackRowHtml(cfg: HwConfig, blockId: string, slot: HwSlot): string {
+  const bound = !!cfg.block_track[blockId];
+  return `<div class="input-small-row mb-8">
+      <label class="input-small-label input-small-label-inline">${esc(slot.label)}</label>
+      <button type="button" class="input-small-field text-left hw-track-pick">${esc(trackBindingSummary(cfg, blockId))}</button>
+      <button type="button" class="btn btn-secondary btn-sm hw-track-test"${bound ? '' : ' disabled'}>Test</button>
     </div>`;
 }
 
@@ -526,40 +563,72 @@ export function bindHardwareSection(cfg: HwConfig | null, logicalId: string): vo
     });
   });
 
-  section.querySelectorAll<HTMLButtonElement>('.hw-bind-test').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const map = btn.dataset.hwMap!;
-      const action = (btn.dataset.hwAction || 'pulse_output') as
-        'pulse_output' | 'drive_sequence';
-      const sel = section.querySelector<HTMLSelectElement>(`.hw-bind-select[data-hw-map="${map}"]`);
-      if (!sel?.value) return;
-      const [chipId, port] = sel.value.split('::');
-      const label = btn.textContent;
-      btn.disabled = true;
-      // The direction sweep drives the track for three seconds, so the button
-      // says so rather than looking hung.
-      if (action === 'drive_sequence') btn.textContent = 'Running…';
-      try {
-        const res = await api.runHardwarePortTest(cfg, chipId, Number(port), action);
-        if (!res?.ok) {
-          showToast(res?.error || 'Port test failed.', 'error', 3500);
-        } else if (action === 'drive_sequence') {
-          showToast(
-            `Swept port ${port}: ${fmt(res.volts, 0)} V one way, off, then the other way. `
-            + 'A loco on this block should have run forward, stopped, then reversed.',
-            'success',
-            5000
-          );
-        } else {
-          showToast(`Pulsed port ${port}.`, 'success', 2000);
-        }
-      } catch (e: any) {
-        showToast(e?.message || 'Port test failed.', 'error', 3500);
-      } finally {
-        btn.disabled = false;
-        btn.textContent = label;
-      }
+  // --- track power: pick the two rail channels, then sweep them -------------
+  const pickBtn = section.querySelector<HTMLButtonElement>('.hw-track-pick');
+  const trackTestBtn = section.querySelector<HTMLButtonElement>('.hw-track-test');
+
+  pickBtn?.addEventListener('click', async () => {
+    const bound = cfg.block_track[logicalId];
+    const picked = await pickPorts({
+      cfg,
+      anchor: pickBtn,
+      role: 'track_output',
+      direction: 'output',
+      title: 'Track power — pick the two rails',
+      slots: TRACK_SLOTS,
+      initial: bound
+        ? {
+            forward: { chip_id: bound.chip_id, line: bound.forward },
+            reverse: { chip_id: bound.chip_id, line: bound.reverse },
+          }
+        : undefined,
+      // Channels other blocks already drive, so this block cannot steal one.
+      taken: trackChannelsTakenByOthers(cfg, logicalId),
     });
+    if (!picked) return;                       // cancelled — leave the binding be
+    const { forward, reverse } = picked;
+    if (forward.chip_id !== reverse.chip_id) {
+      showToast('Both rails must be on the same PWM chip.', 'error', 4000);
+      return;
+    }
+    try {
+      await api.updateTrackBinding(logicalId, forward.chip_id, forward.line, reverse.line);
+      cfg.block_track[logicalId] = {
+        chip_id: forward.chip_id, forward: forward.line, reverse: reverse.line,
+      };
+      pickBtn.textContent = trackBindingSummary(cfg, logicalId);
+      if (trackTestBtn) trackTestBtn.disabled = false;
+      flashField(pickBtn, 'ok');
+    } catch (e: any) {
+      flashField(pickBtn, 'err');
+      showToast(e?.message || 'Could not save the track wiring.', 'error', 4000);
+    }
+  });
+
+  trackTestBtn?.addEventListener('click', async () => {
+    const label = trackTestBtn.textContent;
+    trackTestBtn.disabled = true;
+    // The sweep drives the track for about three seconds, so the button says so
+    // rather than looking hung.
+    trackTestBtn.textContent = 'Running…';
+    try {
+      const res = await api.runHardwareTrackTest(cfg, logicalId);
+      if (!res?.ok) {
+        showToast(res?.error || 'Track test failed.', 'error', 3500);
+      } else {
+        showToast(
+          `Swept this block: ${fmt(res.volts, 0)} V one way, off, then the other way. `
+          + 'A loco on it should have run forward, stopped, then reversed.',
+          'success',
+          5000
+        );
+      }
+    } catch (e: any) {
+      showToast(e?.message || 'Track test failed.', 'error', 3500);
+    } finally {
+      trackTestBtn.disabled = false;
+      trackTestBtn.textContent = label;
+    }
   });
 
   // One test for both occupancy detectors: read each, show which one the drive

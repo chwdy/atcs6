@@ -19,12 +19,14 @@ function cfg(overrides: Partial<HwConfig> = {}): HwConfig {
   return {
     enabled: true,
     chips: [
-      { chip_id: 'track0', kind: 'pca9685', role: 'track_output', port_kind: 'bipolar_pair', port_count: 8, label: 'Track PWM' },
-      { chip_id: 'det0', kind: 'hc165', role: 'occupancy_input', port_kind: 'digital_in', port_count: 8, label: 'Detectors' },
-      { chip_id: 'cur0', kind: 'ina3221', role: 'occupancy_input', port_kind: 'current_sense', port_count: 3, label: 'INA3221' },
-      { chip_id: 'cur1', kind: 'ina219', role: 'occupancy_input', port_kind: 'current_sense', port_count: 1, label: 'INA219' },
+      { chip_id: 'track0', kind: 'pca9685', role: 'track_output', port_kind: 'bipolar_pair', port_count: 8, line_count: 16, label: 'Main PWM' },
+      { chip_id: 'det0', kind: 'hc165', role: 'occupancy_input', port_kind: 'digital_in', port_count: 8, line_count: 8, label: 'Detectors' },
+      { chip_id: 'cur0', kind: 'ina3221', role: 'occupancy_input', port_kind: 'current_sense', port_count: 3, line_count: 3, label: 'INA3221' },
+      { chip_id: 'cur1', kind: 'ina219', role: 'occupancy_input', port_kind: 'current_sense', port_count: 1, line_count: 1, label: 'INA219' },
     ],
-    block_track: { [BLOCK]: { chip_id: 'track0', port: 0 } },
+    // The two rails are non-adjacent channels — the case the old fixed-pair
+    // dropdown could not express.
+    block_track: { [BLOCK]: { chip_id: 'track0', forward: 3, reverse: 10 } },
     block_occupancy: { [BLOCK]: { chip_id: 'det0', port: 3 } },
     block_occupancy_current: {
       [BLOCK]: { chip_id: 'cur0', port: 1, baseline_ma: 0, threshold_ma: 15 },
@@ -67,11 +69,24 @@ describe('block hardware section', () => {
     expect(section(cfg({ enabled: true }))).not.toContain('Hardware is not live yet');
   });
 
-  it('names the two rails each track port drives', () => {
-    // Port p is the H-bridge pair (ch2p, ch2p+1) — the wires to the block's rails.
-    const opts = optionsOf(section(cfg()), 'hw-bind-select" data-hw-map="block_track');
-    expect(opts).toContain('Track PWM · P0 · rails ch0/ch1');
-    expect(opts).toContain('Track PWM · P3 · rails ch6/ch7');
+  it('opens the picker for track power instead of a dropdown of fixed pairs', () => {
+    // The two rails are independently-chosen channels, which a dropdown of
+    // pre-paired ports could not express.
+    const html = section(cfg());
+    expect(html).toContain('hw-track-pick');
+    expect(optionsOf(html, 'hw-bind-select" data-hw-map="block_track')).toEqual([]);
+  });
+
+  it('summarises the bound rails on the picker button', () => {
+    expect(section(cfg())).toContain('Main PWM · ch3 → ch10');
+    // An unwired block says so rather than showing a channel.
+    const unwired = cfg({ block_track: {} });
+    expect(section(unwired)).toContain('not wired');
+  });
+
+  it('disables the track Test until both rails are wired', () => {
+    expect(section(cfg({ block_track: {} }))).toMatch(/hw-track-test" disabled/);
+    expect(section(cfg())).not.toMatch(/hw-track-test" disabled/);
   });
 
   it('splits the two occupancy sources by port kind and offers both sensors', () => {
@@ -89,12 +104,11 @@ describe('block hardware section', () => {
 
   it('gives the occupancy pair one shared test, and track power its own sweep', () => {
     const html = section(cfg());
-    expect(html).toContain('hw-occ-test');
-    // Exactly one per-row Test button, on the track row, running the sweep.
-    expect(html.match(/hw-bind-test/g)).toHaveLength(1);
-    expect(html).toContain('data-hw-map="block_track" data-hw-action="drive_sequence"');
-    // The occupancy rows carry no button of their own.
+    expect(html).toContain('hw-occ-test');       // one test for both detectors
+    expect(html).toContain('hw-track-test');     // the block-level track sweep
+    // The occupancy rows carry no per-row button of their own.
     expect(html).not.toContain('hw-cur-read');
+    expect(html).not.toContain('hw-bind-test');
   });
 
   it('orders the occupancy pair and its test above track power', () => {

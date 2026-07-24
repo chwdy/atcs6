@@ -574,16 +574,57 @@ export class EditorUIHandler {
     } catch (e) {}
   }
 
+  /** Which group a panel opened right now would land in. A tab living in a
+   *  spawned window that's mid-restore (TabGroup.restoreTabPanel /
+   *  navigateToParentList) marks itself as the target first, so that takes
+   *  priority. Otherwise this is a fresh open — most are canvas-driven
+   *  (inspecting a tile/entity) with no window context of their own, but a
+   *  panel-embedded action button (an "Edit" row inside an already-open list)
+   *  has no way to say which window it lives in either, so falling back to
+   *  the last-focused window (rather than always home) means that action
+   *  lands back in the window the user was looking at. */
+  private resolveTargetGroup(): TabGroup {
+    return this.editor._activeTabGroupForRestore || this.lastFocusedTabGroup || this.homeTabGroup;
+  }
+
+  /** Open a panel the user asked for by name — the right-click "Inspect tile"
+   *  action, and anything else that is an explicit request rather than an
+   *  incidental follow-along. It always opens: unlike the ambient updates in
+   *  updateSecondaryEditorForTile, it does not defer to whatever editor
+   *  happens to be showing. A pinned target is the one thing it won't
+   *  overwrite — pinned means "keep showing this", so the requested panel
+   *  gets a new floating window of its own instead. */
+  showRequestedPanel(render: () => void): void {
+    const target = this.resolveTargetGroup();
+    if (!target.isPinned()) {
+      render();
+      return;
+    }
+
+    const groupId = `tabgroup-${++this.spawnCounter}`;
+    const { tabGroup, window: win } = this.createSpawnedWindow(groupId, {
+      left: 200 + 28 * (this.spawnCounter % 8),
+      top: 120 + 28 * (this.spawnCounter % 8),
+    });
+    // Focus it: it is what the user is now looking at, and it makes the new
+    // group the last-focused one, so the *next* explicit open reuses this
+    // window instead of spawning yet another beside the same pinned panel.
+    win.focus();
+    // Route the render into the new group the same way a mid-restore tab
+    // does — showSecondarySidebar reads this one-shot flag first.
+    const previous = this.editor._activeTabGroupForRestore;
+    this.editor._activeTabGroupForRestore = tabGroup;
+    try {
+      render();
+    } finally {
+      this.editor._activeTabGroupForRestore = previous;
+    }
+    tabGroup.updateNavigationState();
+    this.persistWindowRegistry();
+  }
+
   showSecondarySidebar(title: string, content: string): void {
-    // A tab living in a spawned window that's mid-restore (TabGroup.
-    // restoreTabPanel / navigateToParentList) marks itself as the target
-    // first, so that takes priority. Otherwise this is a fresh open — most
-    // are canvas-driven (inspecting a tile/entity) with no window context of
-    // their own, but a panel-embedded action button (an "Edit" row inside an
-    // already-open list) has no way to say which window it lives in either,
-    // so falling back to the last-focused window (rather than always home)
-    // means that action lands back in the window the user was looking at.
-    const target: TabGroup = this.editor._activeTabGroupForRestore || this.lastFocusedTabGroup || this.homeTabGroup;
+    const target: TabGroup = this.resolveTargetGroup();
     // Reopening into the home window after it was closed while floating must
     // clear the `.floating-window--hidden` that hideSecondarySidebar set —
     // `.visible` alone can't reveal a floating window. Gated on isHidden so an

@@ -46,6 +46,8 @@ class App {
   lastLookaheadPayload: any;
   trainMonitorUnsub: (() => void) | null;
   followTrainEnabled: boolean;
+  /** Re-checks whether the tool rail fits; installed by watchToolRailFit(). */
+  fitToolRail: (() => void) | null = null;
 
   constructor() {
     this.renderer = new Renderer('rail-canvas');
@@ -86,6 +88,7 @@ class App {
     setupHardwarePanel();
     this.setupViewControls();
     this.setupPanelToggles();
+    this.watchToolRailFit();
     this.refreshNetwork();
   }
 
@@ -378,6 +381,9 @@ class App {
       toolsBtn.addEventListener('click', () => {
         sidebar.classList.toggle('collapsed');
         this.updateToolsToggle(toolsBtn, sidebar);
+        // Re-showing the rail cannot resize .workspace, so nothing else would
+        // re-check whether it still needs its compact form.
+        this.fitToolRail?.();
       });
       this.updateToolsToggle(toolsBtn, sidebar);
     }
@@ -395,6 +401,48 @@ class App {
       obs.observe(secSidebar, { attributes: true, attributeFilter: ['class'] });
       this.updateSecondaryToggle(secBtn, secSidebar);
     }
+  }
+
+  /**
+   * Keep every tool reachable in the floating rail.
+   *
+   * The capsule is centred over `.workspace`, so its height budget shrinks
+   * whenever the train monitor bar opens or is dragged taller — on a short
+   * window the square tiles no longer fit and the last tools scroll out of
+   * sight. When that happens, switch the rail to its icon-only compact form
+   * (`.sidebar--compact`), which fits roughly a third more tiles in the same
+   * height; when the space comes back, switch out again.
+   *
+   * Measuring means asking the full-size rail whether it overflows, so the
+   * class comes off before the read. Reading `scrollHeight` flushes layout, so
+   * the un-compacted geometry is what gets measured. The observer watches
+   * `.workspace` (the height that actually changes) rather than the rail, so
+   * the class toggle cannot feed back into the callback; the MutationObserver
+   * covers the other trigger, the toolbar re-rendering with a different tool
+   * count when the editor/simulation mode changes.
+   */
+  watchToolRailFit(): void {
+    const rail = document.querySelector('.sidebar') as HTMLElement | null;
+    const workspace = document.querySelector('.workspace') as HTMLElement | null;
+    const section = rail?.querySelector('.sidebar-tools-section') as HTMLElement | null;
+    const groups = document.getElementById('tool-groups');
+    if (!rail || !workspace || !section || !groups) return;
+
+    const fit = (): void => {
+      // A collapsed rail measures 0×0 and would always look like it fits, so
+      // leave the class alone until it is on screen again (the toggle re-runs
+      // this).
+      if (rail.offsetParent === null) return;
+      rail.classList.remove('sidebar--compact');
+      if (section.scrollHeight > section.clientHeight) {
+        rail.classList.add('sidebar--compact');
+      }
+    };
+    this.fitToolRail = fit;
+
+    new ResizeObserver(fit).observe(workspace);
+    new MutationObserver(fit).observe(groups, { childList: true });
+    fit();
   }
 
   updateToolsToggle(btn: HTMLElement, sidebar: HTMLElement): void {

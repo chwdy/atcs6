@@ -100,24 +100,29 @@
         </div>
 
         <div class="app-body">
-            <aside class="sidebar">
-                <!-- Left rail = tools only. The tile inspector (coordinates,
-                     track bits, and the entity cards: block / switch / signal /
-                     platform / station) lives in the Tile Editor secondary
-                     panel — see Editor.showTileEditor. -->
-                <div class="sidebar-tools-section" id="tools-panel">
-                    <!-- Tool palette — rendered from the tool registry, not
-                         hardcoded. The core editor contributes the layout tools
-                         (inspect, selection, network, platform, block); plugins
-                         contribute their own (SimEditorPlugin adds path / train /
-                         route). See frontend/src/editor/tool-registry.ts and
-                         Editor.renderToolbar(). -->
-                    <div id="tool-groups"></div>
-                </div>
-            </aside>
-
             <div class="content-area">
                 <div class="workspace">
+                    <!-- Left rail = tools only. It floats over the canvas, so it
+                         lives INSIDE .workspace: that makes .workspace its
+                         containing block, and the capsule centres itself over the
+                         canvas region alone rather than over the whole app body —
+                         which would push it down across the train monitor bar (a
+                         sibling of .workspace, below it). The tile inspector
+                         (coordinates, track bits, and the entity cards: block /
+                         switch / signal / platform / station) lives in the Tile
+                         Editor secondary panel — see Editor.showTileEditor. -->
+                    <aside class="sidebar">
+                        <div class="sidebar-tools-section" id="tools-panel">
+                            <!-- Tool palette — rendered from the tool registry, not
+                                 hardcoded. The core editor contributes the layout tools
+                                 (inspect, selection, network, platform, block); plugins
+                                 contribute their own (SimEditorPlugin adds path / train /
+                                 route). See frontend/src/editor/tool-registry.ts and
+                                 Editor.renderToolbar(). -->
+                            <div id="tool-groups"></div>
+                        </div>
+                    </aside>
+
                     <!-- Secondary sidebar for editors (block, signal details) - positioned to the right of main sidebar -->
                     <aside class="secondary-sidebar" id="secondary-sidebar">
                         <div class="secondary-sidebar-header">
@@ -468,7 +473,7 @@
                 <button class="close-btn" data-close-modal>&times;</button>
             </div>
             <div class="modal-body">
-                <p class="hw-intro">Find the chips on your control board and confirm their ports respond. Blocks and switches are wired to ports in their own editor panels.</p>
+                <p class="hw-intro">Find the chips on your control board and confirm each one is really there. Blocks and switches are wired to ports in their own editor panels.</p>
                 <div id="hw-body"></div>
             </div>
             <div class="modal-footer hw-gate" id="hw-gate"></div>

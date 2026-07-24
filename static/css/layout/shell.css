@@ -768,13 +768,17 @@ textarea {
 
 /* Primary tool rail — a fixed-width capsule that floats over the canvas,
    vertically centred on the left, instead of a docked full-height column. It is
-   absolutely positioned inside `.app-body`, so `.content-area` (and the canvas)
-   reclaim the full width behind it. `top/bottom:0 + margin:auto + height:fit-content`
-   centres it vertically WITHOUT a transform — a transform would re-root the fixed
-   `.tool-popover` flyout to the capsule and break its viewport positioning. The
-   capsule sits at the picker layer (--z-picker, 1000) so its flyouts (fixed
-   children, trapped in this stacking context) render above every floating
-   window (the --z-window band, 900 + z-order — see lib/window-manager.ts). */
+   absolutely positioned inside `.workspace`, so the canvas reclaims the full
+   width behind it. `.workspace` — NOT `.app-body` — is the containing block on
+   purpose: the train monitor bar is a sibling of `.workspace` inside
+   `.content-area`, so centring against the app body would drop the capsule
+   across the monitor's left edge whenever that panel is open.
+   `top/bottom:0 + margin:auto + height:fit-content` centres it vertically
+   WITHOUT a transform — a transform would re-root the fixed `.tool-popover`
+   flyout to the capsule and break its viewport positioning. The capsule sits at
+   the picker layer (--z-picker, 1000) so its flyouts (fixed children, trapped in
+   this stacking context) render above every floating window (the --z-window
+   band, 900 + z-order — see lib/window-manager.ts). */
 .sidebar {
     position: absolute;
     left: 12px;
@@ -800,6 +804,23 @@ textarea {
    user's resized width is preserved across hide/show. */
 .sidebar.collapsed {
     display: none;
+}
+
+/* Compact rail — applied by App.watchToolRailFit() when the full-size tiles
+   cannot fit the canvas height (short window, or the train monitor bar open).
+   Tiles collapse to icon-only rows so every tool stays one click away instead
+   of scrolling out of the capsule; the labels survive as native tooltips (the
+   rail buttons carry `title`). Narrower too, since nothing needs room for
+   "SELECTION" any more. The tile-level overrides live beside `.tool-launch` in
+   components/tools.css. */
+.sidebar--compact {
+    width: 64px;
+    border-radius: 16px;
+}
+
+.sidebar--compact .sidebar-tools-section {
+    /* Concentric with the smaller capsule radius: 16 - 8 = 8px. */
+    padding: 8px 6px;
 }
 
 /* The left rail is tools only — it fills the sidebar and scrolls if the tool
