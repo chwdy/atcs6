@@ -1,12 +1,14 @@
-"""Auto-recovery on extend_path INVALID_REVERSE.
+"""How Phase 1 sorts extend_path failures into structural and temporary.
 
-When `extend_path()` rejects a candidate as a 180-degree reversal at the
-authority-end (failure_kind=INVALID_REVERSE), the route executor must NOT
-surface a hard `last_error` to the operator. Instead it latches
-`pending_path_cancel_request` so Phase 3 cancels the stale path once the
-train stops, and the next eligible Phase 1 acquires fresh authority via
-`create_path()` from the train's current span — which is free to pick a
-forward route in either direction.
+Per design_new.md **Planning Kernel**, a structural extend failure on a live
+path — `invalid_reverse`, `no_viable_path`, or any other non-temporary kind —
+latches `pending_path_cancel_request` rather than surfacing a hard
+`last_error`. Phase 3 cancels the stale path once the train stops, and the
+next eligible Phase 1 acquires fresh authority via `create_path()` from the
+train's current span, which is free to pick a route the extend could not.
+
+A temporary failure is the opposite case: the live path is still valid, so it
+is kept, the error is recorded for the operator, and Phase 1 retries later.
 """
 
 from types import SimpleNamespace
@@ -111,11 +113,16 @@ def test_invalid_reverse_latches_cancel_and_skips_last_error():
     assert exec_state.last_error is None
 
 
-def test_other_failure_kinds_still_record_last_error():
-    """Sanity check: the auto-recovery branch only fires for INVALID_REVERSE.
+def test_no_viable_path_also_latches_cancellation():
+    """NO_VIABLE_PATH on a live path is structural, so it latches too.
 
-    Any other failure_kind must keep the existing behavior — record a hard
-    last_error so the operator sees something is wrong.
+    Per design_new.md **Planning Kernel**, "Only `no_viable_path`, `invalid_reverse`, or
+    another non-temporary structural failure latches cancellation before a
+    fresh create attempt." No legal forward suffix to the target exists, and
+    waiting will not produce one, so retrying against the same path would spin
+    until the train ran out its authority. This is the failure a circular route
+    hits at the lap seam when the only way on runs back through a block the
+    live path still holds.
     """
     train_id = "T3"
     train = SimpleNamespace(train_id=train_id)
@@ -124,6 +131,49 @@ def test_other_failure_kinds_still_record_last_error():
     extend_result = SimpleNamespace(
         success=False,
         failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
+        reason="BLK_Y is still held by this path",
+        path_id="P1",
+    )
+    dispatcher = _FakeDispatcher(train_id, active_path_id="P1", extend_result=extend_result)
+
+    executor = RouteExecutor(network=MagicMock(), path_dispatcher=dispatcher)
+    executor._sync_task_runs = MagicMock()
+    executor._now = MagicMock(return_value=12345.0)
+
+    controller, latches = _make_controller()
+    exec_state = _make_exec_state()
+    projection = _make_projection()
+
+    result = executor._authority_acquisition_step(
+        train=train,
+        route=route,
+        exec_state=exec_state,
+        controller=controller,
+        projection=projection,
+    )
+
+    assert result is False
+    assert latches.path_cancel_request is not None
+    assert latches.path_cancel_request.initiator == "revoked"
+    assert "still held" in (latches.path_cancel_request.reason or "")
+    assert exec_state.last_error is None
+
+
+def test_temporary_failure_kinds_still_record_last_error():
+    """A temporary failure keeps the live path and records a hard last_error.
+
+    BLOCKED_BEFORE_TARGET means a viable candidate exists but a current
+    occupancy/reservation/lock conflict stopped acquisition. Per design_new.md
+    "Unreachable and broken task handling" the live path stays valid and Phase 1
+    retries later, so this must not latch a cancellation.
+    """
+    train_id = "T3"
+    train = SimpleNamespace(train_id=train_id)
+    route = MagicMock()
+
+    extend_result = SimpleNamespace(
+        success=False,
+        failure_kind=PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET,
         reason="No forward path from BLK_X to BLK_Y",
         path_id="P1",
     )
@@ -148,7 +198,7 @@ def test_other_failure_kinds_still_record_last_error():
     )
 
     assert result is False
-    # NO recovery latch for other failure kinds.
+    # No recovery latch — the live path is still valid and worth retrying.
     assert latches.path_cancel_request is None
     # Hard error recorded.
     assert exec_state.last_error is not None

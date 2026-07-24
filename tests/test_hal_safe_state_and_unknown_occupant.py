@@ -14,19 +14,19 @@ exercised here as unit contracts.
 """
 
 from block import Block
-from block_occupancy import BlockOccupancyDetector, SimulatedInputInterface
-from block_power import BlockPowerController, SimulatedOutputInterface
+from block_occupancy import BlockOccupancyDetector, SimulatedOccupancyDriver
+from block_power import BlockPowerController, SimulatedTrackDriver
 from constants import UNKNOWN_TRAIN_ID
 from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from simulation import SimulationController
-from switch_power import SimulatedSwitchOutputInterface, SwitchPowerController
+from switch_power import SimulatedSwitchDriver
 
 
 # --------------------------------------------------------------- M1 safe state
 
 def test_block_output_interface_enter_safe_state_zeroes_voltages():
-    iface = SimulatedOutputInterface()
+    iface = SimulatedTrackDriver()
     iface.set_voltage("B1", 5.0)
     iface.set_voltage("B2", 8.0)
     iface.enter_safe_state()
@@ -36,36 +36,28 @@ def test_block_output_interface_enter_safe_state_zeroes_voltages():
 
 
 def test_switch_output_interface_enter_safe_state_deenergizes():
-    iface = SimulatedSwitchOutputInterface()
+    iface = SimulatedSwitchDriver()
     iface.set_throw("S1", 1)
     iface.enter_safe_state()
     assert iface.get_last_throw("S1") is None
 
 
 def test_block_power_controller_delegates_safe_state():
-    iface = SimulatedOutputInterface()
+    iface = SimulatedTrackDriver()
     controller = BlockPowerController(output_interface=iface)
     iface.set_voltage("B1", 7.0)
     controller.enter_safe_state()
     assert iface.get_actual_voltage("B1") == 0.0
 
 
-def test_switch_power_controller_delegates_safe_state():
-    iface = SimulatedSwitchOutputInterface()
-    controller = SwitchPowerController(output_interface=iface)
-    iface.set_throw("S1", 1)
-    controller.enter_safe_state()
-    assert iface.get_last_throw("S1") is None
-
-
 def test_simulation_controller_enter_safe_state_drives_all_outputs_safe():
     network = RailwayNetwork()
     sim = SimulationController(network, PathDispatcher(network))
     sim.power_controller.output_interface.set_voltage("B1", 9.0)
-    sim.switch_power_controller.output_interface.set_throw("S1", 1)
+    sim.switch_output_interface.set_throw("S1", 1)
     sim.enter_safe_state()
     assert sim.power_controller.output_interface.get_actual_voltage("B1") == 0.0
-    assert sim.switch_power_controller.output_interface.get_last_throw("S1") is None
+    assert sim.switch_output_interface.get_last_throw("S1") is None
 
 
 # ----------------------------------------------------------- M2 unknown occupant
@@ -76,7 +68,7 @@ def _detector():
     controllers = {}
     detector = BlockOccupancyDetector(
         network=network,
-        input_interface=SimulatedInputInterface(network, controllers),
+        input_interface=SimulatedOccupancyDriver(network, controllers),
         controllers=controllers,
     )
     return network, detector

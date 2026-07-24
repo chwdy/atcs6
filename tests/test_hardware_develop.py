@@ -51,7 +51,9 @@ def _develop_payload(**overrides):
             {"chip_id": "in1", "kind": "hc165", "spi_select": "cs1"},
             {"chip_id": "cur1", "kind": "ina3221", "i2c_address": "0x41"},
         ],
-        "block_track": {"B1": {"chip_id": "pwm1", "port": 0}},
+        "block_track": {
+            "B1": {"chip_id": "pwm1", "forward": 0, "reverse": 1},
+        },
         "switch_output": {
             "SW_A": {"chip_id": "sw1", "port_main": 5, "port_diverge": 6},
         },
@@ -101,13 +103,13 @@ def test_factory_develop_wires_interfaces_on_fake_without_driver():
     hardware_config.apply_updates(_develop_payload(), persist=False)
     inp, blk, sw = hardware_config.build_session_interfaces()
     from hardware.interfaces import (
-        Ch347OccupancyInputInterface,
-        Ch347SwitchOutputInterface,
-        Ch347TrackOutputInterface,
+        OccupancyDriver,
+        SwitchDriver,
+        TrackDriver,
     )
-    assert isinstance(blk, Ch347TrackOutputInterface)
-    assert isinstance(sw, Ch347SwitchOutputInterface)
-    assert isinstance(inp, Ch347OccupancyInputInterface)
+    assert isinstance(blk, TrackDriver)
+    assert isinstance(sw, SwitchDriver)
+    assert isinstance(inp, OccupancyDriver)
     # It is still real mode; develop only swaps the device source.
     assert hardware_config.derive_operation_mode() == OperationMode.REAL
     # The session device is the opened fake, reachable for the debug endpoints.
@@ -266,36 +268,38 @@ def test_config_get_reports_session_info(client):
 
 
 # --- commissioning tools on the fake ---------------------------------------
-def test_self_test_runs_on_fake_when_develop_persisted(client):
+def test_scan_runs_on_fake_when_develop_persisted(client):
     test_client, _ = client
     payload = _develop_payload()
     hardware_config.apply_updates(payload, persist=False)   # persisted flag gates
-    resp = test_client.post("/api/hardware/self-test", json={"config": payload})
+    resp = test_client.post("/api/hardware/scan", json={"config": payload})
     data = resp.get_json()
     assert data["ok"] is True
     assert data["controller"]["reachable"] is True
-    assert all(c["reachable"] for c in data["chips"])
+    # The fake is seeded from the payload's chip list, so every configured I2C
+    # address answers the scan.
+    assert data["controller"]["i2c_scan"] == ["0x40", "0x41"]
 
 
-def test_self_test_runs_on_fake_before_enable(client):
+def test_scan_runs_on_fake_before_enable(client):
     # The pre-enable commissioning flow: develop is persisted but enabled is
-    # still false (you cannot enable until self-test passes). The gate is the
-    # develop flag alone, so Detect / self-test still run on the fake.
+    # still false (you cannot enable until every chip is proven). The gate is
+    # the develop flag alone, so Detect / Rescan still run on the fake.
     test_client, _ = client
     payload = _develop_payload(enabled=False)
     hardware_config.apply_updates(payload, persist=False)
     assert hardware_config.is_develop() is False   # not a running develop session yet
-    resp = test_client.post("/api/hardware/self-test", json={"config": payload})
+    resp = test_client.post("/api/hardware/scan", json={"config": payload})
     data = resp.get_json()
     assert data["ok"] is True
     assert data["controller"]["reachable"] is True
 
 
-def test_self_test_still_fails_without_develop(client):
+def test_scan_still_fails_without_develop(client):
     test_client, _ = client
     payload = _develop_payload(develop=False)
     hardware_config.apply_updates(payload, persist=False)
-    resp = test_client.post("/api/hardware/self-test", json={"config": payload})
+    resp = test_client.post("/api/hardware/scan", json={"config": payload})
     # No fake gate, no physical device: the controller line reports unreachable.
     assert resp.get_json()["controller"]["reachable"] is False
 

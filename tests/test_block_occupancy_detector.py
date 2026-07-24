@@ -10,11 +10,11 @@ simulation loop.
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from block_occupancy import BlockOccupancyDetector, InputInterface
+from block_occupancy import BlockOccupancyDetector, OccupancyInput
 from constants import UNKNOWN_TRAIN_ID
 
 
-class ScriptedInput(InputInterface):
+class ScriptedInput(OccupancyInput):
     """Returns a pre-scripted sequence of raw per-block current maps, one per
     read_block_currents() call; repeats the final frame once exhausted."""
 

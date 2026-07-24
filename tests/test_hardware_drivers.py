@@ -15,6 +15,7 @@ from hardware_config import (
     CurrentBinding,
     HardwareConfig,
     PortBinding,
+    TrackBinding,
 )
 from hardware import interfaces as hw_interfaces
 from hardware import self_test
@@ -31,9 +32,9 @@ from hardware.chips.ina3221 import INA3221
 from hardware.chips.pca9685 import PCA9685
 from hardware.fake import FakeCh347Device
 from hardware.interfaces import (
-    Ch347OccupancyInputInterface,
-    Ch347SwitchOutputInterface,
-    Ch347TrackOutputInterface,
+    OccupancyDriver,
+    SwitchDriver,
+    TrackDriver,
     build_real_interfaces,
 )
 
@@ -152,7 +153,7 @@ def wired():
     ]
     inp, blk, sw = build_real_interfaces(
         dev, specs,
-        block_track={"B1": ("pwm1", 0), "B2": ("pwm1", 3)},
+        block_track={"B1": ("pwm1", 0, 1), "B2": ("pwm1", 6, 7)},
         block_occupancy={"B1": ("in1", 2), "B2": ("in1", 7)},
         # main coil on bit 5, diverge on bit 6, TB6612 standby on bit 4
         switch_output={"SW_A": ("sw1", 5, 6, 4)},
@@ -162,7 +163,7 @@ def wired():
 
 def test_track_voltage_bipolar_h_bridge(wired):
     dev, _inp, blk, _sw = wired
-    assert isinstance(blk, Ch347TrackOutputInterface)
+    assert isinstance(blk, TrackDriver)
     # forward: IN1 (ch0) drives, IN2 (ch1) off
     assert blk.set_voltage("B1", 6.0) is True
     assert abs(dev.duty_cycle(0x40, 0) - 0.5) < 0.01
@@ -180,7 +181,7 @@ def test_switch_throw_pulses_the_side_coil_and_rests_low(wired):
     """A solenoid point motor burns out if a coil is held, so a throw is a pulse:
     the commanded coil ends the call de-energized, as does the standby bit."""
     dev, _inp, _blk, sw = wired
-    assert isinstance(sw, Ch347SwitchOutputInterface)
+    assert isinstance(sw, SwitchDriver)
     assert sw.set_throw("SW_A", 1) is True
     assert sw.get_last_throw("SW_A") == 1
     # Nothing is left driven once the throw returns.
@@ -299,7 +300,7 @@ def test_switch_throw_de_energizes_even_when_the_pulse_raises(wired, monkeypatch
 
 def test_occupancy_read_maps_bound_blocks(wired):
     dev, inp, _blk, _sw = wired
-    assert isinstance(inp, Ch347OccupancyInputInterface)
+    assert isinstance(inp, OccupancyDriver)
     dev.set_input_bit("cs1", 2, True, width=1)
     currents = inp.read_block_currents()
     assert currents["B1"] is True
@@ -318,7 +319,7 @@ def test_hybrid_occupancy_selects_source_by_drive_state():
     ]
     inp, blk, _sw = build_real_interfaces(
         dev, specs,
-        block_track={"B1": ("pwm1", 0)},
+        block_track={"B1": ("pwm1", 0, 1)},
         block_occupancy={"B1": ("in1", 3)},
         switch_output={},
         block_occupancy_current={"B1": ("cur1", 0, 0.0, 0.015)},  # CH1, 15 mA threshold
@@ -376,78 +377,50 @@ def test_safe_state_zeros_outputs(wired):
     assert blk.get_actual_voltage("B2") == 0.0
 
 
-# --- self-test / port-test -------------------------------------------------
+# --- bus scan / port-test --------------------------------------------------
 def _cfg(*specs):
     return HardwareConfig(controller=ControllerConfig(kind="ch347"), chips=list(specs))
 
 
-def test_self_test_reports_reachability_and_ports():
-    dev = FakeCh347Device(present_addresses={0x40})
+def test_bus_scan_reports_answering_addresses():
+    dev = FakeCh347Device(present_addresses={0x40, 0x44})
     cfg = _cfg(
         ChipConfig("pwm1", "pca9685", i2c_address=0x40),
         ChipConfig("sw1", "hc595", spi_select="cs0", chain_length=3),
-        ChipConfig("in1", "hc165", spi_select="cs1"),
     )
-    report = self_test.run_self_test(cfg, device=dev)
+    report = self_test.run_bus_scan(cfg, device=dev)
     assert report["ok"] is True
     assert report["controller"]["reachable"] is True
-    chips = {c["chip_id"]: c for c in report["chips"]}
-    assert chips["pwm1"]["reachable"] is True
-    assert chips["sw1"]["port_count"] == 24
-    assert len(chips["sw1"]["ports"]) == 24
+    assert report["controller"]["i2c_scan"] == ["0x40", "0x44"]
 
 
-def test_self_test_reports_ina3221():
-    dev = FakeCh347Device(present_addresses={0x40})
-    cfg = _cfg(ChipConfig("cur1", "ina3221", i2c_address=0x40))
-    report = self_test.run_self_test(cfg, device=dev)
-    chip = report["chips"][0]
-    assert chip["reachable"] is True
-    assert chip["role"] == "occupancy_input"
-    assert chip["bus"] == "i2c"
-    assert chip["port_count"] == 3
+def test_bus_scan_reports_addresses_no_chip_is_configured_for():
+    # The scan asks the bus, not the chip list, so a part strapped somewhere the
+    # user did not expect shows up rather than reading as silence.
+    dev = FakeCh347Device(present_addresses={0x41})
+    cfg = _cfg(ChipConfig("pwm1", "pca9685", i2c_address=0x40))
+    report = self_test.run_bus_scan(cfg, device=dev)
+    assert report["controller"]["i2c_scan"] == ["0x41"]
 
 
-def test_self_test_absent_pca_is_unreachable():
+def test_bus_scan_empty_bus_is_still_ok():
     dev = FakeCh347Device(present_addresses=set())
     cfg = _cfg(ChipConfig("pwm1", "pca9685", i2c_address=0x40))
-    report = self_test.run_self_test(cfg, device=dev)
-    assert report["chips"][0]["reachable"] is False
-
-
-def test_self_test_probes_only_named_chip():
-    # The per-chip Self-test button must probe just that chip, not silently
-    # re-probe every chip and overwrite their statuses.
-    dev = FakeCh347Device(present_addresses={0x40})
-    cfg = _cfg(
-        ChipConfig("pwm1", "pca9685", i2c_address=0x40),
-        ChipConfig("sw1", "hc595", spi_select="cs0"),
-        ChipConfig("in1", "hc165", spi_select="cs1"),
-    )
-    report = self_test.run_self_test(cfg, device=dev, chip_id="sw1")
+    report = self_test.run_bus_scan(cfg, device=dev)
     assert report["ok"] is True
-    assert [c["chip_id"] for c in report["chips"]] == ["sw1"]
-    # The controller line still carries its I2C scan, so the report is complete.
-    assert report["controller"]["reachable"] is True
+    assert report["controller"]["i2c_scan"] == []
 
 
-def test_self_test_unknown_chip_id_probes_nothing():
-    dev = FakeCh347Device(present_addresses={0x40})
-    cfg = _cfg(ChipConfig("pwm1", "pca9685", i2c_address=0x40))
-    report = self_test.run_self_test(cfg, device=dev, chip_id="ghost")
-    assert report["ok"] is True
-    assert report["chips"] == []
-
-
-def test_self_test_open_failure_reports_unreachable():
+def test_bus_scan_open_failure_reports_unreachable():
     cfg = _cfg(ChipConfig("pwm1", "pca9685", i2c_address=0x40))
 
     def _boom():
         raise RuntimeError("busy")
 
-    report = self_test.run_self_test(cfg, open_device=_boom)
+    report = self_test.run_bus_scan(cfg, open_device=_boom)
     assert report["ok"] is False
     assert report["controller"]["reachable"] is False
+    assert report["controller"]["i2c_scan"] == []
 
 
 def test_port_test_read_input():
@@ -587,7 +560,7 @@ def test_watchdog_drops_outputs_to_safe_state_when_control_loop_stalls():
     _inp, blk, sw = build_real_interfaces(
         fake,
         specs,
-        {"BLK_A": ("pwm1", 0)},
+        {"BLK_A": ("pwm1", 0, 1)},
         {},
         {"SW_A": ("sw1", 1, 2, None)},
         watchdog_timeout_s=_WATCHDOG_SOON,
@@ -612,7 +585,7 @@ def test_watchdog_does_not_fire_while_the_control_loop_refreshes():
     fake = FakeCh347Device(present_addresses={0x40})
     specs = [ChipConfig("pwm1", "pca9685", i2c_address=0x40)]
     _inp, blk, _sw = build_real_interfaces(
-        fake, specs, {"BLK_A": ("pwm1", 0)}, {}, {}, watchdog_timeout_s=_WATCHDOG_NEVER
+        fake, specs, {"BLK_A": ("pwm1", 0, 1)}, {}, {}, watchdog_timeout_s=_WATCHDOG_NEVER
     )
 
     for _ in range(5):
@@ -625,7 +598,7 @@ def test_watchdog_does_not_fire_while_the_control_loop_refreshes():
 def test_watchdog_is_unarmed_by_default_so_test_harnesses_stay_inert():
     fake = FakeCh347Device(present_addresses={0x40})
     specs = [ChipConfig("pwm1", "pca9685", i2c_address=0x40)]
-    _inp, blk, _sw = build_real_interfaces(fake, specs, {"BLK_A": ("pwm1", 0)}, {}, {})
+    _inp, blk, _sw = build_real_interfaces(fake, specs, {"BLK_A": ("pwm1", 0, 1)}, {}, {})
     assert blk._watchdog is None
 
 
@@ -664,7 +637,7 @@ def test_enter_safe_state_disarms_the_watchdog():
     fake = FakeCh347Device(present_addresses={0x40})
     specs = [ChipConfig("pwm1", "pca9685", i2c_address=0x40)]
     _inp, blk, _sw = build_real_interfaces(
-        fake, specs, {"BLK_A": ("pwm1", 0)}, {}, {}, watchdog_timeout_s=_WATCHDOG_NEVER
+        fake, specs, {"BLK_A": ("pwm1", 0, 1)}, {}, {}, watchdog_timeout_s=_WATCHDOG_NEVER
     )
     blk.set_voltage("BLK_A", 9.0)
     blk.enter_safe_state()
@@ -721,7 +694,7 @@ def test_ina219_fills_the_current_sense_occupancy_slot():
     ]
     inp, blk, _sw = build_real_interfaces(
         dev, specs,
-        block_track={"B1": ("pwm1", 0)},
+        block_track={"B1": ("pwm1", 0, 1)},
         block_occupancy={},
         switch_output={},
         block_occupancy_current={"B1": ("cur1", 0, 0.0, 0.015)},
@@ -760,30 +733,31 @@ def test_drive_sequence_runs_both_polarities_and_ends_de_energized():
     dev = FakeCh347Device(present_addresses={0x40})
     chip = PCA9685(dev, address=0x40)
     seen = _writes(chip)
-    self_test._drive_sequence(chip, port=2, hold_s=0.0)
-    # Port 2 is the H-bridge pair (ch4, ch5): forward, both off, then reverse.
-    assert (4, 1.0) in seen and (5, 1.0) in seen
-    assert seen.index((4, 1.0)) < seen.index((5, 1.0))
-    assert seen[-2:] == [(4, 0.0), (5, 0.0)]
-    assert chip.read_duty_cycle(4) == 0.0 and chip.read_duty_cycle(5) == 0.0
+    # The two rails are two independently-chosen channels (ch4 forward, ch9
+    # reverse), not a fixed adjacent pair: forward, both off, then reverse.
+    self_test._drive_sequence(chip, forward=4, reverse=9, hold_s=0.0)
+    assert (4, 1.0) in seen and (9, 1.0) in seen
+    assert seen.index((4, 1.0)) < seen.index((9, 1.0))
+    assert seen[-2:] == [(4, 0.0), (9, 0.0)]
+    assert chip.read_duty_cycle(4) == 0.0 and chip.read_duty_cycle(9) == 0.0
 
 
-def test_drive_sequence_never_drives_both_bridge_inputs_at_once():
+def test_drive_sequence_never_drives_both_rails_at_once():
     # Both H-bridge inputs high is a shoot-through across the driver, so no
-    # moment of the sweep may leave both channels of the pair energized.
+    # moment of the sweep may leave both bound channels energized.
     dev = FakeCh347Device(present_addresses={0x40})
     chip = PCA9685(dev, address=0x40)
-    live = {4: 0.0, 5: 0.0}
+    live = {4: 0.0, 9: 0.0}
     original = chip.set_duty_cycle
 
     def spy(channel, duty):
         original(channel, duty)
         if channel in live:
             live[channel] = duty
-        assert not (live[4] > 0 and live[5] > 0), f"both inputs driven: {live}"
+        assert not (live[4] > 0 and live[9] > 0), f"both rails driven: {live}"
 
     chip.set_duty_cycle = spy
-    self_test._drive_sequence(chip, port=2, hold_s=0.0)
+    self_test._drive_sequence(chip, forward=4, reverse=9, hold_s=0.0)
 
 
 def test_drive_sequence_de_energizes_when_a_write_raises():
@@ -801,24 +775,43 @@ def test_drive_sequence_de_energizes_when_a_write_raises():
 
     chip.set_duty_cycle = flaky
     with pytest.raises(IOError):
-        self_test._drive_sequence(chip, port=0, hold_s=0.0)
+        self_test._drive_sequence(chip, forward=0, reverse=1, hold_s=0.0)
     # The finally clause still ran, so the track is dead.
     assert chip.read_duty_cycle(0) == 0.0 and chip.read_duty_cycle(1) == 0.0
 
 
-def test_port_test_drive_sequence_reports_what_it_drove(monkeypatch):
+def test_track_test_sweeps_the_blocks_two_bound_channels(monkeypatch):
     monkeypatch.setattr(self_test, "TRACK_TEST_HOLD_S", 0.0)
     dev = FakeCh347Device(present_addresses={0x40})
-    cfg = _cfg(ChipConfig("pwm1", "pca9685", i2c_address=0x40))
-    res = self_test.run_port_test(cfg, "pwm1", 0, "drive_sequence", device=dev)
+    cfg = HardwareConfig(
+        controller=ControllerConfig(kind="ch347"),
+        chips=[ChipConfig("pwm1", "pca9685", i2c_address=0x40)],
+        block_track={"B1": TrackBinding("pwm1", 4, 9)},
+    )
+    res = self_test.run_track_test(cfg, "B1", device=dev)
     assert res["ok"] is True and res["volts"] == 12.0
+    # Both bound channels were exercised and left off.
+    assert dev.duty_cycle(0x40, 4) == 0.0 and dev.duty_cycle(0x40, 9) == 0.0
 
 
-def test_port_test_drive_sequence_rejects_a_non_track_chip():
-    dev = FakeCh347Device()
-    cfg = _cfg(ChipConfig("in1", "hc165", spi_select="cs1"))
-    res = self_test.run_port_test(cfg, "in1", 0, "drive_sequence", device=dev)
-    assert res["ok"] is False and "bipolar" in res["error"]
+def test_track_test_reports_a_block_with_no_track_binding():
+    dev = FakeCh347Device(present_addresses={0x40})
+    cfg = HardwareConfig(
+        controller=ControllerConfig(kind="ch347"),
+        chips=[ChipConfig("pwm1", "pca9685", i2c_address=0x40)],
+    )
+    res = self_test.run_track_test(cfg, "B9", device=dev)
+    assert res["ok"] is False and "no track binding" in res["error"]
+
+
+def test_pulse_output_drives_a_single_pwm_channel():
+    # The picker's double-click pulses one channel (raw line), not a pair.
+    dev = FakeCh347Device(present_addresses={0x40})
+    cfg = _cfg(ChipConfig("pwm1", "pca9685", i2c_address=0x40))
+    res = self_test.run_port_test(cfg, "pwm1", 5, "pulse_output", device=dev)
+    assert res["ok"] is True
+    assert dev.duty_cycle(0x40, 5) == 0.0        # returned to off
+    assert dev.duty_cycle(0x40, 10) == 0.0       # the old pair-mate is untouched
 
 
 # --- the block occupancy test ----------------------------------------------
@@ -831,7 +824,7 @@ def _occupancy_cfg():
             ChipConfig("in1", "hc165", spi_select="cs1"),
             ChipConfig("cur1", "ina3221", i2c_address=0x41),
         ],
-        block_track={"B1": PortBinding("pwm1", 0)},
+        block_track={"B1": TrackBinding("pwm1", 0, 1)},
         block_occupancy={"B1": PortBinding("in1", 3)},
         block_occupancy_current={
             "B1": CurrentBinding("cur1", 1, baseline_ma=0.0, threshold_ma=15.0)
@@ -919,3 +912,53 @@ def test_occupancy_test_reports_a_busy_controller():
 
     res = self_test.run_occupancy_test(_occupancy_cfg(), "B1", open_device=_boom)
     assert res["ok"] is False and "busy" in res["error"]
+
+
+# --- detector polarity (active-low comparators) ------------------------------
+# An LM339 with no inverter stage pulls its output LOW when a train draws
+# current, so the raw '165 bit reads 0 occupied / 1 clear. The real input
+# interface normalizes that below read_block_currents(), so nothing above the
+# interface knows a polarity exists.
+def _polarity_wired(active_low: bool):
+    dev = FakeCh347Device(present_addresses={0x40})
+    specs = [
+        ChipConfig("in1", "hc165", spi_select="cs1", active_low=active_low),
+    ]
+    inp, _blk, _sw = build_real_interfaces(
+        dev, specs, block_track={}, block_occupancy={"B1": ("in1", 2)},
+        switch_output={},
+    )
+    return dev, inp
+
+
+def test_active_high_detector_reads_bit_straight_through():
+    dev, inp = _polarity_wired(active_low=False)
+    assert inp.read_block_currents()["B1"] is False   # idle line low
+    dev.set_input_bit("cs1", 2, True)
+    assert inp.read_block_currents()["B1"] is True
+
+
+def test_active_low_detector_is_inverted_inside_the_interface():
+    dev, inp = _polarity_wired(active_low=True)
+    # Raw bit 0 (comparator pulled low) means a train IS drawing current.
+    assert inp.read_block_currents()["B1"] is True
+    # Raw bit 1 (line idles high through its pull-up) means clear.
+    dev.set_input_bit("cs1", 2, True)
+    assert inp.read_block_currents()["B1"] is False
+
+
+def test_polarity_is_per_chip_not_global():
+    dev = FakeCh347Device(present_addresses={0x40})
+    specs = [
+        ChipConfig("normal", "hc165", spi_select="cs1"),
+        ChipConfig("inverted", "hc165", spi_select="cs2", active_low=True),
+    ]
+    inp, _blk, _sw = build_real_interfaces(
+        dev, specs, block_track={},
+        block_occupancy={"B1": ("normal", 0), "B2": ("inverted", 0)},
+        switch_output={},
+    )
+    # Both lines sit at 0: the active-high block is clear, the active-low one occupied.
+    reads = inp.read_block_currents()
+    assert reads["B1"] is False
+    assert reads["B2"] is True

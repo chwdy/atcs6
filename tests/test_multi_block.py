@@ -12,7 +12,7 @@ from tests.train_test_helpers import set_train_span
 from network import RailwayNetwork
 from block import Block
 from track import Tile
-from block_power import BlockPowerController, SimulatedOutputInterface
+from block_power import BlockPowerController, SimulatedTrackDriver
 from speed_profile import SpeedProfile
 from enums import Direction, TrainState
 

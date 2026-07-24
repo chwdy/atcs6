@@ -23,11 +23,11 @@ from datetime import datetime
 import pytest
 
 import hardware_config
-from block_occupancy import SimulatedInputInterface
-from block_power import SimulatedOutputInterface
+from block_occupancy import SimulatedOccupancyDriver
+from block_power import SimulatedTrackDriver
 from enums import OperationMode
 from hardware.fake import FakeCh347Device
-from switch_power import SimulatedSwitchOutputInterface
+from switch_power import SimulatedSwitchDriver
 
 
 @pytest.fixture(autouse=True)
@@ -55,7 +55,9 @@ def _real_payload(**overrides):
             {"chip_id": "sw1", "kind": "hc595", "spi_select": "cs0", "chain_length": 3},
             {"chip_id": "in1", "kind": "hc165", "spi_select": "cs1"},
         ],
-        "block_track": {"B1": {"chip_id": "pwm1", "port": 0}},
+        "block_track": {
+            "B1": {"chip_id": "pwm1", "forward": 0, "reverse": 1},
+        },
         "switch_output": {
             "SW_A": {"chip_id": "sw1", "port_main": 5, "port_diverge": 6},
         },
@@ -481,13 +483,13 @@ def test_factory_real_wires_interfaces_from_fake_device(monkeypatch):
     hardware_config.apply_updates(_real_payload(), persist=False)
     inp, blk, sw = hardware_config.build_session_interfaces()
     from hardware.interfaces import (
-        Ch347OccupancyInputInterface,
-        Ch347SwitchOutputInterface,
-        Ch347TrackOutputInterface,
+        OccupancyDriver,
+        SwitchDriver,
+        TrackDriver,
     )
-    assert isinstance(blk, Ch347TrackOutputInterface)
-    assert isinstance(sw, Ch347SwitchOutputInterface)
-    assert isinstance(inp, Ch347OccupancyInputInterface)
+    assert isinstance(blk, TrackDriver)
+    assert isinstance(sw, SwitchDriver)
+    assert isinstance(inp, OccupancyDriver)
 
 
 def test_factory_real_role_without_chip_stays_none(monkeypatch):
@@ -579,28 +581,27 @@ def test_put_invalid_config_returns_400_and_writes_nothing(client):
     assert not os.path.exists(hardware_config.CONFIG_PATH)
 
 
-def test_self_test_endpoint_with_fake_device(client, monkeypatch):
+def test_scan_endpoint_with_fake_device(client, monkeypatch):
     _patch_fake_device(monkeypatch, present=(0x40,))
-    resp = client.post("/api/hardware/self-test", json={"config": _real_payload()})
+    resp = client.post("/api/hardware/scan", json={"config": _real_payload()})
     assert resp.status_code == 200
     body = resp.get_json()
     assert body["ok"] is True
-    chips = {c["chip_id"]: c for c in body["chips"]}
-    assert chips["pwm1"]["reachable"] is True     # 0x40 present on the fake
-    assert chips["pwm1"]["port_count"] == 8
+    assert body["controller"]["reachable"] is True
+    assert body["controller"]["i2c_scan"] == ["0x40"]
 
 
-def test_self_test_endpoint_no_device_is_graceful(client, monkeypatch):
+def test_scan_endpoint_no_device_is_graceful(client, monkeypatch):
     import hardware.ch347_device as chdev
     monkeypatch.setattr(chdev, "open_ch347_device",
                         lambda port=None: (_ for _ in ()).throw(RuntimeError("busy")))
-    resp = client.post("/api/hardware/self-test", json={"config": _real_payload()})
+    resp = client.post("/api/hardware/scan", json={"config": _real_payload()})
     assert resp.status_code == 200
     assert resp.get_json()["ok"] is False
 
 
-def test_self_test_endpoint_invalid_config_400(client):
-    resp = client.post("/api/hardware/self-test",
+def test_scan_endpoint_invalid_config_400(client):
+    resp = client.post("/api/hardware/scan",
                        json={"config": {"chips": [{"chip_id": "p", "kind": "pca9685"}]}})
     assert resp.status_code == 400
 
@@ -724,19 +725,19 @@ def test_bootstrap_falls_back_to_sim_when_device_unavailable(monkeypatch):
         demo=False, setup_train=False
     )
     assert sim.operation_mode == OperationMode.SIM
-    assert isinstance(sim.input_interface, SimulatedInputInterface)
-    assert isinstance(sim.power_controller.output_interface, SimulatedOutputInterface)
+    assert isinstance(sim.input_interface, SimulatedOccupancyDriver)
+    assert isinstance(sim.power_controller.output_interface, SimulatedTrackDriver)
     assert isinstance(
-        sim.switch_power_controller.output_interface, SimulatedSwitchOutputInterface
+        sim.switch_output_interface, SimulatedSwitchDriver
     )
 
 
 def test_bootstrap_real_mode_wires_ch347_interfaces(monkeypatch):
     import bootstrap
     from hardware.interfaces import (
-        Ch347OccupancyInputInterface,
-        Ch347SwitchOutputInterface,
-        Ch347TrackOutputInterface,
+        OccupancyDriver,
+        SwitchDriver,
+        TrackDriver,
     )
     _patch_fake_device(monkeypatch)
     hardware_config.apply_updates(_real_payload())
@@ -744,10 +745,10 @@ def test_bootstrap_real_mode_wires_ch347_interfaces(monkeypatch):
         demo=False, setup_train=False
     )
     assert sim.operation_mode == OperationMode.REAL
-    assert isinstance(sim.input_interface, Ch347OccupancyInputInterface)
-    assert isinstance(sim.power_controller.output_interface, Ch347TrackOutputInterface)
+    assert isinstance(sim.input_interface, OccupancyDriver)
+    assert isinstance(sim.power_controller.output_interface, TrackDriver)
     assert isinstance(
-        sim.switch_power_controller.output_interface, Ch347SwitchOutputInterface
+        sim.switch_output_interface, SwitchDriver
     )
 
 
@@ -758,4 +759,4 @@ def test_bootstrap_sim_config_wires_sim_mode():
         demo=False, setup_train=False
     )
     assert sim.operation_mode == OperationMode.SIM
-    assert isinstance(sim.input_interface, SimulatedInputInterface)
+    assert isinstance(sim.input_interface, SimulatedOccupancyDriver)
