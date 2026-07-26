@@ -10,11 +10,11 @@ Module map:
 - simulation: server lifecycle, simulation control, /api/network*, /api/scale*
 - layouts: /api/layouts/* save/load/list/delete
 - tracks: /api/track* and /api/tracks/* CRUD and bulk operations
-- blocks: /api/blocks/* CRUD, state cycling, validation
+- segments: /api/segments/* geometry CRUD, tiles, extend, can_extend, end_tiles
+- blocks: /api/blocks/* grouping, config/availability, voltage
 - signals: /api/signal/* CRUD and validation
 - stations: /api/stations/*
 - platforms: /api/platforms/*
-- power_districts: /api/power-districts/* CRUD + add/remove block
 - trains: /api/trains/* CRUD and control
 - paths: /api/paths/* pathfinding and management
 - train_routes: /api/train-routes/* route definitions + lifecycle + viability
@@ -29,11 +29,11 @@ from routes import (
     simulation,
     layouts,
     tracks,
+    segments,
     blocks,
     signals,
     stations,
     platforms,
-    power_districts,
     trains,
     paths,
     train_routes,
@@ -59,11 +59,11 @@ def register_all(app, state) -> None:
     simulation.register(app, state)
     layouts.register(app, state)
     tracks.register(app, state)
+    segments.register(app, state)
     blocks.register(app, state)
     signals.register(app, state)
     stations.register(app, state)
     platforms.register(app, state)
-    power_districts.register(app, state)
     trains.register(app, state)
     paths.register(app, state)
     train_routes.register(app, state)

@@ -32,7 +32,7 @@ class StationRegistry:
     def tile_to_platform_id(self, x: int, y: int) -> Optional[str]:
         """Reverse index from tile coordinate to owning Platform id, or None.
 
-        Per design_new.md: TrackSegment does not store platform membership.
+        Per design_new.md: Tile does not store platform membership.
         Returns the concrete physical Platform that owns this tile.
         """
         return self._n._tile_to_platform.get((x, y))
@@ -122,29 +122,39 @@ class StationRegistry:
         if station_id is None:
             station_id = f"STA_{uuid.uuid4().hex[:6].upper()}"
 
-        # Handle block splitting if track belongs to a block
-        # Stations are block boundaries, so placing a station may split the block
-        original_block_id = track.block_section_id
-        original_block = None
+        # Handle segment splitting if track belongs to a segment.
+        # Stations are block boundaries, so placing a station may split the
+        # segment the tile sat in.
+        original_segment_id = track.segment_id
+        original_segment = None
         length_per_tile_cm = (
-            None  # None means no block, 0.0 means block with zero length
+            None  # None means no segment, 0.0 means segment with zero length
         )
 
-        if original_block_id:
-            # Get the original block before removal
-            original_block = self._n.blocks.get(original_block_id)
-            if original_block:
-                # Calculate length per tile from the original block
-                original_positions = self._n.get_block_positions(original_block_id)
+        if original_segment_id:
+            # Get the original segment before removal
+            original_segment = self._n.get_segment(original_segment_id)
+            if original_segment:
+                # Length is segment geometry, so spread the SEGMENT's length
+                # over the SEGMENT's tiles.
+                original_positions = self._n.get_segment_positions(
+                    original_segment_id
+                )
                 if original_positions:
-                    length_per_tile_cm = original_block.length_cm / len(
+                    length_per_tile_cm = original_segment.length_cm / len(
                         original_positions
                     )
-                    # Store this on the original block so child blocks can use it
-                    original_block._length_per_tile_cm = length_per_tile_cm
+                    # Store this on the owning block so child segments can use it
+                    original_block_id = self._n.segment_to_block_id(
+                        original_segment_id
+                    )
+                    if original_block_id:
+                        self._n.blocks[
+                            original_block_id
+                        ]._length_per_tile_cm = length_per_tile_cm
 
-            # Remove this tile from its block (triggers connectivity check/split)
-            self._n.remove_tile_from_block(x, y)
+            # Remove this tile from its segment (triggers connectivity check/split)
+            self._n.remove_tile_from_segment(x, y)
 
         # Create station block for this station
         station_block_id = f"{station_id}_BLOCK"
@@ -153,10 +163,10 @@ class StationRegistry:
         # - If station was on a block, use calculated length per tile × 1 tile (may be 0)
         # - If not on a block, use the input platform length
         if length_per_tile_cm is not None:
-            # Was on a block (even if that block had zero length)
+            # Was on a segment (even if that segment had zero length)
             station_block_length_cm = length_per_tile_cm
         else:
-            # Was not on a block, use input platform length
+            # Was not on a segment, use input platform length
             station_block_length_cm = length_cm if length_cm > 0 else 0.0
 
         # Use station name in block name if provided, otherwise use station_id
@@ -164,7 +174,11 @@ class StationRegistry:
             f"Station Block - {name}" if name else f"Station Block - {station_id}"
         )
 
-        station_block = self._n.create_block(block_id=station_block_id, name=block_name)
+        # A station tile becomes its own segment, and that segment gets its own
+        # block (nothing is grouped with it), so both take `station_block_id`.
+        station_block = self._n.create_segment(
+            segment_id=station_block_id, name=block_name
+        )
 
         # Set the calculated length on the block
         station_block.length_cm = station_block_length_cm
@@ -174,16 +188,16 @@ class StationRegistry:
         if top_speed_kmh is not None:
             station_block.speed_limit_kmh = top_speed_kmh
 
-        # Assign station tile to station block
-        track.block_section_id = station_block_id
+        # Assign station tile to the station segment
+        track.segment_id = station_block_id
 
-        # Refresh ordered_tiles for both the new station block and the
-        # parent block we split from (its membership just changed).
-        geom = self._n._get_block_geometry_manager()
+        # Refresh ordered_tiles for both the new station segment and the
+        # parent segment we split from (its membership just changed).
+        geom = self._n._get_segment_geometry_manager()
         if geom is not None:
-            geom.rebuild_block_ordered_tiles(station_block_id)
-            if original_block_id and original_block_id in self._n.blocks:
-                geom.rebuild_block_ordered_tiles(original_block_id)
+            geom.rebuild_segment_ordered_tiles(station_block_id)
+            if original_segment_id and self._n.get_segment(original_segment_id):
+                geom.rebuild_segment_ordered_tiles(original_segment_id)
 
         # Create station
         from enums import PlatformSide
@@ -200,7 +214,7 @@ class StationRegistry:
                 break
 
         # Record the tile -> station block on the Platform's canonical
-        # block_assignments, mirroring track.block_section_id set above so
+        # block_assignments, mirroring track.segment_id set above so
         # ordered_blocks / get_all_assigned_blocks see this platform's block
         # without any tile scan.
         station = Platform(
@@ -291,9 +305,18 @@ class StationRegistry:
                     f"[Station Delete] Block {block_id} is fully within station {station_id}, will be deleted"
                 )
 
-        # Delete all blocks that are fully within the station
+        # Delete all blocks that are fully within the station. Deleting the
+        # station removes its track, so this deletes each member segment's
+        # geometry rather than calling `delete_block`, which only dissolves the
+        # power grouping and re-homes the segments (design_new.md "Block
+        # grouping"). The block itself is dropped once its last member goes,
+        # through the Non-empty parent rule.
         for block_id in blocks_to_delete:
-            self._n.delete_block(block_id)
+            block = self._n.blocks.get(block_id)
+            if block is None:
+                continue
+            for segment_id in list(block.segment_ids):
+                self._n.delete_segment(segment_id)
             print(f"[Station Delete] Deleted block {block_id}")
 
         # Clear station_id from all tracks in this station and drop
@@ -412,34 +435,34 @@ class StationRegistry:
         # Add positions to station
         station_block_id = f"{station_id}_BLOCK"
 
-        affected_blocks: set = set()
+        affected_segments: set = set()
         for x, y in new_positions:
             if (x, y) not in station.positions:
                 station.add_position(x, y)
                 track = self._n.get_track(x, y)
                 if track:
-                    # Handle block splitting if needed - use lifecycle method
-                    if track.block_section_id:
-                        if track.block_section_id != station_block_id:
-                            affected_blocks.add(track.block_section_id)
-                        self._n.remove_tile_from_block(x, y)
-                    # Assign to station's block, mirroring track.block_section_id
-                    # onto the Platform's canonical block_assignments so
+                    # Handle segment splitting if needed - use lifecycle method
+                    if track.segment_id:
+                        if track.segment_id != station_block_id:
+                            affected_segments.add(track.segment_id)
+                        self._n.remove_tile_from_segment(x, y)
+                    # Assign to the station's segment, mirroring the owning
+                    # block onto the Platform's canonical block_assignments so
                     # ordered_blocks / get_all_assigned_blocks see this tile's
                     # block without any tile scan.
                     if station_block_id in self._n.blocks:
-                        track.block_section_id = station_block_id
+                        track.segment_id = station_block_id
                         station.block_assignments[(x, y)] = station_block_id
                     track.station_id = station_id
 
-        # Refresh ordered_tiles on the station block plus any block we
+        # Refresh ordered_tiles on the station segment plus any segment we
         # split tiles away from, so the geometry view stays in sync.
-        geom = self._n._get_block_geometry_manager()
+        geom = self._n._get_segment_geometry_manager()
         if geom is not None:
-            geom.rebuild_block_ordered_tiles(station_block_id)
-            for bid in affected_blocks:
-                if bid in self._n.blocks:
-                    geom.rebuild_block_ordered_tiles(bid)
+            geom.rebuild_segment_ordered_tiles(station_block_id)
+            for sid in affected_segments:
+                if self._n.get_segment(sid) is not None:
+                    geom.rebuild_segment_ordered_tiles(sid)
 
         return station
 
@@ -506,7 +529,7 @@ class StationRegistry:
             if platform_id not in normalized_platform_ids:
                 normalized_platform_ids.append(platform_id)
 
-        # Non-empty parent rule (design_new.md, TrackSegment ownership list):
+        # Non-empty parent rule (design_new.md, Tile ownership list):
         # a Station always owns at least one Platform, so a group is never
         # created empty.
         if not normalized_platform_ids:
@@ -532,7 +555,7 @@ class StationRegistry:
     def _prune_station_group_if_empty(self, station_id: str) -> bool:
         """Delete a logical station group when it has no platforms left.
 
-        Enforces the Non-empty parent rule (design_new.md, TrackSegment
+        Enforces the Non-empty parent rule (design_new.md, Tile
         ownership list): a Station always owns at least one Platform, so a
         group whose last platform just left is removed rather than persisted
         empty. No-op (returns False) when the group is missing or still has
@@ -575,7 +598,7 @@ class StationRegistry:
     ) -> bool:
         """Remove a platform from a logical station group.
 
-        Non-empty parent rule (design_new.md, TrackSegment ownership list):
+        Non-empty parent rule (design_new.md, Tile ownership list):
         if this removes the group's last platform, the now-empty group is
         deleted in the same call rather than left empty.
         """

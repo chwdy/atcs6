@@ -4,7 +4,7 @@
 (frontend/src/lib/constants.ts) encode the same geometry rule: a switch placement is
 rejected when it joins a horizontal segment (NW|SE) and a vertical segment
 (NE|SW) with no 45-degree diagonal (NS|EW) to ease the branch. The server uses
-it in `TrackSegment.is_valid` / `routes/tracks.py`; the client uses it in the
+it in `Tile.is_valid` / `routes/tracks.py`; the client uses it in the
 editor to grey out invalid placements. They live in different languages, so
 this test pins a line-for-line Python port of the JS function against the
 backend for every `track_bits` value (0..63) — a future change on either side

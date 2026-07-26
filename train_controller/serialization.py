@@ -54,6 +54,7 @@ def controller_to_dict(controller: "TrainController") -> Dict[str, Any]:
         "target_speed": controller.target_speed,
         "handle_position": controller.ops.handle_position.value,
         "ato_running": controller.ato.running,
+        "service_stop_active": controller.ops.service_stop_active,
         "ato_destination_block_id": controller.path_projection.ato_destination_block_id,
         "ato_path_id": controller.path_projection.ato_path_id,
         "assigned_path_id": controller.path_projection.assigned_path_id,
@@ -210,6 +211,7 @@ def controller_from_dict(
     # sub-module; restore after construction.
     controller.ops.state = state
     controller.ops.handle_position = handle
+    controller.ops.service_stop_active = data.get("service_stop_active", False)
     # Sub-module fields are created in `__post_init__`; restore
     # persisted values after construction.
     controller.eb.active = data.get("eb_active", False)

@@ -46,6 +46,8 @@ class App {
   lastLookaheadPayload: any;
   trainMonitorUnsub: (() => void) | null;
   followTrainEnabled: boolean;
+  /** Re-checks whether the tool rail fits; installed by watchToolRailFit(). */
+  fitToolRail: (() => void) | null = null;
 
   constructor() {
     this.renderer = new Renderer('rail-canvas');
@@ -86,6 +88,7 @@ class App {
     setupHardwarePanel();
     this.setupViewControls();
     this.setupPanelToggles();
+    this.watchToolRailFit();
     this.refreshNetwork();
   }
 
@@ -106,24 +109,32 @@ class App {
       }
     });
 
-    const clearFatalBtn = document.getElementById('btn-clear-fatal') as HTMLButtonElement | null;
-    if (clearFatalBtn) {
-      clearFatalBtn.addEventListener('click', async () => {
-        clearFatalBtn.disabled = true;
+    const restartFatalBtn = document.getElementById('btn-restart-fatal') as HTMLButtonElement | null;
+    if (restartFatalBtn) {
+      restartFatalBtn.addEventListener('click', async () => {
+        const confirmed = await showConfirmModal({
+          title: 'Restart Server?',
+          message: 'This session cannot continue after a fatal track conflict — the server process will exit and relaunch.',
+          detail: 'Unsaved layout edits will be flushed to autosave first. The page will reload automatically when the server is back (~3–5s).',
+          confirmText: 'Restart',
+          cancelText: 'Cancel',
+          confirmVariant: 'danger'
+        });
+        if (!confirmed) return;
+
+        restartFatalBtn.disabled = true;
         try {
-          const res = await api.releaseFailedRuntime();
-          if (res && res.released) {
-            showToast('Conflict cleared — simulation resumed', 'success', 3000);
-          } else {
-            showToast('Conflict still present — resolve it on the layout, then clear again', 'warning', 6000);
-          }
+          await api.restartServer();
         } catch (e: any) {
-          console.error('[App] Clear-fatal error:', e);
-          showToast(`Could not clear halt: ${e.message}`, 'error', 5000);
-        } finally {
-          clearFatalBtn.disabled = false;
-          this.refreshNetwork();
+          console.error('[App] Restart request failed:', e);
+          showToast('Could not reach server to restart.', 'error', 4000);
+          restartFatalBtn.disabled = false;
+          return;
         }
+
+        this.stopSimulationPolling();
+        this.updatePlaybackUI(false);
+        startRestartReconnectFlow();
       });
     }
 
@@ -370,6 +381,9 @@ class App {
       toolsBtn.addEventListener('click', () => {
         sidebar.classList.toggle('collapsed');
         this.updateToolsToggle(toolsBtn, sidebar);
+        // Re-showing the rail cannot resize .workspace, so nothing else would
+        // re-check whether it still needs its compact form.
+        this.fitToolRail?.();
       });
       this.updateToolsToggle(toolsBtn, sidebar);
     }
@@ -387,6 +401,48 @@ class App {
       obs.observe(secSidebar, { attributes: true, attributeFilter: ['class'] });
       this.updateSecondaryToggle(secBtn, secSidebar);
     }
+  }
+
+  /**
+   * Keep every tool reachable in the floating rail.
+   *
+   * The capsule is centred over `.workspace`, so its height budget shrinks
+   * whenever the train monitor bar opens or is dragged taller — on a short
+   * window the square tiles no longer fit and the last tools scroll out of
+   * sight. When that happens, switch the rail to its icon-only compact form
+   * (`.sidebar--compact`), which fits roughly a third more tiles in the same
+   * height; when the space comes back, switch out again.
+   *
+   * Measuring means asking the full-size rail whether it overflows, so the
+   * class comes off before the read. Reading `scrollHeight` flushes layout, so
+   * the un-compacted geometry is what gets measured. The observer watches
+   * `.workspace` (the height that actually changes) rather than the rail, so
+   * the class toggle cannot feed back into the callback; the MutationObserver
+   * covers the other trigger, the toolbar re-rendering with a different tool
+   * count when the editor/simulation mode changes.
+   */
+  watchToolRailFit(): void {
+    const rail = document.querySelector('.sidebar') as HTMLElement | null;
+    const workspace = document.querySelector('.workspace') as HTMLElement | null;
+    const section = rail?.querySelector('.sidebar-tools-section') as HTMLElement | null;
+    const groups = document.getElementById('tool-groups');
+    if (!rail || !workspace || !section || !groups) return;
+
+    const fit = (): void => {
+      // A collapsed rail measures 0×0 and would always look like it fits, so
+      // leave the class alone until it is on screen again (the toggle re-runs
+      // this).
+      if (rail.offsetParent === null) return;
+      rail.classList.remove('sidebar--compact');
+      if (section.scrollHeight > section.clientHeight) {
+        rail.classList.add('sidebar--compact');
+      }
+    };
+    this.fitToolRail = fit;
+
+    new ResizeObserver(fit).observe(workspace);
+    new MutationObserver(fit).observe(groups, { childList: true });
+    fit();
   }
 
   updateToolsToggle(btn: HTMLElement, sidebar: HTMLElement): void {
@@ -800,15 +856,32 @@ class App {
    * (Renderer.resize uses parent.clientWidth), so getBoundingClientRect values
    * are already in the same units fitToContent works in.
    */
-  _canvasChromeInsets(): { left: number } {
-    const rail = document.querySelector('.sidebar:not(.collapsed)') as HTMLElement | null;
+  _canvasChromeInsets(): { left: number; bottom: number } {
     const canvas = this.renderer.canvas;
-    if (!rail || !canvas) return { left: 0 };
-    const railRect = rail.getBoundingClientRect();
-    if (railRect.width === 0) return { left: 0 };
-    const GAP = 12; // breathing room between the rail and the framed layout
-    const left = Math.max(0, railRect.right - canvas.getBoundingClientRect().left + GAP);
-    return { left };
+    if (!canvas) return { left: 0, bottom: 0 };
+    const canvasRect = canvas.getBoundingClientRect();
+    const GAP = 12; // breathing room between the chrome and the framed layout
+
+    let left = 0;
+    const rail = document.querySelector('.sidebar:not(.collapsed)') as HTMLElement | null;
+    const railRect = rail?.getBoundingClientRect();
+    if (railRect && railRect.width > 0) {
+      left = Math.max(0, railRect.right - canvasRect.left + GAP);
+    }
+
+    // The train monitor is a floating window now, so it no longer takes flow
+    // height out of the canvas — it hovers over the bottom of it. Fit View has
+    // to inset past it explicitly or it frames the layout under the panel.
+    let bottom = 0;
+    const monitor = document.getElementById('train-monitor-bar');
+    if (monitor && !monitor.classList.contains('hidden')) {
+      const monitorRect = monitor.getBoundingClientRect();
+      if (monitorRect.height > 0) {
+        bottom = Math.max(0, canvasRect.bottom - monitorRect.top + GAP);
+      }
+    }
+
+    return { left, bottom };
   }
 
   setupViewControls(): void {

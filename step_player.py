@@ -8,7 +8,7 @@ providing a way to verify that API changes don't break existing layouts.
 
 from typing import Any, Dict, List
 
-from track import TrackSegment
+from track import Tile
 
 
 class StepPlayer:
@@ -173,7 +173,7 @@ class StepPlayer:
         y = op["y"]
         track_bits = op["track_bits"]
 
-        track = TrackSegment(x, y, track_bits=track_bits)
+        track = Tile(x, y, track_bits=track_bits)
         network.add_track(track)
         return f"{x},{y}"
 
@@ -181,7 +181,7 @@ class StepPlayer:
         """Execute add_switch operation.
 
         Registers a `Switch` entity at an already-placed switch tile. The
-        underlying `TrackSegment` must have been created by an earlier
+        underlying `Tile` must have been created by an earlier
         `add_track` step (the recorder orders tracks before switches).
         """
         from switch import Switch
@@ -203,7 +203,7 @@ class StepPlayer:
         return switch.switch_id
 
     def _op_create_block(self, op: dict, network: "RailwayNetwork") -> str:
-        """Execute create_block_with_tracks operation."""
+        """Execute create_segment_with_tracks operation."""
         block_id = op["block_id"]
         positions = [tuple(p) for p in op["positions"]]
         name = op.get("name", "")
@@ -217,8 +217,8 @@ class StepPlayer:
                 # This can happen if tracks were grouped separately
                 pass
 
-        network.create_block_with_tracks(
-            block_id=block_id,
+        network.create_segment_with_tracks(
+            segment_id=block_id,
             positions=positions,
             name=name,
             length_cm=length_cm,

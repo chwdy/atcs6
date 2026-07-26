@@ -10,12 +10,11 @@ The doc rule (Latch Table): pending_path_cancel_request is consumed only
 when the train is stopped; while the train is still rolling, it survives.
 """
 
-import pytest
 from runtime_payloads import (
     PendingPathCancelRequest,
 )
 from network import RailwayNetwork
-from track import TrackSegment, TRACK_EW
+from track import Tile, TRACK_EW
 from enums import Direction
 from train import Train, TrainCar
 from path_dispatcher import PathDispatcher
@@ -26,15 +25,15 @@ from train_controller import create_controller_for_train
 def _build_three_block_network() -> RailwayNetwork:
     network = RailwayNetwork()
     for x in range(6):
-        network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
-    network.create_block_with_tracks(
-        block_id="BLK_A", positions=[(0, 0), (1, 0)], name="A", length_cm=200.0
+        network.add_track(Tile(x, 0, track_bits=TRACK_EW))
+    network.create_segment_with_tracks(
+        segment_id="BLK_A", positions=[(0, 0), (1, 0)], name="A", length_cm=200.0
     )
-    network.create_block_with_tracks(
-        block_id="BLK_B", positions=[(2, 0), (3, 0)], name="B", length_cm=200.0
+    network.create_segment_with_tracks(
+        segment_id="BLK_B", positions=[(2, 0), (3, 0)], name="B", length_cm=200.0
     )
-    network.create_block_with_tracks(
-        block_id="BLK_C", positions=[(4, 0), (5, 0)], name="C", length_cm=200.0
+    network.create_segment_with_tracks(
+        segment_id="BLK_C", positions=[(4, 0), (5, 0)], name="C", length_cm=200.0
     )
     return network
 
@@ -59,15 +58,8 @@ def test_activate_emergency_with_path_sets_pending_cancel():
         train_id=train.train_id,
         requested_destination_block_id="BLK_C",
     )
-    if not result.success:
-        pytest.skip(
-            "v1: dispatcher's _compute_block_traversals omits the destination "
-            "block, so create_path returns missing_direction here. The latch "
-            "behavior under EB still holds; covered by integration tests."
-        )
-
     result.path = dispatcher.get_path(result.path_id) if result.path_id else None
-    assert result.success
+    assert result.success, f"Failed to create path: {result.reason}"
     assert controller.path_projection.received_path_plan is not None
 
     # Pre-condition: no latch.
@@ -131,14 +123,8 @@ def test_pending_cancel_latch_survives_while_moving():
         train_id=train.train_id,
         requested_destination_block_id="BLK_C",
     )
-    if not result.success:
-        pytest.skip(
-            "v1: dispatcher's _compute_block_traversals omits the destination "
-            "block, so create_path returns missing_direction here."
-        )
-
     result.path = dispatcher.get_path(result.path_id) if result.path_id else None
-    assert result.success
+    assert result.success, f"Failed to create path: {result.reason}"
 
     # Set the train as moving and activate EB.
     controller.physics_sync.current_speed_kmh = 30.0
@@ -202,12 +188,22 @@ def test_set_pending_route_abort_sets_abort_latch_without_path():
     assert controller.route_hooks.phase_latches.path_cancel_request is None
 
 
+class _FakeResourceEntry:
+    def __init__(self, resource_id):
+        self.resource_id = resource_id
+        self.path_tiles = []
+
+
 class _FakePath:
-    """Tiny stand-in for a dispatcher Path with the fields the controller reads."""
+    """Tiny stand-in for a dispatcher Path with the fields the controller reads.
+
+    `authority_end_block_id` is derived from `resource_sequence[-1]`, not stored,
+    so the fake supplies the sequence the projection actually reads.
+    """
 
     def __init__(self, path_id="PATH_X", authority_end_block_id="BLK_C"):
         self.path_id = path_id
-        self.authority_end_block_id = authority_end_block_id
+        self.resource_sequence = [_FakeResourceEntry(authority_end_block_id)]
 
 
 class _FakePathDispatcher:
@@ -237,7 +233,14 @@ def test_set_pending_route_abort_inclusive_cancel_when_path_exists():
         train_id=train.train_id, network=network, path_dispatcher=dispatcher
     )
 
-    assert controller.path_projection.received_path_plan is fake_path
+    # The projection is the narrow received_path_plan schema, not the raw
+    # dispatcher Path — the controller never sees the dispatcher-only fields.
+    plan = controller.path_projection.received_path_plan
+    assert plan is not fake_path
+    assert plan.path_id == "PATH_ABORT_001"
+    assert plan.get_authority_end_block_id() == "BLK_C"
+    assert not hasattr(plan, "requested_destination_block_id")
+    assert not hasattr(plan, "status")
     assert controller.path_projection.assigned_path_id == "PATH_ABORT_001"
 
     controller.route_hooks.phase_latches.set_route_abort(
@@ -295,7 +298,7 @@ def test_route_deactivate_writes_latches_per_assigned_train():
         train_id=train2.train_id, network=network, path_dispatcher=dispatcher_no_path
     )
 
-    assert controller1.path_projection.received_path_plan is fake_path
+    assert controller1.path_projection.received_path_plan.path_id == fake_path.path_id
     assert controller2.path_projection.received_path_plan is None
 
     sim = _StubSimController()

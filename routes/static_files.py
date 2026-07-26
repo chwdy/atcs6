@@ -2,7 +2,10 @@
 Static File Routes - Serve index.html and SPA-style static assets.
 """
 
+from pathlib import PurePosixPath
+
 from flask import send_from_directory
+from werkzeug.exceptions import NotFound
 
 from app_state import AppState
 
@@ -27,4 +30,12 @@ def register(app, state: AppState) -> None:
 
     @app.route("/<path:path>")
     def static_files(path):
-        return _no_cache(send_from_directory("static", path))
+        try:
+            return _no_cache(send_from_directory("static", path))
+        except NotFound:
+            # Extension-less paths belong to the client-side router. Keep
+            # missing asset requests as real 404s so a broken script or
+            # stylesheet reference is not answered with HTML.
+            if PurePosixPath(path).suffix:
+                raise
+            return _no_cache(send_from_directory("static", "index.html"))

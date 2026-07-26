@@ -251,21 +251,6 @@ export class API implements LayoutDataClient, SimClient {
   }
 
   /**
-   * Clear a fatal physical-entry conflict halt after the operator has
-   * resolved the conflict. Returns { released, failed_runtime }; released
-   * is false (HTTP still 200) when the conflict still stands.
-   */
-  async releaseFailedRuntime(): Promise<any> {
-    return this._request(
-      '/simulation/release-failed-runtime',
-      {
-        method: 'POST',
-      },
-      'releaseFailedRuntime'
-    );
-  }
-
-  /**
    * Restart the server process. The server flushes autosave, then
    * replaces itself via os.execv. Caller should immediately switch
    * the UI into a reconnect-polling state.
@@ -319,15 +304,18 @@ export class API implements LayoutDataClient, SimClient {
   }
 
   /**
-   * Probe the controller + each configured chip. Opens a transient device at
-   * commissioning time (returns `{ok:false}` gracefully if none is attached or
-   * a real session already holds it). `config` is the config being edited.
+   * Open the controller and report the I2C addresses answering right now
+   * (Hardware Setup's Detect / Rescan). Opens a transient device at
+   * commissioning time, returning `{ok:false}` gracefully if none is attached or
+   * a real session already holds it. `config` is the config being edited.
+   * Shift registers do not answer a scan — they are proven with the interactive
+   * port test instead.
    */
-  async runHardwareSelfTest(config: any): Promise<any> {
+  async scanHardwareBus(config: any): Promise<any> {
     return this._request(
-      '/hardware/self-test',
+      '/hardware/scan',
       { method: 'POST', body: { config } },
-      'runHardwareSelfTest'
+      'scanHardwareBus'
     );
   }
 
@@ -339,7 +327,7 @@ export class API implements LayoutDataClient, SimClient {
     config: any,
     chipId: string,
     port: number,
-    action: 'pulse_output' | 'read_input'
+    action: 'pulse_output' | 'read_input' | 'drive_sequence'
   ): Promise<any> {
     return this._request(
       '/hardware/port-test',
@@ -348,17 +336,94 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
-  /** Set (or clear, when chipId is null) one port binding, keyed by logical id. */
+  /**
+   * Read both of one block's occupancy detectors and report which decides.
+   * Returns the '165 bit, the current-sense reading, the drive state read back
+   * off the PWM chip, and the verdict that follows. Drives nothing.
+   */
+  async runHardwareOccupancyTest(config: any, blockId: string): Promise<any> {
+    return this._request(
+      '/hardware/occupancy-test',
+      { method: 'POST', body: { config, block_id: blockId } },
+      'runHardwareOccupancyTest'
+    );
+  }
+
+  /** Set (or clear, when chipId is null) one port binding, keyed by logical id.
+   * `extra` carries the current map's per-channel calibration (baseline/threshold mA). */
   async updateHardwareBinding(
     map: string,
     logicalId: string,
     chipId: string | null,
-    port: number | null
+    port: number | null,
+    extra?: { baseline_ma?: number | null; threshold_ma?: number | null }
   ): Promise<any> {
     return this._request(
       '/hardware/binding',
-      { method: 'PUT', body: { map, logical_id: logicalId, chip_id: chipId, port } },
+      { method: 'PUT', body: { map, logical_id: logicalId, chip_id: chipId, port, ...(extra || {}) } },
       'updateHardwareBinding'
+    );
+  }
+
+  /** Set (or clear, when chipId is null) one block's track wiring: the two PWM
+   * channels driving its rails, chosen independently (not a fixed pair). */
+  async updateTrackBinding(
+    blockId: string,
+    chipId: string | null,
+    forward: number | null,
+    reverse: number | null
+  ): Promise<any> {
+    return this._request(
+      '/hardware/binding',
+      {
+        method: 'PUT',
+        body: {
+          map: 'block_track',
+          logical_id: blockId,
+          chip_id: chipId,
+          forward,
+          reverse,
+        },
+      },
+      'updateTrackBinding'
+    );
+  }
+
+  /**
+   * Sweep one block's track through both polarities — full voltage one way,
+   * off, then the other way — so a loco on it runs, stops, and reverses.
+   */
+  async runHardwareTrackTest(config: any, blockId: string): Promise<any> {
+    return this._request(
+      '/hardware/track-test',
+      { method: 'POST', body: { config, block_id: blockId } },
+      'runHardwareTrackTest'
+    );
+  }
+
+  /** Set (or clear, when chipId is null) one switch's throw wiring: a coil port
+   * per side plus an optional motor-driver standby bit. */
+  async updateSwitchBinding(
+    switchId: string,
+    chipId: string | null,
+    portMain: number | null,
+    portDiverge: number | null,
+    portStandby: number | null
+  ): Promise<any> {
+    return this._request(
+      '/hardware/binding',
+      {
+        method: 'PUT',
+        body: {
+          map: 'switch_output',
+          logical_id: switchId,
+          chip_id: chipId,
+          port_main: portMain,
+          port_diverge: portDiverge,
+          port_standby: portStandby,
+        },
+      },
+      'updateSwitchBinding'
     );
   }
 
@@ -380,12 +445,46 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
+  /** Pulse one shift-out bit for the switch-coil pulse width on the held session,
+   * raising `standbyPort` for the pulse when the motor driver needs one and
+   * holding `offPort` (the driver's other input) low. A coil must never be held
+   * energized, so every '595 bit is driven this way. */
+  async commissionPulse(
+    chipId: string,
+    port: number,
+    standbyPort?: number | null,
+    offPort?: number | null
+  ): Promise<any> {
+    return this._request(
+      '/hardware/commission/pulse',
+      {
+        method: 'POST',
+        body: {
+          chip_id: chipId,
+          port,
+          standby_port: standbyPort ?? null,
+          off_port: offPort ?? null,
+        },
+      },
+      'commissionPulse'
+    );
+  }
+
   /** Read every input bit on a shift-in chip from the held session (live view). */
   async commissionInputs(chipId: string): Promise<any> {
     return this._request(
       '/hardware/commission/inputs',
       { method: 'POST', body: { chip_id: chipId } },
       'commissionInputs'
+    );
+  }
+
+  /** Read every channel's current (mA) on an INA3221 from the held session. */
+  async commissionCurrents(chipId: string): Promise<any> {
+    return this._request(
+      '/hardware/commission/currents',
+      { method: 'POST', body: { chip_id: chipId } },
+      'commissionCurrents'
     );
   }
 
@@ -398,35 +497,210 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
-  // === Block Management ===
+  /**
+   * Develop mode (fake hardware) input-poke surface. These act on the LIVE
+   * session's fake device, so the real occupancy pipeline reads the injected
+   * state back on its next tick. Available only when the running session booted
+   * on the fake device (`session.develop_active`); otherwise they answer 409.
+   */
 
-  /** Get all blocks. */
+  /** Read the fake device's per-block / per-switch state for the dev panel. */
+  async getHwDebugState(): Promise<any> {
+    return this._request('/debug/hw', {}, 'getHwDebugState');
+  }
+
+  /** Set a block's fake '165 occupancy bit. */
+  async setHwDebugOccupancy(blockId: string, occupied: boolean): Promise<any> {
+    return this._request(
+      '/debug/hw/occupancy',
+      { method: 'POST', body: { block_id: blockId, occupied } },
+      'setHwDebugOccupancy'
+    );
+  }
+
+  /** Set a block's fake current-sense reading (mA); decides occupancy only
+   * while the block is driven. */
+  async setHwDebugCurrent(blockId: string, currentMa: number): Promise<any> {
+    return this._request(
+      '/debug/hw/current',
+      { method: 'POST', body: { block_id: blockId, current_ma: currentMa } },
+      'setHwDebugCurrent'
+    );
+  }
+
+  // === Segment Geometry (the geometry axis: /api/segments) ===
+  //
+  // A `Segment` owns geometry only — ordered tiles, length, min radius, grade
+  // and speed limit. Occupancy / reservation / power / grouping live on its
+  // owning `Block` under the block surface below. Every id in this section is a
+  // SEGMENT id; passing a block id here addresses the wrong axis (for a
+  // single-segment block the two ids happen to be equal, which is exactly why
+  // they must not be mixed up).
+
+  /** Get all segments (geometry + owning block id + tile positions). */
+  async getSegments(): Promise<any> {
+    return this._request('/segments', {}, 'getSegments');
+  }
+
+  /** Get a single segment's geometry, continuity status and owning block id. */
+  async getSegment(segmentId: string): Promise<any> {
+    return this._request(`/segments/${encodeURIComponent(segmentId)}`, {}, 'getSegment');
+  }
+
+  /**
+   * Create a segment holding the given track positions. A fresh segment gets
+   * its own single-segment block; group it with others via `createBlock`.
+   */
+  async createSegment(
+    segmentId: string | null = null,
+    positions: unknown = [],
+    name = '',
+    options: Record<string, unknown> = {}
+  ): Promise<any> {
+    return this._request(
+      '/segments',
+      {
+        method: 'POST',
+        body: {
+          segment_id: segmentId,
+          positions,
+          name,
+          ...options,
+        },
+      },
+      'createSegment'
+    );
+  }
+
+  /** Update a segment's geometry (name / length / radius / grade / speed). */
+  async updateSegment(segmentId: string, data: unknown): Promise<any> {
+    return this._request(
+      `/segments/${encodeURIComponent(segmentId)}`,
+      {
+        method: 'PATCH',
+        body: data,
+      },
+      'updateSegment'
+    );
+  }
+
+  /** Delete a segment's geometry (and its owning block if it was the last member). */
+  async deleteSegment(segmentId: string): Promise<any> {
+    return this._request(
+      `/segments/${encodeURIComponent(segmentId)}`,
+      {
+        method: 'DELETE',
+      },
+      'deleteSegment'
+    );
+  }
+
+  /** Add tracks to a segment. */
+  async addTracksToSegment(segmentId: string, positions: unknown, force = false): Promise<any> {
+    return this._request(
+      `/segments/${encodeURIComponent(segmentId)}/tracks`,
+      {
+        method: 'POST',
+        body: { positions, force },
+      },
+      'addTracksToSegment'
+    );
+  }
+
+  /** Remove tiles from a segment. */
+  async removeSegmentTiles(segmentId: string, positions: unknown): Promise<any> {
+    return this._request(
+      `/segments/${encodeURIComponent(segmentId)}/tracks`,
+      {
+        method: 'DELETE',
+        body: { positions },
+      },
+      'removeSegmentTiles'
+    );
+  }
+
+  /**
+   * Extend a segment with new track positions.
+   * Uses the /extend endpoint which supports signal removal with force=true.
+   */
+  async extendSegment(
+    segmentId: string,
+    positions: unknown,
+    force = false,
+    forceOverwrite = false
+  ): Promise<any> {
+    return this._request(
+      `/segments/${encodeURIComponent(segmentId)}/extend`,
+      {
+        method: 'POST',
+        body: { positions, force, force_overwrite: forceOverwrite },
+      },
+      'extendSegment'
+    );
+  }
+
+  /** Check if a segment can be extended to a specific position. */
+  async canExtendSegment(segmentId: string, x: number, y: number): Promise<any> {
+    return this._request(
+      `/segments/${encodeURIComponent(segmentId)}/can_extend`,
+      {
+        method: 'POST',
+        body: { x, y },
+      },
+      'canExtendSegment'
+    );
+  }
+
+  /** Get the start and end tiles of a segment, in traversal order. */
+  async getSegmentEndTiles(segmentId: string): Promise<any> {
+    return this._request(
+      `/segments/${encodeURIComponent(segmentId)}/end_tiles`,
+      {},
+      'getSegmentEndTiles'
+    );
+  }
+
+  // === Block Management (grouping + power + occupancy: /api/blocks) ===
+  //
+  // A `Block` groups one or more segments and owns occupancy, reservation,
+  // availability, power and the static travel policy. Geometry is NOT edited
+  // here — that is the segment surface above. Every id in this section is a
+  // BLOCK id.
+
+  /** Get all blocks (member segments, occupancy, power, track counts). */
   async getBlocks(): Promise<any> {
     return this._request('/blocks', {}, 'getBlocks');
   }
 
-  /** Create a new block. */
-  async createBlock(blockId: string | null = null, name = '', options: Record<string, unknown> = {}): Promise<any> {
+  /**
+   * Group existing segments into one block. Creating track geometry is a
+   * segment operation (`createSegment`); this only forms the grouping.
+   */
+  async createBlock(segmentIds: string[], name = '', blockId: string | null = null): Promise<any> {
     return this._request(
       '/blocks',
       {
         method: 'POST',
         body: {
           block_id: blockId,
+          segment_ids: segmentIds,
           name,
-          ...options,
         },
       },
       'createBlock'
     );
   }
 
-  /** Get a single block by ID. */
+  /** Get a single block by ID (member segments, occupancy, positions). */
   async getBlock(blockId: string): Promise<any> {
     return this._request(`/blocks/${encodeURIComponent(blockId)}`, {}, 'getBlock');
   }
 
-  /** Update block properties. */
+  /**
+   * Update block config / availability (name, is_holding_point, disabled,
+   * manual, allowed_travel_directions). Geometry is rejected here — patch the
+   * member segments instead.
+   */
   async updateBlock(blockId: string, data: unknown): Promise<any> {
     return this._request(
       `/blocks/${encodeURIComponent(blockId)}`,
@@ -438,7 +712,10 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
-  /** Delete a block. */
+  /**
+   * Dissolve a block grouping (ungroup). Member segments return to their own
+   * single-segment blocks; the track geometry survives.
+   */
   async deleteBlock(blockId: string): Promise<any> {
     return this._request(
       `/blocks/${encodeURIComponent(blockId)}`,
@@ -449,42 +726,39 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
-  /** Add tracks to a block. */
-  async addTracksToBlock(blockId: string, positions: unknown, force = false): Promise<any> {
+  /** Add a member segment to either end of a block's run. */
+  async addSegmentToBlock(blockId: string, segmentId: string): Promise<any> {
     return this._request(
-      `/blocks/${encodeURIComponent(blockId)}/tracks`,
+      `/blocks/${encodeURIComponent(blockId)}/segments`,
       {
         method: 'POST',
-        body: { positions, force },
+        body: { segment_id: segmentId },
       },
-      'addTracksToBlock'
+      'addSegmentToBlock'
     );
   }
 
   /**
-   * Extend a block with new track positions.
-   * Uses the /extend endpoint which supports signal removal with force=true.
+   * Remove a member segment from either end of a block's run. The segment
+   * returns to its own single-segment block; removing the last member
+   * dissolves the block (response carries `block_dissolved`).
    */
-  async extendBlock(blockId: string, positions: unknown, force = false, forceOverwrite = false): Promise<any> {
+  async removeSegmentFromBlock(blockId: string, segmentId: string): Promise<any> {
     return this._request(
-      `/blocks/${encodeURIComponent(blockId)}/extend`,
+      `/blocks/${encodeURIComponent(blockId)}/segments/${encodeURIComponent(segmentId)}`,
       {
-        method: 'POST',
-        body: { positions, force, force_overwrite: forceOverwrite },
+        method: 'DELETE',
       },
-      'extendBlock'
+      'removeSegmentFromBlock'
     );
   }
 
-  /** Check if a block can be extended to a specific position. */
-  async canExtendBlock(blockId: string, x: number, y: number): Promise<any> {
+  /** Get current track voltage for a block. */
+  async getBlockVoltage(blockId: string): Promise<any> {
     return this._request(
-      `/blocks/${encodeURIComponent(blockId)}/can_extend`,
-      {
-        method: 'POST',
-        body: { x, y },
-      },
-      'canExtendBlock'
+      `/blocks/${encodeURIComponent(blockId)}/voltage`,
+      {},
+      'getBlockVoltage'
     );
   }
 
@@ -735,98 +1009,6 @@ export class API implements LayoutDataClient, SimClient {
         body: { platform_id: platformId },
       },
       'removePlatformFromStation'
-    );
-  }
-
-  // === Power District API Methods ===
-
-  async createPowerDistrict(data: unknown): Promise<any> {
-    return this._request(
-      '/power-districts',
-      {
-        method: 'POST',
-        body: data,
-      },
-      'createPowerDistrict'
-    );
-  }
-
-  async listPowerDistricts(): Promise<any> {
-    return this._request('/power-districts', {}, 'listPowerDistricts');
-  }
-
-  async getPowerDistrict(districtId: string): Promise<any> {
-    return this._request(
-      `/power-districts/${encodeURIComponent(districtId)}`,
-      {},
-      'getPowerDistrict'
-    );
-  }
-
-  async updatePowerDistrict(districtId: string, patch: unknown): Promise<any> {
-    return this._request(
-      `/power-districts/${encodeURIComponent(districtId)}`,
-      {
-        method: 'PATCH',
-        body: patch,
-      },
-      'updatePowerDistrict'
-    );
-  }
-
-  async deletePowerDistrict(districtId: string): Promise<any> {
-    return this._request(
-      `/power-districts/${encodeURIComponent(districtId)}`,
-      {
-        method: 'DELETE',
-      },
-      'deletePowerDistrict'
-    );
-  }
-
-  async addBlockToDistrict(districtId: string, blockId: string): Promise<any> {
-    return this._request(
-      `/power-districts/${encodeURIComponent(districtId)}/add-block`,
-      {
-        method: 'POST',
-        body: { block_id: blockId },
-      },
-      'addBlockToDistrict'
-    );
-  }
-
-  /** Add several blocks at once; the whole union must stay one connected run. */
-  async addBlocksToDistrict(districtId: string, blockIds: string[]): Promise<any> {
-    return this._request(
-      `/power-districts/${encodeURIComponent(districtId)}/add-block`,
-      {
-        method: 'POST',
-        body: { block_ids: blockIds },
-      },
-      'addBlocksToDistrict'
-    );
-  }
-
-  async removeBlockFromDistrict(districtId: string, blockId: string): Promise<any> {
-    return this._request(
-      `/power-districts/${encodeURIComponent(districtId)}/remove-block`,
-      {
-        method: 'POST',
-        body: { block_id: blockId },
-      },
-      'removeBlockFromDistrict'
-    );
-  }
-
-  /** Remove tiles from a block. */
-  async removeBlockTiles(blockId: string, positions: unknown): Promise<any> {
-    return this._request(
-      `/blocks/${encodeURIComponent(blockId)}/tracks`,
-      {
-        method: 'DELETE',
-        body: { positions },
-      },
-      'removeBlockTiles'
     );
   }
 

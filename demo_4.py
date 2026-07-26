@@ -34,7 +34,7 @@ Initial placement:
 """
 
 from network import RailwayNetwork
-from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NE, TRACK_NW, TRACK_SE
+from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW, TRACK_SE
 from path_dispatcher import PathDispatcher
 from switch import Switch
 
@@ -62,70 +62,6 @@ SCISSORS_BITS = TRACK_NS | TRACK_EW | TRACK_NW | TRACK_SE  # = 27
 
 
 # ============= Demo Functions =============
-
-
-def test_block_validation():
-    """Test that block validation rules are working correctly.
-
-    Same checks as demo_main.test_block_validation — kept verbatim so the
-    server's startup tests still pass after `import demo_4 as demo_main`.
-    """
-    print("\n" + "=" * 70)
-    print("Testing Block Validation Rules...")
-    print("=" * 70)
-
-    test_network = RailwayNetwork()
-
-    for x in range(8):
-        test_network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
-
-    print("\n[TEST 1] Verifying disconnected tracks are rejected...")
-    try:
-        test_network.create_block_with_tracks(
-            block_id="TEST_DISCONNECTED",
-            positions=[(0, 0), (4, 0)],
-            name="Test",
-        )
-        assert False, "Should have raised ValueError for disconnected tracks"
-    except ValueError as e:
-        assert "not continuous" in str(e).lower(), f"Wrong error message: {e}"
-        print(f"  ✓ Correctly rejected: {e}")
-
-    print("\n[TEST 2] Verifying switches cannot be in blocks...")
-    switch_track = TrackSegment(5, 0, track_bits=TRACK_EW | TRACK_NE)
-    test_network.add_track(switch_track)
-    switch = Switch(switch_id="SW_5_0", x=5, y=0)
-    test_network.add_switch(switch)
-    switch_track.switch_id = switch.switch_id
-    try:
-        test_network.create_block_with_tracks(
-            block_id="TEST_WITH_SWITCH",
-            positions=[(3, 0), (4, 0), (5, 0)],
-            name="Test",
-        )
-        assert False, "Should have raised ValueError for switch in block"
-    except ValueError as e:
-        assert "switch" in str(e).lower(), f"Wrong error message: {e}"
-        print(f"  ✓ Correctly rejected: {e}")
-
-    print("\n[TEST 3] Verifying duplicate block IDs are rejected...")
-    test_network.create_block_with_tracks(
-        block_id="TEST_BLOCK_1", positions=[(0, 0), (1, 0)], name="Test Block 1"
-    )
-    try:
-        test_network.create_block_with_tracks(
-            block_id="TEST_BLOCK_1",
-            positions=[(6, 0)],
-            name="Test",
-        )
-        assert False, "Should have raised ValueError for duplicate block ID"
-    except ValueError as e:
-        assert "already exists" in str(e).lower(), f"Wrong error message: {e}"
-        print(f"  ✓ Correctly rejected: {e}")
-
-    print("\n" + "=" * 70)
-    print("✓ Block Validation Tests Passed")
-    print("=" * 70)
 
 
 # Track-tile layout. Each entry: (x, y, bits, role).
@@ -189,7 +125,7 @@ def _add_plain_tracks(network: RailwayNetwork) -> None:
     """Place all non-switch tiles for both tracks."""
     for tiles in (S_TRACK_TILES, N_TRACK_TILES):
         for (x, y, bits, _role) in tiles:
-            network.add_track(TrackSegment(x, y, track_bits=bits))
+            network.add_track(Tile(x, y, track_bits=bits))
 
 
 def _add_crossovers(network: RailwayNetwork) -> None:
@@ -202,7 +138,7 @@ def _add_crossovers(network: RailwayNetwork) -> None:
     """
     from enums import SwitchState
     for (sx, sy, sid) in ((2, 3, "SW_X1"), (8, 9, "SW_X2")):
-        tile = TrackSegment(sx, sy, track_bits=SCISSORS_BITS)
+        tile = Tile(sx, sy, track_bits=SCISSORS_BITS)
         network.add_track(tile)
         switch = Switch(switch_id=sid, x=sx, y=sy)
         # DIVERGE (1) = stay-on-track via NW/SE diagonals — the demo's
@@ -240,17 +176,17 @@ BLOCKS = [
 
 
 def _add_blocks(network: RailwayNetwork) -> None:
-    """Register every block in BLOCKS via create_block_with_tracks."""
+    """Register every block in BLOCKS via create_segment_with_tracks."""
     for (block_id, positions, name, length_cm, speed) in BLOCKS:
         kwargs = {
-            "block_id": block_id,
+            "segment_id": block_id,
             "positions": positions,
             "name": name,
             "length_cm": length_cm,
         }
         if speed is not None:
             kwargs["speed_limit_kmh"] = speed
-        network.create_block_with_tracks(**kwargs)
+        network.create_segment_with_tracks(**kwargs)
 
 
 # Each station entry: (station_id, name, first_tile, extra_tiles, platform_side)

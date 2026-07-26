@@ -10,11 +10,11 @@ simulation loop.
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from block_occupancy import BlockOccupancyDetector, InputInterface
+from block_occupancy import BlockOccupancyDetector, OccupancyInput
 from constants import UNKNOWN_TRAIN_ID
 
 
-class ScriptedInput(InputInterface):
+class ScriptedInput(OccupancyInput):
     """Returns a pre-scripted sequence of raw per-block current maps, one per
     read_block_currents() call; repeats the final frame once exhausted."""
 
@@ -180,11 +180,13 @@ def test_attribute_unresolved_entry_becomes_unknown_occupant():
     entered, _ = det.step()
     assert entered == {"A"}
     # No reserving train and no covering span -> unmodeled (unknown) occupant
-    # (design_new.md "Attribution"): committed to the reserved sentinel, not
-    # routed to any train, and kept confirmed so it blocks availability there.
+    # (design_new.md "Attribution"): attributed to the reserved sentinel and kept
+    # confirmed so it blocks availability there. `attribute()` is a pure
+    # attribution step — the Step-0 preamble commits the sentinel slice through
+    # `BlockManager.occupy_blocks(...)`, so no block state is written here.
     entered_by_train, _ = det.attribute(entered, set())
-    assert entered_by_train == {}
-    assert net.blocks["A"].occupied_by == UNKNOWN_TRAIN_ID
+    assert entered_by_train == {UNKNOWN_TRAIN_ID: {"A"}}
+    assert net.blocks["A"].occupied_by is None
     assert det.confirmed_occupied == {"A"}
 
 

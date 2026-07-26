@@ -49,7 +49,7 @@ read as straight horizontal running lines on screen.
 
 from network import RailwayNetwork
 from track import (
-    TrackSegment,
+    Tile,
     TRACK_NS,
     TRACK_EW,
     TRACK_NE,
@@ -67,74 +67,10 @@ from switch import Switch
 SCENE_ID = "demo_6"
 
 
-def test_block_validation():
-    """Test that block validation rules are working correctly.
-
-    Same checks as demo_main.test_block_validation — the server's startup
-    block-validation gate calls this on whichever scene module is active.
-    """
-    print("\n" + "=" * 70)
-    print("Testing Block Validation Rules...")
-    print("=" * 70)
-
-    test_network = RailwayNetwork()
-
-    for x in range(8):
-        test_network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
-
-    print("\n[TEST 1] Verifying disconnected tracks are rejected...")
-    try:
-        test_network.create_block_with_tracks(
-            block_id="TEST_DISCONNECTED",
-            positions=[(0, 0), (4, 0)],
-            name="Test",
-        )
-        assert False, "Should have raised ValueError for disconnected tracks"
-    except ValueError as e:
-        assert "not continuous" in str(e).lower(), f"Wrong error message: {e}"
-        print(f"  ✓ Correctly rejected: {e}")
-
-    print("\n[TEST 2] Verifying switches cannot be in blocks...")
-    switch_track = TrackSegment(5, 0, track_bits=TRACK_EW | TRACK_NE)
-    test_network.add_track(switch_track)
-    switch = Switch(switch_id="SW_5_0", x=5, y=0)
-    test_network.add_switch(switch)
-    switch_track.switch_id = switch.switch_id
-    try:
-        test_network.create_block_with_tracks(
-            block_id="TEST_WITH_SWITCH",
-            positions=[(3, 0), (4, 0), (5, 0)],
-            name="Test",
-        )
-        assert False, "Should have raised ValueError for switch in block"
-    except ValueError as e:
-        assert "switch" in str(e).lower(), f"Wrong error message: {e}"
-        print(f"  ✓ Correctly rejected: {e}")
-
-    print("\n[TEST 3] Verifying duplicate block IDs are rejected...")
-    test_network.create_block_with_tracks(
-        block_id="TEST_BLOCK_1", positions=[(0, 0), (1, 0)], name="Test Block 1"
-    )
-    try:
-        test_network.create_block_with_tracks(
-            block_id="TEST_BLOCK_1",
-            positions=[(6, 0)],
-            name="Test",
-        )
-        assert False, "Should have raised ValueError for duplicate block ID"
-    except ValueError as e:
-        assert "already exists" in str(e).lower(), f"Wrong error message: {e}"
-        print(f"  ✓ Correctly rejected: {e}")
-
-    print("\n" + "=" * 70)
-    print("✓ Block Validation Tests Passed")
-    print("=" * 70)
-
-
 # Baked track geometry from layouts/demo_6.json. Each entry: (x, y, bits).
 # dead_end_ports (buffer stops) are NOT listed here — the network recomputes
 # them from connectivity when tracks are added (see
-# TrackSegment._update_dead_ends). Switch tiles carry their geometry here and
+# Tile._update_dead_ends). Switch tiles carry their geometry here and
 # get their Switch entity from SWITCHES below.
 TILES = [
     (-22, 2, TRACK_NE),
@@ -665,7 +601,7 @@ SWITCHES = [
 
 
 # Blocks created on top of the platform blocks. Each entry:
-# (block_id, name, [positions], length_cm, speed_limit_kmh). create_block_with_tracks
+# (block_id, name, [positions], length_cm, speed_limit_kmh). create_segment_with_tracks
 # assigns the tiles, validates continuity, and rebuilds the block's ordered_tiles.
 BLOCKS = [
     # Yard approach blocks: the road between each platform and its
@@ -984,7 +920,7 @@ BRANCH_TRAIN_IDS = [
 def _add_tracks(network: RailwayNetwork) -> None:
     """Place every baked track tile."""
     for (x, y, bits) in TILES:
-        network.add_track(TrackSegment(x, y, track_bits=bits))
+        network.add_track(Tile(x, y, track_bits=bits))
 
 
 def _add_switches(network: RailwayNetwork) -> None:
@@ -1026,8 +962,8 @@ def _add_stations(network: RailwayNetwork) -> None:
 def _add_blocks(network: RailwayNetwork) -> None:
     """Create the approach and running-line blocks from their baked tile lists."""
     for (block_id, name, positions, length_cm, speed_limit_kmh) in BLOCKS:
-        network.create_block_with_tracks(
-            block_id=block_id,
+        network.create_segment_with_tracks(
+            segment_id=block_id,
             positions=positions,
             name=name,
             length_cm=length_cm,
@@ -1093,7 +1029,7 @@ def _yard_train_placement(network: RailwayNetwork, platform_id: str):
             neighbor = network.get_neighbor(x, y, edge)
             if neighbor is None or (neighbor.x, neighbor.y) in tile_set:
                 continue
-            if neighbor.block_section_id == approach_id:
+            if neighbor.block_id == approach_id:
                 return edge_to_dir[edge], (x, y)
     raise ValueError(
         f"No throat tile for {platform_id!r}: none of its tiles border "

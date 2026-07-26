@@ -44,6 +44,9 @@ node_modules/
 /static/dist/
 .vite/
 
+# Skill dev scratch (benchmark/eval iterations from building a skill, not the skill itself)
+.claude/skills/*-workspace/
+
 # Persisted runtime event log (design_new.md Event log)
 event_log.jsonl
 

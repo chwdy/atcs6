@@ -203,18 +203,15 @@ class BlockManager:
         self._blocks_pending_deenergize.add(block_id)
 
     def take_blocks_to_deenergize(self) -> List[str]:
-        """Return and clear the block ids queued this tick whose whole power
-        district is *still* unheld, so the caller drives them to 0V.
+        """Return and clear the block ids queued this tick that are *still*
+        unheld, so the caller drives them to 0V.
 
-        A power district shares one feed, so it stays energized while any of its
-        blocks is held — occupied or reserved by any train — and is powered off
-        only when no train holds it (design_new.md "Power"). A queued block is
-        therefore returned for zeroing only when its entire district is unheld;
-        for an ungrouped block the district is the block itself, so this reduces
-        to the block's own occupancy/reservation. Re-checking the live block
-        fields here — not the queued snapshot — means a district vacated and
-        then re-held within the same tick stays energized. This is the
-        event-driven replacement for the former all-blocks de-energize sweep.
+        A block is one power feed, so it stays energized while it is held —
+        occupied or reserved by any train — and is powered off only when no
+        train holds it (design_new.md "Power"). Re-checking the live block
+        fields here — not the queued snapshot — means a block vacated and then
+        re-held within the same tick stays energized. This is the event-driven
+        replacement for the former all-blocks de-energize sweep.
         """
         pending = self._blocks_pending_deenergize
         self._blocks_pending_deenergize = set()
@@ -223,7 +220,7 @@ class BlockManager:
             block = self._block_registry.get(block_id)
             if block is None:
                 continue
-            if not self._power_district_is_held(block_id):
+            if not self._block_is_held(block_id):
                 unheld.append(block_id)
         return unheld
 
@@ -286,21 +283,6 @@ class BlockManager:
             )
             return False
 
-        # Power-district intrusion (design_new.md "Power district", line 2397):
-        # a second train physically drawing power in a district already held by
-        # another train is a fatal physical-entry conflict — the power-level
-        # analogue of two trains in one block. block_id's own occupancy is clean
-        # for this train by here; this checks the rest of its district.
-        district_conflict = self._power_district_holder_other(block_id, train_id)
-        if district_conflict is not None:
-            self._report_fatal_conflict(
-                block_id=block_id,
-                train_id=train_id,
-                conflict_kind=FatalConflictKind.POWER_DISTRICT_INTRUSION,
-                prior_owner_train_id=district_conflict[1],
-            )
-            return False
-
         # Clean entry per design_new.md:717 — set physical occupancy, clear
         # stale caution, and consume any same-train reservation. The
         # reservation clear must run for every clean entry (FREE / RESERVED
@@ -353,66 +335,20 @@ class BlockManager:
             # Receiver issues must not mask the underlying conflict.
             pass
 
-    def _power_district_holder_other(
-        self, block_id: str, train_id: str
-    ) -> Optional[Tuple[str, str]]:
-        """One-train-per-power-district check (design_new.md "Power district").
+    def _block_is_held(self, block_id: str) -> bool:
+        """True when `block_id` is still held — occupied or reserved by any
+        train.
 
-        If `block_id`'s power district has any OTHER block held — occupied or
-        reserved — by a train other than `train_id`, return
-        ``(held_block_id, holder_train_id)``; else ``None``. `block_id`'s own
-        occupancy/reservation is checked by the caller's per-block logic, so
-        this scans only the rest of the district. Returns ``None`` for an
-        ungrouped (single-block) district and when no network is wired.
+        A block is one power feed (design_new.md "One train per Block (power
+        domain)"), so it stays energized while it is held and is powered off
+        only once nothing holds it.
         """
-        network = self.network
-        if network is None:
-            return None
-        district_blocks = network.district_block_ids(block_id)
-        if len(district_blocks) <= 1:
-            return None
-        for other_id in district_blocks:
-            if other_id == block_id:
-                continue
-            other = self._block_registry.get(other_id)
-            if other is None:
-                continue
-            if other.occupied_by is not None and other.occupied_by != train_id:
-                return (other_id, other.occupied_by)
-            if (
-                other.reserved_for_train is not None
-                and other.reserved_for_train != train_id
-            ):
-                return (other_id, other.reserved_for_train)
-        return None
-
-    def _power_district_is_held(self, block_id: str) -> bool:
-        """True when any block in `block_id`'s power district is still held —
-        occupied or reserved by any train.
-
-        A power district stays energized while any member is held and is powered
-        off only when the whole district is unheld (design_new.md "Power"). For
-        an ungrouped (single-block) district, or when no network is wired, this
-        reduces to the block's own occupancy/reservation. Shares the canonical
-        `RailwayNetwork.district_block_ids(...)` lookup with the one-train-per-
-        district intrusion check.
-        """
-        network = self.network
-        district_blocks = (
-            network.district_block_ids(block_id)
-            if network is not None
-            else [block_id]
+        block = self._block_registry.get(block_id)
+        if block is None:
+            return False
+        return (
+            block.occupied_by is not None or block.reserved_for_train is not None
         )
-        for member_id in district_blocks:
-            member = self._block_registry.get(member_id)
-            if member is None:
-                continue
-            if (
-                member.occupied_by is not None
-                or member.reserved_for_train is not None
-            ):
-                return True
-        return False
 
     def _emit_diagnostic(self, message: str, *, block_id: str, train_id: Optional[str] = None) -> None:
         """Emit a runtime diagnostic through `NotificationCenter`.
@@ -757,18 +693,6 @@ class BlockManager:
                     failed_block_id=block_id,
                     reason="reserved_by_other_path",
                 )
-            # Power-district eligibility (design_new.md "Power district", line
-            # 2396): a candidate block whose district holds — occupies or
-            # reserves — any block for a different train is not eligible, the
-            # same way an occupied or other-reserved block is not. Keeps a path
-            # from ever being reserved into a district another train holds.
-            if self._power_district_holder_other(block_id, train_id) is not None:
-                return ReserveResult(
-                    success=False,
-                    failed_block_id=block_id,
-                    reason="power_district_held_by_other_train",
-                )
-
             traversal = directions.get(block_id) if directions else None
             if traversal is None:
                 return ReserveResult(
@@ -1097,7 +1021,7 @@ class BlockManager:
             if tile is None or not (tile.track_bits & edge_mask):
                 continue
             neighbour = self.network.get_neighbor(tx, ty, direction)
-            if neighbour is None or neighbour.block_section_id != block.block_id:
+            if neighbour is None or neighbour.block_id != block.block_id:
                 exit_tile = (tx, ty)
                 break
         if exit_tile is None:
@@ -1126,12 +1050,12 @@ class BlockManager:
             if tile is None:
                 return (None, None)
             # Plain block tile: this is the next reachable block.
-            if tile.block_section_id and not tile.is_switch:
-                return (self._block_registry.get(tile.block_section_id), entry_edge)
-            if tile.block_section_id and tile.is_switch:
+            if tile.block_id and not tile.is_switch:
+                return (self._block_registry.get(tile.block_id), entry_edge)
+            if tile.block_id and tile.is_switch:
                 # Block-internal switch tile: still part of a block; treat as
                 # reaching that block.
-                return (self._block_registry.get(tile.block_section_id), entry_edge)
+                return (self._block_registry.get(tile.block_id), entry_edge)
             # Bare switch tile (boundary between blocks). Cross via the live
             # active exit determined by the current Switch.position.
             if tile.is_switch:

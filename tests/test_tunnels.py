@@ -9,11 +9,11 @@ Phase C and has its own tests.
 import pytest
 
 from network import RailwayNetwork
-from track import TrackSegment, TRACK_EW, TRACK_NS
+from track import Tile, TRACK_EW, TRACK_NS
 
 
 def _segs(x, y, bits):
-    return TrackSegment(x=x, y=y, track_bits=bits)
+    return Tile(x=x, y=y, track_bits=bits)
 
 
 def _two_dead_end_tiles() -> RailwayNetwork:

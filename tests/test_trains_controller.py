@@ -4,10 +4,9 @@ Train controller tests - Controller basics, ATC, braking
 Run with: pytest tests/test_trains_controller.py -v
 """
 
-import logging
 import pytest
 
-from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NW
+from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
 from enums import BlockState, Direction, TrainState, HandlePosition
@@ -29,7 +28,7 @@ def network():
 @pytest.fixture
 def straight_ew_track(network):
     for x in range(5):
-        track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+        track = Tile(x=x, y=0, track_bits=TRACK_EW)
         network.add_track(track)
     return network
 
@@ -72,7 +71,7 @@ class TestRaceConditionFix:
     """Tests for race condition fixes."""
 
     def test_block_manager_prevents_premature_release(self, network):
-        block = network.create_block("B1", "Block 1")
+        block = network.create_segment("B1", "Block 1")
         network.block_manager.occupy_block("B1", "TRAIN_1")
         assert block.state == BlockState.OCCUPIED
         network.block_manager.set_block_to_caution("B1")
@@ -101,11 +100,11 @@ class TestRaceConditionFix:
         network = RailwayNetwork()
 
         # Create track and block with speed limit
-        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
-        track.block_section_id = "B1"
+        track = Tile(x=0, y=0, track_bits=TRACK_EW)
+        track.segment_id = "B1"
         network.add_track(track)
 
-        block = network.create_block("B1", "Block 1")
+        block = network.create_segment("B1", "Block 1")
         block.length_cm = 1000.0
         block.speed_limit_kmh = 30.0  # 30 km/h limit
 
@@ -232,11 +231,11 @@ class TestTrainControllerBrakingNotches:
             make_synthetic_path,
         )
 
-        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
-        next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        track = Tile(x=0, y=0, track_bits=TRACK_EW)
+        next_track = Tile(x=1, y=0, track_bits=TRACK_EW)
         network.add_track(track)
         network.add_track(next_track)
-        network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
+        network.create_segment_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
 
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="TRAIN_MANUAL", consist=[car], max_speed=60.0)
@@ -303,25 +302,38 @@ class TestTrainControllerBrakingNotches:
 
 
 
-class TestTrainDebugLogging:
-    """Regression tests for controller/physics debug logging (2026-01-22)."""
+class TestPoweredOffControllerTick:
+    """A powered-off controller's Phase-2 tick entry still runs, but is inert.
 
-    def test_train_controller_logs_power_off_state(self, caplog):
-        """TrainController.tick should log when power is off."""
+    design_new.md "SimulationController.update() calls": for a train that is
+    `OFF` at transaction start, route Phase 1 is skipped while Phase 2 still
+    runs, so `power_on_cmd()` can be accepted. This replaces an older test that
+    asserted a `logger.debug("power off")` trace — component-local logging is
+    forbidden by design ("NotificationCenter is the only runtime sink"), so the
+    trace is gone and the behavior underneath it is what's worth pinning.
+    """
+
+    def _controller(self):
         network = RailwayNetwork()
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_LOG_1", consist=[car], max_speed=60.0)
         network.add_train(train)
-
         sim = SimulationController(network)
-        controller = sim._get_or_create_controller(train)
+        return sim._get_or_create_controller(train)
 
-        caplog.set_level(logging.DEBUG)
+    def test_tick_on_a_powered_off_controller_is_inert(self):
+        controller = self._controller()
+        assert controller.state == TrainState.OFF
+        controller.tick(0.1)  # must not raise
+        assert controller.state == TrainState.OFF
+        assert controller.power_on is False
+
+    def test_power_on_is_accepted_while_off(self):
+        controller = self._controller()
         controller.tick(0.1)
-
-        assert any(
-            "power off" in record.message.lower() for record in caplog.records
-        ), "Expected debug log for power off state"
+        assert controller.commands.power_on_cmd().success is True
+        assert controller.state == TrainState.READY
+        assert controller.power_on is True
 
 
 
@@ -339,14 +351,14 @@ class TestTrainClearancePrecisionBugFix:
         """Remaining distance should reflect head distance in current tile."""
         network = RailwayNetwork()
 
-        track_a = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
-        track_b = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
-        track_a.block_section_id = "B1"
-        track_b.block_section_id = "B1"
+        track_a = Tile(x=0, y=0, track_bits=TRACK_EW)
+        track_b = Tile(x=1, y=0, track_bits=TRACK_EW)
+        track_a.segment_id = "B1"
+        track_b.segment_id = "B1"
         network.add_track(track_a)
         network.add_track(track_b)
 
-        block = network.create_block("B1", "Block 1")
+        block = network.create_segment("B1", "Block 1")
         block.length_cm = 40.0
 
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=10.0)
@@ -371,3 +383,80 @@ class TestTrainClearancePrecisionBugFix:
 
 
 
+
+
+class TestATCOverspeedWarning:
+    """`overspeed_warn_threshold_kmh` drives a real diagnostic warning.
+
+    design_new.md "Runtime settings": the margin above the ATC speed limit "at
+    which ATC emits a diagnostic overspeed warning". It is edge triggered on
+    entry into the warn band, so one excursion emits one warning rather than one
+    per tick.
+
+    The branch sits below the EB escalation, so it is reachable only with live
+    authority: a moving train with no authority is escalated to EB first.
+    """
+
+    def _sim_with_authority(self):
+        network = RailwayNetwork()
+        for x in range(6):
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
+        for blk, (a, b) in [("B1", (0, 1)), ("B2", (2, 3)), ("B3", (4, 5))]:
+            network.create_segment_with_tracks(
+                segment_id=blk, positions=[(a, 0), (b, 0)], name=blk, length_cm=200.0
+            )
+            network.blocks[blk].speed_limit_kmh = 30.0
+
+        car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
+        train = Train(train_id="T_WARN", consist=[car], max_speed=100.0)
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+        network.block_manager.occupy_block("B1", train.train_id)
+
+        dispatcher = PathDispatcher(network)
+        sim = SimulationController(network, dispatcher)
+        controller = sim._get_or_create_controller(train)
+        set_train_span(
+            controller, (0, 0), facing_direction=Direction.EAST, occupied_blocks=["B1"]
+        )
+        controller.commands.cab = "A"
+        controller.ops.state = TrainState.RUNNING_MOVING
+
+        assert dispatcher.create_path(
+            train_id=train.train_id, requested_destination_block_id="B3"
+        ).success
+        return sim, controller
+
+    @staticmethod
+    def _warnings(controller):
+        return [n for n in controller.notifications.pending if "overspeed warning" in n]
+
+    def _tick_at(self, sim, controller, speed_kmh):
+        controller.physics_sync.current_speed_kmh = speed_kmh
+        sim.update(0.1)
+
+    def test_sustained_overspeed_in_warn_band_emits_exactly_one_warning(self):
+        sim, controller = self._sim_with_authority()
+        for _ in range(3):
+            self._tick_at(sim, controller, 36.0)  # 6 over a 30 limit
+
+        assert controller.atc.speed_limit == 30.0
+        assert controller.eb.active is False, "warn band must not escalate to EB"
+        assert len(self._warnings(controller)) == 1, controller.notifications.pending
+
+    def test_dropping_below_the_threshold_rearms_the_warning(self):
+        sim, controller = self._sim_with_authority()
+        self._tick_at(sim, controller, 36.0)
+        assert len(self._warnings(controller)) == 1
+
+        self._tick_at(sim, controller, 29.0)  # back inside the limit
+        assert controller._overspeed_warned is False
+
+        self._tick_at(sim, controller, 36.0)  # a second excursion
+        assert len(self._warnings(controller)) == 2
+
+    def test_no_warning_below_the_threshold(self):
+        sim, controller = self._sim_with_authority()
+        self._tick_at(sim, controller, 32.0)  # only 2 over: inside the margin
+        assert self._warnings(controller) == []
+        assert controller._overspeed_warned is False

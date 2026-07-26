@@ -11,7 +11,7 @@ export type PathAcquisitionFailureKind = "no_viable_path" | "blocked_before_targ
 
 export type TargetResolutionFailureKind = "missing_target" | "target_unavailable";
 
-export type FatalConflictKind = "occupied_by_other_train" | "reserved_for_other_train" | "switch_occupied_by_other_train" | "disabled_resource_entry" | "malformed_route_key" | "switch_intrusion" | "power_district_intrusion";
+export type FatalConflictKind = "occupied_by_other_train" | "reserved_for_other_train" | "switch_occupied_by_other_train" | "disabled_resource_entry" | "malformed_route_key" | "switch_intrusion";
 
 export type ValidationErrorType = "unblocked_tile" | "block_occupied" | "block_reserved" | "block_disabled" | "block_manual" | "switch_locked" | "switch_manual" | "switch_disabled" | "flank_switch_conflict";
 
@@ -62,6 +62,7 @@ export interface PendingPathCancelRequest {
   initiator: string;
   reason: string | null;
   deviation_kind: "out_of_sequence" | "beyond_authorized_target" | null;
+  route_progress_kind: "run_complete" | null;
 }
 
 export interface PhaseLatches {
@@ -86,7 +87,7 @@ export interface PathAcquisitionResult {
   requested_destination_block_id: string | null;
   requested_destination_direction: string | null;
   authority_end_block_id: string | null;
-  resource_sequence: unknown[];
+  resource_sequence: unknown[] | null;
   reason: string;
 }
 

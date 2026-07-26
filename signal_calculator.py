@@ -80,8 +80,8 @@ class SignalCalculator:
             block_train = (
                 first_block.reserved_for_train or first_block.occupied_by
             )
-            if signal_track and signal_track.block_section_id:
-                signal_block = n.blocks.get(signal_track.block_section_id)
+            if signal_track and signal_track.block_id:
+                signal_block = n.blocks.get(signal_track.block_id)
                 # The signal allows the monitored (reserved) block to be entered
                 # only if it can establish continuity with the train approaching
                 # from this signal's side. Two ways to do that:
@@ -195,7 +195,7 @@ class SignalCalculator:
         if not signal_track:
             return False
 
-        if signal_track.block_section_id == signal.monitored_block_id:
+        if signal_track.block_id == signal.monitored_block_id:
             return True
 
         track_bits = signal_track.track_bits
@@ -243,7 +243,7 @@ class SignalCalculator:
                 if not next_track:
                     break
 
-                if next_track.block_section_id == signal.monitored_block_id:
+                if next_track.block_id == signal.monitored_block_id:
                     return True
 
                 entry_edge = {"N": "S", "S": "N", "E": "W", "W": "E"}.get(
@@ -310,7 +310,7 @@ class SignalCalculator:
             if not next_track:
                 continue
 
-            if next_track.block_section_id == target_block_id:
+            if next_track.block_id == target_block_id:
                 return True
 
             entry_edge = opposite_edges.get(exit_edge)
@@ -393,7 +393,7 @@ class SignalCalculator:
             if not next_track:
                 continue
 
-            if next_track.block_section_id == target_block_id:
+            if next_track.block_id == target_block_id:
                 return dist + 1
 
             entry_edge = opposite_edges.get(exit_edge)
@@ -431,7 +431,7 @@ class SignalCalculator:
 
         x, y = signal.position
         track = n.get_track(x, y)
-        own_block = track.block_section_id if track else None
+        own_block = track.block_id if track else None
 
         reachable_with_distance = []
         for block_id in n.blocks:
@@ -455,10 +455,10 @@ class SignalCalculator:
 
         x, y = signal.position
         track = n.get_track(x, y)
-        if not track or not track.block_section_id:
+        if not track or not track.block_id:
             return False
 
-        block_id = track.block_section_id
+        block_id = track.block_id
         detection_dir = signal.detection_direction.upper()
 
         path = track.get_path_at_edge(detection_dir)
@@ -483,10 +483,10 @@ class SignalCalculator:
             return False
         detect_dx, detect_dy = detect_offset
         detect_neighbor = n.get_track(x + detect_dx, y + detect_dy)
-        if not detect_neighbor or detect_neighbor.block_section_id != block_id:
+        if not detect_neighbor or detect_neighbor.block_id != block_id:
             return False
 
-        return neighbor is None or neighbor.block_section_id != block_id
+        return neighbor is None or neighbor.block_id != block_id
 
     # ------------------------------------------------------------------
     # Two-block lookahead helpers
@@ -504,7 +504,7 @@ class SignalCalculator:
         edge_offsets = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
 
         block_tracks = [
-            (pos, t) for pos, t in n.tracks.items() if t.block_section_id == block_id
+            (pos, t) for pos, t in n.tracks.items() if t.block_id == block_id
         ]
         if not block_tracks:
             return None
@@ -525,7 +525,7 @@ class SignalCalculator:
                 if offset:
                     next_x, next_y = pos[0] + offset[0], pos[1] + offset[1]
                     next_track = n.get_track(next_x, next_y)
-                    if not next_track or next_track.block_section_id != block_id:
+                    if not next_track or next_track.block_id != block_id:
                         edge_tracks.append((pos, track))
 
         if not edge_tracks:
@@ -562,10 +562,10 @@ class SignalCalculator:
                     break
 
                 if (
-                    next_track.block_section_id
-                    and next_track.block_section_id != block_id
+                    next_track.block_id
+                    and next_track.block_id != block_id
                 ):
-                    return next_track.block_section_id
+                    return next_track.block_id
 
                 entry_edge = {"N": "S", "S": "N", "E": "W", "W": "E"}.get(
                     current_exit_edge

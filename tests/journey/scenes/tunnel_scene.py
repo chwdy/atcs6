@@ -19,7 +19,7 @@ and (10, 0).W are no longer dead-ends; only (0, 0).W and (12, 0).E are.
 
 from train_route import BlockTarget, Route, RouteMode, RouteTask
 from bootstrap import bootstrap_runtime
-from track import TRACK_EW, TrackSegment
+from track import TRACK_EW, Tile
 
 from .base import SceneFixture
 
@@ -36,19 +36,19 @@ class TunnelScene:
         )
 
         for x in range(3):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
         for x in range(10, 13):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
 
-        network.create_block_with_tracks(
-            block_id=self.west_block_id,
+        network.create_segment_with_tracks(
+            segment_id=self.west_block_id,
             positions=[(0, 0), (1, 0), (2, 0)],
             name="west",
             length_cm=150.0,
             speed_limit_kmh=30.0,
         )
-        network.create_block_with_tracks(
-            block_id=self.east_block_id,
+        network.create_segment_with_tracks(
+            segment_id=self.east_block_id,
             positions=[(10, 0), (11, 0), (12, 0)],
             name="east",
             length_cm=150.0,

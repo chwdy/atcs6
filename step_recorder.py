@@ -10,7 +10,7 @@ This format records the construction steps used to build a layout, making it:
 
 from typing import Dict, List, Optional, Set
 
-from track import TrackSegment
+from track import Tile
 
 
 class StepRecorder:
@@ -59,7 +59,7 @@ class StepRecorder:
         `network.add_platform`) creates a block named
         ``f"{platform_id}_BLOCK"`` and assigns the platform's tile to it.
         The recorder must skip those blocks in `_generate_block_steps`
-        otherwise replay double-creates them and `create_block_with_tracks`
+        otherwise replay double-creates them and `create_segment_with_tracks`
         fails with "Block ... already exists".
         """
         return {f"{platform_id}_BLOCK" for platform_id in network.platforms.keys()}
@@ -76,10 +76,10 @@ class StepRecorder:
         steps = []
 
         # Separate tracks by block assignment
-        tracks_by_block: Dict[Optional[str], List[TrackSegment]] = {}
+        tracks_by_block: Dict[Optional[str], List[Tile]] = {}
 
         for pos, track in network.tracks.items():
-            block_id = track.block_section_id
+            block_id = track.block_id
             if block_id not in tracks_by_block:
                 tracks_by_block[block_id] = []
             tracks_by_block[block_id].append(track)
@@ -163,7 +163,7 @@ class StepRecorder:
     def _generate_switch_steps(self, network: "RailwayNetwork") -> List[dict]:
         """Generate Switch-entity creation steps.
 
-        A switch TrackSegment is laid down by `add_track`, but the
+        A switch Tile is laid down by `add_track`, but the
         corresponding `Switch` entity (carrying lengths, radii, type, name)
         must be registered separately via `network.add_switch(...)`. Without
         this step, switches survive snapshot round-trip but vanish on the
@@ -216,7 +216,7 @@ class StepRecorder:
             # Find all tracks belonging to this block
             positions = []
             for pos, track in network.tracks.items():
-                if track.block_section_id == block_id:
+                if track.block_id == block_id:
                     positions.append([track.x, track.y])
 
             # Sort positions for consistent ordering

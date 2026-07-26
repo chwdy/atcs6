@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -130,7 +131,7 @@ class NotificationCenter:
         source: str,
         kind: str,
         severity: Severity,
-        event_time: float,
+        event_time: Optional[float] = None,
         train_id: Optional[str] = None,
         path_id: Optional[str] = None,
         payload: Optional[Dict[str, Any]] = None,
@@ -141,14 +142,19 @@ class NotificationCenter:
             source: Emitting component name.
             kind: Short kind discriminator.
             severity: Severity level.
-            event_time: Simulation event time in seconds.
+            event_time: Wall-clock `time.time()` seconds. Omit it and this call
+                samples it. Pass it only to share one local sample between this
+                notification and a related entity write in the same step, which
+                is the one case design_new.md "Time sampling" allows. Never pass
+                `simulation_time`: the stream is wall-clock by design, so a
+                playback-scaled value would not order against its siblings.
             train_id: Optional related train id.
             path_id: Optional related path id.
             payload: Optional per-kind payload (copied defensively).
         """
         n = Notification(
             notification_id=self._next_id,
-            event_time=event_time,
+            event_time=time.time() if event_time is None else event_time,
             source=source,
             kind=kind,
             severity=severity,
@@ -168,10 +174,25 @@ class NotificationCenter:
             return []
         return list(self._archive[-n:])
 
+    @property
+    def log_path(self) -> Optional[str]:
+        """The persisted event-log path, or `None` when persistence is off.
+
+        The read-only viewer reads the persisted stream through this so that an
+        earlier run's incidents survive a restart (design_new.md "Event log").
+        """
+        return self._log_path
+
     # -- event-log persistence (design_new.md "Event log") ----------------
 
     def enable_event_log(self, path: str) -> None:
-        """Persist every subsequent emit to ``path`` as append-only JSONL."""
+        """Persist every subsequent emit to ``path`` as append-only JSONL.
+
+        A fresh `NotificationCenter` numbers from 1, but the log is append-only
+        across sessions. Resume past the highest id already on disk so
+        "the increasing `notification_id` is the order the log reads back in"
+        holds for the whole file, not just within one session.
+        """
         directory = os.path.dirname(path)
         if directory:
             try:
@@ -179,6 +200,31 @@ class NotificationCenter:
             except OSError:
                 pass
         self._log_path = path
+        self._next_id = max(self._next_id, self._last_logged_id(path) + 1)
+
+    @staticmethod
+    def _last_logged_id(path: str) -> int:
+        """Highest `notification_id` already persisted at `path`; 0 when none.
+
+        A malformed line is skipped rather than failing the boot — a corrupt
+        log must not stop the runtime from recording new events.
+        """
+        highest = 0
+        if not path or not os.path.exists(path):
+            return highest
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        highest = max(highest, int(json.loads(line)["notification_id"]))
+                    except (ValueError, KeyError, TypeError):
+                        continue
+        except OSError:
+            return highest
+        return highest
 
     def _persist(self, n: Notification) -> None:
         """Append one notification to the disk event log; never raises (a log

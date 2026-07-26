@@ -21,9 +21,8 @@ import {
 } from '../lib/helpers';
 import {
   fetchHardwareConfig,
-  hardwareSectionHtml,
-  bindHardwareSection,
-  SWITCH_HW_SLOTS,
+  switchHardwareSectionHtml,
+  bindSwitchHardwareSection,
 } from '../ui/hardware-binding';
 
 export class SwitchEditorHandler {
@@ -346,7 +345,7 @@ export class SwitchEditorHandler {
                 ${renderAvailabilitySegment('switch', switchData, { idBase: 'switch-availability' })}
             </div>
 
-            ${hardwareSectionHtml(hwCfg, switchData.switch_id, SWITCH_HW_SLOTS)}
+            ${switchHardwareSectionHtml(hwCfg, switchData.switch_id)}
 
             <!-- Maintenance — read-only wear counter (design_new.md "Maintenance
                  counters"); counts real alignment changes during simulation. -->
@@ -372,7 +371,7 @@ export class SwitchEditorHandler {
   }
 
   bindEventHandlers(switchData: any, hwCfg: any = null): void {
-    bindHardwareSection(hwCfg, switchData.switch_id);
+    bindSwitchHardwareSection(hwCfg, switchData.switch_id);
     // Availability segment (disabled / manual). Per docs/DESIGN_LANGUAGE.md
     // §3 segmented control and design_new.md "Availability flag REST API
     // surface". Toggling `disabled = True` runs admin-reject preconditions

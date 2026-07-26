@@ -18,11 +18,12 @@ import { RendererSignalHandler } from './renderer-signals';
 import { RendererPlatformHandler, type Platform, type PlatformBound } from './renderer-platforms';
 import { RendererStationHandler, type Station } from './renderer-stations';
 import { RendererBlockHandler, type BlockInfo } from './renderer-blocks';
+import { RendererSegmentHandler, type SegmentInfo } from './renderer-segments';
 import { RendererRouteHandler } from './renderer-routes';
 import { RendererTrainHandler, type TrainSnap } from './renderer-trains';
 import { RendererTunnelHandler, type TunnelPair } from './renderer-tunnels';
 import { RendererDebugHandler } from './renderer-debug';
-import type { NetworkPayload } from './payload-types';
+import { segmentsFromBlocks, type NetworkPayload } from './payload-types';
 import type { OverlayPhase, RendererOverlay } from './renderer-overlay';
 import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
 import { gridPreference } from '../lib/grid-preference';
@@ -178,7 +179,7 @@ interface RequestRedrawOpts {
 type BuildPreview =
   | { kind: 'tracks'; tracks: Track[] }
   | { kind: 'eraser'; path: Array<{ x: number; y: number }> }
-  | { kind: 'block'; path: Array<{ x: number; y: number }> }
+  | { kind: 'segment'; path: Array<{ x: number; y: number }> }
   | { kind: 'path'; path: Array<{ x: number; y: number }> }
   | { kind: 'invalid'; path: Array<{ x: number; y: number }> };
 
@@ -225,13 +226,15 @@ class Renderer {
   mouseY!: number;
   platformBounds!: PlatformBound[];
   labelBounds!: LabelBound[];
-  showBlockColorsOnly!: boolean;
-  // When set, the world layer tints each block by its power district instead of
-  // the per-block id colors. Driven by the power-district tool / panel.
-  showPowerDistrictColors!: boolean;
+  showSegmentColorsOnly!: boolean;
+  // When set, the world layer tints each tile by its owning block (the grouping)
+  // instead of the per-segment geometry colors. Driven by the block-grouping
+  // tool / panel.
+  showBlockGroupingColors!: boolean;
   currentBlocks!: Record<string, BlockInfo>;
-  blockColorCache!: Record<string, number | undefined>;
-  blockColorCounter!: number;
+  currentSegments!: Record<string, SegmentInfo>;
+  segmentColorCache!: Record<string, number | undefined>;
+  segmentColorCounter!: number;
   currentNetwork!: NetworkPayload | null;
   boxSelection!: Set<string>;
   selectionGroups!: SelectionOutlineGroup[];
@@ -251,6 +254,7 @@ class Renderer {
   platformHandler!: RendererPlatformHandler;
   stationHandler!: RendererStationHandler;
   blockHandler!: RendererBlockHandler;
+  segmentHandler!: RendererSegmentHandler;
   routeHandler!: RendererRouteHandler;
   trainHandler!: RendererTrainHandler;
   tunnelHandler!: RendererTunnelHandler;
@@ -311,20 +315,22 @@ class Renderer {
     // Items: { x, y, w, h, tier }. Reset at the top of _drawLive.
     this.labelBounds = [];
 
-    // Block display mode:
+    // Segment display mode:
     // - false: only show when debug checkbox is checked (full debug info)
-    // - true: show block colors only (for block tools)
-    this.showBlockColorsOnly = false;
-    // Power-district color overlay (on while a power-district tool/panel is open).
-    this.showPowerDistrictColors = false;
+    // - true: show segment colors only (for segment tools)
+    this.showSegmentColorsOnly = false;
+    // Block-grouping color overlay (on while a block tool/panel is open).
+    this.showBlockGroupingColors = false;
 
-    // Current blocks data for track coloring
+    // Current blocks data (power / occupancy / grouping) for track coloring
     this.currentBlocks = {};
+    // Current segment geometry, flattened out of each block's members.
+    this.currentSegments = {};
 
-    // Block color cache for golden angle distribution
-    // Maps block_id -> assigned hue (ensures consistent colors across renders)
-    this.blockColorCache = {};
-    this.blockColorCounter = 0;  // Increments for each new block
+    // Segment color cache for golden angle distribution
+    // Maps segment_id -> assigned hue (ensures consistent colors across renders)
+    this.segmentColorCache = {};
+    this.segmentColorCounter = 0;  // Increments for each new segment
 
     // Store current network for redraws
     this.currentNetwork = null;
@@ -353,6 +359,7 @@ class Renderer {
     this.platformHandler = new RendererPlatformHandler(this);
     this.stationHandler = new RendererStationHandler(this);
     this.blockHandler = new RendererBlockHandler(this);
+    this.segmentHandler = new RendererSegmentHandler(this);
     this.routeHandler = new RendererRouteHandler(this);
     this.trainHandler = new RendererTrainHandler(this);
     this.tunnelHandler = new RendererTunnelHandler(this);
@@ -377,7 +384,7 @@ class Renderer {
       const hasTrains = (this.currentNetwork?.trains?.length ?? 0) > 0;
 
       if (this.currentNetwork && (prevMouseX !== this.mouseX || prevMouseY !== this.mouseY)) {
-        if (showBlocks || this.showBlockColorsOnly || hasPlatforms || hasTrains) {
+        if (showBlocks || this.showSegmentColorsOnly || hasPlatforms || hasTrains) {
           this.requestRedraw({ live: true, world: false, reason: 'hover' });
         }
       }
@@ -394,7 +401,7 @@ class Renderer {
       const hasTrains = (this.currentNetwork?.trains?.length ?? 0) > 0;
 
       if (this.currentNetwork && (prevMouseX !== -1 || prevMouseY !== -1)) {
-        if (showBlocks || this.showBlockColorsOnly || hasPlatforms || hasTrains) {
+        if (showBlocks || this.showSegmentColorsOnly || hasPlatforms || hasTrains) {
           this.requestRedraw({ live: true, world: false, reason: 'mouseleave' });
         }
       }
@@ -579,12 +586,16 @@ class Renderer {
     if (!network || !network.tracks) {
       this.currentNetwork = null;
       this.currentBlocks = {};
+      this.currentSegments = {};
       this.currentPlatforms = [];
       this.trackMap = {};
       return false;
     }
     this.currentNetwork = network;
     this.currentBlocks = network.blocks || {};
+    // Segment geometry rides nested inside each block's members, so the
+    // geometry index is derived here rather than carried as a sibling map.
+    this.currentSegments = segmentsFromBlocks(network.blocks);
     this.currentPlatforms = network.platforms || [];
     this.trackMap = {};
     network.tracks.forEach((t) => {
@@ -780,14 +791,14 @@ class Renderer {
 
     const tracks = network.tracks || [];
 
-    // Draw block ID colors BEFORE tracks (so they appear underneath). The
-    // power-district overlay takes precedence: while it is on, blocks read by
-    // district color instead of per-block id color.
+    // Draw segment ID colors BEFORE tracks (so they appear underneath). The
+    // block-grouping overlay takes precedence: while it is on, tiles read by
+    // owning-block color instead of per-segment geometry color.
     const showBlockDebug = this.debugFlags?.showBlocks || false;
-    if (this.showPowerDistrictColors) {
-      this.blockHandler.drawPowerDistrictColors(tracks, network.power_districts);
-    } else if (showBlockDebug || this.showBlockColorsOnly) {
-      this.blockHandler.drawBlockIdColors(tracks);
+    if (this.showBlockGroupingColors) {
+      this.blockHandler.drawBlockGroupingColors(tracks, network.blocks);
+    } else if (showBlockDebug || this.showSegmentColorsOnly) {
+      this.segmentHandler.drawSegmentIdColors(tracks);
     }
 
     // Tracks (with state-driven coloring). Each tile draws its own grey
@@ -808,7 +819,7 @@ class Renderer {
 
     // Grey dots at block boundaries (gaps between different blocks).
     if (network.blocks) {
-      this.blockHandler.drawBlockBoundaryMarkers(tracks);
+      this.segmentHandler.drawSegmentBoundaryMarkers(tracks);
     }
 
     // Note: platforms AND stations live on the LIVE layer, not world.
@@ -855,8 +866,8 @@ class Renderer {
     this.debugHandler.drawDebugOverlays(tracks);
 
     // Block info labels (full debug only).
-    if (showBlockDebug && !this.showBlockColorsOnly) {
-      this.blockHandler.drawBlockDetailLabels(tracks);
+    if (showBlockDebug && !this.showSegmentColorsOnly) {
+      this.segmentHandler.drawSegmentDetailLabels(tracks);
     }
 
     // Per-block metric overlays (voltage, length, radius, speed limit). Each is
@@ -868,7 +879,7 @@ class Renderer {
     const mR = this.debugFlags?.showBlockRadius;
     const mS = this.debugFlags?.showBlockSpeedLimit;
     if (mV || mL || mR || mS) {
-      this.blockHandler.drawBlockMetrics(tracks, { voltage: mV, length: mL, radius: mR, speed: mS });
+      this.segmentHandler.drawSegmentMetrics(tracks, { voltage: mV, length: mL, radius: mR, speed: mS });
     }
   }
 
@@ -993,8 +1004,8 @@ class Renderer {
       case 'eraser':
         this.trackHandler.drawEraserPreviewPath(p.path);
         break;
-      case 'block':
-        this.blockHandler.drawBlockPreviewPath(p.path);
+      case 'segment':
+        this.segmentHandler.drawSegmentPreviewPath(p.path);
         break;
       case 'path':
         this.trackHandler.drawPreviewPath(p.path);

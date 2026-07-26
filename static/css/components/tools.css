@@ -122,6 +122,32 @@
     white-space: nowrap;
 }
 
+/* Compact rail (see .sidebar--compact in layout/shell.css): the capsule has
+   less height than the square tiles need, so each tile drops to a short
+   icon-only row. The label is hidden rather than shrunk — at this height it
+   would be unreadable — and the button's `title` carries it instead. The
+   number badge and group caret stay: they are corner-anchored and still fit. */
+.sidebar--compact .tool-launch {
+    aspect-ratio: auto;
+    height: 44px;
+    padding: 2px;
+    gap: 0;
+}
+
+.sidebar--compact .tool-launch-label {
+    display: none;
+}
+
+.sidebar--compact .tool-launch-num {
+    top: 3px;
+    right: 5px;
+}
+
+.sidebar--compact .tool-launch-caret {
+    bottom: 3px;
+    right: 4px;
+}
+
 /* The 1-9 shortcut number, top-right corner. */
 .tool-launch-num {
     position: absolute;

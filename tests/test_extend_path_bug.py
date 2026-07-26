@@ -16,7 +16,7 @@ import pytest
 from datetime import datetime, timedelta
 
 from network import RailwayNetwork
-from track import TrackSegment, TRACK_EW, TRACK_NS, TRACK_NW, TRACK_SE
+from track import Tile, TRACK_EW, TRACK_NS, TRACK_NW, TRACK_SE
 from train import Train, TrainCar
 from train_span import SpanEndLocator, TrainSpan
 from path_dispatcher import PathDispatcher
@@ -70,36 +70,36 @@ class TestExtendPathBug:
         # Create a simple linear track: A - B - C - D - E
         # All connected with EW tracks
         for x in range(0, 10):
-            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            track = Tile(x, 0, track_bits=TRACK_EW)
             network.add_track(track)
 
         # Create 5 blocks
-        network.create_block_with_tracks(
-            block_id="BLOCK_A",
+        network.create_segment_with_tracks(
+            segment_id="BLOCK_A",
             positions=[(0, 0), (1, 0)],
             name="Block A",
             length_cm=100.0,
         )
-        network.create_block_with_tracks(
-            block_id="BLOCK_B",
+        network.create_segment_with_tracks(
+            segment_id="BLOCK_B",
             positions=[(2, 0), (3, 0)],
             name="Block B",
             length_cm=100.0,
         )
-        network.create_block_with_tracks(
-            block_id="BLOCK_C",
+        network.create_segment_with_tracks(
+            segment_id="BLOCK_C",
             positions=[(4, 0), (5, 0)],
             name="Block C",
             length_cm=100.0,
         )
-        network.create_block_with_tracks(
-            block_id="BLOCK_D",
+        network.create_segment_with_tracks(
+            segment_id="BLOCK_D",
             positions=[(6, 0), (7, 0)],
             name="Block D",
             length_cm=100.0,
         )
-        network.create_block_with_tracks(
-            block_id="BLOCK_E",
+        network.create_segment_with_tracks(
+            segment_id="BLOCK_E",
             positions=[(8, 0), (9, 0)],
             name="Block E",
             length_cm=100.0,
@@ -119,11 +119,11 @@ class TestExtendPathBug:
         start_track = simple_network.get_track(0, 0)
         if (
             start_track
-            and start_track.block_section_id
+            and start_track.block_id
             and simple_network.block_manager
         ):
             simple_network.block_manager.occupy_block(
-                start_track.block_section_id, train.train_id
+                start_track.block_id, train.train_id
             )
 
         return train
@@ -158,10 +158,6 @@ class TestExtendPathBug:
 
         path_result.path = dispatcher.get_path(path_result.path_id) if path_result.path_id else None
 
-        if not path_result.success:
-            pytest.skip(
-                'Conditional skip retained as a guard. PR 6 audit: _compute_block_traversals works for current destination-block scenarios; if create_path returns failure here, investigate as a regression rather than the historical bug this skip was written for.'
-            )
         assert path_result.success, f"Failed to create path: {path_result.reason}"
         path = dispatcher.get_path(path_result.path_id)
 
@@ -186,10 +182,6 @@ class TestExtendPathBug:
         extend_result = dispatcher.extend_path(path.path_id, "BLOCK_E")
 
         extend_result.path = dispatcher.get_path(extend_result.path_id) if extend_result.path_id else None
-        if not extend_result.success:
-            pytest.skip(
-                'Conditional skip retained as a guard. PR 6 audit: _compute_block_traversals works for current destination-block scenarios; if create_path returns failure here, investigate as a regression rather than the historical bug this skip was written for.'
-            )
         assert extend_result.success, f"Failed to extend path: {extend_result.reason}"
 
         # Verify dispatcher's Path object is updated
@@ -208,7 +200,7 @@ class TestExtendPathBug:
         final_tile = extended_tiles[-1]
         final_track = simple_network.get_track(final_tile[0], final_tile[1])
         assert final_track is not None
-        assert final_track.block_section_id == "BLOCK_E"
+        assert final_track.block_id == "BLOCK_E"
 
     def test_extend_path_updates_lookahead(self, simple_network, demo_train):
         """
@@ -234,11 +226,7 @@ class TestExtendPathBug:
         )
 
         path_result.path = dispatcher.get_path(path_result.path_id) if path_result.path_id else None
-        if not path_result.success:
-            pytest.skip(
-                'Conditional skip retained as a guard. PR 6 audit: _compute_block_traversals works for current destination-block scenarios; if create_path returns failure here, investigate as a regression rather than the historical bug this skip was written for.'
-            )
-        assert path_result.success
+        assert path_result.success, f"Failed to create path: {path_result.reason}"
 
         raw_path = executor._convert_path_to_train_path(path_result.path)
         assign_complete_path_to_train(
@@ -269,11 +257,7 @@ class TestExtendPathBug:
         extend_result = dispatcher.extend_path(path_result.path.path_id, "BLOCK_E")
 
         extend_result.path = dispatcher.get_path(extend_result.path_id) if extend_result.path_id else None
-        if not extend_result.success:
-            pytest.skip(
-                'Conditional skip retained as a guard. PR 6 audit: _compute_block_traversals works for current destination-block scenarios; if create_path returns failure here, investigate as a regression rather than the historical bug this skip was written for.'
-            )
-        assert extend_result.success
+        assert extend_result.success, f"Failed to extend path: {extend_result.reason}"
 
         # v1: lookahead is a read-only derived property; reads recompute
         # automatically. No explicit cache to set.
@@ -326,11 +310,7 @@ class TestExtendPathBug:
         )
 
         path_result.path = dispatcher.get_path(path_result.path_id) if path_result.path_id else None
-        if not path_result.success:
-            pytest.skip(
-                'Conditional skip retained as a guard. PR 6 audit: _compute_block_traversals works for current destination-block scenarios; if create_path returns failure here, investigate as a regression rather than the historical bug this skip was written for.'
-            )
-        assert path_result.success
+        assert path_result.success, f"Failed to create path: {path_result.reason}"
 
         raw_path = executor._convert_path_to_train_path(path_result.path)
         assign_complete_path_to_train(
@@ -368,10 +348,6 @@ class TestExtendPathBug:
         extend_result = dispatcher.extend_path(path_result.path.path_id, "BLOCK_E")
 
         extend_result.path = dispatcher.get_path(extend_result.path_id) if extend_result.path_id else None
-        if not extend_result.success:
-            pytest.skip(
-                'Conditional skip retained as a guard. PR 6 audit: _compute_block_traversals works for current destination-block scenarios; if create_path returns failure here, investigate as a regression rather than the historical bug this skip was written for.'
-            )
         assert extend_result.success, f"Extension failed: {extend_result.reason}"
 
         # Verify dispatcher's Path object is updated
@@ -421,23 +397,23 @@ class TestExtendPathAtoSync:
 
         # 6 tiles: BLK_A=(0,0),(1,0)  BLK_B=(2,0),(3,0)  BLK_C=(4,0),(5,0)
         for x in range(6):
-            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            track = Tile(x, 0, track_bits=TRACK_EW)
             network.add_track(track)
 
-        network.create_block_with_tracks(
-            block_id="BLK_A",
+        network.create_segment_with_tracks(
+            segment_id="BLK_A",
             positions=[(0, 0), (1, 0)],
             name="Block A",
             length_cm=100.0,
         )
-        network.create_block_with_tracks(
-            block_id="BLK_B",
+        network.create_segment_with_tracks(
+            segment_id="BLK_B",
             positions=[(2, 0), (3, 0)],
             name="Block B",
             length_cm=100.0,
         )
-        network.create_block_with_tracks(
-            block_id="BLK_C",
+        network.create_segment_with_tracks(
+            segment_id="BLK_C",
             positions=[(4, 0), (5, 0)],
             name="Block C",
             length_cm=100.0,
@@ -477,10 +453,6 @@ class TestExtendPathAtoSync:
         )
 
         result.path = dispatcher.get_path(result.path_id) if result.path_id else None
-        if not result.success:
-            pytest.skip(
-                'Conditional skip retained as a guard. PR 6 audit: _compute_block_traversals works for current destination-block scenarios; if create_path returns failure here, investigate as a regression rather than the historical bug this skip was written for.'
-            )
         assert result.success, f"Failed to create initial path: {result.reason}"
         path = dispatcher.get_path(result.path_id)
 
@@ -521,10 +493,6 @@ class TestExtendPathAtoSync:
         ext_result = dispatcher.extend_path(path.path_id, new_end_block_id)
 
         ext_result.path = dispatcher.get_path(ext_result.path_id) if ext_result.path_id else None
-        if not ext_result.success:
-            pytest.skip(
-                'Conditional skip retained as a guard. PR 6 audit: _compute_block_traversals works for current destination-block scenarios; if create_path returns failure here, investigate as a regression rather than the historical bug this skip was written for.'
-            )
         assert ext_result.success, f"Extension failed: {ext_result.reason}"
 
         # v1: live property reads new end_block_id immediately, no sync needed.
@@ -565,35 +533,35 @@ class TestEffectivePathTiles:
         network = RailwayNetwork()
 
         for x in range(0, 10):
-            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            track = Tile(x, 0, track_bits=TRACK_EW)
             network.add_track(track)
 
-        network.create_block_with_tracks(
-            block_id="BLOCK_A",
+        network.create_segment_with_tracks(
+            segment_id="BLOCK_A",
             positions=[(0, 0), (1, 0)],
             name="Block A",
             length_cm=100.0,
         )
-        network.create_block_with_tracks(
-            block_id="BLOCK_B",
+        network.create_segment_with_tracks(
+            segment_id="BLOCK_B",
             positions=[(2, 0), (3, 0)],
             name="Block B",
             length_cm=100.0,
         )
-        network.create_block_with_tracks(
-            block_id="BLOCK_C",
+        network.create_segment_with_tracks(
+            segment_id="BLOCK_C",
             positions=[(4, 0), (5, 0)],
             name="Block C",
             length_cm=100.0,
         )
-        network.create_block_with_tracks(
-            block_id="BLOCK_D",
+        network.create_segment_with_tracks(
+            segment_id="BLOCK_D",
             positions=[(6, 0), (7, 0)],
             name="Block D",
             length_cm=100.0,
         )
-        network.create_block_with_tracks(
-            block_id="BLOCK_E",
+        network.create_segment_with_tracks(
+            segment_id="BLOCK_E",
             positions=[(8, 0), (9, 0)],
             name="Block E",
             length_cm=100.0,
@@ -630,11 +598,7 @@ class TestEffectivePathTiles:
         )
 
         result.path = dispatcher.get_path(result.path_id) if result.path_id else None
-        if not result.success:
-            pytest.skip(
-                'Conditional skip retained as a guard. PR 6 audit: _compute_block_traversals works for current destination-block scenarios; if create_path returns failure here, investigate as a regression rather than the historical bug this skip was written for.'
-            )
-        assert result.success
+        assert result.success, f"Failed to create path: {result.reason}"
         train.assigned_path_id = result.path.path_id
 
         # _get_effective_path_tiles should return tiles from dispatcher
@@ -690,11 +654,7 @@ class TestEffectivePathTiles:
         )
 
         result.path = dispatcher.get_path(result.path_id) if result.path_id else None
-        if not result.success:
-            pytest.skip(
-                'Conditional skip retained as a guard. PR 6 audit: _compute_block_traversals works for current destination-block scenarios; if create_path returns failure here, investigate as a regression rather than the historical bug this skip was written for.'
-            )
-        assert result.success
+        assert result.success, f"Failed to create path: {result.reason}"
         train.assigned_path_id = result.path.path_id
 
         tiles_before = controller._get_effective_path_tiles()
@@ -704,10 +664,6 @@ class TestEffectivePathTiles:
         ext_result = dispatcher.extend_path(result.path.path_id, "BLOCK_E")
 
         ext_result.path = dispatcher.get_path(ext_result.path_id) if ext_result.path_id else None
-        if not ext_result.success:
-            pytest.skip(
-                'Conditional skip retained as a guard. PR 6 audit: _compute_block_traversals works for current destination-block scenarios; if create_path returns failure here, investigate as a regression rather than the historical bug this skip was written for.'
-            )
         assert ext_result.success, f"Extension failed: {ext_result.reason}"
 
         tiles_after = controller._get_effective_path_tiles()
@@ -741,28 +697,27 @@ class TestAtoDestinationCleanup:
         network = RailwayNetwork()
 
         for x in range(0, 10):
-            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            track = Tile(x, 0, track_bits=TRACK_EW)
             network.add_track(track)
 
-        network.create_block_with_tracks(
-            block_id="BLOCK_A",
+        network.create_segment_with_tracks(
+            segment_id="BLOCK_A",
             positions=[(0, 0), (1, 0)],
             name="Block A",
             length_cm=100.0,
         )
-        network.create_block_with_tracks(
-            block_id="BLOCK_B",
+        network.create_segment_with_tracks(
+            segment_id="BLOCK_B",
             positions=[(2, 0), (3, 0)],
             name="Block B",
             length_cm=100.0,
         )
-        network.create_block_with_tracks(
-            block_id="BLOCK_C",
+        network.create_segment_with_tracks(
+            segment_id="BLOCK_C",
             positions=[(4, 0), (5, 0)],
             name="Block C",
             length_cm=100.0,
         )
 
         return network
-
 

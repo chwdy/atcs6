@@ -12,7 +12,7 @@ entirely; the field stayed `[]` and every flank consumer no-opped).
 
 import pytest
 
-from track import TrackSegment, TRACK_EW, TRACK_NW, TRACK_SE, TRACK_NS
+from track import Tile, TRACK_EW, TRACK_NW, TRACK_SE, TRACK_NS
 from network import RailwayNetwork
 from switch import Switch
 from switch_manager import SwitchLockRequest
@@ -397,8 +397,8 @@ class TestFlankRecompute:
         net = RailwayNetwork()
         # Two adjacent switch tiles sharing the E/W edge, each EW + a diagonal
         # so each has a MAIN (EW) state and a DIVERGE state.
-        net.add_track(TrackSegment(x=0, y=0, track_bits=TRACK_EW | TRACK_NW))
-        net.add_track(TrackSegment(x=1, y=0, track_bits=TRACK_EW | TRACK_SE))
+        net.add_track(Tile(x=0, y=0, track_bits=TRACK_EW | TRACK_NW))
+        net.add_track(Tile(x=1, y=0, track_bits=TRACK_EW | TRACK_SE))
         net.add_switch(Switch(switch_id="SW_L", x=0, y=0))
         net.add_switch(Switch(switch_id="SW_R", x=1, y=0))
 

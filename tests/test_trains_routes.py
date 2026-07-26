@@ -6,7 +6,7 @@ Run with: pytest tests/test_trains_routes.py -v
 
 import pytest
 
-from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NW
+from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
 from enums import BlockState, Direction
@@ -42,15 +42,15 @@ class TestBlockTileSyncValidation:
         network = RailwayNetwork()
 
         # Create track with blocks
-        from track import TrackSegment, TRACK_EW
+        from track import Tile, TRACK_EW
 
         # v1: Block.state is read-only; new blocks are FREE by default.
         block = Block(block_id="B1", length_cm=300.0)
         network.blocks["B1"] = block
 
         for x in range(6):
-            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
-            track.block_section_id = "B1"
+            track = Tile(x=x, y=0, track_bits=TRACK_EW)
+            track.segment_id = "B1"
             network.add_track(track)
 
         train = Train(train_id="T1", max_speed=60.0)
@@ -125,26 +125,26 @@ class TestMultiTilePlatformStopping:
         # Create vertical track layout: (9,0) to (9,4)
         # Train will travel NORTH from (9,0) to station at (9,3)-(9,4)
         for y in range(5):
-            track = TrackSegment(9, y, track_bits=TRACK_NS)
+            track = Tile(9, y, track_bits=TRACK_NS)
             network.add_track(track)
 
         # Create blocks
-        network.create_block_with_tracks(
-            block_id="BLOCK_START",
+        network.create_segment_with_tracks(
+            segment_id="BLOCK_START",
             positions=[(9, 0)],
             name="Start Block",
             length_cm=50.0,
         )
-        network.create_block_with_tracks(
-            block_id="BLOCK_MID",
+        network.create_segment_with_tracks(
+            segment_id="BLOCK_MID",
             positions=[(9, 1), (9, 2)],
             name="Middle Block",
             length_cm=100.0,
         )
         # Multi-tile station block spanning (9,3) and (9,4)
         # Add tracks in reverse order to test insertion order issue
-        network.create_block_with_tracks(
-            block_id="STATION_BLOCK",
+        network.create_segment_with_tracks(
+            segment_id="STATION_BLOCK",
             positions=[(9, 4), (9, 3)],  # Note: reversed order!
             name="East Terminal",
             length_cm=100.0,

@@ -199,7 +199,6 @@ class SpeedCalibration:
                 source="SpeedCalibration",
                 kind="command_result",
                 severity=Severity.INFO if success else Severity.WARNING,
-                event_time=getattr(sc, "simulation_time", 0.0) or 0.0,
                 train_id=run.train_id,
                 payload={
                     "command_id": f"calibrate:{run.train_id}",

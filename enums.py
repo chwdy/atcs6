@@ -68,7 +68,7 @@ class TrackType(Enum):
     Connection-based curve detection:
     - A CURVE is when connected paths are in DIFFERENT orientation groups
     - Groups: (NS), (EW), (NE+SW), (NW+SE)
-    - Use TrackSegment.is_curve_connection(exit_edge, neighbor) to check
+    - Use Tile.is_curve_connection(exit_edge, neighbor) to check
     """
 
     EMPTY = "empty"

@@ -8,9 +8,9 @@ boundary for block occupancy, plus the debounce + attribution layer that turns a
 noisy per-block current stream into confirmed, train-attributed entered/vacated
 block observations.
 
-Layers (mirrors the OutputInterface pattern in block_power.py):
-  - InputInterface: abstract per-block current read (raw booleans, no train id).
-  - SimulatedInputInterface: in-memory default; derives current from the model
+Layers (mirrors the TrackOutput pattern in block_power.py):
+  - OccupancyInput: abstract per-block current read (raw booleans, no train id).
+  - SimulatedOccupancyDriver: in-memory default; derives current from the model
     (a block reads current iff some train's live span covers it).
   - BlockOccupancyDetector: per-block debounce (on/off thresholds) producing the
     confirmed-occupied set each tick, plus model-based attribution of each
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from train_controller import TrainController
 
 
-class InputInterface(ABC):
+class OccupancyInput(ABC):
     """Read side for hardware sensors that no software output drives
     (design_new.md Power, Hardware interface boundary).
 
@@ -59,7 +59,7 @@ class InputInterface(ABC):
         raise NotImplementedError
 
 
-class SimulatedInputInterface(InputInterface):
+class SimulatedOccupancyDriver(OccupancyInput):
     """In-memory default used when no real hardware is connected.
 
     Derives the raw current map from the model: a block reads current iff some
@@ -112,7 +112,7 @@ class BlockOccupancyDetector:
     """
 
     network: "RailwayNetwork"
-    input_interface: InputInterface
+    input_interface: OccupancyInput
     controllers: Dict[str, "TrainController"] = field(default_factory=dict)
     on_threshold: int = OCCUPANCY_ON_THRESHOLD
     off_threshold: int = OCCUPANCY_OFF_THRESHOLD
@@ -182,11 +182,14 @@ class BlockOccupancyDetector:
         Entered blocks attribute to `Block.reserved_for_train` (the train that
         reserved the block it is entering), falling back to the train whose live
         span covers the block. An entered block that resolves to no modeled train
-        is committed to the reserved `UNKNOWN_TRAIN_ID` sentinel and kept
-        confirmed (an unmodeled occupant), so it blocks reservation / clean entry
-        there until its detector current clears. Vacated blocks attribute to
-        `Block.occupied_by`; a vacate whose block is already clear is a benign
-        double-clear and is skipped.
+        attributes to the reserved `UNKNOWN_TRAIN_ID` sentinel (an unmodeled
+        occupant). Vacated blocks attribute to `Block.occupied_by`; a vacate
+        whose block is already clear is a benign double-clear and is skipped.
+
+        This is a pure attribution step: it writes no block state. The Step-0
+        preamble commits both slices — a known train's through its Phase-3
+        transaction, the `UNKNOWN_TRAIN_ID` slice through
+        `BlockManager.occupy_blocks(...)` (design_new.md "Attribution").
         """
         entered_by_train: Dict[str, Set[str]] = {}
         for block_id in entered:
@@ -196,21 +199,16 @@ class BlockOccupancyDetector:
                 train_id = self._span_owner(block_id)
             if train_id is None:
                 # design_new.md "Attribution": a confirmed entry that matches no
-                # modeled train is an unmodeled (unknown) occupant. The detector
-                # is the authority for Block.occupied_by, so commit the block to
-                # the reserved UNKNOWN_TRAIN_ID sentinel directly (no controller
-                # exists to route it through) and keep it confirmed, so the block
-                # blocks reservation / clean entry there until its current clears
-                # for the off-window. Unreachable under the simulated detector,
-                # which builds current from live spans.
-                if block is not None:
-                    block.occupied_by = UNKNOWN_TRAIN_ID
+                # modeled train is an unmodeled (unknown) occupant. It has no
+                # per-train Phase-3 transaction, so the preamble commits it.
+                # Unreachable under the simulated detector, which builds current
+                # from live spans.
+                train_id = UNKNOWN_TRAIN_ID
                 self._emit(
                     "block_attribution_unknown",
                     f"confirmed entry on block {block_id} matches no modeled "
                     f"train; attributing to unknown occupant",
                 )
-                continue
             entered_by_train.setdefault(train_id, set()).add(block_id)
 
         vacated_by_train: Dict[str, Set[str]] = {}
@@ -218,13 +216,6 @@ class BlockOccupancyDetector:
             block = self.network.blocks.get(block_id)
             train_id = getattr(block, "occupied_by", None) if block else None
             if train_id is None:
-                continue
-            if train_id == UNKNOWN_TRAIN_ID:
-                # An unknown occupant has no controller to route a vacate to;
-                # the detector clears it directly once its current drops for the
-                # off-window (design_new.md "Attribution").
-                if block is not None:
-                    block.occupied_by = None
                 continue
             vacated_by_train.setdefault(train_id, set()).add(block_id)
 

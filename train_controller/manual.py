@@ -34,3 +34,21 @@ class ManualDriving:
         self.manual_mode_type: str = "simulation"
         # 0..100 voltage-style command for manual power_percent mode
         self.manual_power_percent: int = 0
+
+    def set_power_percent(self, percent: float) -> None:
+        """Sanctioned operator-input writer for `manual_power_percent`.
+
+        Per design_new.md: the operator setter (`TrainController.commands.
+        set_manual_power_percent(...)`) writes through this method. No other
+        writer sets a positive value.
+        """
+        self.manual_power_percent = percent
+
+    def reset_power_percent_for_safety(self) -> None:
+        """Sanctioned safety-reset writer for `manual_power_percent`.
+
+        Per design_new.md: ATC / service-stop / EB / power-off orchestration
+        calls this to zero the retained command; those safety workflows never
+        assign the field directly.
+        """
+        self.manual_power_percent = 0.0

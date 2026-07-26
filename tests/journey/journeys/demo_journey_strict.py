@@ -79,7 +79,7 @@ def build_strict_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
         track = s.network.get_track(*tile)
         if track is None:
             return None
-        return getattr(track, "block_section_id", None)
+        return getattr(track, "block_id", None)
 
     events = [
         # E0 — pre-tick boot. Origin block must be the only OCCUPIED block.
@@ -259,7 +259,7 @@ def _block_at(s, tile):
     track = s.network.get_track(*tile)
     if track is None:
         return None
-    bid = getattr(track, "block_section_id", None)
+    bid = getattr(track, "block_id", None)
     if not bid:
         return None
     return s.network.blocks.get(bid)
@@ -269,4 +269,4 @@ def _resolve_block_id_at(s, tile):
     track = s.network.get_track(*tile)
     if track is None:
         return None
-    return getattr(track, "block_section_id", None)
+    return getattr(track, "block_id", None)

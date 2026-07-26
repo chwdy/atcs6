@@ -555,7 +555,7 @@
 
 /* Block-editor tile rows are clickable — clicking one flashes that tile on
    the layout, so a coordinate in the list maps to a place on the map. */
-.block-editor-panel .tile-list-item {
+.segment-editor-panel .tile-list-item {
     cursor: pointer;
 }
 

@@ -58,10 +58,12 @@ export function memoryWindowPersistenceEnv(initial?: Record<string, string>): Wi
 const REGISTRY_KEY = 'windowRegistryV1';
 const windowStateKey = (id: string): string => `window:${id}`;
 
-/** 'home' is the one dockable window; 'diagnostics' is the one non-tab-group
- *  singleton; 'tab-group' is every window spawned by splitting a tab (Phase
- *  5) — always floating, always holds a TabGroup. */
-export type PersistedWindowKind = 'home' | 'diagnostics' | 'tab-group';
+/** 'home' is the one dockable window; 'diagnostics' and 'train-monitor' are the
+ *  non-tab-group singletons (both hide rather than destroy on close, and both
+ *  always exist regardless of the registry); 'tab-group' is every window
+ *  spawned by splitting a tab (Phase 5) — always floating, always holds a
+ *  TabGroup. */
+export type PersistedWindowKind = 'home' | 'diagnostics' | 'tab-group' | 'train-monitor';
 
 export interface WindowRegistryEntry {
   id: string;

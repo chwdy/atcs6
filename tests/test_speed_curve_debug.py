@@ -23,7 +23,7 @@ Run with: conda run -n general pytest tests/test_speed_curve_debug.py -v -s
 import pytest
 from typing import List, Tuple, Dict, Any, Optional
 
-from track import TrackSegment, TRACK_EW
+from track import Tile, TRACK_EW
 from network import RailwayNetwork
 from block import Block
 from station import Station

@@ -220,14 +220,14 @@ class SwitchManager:
                 block_manager = self._resolve_block_manager()
                 if block_manager is not None:
                     block_manager.on_switch_position_changed(req.switch_id)
-                # Drive the physical throw and confirm it landed (design_new.md
-                # "Power", Switch power-controller role). Same behaviour as the
-                # operator path: an unconfirmed throw fails this switch's lock
-                # acquisition and rolls back the segment (releasing the locks;
-                # it does not restore an earlier `Switch.position`). In
-                # simulation this never fails — the reading is derived from the
-                # commanded position, so it always confirms.
-                fail_reason = self._throw_and_verify(switch, int(req.locked_state))
+                # Drive the physical throw (design_new.md "Power", Switch throw
+                # output). Same behaviour as the operator path: a throw the
+                # hardware could not be commanded to make fails this switch's
+                # lock acquisition and rolls back the segment (releasing the
+                # locks; it does not restore an earlier `Switch.position`). In
+                # simulation this never fails — the simulated interface accepts
+                # every throw.
+                fail_reason = self._drive_throw(switch, int(req.locked_state))
                 if fail_reason is not None:
                     self._emit_throw_diagnostic(req.switch_id, fail_reason)
                     switch.release_lock(
@@ -238,10 +238,10 @@ class SwitchManager:
                     return LockAcquireResult(
                         success=False,
                         failed_switch_id=req.switch_id,
-                        reason=f"throw_unconfirmed: {fail_reason}",
+                        reason=f"throw_not_issued: {fail_reason}",
                     )
             # Per design_new.md, `Switch.locks` is the canonical lock store.
-            # `TrackSegment` no longer exposes any lock surface; UI and API
+            # `Tile` no longer exposes any lock surface; UI and API
             # readers resolve the owning `Switch` (via
             # `network.switches[switch_id]`) and read `Switch.locks` directly,
             # so there is no Track-side mirror to maintain here.
@@ -444,7 +444,14 @@ class SwitchManager:
         switch = self._switch_registry.get(switch_id)
         if switch is None:
             return
-        switch.on_train_tail_vacated(train_id, network=self.network, route=route)
+        diagnostics = switch.on_train_tail_vacated(
+            train_id, network=self.network, route=route
+        )
+        # design_new.md "Runtime notifications": component-side runtime
+        # diagnostics flow through NotificationCenter, never a separate sink.
+        # `Switch` cannot reach it, so the manager emits on its behalf.
+        for message in diagnostics or ():
+            self._emit_diagnostic(message, switch_id=switch_id, train_id=train_id)
 
     # ------------------------------------------------------------------
     # Switch position change request (admin / API / UI)
@@ -483,13 +490,13 @@ class SwitchManager:
             block_manager.on_switch_position_changed(switch_id)
 
         # Only when the write actually changed the alignment: drive the
-        # physical throw and confirm it via the continuity check (design_new.md
-        # "Power", Switch power-controller role). An unconfirmed throw is
-        # reported as a failed command; `Switch.position` is not rolled back,
-        # and the service layer surfaces this `(False, reason)` as the
-        # operator's `command_result` warning.
+        # physical throw (design_new.md "Power", Switch throw output). A throw
+        # the hardware could not be commanded to make is reported as a failed
+        # command; `Switch.position` is not rolled back, and the service layer
+        # surfaces this `(False, reason)` as the operator's `command_result`
+        # warning.
         if int(new_position) != old_position:
-            fail_reason = self._throw_and_verify(switch, int(new_position))
+            fail_reason = self._drive_throw(switch, int(new_position))
             if fail_reason is not None:
                 return (False, fail_reason)
             # design_new.md "Event log": a confirmed operator alignment change is
@@ -524,42 +531,67 @@ class SwitchManager:
             return getattr(self.network, "block_manager", None)
         return None
 
-    def _resolve_switch_power_controller(self):
-        """Locate the SwitchPowerController — preferred via SimulationController,
-        with a network fallback. Returns None in editor/unit setups that never
-        wired one (verification is then a no-op)."""
+    def _resolve_switch_output(self):
+        """Locate the `SwitchOutput` — preferred via
+        SimulationController, with a network fallback. Returns None in
+        editor/unit setups that never wired one (the throw is then a no-op)."""
         if self.simulation_controller is not None:
-            spc = getattr(self.simulation_controller, "switch_power_controller", None)
-            if spc is not None:
-                return spc
+            iface = getattr(
+                self.simulation_controller, "switch_output_interface", None
+            )
+            if iface is not None:
+                return iface
         if self.network is not None:
-            return getattr(self.network, "switch_power_controller", None)
+            return getattr(self.network, "switch_output_interface", None)
         return None
 
-    def _throw_and_verify(
-        self, switch: "Switch", target_state: int
-    ) -> Optional[str]:
-        """Drive the physical throw and verify it landed (design_new.md "Power",
-        Switch power-controller role).
+    def _drive_throw(self, switch: "Switch", target_state: int) -> Optional[str]:
+        """Drive the physical throw (design_new.md "Power", Switch throw output).
 
-        Behaves the same for every caller: drives the point motor through
-        `SwitchPowerController`, then runs the continuity check. Returns `None`
-        when the throw is confirmed or the check is skipped (not verifiable /
-        indeterminate), or a free-form reason string when continuity did not
-        confirm. When no `SwitchPowerController` is wired, verification is a
-        no-op and this returns `None`.
+        Behaves the same for every caller. Returns `None` when the command was
+        issued, or a reason string when it could not be. When no output
+        interface is wired the throw is a no-op and this returns `None`.
+
+        The throw is blind: a solenoid point motor reports nothing back, so
+        there is no confirmation step and `None` is not a claim that the points
+        moved. The one failure this can report is a command that never left the
+        software — no hardware binding for this switch, or its chip is missing —
+        which `SwitchOutput.set_throw` signals by returning False.
         """
-        spc = self._resolve_switch_power_controller()
-        if spc is None:
+        iface = self._resolve_switch_output()
+        if iface is None:
             return None
-        spc.throw(switch.switch_id, int(target_state))
-        result = spc.verify_throw(switch, int(target_state))
-        if result.ok:
-            return None
-        return result.reason or "throw continuity check did not confirm"
+        if not iface.set_throw(switch.switch_id, int(target_state)):
+            return "throw not issued (no hardware binding for this switch)"
+        return None
+
+    def _emit_diagnostic(
+        self, message: str, switch_id: str, train_id: Optional[str] = None
+    ) -> None:
+        """Emit a switch-side runtime diagnostic through `NotificationCenter`.
+
+        `Switch` is a pure data entity with no runtime back-reference, so it
+        returns its diagnostic strings and this manager emits them — keeping
+        `NotificationCenter` the only runtime sink (design_new.md
+        "Runtime notifications"). Skipped when none is wired.
+        """
+        sc = self.simulation_controller
+        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        if nc is None:
+            return
+        try:
+            nc.emit(
+                source="SwitchManager",
+                kind="diagnostic",
+                severity=Severity.WARNING,
+                train_id=train_id,
+                payload={"message": message, "switch_id": switch_id},
+            )
+        except Exception:
+            pass
 
     def _emit_throw_diagnostic(self, switch_id: str, reason: str) -> None:
-        """Emit an unconfirmed-throw warning through `NotificationCenter`.
+        """Emit an unissued-throw warning through `NotificationCenter`.
 
         Mirrors `BlockManager._emit_diagnostic`. The operator/API path surfaces
         the failure through its own `command_result` (from the `(False, reason)`
@@ -576,9 +608,8 @@ class SwitchManager:
                 source="SwitchManager",
                 kind="diagnostic",
                 severity=Severity.WARNING,
-                event_time=getattr(sc, "simulation_time", None) or time.time(),
                 payload={
-                    "message": f"switch {switch_id} throw unconfirmed: {reason}",
+                    "message": f"switch {switch_id} throw not issued: {reason}",
                     "switch_id": switch_id,
                 },
             )

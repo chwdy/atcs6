@@ -147,16 +147,37 @@ def gen_platforms(net, grouped: set) -> str:
         first, extras = positions[0], positions[1:]
         # The auto-created station block name is reproduced verbatim: a platform
         # renamed after creation keeps its original id-based block name, which
-        # ``add_station(name=...)`` would not regenerate.
+        # ``add_station(name=...)`` would not regenerate. `add_station` names the
+        # segment and its block together, so the segment carries the same stale
+        # name and has to be restored alongside it.
         block = net.blocks.get(f"{pid}_BLOCK")
         block_name = block.name if block is not None else ""
+        segment_name = (
+            block.segments[0].name if block is not None and block.segments else ""
+        )
         lines.append(
             f"    ({pid!r}, {p.name!r}, {_xy(first)}, {_xy_list(extras)}, "
             f"{_side_str(p.platform_side)!r}, {p.length_cm}, {p.top_speed_kmh}, "
-            f"{block_name!r}),"
+            f"{block_name!r}, {segment_name!r}),"
         )
     lines.append("]")
     return "\n".join(lines)
+
+
+def _is_grouped(block, bid: str) -> bool:
+    """True when `block`'s identity differs from its geometry, so it needs a fold.
+
+    A block is baked directly only when it IS its one same-named segment. Any
+    other shape — several segments on one feed, or a single segment under a
+    different id (an operator-named ``BLK_*`` owning a ``SEG_*``) — is baked as
+    its member segments plus a ``BLOCK_GROUPS`` entry that folds them back.
+
+    Every site that emits, counts, or verifies a grouping asks this one
+    question, so the emitted lists and the reported counts cannot disagree.
+    """
+    if not block.segments:
+        return False
+    return len(block.segments) > 1 or block.segments[0].segment_id != bid
 
 
 def gen_blocks(net) -> str:
@@ -166,8 +187,21 @@ def gen_blocks(net) -> str:
         if bid in platform_block_ids:
             continue  # auto-created by add_station
         b = net.blocks[bid]
+        if _is_grouped(b, bid):
+            # A block whose identity differs from its geometry segment(s) is
+            # baked as the member segments first, then folded back to the
+            # original block by BLOCK_GROUPS. This includes a one-segment
+            # operator-named block such as BLK_* owning a SEG_* geometry.
+            for seg in b.segments:
+                positions = [(e.x, e.y) for e in seg.ordered_tiles]
+                lines.append(
+                    f"    ({seg.segment_id!r}, {seg.name!r}, "
+                    f"{_xy_list(positions)}, {seg.length_cm}, "
+                    f"{seg.speed_limit_kmh}),"
+                )
+            continue
         # Editor-authored blocks serialize with empty ``ordered_tiles`` and
-        # carry their membership on the tracks (``track.block_section_id``).
+        # carry their membership on the tracks (``track.segment_id``).
         # ``get_block_positions`` reads that track-derived membership, so it is
         # the correct source for every block regardless of how it was authored.
         positions = net.get_block_positions(bid)
@@ -200,21 +234,21 @@ def gen_signals(snapshot) -> str:
     return "\n".join(lines)
 
 
-def gen_power_districts(net) -> str:
-    """Emit each power district as the same dict shape ``from_dict`` consumes.
+def gen_block_groups(net) -> str:
+    """Emit each block that groups several segments onto one power feed.
 
-    A power district is an operator grouping of blocks onto one power feed
-    (design_new.md "Power district"); it is not re-derivable from geometry, so
-    it must be baked explicitly. The dict form lets the generated scene reload
-    districts through the identical direct-load path as ``RailwayNetwork.from_dict``.
+    Grouping is an operator decision about shared power wiring (design_new.md
+    "Block grouping"); it is not re-derivable from geometry, so it must be baked
+    explicitly. ``gen_blocks`` emits every member segment as its own block — the
+    default one-feed-per-segment layout — and this emits the fold that turns
+    each group into the single block it describes.
     """
-    lines = ["POWER_DISTRICTS = ["]
-    for did in sorted(net.power_districts.keys()):
-        d = net.power_districts[did]
-        lines.append(
-            f"    {{'district_id': {d.district_id!r}, "
-            f"'block_ids': {list(d.block_ids)!r}, 'name': {d.name!r}}},"
-        )
+    lines = ["BLOCK_GROUPS = ["]
+    for bid in sorted(net.blocks.keys()):
+        b = net.blocks[bid]
+        if not _is_grouped(b, bid):
+            continue
+        lines.append(f"    ({bid!r}, {b.name!r}, {list(b.segment_ids)!r}),")
     lines.append("]")
     return "\n".join(lines)
 
@@ -226,7 +260,7 @@ _BUILDERS = '''
 def _add_tracks(network: RailwayNetwork) -> None:
     """Place every baked track tile (dead-end ports are re-derived from geometry)."""
     for (x, y, bits) in TILES:
-        network.add_track(TrackSegment(x, y, track_bits=bits))
+        network.add_track(Tile(x, y, track_bits=bits))
 
 
 def _add_switches(network: RailwayNetwork) -> None:
@@ -273,7 +307,7 @@ def _add_platforms(network: RailwayNetwork) -> None:
     ``create_station_group`` call. Each platform still auto-creates its
     ``{platform_id}_BLOCK``.
     """
-    for (platform_id, name, first_tile, extra_tiles, side, length_cm, top_speed_kmh, block_name) in PLATFORMS:
+    for (platform_id, name, first_tile, extra_tiles, side, length_cm, top_speed_kmh, block_name, segment_name) in PLATFORMS:
         platform = network.add_station(
             x=first_tile[0],
             y=first_tile[1],
@@ -285,16 +319,22 @@ def _add_platforms(network: RailwayNetwork) -> None:
         )
         for extra in extra_tiles:
             network.extend_station(platform.platform_id, [extra])
+        # add_station derives both names from the CURRENT platform name; a
+        # platform renamed after creation keeps the older name on its block and
+        # segment, so restore each from the layout rather than leaving the
+        # freshly derived one.
         station_block = network.blocks.get(f"{platform.platform_id}_BLOCK")
         if station_block is not None:
             station_block.name = block_name
+            if station_block.segments:
+                station_block.segments[0].name = segment_name
 
 
 def _add_blocks(network: RailwayNetwork) -> None:
     """Create the non-platform blocks from their baked tile lists."""
     for (block_id, name, positions, length_cm, speed_limit_kmh) in BLOCKS:
-        network.create_block_with_tracks(
-            block_id=block_id,
+        network.create_segment_with_tracks(
+            segment_id=block_id,
             positions=positions,
             name=name,
             length_cm=length_cm,
@@ -321,21 +361,43 @@ def _add_signals(network: RailwayNetwork) -> None:
             track.signal_ids.append(signal.signal_id)
 
 
-def _add_power_districts(network: RailwayNetwork) -> None:
-    """Rebuild power districts, mirroring ``RailwayNetwork.from_dict``.
+def _add_block_groups(network: RailwayNetwork) -> None:
+    """Fold each baked grouping into one block owning its member segments.
 
-    Districts are an operator grouping of blocks onto one power feed, not
-    re-derivable from geometry, so they load directly: construct each
-    ``PowerDistrict`` from its dict and rebuild the reverse index once. Runs
-    after every block exists (a district may name a platform block).
+    Grouping is an operator decision about shared power wiring, not something
+    re-derivable from geometry, so it is baked. Each member segment already
+    exists as its own one-segment block from ``_add_blocks``; grouping moves
+    those segments into one block and drops the emptied ones. Runs after every
+    block exists (a grouping may name a platform block).
+
+    A grouping whose members do not chain into one clean run is folded anyway,
+    with a warning — the same reading `RailwayNetwork._fold_grouped_blocks`
+    takes on load: dropping it would turn one single-train feed back into
+    several independent feeds, which is the less safe reading of the layout.
     """
-    if not POWER_DISTRICTS:
+    if not BLOCK_GROUPS:
         return
-    from power_district import PowerDistrict
-    for district_data in POWER_DISTRICTS:
-        district = PowerDistrict.from_dict(district_data)
-        network.power_districts[district.district_id] = district
-    network._get_power_district_registry()._rebuild_district_index()
+    grouping = network._get_block_grouping_manager()
+    for (block_id, name, segment_ids) in BLOCK_GROUPS:
+        try:
+            grouping.group_into_block(
+                block_id=block_id, segment_ids=segment_ids, name=name
+            )
+        except ValueError as exc:
+            logging.getLogger(__name__).warning(
+                "Baked grouping %s is not one connected switch-free run (%s); "
+                "folding it into a single block anyway to preserve its "
+                "one-train power domain.",
+                block_id,
+                exc,
+            )
+            ordered, _ = grouping.plan_run(segment_ids)
+            grouping.create_block(
+                block_id=block_id,
+                segment_ids=ordered,
+                name=name,
+                validate=False,
+            )
 
 
 def create_comprehensive_demo() -> RailwayNetwork:
@@ -346,7 +408,7 @@ def create_comprehensive_demo() -> RailwayNetwork:
     _add_stations(network)
     _add_platforms(network)
     _add_blocks(network)
-    _add_power_districts(network)
+    _add_block_groups(network)
     _add_tunnels(network)
     _add_signals(network)
     network.recompute_all_flank_protection()
@@ -373,7 +435,7 @@ def build_module_text(snapshot: dict, scene_id: str, source_name: str) -> tuple[
     stations, grouped = gen_stations(net)
     platforms = gen_platforms(net, grouped)
     blocks = gen_blocks(net)
-    power_districts = gen_power_districts(net)
+    block_groups = gen_block_groups(net)
     tunnels = gen_tunnels(net)
     signals = gen_signals(snapshot)
 
@@ -393,14 +455,16 @@ Auto-generated — do not hand-edit; re-run json_to_scene.py against the source
 layout instead. Layout only: {len(net.tracks)} tracks, {len(net.switches)} switches,
 {len(net.platforms)} platforms ({len(net.station_groups)} station groups),
 {len(net.blocks)} blocks ({n_platform_blocks} auto-created platform blocks),
-{len(net.power_districts)} power districts, {len(net.tunnels) // 2} tunnels,
+{sum(1 for bid, b in net.blocks.items() if _is_grouped(b, bid))} block groups, {len(net.tunnels) // 2} tunnels,
 {len(net.signals)} signals. Trains/routes are not
 part of the layout JSON, so setup_demo_train() is a stub.
 """
 
+import logging
+
 from network import RailwayNetwork
 from track import (
-    TrackSegment,
+    Tile,
     TRACK_NS,
     TRACK_EW,
     TRACK_NE,
@@ -414,7 +478,7 @@ from switch import Switch
 SCENE_ID = {scene_id!r}'''
 
     body = "\n\n\n".join(
-        [header, tiles, switches, stations, platforms, blocks, power_districts, tunnels, signals]
+        [header, tiles, switches, stations, platforms, blocks, block_groups, tunnels, signals]
     )
     return body + "\n\n" + _BUILDERS, warnings
 
@@ -429,7 +493,7 @@ def _fingerprint(net) -> dict:
             t.track_bits,
             tuple(sorted(t.dead_end_ports or [])),
             t.switch_id,
-            t.block_section_id,
+            t.segment_id,
             t.station_id,
             tuple(sorted(t.signal_ids or [])),
         )
@@ -461,9 +525,13 @@ def _fingerprint(net) -> dict:
         sid: (tuple(s.position), s.detection_direction, s.monitored_block_id)
         for sid, s in net.signals.items()
     }
-    power_districts = {
-        d.district_id: (d.name, tuple(sorted(d.block_ids)))
-        for d in net.power_districts.values()
+    # Compare the grouping of every block whose identity differs from its
+    # geometry — including the one-segment `BLK_* owns SEG_*` case, which a
+    # `len(segments) > 1` test would silently skip.
+    block_groups = {
+        bid: (b.name, tuple(b.segment_ids))
+        for bid, b in net.blocks.items()
+        if _is_grouped(b, bid)
     }
     return {
         "tracks": tracks,
@@ -473,7 +541,7 @@ def _fingerprint(net) -> dict:
         "blocks": blocks,
         "tunnels": tunnels,
         "signals": signals,
-        "power_districts": power_districts,
+        "block_groups": block_groups,
     }
 
 
@@ -509,7 +577,7 @@ def verify(output_path: str, snapshot: dict) -> bool:
 
     fa, fb = _fingerprint(gen_net), _fingerprint(canon)
     all_msgs = []
-    for section in ("tracks", "switches", "platforms", "groups", "blocks", "tunnels", "signals", "power_districts"):
+    for section in ("tracks", "switches", "platforms", "groups", "blocks", "tunnels", "signals", "block_groups"):
         all_msgs += _diff_section(section, fa[section], fb[section])
 
     if all_msgs:
@@ -521,7 +589,7 @@ def verify(output_path: str, snapshot: dict) -> bool:
     print(f"  tracks={len(fa['tracks'])} switches={len(fa['switches'])} "
           f"platforms={len(fa['platforms'])} groups={len(fa['groups'])} "
           f"blocks={len(fa['blocks'])} tunnels={len(fa['tunnels'])} signals={len(fa['signals'])} "
-          f"power_districts={len(fa['power_districts'])}")
+          f"block_groups={len(fa['block_groups'])}")
     return True
 
 

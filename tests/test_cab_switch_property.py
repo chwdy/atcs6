@@ -10,7 +10,7 @@ physical end is the head and flips the network-frame direction.
 
 import pytest
 from network import RailwayNetwork
-from track import TrackSegment, TRACK_EW
+from track import Tile, TRACK_EW
 from enums import Direction
 from train import Train, TrainCar
 from train_span import SpanEndLocator, TrainSpan
@@ -20,7 +20,7 @@ from train_controller import create_controller_for_train
 def _build_two_tile_network() -> RailwayNetwork:
     network = RailwayNetwork()
     for x in range(3):
-        network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+        network.add_track(Tile(x, 0, track_bits=TRACK_EW))
     return network
 
 

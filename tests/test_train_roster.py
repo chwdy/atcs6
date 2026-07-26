@@ -11,7 +11,7 @@ from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from simulation import SimulationController
 from speed_profile import make_default_speed_profile
-from track import TRACK_EW, TrackSegment
+from track import TRACK_EW, Tile
 from train_roster import RosterEntry, TrainRoster
 
 
@@ -51,8 +51,8 @@ def test_network_persists_roster():
 def _placeable_network():
     net = RailwayNetwork()
     for x in range(3):
-        net.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
-    net.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0)
+        net.add_track(Tile(x, 0, track_bits=TRACK_EW))
+    net.create_segment_with_tracks("BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0)
     return net
 
 

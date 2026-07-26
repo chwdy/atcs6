@@ -157,7 +157,7 @@ def validate_placement(state: AppState, x: int, y: int) -> Dict[str, Any]:
             "can_place": False,
             "error": f"Tile already belongs to platform {track.station_id}",
         }
-    return {"can_place": True, "existing_block": track.block_section_id}
+    return {"can_place": True, "existing_block": track.block_id}
 
 
 def extend_platform(state: AppState, platform_id: str, *, positions: List[Any]):
@@ -205,8 +205,8 @@ def remove_tile(state: AppState, platform_id: str, *, x: int, y: int) -> Dict[st
     track = state.network.get_track(x, y)
     if track and track.station_id == platform_id:
         track.station_id = None
-        if track.block_section_id:
-            state.network.remove_tile_from_block(x, y)
+        if track.segment_id:
+            state.network.remove_tile_from_segment(x, y)
 
     if len(platform.positions) == 0:
         state.network.delete_platform(platform_id)

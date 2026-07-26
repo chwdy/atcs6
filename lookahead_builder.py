@@ -119,7 +119,7 @@ class LookaheadBuilder:
 
         head_track = self._c.network.get_track(head_tile[0], head_tile[1])
         head_block_id: Optional[str] = (
-            head_track.block_section_id if head_track else None
+            head_track.block_id if head_track else None
         )
 
         # Recovery for the freshly-departed case: a Path's resource_sequence
@@ -246,7 +246,7 @@ class LookaheadBuilder:
             head_resource_index,
             head_tile_index,
             current_block_id,
-            lambda t: t.block_section_id,
+            lambda t: t.block_id,
         )
 
         # When recovery picked up a same-block prefix that the path doesn't
@@ -297,7 +297,7 @@ class LookaheadBuilder:
                 tile_length = (
                     self._c.network._get_tile_length_cm(x, y) if track else 50.0
                 )
-                tile_block_id = track.block_section_id if track else None
+                tile_block_id = track.block_id if track else None
                 tile_travel_direction = EDGE_TO_DIRECTION_NAME.get(
                     tile_entry.exit_edge
                 )
@@ -324,7 +324,7 @@ class LookaheadBuilder:
                                 ft_entry.x, ft_entry.y
                             )
                             ft_block_id = (
-                                ft_track.block_section_id if ft_track else None
+                                ft_track.block_id if ft_track else None
                             )
                             if ft_block_id != tile_block_id:
                                 done = True
@@ -793,7 +793,7 @@ class LookaheadBuilder:
         (via `key_fn`) stays equal to `match_id`; stop at the first mismatch.
 
         Returns `(length_cm, tile_count)`. Used for both the head block's tail
-        (`key_fn = block_section_id`) and the head station's tail (`key_fn =
+        (`key_fn = block_id`) and the head station's tail (`key_fn =
         station_id`): the tiles before the head that share its block / platform,
         so the chart frame can sit behind the train marker instead of pinned to
         it. Walks the head resource's pre-head tiles first, then earlier
@@ -1015,7 +1015,7 @@ class LookaheadBuilder:
         track = c.network.tracks.get(head_tile)
         if not track:
             return float("inf")
-        block = c.network.blocks.get(track.block_section_id)
+        block = c.network.blocks.get(track.block_id)
         if not block:
             return float("inf")
         return block.speed_limit_kmh or float("inf")

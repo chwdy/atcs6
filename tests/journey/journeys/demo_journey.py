@@ -86,7 +86,7 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
             track = s.network.get_track(*tile)
             if track is None:
                 continue
-            bid = getattr(track, "block_section_id", None)
+            bid = getattr(track, "block_id", None)
             if bid:
                 ids.add(bid)
         return ids

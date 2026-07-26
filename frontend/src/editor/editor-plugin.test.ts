@@ -41,7 +41,7 @@ describe('tool registry', () => {
     const ids = coreIds();
     expect(ids).toContain('inspect');
     expect(ids).toContain('track');
-    expect(ids).toContain('block');
+    expect(ids).toContain('segment');
     for (const simId of ['path', 'add-train', 'new-route', 'route-runs-panel', 'paths-panel']) {
       expect(ids).not.toContain(simId);
     }
@@ -52,7 +52,7 @@ describe('tool registry', () => {
     const byId = new Map(core.map((t) => [t.id, t]));
     // Laying/reshaping the layout is frozen in operation mode.
     expect(byId.get('track').availableIn).toEqual(['edit']);
-    expect(byId.get('block').availableIn).toEqual(['edit']);
+    expect(byId.get('segment').availableIn).toEqual(['edit']);
     expect(byId.get('platform').availableIn).toEqual(['edit']);
     // Inspect and the read-only viewers stay available while operating.
     expect(byId.get('inspect').availableIn).toContain('sim');

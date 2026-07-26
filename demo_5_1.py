@@ -129,7 +129,7 @@ Performance note (expected, accepted):
 
 from network import RailwayNetwork
 from track import (
-    TrackSegment,
+    Tile,
     TRACK_NS,
     TRACK_EW,
     TRACK_NE,
@@ -164,70 +164,6 @@ SCISSORS_BITS = TRACK_NS | TRACK_EW | TRACK_NW | TRACK_SE  # = 27
 
 
 # ============= Demo Functions =============
-
-
-def test_block_validation():
-    """Test that block validation rules are working correctly.
-
-    Same checks as demo_main.test_block_validation — the server's startup
-    block-validation gate calls this on whichever scene module is active.
-    """
-    print("\n" + "=" * 70)
-    print("Testing Block Validation Rules...")
-    print("=" * 70)
-
-    test_network = RailwayNetwork()
-
-    for x in range(8):
-        test_network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
-
-    print("\n[TEST 1] Verifying disconnected tracks are rejected...")
-    try:
-        test_network.create_block_with_tracks(
-            block_id="TEST_DISCONNECTED",
-            positions=[(0, 0), (4, 0)],
-            name="Test",
-        )
-        assert False, "Should have raised ValueError for disconnected tracks"
-    except ValueError as e:
-        assert "not continuous" in str(e).lower(), f"Wrong error message: {e}"
-        print(f"  ✓ Correctly rejected: {e}")
-
-    print("\n[TEST 2] Verifying switches cannot be in blocks...")
-    switch_track = TrackSegment(5, 0, track_bits=TRACK_EW | TRACK_NE)
-    test_network.add_track(switch_track)
-    switch = Switch(switch_id="SW_5_0", x=5, y=0)
-    test_network.add_switch(switch)
-    switch_track.switch_id = switch.switch_id
-    try:
-        test_network.create_block_with_tracks(
-            block_id="TEST_WITH_SWITCH",
-            positions=[(3, 0), (4, 0), (5, 0)],
-            name="Test",
-        )
-        assert False, "Should have raised ValueError for switch in block"
-    except ValueError as e:
-        assert "switch" in str(e).lower(), f"Wrong error message: {e}"
-        print(f"  ✓ Correctly rejected: {e}")
-
-    print("\n[TEST 3] Verifying duplicate block IDs are rejected...")
-    test_network.create_block_with_tracks(
-        block_id="TEST_BLOCK_1", positions=[(0, 0), (1, 0)], name="Test Block 1"
-    )
-    try:
-        test_network.create_block_with_tracks(
-            block_id="TEST_BLOCK_1",
-            positions=[(6, 0)],
-            name="Test",
-        )
-        assert False, "Should have raised ValueError for duplicate block ID"
-    except ValueError as e:
-        assert "already exists" in str(e).lower(), f"Wrong error message: {e}"
-        print(f"  ✓ Correctly rejected: {e}")
-
-    print("\n" + "=" * 70)
-    print("✓ Block Validation Tests Passed")
-    print("=" * 70)
 
 
 # Track-tile layout. Each entry: (x, y, bits, role).
@@ -338,7 +274,7 @@ def _add_plain_tracks(network: RailwayNetwork) -> None:
     """Place all non-switch main-line tiles for both tracks."""
     for tiles in (S_TRACK_TILES, N_TRACK_TILES):
         for (x, y, bits, _role) in tiles:
-            network.add_track(TrackSegment(x, y, track_bits=bits))
+            network.add_track(Tile(x, y, track_bits=bits))
 
 
 def _add_crossovers(network: RailwayNetwork) -> None:
@@ -351,7 +287,7 @@ def _add_crossovers(network: RailwayNetwork) -> None:
     """
     from enums import SwitchState
     for (sx, sy, sid) in ((2, 3, "SW_X1"), (12, 13, "SW_X2")):
-        tile = TrackSegment(sx, sy, track_bits=SCISSORS_BITS)
+        tile = Tile(sx, sy, track_bits=SCISSORS_BITS)
         network.add_track(tile)
         switch = Switch(switch_id=sid, x=sx, y=sy)
         # DIVERGE (1) = stay-on-track via NW/SE diagonals — the demo's
@@ -384,7 +320,7 @@ def _add_throat(network: RailwayNetwork) -> None:
         (8, 8, TRACK_SE | TRACK_EW, "SW_XOVER_S", SwitchState.DIVERGE),
     ]
     for (sx, sy, bits, sid, state) in throat:
-        tile = TrackSegment(sx, sy, track_bits=bits)
+        tile = Tile(sx, sy, track_bits=bits)
         network.add_track(tile)
         switch = Switch(switch_id=sid, x=sx, y=sy)
         switch.position = state
@@ -417,7 +353,7 @@ def _add_lead_crossover(network: RailwayNetwork) -> None:
         (8, 10, TRACK_SE | TRACK_EW, "SW_8_10", SwitchState.DIVERGE),
     ]
     for (sx, sy, bits, sid, state) in crossover:
-        tile = TrackSegment(sx, sy, track_bits=bits)
+        tile = Tile(sx, sy, track_bits=bits)
         network.add_track(tile)
         switch = Switch(switch_id=sid, x=sx, y=sy)
         switch.position = state
@@ -449,11 +385,11 @@ def _add_depot(network: RailwayNetwork) -> None:
         (8, 14, TRACK_NS),
         (8, 15, TRACK_SW),
     ]:
-        network.add_track(TrackSegment(x, y, track_bits=bits))
+        network.add_track(Tile(x, y, track_bits=bits))
 
     # Plain ladder connectors (NW corners) between consecutive turnouts.
     for (x, y) in [(3, 10), (4, 11), (5, 12), (6, 13), (7, 14)]:
-        network.add_track(TrackSegment(x, y, track_bits=TRACK_NW))
+        network.add_track(Tile(x, y, track_bits=TRACK_NW))
 
     # Single-direction ladder: lead enters at the right end (SW_LAD5) and each
     # turnout peels a platform off going up-left. Every turnout is SE|EW — SE
@@ -461,7 +397,7 @@ def _add_depot(network: RailwayNetwork) -> None:
     # branch — so none is a square corner. Default DIVERGE = ladder through.
     for k in range(6):
         ax, ay = 2 + k, 10 + k
-        at = TrackSegment(ax, ay, track_bits=TRACK_SE | TRACK_EW)
+        at = Tile(ax, ay, track_bits=TRACK_SE | TRACK_EW)
         network.add_track(at)
         sw = Switch(switch_id=f"SW_LAD{k}", x=ax, y=ay)
         sw.position = SwitchState.DIVERGE
@@ -471,9 +407,9 @@ def _add_depot(network: RailwayNetwork) -> None:
     # Six platforms (vertical NE/SW stubs, 3 tiles each), bases aligned on
     # screen-row -9, each branching up-left off its ladder turnout.
     for (bx, by) in DEPOT_PLATFORM_BASES:
-        network.add_track(TrackSegment(bx, by, track_bits=TRACK_NE))         # BOT
-        network.add_track(TrackSegment(bx, by + 1, track_bits=TRACK_SW))     # MID
-        network.add_track(TrackSegment(bx - 1, by + 1, track_bits=TRACK_NE)) # TOP
+        network.add_track(Tile(bx, by, track_bits=TRACK_NE))         # BOT
+        network.add_track(Tile(bx, by + 1, track_bits=TRACK_SW))     # MID
+        network.add_track(Tile(bx - 1, by + 1, track_bits=TRACK_NE)) # TOP
 
 
 # Each block: (block_id, positions, name, length_cm, speed_limit_kmh or None).
@@ -529,17 +465,17 @@ BLOCKS = [
 
 
 def _add_blocks(network: RailwayNetwork) -> None:
-    """Register every block in BLOCKS via create_block_with_tracks."""
+    """Register every block in BLOCKS via create_segment_with_tracks."""
     for (block_id, positions, name, length_cm, speed) in BLOCKS:
         kwargs = {
-            "block_id": block_id,
+            "segment_id": block_id,
             "positions": positions,
             "name": name,
             "length_cm": length_cm,
         }
         if speed is not None:
             kwargs["speed_limit_kmh"] = speed
-        network.create_block_with_tracks(**kwargs)
+        network.create_segment_with_tracks(**kwargs)
 
 
 # One-way travel policy. The S2<->S3 corridor and the crossover approaches on

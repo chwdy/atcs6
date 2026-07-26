@@ -10,7 +10,7 @@ part of the layout JSON, so setup_demo_train() is a stub.
 
 from network import RailwayNetwork
 from track import (
-    TrackSegment,
+    Tile,
     TRACK_NS,
     TRACK_EW,
     TRACK_NE,
@@ -165,7 +165,7 @@ SIGNALS = [
 def _add_tracks(network: RailwayNetwork) -> None:
     """Place every baked track tile (dead-end ports are re-derived from geometry)."""
     for (x, y, bits) in TILES:
-        network.add_track(TrackSegment(x, y, track_bits=bits))
+        network.add_track(Tile(x, y, track_bits=bits))
 
 
 def _add_switches(network: RailwayNetwork) -> None:
@@ -232,8 +232,8 @@ def _add_platforms(network: RailwayNetwork) -> None:
 def _add_blocks(network: RailwayNetwork) -> None:
     """Create the non-platform blocks from their baked tile lists."""
     for (block_id, name, positions, length_cm, speed_limit_kmh) in BLOCKS:
-        network.create_block_with_tracks(
-            block_id=block_id,
+        network.create_segment_with_tracks(
+            segment_id=block_id,
             positions=positions,
             name=name,
             length_cm=length_cm,

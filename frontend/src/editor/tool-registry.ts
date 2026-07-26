@@ -108,6 +108,10 @@ function buildRailButton(
   btn.type = 'button';
   btn.className = c.id === activeToolId ? 'tool-launch active' : 'tool-launch';
   btn.dataset.tool = c.id;
+  // The visible label is hidden in the compact rail (.sidebar--compact), so the
+  // name has to survive as a tooltip / accessible name.
+  btn.title = c.label;
+  btn.setAttribute('aria-label', c.label);
   const numEl = document.createElement('span');
   numEl.className = 'tool-launch-num';
   numEl.textContent = String(num);
@@ -137,6 +141,10 @@ function buildGroup(
   trigger.className = 'tool-launch tool-group-btn';
   trigger.setAttribute('aria-haspopup', 'true');
   trigger.setAttribute('aria-expanded', 'false');
+  // See buildRailButton: the compact rail hides the label, so name the group
+  // on the button itself.
+  trigger.title = group;
+  trigger.setAttribute('aria-label', group);
   if (tools.some((t) => t.id === activeToolId)) trigger.classList.add('active');
 
   const icon = document.createElement('i');

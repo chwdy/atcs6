@@ -58,7 +58,7 @@ class TrainAtTargetPredicates:
         track = self._e.network.get_track(*head_tile)
         if not track:
             return False
-        return track.block_section_id == block_id
+        return track.block_id == block_id
 
     def is_train_at_platform_for_task(
         self, train: "Train", task: "RouteTask"
@@ -147,7 +147,7 @@ class TrainAtTargetPredicates:
         track = self._e.network.get_track(*head_tile)
         if not track:
             return None
-        return track.block_section_id
+        return track.block_id
 
     # ------------------------------------------------------------------
     # Internal helpers

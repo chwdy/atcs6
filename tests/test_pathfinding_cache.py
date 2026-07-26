@@ -42,7 +42,10 @@ def _connected_pair(network, pf):
         for b in blocks:
             if a != b and pf.find_ordered_walk(a, b):
                 return a, b
-    pytest.skip("no connected block pair found in demo_5")
+    raise AssertionError(
+        "demo_5 contains no connected block pair; the cache test fixture no "
+        "longer exercises pathfinding"
+    )
 
 
 def _block_lists(candidates):
@@ -93,9 +96,9 @@ def _mutate_direct_invalidate(network):
 
 def _mutate_block_membership(network):
     # Re-assign one tile to its current block: a no-op *value* change that still
-    # routes through the block_section_id setter -> _set_tile_block -> clear.
+    # routes through the segment_id setter -> _set_tile_segment -> clear.
     _tile, track = next(iter(network.tracks.items()))
-    track.block_section_id = track.block_section_id
+    track.segment_id = track.block_id
 
 
 def _mutate_propagate_from_tile(network):
@@ -111,7 +114,7 @@ def _mutate_rebuild_ordered_tiles(network):
     # ordered_tiles feeds the cached per-step block_direction, so recomputing it
     # must drop the cache.
     bid = next(iter(network.blocks))
-    network._get_block_geometry_manager().rebuild_block_ordered_tiles(bid)
+    network._get_segment_geometry_manager().rebuild_segment_ordered_tiles(bid)
 
 
 @pytest.mark.parametrize(

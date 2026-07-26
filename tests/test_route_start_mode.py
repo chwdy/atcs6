@@ -47,8 +47,8 @@ class _Block:
 
 
 class _Track:
-    def __init__(self, block_section_id: str) -> None:
-        self.block_section_id = block_section_id
+    def __init__(self, block_id: str) -> None:
+        self.block_id = block_id
 
 
 class _Network:

@@ -18,10 +18,11 @@ import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
 import { showConfirmModal } from '../lib/helpers';
 import { FORBIDDEN_TRACK_BITS, isSquareCornerSwitch } from '../lib/constants';
-import { TabGroup } from './tab-group';
+import { TabGroup, resolveActiveGroup } from './tab-group';
 import { FloatingWindow, windowManager, type WindowGeometry } from '../lib/window-manager';
 import { showContextMenu, type ContextMenuSection } from '../lib/context-menu';
 import { wireTabDrag } from './tab-drag';
+import { placeClearOfLayout } from '../lib/window-placement';
 import {
   browserWindowPersistenceEnv,
   loadRegistry,
@@ -31,6 +32,13 @@ import {
   unregister,
   type WindowPersistenceEnv,
 } from '../lib/window-persistence';
+
+/** A spawned window's assumed size while placing it — it has no DOM yet at
+ *  placement time. Matches `.secondary-sidebar`'s docked width and a typical
+ *  opened height; the window is reclamped once it is real, so an inexact guess
+ *  only shifts the opening position slightly. */
+const SPAWNED_WINDOW_WIDTH = 350;
+const SPAWNED_WINDOW_HEIGHT = 420;
 
 export class EditorUIHandler {
   editor: EditorHost;
@@ -44,15 +52,6 @@ export class EditorUIHandler {
    *  each a full independent TabGroup + FloatingWindow. Keyed by groupId. */
   private spawnedGroups = new Map<string, { window: FloatingWindow; tabGroup: TabGroup }>();
   private spawnCounter = 0;
-
-  /** The group whose window was most recently focused (any pointerdown
-   *  inside it, including on an embedded action button — FloatingWindow
-   *  bumps z-order on every pointerdown, not just header drags). Content
-   *  actions embedded in a panel (an "Edit" button in a list row) call a
-   *  generic editor.showXEditor() with no idea which window they live in —
-   *  this is showSecondarySidebar's fallback so that action lands back in
-   *  the window the user was actually looking at, not always home. */
-  private lastFocusedTabGroup: TabGroup | null = null;
 
   constructor(editor: EditorHost) {
     this.editor = editor;
@@ -98,13 +97,13 @@ export class EditorUIHandler {
       adopt: { root: sidebar, header },
       minW: 260,
       minH: 180,
-      // Clear of the floating tool capsule on the left (right edge ~152).
-      defaultFloatPosition: { left: 168, top: 84 },
+      // Open beside the drawn layout rather than on top of it — measured live
+      // at the moment the inspector is torn off, since the layout moves under
+      // pan/zoom. Falls back to the bounds' top-left (clear of the floating
+      // tool capsule) when nothing is drawn yet.
+      defaultFloatPosition: (size) => placeClearOfLayout(size),
       onGeometryChange: () => this.persistSecondaryInspectorState(),
     });
-
-    windowManager.subscribe(() => this.updateLastFocusedTabGroup());
-    this.lastFocusedTabGroup = this.homeTabGroup;
 
     const closeBtn = this.editor.$id('close-secondary-sidebar');
     if (closeBtn) {
@@ -192,7 +191,7 @@ export class EditorUIHandler {
       if (pinTabBtn) {
         event.stopPropagation();
         const tabId = pinTabBtn.dataset.tabId;
-        if (tabId) group.pinTab(tabId);
+        if (tabId) await this.pinTabIntoOwnGroup(group, tabId);
         return;
       }
 
@@ -203,11 +202,11 @@ export class EditorUIHandler {
       }
     });
 
-    // Double-click a preview tab to keep it (pin).
+    // Double-click a tab to pin it — same gesture as the pin button.
     tabsEl.addEventListener('dblclick', (event) => {
       const tabEl = (event.target as HTMLElement).closest('.secondary-tab[data-tab-id]') as HTMLElement | null;
       if (tabEl?.dataset.tabId) {
-        group.pinTab(tabEl.dataset.tabId);
+        void this.pinTabIntoOwnGroup(group, tabEl.dataset.tabId);
       }
     });
 
@@ -289,28 +288,6 @@ export class EditorUIHandler {
     return list;
   }
 
-  /** Re-derive lastFocusedTabGroup from WindowManager's current z-order
-   *  (topmost = last). Called on every WindowManager change (open/close/
-   *  focus) — cheap, and simpler than threading a "which group is this"
-   *  callback through FloatingWindowOptions for every window kind. */
-  private updateLastFocusedTabGroup(): void {
-    const open = windowManager.all();
-    const top = open[open.length - 1];
-    if (!top) {
-      return;
-    }
-    if (top.id === 'home') {
-      this.lastFocusedTabGroup = this.homeTabGroup;
-      return;
-    }
-    const entry = this.spawnedGroups.get(top.id);
-    if (entry) {
-      this.lastFocusedTabGroup = entry.tabGroup;
-    }
-    // A non-tab-group window (diagnostics) being topmost doesn't change
-    // which *tab group* content actions should land in — leave it as-is.
-  }
-
   /** Close one tab in a group; if that group is now empty, hide (home) or
    *  destroy (spawned) its window. */
   private async closeTabInGroup(group: TabGroup, tabId: string): Promise<void> {
@@ -349,7 +326,8 @@ export class EditorUIHandler {
   async splitTabIntoNewWindow(
     sourceGroup: TabGroup,
     tabId: string,
-    atPoint?: { x: number; y: number }
+    atPoint?: { x: number; y: number },
+    opts: { pinned?: boolean } = {}
   ): Promise<void> {
     const tab = await sourceGroup.extractTab(tabId);
     if (!tab) {
@@ -358,18 +336,36 @@ export class EditorUIHandler {
 
     const groupId = `tabgroup-${++this.spawnCounter}`;
     const geometry = atPoint
-      ? { left: Math.max(8, atPoint.x - 60), top: Math.max(8, atPoint.y - 12) }
-      : // Cascade so repeated splits don't stack exactly on top of each
-        // other; clamped back on screen by FloatingWindow's own reclamp.
-        { left: 200 + 28 * (this.spawnCounter % 8), top: 120 + 28 * (this.spawnCounter % 8) };
+      ? // A drag-out lands where the user dropped it — they chose the spot, so
+        // no placement policy second-guesses them.
+        { left: Math.max(8, atPoint.x - 60), top: Math.max(8, atPoint.y - 12) }
+      : // Button/menu trigger has no drop point: open clear of the drawn layout,
+        // then cascade so repeated splits don't stack exactly on top of each
+        // other. Clamped back on screen by FloatingWindow's own reclamp.
+        this.cascadeFrom(placeClearOfLayout({ width: SPAWNED_WINDOW_WIDTH, height: SPAWNED_WINDOW_HEIGHT }));
     const { tabGroup } = this.createSpawnedWindow(groupId, geometry);
 
     tabGroup.acceptMovedTab(tab);
+    if (opts.pinned) {
+      // A pinned group holds exactly the record the user pinned and leaves the
+      // active chain — nothing new ever lands here. The tab is marked kept too,
+      // so it never reads as a throwaway preview.
+      tabGroup.pinTab(tab.tabId);
+      tabGroup.setPinned(true);
+    }
     tabGroup.updateNavigationState();
     void tabGroup.restoreTabPanel(tab);
 
     this.closeGroupWindowIfEmpty(sourceGroup);
     this.persistWindowRegistry();
+  }
+
+  /** Step a placed position along the cascade diagonal so a second split from
+   *  the same trigger doesn't land exactly under the first. Wraps every 8 so a
+   *  long session never marches a window off the far corner. */
+  private cascadeFrom(origin: { left: number; top: number }): { left: number; top: number } {
+    const step = 28 * (this.spawnCounter % 8);
+    return { left: origin.left + step, top: origin.top + step };
   }
 
   /** Move a tab from one already-open group to another — the context-menu
@@ -574,16 +570,131 @@ export class EditorUIHandler {
     } catch (e) {}
   }
 
+  /** Which group a panel opened right now would land in — the *active* group.
+   *
+   *  Every open group is in one of three states: active (exactly one — the one
+   *  new tabs land in), inactive, or pinned. Resolution walks the
+   *  most-recently-interacted chain and takes the first group that isn't
+   *  pinned:
+   *
+   *  1. A tab mid-restore in a spawned window (TabGroup.restoreTabPanel /
+   *     navigateToParentList) names itself the target, so that wins outright.
+   *  2. Otherwise the focused group — WindowManager's z-order top, since any
+   *     pointerdown inside a window focuses it. That covers both "the user just
+   *     selected a tab" and "the user clicked an Edit button inside a panel":
+   *     content actions call a generic editor.showXEditor() with no idea which
+   *     window they live in, so the action has to land back in the window the
+   *     user was looking at.
+   *  3. A pinned group is skipped, and the walk continues down the chain to the
+   *     previous group, and the one before that, until it finds an unpinned one.
+   *
+   *  Returns null when the chain runs out — every open group is pinned, or
+   *  there are none. That is the same situation as having no window at all, and
+   *  callers answer it the same way: spawn a new group (see openInNewGroup). */
+  private resolveTargetGroup(): TabGroup | null {
+    if (this.editor._activeTabGroupForRestore) {
+      return this.editor._activeTabGroupForRestore;
+    }
+    return resolveActiveGroup(this.activeChain());
+  }
+
+  /** Every tab group that could be the active one, most-recently-interacted
+   *  first. WindowManager's z-order is already that chain — it moves a window
+   *  to the end on every focus, and FloatingWindow focuses on any pointerdown
+   *  inside it. Non-tab-group windows (diagnostics, the train monitor) drop
+   *  out; the home group is appended as the floor of the chain, because it
+   *  always exists even in a state where no window has registered yet (early
+   *  boot, or a headless unit test). */
+  private activeChain(): TabGroup[] {
+    const chain: TabGroup[] = [];
+    const open = windowManager.all(); // back-to-front; last = most recent
+    for (let i = open.length - 1; i >= 0; i--) {
+      const group = this.groupForWindow(open[i]);
+      if (group) {
+        chain.push(group);
+      }
+    }
+    if (this.homeTabGroup && !chain.includes(this.homeTabGroup)) {
+      chain.push(this.homeTabGroup);
+    }
+    return chain;
+  }
+
+  /** The TabGroup a window hosts, or null for a non-tab-group window
+   *  (diagnostics, the train monitor). */
+  private groupForWindow(win: FloatingWindow): TabGroup | null {
+    if (win.id === 'home') {
+      return this.homeTabGroup;
+    }
+    return this.spawnedGroups.get(win.id)?.tabGroup ?? null;
+  }
+
+  /** Spawn a fresh group in its own window and run `render` into it — what
+   *  happens when the active chain is exhausted (every group pinned) and a
+   *  panel still has to open somewhere. */
+  private openInNewGroup(render: () => void): void {
+    const groupId = `tabgroup-${++this.spawnCounter}`;
+    const { tabGroup, window: win } = this.createSpawnedWindow(
+      groupId,
+      this.cascadeFrom(placeClearOfLayout({ width: SPAWNED_WINDOW_WIDTH, height: SPAWNED_WINDOW_HEIGHT }))
+    );
+    // Focus it: it is what the user is now looking at, and being top of the
+    // z-order makes it the active group, so the *next* open reuses this window
+    // instead of spawning yet another beside the same pinned panels.
+    win.focus();
+    // Route the render into the new group the same way a mid-restore tab does —
+    // showSecondarySidebar reads this one-shot flag first.
+    const previous = this.editor._activeTabGroupForRestore;
+    this.editor._activeTabGroupForRestore = tabGroup;
+    try {
+      render();
+    } finally {
+      this.editor._activeTabGroupForRestore = previous;
+    }
+    tabGroup.updateNavigationState();
+    this.persistWindowRegistry();
+  }
+
+  /** Pin a tab: detach it from its group into a dedicated group that holds only
+   *  it, and mark that group pinned so no new tab ever lands there. A pinned
+   *  group is out of the active chain entirely — it keeps showing the one
+   *  record the user pinned, and only responds to explicit window actions
+   *  (move, drag, close).
+   *
+   *  A tab that is already alone in its group needs no new window — pinning it
+   *  just pins the group it is already the sole occupant of. Without this,
+   *  pinning would destroy the group and respawn an identical one at a cascade
+   *  offset, which reads as the window jumping for no reason. */
+  async pinTabIntoOwnGroup(sourceGroup: TabGroup, tabId: string): Promise<void> {
+    if (sourceGroup.tabs.length <= 1) {
+      sourceGroup.setPinned(true);
+      return;
+    }
+    await this.splitTabIntoNewWindow(sourceGroup, tabId, undefined, { pinned: true });
+  }
+
+  /** Open a panel the user asked for by name — the right-click "Inspect tile"
+   *  action, and anything else that is an explicit request rather than an
+   *  incidental follow-along. It always opens: unlike the ambient updates in
+   *  updateSecondaryEditorForTile, it does not defer to whatever editor
+   *  happens to be showing. With every group pinned there is nowhere to put it,
+   *  so it gets a group of its own. */
+  showRequestedPanel(render: () => void): void {
+    if (this.resolveTargetGroup()) {
+      render();
+      return;
+    }
+    this.openInNewGroup(render);
+  }
+
   showSecondarySidebar(title: string, content: string): void {
-    // A tab living in a spawned window that's mid-restore (TabGroup.
-    // restoreTabPanel / navigateToParentList) marks itself as the target
-    // first, so that takes priority. Otherwise this is a fresh open — most
-    // are canvas-driven (inspecting a tile/entity) with no window context of
-    // their own, but a panel-embedded action button (an "Edit" row inside an
-    // already-open list) has no way to say which window it lives in either,
-    // so falling back to the last-focused window (rather than always home)
-    // means that action lands back in the window the user was looking at.
-    const target: TabGroup = this.editor._activeTabGroupForRestore || this.lastFocusedTabGroup || this.homeTabGroup;
+    const target = this.resolveTargetGroup();
+    if (!target) {
+      // Active chain exhausted (every open group is pinned) — same as having no
+      // window at all, so make one.
+      this.openInNewGroup(() => this.showSecondarySidebar(title, content));
+      return;
+    }
     // Reopening into the home window after it was closed while floating must
     // clear the `.floating-window--hidden` that hideSecondarySidebar set —
     // `.visible` alone can't reveal a floating window. Gated on isHidden so an

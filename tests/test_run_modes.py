@@ -8,13 +8,13 @@ switched mid-run; no code above the interfaces branches on the mode — it
 manifests only as which interfaces are wired.
 """
 
-from block_occupancy import SimulatedInputInterface
-from block_power import SimulatedOutputInterface
+from block_occupancy import SimulatedOccupancyDriver
+from block_power import SimulatedTrackDriver
 from enums import OperationMode
 from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from simulation import SimulationController
-from switch_power import SimulatedSwitchOutputInterface
+from switch_power import SimulatedSwitchDriver
 
 
 def _sim(**kwargs):
@@ -25,10 +25,10 @@ def _sim(**kwargs):
 def test_default_is_sim_mode_with_simulated_interfaces():
     sim = _sim()
     assert sim.operation_mode == OperationMode.SIM
-    assert isinstance(sim.input_interface, SimulatedInputInterface)
-    assert isinstance(sim.power_controller.output_interface, SimulatedOutputInterface)
+    assert isinstance(sim.input_interface, SimulatedOccupancyDriver)
+    assert isinstance(sim.power_controller.output_interface, SimulatedTrackDriver)
     assert isinstance(
-        sim.switch_power_controller.output_interface, SimulatedSwitchOutputInterface
+        sim.switch_output_interface, SimulatedSwitchDriver
     )
 
 
@@ -59,7 +59,7 @@ def test_backend_injection_seam_wires_provided_interfaces():
     )
     assert sim.input_interface is in_iface
     assert sim.power_controller.output_interface is blk_out
-    assert sim.switch_power_controller.output_interface is sw_out
+    assert sim.switch_output_interface is sw_out
 
 
 def test_operation_mode_values():

@@ -59,7 +59,7 @@ class PathDispatcher:
                     requested_destination_direction, acquisition_mode)
         cancel_path(path_id, initiator, reason)
         on_controller_progress(report)
-        try_complete_active_path(train_id, event_time)
+        try_complete_active_path(train_id)
         get_active_path(train_id)
         active_path_id_by_train(train_id)
         get_active_paths()
@@ -178,7 +178,7 @@ class PathDispatcher:
         track = self.network.get_track(*head_tile)
         if track is None:
             return None
-        return track.block_section_id
+        return track.block_id
 
     def _resolve_create_start_block(
         self,
@@ -359,7 +359,7 @@ class PathDispatcher:
                 # Switch interrupts any in-progress block run.
                 prev_block_id = None
                 continue
-            block_id = getattr(track, "block_section_id", None)
+            block_id = getattr(track, "block_id", None)
             if not block_id:
                 continue
             if block_id == prev_block_id:
@@ -449,7 +449,10 @@ class PathDispatcher:
         if not valid_exits:
             return ([], "No valid exits from path end tile")
 
-        existing_blocks = set(path.get_all_blocks())
+        # Blocks the path still holds cannot be extension destinations; ones it
+        # has already released can (see `_blocks_held_by`), so a loop's first
+        # block stays offerable as a destination once the train has passed it.
+        existing_blocks = self._blocks_held_by(path)
         reachable_blocks: Set[str] = set()
         visited: Set[Tuple[int, int, str]] = set()
 
@@ -469,7 +472,7 @@ class PathDispatcher:
                 if not next_track:
                     continue
                 next_x, next_y = next_track.x, next_track.y
-                next_block_id = next_track.block_section_id
+                next_block_id = next_track.block_id
                 if next_block_id and next_block_id not in existing_blocks:
                     reachable_blocks.add(next_block_id)
                 next_entry_edge = OPPOSITE_EDGE.get(curr_exit)
@@ -486,7 +489,7 @@ class PathDispatcher:
             for station_id, station in self.network.stations.items():
                 for pos in station.positions:
                     track = self.network.get_track(*pos)
-                    if track and track.block_section_id in reachable_blocks:
+                    if track and track.block_id in reachable_blocks:
                         if station_id not in result:
                             result.append(station_id)
                         break
@@ -598,7 +601,7 @@ class PathDispatcher:
                 continue
             if track.is_switch:
                 continue
-            if not track.block_section_id:
+            if not track.block_id:
                 errors.append(
                     ValidationError(
                         type=ValidationErrorType.UNBLOCKED_TILE,
@@ -719,24 +722,32 @@ class PathDispatcher:
         """Build a `success=False` PathAcquisitionResult for create_path /
         extend_path validation guards.
 
-        Fills the fields every rejection shares (`success=False`, the caller's
-        requested direction, the structured `failure_kind`, and the `reason`
-        text) from the arguments; the per-guard fields that some rejections
-        omit (`requested_destination_block_id`, `path_id`,
-        `authority_end_block_id`) default to `None`, which matches the
-        `PathAcquisitionResult` field defaults, so a guard that did not set one
-        gets exactly the same value as before. Each call site passes its block
-        id with the same expression it used inline (plain pass-through vs
-        `... or None`), so an empty-string block id renders identically.
+        Per the **`create_path()` / `extend_path()` return contract**: on
+        failure only `failure_kind` and `reason` carry information. `path_id`,
+        `resource_sequence`, `authority_end_block_id`, `result_kind`, and both
+        target fields are `None`, so a caller can never mistake a rejection's
+        echoed request for authority the dispatcher actually stored.
+
+        The context each guard passes is folded into `reason` instead, so no
+        diagnostic is lost. `reason` is human-readable only — callers branch on
+        `success`, `result_kind`, and `failure_kind`, never on this text.
         """
+        context = []
+        if path_id:
+            context.append(f"path_id={path_id}")
+        if requested_destination_block_id:
+            context.append(f"target={requested_destination_block_id}")
+        if requested_destination_direction:
+            context.append(f"direction={requested_destination_direction}")
+        if authority_end_block_id:
+            context.append(f"authority_end={authority_end_block_id}")
+        detail = f"{reason} ({', '.join(context)})" if context else reason
+
         return PathAcquisitionResult(
             success=False,
             failure_kind=failure_kind,
-            path_id=path_id,
-            requested_destination_block_id=requested_destination_block_id,
-            requested_destination_direction=requested_destination_direction,
-            authority_end_block_id=authority_end_block_id,
-            reason=reason,
+            reason=detail,
+            resource_sequence=None,
         )
 
     def create_path(
@@ -854,7 +865,7 @@ class PathDispatcher:
                 failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
-                reason="destination block already covered by the train's span",
+                reason="destination block already contains the train head",
             )
 
         # Resolve the start-side block for candidate search (design_new.md
@@ -1187,15 +1198,53 @@ class PathDispatcher:
                 reason="requested_destination_block_id required",
             )
 
-        existing_blocks = path.get_all_blocks()
-        if requested_destination_block_id in existing_blocks:
+        # The live authority already reaches this target block, so there is
+        # nothing to append. Per design_new.md "create_path() / extend_path()
+        # return contract" this is `reached_requested_target`, not a failure:
+        # Phase 1 re-requests the current target on every eligible tick while
+        # the train runs out its authority, and each of those calls is a
+        # successful no-op.
+        #
+        # The test is on the block alone, not on block + direction. A task
+        # authored `task_direction = "either"` is re-resolved from the train's
+        # live position every tick, and the resolved direction legitimately
+        # flips once the head enters the destination block — the walk that
+        # reaches a block you are already standing in comes out the other way
+        # round. Keying on direction would read that flip as a new request that
+        # extend cannot serve. The direction that matters for arrival is the
+        # one on the terminal frame this path already stored, and
+        # `try_complete_active_path(...)` checks that independently before it
+        # commits completion.
+        if requested_destination_block_id == path.get_authority_end_block_id():
+            # Report the direction the live authority actually has, not the
+            # one the caller asked with. Nothing was appended, so the terminal
+            # frame is unchanged, and the caller records this pair as the match
+            # key for stop completion.
+            return PathAcquisitionResult(
+                success=True,
+                result_kind=PathAcquisitionResultKind.REACHED_REQUESTED_TARGET,
+                path_id=path_id,
+                requested_destination_block_id=requested_destination_block_id,
+                requested_destination_direction=path.requested_destination_direction,
+                authority_end_block_id=path.get_authority_end_block_id(),
+                resource_sequence=list(path.resource_sequence),
+                reason=None,
+            )
+
+        # A block this path still holds cannot be authorized a second time —
+        # one path, one concurrent claim per block (see `_blocks_held_by`).
+        # This is the repeated-resource rule, so it classifies as
+        # `no_viable_path` per design_new.md "PathAcquisitionFailureKind".
+        if requested_destination_block_id in self._blocks_held_by(path):
             return self._reject(
-                failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
+                failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
                 authority_end_block_id=path.get_authority_end_block_id() or None,
-                reason=f"{requested_destination_block_id} is already in path",
+                reason=(
+                    f"{requested_destination_block_id} is still held by this path"
+                ),
             )
 
         train_id = path.train_id
@@ -1255,17 +1304,24 @@ class PathDispatcher:
             )
         candidates = forward_candidates
 
-        # Reject candidates whose tile walk would cause any block or switch
-        # to appear twice in the combined (existing path + appended segment)
-        # resource_sequence, per design_new.md "Path extension" lines
-        # 1040-1041, 1083 ("repeated resources in a single path are invalid
-        # and should be rejected during both create_path() and extend_path()").
-        # Without this, find_ordered_walk can return a candidate whose
-        # post-seam tile path re-enters the path's start block via the
-        # south tunnel (or any other connection that loops the network),
-        # BEST_EFFORT truncates that loop into a closed prefix, and
-        # extend_path appends one full loop to the path every Phase-1 tick.
-        existing_path_blocks = set(path.get_all_blocks())
+        # Reject candidates whose tile walk would make this path hold one block
+        # or switch twice at the same time, per the repeated-resource rule in
+        # design_new.md "Path invariants". Two separate checks live inside
+        # `_segment_would_revisit_resources`: the candidate must not repeat a
+        # resource within its own walk, and it must not land on a resource the
+        # path is still holding. Without them, find_ordered_walk can return a
+        # candidate whose post-seam tile path re-enters a block the path
+        # already holds (via the south tunnel, or any other connection that
+        # loops the network), BEST_EFFORT truncates that loop into a closed
+        # prefix, and extend_path appends one full loop every Phase-1 tick.
+        #
+        # Blocks are tested against the live holdings (`_blocks_held_by`)
+        # rather than the whole history, so a lap can close over a block the
+        # train has already released. Switches are still tested against the
+        # full history: a path holds its switch locks for its entire lifetime
+        # (they are released together in `release_path_resources`), so a
+        # switch never leaves the held set while the path is ACTIVE.
+        existing_path_blocks = self._blocks_held_by(path)
         existing_path_switches = {
             e.resource_id for e in path.resource_sequence
             if e.resource_type == "switch"
@@ -1517,6 +1573,7 @@ class PathDispatcher:
         initiator: Optional[str] = None,
         reason: Optional[str] = None,
         deviation_kind: Optional[str] = None,
+        route_progress_kind: Optional[str] = None,
     ) -> CancellationResult:
         """v1 cancel_path: release reservations, mark path CANCELLED.
 
@@ -1580,15 +1637,18 @@ class PathDispatcher:
             route_executor = self._get_route_executor()
             if route_executor is not None:
                 # design_new.md "route path-event callback schema" (1700, 1730):
-                # forward the optional `reason` and the single classification bit
-                # `was_deviation = initiator == "deviation"` so the route side
-                # projects DEVIATED vs CANCELLED. The free-form `initiator` stays
-                # on the notification emitted below.
+                # forward the optional `reason` and the two classification bits
+                # `was_deviation = initiator == "deviation"` and
+                # `was_run_completion = route_progress_kind == "run_complete"`
+                # so the route side projects DEVIATED vs CANCELLED vs (for a
+                # completing run) neither. The free-form `initiator` stays on
+                # the notification emitted below.
                 route_executor.handle_path_cancellation(
                     train_id,
                     path_id,
                     reason=reason,
                     was_deviation=(initiator == "deviation"),
+                    was_run_completion=(route_progress_kind == "run_complete"),
                 )
 
         # Emit the canonical `path_cancellation` notification.
@@ -1770,6 +1830,36 @@ class PathDispatcher:
             return False
         return block_id in (span.occupied_blocks or [])
 
+    def _blocks_held_by(self, path: "Path") -> Set[str]:
+        """The blocks this path holds *right now*.
+
+        `Path.resource_sequence` is a history: it keeps every block the path
+        has ever authorized, including ones the train has already rolled
+        through and let go of. A block leaves the path's live holdings in two
+        steps — head entry consumes the future reservation (`reserved_by_path`
+        cleared) and tail vacate clears `occupied_by`
+        (`BlockManager.on_block_tail_vacated()`), after which the block goes
+        CAUTION and then FREE.
+
+        The repeated-resource rule exists to stop one path holding one block
+        twice at the same time, so it is tested against this live set rather
+        than against the history. On a circular route that is what lets a lap
+        close: by the time the route walk wraps back to the first block, the
+        train has long since released it, so authorizing it again is an
+        ordinary acquisition rather than a double claim.
+        """
+        train_id = path.train_id
+        held: Set[str] = set()
+        for block_id in path.get_all_blocks():
+            block = self.network.blocks.get(block_id)
+            if block is None:
+                continue
+            if getattr(block, "reserved_by_path", None) == path.path_id:
+                held.add(block_id)
+            elif train_id and getattr(block, "occupied_by", None) == train_id:
+                held.add(block_id)
+        return held
+
     def _blocks_still_reserved_by(
         self, block_ids: List[str], path_id: str
     ) -> List[str]:
@@ -1915,7 +2005,7 @@ class PathDispatcher:
             track = self.network.get_track(x, y)
             if track is None:
                 continue
-            block_id = getattr(track, "block_section_id", None)
+            block_id = getattr(track, "block_id", None)
             if block_id and block_id in segment.blocks:
                 # `block_id` is acquirable; the first block to drop is the
                 # one AFTER this one in `segment.blocks`. _best_effort_truncate
@@ -2002,7 +2092,7 @@ class PathDispatcher:
             track = self.network.get_track(*tile)
             if track is None or track.is_switch:
                 continue
-            if track.block_section_id == terminal_block_id:
+            if track.block_id == terminal_block_id:
                 first_idx = idx
                 break
         if first_idx is None:
@@ -2117,19 +2207,20 @@ class PathDispatcher:
         else:
             start = max(2, min(start_at_block_count, max_prefix))
         # Per the route-managed point-to-point planning rule in design_new.md
-        # "Path And PathDispatcher": resolve this run's waypoint target blocks so
-        # the loop never stores a live authority terminating on a waypoint target.
+        # "Path And PathDispatcher": resolve this run's waypoint and run
+        # target blocks so the loop never stores a live authority terminating
+        # on either kind of target.
         route_executor = self._get_route_executor()
-        waypoint_targets = (
-            route_executor.waypoint_target_blocks(train_id)
+        excluded_terminal_targets = (
+            route_executor.waypoint_and_run_target_blocks(train_id)
             if route_executor is not None
-            and hasattr(route_executor, "waypoint_target_blocks")
+            and hasattr(route_executor, "waypoint_and_run_target_blocks")
             else set()
         )
         for prefix_block_count in range(start, 1, -1):
             prefix_blocks = segment.blocks[:prefix_block_count]
             if not self._prefix_terminal_is_eligible(
-                segment, prefix_blocks, train_id, waypoint_targets
+                segment, prefix_blocks, train_id, excluded_terminal_targets
             ):
                 continue
             cutoff_tiles = self._compute_prefix_cutoff_tiles(
@@ -2153,12 +2244,15 @@ class PathDispatcher:
             if ok:
                 # Per the route-managed point-to-point planning rule in
                 # design_new.md "Path And PathDispatcher": never store an
-                # authority whose terminal block is a waypoint target. The loop
-                # is longest-first, so a
-                # waypoint terminal here means no longer, past-the-waypoint prefix
-                # was acquirable — roll back and fail (create_path's tail reports
-                # BLOCKED_BEFORE_TARGET) rather than land short of the waypoint.
-                if waypoint_targets and prefix_blocks[-1] in waypoint_targets:
+                # authority whose terminal block is a waypoint or run target.
+                # The loop is longest-first, so landing on one of these here
+                # means no longer, past-the-target prefix was acquirable —
+                # roll back and fail (create_path's tail reports
+                # BLOCKED_BEFORE_TARGET) rather than land short of the target.
+                if (
+                    excluded_terminal_targets
+                    and prefix_blocks[-1] in excluded_terminal_targets
+                ):
                     self._rollback_segment(truncated, path_id)
                     return None
                 return truncated
@@ -2170,7 +2264,7 @@ class PathDispatcher:
         segment: PathSegment,
         prefix_blocks: List[str],
         train_id: str,
-        waypoint_targets: Set[str],
+        excluded_terminal_targets: Set[str],
     ) -> bool:
         """Whether a best-effort prefix may terminate on its last block.
 
@@ -2191,9 +2285,9 @@ class PathDispatcher:
 
         A holding-point terminal is the operator's explicit safe-wait place,
         so it overrides the two-way-switch foul — except a holding point that
-        is a resolved ``waypoint`` target, which falls through to the ordinary
-        back-off (the waypoint-target exclusion stays absolute and is applied
-        after acquisition).
+        is a resolved ``waypoint`` or ``run`` target, which falls through to
+        the ordinary back-off (the waypoint/run-target exclusion stays
+        absolute and is applied after acquisition).
         """
         prefix_block_count = len(prefix_blocks)
         # `prefix_block_count` can equal the block count when `start` was
@@ -2210,7 +2304,7 @@ class PathDispatcher:
             return False
         terminal_is_holding_point = (
             self._block_is_holding_point(terminal_block_id)
-            and terminal_block_id not in waypoint_targets
+            and terminal_block_id not in excluded_terminal_targets
         )
         if (
             not terminal_is_holding_point
@@ -2226,7 +2320,7 @@ class PathDispatcher:
     ) -> List[Tuple[int, int]]:
         """Tiles of `segment` that fall inside `prefix_blocks`, in path order.
 
-        A block tile is kept while its `block_section_id` is in
+        A block tile is kept while its `block_id` is in
         `prefix_blocks`. A switch tile is kept only when the next non-switch
         tile in path order belongs to a kept block — i.e. the switch sits
         inside the prefix, not at the boundary to a dropped block. Per
@@ -2258,7 +2352,7 @@ class PathDispatcher:
                         j += 1
                         continue
                     next_in_prefix = (
-                        next_track.block_section_id in prefix_blocks
+                        next_track.block_id in prefix_blocks
                     )
                     break
                 if next_in_prefix:
@@ -2267,7 +2361,7 @@ class PathDispatcher:
                     continue
                 # Boundary switch to a dropped block: truncate here.
                 break
-            if track.block_section_id in prefix_blocks:
+            if track.block_id in prefix_blocks:
                 cutoff_tiles.append(tile)
                 i += 1
             else:
@@ -2313,9 +2407,9 @@ class PathDispatcher:
                 dx = curr[0] - prev[0]
                 dy = curr[1] - prev[1]
             track = self.network.get_track(*curr)
-            if track is None or not track.block_section_id:
+            if track is None or not track.block_id:
                 continue
-            block_id = track.block_section_id
+            block_id = track.block_id
             if block_id in result:
                 continue
             exit_edge = direction_from_delta(dx, dy)
@@ -2471,7 +2565,7 @@ class PathDispatcher:
                 continue
 
             # Block tiles: collect contiguous run with same block id.
-            block_id = track.block_section_id
+            block_id = track.block_id
             if not block_id:
                 i += 1
                 continue
@@ -2483,7 +2577,7 @@ class PathDispatcher:
                     if (
                         track2 is None
                         or track2.is_switch
-                        or track2.block_section_id != block_id
+                        or track2.block_id != block_id
                     ):
                         break
                     i += 1
@@ -2498,7 +2592,7 @@ class PathDispatcher:
                 track2 = self.network.get_track(*tile2)
                 if track2 is None or track2.is_switch:
                     break
-                if track2.block_section_id != block_id:
+                if track2.block_id != block_id:
                     break
                 ee = self._tile_entry_edge(segment.tiles, i)
                 xe = self._tile_exit_edge(segment.tiles, i)
@@ -2917,9 +3011,13 @@ class PathDispatcher:
     # Completion handshake
     # ========================================================================
 
-    def try_complete_active_path(
-        self, train_id: str, event_time: float
-    ) -> PathCompletionResult:
+    def try_complete_active_path(self, train_id: str) -> PathCompletionResult:
+        # design_new.md "Time sampling": the writer samples wall-clock time
+        # itself. One local sample covers this writer's own two writes — the
+        # `Path.last_status_updated_time` status write and its `path_completed`
+        # notification. It is not threaded on to `RouteExecutor`, which is a
+        # separate writer and samples `finished_at` fresh.
+        event_time = time.time()
         path = self.get_active_path(train_id)
         if path is None:
             return PathCompletionResult(
@@ -3071,7 +3169,6 @@ class PathDispatcher:
                 path_id,
                 path.get_authority_end_block_id(),
                 path.requested_destination_direction,
-                event_time,
             )
         else:
             route_executor = self._get_route_executor()
@@ -3081,7 +3178,6 @@ class PathDispatcher:
                     path_id,
                     path.get_authority_end_block_id(),
                     path.requested_destination_direction,
-                    event_time,
                 )
 
         # Per design_new.md ~line 80: completed paths remain in

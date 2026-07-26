@@ -6,29 +6,29 @@ It imports all components from separate modules and creates a demo
 showing train dispatching, scheduling, and safety systems in action.
 
 Track Building using 6-bit track_bits system:
-- TrackSegment(x, y, track_bits=TRACK_EW): East-West straight track
-- TrackSegment(x, y, track_bits=TRACK_NS): North-South straight track
-- TrackSegment(x, y, track_bits=TRACK_NE): North-East diagonal track
-- TrackSegment(x, y, track_bits=TRACK_NW): North-West diagonal track
-- TrackSegment(x, y, track_bits=TRACK_SE): South-East diagonal track
-- TrackSegment(x, y, track_bits=TRACK_SW): South-West diagonal track
-- TrackSegment(x, y, track_bits=TRACK_EW | TRACK_NE): 3-way switch
+- Tile(x, y, track_bits=TRACK_EW): East-West straight track
+- Tile(x, y, track_bits=TRACK_NS): North-South straight track
+- Tile(x, y, track_bits=TRACK_NE): North-East diagonal track
+- Tile(x, y, track_bits=TRACK_NW): North-West diagonal track
+- Tile(x, y, track_bits=TRACK_SE): South-East diagonal track
+- Tile(x, y, track_bits=TRACK_SW): South-West diagonal track
+- Tile(x, y, track_bits=TRACK_EW | TRACK_NE): 3-way switch
 - Dead-ends are auto-detected by propagation system based on neighbor connectivity
 """
 
 from datetime import datetime
 from network import RailwayNetwork
 from track import (
-    TrackSegment,
+    Tile,
     TRACK_NS,
     TRACK_EW,
-    TRACK_NE,
     TRACK_NW,
     TRACK_SE,
     TRACK_SW,
 )
 from path_dispatcher import PathDispatcher
 from railway_signal import SignalType
+from scene_validation import validate_block_rules
 from switch import Switch
 
 # Identifier read by bootstrap.py and by scene-gated tests to recognise this
@@ -37,160 +37,6 @@ from switch import Switch
 SCENE_ID = "demo_main"
 
 # ============= Demo Functions =============
-
-
-def test_block_validation():
-    """Test that block validation rules are working correctly.
-
-    These tests verify that invalid operations FAIL as expected.
-    Each test should raise a ValueError with a descriptive error message.
-    """
-    print("\n" + "=" * 70)
-    print("Testing Block Validation Rules...")
-    print("=" * 70)
-
-    test_network = RailwayNetwork()
-
-    # Create some test tracks (0,0) to (7,0) - extra tracks at (6,0) and (7,0) for Test 5/6
-    for x in range(8):
-        test_network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
-
-    # Test 1: Cannot create block with disconnected tracks
-    print("\n[TEST 1] Verifying disconnected tracks are rejected...")
-    try:
-        test_network.create_block_with_tracks(
-            block_id="TEST_DISCONNECTED",
-            positions=[(0, 0), (4, 0)],  # Not adjacent - gap in between
-            name="Test",
-        )
-        assert False, "Should have raised ValueError for disconnected tracks"
-    except ValueError as e:
-        assert "not continuous" in str(e).lower(), f"Wrong error message: {e}"
-        print(f"  ✓ Correctly rejected: {e}")
-
-    # Test 2: Cannot add switch to block
-    print("\n[TEST 2] Verifying switches cannot be in blocks...")
-    switch_track = TrackSegment(5, 0, track_bits=TRACK_EW | TRACK_NE)  # Switch
-    test_network.add_track(switch_track)
-    # Create switch entity
-    switch = Switch(switch_id="SW_5_0", x=5, y=0)
-    test_network.add_switch(switch)
-    switch_track.switch_id = switch.switch_id
-    try:
-        test_network.create_block_with_tracks(
-            block_id="TEST_WITH_SWITCH",
-            positions=[(3, 0), (4, 0), (5, 0)],  # Includes switch at (5,0)
-            name="Test",
-        )
-        assert False, "Should have raised ValueError for switch in block"
-    except ValueError as e:
-        assert "switch" in str(e).lower(), f"Wrong error message: {e}"
-        print(f"  ✓ Correctly rejected: {e}")
-
-    # Test 3: Signals can be in blocks, but cannot monitor own block from middle
-    print(
-        "\n[TEST 3] Verifying signals in blocks can only monitor own block from entry tile..."
-    )
-
-    # First create TEST_BLOCK_1 at (0,0), (1,0) which is also used by Test 4 and Test 5
-    test_network.create_block_with_tracks(
-        block_id="TEST_BLOCK_1", positions=[(0, 0), (1, 0)], name="Test Block 1"
-    )
-
-    # Create a 3-tile block for testing
-    test_network.create_block_with_tracks(
-        block_id="TEST_BLOCK_SIGNAL",
-        positions=[(2, 0), (3, 0), (4, 0)],
-        name="Test Block for Signal",
-    )
-
-    # Add a signal in the MIDDLE of the block (at tile 3,0)
-    # This signal CAN exist in the block, but CANNOT monitor TEST_BLOCK_SIGNAL
-    middle_signal = test_network.add_signal(
-        3, 0, "E", signal_type="block", name="Middle Signal", auto_connect=False
-    )
-
-    # Verify the track still has its block_section_id
-    middle_track = test_network.get_track(3, 0)
-    assert middle_track.block_section_id == "TEST_BLOCK_SIGNAL", (
-        "Signal tile should remain in block"
-    )
-    print(
-        f"  ✓ Signal placed in middle of block, tile remains in block: {middle_track.block_section_id}"
-    )
-
-    # Try to make the signal monitor its own block (should fail - not on entry tile)
-    try:
-        test_network.connect_signal_to_block(
-            middle_signal.signal_id, "TEST_BLOCK_SIGNAL"
-        )
-        assert False, (
-            "Should have raised ValueError for monitoring own block from middle"
-        )
-    except ValueError as e:
-        assert "entry tile" in str(e).lower() or "middle" in str(e).lower(), (
-            f"Wrong error: {e}"
-        )
-        print(f"  ✓ Correctly rejected monitoring own block from middle: {e}")
-
-    # Add a signal at the ENTRY tile (tile 2,0 for eastbound)
-    # Eastbound trains approach from west, so (2,0) is the entry tile
-    entry_signal = test_network.add_signal(
-        2, 0, "E", signal_type="block", name="Entry Signal", auto_connect=False
-    )
-
-    # This signal CAN monitor its own block (TEST_BLOCK_SIGNAL) because it's on entry tile
-    reachable = test_network.get_reachable_blocks(entry_signal.signal_id)
-    assert "TEST_BLOCK_SIGNAL" in reachable, (
-        f"Entry tile signal should be able to monitor own block, got: {reachable}"
-    )
-    print(f"  ✓ Entry tile signal can monitor own block, reachable: {reachable}")
-
-    # Test 4: Cannot assign track already in another block
-    print("\n[TEST 4] Verifying tracks cannot be in multiple blocks...")
-    try:
-        test_network.create_block_with_tracks(
-            block_id="TEST_DUPLICATE",
-            positions=[(0, 0), (1, 0)],  # These are already in TEST_BLOCK_1
-            name="Test",
-        )
-        assert False, "Should have raised ValueError for duplicate assignment"
-    except ValueError as e:
-        assert "already in block" in str(e).lower(), f"Wrong error message: {e}"
-        print(f"  ✓ Correctly rejected: {e}")
-
-    # Test 5: Cannot create block with duplicate ID
-    print("\n[TEST 5] Verifying duplicate block IDs are rejected...")
-    try:
-        test_network.create_block_with_tracks(
-            block_id="TEST_BLOCK_1",  # Already exists
-            positions=[(6, 0)],  # Use position not in any block
-            name="Test",
-        )
-        assert False, "Should have raised ValueError for duplicate block ID"
-    except ValueError as e:
-        assert "already exists" in str(e).lower(), f"Wrong error message: {e}"
-        print(f"  ✓ Correctly rejected: {e}")
-
-    # Test 6: Cannot create block with invalid properties
-    print("\n[TEST 6] Verifying invalid block properties are rejected...")
-    try:
-        test_network.create_block_with_tracks(
-            block_id="TEST_INVALID_PROPS",
-            positions=[(7, 0)],  # Use position not in any block
-            name="Test",
-            length_cm=-100.0,  # Negative length!
-        )
-        assert False, "Should have raised ValueError for negative length"
-    except ValueError as e:
-        assert "negative" in str(e).lower() or "length_cm" in str(e).lower(), (
-            f"Wrong error message: {e}"
-        )
-        print(f"  ✓ Correctly rejected: {e}")
-
-    print("\n" + "=" * 70)
-    print("✓ All Block Validation Tests Passed!")
-    print("=" * 70)
 
 
 def create_comprehensive_demo():
@@ -209,16 +55,16 @@ def create_comprehensive_demo():
     network = RailwayNetwork()
 
     # === Create Tracks and Blocks with Validated Assignment ===
-    # Note: Blocks are now created WITH tracks using create_block_with_tracks()
+    # Note: Blocks are now created WITH tracks using create_segment_with_tracks()
 
     # Main Line West: (0,0) to (2,0)
     for x in range(0, 3):
-        track = TrackSegment(x, 0, track_bits=TRACK_EW)
+        track = Tile(x, 0, track_bits=TRACK_EW)
         network.add_track(track)
 
     # Create block with validated track assignment
-    network.create_block_with_tracks(
-        block_id="BLOCK_MAIN_WEST",
+    network.create_segment_with_tracks(
+        segment_id="BLOCK_MAIN_WEST",
         positions=[(x, 0) for x in range(0, 3)],
         name="Main Line West",
         length_cm=150.0,  # 3 tiles * 50cm each
@@ -227,9 +73,9 @@ def create_comprehensive_demo():
 
     # Switch at (3,0) - BOUNDARY, NO block assignment
     # Connects main line (EW) with branch toward NORTH via NW
-    track = TrackSegment(3, 0, track_bits=TRACK_EW | TRACK_NW)
+    track = Tile(3, 0, track_bits=TRACK_EW | TRACK_NW)
     track.switch_state = 0  # MAIN (EW) active
-    # track.block_section_id intentionally left as None
+    # track.block_id intentionally left as None
     network.add_track(track)
     # Create switch entity
     switch = Switch(switch_id="SW_3_0", x=3, y=0)
@@ -238,12 +84,12 @@ def create_comprehensive_demo():
 
     # Main Line East: (4,0) to (10,0)
     for x in range(4, 11):
-        track = TrackSegment(x, 0, track_bits=TRACK_EW)
+        track = Tile(x, 0, track_bits=TRACK_EW)
         network.add_track(track)
 
     # Create block with validated track assignment
-    network.create_block_with_tracks(
-        block_id="BLOCK_MAIN_EAST",
+    network.create_segment_with_tracks(
+        segment_id="BLOCK_MAIN_EAST",
         positions=[(x, 0) for x in range(4, 11)],
         name="Main Line East",
         length_cm=350.0,  # 7 tiles * 50cm each
@@ -267,12 +113,12 @@ def create_comprehensive_demo():
 
     # North Branch: (3,1) to (3,3)
     for y in range(1, 4):
-        track = TrackSegment(3, y, track_bits=TRACK_NS)
+        track = Tile(3, y, track_bits=TRACK_NS)
         network.add_track(track)
 
     # Create block with validated track assignment
-    network.create_block_with_tracks(
-        block_id="BLOCK_BRANCH",
+    network.create_segment_with_tracks(
+        segment_id="BLOCK_BRANCH",
         positions=[(3, y) for y in range(1, 4)],
         name="North Branch",
         length_cm=150.0,  # 3 tiles * 50cm each
@@ -301,7 +147,7 @@ def create_comprehensive_demo():
     if existing:
         network.remove_track(9, 0)
     # Create switch at (9,0) - EW + NW to go up-left diagonally
-    switch_track = TrackSegment(9, 0, track_bits=TRACK_EW | TRACK_NW)
+    switch_track = Tile(9, 0, track_bits=TRACK_EW | TRACK_NW)
     switch_track.switch_state = 0  # MAIN (EW) active initially
     network.add_track(switch_track)
     # Create switch entity
@@ -311,26 +157,26 @@ def create_comprehensive_demo():
 
     # Simple approach: vertical branch at x=9
     for y in range(1, 6):
-        track = TrackSegment(9, y, track_bits=TRACK_NS)
+        track = Tile(9, y, track_bits=TRACK_NS)
         network.add_track(track)
 
-    network.add_track(TrackSegment(9, 6, track_bits=TRACK_SE))
-    network.add_track(TrackSegment(10, 6, track_bits=TRACK_NW))
-    network.add_track(TrackSegment(10, 7, track_bits=TRACK_SE))
-    network.add_track(TrackSegment(11, 7, track_bits=TRACK_NW))
-    network.add_track(TrackSegment(11, 8, track_bits=TRACK_SE))
-    network.add_track(TrackSegment(12, 8, track_bits=TRACK_NW))
+    network.add_track(Tile(9, 6, track_bits=TRACK_SE))
+    network.add_track(Tile(10, 6, track_bits=TRACK_NW))
+    network.add_track(Tile(10, 7, track_bits=TRACK_SE))
+    network.add_track(Tile(11, 7, track_bits=TRACK_NW))
+    network.add_track(Tile(11, 8, track_bits=TRACK_SE))
+    network.add_track(Tile(12, 8, track_bits=TRACK_NW))
 
-    network.create_block_with_tracks(
-        block_id="BLOCK_EAST_BRANCH",
+    network.create_segment_with_tracks(
+        segment_id="BLOCK_EAST_BRANCH",
         positions=[(9, y) for y in range(1, 6)] + [(9, 6)],
         name="East Vertical Branch",
         length_cm=260.0,
         speed_limit_kmh=50.0,
     )
 
-    network.create_block_with_tracks(
-        block_id="BLOCK_EAST_DIAGONAL",
+    network.create_segment_with_tracks(
+        segment_id="BLOCK_EAST_DIAGONAL",
         positions=[(11, 8), (12, 8)],
         name="East Diagonal Approach",
         length_cm=80.0,
@@ -569,7 +415,7 @@ def setup_demo_train(
 
     # 1. Resolve the start block at the demo origin tile (0, 0).
     start_track = network.get_track(0, 0)
-    starting_block_id = start_track.block_section_id
+    starting_block_id = start_track.block_id
 
     # 2. Canonical placement: writes current_span before the first tick.
     demo_train = sim_controller.add_train(
@@ -729,7 +575,7 @@ def create_diagonal_siding(network: RailwayNetwork):
     for x in range(11, 15):
         existing = network.get_track(x, 0)
         if not existing:
-            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            track = Tile(x, 0, track_bits=TRACK_EW)
             network.add_track(track)
             print(f"    Added main line track at ({x}, 0)")
 
@@ -737,7 +583,7 @@ def create_diagonal_siding(network: RailwayNetwork):
     existing = network.get_track(12, 0)
     if existing:
         network.remove_track(12, 0)
-    switch_track = TrackSegment(12, 0, track_bits=TRACK_EW | TRACK_NW)
+    switch_track = Tile(12, 0, track_bits=TRACK_EW | TRACK_NW)
     switch_track.switch_state = 0  # MAIN (EW) active initially
     network.add_track(switch_track)
     # Create switch entity
@@ -755,31 +601,31 @@ def create_diagonal_siding(network: RailwayNetwork):
 
     # (12,1): SE - connects S to E
     # Entry from S (from switch NW at 12,0), exit E to (13,1)
-    track = TrackSegment(12, 1, track_bits=TRACK_SE)
+    track = Tile(12, 1, track_bits=TRACK_SE)
     network.add_track(track)
     print(f"    Added SE track at (12,1)")
 
     # (13,1): NW - connects N to W
     # Entry from W (from 12,1 SE), exit N to (13,2)
-    track = TrackSegment(13, 1, track_bits=TRACK_NW)
+    track = Tile(13, 1, track_bits=TRACK_NW)
     network.add_track(track)
     print(f"    Added NW track at (13,1)")
 
     # (13,2): SE - connects S to E
     # Entry from S (from 13,1 NW), exit E to (14,2)
-    track = TrackSegment(13, 2, track_bits=TRACK_SE)
+    track = Tile(13, 2, track_bits=TRACK_SE)
     network.add_track(track)
     print(f"    Added SE track at (13,2)")
 
     # (14,2): NW - connects N to W
     # Entry from W (from 13,2 SE), exit N to (14,3)
-    track = TrackSegment(14, 2, track_bits=TRACK_NW)
+    track = Tile(14, 2, track_bits=TRACK_NW)
     network.add_track(track)
     print(f"    Added NW track at (14,2)")
 
     # (14,3): SE - connects S to E (dead end on E side)
     # Entry from S (from 14,2 NW), exit E is dead end
-    track = TrackSegment(14, 3, track_bits=TRACK_SE)
+    track = Tile(14, 3, track_bits=TRACK_SE)
     network.add_track(track)
     print(f"    Added SE track at (14,3) - end of siding")
 
@@ -800,7 +646,7 @@ def run_comprehensive_demo():
     """Run a demonstration of the railway network."""
 
     # Run validation tests first
-    test_block_validation()
+    validate_block_rules()
 
     # Create network
     network = create_comprehensive_demo()

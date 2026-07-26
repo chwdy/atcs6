@@ -53,7 +53,7 @@ def test_bootstrap_demo_train_respects_east_terminal_speed_limit_at_3x():
         if platform.name == "East Terminal"
     )
     terminal_blocks = {
-        network.get_track(x, y).block_section_id
+        network.get_track(x, y).block_id
         for x, y in east_terminal.positions
         if network.get_track(x, y)
     }
@@ -73,7 +73,7 @@ def test_bootstrap_demo_train_respects_east_terminal_speed_limit_at_3x():
 
         head_tile = controller._get_head_tile()
         head_track = network.get_track(*head_tile) if head_tile else None
-        block_id = head_track.block_section_id if head_track else None
+        block_id = head_track.block_id if head_track else None
 
         if controller.eb.active:
             eb_events.append(
@@ -119,7 +119,7 @@ def test_bootstrap_demo_train_respects_east_terminal_speed_limit_at_3x():
 
     final_head_tile = controller._get_head_tile()
     final_track = network.get_track(*final_head_tile) if final_head_tile else None
-    final_block_id = final_track.block_section_id if final_track else None
+    final_block_id = final_track.block_id if final_track else None
 
     assert reached_terminal, (
         f"Demo train should reach East Terminal; final block={final_block_id}, "

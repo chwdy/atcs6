@@ -15,7 +15,7 @@ BUG FIX: Station Block Naming and Length Calculation (January 2026)
 
 import pytest
 from network import RailwayNetwork
-from track import TrackSegment, TRACK_NS, TRACK_EW
+from track import Tile, TRACK_NS, TRACK_EW
 from enums import BlockState, PlatformSide
 
 
@@ -25,7 +25,7 @@ class TestStationBlockNaming:
     def test_station_block_includes_station_name(self):
         """Station block should include station name in its name"""
         network = RailwayNetwork()
-        network.add_track(TrackSegment(0, 0, TRACK_NS))
+        network.add_track(Tile(0, 0, TRACK_NS))
 
         station = network.add_station(
             0, 0, station_id="STA_001", name="Central Station", length_cm=200.0
@@ -41,7 +41,7 @@ class TestStationBlockNaming:
     def test_station_block_uses_station_id_when_no_name(self):
         """Station block should use station_id when name is not provided"""
         network = RailwayNetwork()
-        network.add_track(TrackSegment(0, 0, TRACK_NS))
+        network.add_track(Tile(0, 0, TRACK_NS))
 
         station = network.add_station(
             0, 0, station_id="STA_002", name="", length_cm=200.0
@@ -57,7 +57,7 @@ class TestStationBlockNaming:
     def test_station_block_name_with_special_characters(self):
         """Station block name should handle special characters"""
         network = RailwayNetwork()
-        network.add_track(TrackSegment(0, 0, TRACK_NS))
+        network.add_track(Tile(0, 0, TRACK_NS))
 
         station = network.add_station(
             0, 0, station_id="STA_003", name="King's Cross", length_cm=200.0
@@ -78,10 +78,10 @@ class TestStationBlockLengthCalculation:
 
         # Create a 5-tile track
         for y in range(5):
-            network.add_track(TrackSegment(0, y, TRACK_NS))
+            network.add_track(Tile(0, y, TRACK_NS))
 
         # Create a block with 500cm length covering all 5 tiles
-        block = network.create_block_with_tracks(
+        block = network.create_segment_with_tracks(
             "BLK_001", [(0, y) for y in range(5)], length_cm=500.0
         )
 
@@ -101,7 +101,7 @@ class TestStationBlockLengthCalculation:
     def test_station_without_existing_block_uses_platform_length(self):
         """When placing station on track without block, use input platform length"""
         network = RailwayNetwork()
-        network.add_track(TrackSegment(0, 0, TRACK_NS))
+        network.add_track(Tile(0, 0, TRACK_NS))
 
         # Place station with 300cm platform length
         station = network.add_station(
@@ -117,7 +117,7 @@ class TestStationBlockLengthCalculation:
     def test_station_with_zero_platform_length_and_no_block(self):
         """Station with zero platform length and no prior block should have 0 length"""
         network = RailwayNetwork()
-        network.add_track(TrackSegment(0, 0, TRACK_NS))
+        network.add_track(Tile(0, 0, TRACK_NS))
 
         station = network.add_station(
             0, 0, station_id="STA_003", name="Zero Station", length_cm=0.0
@@ -138,10 +138,10 @@ class TestBlockSplittingWithLengthCalculation:
 
         # Create a 7-tile track: (0,0) to (0,6)
         for y in range(7):
-            network.add_track(TrackSegment(0, y, TRACK_NS))
+            network.add_track(Tile(0, y, TRACK_NS))
 
         # Create block with 700cm length
-        block = network.create_block_with_tracks(
+        block = network.create_segment_with_tracks(
             "BLK_001", [(0, y) for y in range(7)], length_cm=700.0
         )
 
@@ -180,10 +180,10 @@ class TestBlockSplittingWithLengthCalculation:
 
         # Create a 10-tile track
         for y in range(10):
-            network.add_track(TrackSegment(0, y, TRACK_NS))
+            network.add_track(Tile(0, y, TRACK_NS))
 
         # Create block with 1000cm length
-        block = network.create_block_with_tracks(
+        block = network.create_segment_with_tracks(
             "BLK_001", [(0, y) for y in range(10)], length_cm=1000.0
         )
 
@@ -215,11 +215,11 @@ class TestBlockSplittingWithLengthCalculation:
 
         # Create a 6-tile track
         for y in range(6):
-            network.add_track(TrackSegment(0, y, TRACK_NS))
+            network.add_track(Tile(0, y, TRACK_NS))
 
         # Create block with 600cm length
         original_length = 600.0
-        block = network.create_block_with_tracks(
+        block = network.create_segment_with_tracks(
             "BLK_001", [(0, y) for y in range(6)], length_cm=original_length
         )
 
@@ -248,10 +248,10 @@ class TestChildBlockNaming:
 
         # Create a 5-tile track
         for y in range(5):
-            network.add_track(TrackSegment(0, y, TRACK_NS))
+            network.add_track(Tile(0, y, TRACK_NS))
 
         # Create block with custom name
-        block = network.create_block_with_tracks(
+        block = network.create_segment_with_tracks(
             "BLK_MAIN",
             [(0, y) for y in range(5)],
             name="Main Line Block",
@@ -276,10 +276,10 @@ class TestChildBlockNaming:
 
         # Create a 4-tile track
         for y in range(4):
-            network.add_track(TrackSegment(0, y, TRACK_NS))
+            network.add_track(Tile(0, y, TRACK_NS))
 
         # Create block
-        block = network.create_block_with_tracks(
+        block = network.create_segment_with_tracks(
             "BLK_001", [(0, y) for y in range(4)], length_cm=400.0
         )
 
@@ -298,10 +298,10 @@ class TestEdgeCases:
     def test_single_tile_block_split_by_station(self):
         """Single-tile block split by station should handle correctly"""
         network = RailwayNetwork()
-        network.add_track(TrackSegment(0, 0, TRACK_NS))
+        network.add_track(Tile(0, 0, TRACK_NS))
 
         # Create single-tile block with 100cm
-        block = network.create_block_with_tracks("BLK_001", [(0, 0)], length_cm=100.0)
+        block = network.create_segment_with_tracks("BLK_001", [(0, 0)], length_cm=100.0)
 
         # Place station on it
         station = network.add_station(
@@ -323,10 +323,10 @@ class TestEdgeCases:
         network = RailwayNetwork()
 
         for y in range(3):
-            network.add_track(TrackSegment(0, y, TRACK_NS))
+            network.add_track(Tile(0, y, TRACK_NS))
 
         # Create block with zero length
-        block = network.create_block_with_tracks(
+        block = network.create_segment_with_tracks(
             "BLK_001", [(0, y) for y in range(3)], length_cm=0.0
         )
 
@@ -363,10 +363,10 @@ class TestRealWorldScenarios:
 
         # Create 10-tile mainline
         for y in range(10):
-            network.add_track(TrackSegment(0, y, TRACK_NS))
+            network.add_track(Tile(0, y, TRACK_NS))
 
         # Create mainline block: 10 tiles, 100000cm (1km)
-        block = network.create_block_with_tracks(
+        block = network.create_segment_with_tracks(
             "BLK_MAINLINE",
             [(0, y) for y in range(10)],
             name="Main Line",
@@ -414,10 +414,10 @@ class TestRealWorldScenarios:
 
         # Create 9-tile track
         for y in range(9):
-            network.add_track(TrackSegment(0, y, TRACK_NS))
+            network.add_track(Tile(0, y, TRACK_NS))
 
         # Create block with 900cm
-        block = network.create_block_with_tracks(
+        block = network.create_segment_with_tracks(
             "BLK_001", [(0, y) for y in range(9)], length_cm=900.0
         )
 
@@ -454,7 +454,7 @@ class TestStationBlockSpeedLimitInheritance:
     def test_station_block_inherits_speed_limit(self):
         """Station block should inherit speed_limit_kmh from platform's top_speed_kmh"""
         network = RailwayNetwork()
-        network.add_track(TrackSegment(0, 0, TRACK_NS))
+        network.add_track(Tile(0, 0, TRACK_NS))
 
         station = network.add_station(
             0,
@@ -477,7 +477,7 @@ class TestStationBlockSpeedLimitInheritance:
     def test_station_block_no_speed_limit_when_none(self):
         """Station block should have no speed limit when platform has none"""
         network = RailwayNetwork()
-        network.add_track(TrackSegment(0, 0, TRACK_NS))
+        network.add_track(Tile(0, 0, TRACK_NS))
 
         station = network.add_station(
             0,
@@ -503,7 +503,7 @@ class TestStationBlockSpeedLimitInheritance:
 
         # Create 3-tile track
         for y in range(3):
-            network.add_track(TrackSegment(0, y, TRACK_NS))
+            network.add_track(Tile(0, y, TRACK_NS))
 
         # Create station with speed limit on first tile
         station = network.add_station(

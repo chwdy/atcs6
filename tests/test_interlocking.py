@@ -7,7 +7,7 @@ Run with: pytest tests/test_interlocking.py -v
 import pytest
 from types import SimpleNamespace
 
-from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NE, TRACK_NW
+from track import Tile, TRACK_NS, TRACK_EW, TRACK_NE, TRACK_NW
 from network import RailwayNetwork
 from block import Block
 from enums import BlockState, Direction
@@ -94,7 +94,7 @@ class TestSwitchLocking:
         from runtime_payloads import SwitchLockClaim
 
         network = RailwayNetwork()
-        network.add_track(TrackSegment(0, 0, track_bits=TRACK_EW | TRACK_NE))
+        network.add_track(Tile(0, 0, track_bits=TRACK_EW | TRACK_NE))
         switch = Switch(switch_id="SW_1", x=0, y=0)
         network.add_switch(switch)
         switch_manager = _stub_switch_manager(network)
@@ -109,13 +109,13 @@ class TestSwitchLocking:
         from switch import Switch
 
         network = RailwayNetwork()
-        network.add_track(TrackSegment(0, 0, track_bits=TRACK_EW | TRACK_NE))
+        network.add_track(Tile(0, 0, track_bits=TRACK_EW | TRACK_NE))
         switch = Switch(switch_id="SW_1", x=0, y=0)
         network.add_switch(switch)
         switch_manager = _stub_switch_manager(network)
         success, msg = switch_manager.request_position_change("SW_1", 1)
         assert success is True
-        # v1: position is authoritative on the Switch entity (not the TrackSegment).
+        # v1: position is authoritative on the Switch entity (not the Tile).
         assert int(switch.position) == 1
 
     def test_switch_serialization_includes_lock_state(self):
@@ -171,7 +171,7 @@ class TestSwitchLockingInRoutes:
 
     def test_get_required_switch_state_main_path(self):
         network = RailwayNetwork()
-        switch = TrackSegment(0, 0, track_bits=18)  # EW + SE
+        switch = Tile(0, 0, track_bits=18)  # EW + SE
         network.add_track(switch)
         network.propagate_from_tile(0, 0)
         assert switch.is_switch
@@ -180,7 +180,7 @@ class TestSwitchLockingInRoutes:
 
     def test_get_required_switch_state_diverge_path(self):
         network = RailwayNetwork()
-        switch = TrackSegment(0, 0, track_bits=18)
+        switch = Tile(0, 0, track_bits=18)
         network.add_track(switch)
         network.propagate_from_tile(0, 0)
         assert switch.get_required_switch_state("E", "S") == 1
@@ -188,7 +188,7 @@ class TestSwitchLockingInRoutes:
 
     def test_get_required_switch_state_invalid_path(self):
         network = RailwayNetwork()
-        switch = TrackSegment(0, 0, track_bits=18)
+        switch = Tile(0, 0, track_bits=18)
         network.add_track(switch)
         network.propagate_from_tile(0, 0)
         assert switch.get_required_switch_state("W", "S") is None
@@ -207,8 +207,8 @@ class TestPathPrepending:
 
         network = RailwayNetwork()
         for x in range(4):
-            track = TrackSegment(x, 0, track_bits=TRACK_EW)
-            track.block_section_id = "BLK_1"
+            track = Tile(x, 0, track_bits=TRACK_EW)
+            track.segment_id = "BLK_1"
             network.add_track(track)
         network.blocks["BLK_1"] = Block(block_id="BLK_1")
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
@@ -229,8 +229,8 @@ class TestPathPrepending:
         """Test no prepending when train is at path start."""
         network = RailwayNetwork()
         for x in range(4):
-            track = TrackSegment(x, 0, track_bits=TRACK_EW)
-            track.block_section_id = "BLK_1"
+            track = Tile(x, 0, track_bits=TRACK_EW)
+            track.segment_id = "BLK_1"
             network.add_track(track)
         network.blocks["BLK_1"] = Block(block_id="BLK_1")
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
@@ -250,12 +250,12 @@ class TestPathPrepending:
         """Test rejection when train and path are in different blocks."""
         network = RailwayNetwork()
         for x in range(2):
-            track = TrackSegment(x, 0, track_bits=TRACK_EW)
-            track.block_section_id = "BLK_A"
+            track = Tile(x, 0, track_bits=TRACK_EW)
+            track.segment_id = "BLK_A"
             network.add_track(track)
         for x in range(3, 5):
-            track = TrackSegment(x, 0, track_bits=TRACK_EW)
-            track.block_section_id = "BLK_B"
+            track = Tile(x, 0, track_bits=TRACK_EW)
+            track.segment_id = "BLK_B"
             network.add_track(track)
         network.blocks["BLK_A"] = Block(block_id="BLK_A")
         network.blocks["BLK_B"] = Block(block_id="BLK_B")
@@ -275,8 +275,8 @@ class TestPathPrepending:
     def test_reject_empty_path(self):
         """Test rejection of empty path."""
         network = RailwayNetwork()
-        track = TrackSegment(0, 0, track_bits=TRACK_EW)
-        track.block_section_id = "BLK_1"
+        track = Tile(0, 0, track_bits=TRACK_EW)
+        track.segment_id = "BLK_1"
         network.add_track(track)
         network.blocks["BLK_1"] = Block(block_id="BLK_1")
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
@@ -298,13 +298,13 @@ class TestPathAppending:
 
         network = RailwayNetwork()
         for x in range(2):
-            track = TrackSegment(x, 0, track_bits=TRACK_EW)
-            track.block_section_id = "BLK_SOURCE"
+            track = Tile(x, 0, track_bits=TRACK_EW)
+            track.segment_id = "BLK_SOURCE"
             network.add_track(track)
         network.blocks["BLK_SOURCE"] = Block(block_id="BLK_SOURCE")
         for x in range(2, 5):
-            track = TrackSegment(x, 0, track_bits=TRACK_EW)
-            track.block_section_id = "BLK_DEST"
+            track = Tile(x, 0, track_bits=TRACK_EW)
+            track.segment_id = "BLK_DEST"
             network.add_track(track)
         network.blocks["BLK_DEST"] = Block(block_id="BLK_DEST")
         path_tiles = [
@@ -324,8 +324,8 @@ class TestPathAppending:
 
         network = RailwayNetwork()
         for x in range(3):
-            track = TrackSegment(x, 0, track_bits=TRACK_EW)
-            track.block_section_id = "BLK_DEST"
+            track = Tile(x, 0, track_bits=TRACK_EW)
+            track.segment_id = "BLK_DEST"
             network.add_track(track)
         network.blocks["BLK_DEST"] = Block(block_id="BLK_DEST")
         path_tiles = [

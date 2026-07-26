@@ -18,7 +18,7 @@ that prevents that.
 """
 
 from network import RailwayNetwork
-from track import TrackSegment, TRACK_EW
+from track import Tile, TRACK_EW
 from train import Train, TrainCar
 from path_dispatcher import PathDispatcher
 from runtime_payloads import PathAcquisitionResultKind
@@ -31,7 +31,7 @@ def _linear_network():
     """A - B - C - D - E linear EW network (2 tiles per block)."""
     network = RailwayNetwork()
     for x in range(10):
-        network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+        network.add_track(Tile(x, 0, track_bits=TRACK_EW))
     for blk, (x0, x1) in [
         ("BLOCK_A", (0, 1)),
         ("BLOCK_B", (2, 3)),
@@ -39,8 +39,8 @@ def _linear_network():
         ("BLOCK_D", (6, 7)),
         ("BLOCK_E", (8, 9)),
     ]:
-        network.create_block_with_tracks(
-            block_id=blk, positions=[(x0, 0), (x1, 0)], name=blk, length_cm=100.0,
+        network.create_segment_with_tracks(
+            segment_id=blk, positions=[(x0, 0), (x1, 0)], name=blk, length_cm=100.0,
         )
     return network
 
@@ -90,7 +90,7 @@ def test_create_path_caps_authority_and_never_completes():
     # The completion gate requires authority_end == requested. A capped authority
     # (BLOCK_C != BLOCK_E) can therefore never complete — the train holds at the
     # cap instead of completing at the meet point (which used to freeze the run).
-    completion = dispatcher.try_complete_active_path(train.train_id, 0.0)
+    completion = dispatcher.try_complete_active_path(train.train_id)
     assert completion.success is False
 
 
@@ -173,3 +173,46 @@ def test_extend_path_caps_ahead_of_authority_end():
     path = dispatcher.get_path(path_id)
     assert path.get_authority_end_block_id() == "BLOCK_D"
     assert path.requested_destination_block_id == "BLOCK_E"
+
+
+# --- create_path() / extend_path() return contract ---------------------------
+def test_failed_acquisition_result_nulls_every_field_but_failure_kind_and_reason():
+    """design_new.md "`create_path()` / `extend_path()` return contract":
+    "On failure, `success = False`, `path_id = None`, `resource_sequence = None`,
+    all target fields are `None`, `result_kind = None`, `failure_kind` is
+    required, and `reason` is required."
+
+    A rejection must not echo the caller's request back as if it were stored
+    authority. The diagnostic context lives in `reason`, which callers may
+    display but must never branch on.
+    """
+    from runtime_payloads import PathAcquisitionFailureKind
+
+    dispatcher = PathDispatcher(RailwayNetwork())
+    result = dispatcher._reject(
+        failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
+        reason="no such block",
+        requested_destination_direction="forward",
+        requested_destination_block_id="BLOCK_E",
+        path_id="PATH_1",
+        authority_end_block_id="BLOCK_C",
+    )
+
+    assert result.success is False
+    assert result.failure_kind is PathAcquisitionFailureKind.INVALID_REQUEST
+    assert result.reason  # required
+
+    assert result.path_id is None
+    assert result.resource_sequence is None
+    assert result.result_kind is None
+    assert result.requested_destination_block_id is None
+    assert result.requested_destination_direction is None
+    assert result.authority_end_block_id is None
+
+    # Nothing diagnostic was lost — it moved into `reason`.
+    assert "PATH_1" in result.reason
+    assert "BLOCK_E" in result.reason
+    assert "BLOCK_C" in result.reason
+
+    # and it serializes as null, not []
+    assert result.to_dict()["resource_sequence"] is None

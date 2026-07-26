@@ -7,8 +7,8 @@ to track blocks. In DC analog control, each block is electrically isolated and
 receives independent voltage based on the trains occupying it.
 
 The module includes:
-- OutputInterface: Abstract base for hardware voltage output
-- SimulatedOutputInterface: In-memory implementation for simulation
+- TrackOutput: Abstract base for hardware voltage output
+- SimulatedTrackDriver: In-memory implementation for simulation
 - BlockPowerController: Main controller for voltage management
 """
 
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from speed_profile import SpeedProfile, SpeedProfileRegistry
 
 
-class OutputInterface(ABC):
+class TrackOutput(ABC):
     """
     Abstract interface for hardware voltage output.
 
@@ -88,7 +88,7 @@ class OutputInterface(ABC):
         pass
 
 
-class SimulatedOutputInterface(OutputInterface):
+class SimulatedTrackDriver(TrackOutput):
     """
     Simulated output interface - stores voltages in memory.
 
@@ -141,7 +141,7 @@ class BlockPowerController:
     """
 
     network: Optional["RailwayNetwork"] = None
-    output_interface: OutputInterface = field(default_factory=SimulatedOutputInterface)
+    output_interface: TrackOutput = field(default_factory=SimulatedTrackDriver)
 
     # Voltage limits
     max_voltage: float = MAX_TRACK_VOLTAGE

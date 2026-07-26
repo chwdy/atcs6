@@ -185,7 +185,7 @@ def test_t3_s_line_reassignment_does_not_grow_repeated_resource_path(dt, label):
                              tpath.path_id, int(sw.position))
                         )
             elif not track.is_switch:
-                head_block = track.block_section_id
+                head_block = track.block_id
                 if (head_block is not None
                         and head_block not in set(tpath.get_all_blocks())):
                     overrun_events.append(

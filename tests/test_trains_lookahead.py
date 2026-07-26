@@ -7,7 +7,7 @@ Run with: pytest tests/test_trains_lookahead.py -v
 import logging
 import pytest
 
-from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NW
+from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
 from enums import BlockState, Direction, TrainState, HandlePosition
@@ -30,7 +30,7 @@ def network():
 @pytest.fixture
 def straight_ew_track(network):
     for x in range(5):
-        track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+        track = Tile(x=x, y=0, track_bits=TRACK_EW)
         network.add_track(track)
     return network
 
@@ -50,8 +50,8 @@ class TestTrainControllerMonitorLookahead:
     def test_cab_switch_updates_head_tile(self, network):
         """When switching cabs, head tile should reflect the new cab position."""
         for x in range(3):
-            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
-            track.block_section_id = "BLOCK_MAIN"
+            track = Tile(x=x, y=0, track_bits=TRACK_EW)
+            track.segment_id = "BLOCK_MAIN"
             network.add_track(track)
 
         train = Train(train_id="TRAIN_LOOKAHEAD_CAB")
@@ -79,8 +79,8 @@ class TestTrainControllerMonitorLookahead:
     def test_no_cab_returns_no_lookahead(self, network):
         """Lookahead should be unavailable when no cab is selected."""
         for x in range(3):
-            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
-            track.block_section_id = f"BLOCK_{x}"
+            track = Tile(x=x, y=0, track_bits=TRACK_EW)
+            track.segment_id = f"BLOCK_{x}"
             network.add_track(track)
 
         train = Train(train_id="TRAIN_LOOKAHEAD_NO_CAB")
@@ -126,17 +126,17 @@ class TestLookaheadNoPathRegardlessOfNetworkState:
 
     def _build_three_tile_with_switch(self, network: RailwayNetwork) -> Train:
         """Create 0-1-2 path where tile 1 is an EW/NW switch."""
-        track_0 = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
-        track_0.block_section_id = "BLOCK_0"
+        track_0 = Tile(x=0, y=0, track_bits=TRACK_EW)
+        track_0.segment_id = "BLOCK_0"
         network.add_track(track_0)
 
-        track_1 = TrackSegment(x=1, y=0, track_bits=TRACK_EW | TRACK_NW)
-        track_1.block_section_id = "BLOCK_1"
+        track_1 = Tile(x=1, y=0, track_bits=TRACK_EW | TRACK_NW)
+        track_1.segment_id = "BLOCK_1"
         track_1.switch_state = 0
         network.add_track(track_1)
 
-        track_2 = TrackSegment(x=2, y=0, track_bits=TRACK_EW)
-        track_2.block_section_id = "BLOCK_2"
+        track_2 = Tile(x=2, y=0, track_bits=TRACK_EW)
+        track_2.segment_id = "BLOCK_2"
         network.add_track(track_2)
 
         for block_id in ("BLOCK_0", "BLOCK_1", "BLOCK_2"):
@@ -342,9 +342,9 @@ class TestNoPathProducesNoAuthorityPayload:
         network.blocks["TERMINAL"] = block
 
         for x in range(3):
-            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            track = Tile(x=x, y=0, track_bits=TRACK_EW)
             network.add_track(track)
-            track.block_section_id = "TERMINAL"
+            track.segment_id = "TERMINAL"
 
         return network
 

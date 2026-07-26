@@ -3,14 +3,14 @@
 Auto-generated — do not hand-edit; re-run json_to_scene.py against the source
 layout instead. Layout only: 28 tracks, 0 switches,
 0 platforms (0 station groups),
-4 blocks (0 auto-created platform blocks),
+1 block over 4 segments (0 auto-created platform blocks),
 0 tunnels, 0 signals. Trains/routes are not
 part of the layout JSON, so setup_demo_train() is a stub.
 """
 
 from network import RailwayNetwork
 from track import (
-    TrackSegment,
+    Tile,
     TRACK_NS,
     TRACK_EW,
     TRACK_NE,
@@ -84,15 +84,22 @@ SIGNALS = [
 ]
 
 
-POWER_DISTRICTS = [
-    {'district_id': 'D_001', 'block_ids': ['BLK_AA62D2', 'BLK_AA6FB5', 'BLK_AA7B7E', 'BLK_AA866E'], 'name': ''},
-]
+# Block groupings: each entry is one block owning the listed segments, in
+# connected run order. ``BLOCKS`` above builds each listed segment as its own
+# one-segment block first (the default one-feed-per-segment layout); grouping
+# then folds them into the single block that shares one power feed.
+# No grouping: each quadrant segment is its own single-segment block, so the
+# oval is four independently-fed blocks. A block admits one train at a time and
+# a route travels between blocks, so four blocks are what make the stop loop
+# possible — grouping all four into one shared feed would leave one block with
+# nowhere to route to.
+BLOCK_GROUPS = []
 
 
 def _add_tracks(network: RailwayNetwork) -> None:
     """Place every baked track tile (dead-end ports are re-derived from geometry)."""
     for (x, y, bits) in TILES:
-        network.add_track(TrackSegment(x, y, track_bits=bits))
+        network.add_track(Tile(x, y, track_bits=bits))
 
 
 def _add_switches(network: RailwayNetwork) -> None:
@@ -159,8 +166,8 @@ def _add_platforms(network: RailwayNetwork) -> None:
 def _add_blocks(network: RailwayNetwork) -> None:
     """Create the non-platform blocks from their baked tile lists."""
     for (block_id, name, positions, length_cm, speed_limit_kmh) in BLOCKS:
-        network.create_block_with_tracks(
-            block_id=block_id,
+        network.create_segment_with_tracks(
+            segment_id=block_id,
             positions=positions,
             name=name,
             length_cm=length_cm,
@@ -187,21 +194,22 @@ def _add_signals(network: RailwayNetwork) -> None:
             track.signal_ids.append(signal.signal_id)
 
 
-def _add_power_districts(network: RailwayNetwork) -> None:
-    """Rebuild power districts, mirroring ``RailwayNetwork.from_dict``.
+def _add_block_groups(network: RailwayNetwork) -> None:
+    """Fold each baked grouping into one block owning its member segments.
 
-    Districts are an operator grouping of blocks onto one power feed, not
-    re-derivable from geometry, so they load directly: construct each
-    ``PowerDistrict`` from its dict and rebuild the reverse index once. Runs
-    after every block exists (a district may name a platform block).
+    Grouping is an operator decision about shared power wiring, not something
+    re-derivable from geometry, so it is baked. Each member segment already
+    exists as its own one-segment block from ``_add_blocks``; grouping moves
+    those segments into one block and drops the emptied ones. Runs after every
+    block exists (a grouping may name a platform block).
     """
-    if not POWER_DISTRICTS:
+    if not BLOCK_GROUPS:
         return
-    from power_district import PowerDistrict
-    for district_data in POWER_DISTRICTS:
-        district = PowerDistrict.from_dict(district_data)
-        network.power_districts[district.district_id] = district
-    network._get_power_district_registry()._rebuild_district_index()
+    grouping = network._get_block_grouping_manager()
+    for (block_id, name, segment_ids) in BLOCK_GROUPS:
+        grouping.group_into_block(
+            block_id=block_id, segment_ids=segment_ids, name=name
+        )
 
 
 def create_comprehensive_demo() -> RailwayNetwork:
@@ -212,40 +220,42 @@ def create_comprehensive_demo() -> RailwayNetwork:
     _add_stations(network)
     _add_platforms(network)
     _add_blocks(network)
-    _add_power_districts(network)
+    _add_block_groups(network)
     _add_tunnels(network)
     _add_signals(network)
     network.recompute_all_flank_protection()
     return network
 
 
-# Which loop demo7 runs when it boots (see setup_demo_train):
-#   "stop_loop"   — stop + HOLD_SECONDS hold at every block, forever
-#   "continuous"  — endless laps with no stop (stops-free CIRCULAR waypoint route)
-# Both are robust one-way loops: one loco on the single power district D_001
-# (one train per powered district) with no platforms, so every stop targets a
-# BlockTarget. The engine also carries a timed `run` task (depart, roll for N
-# simulated seconds, then coast to a smooth ATC stop wherever it is), but a
-# run/dwell *loop* on this small symmetric oval trips the known reverse-
-# resolution wrap-back stall, so demo7's shipped loops use stops in loop order.
-DEMO7_MODE = "stop_loop"
+# Blocks in loop order (each is adjacent to the next; the fourth wraps to the
+# first). AA62D2 top-left -> AA866E top-right -> AA7B7E bottom-right ->
+# AA6FB5 bottom-left -> back. Each is a one-segment block, so the id names both
+# the segment (its geometry) and the block (its power/occupancy).
+LOOP_ORDER = ["BLK_AA62D2", "BLK_AA866E", "BLK_AA7B7E", "BLK_AA6FB5"]
+DEMO7_MODE = "lap_stop"
 HOLD_SECONDS = 5.0
 
 
 def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
-    """Place one locomotive on the single loop and drive it per ``DEMO7_MODE``.
+    """Place one locomotive on the four-block oval and drive it per ``DEMO7_MODE``.
 
-    demo7 is a single four-block oval on one shared power feed (power district
-    ``D_001``). There are no platforms, so every stop targets a ``BlockTarget``
-    — the block itself is the stop location — and one train on one district
-    satisfies the "one train per powered district" rule.
+    demo7 is a four-block oval, each quadrant independently fed. There are no
+    platforms, so every stop targets a ``BlockTarget`` — the block itself is the
+    stop location. Geometry lives on each block's one ``Segment``; the block's
+    ``length_cm`` is the sum across its members.
 
     Modes (``DEMO7_MODE``):
-      * ``stop_loop`` (default): a CIRCULAR route that stops and holds
-        ``HOLD_SECONDS`` at each block. The run between blocks lasts however
-        long the loco takes to reach the next block at its speed profile.
-      * ``continuous``: a stops-free CIRCULAR waypoint route — the loco laps the
-        loop without stopping.
+      * ``lap_stop`` (default): the display pattern — one full lap, then a
+        ``HOLD_SECONDS`` stand at the starting block, then another lap, for as
+        long as the sim runs. The three blocks after the start are waypoints
+        the loco passes through, and the start block is a ``stop`` followed by
+        a ``dwell``. Because the lap ends on a stop, the path completes there
+        and the next lap starts from a fresh ``create_path`` — so the loco
+        stops once per lap, where the route says to, and nowhere else.
+      * ``continuous``: a stops-free CIRCULAR waypoint route — the loco laps
+        the loop without ever stopping. Nothing completes the path, so its
+        ``resource_sequence`` grows by one lap every lap; fine for a short
+        demo, not for an all-day display. Prefer ``lap_stop``.
     """
     import math
     from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
@@ -258,20 +268,16 @@ def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
     if sim_controller is None:
         return
 
-    # Blocks in loop order (each is adjacent to the next; the fourth wraps to
-    # the first). AA62D2 top-left -> AA866E top-right -> AA7B7E bottom-right ->
-    # AA6FB5 bottom-left -> back.
-    LOOP_ORDER = ["BLK_AA62D2", "BLK_AA866E", "BLK_AA7B7E", "BLK_AA6FB5"]
-
-    # Real-world block lengths. The layout's true perimeter is two 315 mm-radius
+    # Real-world segment lengths. The layout's true perimeter is two 315 mm-radius
     # semicircle ends (pi * 31.5 cm each) plus two 56 cm straights =
     # 2*(pi*31.5) + 2*56 = 309.92 cm. The baked layout splits the loop into four
-    # equal-tile quadrant blocks rather than a 2-curve + 2-straight split, so the
-    # perimeter is spread evenly across the four blocks — total lap length (and
-    # therefore lap time) matches the real loop.
-    per_block_cm = (2.0 * math.pi * 31.5 + 2.0 * 56.0) / 4.0
-    for block_id in LOOP_ORDER:
-        network.blocks[block_id].length_cm = per_block_cm
+    # equal-tile quadrant segments rather than a 2-curve + 2-straight split, so
+    # the perimeter is spread evenly across the four segments — total lap length
+    # (and therefore lap time) matches the real loop. Length lives on the
+    # segment; the block's `length_cm` is the sum across its members.
+    per_segment_cm = (2.0 * math.pi * 31.5 + 2.0 * 56.0) / 4.0
+    for segment_id in LOOP_ORDER:
+        network.get_segment(segment_id).length_cm = per_segment_cm
 
     # One shared, slow profile so a lap over the ~3.1 m loop is watchable.
     profile = SpeedProfile(
@@ -295,7 +301,7 @@ def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
     # heads forward around the loop (north out of (3, 8) leads into AA866E).
     train = sim_controller.add_train(
         train_id="T_LOOP",
-        starting_block_id="BLK_AA62D2",
+        starting_block_id=LOOP_ORDER[0],
         initial_direction="NORTH",
         max_speed_kmh=15.0,
         length_cm=20.0,
@@ -305,31 +311,40 @@ def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
     )
     train.speed_profile_id = profile.profile_id
 
-    # Build the CIRCULAR route for the selected mode. task_direction "either"
-    # lets the executor resolve a concrete direction each leg. Stops are listed
-    # in loop order so the loco keeps going one way around (a robust one-way
-    # loop needs a stop on each block; sparse stops that skip blocks hit a known
-    # reverse-resolution wrap-back stall on this symmetric loop).
+    # Build the CIRCULAR route for the selected mode. Tasks are listed in loop
+    # order so the loco keeps going one way around, and task_direction "either"
+    # lets the executor resolve a concrete direction each leg.
+    #
+    # `lap_stop` lists the three blocks after the start as waypoints and the
+    # start block last, as a stop plus a dwell. The loco therefore runs
+    # AA866E -> AA7B7E -> AA6FB5 without stopping, comes to rest back on
+    # AA62D2, holds HOLD_SECONDS, and the CIRCULAR wrap sends it round again.
     route = Route(
         route_id="ROUTE_LOOP", name="Loop", mode=RouteMode.CIRCULAR,
         is_active=True, start_mode=RouteStartMode.NEAREST,
     )
-    for block_id in LOOP_ORDER:
-        target = BlockTarget(block_id=block_id)
-        if DEMO7_MODE == "continuous":
+    if DEMO7_MODE == "continuous":
+        for block_id in LOOP_ORDER:
             route.add_task(RouteTask(
-                task_kind="waypoint", task_location=target,
+                task_kind="waypoint", task_location=BlockTarget(block_id=block_id),
                 task_direction="either",
             ))
-        else:  # "stop_loop"
+    else:  # "lap_stop"
+        start_block_id, *pass_through = LOOP_ORDER
+        for block_id in pass_through:
             route.add_task(RouteTask(
-                task_kind="stop", task_location=target,
+                task_kind="waypoint", task_location=BlockTarget(block_id=block_id),
                 task_direction="either",
             ))
-            route.add_task(RouteTask(
-                task_kind="dwell", task_location=target,
-                task_direction="either", task_time=HOLD_SECONDS,
-            ))
+        start_target = BlockTarget(block_id=start_block_id)
+        route.add_task(RouteTask(
+            task_kind="stop", task_location=start_target,
+            task_direction="either",
+        ))
+        route.add_task(RouteTask(
+            task_kind="dwell", task_location=start_target,
+            task_direction="either", task_time=HOLD_SECONDS,
+        ))
     sim_controller.route_executor.register_route(route)
     route.assign_train("T_LOOP")
     sim_controller.get_or_create_controller("T_LOOP").commands.enqueue_command(
@@ -337,3 +352,14 @@ def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
     )
 
     print(f"  Demo 7: 1 loco on a 4-block loop, mode={DEMO7_MODE!r}.")
+    if DEMO7_MODE == "continuous":
+        print(
+            "  Note: continuous mode never completes its path, so the path's "
+            "resource_sequence grows by one lap every lap. Use 'lap_stop' for "
+            "anything that runs longer than a short demo."
+        )
+    else:
+        print(
+            f"  One lap, then a {HOLD_SECONDS:.0f} s stand on "
+            f"{LOOP_ORDER[0]}, repeating."
+        )

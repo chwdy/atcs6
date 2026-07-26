@@ -418,8 +418,8 @@ class TestTrainState:
 
 from block_power import (
     BlockPowerController,
-    SimulatedOutputInterface,
-    OutputInterface,
+    SimulatedTrackDriver,
+    TrackOutput,
 )
 from block import Block
 from train_controller import (
@@ -429,12 +429,12 @@ from train_controller import (
 from block_power import MAX_TRACK_VOLTAGE
 
 
-class TestSimulatedOutputInterface:
-    """Tests for SimulatedOutputInterface."""
+class TestSimulatedTrackDriver:
+    """Tests for SimulatedTrackDriver."""
 
     def test_set_and_get_voltage(self):
         """Test setting and getting voltage."""
-        interface = SimulatedOutputInterface()
+        interface = SimulatedTrackDriver()
 
         result = interface.set_voltage("BLK_001", 8.0)
         assert result is True
@@ -442,12 +442,12 @@ class TestSimulatedOutputInterface:
 
     def test_get_nonexistent_block_returns_zero(self):
         """Test getting voltage for non-existent block."""
-        interface = SimulatedOutputInterface()
+        interface = SimulatedTrackDriver()
         assert interface.get_actual_voltage("UNKNOWN") == 0.0
 
     def test_get_all_voltages(self):
         """Test getting all voltages."""
-        interface = SimulatedOutputInterface()
+        interface = SimulatedTrackDriver()
         interface.set_voltage("BLK_001", 5.0)
         interface.set_voltage("BLK_002", 8.0)
         interface.set_voltage("BLK_003", 0.0)
@@ -459,7 +459,7 @@ class TestSimulatedOutputInterface:
 
     def test_clear(self):
         """Test clearing all voltages."""
-        interface = SimulatedOutputInterface()
+        interface = SimulatedTrackDriver()
         interface.set_voltage("BLK_001", 5.0)
         interface.set_voltage("BLK_002", 8.0)
 

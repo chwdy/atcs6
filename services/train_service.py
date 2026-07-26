@@ -125,13 +125,13 @@ def create_train(
             raise ValidationError("position must include x and y")
 
         track = state.network.get_track(pos_x, pos_y)
-        if track is None or not track.block_section_id:
+        if track is None or not track.block_id:
             raise ValidationError(f"No block at position ({pos_x}, {pos_y})")
 
         try:
             train = state.sim_controller.add_train(
                 train_id=train_id,
-                starting_block_id=track.block_section_id,
+                starting_block_id=track.block_id,
                 initial_direction=direction,
                 max_speed_kmh=max_speed_kmh,
                 length_cm=length_cm,

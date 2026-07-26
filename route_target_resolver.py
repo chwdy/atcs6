@@ -109,6 +109,26 @@ class RouteTargetResolver:
         signed_direction = 1 if direction_str == "forward" else -1
 
         if task.task_kind == "dwell":
+            # A dwell resolves to no block target — it is served in place. But a
+            # dwell whose `task_location` ID has left the network is BROKEN like
+            # any other task: `missing_target` "applies to all task kinds,
+            # including `dwell`" (design_new.md "RouteTaskRun schema"). Without
+            # this, Phase 1 would enter RUNNING_AT_STATION and hold on the timer
+            # of a station that no longer exists, instead of skipping it.
+            if not self.task_target_present(task):
+                from runtime_payloads import TargetResolutionFailureKind
+
+                return ResolvedNextTaskProjection(
+                    walk_position=walk_position,
+                    task_kind="dwell",
+                    direction=direction_str,
+                    resolved_target=None,
+                    failure_reason=(
+                        f"dwell target {getattr(task, 'task_location', None)} "
+                        f"missing from network"
+                    ),
+                    failure_kind=TargetResolutionFailureKind.MISSING_TARGET,
+                )
             return ResolvedNextTaskProjection(
                 walk_position=walk_position,
                 task_kind="dwell",
@@ -538,7 +558,7 @@ class RouteTargetResolver:
         track = network.get_track(*head_tile)
         if not track:
             return None
-        return getattr(track, "block_section_id", None)
+        return getattr(track, "block_id", None)
 
     # ------------------------------------------------------------------
     # Next-task-index computation (pure)
@@ -650,8 +670,8 @@ class RouteTargetResolver:
         network = self._e.network
         for x, y in getattr(platform, "positions", []):
             track = network.get_track(x, y)
-            if track and track.block_section_id:
-                return track.block_section_id
+            if track and track.block_id:
+                return track.block_id
         return None
 
     def _find_paths_cached(

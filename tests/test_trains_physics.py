@@ -7,7 +7,7 @@ Run with: pytest tests/test_trains_physics.py -v
 import logging
 import pytest
 
-from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NW
+from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
 from enums import BlockState, Direction, TrainState, HandlePosition
@@ -28,7 +28,7 @@ def network():
 @pytest.fixture
 def straight_ew_track(network):
     for x in range(5):
-        track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+        track = Tile(x=x, y=0, track_bits=TRACK_EW)
         network.add_track(track)
     return network
 
@@ -46,7 +46,7 @@ class TestTrainPhysicsOccupiedTilesOrderBugFix:
 
     def _setup_two_tile_train(self, network):
         for x in range(3):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
 
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=80.0)
         train = Train(train_id="OCCUPIED_TILE_ORDER", consist=[car])
@@ -85,8 +85,8 @@ class TestTrainPhysicsTailPositionBugFix:
 
     def test_tail_distance_within_tile_after_advance(self, network):
         for x in range(3):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
-        network.create_block_with_tracks(
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
+        network.create_segment_with_tracks(
             "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
         )
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0)
@@ -112,11 +112,11 @@ class TestZeroLengthSwitchTraversal:
     """Tests for moving across zero-length switch tiles."""
 
     def test_train_advances_across_zero_length_switch(self, network):
-        network.add_track(TrackSegment(0, 0, track_bits=TRACK_EW))
-        switch_track = TrackSegment(1, 0, track_bits=TRACK_EW | TRACK_NW)
+        network.add_track(Tile(0, 0, track_bits=TRACK_EW))
+        switch_track = Tile(1, 0, track_bits=TRACK_EW | TRACK_NW)
         switch_track.switch_state = 0
         network.add_track(switch_track)
-        network.add_track(TrackSegment(2, 0, track_bits=TRACK_EW))
+        network.add_track(Tile(2, 0, track_bits=TRACK_EW))
         switch = Switch(switch_id="SW_1_0", x=1, y=0)
         network.add_switch(switch)
         switch_track.switch_id = switch.switch_id
@@ -177,15 +177,15 @@ class TestTrainPhysicsTransitions:
     def test_train_physics_reports_block_transitions(self):
         """TrainPhysics should expose entered and vacated blocks per update."""
         network = RailwayNetwork()
-        track_a = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
-        track_b = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
-        track_a.block_section_id = "B1"
-        track_b.block_section_id = "B2"
+        track_a = Tile(x=0, y=0, track_bits=TRACK_EW)
+        track_b = Tile(x=1, y=0, track_bits=TRACK_EW)
+        track_a.segment_id = "B1"
+        track_b.segment_id = "B2"
         network.add_track(track_a)
         network.add_track(track_b)
 
-        network.create_block("B1", "Block 1")
-        network.create_block("B2", "Block 2")
+        network.create_segment("B1", "Block 1")
+        network.create_segment("B2", "Block 2")
 
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_1", consist=[car], max_speed=60.0)
@@ -276,7 +276,7 @@ class TestTrainPhysicsManualPowerPercent:
     def _build_train(self):
         network = RailwayNetwork()
         for x in range(5):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
         car = TrainCar(car_id="CAR_PCT", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_PCT", consist=[car], max_speed=120.0)
         network.add_train(train)

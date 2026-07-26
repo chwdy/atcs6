@@ -303,17 +303,9 @@ class TrainPhysics:
             command, profile, previous_speed, delta
         )
 
-        logger.debug(
-            "[TrainPhysics %s] speed update: new_speed=%.2f delta=%.2f speed_delta=%.2f",
-            self.train_id,
-            new_speed,
-            delta,
-            new_speed - previous_speed,
-        )
 
         # 9. Calculate distance to move
         distance_cm = self._speed_to_distance(new_speed, delta)
-        logger.debug("[TrainPhysics %s] distance_cm=%.2f", self.train_id, distance_cm)
 
         # 10. Move train position. _move_train / _advance_end may force a stop
         # when the train hits the end of track; that stop is captured in
@@ -324,9 +316,6 @@ class TrainPhysics:
             # Maintenance counter: accumulate distance actually moved (see
             # design_new.md "Maintenance counters").
             train.total_distance_cm += distance_cm
-            logger.debug(
-                "[TrainPhysics %s] moved distance_cm=%.2f", self.train_id, distance_cm
-            )
 
             if self._force_stop:
                 new_speed = 0.0
@@ -339,11 +328,6 @@ class TrainPhysics:
             # `PathDispatcher.on_controller_progress(...)` →
             # `BlockManager.on_block_tail_vacated(...)` / `occupy_blocks(...)`.
             self._update_block_occupancy(train)
-            logger.debug(
-                "[TrainPhysics %s] occupied_blocks=%s",
-                self.train_id,
-                sorted(self._get_blocks_for_train(train)),
-            )
 
             # 12. Build and emit per-boundary PhysicsSpanUpdate callbacks plus
             # one final no-boundary callback for this tick.
@@ -384,7 +368,6 @@ class TrainPhysics:
 
         # 14. Output voltage to occupied blocks (hardware-output path)
         self._update_voltage_output(train, controller)
-        logger.debug("[TrainPhysics %s] voltage update complete", self.train_id)
 
     # =========================================================================
     # Speed and Acceleration
@@ -579,12 +562,20 @@ class TrainPhysics:
         if operational_state in (TrainState.READY, TrainState.RUNNING_AT_STATION):
             return lighting_voltage
 
-        # RUNNING_MOVING: the speed reference comes from the controller's
+        # RUNNING_MOVING: the reference comes from the controller's
         # PhysicsCommand. EB collapses voltage_source_speed_kmh to 0.0 in
         # the producer, so no extra branch is needed here.
         command = self._read_physics_command(controller)
         voltage_speed = float(command.voltage_source_speed_kmh)
         if speed_profile is not None:
+            source_percent = command.voltage_source_power_percent
+            if source_percent is not None:
+                # Manual power_percent mode: the percent is authoritative, so
+                # voltage comes off voltage_power_curve directly. Deriving it
+                # from the calibrated speed instead would invert
+                # power_speed_curve, which does not round-trip once that curve
+                # is calibrated and non-linear (design_new.md:2424).
+                return speed_profile.power_to_voltage(float(source_percent))
             return speed_profile.speed_to_voltage_two_stage(voltage_speed)
         return self._linear_speed_to_voltage(voltage_speed)
 
@@ -691,14 +682,14 @@ class TrainPhysics:
             if track is not None:
                 # block_id always reflects the block this tile sits inside,
                 # even when the primary resource for the tile is a switch.
-                if track.block_section_id:
-                    block_id = track.block_section_id
+                if track.block_id:
+                    block_id = track.block_id
                 if getattr(track, "is_switch", False) and track.switch_id:
                     resource_type = "switch"
                     resource_id = track.switch_id
-                elif track.block_section_id:
+                elif track.block_id:
                     resource_type = "block"
-                    resource_id = track.block_section_id
+                    resource_id = track.block_id
 
         return TileTraversal(
             tile_xy=tile,
@@ -1338,7 +1329,7 @@ class TrainPhysics:
             tiles = self._work.occupied_tiles or []
             for tile in tiles:
                 track = self.network.tracks.get(tile) if self.network else None
-                bid = getattr(track, "block_section_id", None) if track else None
+                bid = getattr(track, "block_id", None) if track else None
                 if bid and bid not in seen:
                     ordered_blocks.append(bid)
                     seen.add(bid)
@@ -1366,8 +1357,8 @@ class TrainPhysics:
         # Get block for each tile
         for tile in tiles:
             track = self.network.tracks.get(tile)
-            if track and track.block_section_id:
-                blocks.add(track.block_section_id)
+            if track and track.block_id:
+                blocks.add(track.block_id)
 
         return blocks
 
@@ -1469,7 +1460,7 @@ class TrainPhysics:
         seen: Set[str] = set()
         for tile in work.occupied_tiles or []:
             track = self.network.tracks.get(tile) if self.network else None
-            bid = getattr(track, "block_section_id", None) if track else None
+            bid = getattr(track, "block_id", None) if track else None
             if bid and bid not in seen:
                 ordered_blocks.append(bid)
                 seen.add(bid)
@@ -1596,23 +1587,12 @@ class TrainPhysics:
         """Every block that carries this train's `track_voltage` this tick.
 
         Per design_new.md "Power", Block power-controller role: the train drives
-        its one voltage onto every power district it holds, and because a
-        district shares one feed the whole district carries that voltage — not
-        only the held blocks. So this is the held set (`_held_blocks_for_train`:
-        occupied + reserved-ahead) expanded to each held block's full power
-        district through the canonical `RailwayNetwork.district_block_ids(...)`
-        lookup. With no grouping applied every block is its own single-block
-        district, so this is exactly the held set — the same blocks the runtime
-        drives today.
+        its one voltage onto every block it holds. A block is one power feed —
+        it owns the one `track voltage` its member segments share — so the
+        energized set is exactly the held set (`_held_blocks_for_train`:
+        occupied + reserved-ahead).
         """
-        held = self._held_blocks_for_train(train)
-        district_lookup = getattr(self.network, "district_block_ids", None)
-        if district_lookup is None:
-            return held
-        energized: Set[str] = set()
-        for block_id in held:
-            energized.update(district_lookup(block_id))
-        return energized
+        return self._held_blocks_for_train(train)
 
     # =========================================================================
     # Track Geometry Helpers

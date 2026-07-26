@@ -8,7 +8,7 @@ import logging
 import pytest
 from types import SimpleNamespace
 
-from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NW
+from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
 from enums import BlockState, Direction, TrainState, HandlePosition
@@ -29,7 +29,7 @@ def network():
 @pytest.fixture
 def straight_ew_track(network):
     for x in range(5):
-        track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+        track = Tile(x=x, y=0, track_bits=TRACK_EW)
         network.add_track(track)
     return network
 
@@ -50,11 +50,11 @@ class TestAtoStopButtonBugFix:
             make_synthetic_path,
         )
 
-        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
-        next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        track = Tile(x=0, y=0, track_bits=TRACK_EW)
+        next_track = Tile(x=1, y=0, track_bits=TRACK_EW)
         network.add_track(track)
         network.add_track(next_track)
-        network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
+        network.create_segment_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
 
         car = TrainCar("ATO_STOP_TEST", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="ATO_STOP_TEST", consist=[car])
@@ -143,11 +143,11 @@ class TestAtoAutoCabSelectionBugFix:
         1. Manual selection by operator (set_cab())
         2. Auto-selection in depart() when called by RouteExecutor
         """
-        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
-        next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        track = Tile(x=0, y=0, track_bits=TRACK_EW)
+        next_track = Tile(x=1, y=0, track_bits=TRACK_EW)
         network.add_track(track)
         network.add_track(next_track)
-        network.create_block_with_tracks("B1", [(0, 0)], length_cm=100.0)
+        network.create_segment_with_tracks("B1", [(0, 0)], length_cm=100.0)
 
         car = TrainCar(car_id="CAR_02", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_NO_CAB_TICK", consist=[car], max_speed=60.0)
@@ -189,11 +189,11 @@ class TestAtoDepartCallsAtoGo:
             make_synthetic_path,
         )
 
-        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
-        next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        track = Tile(x=0, y=0, track_bits=TRACK_EW)
+        next_track = Tile(x=1, y=0, track_bits=TRACK_EW)
         network.add_track(track)
         network.add_track(next_track)
-        network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
+        network.create_segment_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
 
         car = TrainCar("ATO_DEPART_TEST", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="ATO_DEPART_TEST", consist=[car])
@@ -227,11 +227,11 @@ class TestAtoDepartCallsAtoGo:
         depart() should call ato_go() when in ATO mode.
         This is like RouteExecutor pressing the Go button.
         """
-        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
-        next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        track = Tile(x=0, y=0, track_bits=TRACK_EW)
+        next_track = Tile(x=1, y=0, track_bits=TRACK_EW)
         network.add_track(track)
         network.add_track(next_track)
-        network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
+        network.create_segment_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
 
         car = TrainCar("DEPART_ATO", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="DEPART_ATO", consist=[car])
@@ -302,11 +302,11 @@ class TestAtoDepartCallsAtoGo:
         """
         Verify that ato_go() still properly starts ATO.
         """
-        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
-        next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        track = Tile(x=0, y=0, track_bits=TRACK_EW)
+        next_track = Tile(x=1, y=0, track_bits=TRACK_EW)
         network.add_track(track)
         network.add_track(next_track)
-        network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
+        network.create_segment_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
 
         car = TrainCar("ATO_GO_TEST", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="ATO_GO_TEST", consist=[car])
@@ -355,11 +355,11 @@ class TestAtoDistanceAwareControl:
             make_synthetic_path,
         )
 
-        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
-        next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        track = Tile(x=0, y=0, track_bits=TRACK_EW)
+        next_track = Tile(x=1, y=0, track_bits=TRACK_EW)
         network.add_track(track)
         network.add_track(next_track)
-        network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
+        network.create_segment_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
 
         car = TrainCar("ATO_DIST_TEST", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="ATO_DIST_TEST", consist=[car])
@@ -444,12 +444,12 @@ class TestAtoDistanceAwareControl:
         """
         # Create tracks with a long enough block
         for x in range(5):
-            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            track = Tile(x=x, y=0, track_bits=TRACK_EW)
             network.add_track(track)
 
         # Create block that covers the tracks with reasonable length
         # At model scale, 100 cm gives us plenty of room
-        network.create_block_with_tracks(
+        network.create_segment_with_tracks(
             "LONG_BLOCK", [(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)], length_cm=100.0
         )
 
@@ -577,18 +577,18 @@ class TestAtoDestinationStoppingAfterPathCompletes:
 
         # Create 5 tiles of straight track
         for x in range(5):
-            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            track = Tile(x=x, y=0, track_bits=TRACK_EW)
             network.add_track(track)
 
         # Create blocks
-        network.create_block_with_tracks(
-            block_id="BLOCK_A",
+        network.create_segment_with_tracks(
+            segment_id="BLOCK_A",
             positions=[(0, 0), (1, 0), (2, 0)],
             name="Block A",
             length_cm=150.0,
         )
-        network.create_block_with_tracks(
-            block_id="BLOCK_B",
+        network.create_segment_with_tracks(
+            segment_id="BLOCK_B",
             positions=[(3, 0), (4, 0)],
             name="Block B - Station",
             length_cm=100.0,
@@ -747,13 +747,13 @@ class TestTrendAwareATOControl:
     @pytest.fixture
     def straight_track(self, network):
         for x in range(10):
-            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            track = Tile(x=x, y=0, track_bits=TRACK_EW)
             network.add_track(track)
         # Per Option B, ATC/ATO need a real `received_path_plan` to compute
         # forward authority. Create a block so the synthetic path below
         # resolves; the tests in this class exercise the ATO handle
         # evaluator under that authority.
-        network.create_block_with_tracks(
+        network.create_segment_with_tracks(
             "BLOCK_TREND",
             [(x, 0) for x in range(10)],
             length_cm=1000.0,
@@ -1003,7 +1003,7 @@ class TestSpeedCurveCalculation:
     @pytest.fixture
     def straight_track(self, network):
         for x in range(20):
-            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            track = Tile(x=x, y=0, track_bits=TRACK_EW)
             network.add_track(track)
         return network
 

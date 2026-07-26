@@ -27,9 +27,16 @@ def register(app, state: AppState) -> None:
 
         Returns the `NotificationCenter` stream as records the read-only viewer
         and replay layers consume. Optional filters:
-        ``?kind=&train_id=&severity=&limit=`` (filter by kind / train / severity
-        / most-recent count).
+        ``?kind=&train_id=&severity=&since=&until=&limit=`` (filter by kind /
+        train / severity / time range / most-recent count).
+
+        ``?persisted=true`` reads the on-disk stream instead of the in-memory
+        archive, so an earlier run's incidents can be reviewed after a restart —
+        the persistence the doc's viewer is built on. It falls back to the
+        in-memory archive when no log path is configured.
         """
+        from notification_center import NotificationCenter
+
         sim = getattr(state, "sim_controller", None)
         nc = getattr(sim, "notification_center", None) if sim else None
         if nc is None:
@@ -41,15 +48,43 @@ def register(app, state: AppState) -> None:
         kind = request.args.get("kind")
         train_id = request.args.get("train_id")
         severity = request.args.get("severity")
+
+        def _time_arg(name):
+            raw = request.args.get(name)
+            if raw is None:
+                return None
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                return None
+
+        since = _time_arg("since")
+        until = _time_arg("until")
+
+        persisted = request.args.get("persisted", "").lower() in ("1", "true", "yes")
+        if persisted and nc.log_path:
+            # The persisted stream reads back in `notification_id` order and
+            # survives a restart. Apply `limit` as most-recent after filtering.
+            source = NotificationCenter.read_event_log(nc.log_path)
+        else:
+            source = nc.peek_recent(limit if limit > 0 else 500)
+
         records = []
-        for e in nc.peek_recent(limit if limit > 0 else 500):
+        for e in source:
             if kind and e.kind != kind:
                 continue
             if train_id and e.train_id != train_id:
                 continue
             if severity and e.severity.value != severity:
                 continue
+            if since is not None and e.event_time < since:
+                continue
+            if until is not None and e.event_time > until:
+                continue
             records.append(e.to_dict())
+
+        if limit > 0 and len(records) > limit:
+            records = records[-limit:]
         return jsonify({"events": records})
 
     @app.route("/api/simulation/control", methods=["POST"])
@@ -78,31 +113,6 @@ def register(app, state: AppState) -> None:
                 "status": "success",
                 "running": state.simulation_running,
                 "speed": state.simulation_speed,
-            }
-        )
-
-    @app.route("/api/simulation/release-failed-runtime", methods=["POST"])
-    def release_failed_runtime():
-        """Clear a fatal physical-entry conflict halt after the operator has
-        resolved the conflict.
-
-        Delegates to
-        ``SimulationController.release_failed_runtime_after_manual_cleanup()``,
-        which re-verifies that the conflicting occupancy/reservation recorded
-        in the stored fatal payload is actually gone before clearing the flag.
-        Always returns HTTP 200; ``released`` reports whether the halt was
-        actually lifted (``False`` means the conflict still stands and the
-        operator must resolve it first).
-        """
-        sim = state.sim_controller
-        if sim is None:
-            return jsonify({"error": "Simulation not initialised"}), 503
-        with state.simulation_lock:
-            released = sim.release_failed_runtime_after_manual_cleanup()
-        return jsonify(
-            {
-                "released": released,
-                "failed_runtime": sim.failed_runtime,
             }
         )
 

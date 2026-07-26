@@ -31,11 +31,11 @@ from bootstrap import (
     get_current_scene_id,
     set_current_scene,
     setup_demo_train,
-    _load_scene_module,
 )
 from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
+from scene_validation import validate_block_rules
 from simulation import SimulationController
 
 # Global state
@@ -65,10 +65,10 @@ def run_startup_tests():
     print("\n[1/2] Running Block Validation Tests...")
     print("-" * 70)
     try:
-        # Block-validation suite lives on each scene module; run it for the
-        # currently active scene so the gate matches what we're about to boot.
-        _load_scene_module(None).test_block_validation()
-        print(f"✅ Block validation tests PASSED (scene={get_current_scene_id()})")
+        # These checks build their own throwaway network, so they are the same
+        # for every scene — see scene_validation.py.
+        validate_block_rules()
+        print("✅ Block validation tests PASSED")
     except Exception as e:
         print(f"❌ Block validation tests FAILED: {e}")
         print("\n🛑 BLOCKING: Cannot start server with failing validation tests.")

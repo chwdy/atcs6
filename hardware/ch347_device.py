@@ -16,18 +16,24 @@ Two wiring quirks are contained here so nothing above the interface sees them:
   active-high; the correct edge for each is applied inside `latch_out` /
   `load_in`, driven by the operation, not the caller.
 
-Importing this module requires `ch347api`. `hardware_config.build_session_interfaces`
-imports it lazily and turns an ImportError into `HardwareBackendUnavailable` so a
-build without the USB driver still boots in sim mode.
+`ch347api` itself is only imported inside `Ch347Device.open()`, not at module
+scope, so this module — and anything that only needs to monkeypatch
+`open_ch347_device` — imports cleanly on a build without the USB driver
+installed. `hardware_config.build_session_interfaces` relies on that: it turns
+the ImportError raised on `open()` into `HardwareBackendUnavailable` so a build
+without the USB driver still boots in sim mode.
 """
 
 import struct
 import threading
-from typing import List, Optional, Tuple
-
-from ch347api import CH347HIDDev
+import time
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Iterator, List, Optional, Tuple
 
 from hardware.catalog import BUS_I2C, BUS_SPI
+
+if TYPE_CHECKING:
+    from ch347api import CH347HIDDev
 
 # If the Phase-0 coexistence probe shows I2C does NOT survive `init_SPI()`, set
 # this True: the device then re-inits the bus before each bus-class op. Default
@@ -37,6 +43,9 @@ REINIT_EACH_OP = False
 SPI_CLOCK_LEVEL = 5   # 1.875 MHz — matches the demos; raise once validated
 CS1_HIGH = False      # pad cs0 (lib CS1): active-low '595 latch
 CS2_HIGH = True       # pad cs1 (lib CS2): active-high '165 load
+
+# '595 latch pulse width when the latch rides a GPIO pin (gpio.ipynb uses 100 µs).
+GPIO_LATCH_PULSE_S = 100e-6
 
 # Physical pad name -> ch347api CS selector (1 => set_CS1, 2 => set_CS2).
 _PAD_TO_CS = {"cs0": 1, "cs1": 2}
@@ -51,14 +60,40 @@ _GPIO_UNCHANGED = 0x00
 class Ch347Device:
     """One shared transport instance for all three real interfaces + self-test."""
 
-    def __init__(self, device_port: Optional[str] = None) -> None:
+    def __init__(
+        self, device_port: Optional[str] = None, gpio_transfer_cs: str = "cs0"
+    ) -> None:
         self.device_port = device_port
-        self._dev: Optional[CH347HIDDev] = None
+        if gpio_transfer_cs not in _PAD_TO_CS:
+            raise ValueError(f"gpio_transfer_cs must be one of {list(_PAD_TO_CS)}")
+        # The CS pad the SPI engine asserts while a GPIO-latched chip is clocked.
+        # `build_real_interfaces` overrides it with a pad no '595 latches on.
+        self.gpio_transfer_cs = gpio_transfer_cs
+        self._dev: "Optional[CH347HIDDev]" = None
         self._lock = threading.RLock()
 
     # -- lifecycle -------------------------------------------------------
     def open(self) -> None:
-        self._dev = CH347HIDDev()          # opens by VID/PID, interface 1
+        from ch347api import CH347HIDDev
+
+        try:
+            self._dev = CH347HIDDev()      # opens by VID/PID, interface 1
+        except TypeError as exc:
+            # `ch347api` looks the bridge up by VID/PID and hands the result
+            # straight to `hid.open_path`, so "nothing plugged in" arrives as
+            # `TypeError: expected bytes, NoneType found` — a message about the
+            # library's internals that reads, on the Hardware Setup screen, as
+            # if the app were broken. Say what actually happened instead. If the
+            # library ever raises a real not-found error, it lands in the branch
+            # below, which still reads correctly.
+            raise RuntimeError(
+                "no CH347 found on USB — check the bridge is plugged in"
+            ) from exc
+        except Exception as exc:
+            raise RuntimeError(
+                f"could not open the CH347 ({exc}) — it may already be open in "
+                "another program"
+            ) from exc
         self._init_i2c()
         self._init_spi()
 
@@ -100,12 +135,25 @@ class Ch347Device:
             return bool(status), bytes(raw) if raw else b""
 
     def i2c_scan(self) -> List[int]:
+        """Probe every 7-bit address and report the ones that ACK.
+
+        `ch347api` has no address-existence call, so the probe is a one-byte
+        write — on nearly every chip that is a register-pointer set, which
+        changes no state a later read does not set again anyway.
+
+        The byte is load-bearing, not padding. `__i2c_read_write_raw` skips the
+        address ACK when the frame carries nothing but the address
+        (`if len(data) == 1: ack_stops -= 1`), so its ACK check reduces to
+        `sum(b"") == len(b"")` and an address-only write reports success for
+        every address on the bus. Sending one data byte keeps the ACK bytes in
+        the window it actually inspects.
+        """
         with self._lock:
             self._ensure(BUS_I2C)
             found: List[int] = []
             for addr in range(0x03, 0x78):
                 try:
-                    if self._dev.i2c_exists(addr):
+                    if self._dev.i2c_write(addr, b"\x00"):
                         found.append(addr)
                 except Exception:
                     pass
@@ -121,9 +169,11 @@ class Ch347Device:
                 self._dev.spi_write(bytes(data))
                 self._cs(select, False)        # deassert -> rising edge latches
             else:
-                self._gpio(select, False)      # idle low
-                self._dev.spi_write(bytes(data))
+                self._gpio(select, False)      # RCLK idle low
+                with self._transfer_cs():
+                    self._dev.spi_write(bytes(data))
                 self._gpio(select, True)       # rising edge latches
+                time.sleep(GPIO_LATCH_PULSE_S)
                 self._gpio(select, False)
 
     def load_in(self, count: int, select: str) -> bytes:
@@ -135,10 +185,27 @@ class Ch347Device:
                 rx = self._dev.spi_read(count)
                 self._cs(select, False)
             else:
-                self._gpio(select, True)       # high -> shift mode
-                rx = self._dev.spi_read(count)
-                self._gpio(select, False)      # low -> transparent load
+                self._gpio(select, True)       # high -> freeze inputs, shift mode
+                with self._transfer_cs():
+                    rx = self._dev.spi_read(count)
+                self._gpio(select, False)      # low -> transparent parallel load
             return bytes(rx)
+
+    @contextmanager
+    def _transfer_cs(self) -> Iterator[None]:
+        """Hold a chip-select enabled for the length of a GPIO-latched transfer.
+
+        A GPIO-latched shift register still clocks its data over the SPI
+        peripheral, and `ch347api` refuses `spi_write` / `spi_read` unless some
+        CS is enabled ("no CS enabled yet"). The CH347 asserts that CS around the
+        transfer and releases it after, so the pad must be one no '595 latches
+        on — `build_real_interfaces` picks it.
+        """
+        self._cs(self.gpio_transfer_cs, True)
+        try:
+            yield
+        finally:
+            self._cs(self.gpio_transfer_cs, False)
 
     # -- select-line primitives -----------------------------------------
     def _cs(self, select: str, assert_: bool) -> None:
@@ -158,7 +225,11 @@ class Ch347Device:
         data[pin] = _GPIO_OUT_HIGH if level else _GPIO_OUT_LOW
         payload = struct.pack("<BHBH", 0x00, 11, 0xCC, 8) + bytes(data)
         self._dev.write(payload)
-        self._dev.read(512, timeout_ms=200)
+        # The 0xCC command echoes the eight pin states. An empty frame means the
+        # bridge did not accept it; without this check a chip whose latch never
+        # moved would still self-test as reachable.
+        if not self._dev.read(512, timeout_ms=200):
+            raise RuntimeError(f"no response from CH347 on GPIO command (pin {pin})")
 
 
 def open_ch347_device(device_port: Optional[str] = None) -> Ch347Device:

@@ -70,7 +70,7 @@ EB/warning thresholds are **inline literals, not named**: EB at `overspeed > 10`
 
 ## Tier 6 — Power / voltage
 [block_power.py:19-21](block_power.py:19): `MAX_TRACK_VOLTAGE 12.0` · `MIN_TRACK_VOLTAGE 0.0` · `DEFAULT_LIGHTING_VOLTAGE 2.5` (see hazard #3).
-[switch_power.py:48-51](switch_power.py:48): `CONTINUITY_TOLERANCE_V 0.5` · `ENERGIZED_EPS_V 0.05`.
+[hardware/catalog.py:60](hardware/catalog.py:60): `SWITCH_THROW_PULSE_S 0.01`.
 
 ---
 

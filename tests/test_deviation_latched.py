@@ -61,7 +61,7 @@ from path_dispatcher import PathDispatcher
 from runtime_payloads import PhysicsSpanUpdate
 from simulation import SimulationController
 from switch import Switch
-from track import TRACK_EW, TRACK_NW, TrackSegment
+from track import TRACK_EW, TRACK_NW, Tile
 from train import Train, TrainCar
 
 from tests.train_test_helpers import make_train_span
@@ -91,27 +91,27 @@ def _build_switch_network() -> Tuple[RailwayNetwork, Switch]:
     """
     network = RailwayNetwork()
 
-    network.add_track(TrackSegment(0, 0, track_bits=TRACK_EW))
-    network.add_track(TrackSegment(1, 0, track_bits=TRACK_EW))
-    network.create_block_with_tracks(
-        block_id="BLK_A", positions=[(0, 0), (1, 0)], name="A", length_cm=200.0
+    network.add_track(Tile(0, 0, track_bits=TRACK_EW))
+    network.add_track(Tile(1, 0, track_bits=TRACK_EW))
+    network.create_segment_with_tracks(
+        segment_id="BLK_A", positions=[(0, 0), (1, 0)], name="A", length_cm=200.0
     )
 
     # Switch tile at (2, 0): EW (straight, main) + NW (diverge). Must be a real
     # Switch entity so create_path can lock it.
-    switch_track = TrackSegment(2, 0, track_bits=TRACK_EW | TRACK_NW)
+    switch_track = Tile(2, 0, track_bits=TRACK_EW | TRACK_NW)
     network.add_track(switch_track)
     switch = Switch(switch_id="SW_X", x=2, y=0)
     network.add_switch(switch)
     switch_track.switch_id = switch.switch_id
 
     for x in (3, 4, 5, 6):
-        network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
-    network.create_block_with_tracks(
-        block_id="BLK_C", positions=[(3, 0), (4, 0)], name="C", length_cm=200.0
+        network.add_track(Tile(x, 0, track_bits=TRACK_EW))
+    network.create_segment_with_tracks(
+        segment_id="BLK_C", positions=[(3, 0), (4, 0)], name="C", length_cm=200.0
     )
-    network.create_block_with_tracks(
-        block_id="BLK_D", positions=[(5, 0), (6, 0)], name="D", length_cm=200.0
+    network.create_segment_with_tracks(
+        segment_id="BLK_D", positions=[(5, 0), (6, 0)], name="D", length_cm=200.0
     )
 
     return network, switch

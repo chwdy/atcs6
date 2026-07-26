@@ -45,7 +45,7 @@ SCENE_ENV_VAR = "ATCS_SCENE"
 # demo the server, CLI entry points, and unparameterised tests build by
 # default. Per-call `scene=` arguments, the ATCS_SCENE environment variable,
 # and `set_current_scene()` all take precedence.
-_DEFAULT_SCENE: str = "demo_5"
+_DEFAULT_SCENE: str = "demo7_1"
 
 # The active scene, resolved at import time from ATCS_SCENE (falling back to
 # the default). `set_current_scene()` reassigns this for the running process.
@@ -62,6 +62,7 @@ _SCENE_MODULES: dict[str, str] = {
     "demo_5.1": "demo_5_1",
     "demo_6": "demo_6",
     "demo7": "demo7",
+    "demo7_1": "demo7_1",
     "demo_test": "demo_test",
 }
 

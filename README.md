@@ -180,6 +180,21 @@ Several worked layouts ship as "scenes" you can boot with `--scene`:
 - **`demo_4`** — the same loop closed into a continuous circle through a pair of tunnels.
 - **`demo_5`** *(default)* — the four-station loop plus a depot, with a one-way double-track corridor worked by convention.
 
+### Run the verification suite
+
+Activate the project environment, then run the canonical local gate:
+
+```bash
+conda activate general
+./run_all_tests.sh
+```
+
+It runs the complete Python suite, TypeScript typecheck, frontend unit tests,
+and the production frontend build. `npm test` is the frontend unit-suite alias;
+API tests use Flask's in-process test client and require no separately running
+server. See [the coverage and suite-splitting plan](docs/TEST_COVERAGE_AND_SUITE_PLAN.md)
+for the planned fast/integration/journey CI structure.
+
 ---
 
 ## Driving the demo train
@@ -209,7 +224,7 @@ Sample layout files are included in `layouts/` (loops and test plans) alongside 
 
 ## Toward real hardware
 
-The simulator is built to *become* a layout controller, not just imitate one. The voltage output sits behind a small abstract interface (`OutputInterface`):
+The simulator is built to *become* a layout controller, not just imitate one. The voltage output sits behind a small abstract interface (`TrackOutput`):
 
 - Today it ships a **simulated** implementation that keeps block voltages in memory.
 - The same control logic — block power, aspects, interlocking, ATO/ATC — is written to drive a **real DC layout** through a hardware backend (Serial / I²C / GPIO) by swapping in a different output implementation.

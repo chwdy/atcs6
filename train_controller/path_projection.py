@@ -27,8 +27,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
+from train_controller_types import ReceivedPathPlan
+
 if TYPE_CHECKING:
-    from path import Path
     from train_controller import TrainController
 
 
@@ -39,13 +40,18 @@ class PathProjection:
         self._c = controller
 
     @property
-    def received_path_plan(self) -> Optional["Path"]:
+    def received_path_plan(self) -> Optional[ReceivedPathPlan]:
         """Live read of the controller's active authority.
 
-        Resolves to ``PathDispatcher.get_active_path(self.train_id)`` on
-        every read. There is no setter and no stored field. When the
-        dispatcher transitions the path's status away from ``ACTIVE``,
-        this property returns ``None`` on the next read automatically.
+        Resolves to ``PathDispatcher.get_active_path(self.train_id)`` on every
+        read and narrows it to the canonical **received_path_plan schema**
+        (design_new.md): ``path_id``, ``resource_sequence``, and
+        ``authority_end_block_id``. The dispatcher-only fields on the ``Path``
+        record are not projected — the controller does not see them.
+
+        There is no setter and no stored field. When the dispatcher transitions
+        the path's status away from ``ACTIVE``, ``get_active_path`` returns
+        ``None`` and so does this property, on the next read.
         """
         c = self._c
         if c.path_dispatcher is None:
@@ -53,7 +59,13 @@ class PathProjection:
         getter = getattr(c.path_dispatcher, "get_active_path", None)
         if getter is None:
             return None
-        return getter(c.train_id)
+        path = getter(c.train_id)
+        if path is None:
+            return None
+        return ReceivedPathPlan(
+            path_id=getattr(path, "path_id", None) or getattr(path, "id", ""),
+            resource_sequence=path.resource_sequence,
+        )
 
     def received_path_plan_dict(self) -> Optional[Dict[str, Any]]:
         """Serialize the active authority as the canonical

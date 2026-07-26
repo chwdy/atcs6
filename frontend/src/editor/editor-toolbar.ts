@@ -81,25 +81,25 @@ export class ToolbarHandler {
       await this.editor.exitMode();
     }
 
-    // Auto-toggle block debug when entering/leaving block tools.
-    const isBlockTool = ['block', 'extend-block'].includes(newTool);
-    const wasBlockTool = ['block', 'extend-block'].includes(oldTool);
-    if (isBlockTool !== wasBlockTool) {
-      this.editor.renderer.showBlockColorsOnly = isBlockTool;
+    // Auto-toggle segment debug when entering/leaving segment (geometry) tools.
+    const isSegmentTool = ['segment', 'extend-segment'].includes(newTool);
+    const wasSegmentTool = ['segment', 'extend-segment'].includes(oldTool);
+    if (isSegmentTool !== wasSegmentTool) {
+      this.editor.renderer.showSegmentColorsOnly = isSegmentTool;
       this.editor.host?.refreshNetwork();
     }
 
-    // Auto-toggle the power-district color overlay with the assign tool. It also
-    // stays on while a power-district panel is open (those set it themselves), so
+    // Auto-toggle the block-grouping color overlay with the assign tool. It also
+    // stays on while a block panel is open (those set it themselves), so
     // leaving the assign tool clears it only when no such panel is open.
-    const isPowerTool = newTool === 'power-district-assign';
-    const wasPowerTool = oldTool === 'power-district-assign';
+    const isPowerTool = newTool === 'block-assign';
+    const wasPowerTool = oldTool === 'block-assign';
     if (isPowerTool !== wasPowerTool) {
       const panelOpen =
-        this.editor._currentEditorType === 'power-district-list' ||
-        this.editor._currentEditorType === 'power-district-detail';
-      this.editor.renderer.showPowerDistrictColors = isPowerTool || panelOpen;
-      this.editor.renderer.requestRedraw({ world: true, live: true, reason: 'power-district-layer' });
+        this.editor._currentEditorType === 'block-list' ||
+        this.editor._currentEditorType === 'block-detail';
+      this.editor.renderer.showBlockGroupingColors = isPowerTool || panelOpen;
+      this.editor.renderer.requestRedraw({ world: true, live: true, reason: 'block-grouping-layer' });
     }
 
     if (contribution?.kind.type === 'mode') {

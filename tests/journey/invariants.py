@@ -171,7 +171,7 @@ def span_block_consistency() -> Invariant:
             track = s.network.get_track(*tile)
             if track is None:
                 continue
-            block_id = getattr(track, "block_section_id", None)
+            block_id = getattr(track, "block_id", None)
             if not block_id:
                 continue  # switch / boundary tile — no block
             block = s.network.blocks.get(block_id)
@@ -261,7 +261,7 @@ def block_occupied_iff_span_covers_block() -> Invariant:
             track = s.network.get_track(*tile)
             if track is None:
                 continue
-            block_id = getattr(track, "block_section_id", None)
+            block_id = getattr(track, "block_id", None)
             if block_id:
                 covered_blocks.add(block_id)
         for block_id in covered_blocks:
@@ -366,7 +366,7 @@ def active_path_blocks_held_or_owned() -> Invariant:
             head = s.head_tile
             if head is not None:
                 track = s.network.get_track(*head)
-                head_block = getattr(track, "block_section_id", None) if track else None
+                head_block = getattr(track, "block_id", None) if track else None
 
         # Find head position in sequence; if not found, fall back to checking
         # every block in the sequence (still useful — none should be FREE).
