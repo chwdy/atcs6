@@ -4,6 +4,15 @@ import { api } from '../lib/api';
 import { stateManager } from '../lib/state-manager';
 import { showToast } from '../lib/toast';
 import { getBlockStateColor } from '../lib/helpers';
+import { FloatingWindow, windowManager, type WindowGeometry } from '../lib/window-manager';
+import { placementBounds } from '../lib/window-placement';
+import {
+  browserWindowPersistenceEnv,
+  loadWindowState,
+  saveWindowState,
+  ensureRegistered,
+  type WindowPersistenceEnv,
+} from '../lib/window-persistence';
 
 // Signal-aspect dot colors for the lookahead chart — the single home for the
 // fixed hexes the chart paints. double_yellow shares yellow's fill and is
@@ -14,6 +23,19 @@ const SIGNAL_ASPECT_COLORS: Record<string, string> = {
   double_yellow: '#ffcd1e',
   red: '#e83f5b',
 };
+
+/** Window-system identity for the monitor — its persistence key and its id in
+ *  the WindowManager registry. */
+const TRAIN_MONITOR_WINDOW_ID = 'train-monitor';
+/** Below these the chart has no room to say anything useful. Matches the
+ *  min-width/min-height the panel's CSS used to carry. */
+const MIN_MONITOR_WIDTH = 420;
+const MIN_MONITOR_HEIGHT = 200;
+/** The in-flow bar's old fixed height, kept as the default window height. */
+const DEFAULT_MONITOR_HEIGHT = 305;
+/** Breathing room between the monitor's bottom edge and the canvas view
+ *  controls it hovers above. */
+const MONITOR_CONTROLS_GAP = 10;
 
 interface CurvePoint {
     distance_cm: number;
@@ -169,6 +191,18 @@ class TrainMonitor {
     _xToCm?: (x: number) => number;
     _view!: MonitorView;
 
+    /** The monitor is a managed floating window like every other panel — it
+     *  drags by its header, resizes from all eight edges, keeps its place in
+     *  the z-order band, and gets pulled back on screen when the browser window
+     *  shrinks. Before this it was a fourth hand-rolled implementation of that
+     *  chrome (an in-flow bar with its own top-edge height drag), which is
+     *  exactly the duplication FloatingWindow exists to absorb. */
+    window!: FloatingWindow;
+    /** False until the window has a real position — either restored from a
+     *  previous session or fitted on first open. */
+    private hasGeometry = false;
+    private persistenceEnv: WindowPersistenceEnv = browserWindowPersistenceEnv();
+
     constructor() {
         this.bar = document.getElementById('train-monitor-bar')!;
         this.canvas = document.getElementById('train-monitor-canvas') as HTMLCanvasElement;
@@ -211,8 +245,8 @@ class TrainMonitor {
         
         this.initViewDistanceButtons();
         this.initColumnResizer();
-        this.initPanelResizer();
-        
+        this.initWindow();
+
         this.viewLookaheadBtn = document.getElementById('view-lookahead-btn');
         if (this.viewLookaheadBtn) {
             this.viewLookaheadBtn.addEventListener('click', () => this.dumpLookaheadData());
@@ -235,14 +269,26 @@ class TrainMonitor {
         this.trainId = trainId;
         this.titleEl.textContent = trainName || `Train ${trainId}`;
         this.bar.classList.remove('hidden');
+        // First open with nothing persisted: fit to the chrome as it is right
+        // now. Must happen after `.hidden` comes off, or the panel measures 0×0.
+        if (this.window && !this.hasGeometry) {
+            this.window.setGeometry(this.resolveGeometry());
+            this.hasGeometry = true;
+        }
+        // setHidden is the window-system lever: it reclamps the panel back on
+        // screen (the viewport may have shrunk while it was closed) and raises
+        // it to the top of the z-order. The `.hidden` class stays the panel's
+        // own display switch, which `isVisible` still reads.
+        this.window?.setHidden(false);
         this.pinnedCm = null;
         this.mouseX = null;
         this.mouseY = null;
         this.resizeCanvas();
     }
-    
+
     hide() {
         this.bar.classList.add('hidden');
+        this.window?.setHidden(true);
         this.trainId = null;
         this.lookaheadData = null;
     }
@@ -300,40 +346,69 @@ class TrainMonitor {
         });
     }
 
-    initPanelResizer() {
-        if (!this.bar) return;
-        const EDGE = 8;
-        let dragging = false;
-        let startY = 0;
-        let startH = 0;
+    /** Adopt the static `.tm-panel` markup as a FloatingWindow. Adoption rather
+     *  than generated chrome because the header already carries the monitor's
+     *  own controls (view-distance segment, close) — the same reason the home
+     *  inspector adopts its sidebar. */
+    initWindow() {
+        const header = this.bar.querySelector('.tm-header') as HTMLElement | null;
+        if (!header) return;
 
-        this.bar.addEventListener('mousedown', (e) => {
-            const rect = this.bar.getBoundingClientRect();
-            if (e.clientY > rect.top + EDGE) return;
-            dragging = true;
-            startY = e.clientY;
-            startH = rect.height;
-            this.bar.classList.add('resizing');
-            document.body.style.cursor = 'ns-resize';
-            document.body.style.userSelect = 'none';
-            e.preventDefault();
-        });
+        // Restored geometry is applied now; the default is deferred to the
+        // first show(), because it is measured off live chrome (the tool rail,
+        // the docked inspector, the canvas view controls) and at boot none of
+        // that is laid out — nor is it yet known whether the inspector will
+        // restore docked.
+        const saved = loadWindowState(this.persistenceEnv, TRAIN_MONITOR_WINDOW_ID);
+        const restored = saved?.geometry?.left != null && saved.geometry.top != null;
+        this.hasGeometry = !!restored;
 
-        document.addEventListener('mousemove', (e) => {
-            if (!dragging) return;
-            const minH = parseInt(getComputedStyle(this.bar).minHeight, 10) || 200;
-            const maxH = window.innerHeight * 0.8;
-            const newH = Math.max(minH, Math.min(maxH, startH + (startY - e.clientY)));
-            this.bar.style.height = `${newH}px`;
+        this.window = new FloatingWindow({
+            id: TRAIN_MONITOR_WINDOW_ID,
+            kind: 'train-monitor',
+            manager: windowManager,
+            title: 'Train Monitor',
+            adopt: { root: this.bar, header },
+            minW: MIN_MONITOR_WIDTH,
+            minH: MIN_MONITOR_HEIGHT,
+            initialGeometry: restored ? saved!.geometry : undefined,
+            initialHidden: true,
+            // The monitor is a singleton toggled by train selection, so its ×
+            // hides rather than destroys — same contract as diagnostics.
+            onCloseRequested: () => this.hide(),
+            onGeometryChange: (geo) => {
+                this.hasGeometry = true;
+                saveWindowState(this.persistenceEnv, TRAIN_MONITOR_WINDOW_ID, {
+                    geometry: geo,
+                    floating: true,
+                });
+                // The lookahead chart is a canvas: its backing store has to be
+                // re-sized whenever the window's box changes, or the chart
+                // stays at its old resolution and stretches.
+                this.resizeCanvas();
+            },
         });
+        ensureRegistered(this.persistenceEnv, TRAIN_MONITOR_WINDOW_ID, 'train-monitor');
+    }
 
-        document.addEventListener('mouseup', () => {
-            if (!dragging) return;
-            dragging = false;
-            this.bar.classList.remove('resizing');
-            document.body.style.cursor = '';
-            document.body.style.userSelect = '';
-        });
+    /** The monitor's home position: spanning the canvas region — from the
+     *  floating tool rail's right edge to the docked inspector's left edge (or
+     *  the viewport edge when nothing is docked there) — and sitting just above
+     *  the canvas view controls. That clears every piece of chrome it would
+     *  otherwise cover while giving the chart the full width it wants. */
+    resolveGeometry(): Partial<WindowGeometry> {
+        const bounds = placementBounds();
+        const width = Math.max(MIN_MONITOR_WIDTH, bounds.right - bounds.left);
+        const height = DEFAULT_MONITOR_HEIGHT;
+
+        // Bottom edge rides just above the zoom/fit controls in the canvas
+        // overlay. Falling back to the viewport bottom keeps this working if
+        // that overlay is ever absent.
+        const controls = document.querySelector('.canvas-view-controls') as HTMLElement | null;
+        const controlsTop = controls?.getBoundingClientRect().top || window.innerHeight - 8;
+        const top = Math.max(bounds.top, controlsTop - MONITOR_CONTROLS_GAP - height);
+
+        return { left: bounds.left, top, width, height };
     }
 
     dumpLookaheadData() {

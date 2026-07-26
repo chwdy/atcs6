@@ -60,6 +60,15 @@ GPIO_LINES: List[str] = [f"gpio{i}" for i in range(8)]
 # an operating session does.
 SWITCH_THROW_PULSE_S = 0.01
 
+# Longest any '595 output bit may stay high, in seconds. Nothing in this design
+# holds a shift-out bit high: a coil bit is pulsed for SWITCH_THROW_PULSE_S, a
+# driver standby bit drops with it, and a PCA9685 /OE bit is *held low*. So a bit
+# still high after this long is a fault — a caller that raised it and never
+# lowered it, a crash between the two writes, an API client driving a raw bit —
+# and `HC595Chain` forces it low rather than leave a solenoid energized. It is
+# 100x the throw pulse, so it can never cut a legitimate throw short.
+MAX_OUTPUT_HIGH_S = 1.0
+
 
 def latch_lines_for(bus: str) -> List[str]:
     """Valid latch lines for a bus (empty for I2C, which addresses instead)."""

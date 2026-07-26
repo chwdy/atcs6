@@ -76,7 +76,24 @@ class Ch347Device:
     def open(self) -> None:
         from ch347api import CH347HIDDev
 
-        self._dev = CH347HIDDev()          # opens by VID/PID, interface 1
+        try:
+            self._dev = CH347HIDDev()      # opens by VID/PID, interface 1
+        except TypeError as exc:
+            # `ch347api` looks the bridge up by VID/PID and hands the result
+            # straight to `hid.open_path`, so "nothing plugged in" arrives as
+            # `TypeError: expected bytes, NoneType found` — a message about the
+            # library's internals that reads, on the Hardware Setup screen, as
+            # if the app were broken. Say what actually happened instead. If the
+            # library ever raises a real not-found error, it lands in the branch
+            # below, which still reads correctly.
+            raise RuntimeError(
+                "no CH347 found on USB — check the bridge is plugged in"
+            ) from exc
+        except Exception as exc:
+            raise RuntimeError(
+                f"could not open the CH347 ({exc}) — it may already be open in "
+                "another program"
+            ) from exc
         self._init_i2c()
         self._init_spi()
 
@@ -118,12 +135,25 @@ class Ch347Device:
             return bool(status), bytes(raw) if raw else b""
 
     def i2c_scan(self) -> List[int]:
+        """Probe every 7-bit address and report the ones that ACK.
+
+        `ch347api` has no address-existence call, so the probe is a one-byte
+        write — on nearly every chip that is a register-pointer set, which
+        changes no state a later read does not set again anyway.
+
+        The byte is load-bearing, not padding. `__i2c_read_write_raw` skips the
+        address ACK when the frame carries nothing but the address
+        (`if len(data) == 1: ack_stops -= 1`), so its ACK check reduces to
+        `sum(b"") == len(b"")` and an address-only write reports success for
+        every address on the bus. Sending one data byte keeps the ACK bytes in
+        the window it actually inspects.
+        """
         with self._lock:
             self._ensure(BUS_I2C)
             found: List[int] = []
             for addr in range(0x03, 0x78):
                 try:
-                    if self._dev.i2c_exists(addr):
+                    if self._dev.i2c_write(addr, b"\x00"):
                         found.append(addr)
                 except Exception:
                     pass

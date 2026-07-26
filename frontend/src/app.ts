@@ -856,15 +856,32 @@ class App {
    * (Renderer.resize uses parent.clientWidth), so getBoundingClientRect values
    * are already in the same units fitToContent works in.
    */
-  _canvasChromeInsets(): { left: number } {
-    const rail = document.querySelector('.sidebar:not(.collapsed)') as HTMLElement | null;
+  _canvasChromeInsets(): { left: number; bottom: number } {
     const canvas = this.renderer.canvas;
-    if (!rail || !canvas) return { left: 0 };
-    const railRect = rail.getBoundingClientRect();
-    if (railRect.width === 0) return { left: 0 };
-    const GAP = 12; // breathing room between the rail and the framed layout
-    const left = Math.max(0, railRect.right - canvas.getBoundingClientRect().left + GAP);
-    return { left };
+    if (!canvas) return { left: 0, bottom: 0 };
+    const canvasRect = canvas.getBoundingClientRect();
+    const GAP = 12; // breathing room between the chrome and the framed layout
+
+    let left = 0;
+    const rail = document.querySelector('.sidebar:not(.collapsed)') as HTMLElement | null;
+    const railRect = rail?.getBoundingClientRect();
+    if (railRect && railRect.width > 0) {
+      left = Math.max(0, railRect.right - canvasRect.left + GAP);
+    }
+
+    // The train monitor is a floating window now, so it no longer takes flow
+    // height out of the canvas — it hovers over the bottom of it. Fit View has
+    // to inset past it explicitly or it frames the layout under the panel.
+    let bottom = 0;
+    const monitor = document.getElementById('train-monitor-bar');
+    if (monitor && !monitor.classList.contains('hidden')) {
+      const monitorRect = monitor.getBoundingClientRect();
+      if (monitorRect.height > 0) {
+        bottom = Math.max(0, canvasRect.bottom - monitorRect.top + GAP);
+      }
+    }
+
+    return { left, bottom };
   }
 
   setupViewControls(): void {

@@ -372,10 +372,13 @@ export class TabGroup {
       )
       .join('');
 
-    // Scroll the active tab into view in the vertical strip.
+    // Scroll the active tab into view. 'nearest' on both axes covers either
+    // strip orientation (vertical tree / horizontal row, see `.window--wide`)
+    // and scrolls only when the tab is actually out of view, so re-rendering
+    // the strip never yanks an already-visible tab to an edge.
     const activeEl = tabsEl.querySelector('.secondary-tab.active');
     if (activeEl && typeof activeEl.scrollIntoView === 'function') {
-      activeEl.scrollIntoView({ block: 'nearest', inline: 'start' });
+      activeEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
   }
 
@@ -408,8 +411,14 @@ export class TabGroup {
     this.persist();
   }
 
-  /** Promote a preview tab to a kept (pinned) tab so the next inspect no longer
-   *  replaces it. Triggered by the tab's pin button or a double-click. */
+  /** Mark a preview tab as kept, so the next inspect no longer reuses its slot.
+   *
+   *  This is the low-level flag only. The user-facing *pin* gesture (the tab's
+   *  pin button, or a double-click) is EditorUIHandler.pinTabIntoOwnGroup: it
+   *  detaches the tab into a dedicated group of its own and pins that group out
+   *  of the active chain. This method is what that flow calls to settle the
+   *  detached tab's kept/preview state, plus what list panels and editors get
+   *  implicitly by opening kept in the first place. */
   pinTab(tabId: string): void {
     const tab = this.tabs.find((t) => t.tabId === tabId);
     if (!tab || tab.pinned) {
@@ -525,6 +534,10 @@ export class TabGroup {
     }
   }
 
+  /** Whether this whole group is pinned — i.e. out of the active chain, so no
+   *  new tab ever lands in it and canvas clicks never retarget it. Set either
+   *  by pinning a tab (which detaches it into a dedicated pinned group) or by
+   *  the header's pin button on a group the user wants to freeze as-is. */
   isPinned(): boolean {
     return this.pinned;
   }
@@ -607,7 +620,17 @@ export class TabGroup {
     const pinBtn = this.dom.pinBtnEl();
     if (pinBtn) {
       pinBtn.classList.toggle('active', this.pinned);
-      pinBtn.title = this.pinned ? 'Unpin inspector' : 'Pin inspector';
+      pinBtn.title = this.pinned
+        ? 'Unpin this group (let new tabs open here again)'
+        : 'Pin this group (new tabs stop opening here)';
+    }
+
+    // Mark the whole window pinned, not just its button: a pinned group is out
+    // of the active chain, so the user needs to see at a glance why their next
+    // inspect landed somewhere else.
+    const container = this.dom.containerEl();
+    if (container) {
+      container.classList.toggle('window--pinned', this.pinned);
     }
   }
 
@@ -775,4 +798,32 @@ export class TabGroup {
 
     await this.restoreTabPanel(activeTab);
   }
+}
+
+/** Minimal shape resolveActiveGroup needs — just the pinned flag. Keeps the
+ *  rule testable against plain objects, no TabGroup (and no DOM) required. */
+export interface ActiveChainCandidate {
+  isPinned(): boolean;
+}
+
+/** Pick the *active* group out of a most-recently-interacted chain.
+ *
+ *  Every open group is active, inactive, or pinned. Exactly one is active — the
+ *  one new tabs and window actions land in — and it is the most recently
+ *  interacted group that isn't pinned. A pinned group holds the one record the
+ *  user pinned there and is skipped entirely, so the walk falls through to the
+ *  group before it, and the one before that.
+ *
+ *  Returns null when every candidate is pinned (or there are none). That is the
+ *  same situation as having no window open at all, and the caller answers it the
+ *  same way: by creating a new group.
+ *
+ *  `chain` is ordered most-recent-first. */
+export function resolveActiveGroup<T extends ActiveChainCandidate>(chain: readonly T[]): T | null {
+  for (const candidate of chain) {
+    if (!candidate.isPinned()) {
+      return candidate;
+    }
+  }
+  return null;
 }

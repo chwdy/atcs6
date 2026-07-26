@@ -7,6 +7,8 @@ Run with:
         tests/test_hardware_drivers.py -v
 """
 
+import time
+
 import pytest
 
 from hardware_config import (
@@ -21,6 +23,7 @@ from hardware import interfaces as hw_interfaces
 from hardware import self_test
 from hardware.catalog import (
     CHIP_CATALOG,
+    MAX_OUTPUT_HIGH_S,
     SWITCH_THROW_PULSE_S,
     catalog_payload,
     ports_for_chip,
@@ -140,6 +143,119 @@ def test_ina3221_rejects_bad_channel():
         chip.read_current(0)
     with pytest.raises(ValueError):
         chip.read_current(4)
+
+
+# --- '595 hold guard: no coil bit may stay energized ------------------------
+def test_hold_guard_forces_a_stuck_bit_low():
+    """The backstop for a caller that raises a bit and never lowers it — the
+    case a `finally` cannot reach."""
+    dev = FakeCh347Device()
+    chain = HC595Chain(dev, select="cs0", max_high_s=0.05)
+    chain.set_output(3, True)
+    assert dev.latched_bit("cs0", 3) is True
+
+    time.sleep(0.15)
+    assert dev.latched_bit("cs0", 3) is False
+    assert chain.any_high is False
+
+
+def test_hold_guard_reports_what_it_released():
+    released = []
+    dev = FakeCh347Device()
+    chain = HC595Chain(
+        dev, select="cs0", max_high_s=0.05, on_auto_release=released.append
+    )
+    chain.set_output(0, True)
+    chain.set_output(2, True)
+    time.sleep(0.15)
+    assert released == [0b101]
+
+
+def test_hold_guard_does_not_fire_once_the_bits_are_low():
+    """A normal pulse drops its own bits, so the guard must disarm — otherwise
+    every throw would leave a timer running to re-latch an all-low chain."""
+    dev = FakeCh347Device()
+    chain = HC595Chain(dev, select="cs0", max_high_s=0.05)
+    chain.set_output(1, True)
+    chain.set_output(1, False)
+    writes = []
+    real_latch = dev.latch_out
+    dev.latch_out = lambda data, select: (writes.append(select), real_latch(data, select))[1]
+    time.sleep(0.15)
+    assert writes == []          # the guard disarmed; nothing re-latched
+
+
+def test_hold_guard_deadline_is_far_longer_than_a_throw():
+    # A guard that could expire mid-throw would cut the coil pulse short.
+    assert MAX_OUTPUT_HIGH_S > SWITCH_THROW_PULSE_S * 10
+
+
+def test_switch_coil_bits_are_guarded_by_default(wired):
+    """The runtime's own chains get the guard without opting in."""
+    _dev, _inp, _blk, sw = wired
+    assert sw._chips["sw1"].max_high_s == MAX_OUTPUT_HIGH_S
+
+
+# --- init: the chain must come up de-energized ------------------------------
+def test_build_clears_every_shift_out_chain_before_configuring_anything():
+    """A '595 powers up with undefined contents, so the clear must land before
+    the slow I2C setup — not after a PCA9685 has been configured."""
+    dev = FakeCh347Device(present_addresses={0x40})
+    order = []
+    real_latch, real_write = dev.latch_out, dev.i2c_write
+    dev.latch_out = lambda data, select: (order.append(("latch", select)), real_latch(data, select))[1]
+    dev.i2c_write = lambda addr, data: (order.append(("i2c", addr)), real_write(addr, data))[1]
+    specs = [
+        ChipConfig("pwm1", "pca9685", i2c_address=0x40),
+        ChipConfig("sw1", "hc595", spi_select="cs0"),
+    ]
+    build_real_interfaces(
+        dev, specs, block_track={"B1": ("pwm1", 0, 1)}, block_occupancy={},
+        switch_output={"SW_A": ("sw1", 5, 6, 4)},
+    )
+    # The '595 clear precedes the first I2C byte, even though the PWM chip is
+    # listed first.
+    assert order[0] == ("latch", "cs0")
+    for bit in (4, 5, 6):
+        assert dev.latched_bit("cs0", bit) is False
+
+
+def test_build_refuses_to_start_with_an_energized_coil_bit(monkeypatch):
+    """If anything leaves a coil bit high during init, the build fails loudly
+    instead of handing back a session with a solenoid cooking."""
+    dev = FakeCh347Device()
+    specs = [ChipConfig("sw1", "hc595", spi_select="cs0")]
+
+    # Stand in for a future init step that raises a bit after the clear.
+    real_assert = hw_interfaces._assert_switch_ports_low
+
+    def _raise_a_coil_first(switch_chips, switch_output):
+        switch_chips["sw1"].set_output(5, True)
+        return real_assert(switch_chips, switch_output)
+
+    monkeypatch.setattr(hw_interfaces, "_assert_switch_ports_low", _raise_a_coil_first)
+    with pytest.raises(RuntimeError, match="switch coil outputs are energized"):
+        build_real_interfaces(
+            dev, specs, block_track={}, block_occupancy={},
+            switch_output={"SW_A": ("sw1", 5, 6, 4)},
+        )
+    # And it de-energized on the way out.
+    assert dev.latched_bit("cs0", 5) is False
+
+
+def test_port_test_de_energizes_a_coil_bit_when_the_pulse_raises(monkeypatch):
+    """`run_port_test` turns an exception into a failed-test report, so without
+    a finally the coil would stay hot behind an "ok: false"."""
+    dev = FakeCh347Device()
+    chain = HC595Chain(dev, select="cs0")
+
+    def _boom(_seconds):
+        raise RuntimeError("bridge dropped mid-pulse")
+
+    monkeypatch.setattr(self_test, "time", _SleepSpy(_boom))
+    with pytest.raises(RuntimeError):
+        self_test._pulse("hc595", chain, 5)
+    assert dev.latched_bit("cs0", 5) is False
 
 
 # --- interfaces ------------------------------------------------------------

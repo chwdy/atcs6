@@ -1222,10 +1222,13 @@ function toggleDevelop(): void {
   manualProven = new Set();
   onEdit();
   render();
+  // Detect follows the toggle immediately — the scan is run against the config
+  // being edited, so no Save is needed to change which device answers. Saving
+  // (and restarting) is what moves the running SESSION onto the fake.
   showToast(
     state.develop
-      ? 'Develop mode on — Save, then Detect runs against the fake device.'
-      : 'Develop mode off — Save, then Detect to check the real board.',
+      ? 'Develop mode on — Detect now runs against the fake device.'
+      : 'Develop mode off — Detect now talks to the real board.',
     'info', 4000);
 }
 

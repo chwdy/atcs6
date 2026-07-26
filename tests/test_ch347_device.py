@@ -24,12 +24,18 @@ class FakeHidDev:
     """Stands in for `ch347api.CH347HIDDev`: records calls and enforces the
     library's CS requirement for SPI transfers."""
 
-    def __init__(self, gpio_response: bytes = b"\x00" * 8, spi_in: bytes = b"") -> None:
+    def __init__(
+        self,
+        gpio_response: bytes = b"\x00" * 8,
+        spi_in: bytes = b"",
+        i2c_present: frozenset = frozenset(),
+    ) -> None:
         self.calls: list = []
         self.cs1_enabled = False
         self.cs2_enabled = False
         self.gpio_response = gpio_response
         self.spi_in = spi_in
+        self.i2c_present = i2c_present
 
     def init_I2C(self) -> None:
         self.calls.append(("init_i2c", None))
@@ -61,6 +67,10 @@ class FakeHidDev:
         self._require_cs()
         self.calls.append(("spi_read", length))
         return list((self.spi_in + bytes(length))[:length])
+
+    def i2c_write(self, addr: int, data: bytes) -> bool:
+        self.calls.append(("i2c_write", (addr, bytes(data))))
+        return addr in self.i2c_present
 
     def write(self, payload: bytes) -> None:
         self.calls.append(("hid_write", bytes(payload)))
@@ -117,6 +127,38 @@ def test_cs_loaded_165_asserts_its_load_line_around_the_read():
     device, hid = _device(spi_in=b"\xa5")
     assert device.load_in(1, "cs1") == b"\xa5"
     assert _names(hid) == ["cs2", "spi_read", "cs2"]
+
+
+# --- I2C bus scan -----------------------------------------------------------
+def test_i2c_scan_reports_the_addresses_that_ack():
+    device, hid = _device(i2c_present=frozenset({0x41, 0x44}))
+    assert device.i2c_scan() == [0x41, 0x44]
+
+
+def test_i2c_scan_probes_with_a_call_the_library_actually_has():
+    # The scan once called `i2c_exists`, which `ch347api.CH347HIDDev` does not
+    # define; the per-address `except Exception` swallowed every AttributeError
+    # and the bus always came back empty. Probe only with calls the fake — and
+    # therefore the library — really exposes.
+    device, hid = _device(i2c_present=frozenset({0x40}))
+    device.i2c_scan()
+    probes = [payload for name, payload in hid.calls if name == "i2c_write"]
+    assert len(probes) == 0x78 - 0x03
+    # One data byte, not an address-only frame: the library skips the address
+    # ACK on a 1-byte payload, so an empty write would ACK at every address.
+    assert all(data == b"\x00" for _addr, data in probes)
+
+
+def test_i2c_scan_survives_an_address_that_raises():
+    class Exploding(FakeHidDev):
+        def i2c_write(self, addr: int, data: bytes) -> bool:
+            if addr == 0x20:
+                raise OSError("bus glitch")
+            return super().i2c_write(addr, data)
+
+    device = Ch347Device()
+    device._dev = Exploding(i2c_present=frozenset({0x41}))
+    assert device.i2c_scan() == [0x41]
 
 
 # --- GPIO-latched path ------------------------------------------------------
@@ -192,7 +234,9 @@ def test_build_real_interfaces_wires_a_gpio_latched_595():
         ChipConfig("sw_cs", "hc595", bus="spi", spi_select="cs0"),
         ChipConfig("sw_gpio", "hc595", bus="gpio", spi_select="gpio4"),
     ]
-    build_real_interfaces(device, specs, {}, {}, {"SW_A": ("sw_gpio", 2)})
+    # (chip, main, diverge, standby) — the shape `_switch_binding_tuples` builds
+    # and `SwitchDriver.set_throw` unpacks.
+    build_real_interfaces(device, specs, {}, {}, {"SW_A": ("sw_gpio", 2, 3, None)})
     # cs0 latches a '595, so the GPIO transfer borrows cs1 instead.
     assert device.gpio_transfer_cs == "cs1"
     # Both chips were cleared at build, each through its own latch line.

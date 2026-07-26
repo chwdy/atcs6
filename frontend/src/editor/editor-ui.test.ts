@@ -101,6 +101,9 @@ describe('home inspector hide/show routes through FloatingWindow.setHidden', () 
       clear: vi.fn(),
       show: vi.fn(),
       serialize: vi.fn(() => ({ pinned: false, activeTabId: null, tabs: [] })),
+      // Unpinned, so it is the floor of the active chain — see
+      // EditorUIHandler.resolveTargetGroup.
+      isPinned: vi.fn(() => false),
     };
     const editor = {
       $id: vi.fn(() => null), // no DOM: the class-list block is skipped
@@ -112,7 +115,6 @@ describe('home inspector hide/show routes through FloatingWindow.setHidden', () 
     const handler = new EditorUIHandler(editor as any);
     handler.homeWindow = homeWindow as any;
     handler.homeTabGroup = homeTabGroup as any;
-    (handler as any).lastFocusedTabGroup = homeTabGroup; // canvas-driven default
     return { handler, homeWindow, homeTabGroup, editor };
   }
 

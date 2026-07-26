@@ -578,6 +578,7 @@ def _validate(cfg: HardwareConfig) -> None:
                 f"block_occupancy_current[{logical_id!r}] threshold_ma must be >= 0"
             )
     _validate_output_enable(cfg.output_enable, chips_by_id)
+    _validate_no_coil_port_reuse(cfg.switch_output, cfg.output_enable)
 
 
 def _validate_bindings(
@@ -706,6 +707,33 @@ def _validate_switch_bindings(
                     f"switch_output: port {port} on chip {b.chip_id!r} is bound more than once"
                 )
             used.add(key)
+
+
+def _validate_no_coil_port_reuse(
+    switch_output: Dict[str, SwitchBinding],
+    output_enable: Dict[str, PortBinding],
+) -> None:
+    """A '595 bit cannot be both a switch coil and a PCA9685 /OE line.
+
+    The two uses are contradictory in a way neither map can see alone: /OE is
+    driven low once and *held* there for the session, while a coil bit is pulsed
+    high per throw. Sharing a bit means every throw of that switch pulses the
+    PCA's /OE high, cutting track power to a whole board mid-movement, and the
+    /OE hold at session build leaves the coil's driver input asserted low
+    forever. Each map validates its own ports for reuse; only this cross-check
+    catches a bit claimed by both."""
+    coil_ports: Dict[Tuple[str, int], str] = {}
+    for switch_id, b in switch_output.items():
+        for port in b.ports:
+            coil_ports[(b.chip_id, port)] = switch_id
+    for track_chip_id, b in output_enable.items():
+        switch_id = coil_ports.get((b.chip_id, b.port))
+        if switch_id is not None:
+            raise HardwareConfigError(
+                f"output_enable[{track_chip_id!r}] port {b.port} on chip "
+                f"{b.chip_id!r} is already a switch coil bit (switch "
+                f"{switch_id!r}); a /OE line is held, a coil is pulsed"
+            )
 
 
 def _validate_output_enable(

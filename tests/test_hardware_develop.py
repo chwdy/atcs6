@@ -268,10 +268,10 @@ def test_config_get_reports_session_info(client):
 
 
 # --- commissioning tools on the fake ---------------------------------------
-def test_scan_runs_on_fake_when_develop_persisted(client):
+def test_scan_runs_on_fake_when_develop_set(client):
     test_client, _ = client
     payload = _develop_payload()
-    hardware_config.apply_updates(payload, persist=False)   # persisted flag gates
+    hardware_config.apply_updates(payload, persist=False)
     resp = test_client.post("/api/hardware/scan", json={"config": payload})
     data = resp.get_json()
     assert data["ok"] is True
@@ -302,6 +302,35 @@ def test_scan_still_fails_without_develop(client):
     resp = test_client.post("/api/hardware/scan", json={"config": payload})
     # No fake gate, no physical device: the controller line reports unreachable.
     assert resp.get_json()["controller"]["reachable"] is False
+
+
+# The scan follows the flag on the config UNDER TEST, not the persisted one, so
+# the setup panel's Develop toggle changes which device answers with no Save in
+# between. Both directions matter: reading the persisted flag instead made a
+# scan sent with develop off still open the fake and report its seeded addresses
+# as a genuine "Connected".
+def test_scan_follows_payload_develop_off_over_persisted_on(client):
+    test_client, _ = client
+    hardware_config.apply_updates(_develop_payload(), persist=False)
+    assert hardware_config.get_hardware_config().develop is True
+    resp = test_client.post(
+        "/api/hardware/scan", json={"config": _develop_payload(develop=False)}
+    )
+    data = resp.get_json()
+    assert data["controller"]["reachable"] is False
+    assert data["controller"]["i2c_scan"] == []
+
+
+def test_scan_follows_payload_develop_on_over_persisted_off(client):
+    test_client, _ = client
+    hardware_config.apply_updates(_develop_payload(develop=False), persist=False)
+    assert hardware_config.get_hardware_config().develop is False
+    resp = test_client.post(
+        "/api/hardware/scan", json={"config": _develop_payload(develop=True)}
+    )
+    data = resp.get_json()
+    assert data["controller"]["reachable"] is True
+    assert data["controller"]["i2c_scan"] == ["0x40", "0x41"]
 
 
 def test_occupancy_test_reads_live_session_fake(client):

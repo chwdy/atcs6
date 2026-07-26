@@ -170,7 +170,16 @@
                     </div>
                 </div>
 
-                <!-- Train Monitor Bar — bottom-of-screen lookahead, styled to match inspector -->
+                <!-- Train Monitor — the lookahead panel. Adopted into a managed
+                     FloatingWindow by panels/train-monitor.ts, so it is
+                     position: fixed and out of the flow: the canvas keeps the
+                     full height behind it and the monitor hovers over the
+                     bottom of the layout, spanning from the tool rail's right
+                     edge to the viewport edge and sitting above the canvas view
+                     controls. It stays here in the DOM rather than moving to
+                     <body> because a fixed element is positioned against the
+                     viewport regardless of where it sits — the same reason the
+                     secondary sidebar floats correctly from inside .workspace. -->
                 <div id="train-monitor-bar" class="tm-panel hidden">
                     <div class="tm-header">
                         <span class="tm-title" id="train-monitor-title">Train Monitor</span>

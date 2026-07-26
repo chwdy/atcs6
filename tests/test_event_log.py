@@ -8,6 +8,8 @@ order. The read-only viewer and replay layers consume the persisted records (the
 frontend panels are out of this doc's scope).
 """
 
+import pytest
+
 from notification_center import EventKind, Notification, NotificationCenter, Severity
 
 
@@ -62,11 +64,19 @@ def test_read_missing_log_is_empty():
     assert NotificationCenter.read_event_log("/nonexistent/path/events.jsonl") == []
 
 
+@pytest.mark.scene("demo_main")
 def test_bootstrap_persists_operational_events(tmp_path):
     """bootstrap_runtime(event_log_path=...) wires NotificationCenter persistence
     at boot, and demo placement emits TRAIN_PLACED operational events to the
     on-disk log (design_new.md "Event log": persistence + operational kinds).
-    Also pins the canonical `train_placed` kind (not legacy `train_added`)."""
+    Also pins the canonical `train_placed` kind (not legacy `train_added`).
+
+    Scene-marked because the assertion needs rolling stock: not every scene
+    places trains. Scenes baked from a saved layout carry no trains at all —
+    their generated `setup_demo_train` is a stub — so under one of those (the
+    process default is `demo7_1`) this read an empty log and failed for a reason
+    that had nothing to do with the event log.
+    """
     import bootstrap
 
     path = str(tmp_path / "event_log.jsonl")

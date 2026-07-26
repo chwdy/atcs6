@@ -6,45 +6,29 @@
    a 3px left-border accent on status rows.
    ============================================================================ */
 
-/* ---- Panel shell ---- */
+/* ---- Panel shell ----
+   The monitor is a managed floating window (panels/train-monitor.ts adopts this
+   markup into a FloatingWindow), so the shared `.floating-window` class in
+   layout/floating-window.css owns its position, border, shadow, z-index and the
+   eight edge/corner resize handles. What stays here is only what makes it *this*
+   panel: its surface, its typography, and the size floor the window is
+   configured with. It is no longer in the page flow — the canvas keeps the full
+   height behind it and the monitor hovers over the bottom of the layout. */
 .tm-panel {
-    position: relative;
-    height: 305px;
     min-height: 200px;
-    max-height: 80vh;
     background-color: var(--bg-panel);
     color: var(--text-primary);
-    border-top: 1px solid var(--border-color);
-    box-shadow: 0 -6px 20px rgba(0, 0, 0, 0.35);
     display: flex;
     flex-direction: column;
-    z-index: 10;
-    flex-shrink: 0;
     overflow: hidden;
     font-family: var(--font-main);
     font-size: 12px;
 }
 
+/* The panel's own display switch (train selected / not), independent of
+   FloatingWindow's `.floating-window--hidden`. Declared after the shell rule so
+   it wins over the `display: flex` above. */
 .tm-panel.hidden { display: none; }
-
-/* Top-edge resize handle — drag to adjust panel height.
-   Mirrors the sidebar pattern (gradient that fades in on hover). */
-.tm-panel::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 6px;
-    cursor: ns-resize;
-    background-color: transparent;
-    transition: background-color 0.15s;
-    z-index: 1000;
-}
-.tm-panel:hover::before { background-color: var(--accent-color); }
-.tm-panel.resizing::before {
-    background-color: var(--accent-color);
-}
 
 /* ---- Header strip ---- */
 .tm-header {
@@ -55,6 +39,8 @@
     padding: 8px 10px;
     background-color: var(--bg-hover);
     flex-shrink: 0;
+    /* Doubles as the window's drag handle. */
+    cursor: move;
 }
 
 .tm-title {

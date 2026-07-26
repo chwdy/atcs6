@@ -279,6 +279,31 @@ def test_output_enable_binding_validates_track_key_and_switch_bit():
         })
 
 
+def test_output_enable_cannot_share_a_bit_with_a_switch_coil():
+    """A /OE line is driven low and held for the session; a coil bit is pulsed
+    high per throw. Sharing one bit means every throw of that switch cuts track
+    power to the whole PCA — and neither map can see the clash on its own."""
+    chips = [
+        {"chip_id": "pwm1", "kind": "pca9685", "i2c_address": "0x40"},
+        {"chip_id": "sw1", "kind": "hc595", "spi_select": "cs0"},
+    ]
+    for shared in ("port_main", "port_diverge", "port_standby"):
+        binding = {"chip_id": "sw1", "port_main": 0, "port_diverge": 1, "port_standby": 2}
+        with pytest.raises(hardware_config.HardwareConfigError, match="switch coil bit"):
+            hardware_config.config_from_payload({
+                "chips": chips,
+                "switch_output": {"SW_A": binding},
+                "output_enable": {"pwm1": {"chip_id": "sw1", "port": binding[shared]}},
+            })
+    # A bit no switch claims is fine.
+    cfg = hardware_config.config_from_payload({
+        "chips": chips,
+        "switch_output": {"SW_A": {"chip_id": "sw1", "port_main": 0, "port_diverge": 1}},
+        "output_enable": {"pwm1": {"chip_id": "sw1", "port": 7}},
+    })
+    assert cfg.output_enable["pwm1"].port == 7
+
+
 def test_set_current_binding_sets_and_clears():
     hardware_config.apply_updates(
         {"chips": [{"chip_id": "cur1", "kind": "ina3221", "i2c_address": "0x40"}]},
@@ -703,15 +728,39 @@ def test_commission_endpoints_with_fake(client, monkeypatch):
     client.put("/api/hardware/config", json=_real_payload())
     assert client.post("/api/hardware/commission/open",
                        json={"config": _real_payload()}).get_json()["ok"] is True
+    # Port 5 is SW_A's main coil: holding it on would burn the point motor, so
+    # the session refuses and the bit stays low. (The UI sends coil ports to
+    # /commission/pulse; this guards everything else.)
+    held = client.post("/api/hardware/commission/output",
+                       json={"chip_id": "sw1", "port": 5, "duty": 1.0}).get_json()
+    assert held["ok"] is False and "coil" in held["error"]
+    assert fake.latched_bit("cs0", 5) is False
+    # An unbound bit on the same chain still holds — the refusal is per-port.
     client.post("/api/hardware/commission/output",
-                json={"chip_id": "sw1", "port": 5, "duty": 1.0})
-    assert fake.latched_bit("cs0", 5) is True
+                json={"chip_id": "sw1", "port": 9, "duty": 1.0})
+    assert fake.latched_bit("cs0", 9) is True
     fake.set_input_bit("cs1", 2, True, width=1)
     bits = client.post("/api/hardware/commission/inputs",
                        json={"chip_id": "in1"}).get_json()["ports"]
     assert bits[2]["value"] is True
     assert client.post("/api/hardware/commission/close", json={}).get_json()["ok"] is True
     assert fake.closed is True
+
+
+def test_commission_open_clears_the_shift_out_chain(client, monkeypatch):
+    """A reclaimed session inherits whatever bits an abandoned client left
+    latched, and this screen gets poked at with coils wired up."""
+    import hardware.ch347_device as chdev
+    fake = FakeCh347Device(present_addresses={0x40})
+    monkeypatch.setattr(chdev, "open_ch347_device", lambda port=None: fake)
+    fake.latch_out(bytes([0xFF, 0xFF, 0xFF]), "cs0")     # as if left energized
+    assert fake.latched_bit("cs0", 5) is True
+
+    assert client.post("/api/hardware/commission/open",
+                       json={"config": _real_payload()}).get_json()["ok"] is True
+    for bit in (5, 6):                                   # SW_A's two coil bits
+        assert fake.latched_bit("cs0", bit) is False
+    client.post("/api/hardware/commission/close", json={})
 
 
 # --- bootstrap wiring ------------------------------------------------------

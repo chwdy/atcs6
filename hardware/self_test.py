@@ -149,16 +149,24 @@ def _pulse(kind: str, chip: Any, line: int, hold_s: float = 0.4) -> None:
     `line` is the raw channel/bit: a single PWM channel on a PCA9685 (0..15, not
     a pair), a single output bit on a '595. A shift-out bit gets the much shorter
     switch-coil pulse instead of `hold_s`, because it may be wired to a solenoid
-    point motor, which burns out if its coil is held energized."""
+    point motor, which burns out if its coil is held energized.
+
+    De-energizing runs in a `finally`: `run_port_test` reports a raised exception
+    as a failed test, so without it a bridge that dropped mid-pulse would answer
+    "port test failed" while leaving the coil energized."""
     if kind == "hc595":
-        chip.set_output(line, True)
-        time.sleep(SWITCH_THROW_PULSE_S)
-        chip.set_output(line, False)
+        try:
+            chip.set_output(line, True)
+            time.sleep(SWITCH_THROW_PULSE_S)
+        finally:
+            chip.set_output(line, False)
     elif kind == "pca9685":
         chip.configure()
-        chip.set_duty_cycle(line, 0.5)       # this one channel at half power
-        time.sleep(hold_s)
-        chip.set_duty_cycle(line, 0.0)
+        try:
+            chip.set_duty_cycle(line, 0.5)   # this one channel at half power
+            time.sleep(hold_s)
+        finally:
+            chip.set_duty_cycle(line, 0.0)
     else:
         raise ValueError(f"chip kind {kind!r} has no pulse-output test")
 

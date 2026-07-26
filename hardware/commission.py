@@ -36,10 +36,17 @@ class CommissionSession:
         # Per PWM chip, the channel `set_output` last drove. Zeroed before the
         # next channel is raised — see set_output.
         self._driven: Dict[str, int] = {}
+        # (chip_id, port) pairs carrying a switch coil / standby bit, from the
+        # config the session was opened with.
+        self._switch_ports: set = set()
         self._last = 0.0
 
     def open(self, cfg: Any, open_device: Optional[Callable[[], Any]] = None) -> None:
-        """Open (or reclaim) the session for `cfg` and build its chip drivers."""
+        """Open (or reclaim) the session for `cfg` and build its chip drivers.
+
+        Clears every shift-out chain on the way in, the same as a real session
+        build: a reclaimed session inherits whatever bits the abandoned client
+        left latched, and this screen exists to be poked at with coils wired up."""
         with self._lock:
             self._expire_locked()
             if self._device is None:
@@ -49,6 +56,16 @@ class CommissionSession:
             self._kinds = {c.chip_id: c.kind for c in cfg.chips}
             self._configured = set()
             self._driven = {}
+            # Which (chip_id, port) pairs a switch coil or its driver standby
+            # sits on. `set_output` refuses to hold these — see there.
+            self._switch_ports = {
+                (b.chip_id, port)
+                for b in getattr(cfg, "switch_output", {}).values()
+                for port in b.ports
+            }
+            for chip in self._chips.values():
+                if hasattr(chip, "all_off"):
+                    chip.all_off()
             self._touch()
 
     def set_output(self, chip_id: str, line: int, duty: float) -> None:
@@ -60,12 +77,24 @@ class CommissionSession:
         Raising one PWM channel first drops whichever channel this chip was last
         driving. Two channels of one H-bridge pair high together is a shoot-
         through, and the caller walking channels one at a time must not be able
-        to cause that by skipping its own zeroing step."""
+        to cause that by skipping its own zeroing step.
+
+        A shift-out bit bound to a switch coil (or its driver standby) is refused
+        outright: this call holds a bit until someone lowers it, and a held coil
+        burns out. The UI already sends those ports to `pulse_output` — the
+        refusal is for anything driving the API directly, and for a UI change
+        that forgets. Lowering such a bit is always allowed; it is the one
+        direction that cannot hurt."""
         with self._lock:
             self._require_open()
             chip = self._chips.get(chip_id)
             if chip is None:
                 raise KeyError(f"chip {chip_id!r} not in session")
+            if float(duty) > 0.0 and (chip_id, line) in self._switch_ports:
+                raise ValueError(
+                    f"port {line} on chip {chip_id!r} drives a switch coil and "
+                    f"cannot be held on — pulse it instead"
+                )
             if self._kinds.get(chip_id) == "pca9685":
                 if chip_id not in self._configured:
                     chip.configure()

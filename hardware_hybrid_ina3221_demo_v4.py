@@ -549,7 +549,16 @@ def main() -> None:
     track: Optional[TrackDriver] = None
 
     try:
-        oe_raw = HC595Chain(device, select=HC595_SELECT, chain_length=HC595_CHAIN)
+        # No hold guard on this chain. `HC595Chain` defaults to forcing any bit
+        # low after MAX_OUTPUT_HIGH_S, which protects solenoid coils; on this rig
+        # the chain drives PCA /OE and nothing else, and /OE HIGH is a state this
+        # demo deliberately holds for `--settle-ms`. A guard firing mid-window
+        # would re-enable PWM under the LM339 read and corrupt the measurement.
+        # Safe to disable here: /OE stuck high disables outputs, which is the
+        # fail-safe direction, and the window is already closed in a `finally`.
+        oe_raw = HC595Chain(
+            device, select=HC595_SELECT, chain_length=HC595_CHAIN, max_high_s=None
+        )
         oe_ctrl = PCAOutputEnableController(oe_raw, OE_595_PORT, debug=args.debug_oe)
         oe_ctrl.reset_chain_and_enable()  # /OE low -> PCA outputs enabled
 

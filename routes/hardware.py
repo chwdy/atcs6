@@ -33,16 +33,24 @@ import hardware_config
 
 
 def _develop_opener(cfg):
-    """When the persisted configuration has the develop flag set, an
-    `open_device` callable that creates a transient seeded `FakeCh347Device`;
-    None means "open the real CH347". Gated on the persisted `develop` flag
-    alone — NOT `is_develop`, because commissioning (Detect / port test) runs
-    on the fake BEFORE the user can enable hardware (enabling requires every
-    chip proven), so it must not also require `enabled`. A PUT commits the flag
-    live, so the fake is used right after the first Save, no restart. Seeded
-    from the payload `cfg` under test (the edit-in-progress chip list is what
-    the scan is compared against)."""
-    if not hardware_config.get_hardware_config().develop:
+    """When `cfg` has the develop flag set, an `open_device` callable that
+    creates a transient seeded `FakeCh347Device`; None means "open the real
+    CH347".
+
+    Gated on the flag of the config UNDER TEST — the same object the fake is
+    seeded from — never on the persisted one. Commissioning (Detect, port test,
+    track / occupancy test) always tests the edit in progress, so the toggle
+    decides which device answers the moment it is flipped, with no Save and no
+    restart. Reading the persisted flag here instead was a real bug: with
+    `develop` saved as true, a scan carrying `develop: false` still opened the
+    fake, and its addresses came back as a genuine "Connected". Every caller
+    supplies the flag — the setup panel puts it on each payload, and `as_dict`
+    carries it for the per-entity block / switch editors.
+
+    NOT `is_develop`, because commissioning runs on the fake BEFORE the user can
+    enable hardware (enabling requires every chip proven), so it must not also
+    require `enabled`."""
+    if not cfg.develop:
         return None
     from hardware.fake import FakeCh347Device
 

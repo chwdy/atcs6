@@ -11,8 +11,46 @@
 // always stays under --z-modal, closing the "floating inspector outranks
 // modals" gap) and lets callers enumerate what's open.
 
-import { computeFloatResize, computeFitSize, type FloatRect } from './window-geometry';
+import { computeFloatResize, computeFitSize, clampToViewport, type FloatRect } from './window-geometry';
 import { watchDprChange, isCoarsePointer, coarsePointerScale } from './dpi';
+
+/** One `resize` listener for every open window, rAF-coalesced.
+ *
+ *  Per-window listeners would each force their own layout read on every resize
+ *  event, and a resize drag fires them continuously; batching into a single
+ *  frame keeps that to one pass over the open windows no matter how many there
+ *  are. Installed on the first subscriber and removed with the last, so a
+ *  no-DOM context (this project's vitest has no jsdom) never touches `window`. */
+const viewportListeners = new Set<() => void>();
+let viewportFrame = 0;
+
+function flushViewportListeners(): void {
+  viewportFrame = 0;
+  viewportListeners.forEach((fn) => fn());
+}
+
+function onViewportResize(): void {
+  if (viewportFrame) {
+    return;
+  }
+  viewportFrame = requestAnimationFrame(flushViewportListeners);
+}
+
+function watchViewportResize(cb: () => void): () => void {
+  if (typeof window === 'undefined') {
+    return () => {};
+  }
+  if (viewportListeners.size === 0) {
+    window.addEventListener('resize', onViewportResize);
+  }
+  viewportListeners.add(cb);
+  return () => {
+    viewportListeners.delete(cb);
+    if (viewportListeners.size === 0) {
+      window.removeEventListener('resize', onViewportResize);
+    }
+  };
+}
 
 /** Persisted-and-restorable geometry for one window. Any field left null uses
  *  the browser's default flow position/size until the window is first moved
@@ -76,8 +114,14 @@ export interface FloatingWindowOptions {
   initialFloating?: boolean;
   /** Where a dockable window's float starts the first time it floats with no
    *  previously-persisted position. Ignored for non-dockable windows (their
-   *  position comes from initialGeometry / their own create-mode default). */
-  defaultFloatPosition?: { left: number; top: number };
+   *  position comes from initialGeometry / their own create-mode default).
+   *
+   *  A thunk, not a constant, because it is consulted at the moment the window
+   *  actually floats — a placement that reads the live layout and chrome (see
+   *  lib/window-placement.ts) would be measuring an unlaid-out page if it ran at
+   *  construction. It receives the window's current measured size so placement
+   *  can reason about the box it is positioning. */
+  defaultFloatPosition?: (size: { width: number; height: number }) => { left: number; top: number };
   /** The header's close (×) button was clicked. Only fires for a
    *  FloatingWindow-created header (not adopt mode, whose owner wires its own
    *  close button). FloatingWindow does not decide what "close" means —
@@ -92,6 +136,13 @@ export interface FloatingWindowOptions {
 
 const DEFAULT_MIN_W = 260;
 const DEFAULT_MIN_H = 180;
+/** Width at which a window is wide enough to lay its content out horizontally —
+ *  today that means the working-set navigator flipping from a vertical tree to
+ *  a horizontal tab strip (see `.window--wide` in layout/shell.css). Set just
+ *  past `.secondary-sidebar`'s 500px docked max-width, so the docked inspector
+ *  always stays narrow-form and only a deliberately widened floating window
+ *  crosses over. */
+const WIDE_WINDOW_WIDTH = 520;
 const VIEWPORT_MARGIN = 8;
 const RESIZE_MARGIN = 6;
 const RESIZE_DIRECTIONS = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
@@ -111,7 +162,7 @@ export class FloatingWindow {
   private content?: WindowContent;
   private dockable: boolean;
   private isFloatingState: boolean;
-  private defaultFloatPosition: { left: number; top: number };
+  private defaultFloatPosition: (size: { width: number; height: number }) => { left: number; top: number };
   private minW: number;
   private minH: number;
   private maxW: number;
@@ -126,6 +177,8 @@ export class FloatingWindow {
 
   private hidden = false;
   private unwatchDpr: () => void = () => {};
+  private unwatchViewport: () => void = () => {};
+  private widthObserver: ResizeObserver | null = null;
 
   constructor(opts: FloatingWindowOptions) {
     this.id = opts.id;
@@ -134,7 +187,7 @@ export class FloatingWindow {
     this.content = opts.content;
     this.dockable = !!opts.dockable;
     this.isFloatingState = this.dockable ? !!opts.initialFloating : true;
-    this.defaultFloatPosition = opts.defaultFloatPosition ?? { left: 40, top: 40 };
+    this.defaultFloatPosition = opts.defaultFloatPosition ?? (() => ({ left: 40, top: 40 }));
     this.minW = opts.minW ?? DEFAULT_MIN_W;
     this.minH = opts.minH ?? DEFAULT_MIN_H;
     this.maxW = opts.maxW ?? Infinity;
@@ -155,7 +208,7 @@ export class FloatingWindow {
     if (opts.initialGeometry) {
       this.setGeometry(opts.initialGeometry);
     } else if (this.dockable && this.isFloatingState) {
-      this.setGeometry(this.defaultFloatPosition);
+      this.setGeometry(this.measuredDefaultFloatPosition());
     }
     if (opts.content && this.contentEl) {
       opts.content.mount(this.contentEl);
@@ -165,11 +218,33 @@ export class FloatingWindow {
     this.setupFitOnDblClick();
     this.rootEl.addEventListener('pointerdown', () => this.focus());
     this.unwatchDpr = watchDprChange(() => this.reclampToViewport());
+    this.unwatchViewport = watchViewportResize(() => this.reclampToViewport());
+    this.setupWidthClass();
     this.applyCoarsePointerSizing();
     if (opts.initialHidden) {
       this.setHidden(true);
     }
     this.manager.register(this);
+    // Restored geometry is written for whatever viewport it was saved in, so a
+    // layout saved on a large monitor comes back off-screen on a laptop. Pull
+    // it in once the browser has laid the window out — reclamp measures, and at
+    // constructor time the element has no box yet (a hidden or not-yet-`visible`
+    // window measures 0×0 and reclamp early-returns).
+    if (opts.initialGeometry && !opts.initialHidden && typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => this.reclampToViewport());
+    }
+  }
+
+  /** Evaluate the default-float-position thunk against the window's size as it
+   *  measures right now. A window that has never been laid out (still docked
+   *  behind `display: none`) reports 0×0; fall back to the class's own minimums
+   *  so placement is asked to fit a plausible box rather than a point. */
+  private measuredDefaultFloatPosition(): { left: number; top: number } {
+    const r = this.rootEl.getBoundingClientRect();
+    return this.defaultFloatPosition({
+      width: r.width || this.minW,
+      height: r.height || this.minH,
+    });
   }
 
   /** Whether drag/resize/fit should currently act — always true for a
@@ -390,19 +465,47 @@ export class FloatingWindow {
     this.onGeometryChange?.(this.getGeometry());
   }
 
-  /** Keep the window on screen after a DPR/viewport change. Same margin-8
-   *  clamp every floating panel already did independently — now shared. */
+  /** Keep the window reachable after a DPR change, a browser-window resize, or
+   *  a geometry restore. The clamp rule itself lives in clampToViewport (pure,
+   *  unit-tested); this only measures and writes back. */
   reclampToViewport(): void {
     if (this.hidden || !this.canFloat()) return;
-    const margin = VIEWPORT_MARGIN;
     const r = this.rootEl.getBoundingClientRect();
     if (r.width === 0 && r.height === 0) return; // not laid out yet
-    let x = parseFloat(this.rootEl.style.left) || r.left;
-    let y = parseFloat(this.rootEl.style.top) || r.top;
-    if (x + r.width > window.innerWidth - margin) x = Math.max(margin, window.innerWidth - r.width - margin);
-    if (y + r.height > window.innerHeight - margin) y = Math.max(margin, window.innerHeight - r.height - margin);
-    this.rootEl.style.left = `${x}px`;
-    this.rootEl.style.top = `${y}px`;
+    const { left, top } = clampToViewport(
+      {
+        left: parseFloat(this.rootEl.style.left) || r.left,
+        top: parseFloat(this.rootEl.style.top) || r.top,
+        width: r.width,
+        height: r.height,
+      },
+      { width: window.innerWidth, height: window.innerHeight },
+      { margin: VIEWPORT_MARGIN }
+    );
+    this.rootEl.style.left = `${left}px`;
+    this.rootEl.style.top = `${top}px`;
+  }
+
+  /** Keep `.window--wide` in sync with the window's own width, so content can
+   *  lay itself out by the room it actually has rather than by the viewport.
+   *  Deliberately a class and not a CSS container query: `container-type:
+   *  inline-size` implies `contain: layout`, which would make this window the
+   *  containing block for its `position: fixed` descendants — the hardware port
+   *  picker renders inside the inspector and anchors against the viewport. */
+  private setupWidthClass(): void {
+    const apply = (width: number): void => {
+      this.rootEl.classList.toggle('window--wide', width >= WIDE_WINDOW_WIDTH);
+    };
+    if (typeof ResizeObserver === 'undefined') {
+      apply(this.rootEl.getBoundingClientRect().width);
+      return;
+    }
+    this.widthObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        apply(entry.contentRect.width);
+      }
+    });
+    this.widthObserver.observe(this.rootEl);
   }
 
   private applyCoarsePointerSizing(): void {
@@ -456,7 +559,7 @@ export class FloatingWindow {
     this.rootEl.classList.toggle('floating-window', floating);
     if (floating) {
       if (!this.rootEl.style.left) {
-        this.setGeometry(this.defaultFloatPosition);
+        this.setGeometry(this.measuredDefaultFloatPosition());
       }
       this.reclampToViewport();
       this.focus();
@@ -510,6 +613,8 @@ export class FloatingWindow {
    *  existing (a spawned split-off window losing its last tab, Phase 5+). */
   destroy(): void {
     this.unwatchDpr();
+    this.unwatchViewport();
+    this.widthObserver?.disconnect();
     this.content?.unmount?.();
     this.rootEl.remove();
     this.manager.unregister(this);

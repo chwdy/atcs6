@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 
-import { computeFloatResize, computeFitSize, type FloatRect } from './window-geometry';
+import {
+  computeFloatResize,
+  computeFitSize,
+  clampToViewport,
+  computeOpenPlacement,
+  type FloatRect,
+} from './window-geometry';
 
 // The floating inspector starts at left 200, top 100, 350×400 — so its right
 // edge sits at 550 and its bottom at 500.
@@ -129,5 +135,110 @@ describe('computeFitSize — double-click-to-fit math', () => {
       width: 401,
       height: 300,
     });
+  });
+});
+
+describe('clampToViewport', () => {
+  const MARGIN = { margin: 8 };
+
+  it('leaves a window that is already fully inside exactly where it is', () => {
+    expect(clampToViewport({ left: 200, top: 100, width: 350, height: 400 }, VIEWPORT, MARGIN)).toEqual({
+      left: 200,
+      top: 100,
+    });
+  });
+
+  it('pulls a window back in when the viewport shrinks past its right/bottom edge', () => {
+    // 350×400 at (900, 600) overhangs a 1024×768 viewport on both axes.
+    expect(clampToViewport({ left: 900, top: 600, width: 350, height: 400 }, VIEWPORT, MARGIN)).toEqual({
+      left: 1024 - 350 - 8,
+      top: 768 - 400 - 8,
+    });
+  });
+
+  it('pulls a window back in from a negative left/top', () => {
+    expect(clampToViewport({ left: -120, top: -40, width: 350, height: 400 }, VIEWPORT, MARGIN)).toEqual({
+      left: 8,
+      top: 8,
+    });
+  });
+
+  it('pins a window wider than the viewport to the left margin rather than pushing it off', () => {
+    const narrow = { width: 320, height: 768 };
+    expect(clampToViewport({ left: 200, top: 100, width: 350, height: 400 }, narrow, MARGIN).left).toBe(8);
+  });
+
+  it('pins a window taller than the viewport to the top margin, keeping its header reachable', () => {
+    const short = { width: 1024, height: 300 };
+    expect(clampToViewport({ left: 200, top: 100, width: 350, height: 400 }, short, MARGIN).top).toBe(8);
+  });
+
+  it('does not resize — only position comes back', () => {
+    const result = clampToViewport({ left: 900, top: 600, width: 350, height: 400 }, VIEWPORT, MARGIN);
+    expect(result).not.toHaveProperty('width');
+    expect(result).not.toHaveProperty('height');
+  });
+});
+
+describe('computeOpenPlacement', () => {
+  // Placement area: clear of the 108px tool rail on the left and the app header
+  // above, inset 8px from the right/bottom.
+  const BOUNDS: FloatRect = { left: 108, top: 60, right: 1016, bottom: 760 };
+  const SIZE = { width: 350, height: 400 };
+  const GAP = { gap: 12 };
+
+  it('opens at the bounds origin when there is nothing to avoid', () => {
+    expect(computeOpenPlacement(SIZE, BOUNDS, null, GAP)).toEqual({ left: 108, top: 60 });
+  });
+
+  it('opens to the right of the layout when there is room there', () => {
+    const layout: FloatRect = { left: 150, top: 200, right: 500, bottom: 600 };
+    expect(computeOpenPlacement(SIZE, BOUNDS, layout, GAP)).toEqual({ left: 512, top: 60 });
+  });
+
+  it('falls back to the left of the layout when the right has no room', () => {
+    // Layout hugs the right edge, leaving 600-108 = 492px of clear space on the
+    // left — enough for a 350px window, none on the right.
+    const layout: FloatRect = { left: 600, top: 200, right: 1000, bottom: 600 };
+    const placed = computeOpenPlacement(SIZE, BOUNDS, layout, GAP);
+    expect(placed).toEqual({ left: 238, top: 60 });
+    expect(placed.left + SIZE.width).toBeLessThanOrEqual(layout.left);
+  });
+
+  it('settles for least-overlap when the layout is too wide to clear on either side', () => {
+    // 600px layout centred in 908px of bounds: no 350px window fits beside it.
+    const layout: FloatRect = { left: 400, top: 200, right: 1000, bottom: 600 };
+    const placed = computeOpenPlacement(SIZE, BOUNDS, layout, GAP);
+    // Every candidate clips the layout, so the smallest clip wins: the "below"
+    // anchor, clamped up to the bottom of the placement area.
+    expect(placed).toEqual({ left: 108, top: 360 });
+  });
+
+  it('drops below the layout when neither side has room', () => {
+    const layout: FloatRect = { left: 120, top: 60, right: 1000, bottom: 300 };
+    expect(computeOpenPlacement(SIZE, BOUNDS, layout, GAP)).toEqual({ left: 108, top: 312 });
+  });
+
+  it('picks the least-overlapping candidate when the layout fills the viewport', () => {
+    const layout: FloatRect = { left: 0, top: 0, right: 1024, bottom: 768 };
+    const placed = computeOpenPlacement(SIZE, BOUNDS, layout, GAP);
+    // Nothing can clear it, so the result must at least stay inside bounds
+    // rather than escaping to a fixed corner off the placement area.
+    expect(placed.left).toBeGreaterThanOrEqual(BOUNDS.left);
+    expect(placed.top).toBeGreaterThanOrEqual(BOUNDS.top);
+    expect(placed.left + SIZE.width).toBeLessThanOrEqual(BOUNDS.right);
+    expect(placed.top + SIZE.height).toBeLessThanOrEqual(BOUNDS.bottom);
+  });
+
+  it('never places a window outside the supplied bounds', () => {
+    const layout: FloatRect = { left: 900, top: 700, right: 1010, bottom: 755 };
+    const placed = computeOpenPlacement(SIZE, BOUNDS, layout, GAP);
+    expect(placed.left).toBeGreaterThanOrEqual(BOUNDS.left);
+    expect(placed.top).toBeGreaterThanOrEqual(BOUNDS.top);
+  });
+
+  it('clamps a window larger than the placement area to the bounds origin', () => {
+    const huge = { width: 2000, height: 2000 };
+    expect(computeOpenPlacement(huge, BOUNDS, null, GAP)).toEqual({ left: 108, top: 60 });
   });
 });

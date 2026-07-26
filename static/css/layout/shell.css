@@ -544,9 +544,11 @@ textarea {
     cursor: not-allowed;
 }
 
-/* Tabs flow left-to-right and wrap to the next row when the strip is full —
-   browser-tab behaviour. Each tab is content-sized; multiple short tabs share
-   a row; a long tab wraps alone if needed. No scrollbar: all tabs stay visible. */
+/* Narrow form (the default, and the only form the docked 350px panel takes):
+   a vertical navigator — tabs stack under collapsible type headers as a
+   type → instance tree. Capped at 42vh so a large working set scrolls instead
+   of pushing the panel's actual content off the bottom. The horizontal form a
+   wide window switches to lives under `.window--wide` further down. */
 .secondary-sidebar-tabs {
     display: flex;
     flex-direction: column;
@@ -750,6 +752,96 @@ textarea {
     opacity: 1;
 }
 
+/* ---------------------------------------------------------------------------
+   Wide form of the working-set navigator — one horizontal scrolling strip
+   (VS Code / Adobe style) instead of the vertical tree.
+
+   `.window--wide` is set by FloatingWindow's ResizeObserver (lib/window-manager.ts)
+   at 520px, just past the docked panel's 500px max-width: the docked inspector
+   therefore always keeps the vertical tree, because a 350px-wide horizontal
+   strip would show barely two tabs, while any floating window the user widens
+   gets the row. Type grouping survives the flip — groups become inline segments
+   reading left to right, separated by a rule — so a wide strip still says which
+   tabs are Trains and which are Blocks.
+
+   A CSS container query would express "when this panel is wide" more directly,
+   but `container-type: inline-size` implies `contain: layout`, which makes the
+   element a containing block for its `position: fixed` descendants. The
+   hardware port picker (ui/port-picker.ts) renders inside this panel and
+   positions itself against the viewport, so containment would break it.
+   --------------------------------------------------------------------------- */
+.window--wide .secondary-sidebar-tabs {
+    flex-direction: row;
+    align-items: stretch;
+    gap: var(--space-4);
+    max-height: none;
+    overflow-x: auto;
+    overflow-y: hidden;
+    /* No bottom padding: the active tab's underline should meet the strip's
+       own bottom rule, per DESIGN_LANGUAGE.md §3. */
+    padding-bottom: 0;
+    scrollbar-width: thin;
+}
+
+.window--wide .secondary-nav-group {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-4);
+    flex-shrink: 0;
+}
+
+/* Groups read as segments of one strip, divided by a rule rather than stacked. */
+.window--wide .secondary-nav-group + .secondary-nav-group {
+    margin-top: 0;
+    margin-left: var(--space-4);
+    padding-left: var(--space-8);
+    border-left: 1px solid var(--border-color);
+}
+
+/* The group header collapses to an inline marker. The count goes: in a row the
+   tabs it counts are already visible beside it, so it is pure width. */
+.window--wide .secondary-nav-group-header {
+    padding: 0;
+    flex-shrink: 0;
+}
+
+.window--wide .secondary-nav-group-count {
+    display: none;
+}
+
+/* Instance rows lose the tree indent — there is no tree to indent under. */
+.window--wide .secondary-nav-group .secondary-tab {
+    margin-left: 0;
+}
+
+/* Active mark rotates with the strip: the 2px accent moves from the left border
+   to a bottom underline overlapping the strip's divider (DESIGN_LANGUAGE.md §3's
+   fixed-pane form). Inactive tabs keep a transparent 2px bottom border so the
+   underline never shifts row heights. */
+.window--wide .secondary-tab {
+    flex-shrink: 0;
+    border-left: none;
+    border-bottom: 2px solid transparent;
+    border-radius: var(--control-radius-sm) var(--control-radius-sm) 0 0;
+}
+
+.window--wide .secondary-tab.active {
+    border-bottom-color: var(--accent-color);
+}
+
+/* ---------------------------------------------------------------------------
+   Pinned group — a group the user pinned out of the active chain. New tabs
+   never open here and canvas clicks never retarget it; it holds the one record
+   it was pinned on until unpinned. Marked with an accent top rule on the header
+   rather than a tint or a badge: it is a persistent state of the window, so it
+   belongs in the chrome (DESIGN_LANGUAGE.md §17 state marks), and it must not
+   compete with the active tab's own accent inside the strip. Set by
+   TabGroup.updateNavigationState.
+   --------------------------------------------------------------------------- */
+.window--pinned .secondary-sidebar-header {
+    box-shadow: inset 0 2px 0 0 var(--accent-color);
+}
+
 /* Follows the pointer during a cross-window tab drag (editor/tab-drag.ts) —
    above everything, transient, same rationale as toasts (--z-toast). */
 .secondary-tab-drag-ghost {
@@ -769,10 +861,11 @@ textarea {
 /* Primary tool rail — a fixed-width capsule that floats over the canvas,
    vertically centred on the left, instead of a docked full-height column. It is
    absolutely positioned inside `.workspace`, so the canvas reclaims the full
-   width behind it. `.workspace` — NOT `.app-body` — is the containing block on
-   purpose: the train monitor bar is a sibling of `.workspace` inside
-   `.content-area`, so centring against the app body would drop the capsule
-   across the monitor's left edge whenever that panel is open.
+   width behind it. `.workspace` is the containing block, which since the train
+   monitor became a floating window (it no longer takes flow height out of
+   `.content-area`) spans the whole canvas region — the rail centres on the
+   canvas, and the monitor's default geometry starts past the rail's right edge
+   so the two never overlap.
    `top/bottom:0 + margin:auto + height:fit-content` centres it vertically
    WITHOUT a transform — a transform would re-root the fixed `.tool-popover`
    flyout to the capsule and break its viewport positioning. The capsule sits at

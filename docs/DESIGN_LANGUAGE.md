@@ -677,16 +677,63 @@ entities stay legible instead of crowding one flat row. Each group header carrie
 its type icon, label, and a count of the tabs under it; a granular editor type
 maps to its group through `getSecondaryTabGroup`.
 
+**The navigator turns horizontal once its window is wide.** Past 520px — just
+past the docked panel's 500px ceiling, so the docked inspector never crosses it —
+the tree lays itself out as a single scrolling row instead, the shape a wide
+editor window should have. Grouping survives the flip: each type becomes an
+inline segment reading left to right, its header collapsed to icon + label
+(the count goes — the tabs it counts are visible right beside it) and separated
+from the next by a vertical rule. The active mark rotates with the strip, from
+the 2px left border to the 2px bottom underline of the fixed-pane form above.
+The lever is a `.window--wide` class that `FloatingWindow` sets from a
+`ResizeObserver` on its own root, *not* a CSS container query: `container-type:
+inline-size` implies `contain: layout`, which would make the panel the
+containing block for the `position: fixed` elements that render inside it (the
+hardware port picker) and break their viewport anchoring.
+
 Two kinds of tab live in the tree:
 
 - **Preview tab** — opening an entity by inspecting it on the canvas (a tile,
   block, switch, signal, platform, train, tunnel, station, or speed profile)
   opens a *preview* that reuses one shared slot: the next inspect replaces it, so
   casual looking never piles up tabs. A preview shows a pin affordance
-  (`ti-pin`); pinning it — the pin button or a double-click — promotes it to a
-  kept tab the next inspect won't replace.
+  (`ti-pin`); see **Pinning** below for what pinning does.
 - **Kept tab** — list panels, route / path editors, and setups open as their own
-  kept tab from the start, and pinned previews join them.
+  kept tab from the start.
+
+**Group states: active, inactive, pinned.** Every open group is in exactly one
+of three states, and together they decide where a newly opened panel lands.
+
+- **Active** — exactly one group at a time. New tabs and window actions land
+  here. The active group is the most recently interacted one that isn't pinned:
+  any pointerdown inside a window focuses it, so this covers both selecting a
+  tab and clicking an action button embedded in a panel (an `Edit` row inside a
+  list calls a generic `showXEditor()` with no idea which window it lives in,
+  and has to land back where the user was looking).
+- **Inactive** — every other unpinned group. Still a candidate: the resolution
+  walks the most-recently-interacted chain, so closing or pinning the active
+  group promotes the one behind it.
+- **Pinned** — out of the chain entirely. A pinned group keeps showing the one
+  record it was pinned on: no new tab ever opens there, and canvas clicks never
+  retarget it. It still responds to explicit window actions — drag, resize,
+  move a tab into it, close.
+
+When the walk finds no unpinned group — every open group is pinned — the chain
+is *exhausted*. That is treated exactly like having no window open at all: the
+panel gets a brand-new group of its own. The rule itself is
+`resolveActiveGroup` in `editor/tab-group.ts`, kept pure so it tests without a
+DOM; `EditorUIHandler.activeChain` supplies the ordered candidates from
+WindowManager's z-order.
+
+**Pinning detaches.** Pinning a tab — its pin button, or a double-click —
+*detaches* it from its group into a dedicated group holding only that tab, and
+pins that group. One gesture, one meaning: "keep this one record where I put it,
+and stop opening things on top of it." A tab already alone in its group pins in
+place rather than respawning an identical window at a cascade offset. The
+header's own pin button pins a whole group as-is, for freezing a multi-tab
+working set without breaking it up. A pinned window carries a 2px accent rule
+along the top of its header (`.window--pinned`) so it is obvious why the next
+inspect opened elsewhere.
 
 Every tab carries a close `×`. Tabs are titled by the record they hold
 (`BLK_588D28`, `#1000001`), never by the editor's name — two open blocks must
@@ -1766,8 +1813,10 @@ panel's body:
   already open. List panels, and detail views with no list home
   (blocks, signals, platforms), show no parent link. Keyboard:
   Alt+Left.
-- **Pin** — freezes the panel on its current record so canvas clicks
-  don't retarget it. Tabler `ti-pin`, icon-only.
+- **Pin** — takes this group out of the active chain, so no new tab
+  opens here and canvas clicks don't retarget it. Tabler `ti-pin`,
+  icon-only; the window gains an accent rule along its header's top
+  edge while pinned. See §3 "Group states" for the full model.
 - **Tabs** — the working-set navigator (§3) sits directly under the
   header, grouping open tabs under collapsible type headers. No breadcrumb
   row: the parent link covers "go up," the tab label names the record, and
@@ -1804,6 +1853,14 @@ tabs, can receive more tabs later, and can itself be split or have tabs
 moved out of it. The one thing it cannot do is dock — there is exactly one
 docked slot in the page layout, owned by the secondary sidebar, so every
 split-off window is floating-only.
+
+Splitting and pinning are the same mechanism pointed at different
+intents. **Split** ("Open in new window", or dragging a tab out) detaches
+the tab into a new *unpinned* group — a second working set that keeps
+receiving tabs. **Pin** detaches it into a *pinned* group that receives
+nothing further. A window spawned because the active chain was exhausted
+is unpinned too, so it immediately becomes the active group and the next
+open reuses it rather than spawning yet another window.
 
 Three ways to trigger a split, all routing through the same underlying
 move (`TabGroup.extractTab` / `acceptMovedTab` — [tab-group.ts](../frontend/src/editor/tab-group.ts)):
@@ -1974,6 +2031,8 @@ When in doubt, copy the structure of one of these:
 - **Bottom dock** → [train-monitor.css](../static/css/features/train-monitor.css) — header + multi-column body + status footer, full-width, fixed height. Header has no border; the segmented view-distance control inside the header is a bordered container of flat ghosts (no internal dividers).
 - **Sidebar form** → [train-control.css](../static/css/features/train-control.css) — sectioned vertical stack inside a secondary sidebar. Status rows use the 3px left-border accent only, no surrounding 1px box.
 - **Working-set navigator** → [layout/shell.css](../static/css/layout/shell.css) `.secondary-sidebar-tabs` › `.secondary-nav-group` › `.secondary-tab` — open tabs grouped under collapsible type headers (icon · label · count) as a type → instance tree; a preview tab reuses one slot until pinned (§3 Working-set variant).
+- **Wide navigator** → [layout/shell.css](../static/css/layout/shell.css) `.window--wide .secondary-sidebar-tabs` — past 520px the tree becomes one horizontal scrolling strip, groups as inline segments, active mark rotated to a bottom underline. Class set by `FloatingWindow`'s ResizeObserver (§3 Working-set variant).
+- **Pinned group** → [layout/shell.css](../static/css/layout/shell.css) `.window--pinned .secondary-sidebar-header` — 2px accent rule inset along the header's top edge, marking a group that is out of the active chain (§3 Group states).
 
 **Not a reference — outside this doc.** The standalone debug page
 ([static/debug.html](../static/debug.html), styled by

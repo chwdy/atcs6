@@ -12,6 +12,7 @@ is not their concern. Swapping the controller board replaces the device and
 leaves everything here unchanged.
 """
 
+import logging
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -22,6 +23,7 @@ from switch_power import SwitchOutput
 from hardware.catalog import (
     BUS_GPIO,
     CHIP_CATALOG,
+    MAX_OUTPUT_HIGH_S,
     PORT_CURRENT_SENSE,
     ROLE_OCCUPANCY,
     ROLE_SWITCH,
@@ -91,6 +93,22 @@ def gpio_transfer_cs(chip_specs: List[Any]) -> str:
     )
 
 
+def _auto_release_reporter(chip_id: str) -> Callable[[int], None]:
+    """Report a '595 hold-guard release. Reaching the guard means some path
+    raised an output bit and never lowered it — on a coil bit that is seconds
+    away from a burnt point motor — so it logs at error level even though the
+    guard itself already made the board safe."""
+
+    def report(bits: int) -> None:
+        logging.getLogger(__name__).error(
+            "hc595 %s: hold guard forced outputs 0x%02x low after %.1fs still "
+            "high — some caller raised a bit and never dropped it",
+            chip_id, bits, MAX_OUTPUT_HIGH_S,
+        )
+
+    return report
+
+
 def build_chip(device: Any, spec: Any) -> Any:
     """Instantiate the chip driver for a chip spec (duck-typed: chip_id, kind,
     bus, i2c_address, chain_length, spi_select)."""
@@ -102,8 +120,16 @@ def build_chip(device: Any, spec: Any) -> Any:
         # The latch line is a chip-select pad (spi bus) or a general-purpose pin
         # (gpio bus); the device branches on the pad name. Data clocks over the
         # SPI peripheral either way.
-        cls = HC595Chain if spec.kind == "hc595" else HC165Chain
-        return cls(device, select=_resolved_latch(spec, ck), chain_length=spec.chain_length)
+        if spec.kind == "hc595":
+            return HC595Chain(
+                device,
+                select=_resolved_latch(spec, ck),
+                chain_length=spec.chain_length,
+                on_auto_release=_auto_release_reporter(spec.chip_id),
+            )
+        return HC165Chain(
+            device, select=_resolved_latch(spec, ck), chain_length=spec.chain_length
+        )
     if spec.kind in ("ina3221", "ina219"):
         address = spec.i2c_address if spec.i2c_address is not None else ck.default_i2c_address
         cls = INA3221 if spec.kind == "ina3221" else INA219
@@ -341,6 +367,39 @@ class OccupancyDriver(OccupancyInput):
         return abs(current - baseline_a) >= threshold_a
 
 
+def _assert_switch_ports_low(
+    switch_chips: Dict[str, HC595Chain],
+    switch_output: SwitchBindingMap,
+) -> None:
+    """Raise unless every coil and standby bit named by a switch binding is low.
+
+    Drops the chains it can before raising, so the caller's failure path starts
+    from a de-energized board rather than the state it just rejected."""
+    hot: List[str] = []
+    for switch_id, (chip_id, port_main, port_diverge, port_standby) in switch_output.items():
+        chip = switch_chips.get(chip_id)
+        if chip is None:
+            continue
+        for label, port in (
+            ("main", port_main),
+            ("diverge", port_diverge),
+            ("standby", port_standby),
+        ):
+            if port is not None and chip.is_high(port):
+                hot.append(f"{switch_id}.{label} ({chip_id} port {port})")
+    if not hot:
+        return
+    for chip in switch_chips.values():
+        try:
+            chip.all_off()
+        except Exception:  # noqa: BLE001 - the raise below is the report
+            pass
+    raise RuntimeError(
+        "refusing to start: switch coil outputs are energized after init — "
+        + ", ".join(sorted(hot))
+    )
+
+
 def build_real_interfaces(
     device: Any,
     chip_specs: List[Any],
@@ -372,15 +431,27 @@ def build_real_interfaces(
     if any(getattr(spec, "bus", None) == BUS_GPIO for spec in chip_specs):
         device.gpio_transfer_cs = gpio_transfer_cs(chip_specs)
 
+    # Clear every shift-out chain before anything else on the bus. A '595 powers
+    # up with undefined register contents, so until this lands a coil bit may be
+    # driving a point motor; the I2C PWM setup below is comparatively slow, and
+    # none of it is worth doing ahead of de-energizing a solenoid. Nothing here
+    # raises a bit, so the chain is left all-low for the bindings check further
+    # down. `build_chip` is cheap and side-effect-free, so building the switch
+    # chips in their own pass costs only the second loop.
+    for spec in chip_specs:
+        if CHIP_CATALOG[spec.kind].role == ROLE_SWITCH:
+            chip = build_chip(device, spec)
+            chip.all_off()
+            switch_chips[spec.chip_id] = chip
+
     for spec in chip_specs:
         ck = CHIP_CATALOG[spec.kind]
+        if ck.role == ROLE_SWITCH:
+            continue                       # already built and cleared above
         chip = build_chip(device, spec)
         if ck.role == ROLE_TRACK:
             chip.configure()
             track_chips[spec.chip_id] = chip
-        elif ck.role == ROLE_SWITCH:
-            chip.all_off()
-            switch_chips[spec.chip_id] = chip
         elif ck.role == ROLE_OCCUPANCY:
             if ck.port_kind == PORT_CURRENT_SENSE:
                 chip.configure()               # reset + enable all three channels
@@ -420,6 +491,14 @@ def build_real_interfaces(
         drive = switch_chips.get(drive_chip_id)
         if drive is not None:
             drive.set_output(port, False)
+
+    # Last word on the outputs before the session goes live: no bit a coil sits
+    # on may be high. The clear above already guarantees it — this re-checks it
+    # against the bindings so that a write added between the two (the /OE hold
+    # is one, and it will not be the last) cannot quietly energize a point motor
+    # for the whole session. Failing the build is right: an unusable session
+    # beats a burning solenoid nobody is watching.
+    _assert_switch_ports_low(switch_chips, switch_output)
 
     input_iface: Optional[OccupancyInput] = None
     if digital_chips or current_chips:
