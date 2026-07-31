@@ -2,9 +2,12 @@
 Persistence Manager for ATCS6 Railway Simulation
 
 Handles saving and loading of track layouts to/from JSON files.
-Saves both snapshot and steps in a single file:
+Saves snapshot, steps, and hardware configuration in a single file:
 - Snapshot: Primary format for fast loading
 - Steps: Fallback for recovery if snapshot fails
+- Hardware: The whole hardware configuration (design_new.md "Power ->
+  Hardware configuration"), so a saved layout carries the wiring its
+  logical ids are bound to
 """
 
 import json
@@ -41,6 +44,7 @@ class PersistenceManager:
         Returns:
             Dict with: path, steps_generated, steps_error (if any)
         """
+        import hardware_config
         from step_recorder import StepRecorder
 
         if not name or not name.strip():
@@ -64,6 +68,12 @@ class PersistenceManager:
             steps_error = str(e)
             print(f"[Persistence] Error generating steps: {e}")
 
+        # The binding maps are keyed by `block_id` / `switch_id`, so the wiring
+        # only means anything alongside the layout those ids come from — save it
+        # with the layout (design_new.md "Power -> Hardware configuration",
+        # Saved with the layout).
+        hardware_data = hardware_config.persisted_dict()
+
         # Build merged file
         wrapper = {
             "version": self.SCHEMA_VERSION,
@@ -72,6 +82,7 @@ class PersistenceManager:
             "modified": datetime.now().isoformat(),
             "snapshot": snapshot_data,
             "steps": steps_data,
+            "hardware": hardware_data,
         }
 
         file_path = self.storage_dir / f"{safe_name}.json"
@@ -126,7 +137,12 @@ class PersistenceManager:
         if "snapshot" in wrapper:
             try:
                 network.from_dict(wrapper["snapshot"])
-                return {"success": True, "method": "snapshot", "error": None}
+                return {
+                    "success": True,
+                    "method": "snapshot",
+                    "error": None,
+                    **self._restore_hardware(wrapper),
+                }
             except Exception as e:
                 snapshot_error = str(e)
                 print(f"[Persistence] Snapshot load failed: {e}, trying steps...")
@@ -142,6 +158,7 @@ class PersistenceManager:
                         "method": "steps",
                         "error": None,
                         "recovery": True,
+                        **self._restore_hardware(wrapper),
                     }
                 return {
                     "success": False,
@@ -160,6 +177,34 @@ class PersistenceManager:
             "method": None,
             "error": snapshot_error or "No snapshot or steps found",
         }
+
+    def _restore_hardware(self, wrapper: Dict) -> Dict:
+        """Adopt the layout's `hardware` section onto the hardware-configuration
+        store, writing it to the app-managed config file so it applies on the
+        next session build (design_new.md "Power -> Hardware configuration",
+        Persisted to disk; applies on the next session build, not live).
+
+        Returns the `hardware` result keys to merge into the load result:
+        `absent` for a layout saved before hardware was carried (the running
+        configuration is left alone), `applied` on success, or `error` plus a
+        `hardware_error` message.
+
+        Fail-safe: a malformed or invalid section is reported and skipped, never
+        raised — a layout still loads on a machine whose wiring the file does not
+        describe, the same way a corrupt config file falls back instead of
+        booting a broken real mode.
+        """
+        import hardware_config
+
+        data = wrapper.get("hardware")
+        if not isinstance(data, dict):
+            return {"hardware": "absent"}
+        try:
+            hardware_config.apply_snapshot(data)
+        except Exception as e:
+            print(f"[Persistence] Hardware configuration not applied: {e}")
+            return {"hardware": "error", "hardware_error": str(e)}
+        return {"hardware": "applied"}
 
     def list_layouts(self) -> List[Dict]:
         """List all available layouts with metadata."""
@@ -190,6 +235,7 @@ class PersistenceManager:
                         "has_snapshot": "snapshot" in wrapper,
                         "has_steps": "steps" in wrapper
                         and len(wrapper.get("steps", [])) > 0,
+                        "has_hardware": isinstance(wrapper.get("hardware"), dict),
                     }
                 )
             except (json.JSONDecodeError, IOError):

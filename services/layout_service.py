@@ -23,7 +23,8 @@ def list_layouts(state: AppState) -> List[Dict[str, Any]]:
 
 
 def save_layout(state: AppState, *, name: str, description: str = "") -> Dict[str, Any]:
-    """Save the current network as a layout.
+    """Save the current network as a layout, together with the current hardware
+    configuration (the binding maps are keyed by the layout's own ids).
 
     Returns:
         Dict with keys `path`, `steps_generated`, `steps_count`, and
@@ -59,9 +60,13 @@ def save_layout(state: AppState, *, name: str, description: str = "") -> Dict[st
 def load_layout(state: AppState, name: str) -> Dict[str, Any]:
     """Load a layout by name, replacing the current network state.
 
+    Also adopts the layout's saved hardware configuration (see
+    `PersistenceManager._restore_hardware`), which reaches only the next
+    session build, not the session this call runs inside.
+
     Returns:
         The persistence-managers result dict (`success`, `method`,
-        optionally `recovery`, `error`).
+        `hardware`, optionally `recovery`, `hardware_error`, `error`).
 
     Raises:
         NotFoundError when the persistence manager raises FileNotFoundError.

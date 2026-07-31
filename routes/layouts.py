@@ -64,6 +64,8 @@ def register(app, state: AppState) -> None:
         """Load a layout, replacing the current network state.
 
         Uses snapshot by default, falls back to steps if snapshot fails.
+        Also adopts the layout's saved hardware configuration, which applies
+        on the next session build; `hardware` reports what happened to it.
         """
         try:
             result = layout_service.load_layout(state, name)
@@ -76,11 +78,19 @@ def register(app, state: AppState) -> None:
             "status": "success",
             "message": f"Layout '{name}' loaded successfully",
             "method": result.get("method"),
+            "hardware": result.get("hardware"),
         }
         if result.get("recovery"):
             response["recovery"] = True
             response["message"] = (
                 f"Layout '{name}' recovered from steps (snapshot was corrupted)"
+            )
+        # The layout's wiring applies on the next session build, so a skipped
+        # section is a warning, not a failed load.
+        if result.get("hardware") == "error":
+            response["warning"] = (
+                "Hardware configuration in this layout was not applied: "
+                f"{result.get('hardware_error')}"
             )
 
         return jsonify(response)

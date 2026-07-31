@@ -83,6 +83,26 @@ def pytest_runtest_setup(item):
     bootstrap.set_current_scene(target)
 
 
+@pytest.fixture(autouse=True)
+def _hardware_config_file_off_limits(tmp_path, monkeypatch):
+    """Point the hardware-configuration store's file at a per-test temp path, so
+    no test can write the developer's real `hardware_config.json`.
+
+    Three code paths write that file — `PUT /api/hardware/config`, `PUT
+    /api/hardware/binding`, and loading a layout (a layout save file carries its
+    own hardware configuration, see `PersistenceManager._restore_hardware`) — and
+    the last one fires from any test that loads a layout, which is not obviously
+    a hardware test at all. Redirecting the path here means a test never has to
+    know that. Tests needing their own isolation still monkeypatch `CONFIG_PATH`
+    themselves; this fixture only guarantees the default is never the real file.
+    """
+    import hardware_config
+
+    monkeypatch.setattr(
+        hardware_config, "CONFIG_PATH", str(tmp_path / "hardware_config.json")
+    )
+
+
 # Longest and next-longest tests, by node-id substring. Keep longest first.
 _LONGEST = "test_demo_5_no_path_revisit.py::test_t3_s_line_reassignment"
 _SECOND_LONGEST = (
