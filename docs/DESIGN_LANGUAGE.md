@@ -2353,6 +2353,21 @@ lavender stays clearly lighter, so the two don't read as one). The
 debug-only "stuck waiting" overlay draws a dashed orange leader from
 the train head to the block it is waiting on.
 
+**Ghost trains.** A ghost train — something the detectors found that the
+app did not put there and cannot drive — outranks every tint above:
+steel `--train-body-ghost`, drawn with a **dashed** outline and fill
+instead of the usual solid stroke. The dash carries the meaning; the
+tint alone would read as just one more mode. It takes no mode hue at
+all, because a ghost has no cab, no mode and no brake to report, and it
+must never borrow EB's purple — a ghost is not a fault, it is an
+unknown. In panels the same rule holds: the trains-list card and the
+train panel show a `GHOST` state chip on the muted accent and render
+none of the operator controls, since the API refuses every one of them
+for a ghost. Reference: `trainBodyFill` in
+[renderer-trains.ts](../frontend/src/renderer/renderer-trains.ts),
+`renderGhostTrainListItem` / `renderGhostTrainPanel` in
+[editor-trains.ts](../frontend/src/editor/editor-trains.ts).
+
 ### Selection and previews
 
 Box / lasso selection fills tiles amber with an orange outline. Build
