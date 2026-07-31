@@ -46,7 +46,7 @@ export interface SnapshotStateManager {
 }
 
 export interface SnapshotNetwork {
-  trains?: ReadonlyArray<{ id: string }> | null;
+  trains?: ReadonlyArray<{ id: string; is_ghost?: boolean }> | null;
 }
 
 /** Span fields pre-named in camelCase so the renderer has one shape to consume. */
@@ -67,6 +67,9 @@ export interface RenderSnapshotTrain {
   teardownPending: boolean;
   /** True while the emergency brake is active. Drives the purple body tint. */
   ebActive: boolean;
+  /** True for a runtime-detected ghost train the app cannot drive. Drives the
+   *  steel body tint and the dashed outline that mark it apart. */
+  isGhost: boolean;
   span: RenderSnapshotSpan;
   waitingForBlockId: unknown;
 }
@@ -108,6 +111,7 @@ export function buildRenderSnapshot(
       controlMode: controller.control_mode ?? null,
       teardownPending: controller.route_teardown_pending === true,
       ebActive: controller.eb_active === true,
+      isGhost: train.is_ghost === true,
       span: {
         occupiedTiles: span.occupied_tiles,
         leadingEnd: span.leading_end,

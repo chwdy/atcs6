@@ -54,6 +54,7 @@ export interface CanvasPalette {
   trainBodyManual: string;
   trainBodyTeardown: string;
   trainBodyEb: string;
+  trainBodyGhost: string;
   // highlight overlays driven by the LayoutHighlighter. Only the "locate" flash
   // needs its own hue; peek/selection outlines take entity-chip colours and the
   // reachable fill reuses `warning`, so they have no dedicated token here.
@@ -94,6 +95,7 @@ const TOKENS: Record<keyof CanvasPalette, string> = {
   trainBodyManual: '--train-body-manual',
   trainBodyTeardown: '--train-body-teardown',
   trainBodyEb: '--train-body-eb',
+  trainBodyGhost: '--train-body-ghost',
   highlightLocate: '--canvas-highlight-locate',
 };
 
@@ -133,6 +135,7 @@ const FALLBACK: CanvasPalette = {
   trainBodyManual: '#ffe066',
   trainBodyTeardown: '#c8a2ff',
   trainBodyEb: '#8257e5',
+  trainBodyGhost: '#8a8a99',
   highlightLocate: '#ffd93d',
 };
 

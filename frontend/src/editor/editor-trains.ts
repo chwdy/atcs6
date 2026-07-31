@@ -585,6 +585,7 @@ export class TrainEditorHandler {
   }
 
   renderTrainListItem(train: any): string {
+    if (train.is_ghost) return this.renderGhostTrainListItem(train);
     const controller: any = stateManager?.getController(train.id);
     const state = controller?.state || 'off';
     const accent = this.getTrainAccent(state);
@@ -621,6 +622,71 @@ export class TrainEditorHandler {
                     <span class="chip">${speed} km/h</span>
                 </div>
                 <div class="rr-card-foot"><i class="ti ti-map-pin"></i> (${position.x}, ${position.y})${heading}</div>
+            </div>
+        `;
+  }
+
+  /** The train panel for a ghost train: what was detected, where, and why there
+   *  is nothing to operate. Read-only by construction — it renders no cab, mode,
+   *  handle, ATO or save control, because the API refuses every one of them for a
+   *  ghost (design_new.md "Ghost trains", Never driven / Shown as itself). */
+  renderGhostTrainPanel(trainId: string, controller: any): string {
+    const blocks: string[] = controller?.span?.occupied_blocks || [];
+    const tiles: Array<[number, number]> = controller?.span?.occupied_tiles || [];
+    const where = blocks.length ? blocks.join(', ') : '—';
+    return `
+            <div class="tc-panel train-control-panel train-control-panel-ghost" data-train-id="${trainId}">
+                <section class="tc-section tc-section-task">
+                    <header class="tc-status-headline">
+                        <span class="tc-train-id">${trainId}</span>
+                        <span class="tc-state-badge">GHOST</span>
+                    </header>
+                    <div class="banner banner-warn tc-banner">
+                        ⚠ Something is drawing current on the track that this app did not
+                        put there. It is tracked so other trains keep clear of it, and it
+                        cannot be driven from here — go deal with it on the layout.
+                    </div>
+                    <dl class="tc-status-fields">
+                        <div class="tc-field tc-field-wide">
+                            <dt class="tc-field-label">Detected on</dt>
+                            <dd class="tc-field-value" title="${where}">${where}</dd>
+                        </div>
+                        <div class="tc-field">
+                            <dt class="tc-field-label">Tiles claimed</dt>
+                            <dd class="tc-field-value">${tiles.length}</dd>
+                        </div>
+                        <div class="tc-field tc-field-wide">
+                            <dt class="tc-field-label">Track power</dt>
+                            <dd class="tc-field-value">0 V — never energized</dd>
+                        </div>
+                    </dl>
+                </section>
+            </div>
+        `;
+  }
+
+  /** The trains-list card for a ghost train (design_new.md "Ghost trains",
+   *  Shown as itself): the same .rr-card shell as any train so the operator sees
+   *  it in the list, marked apart by a GHOST chip and the muted accent, and
+   *  offering none of the controls — a ghost cannot be edited, driven, or
+   *  deleted from the app, only dealt with on the layout. The foot caption names
+   *  the blocks it is standing on, which is the whole of what is known about it. */
+  renderGhostTrainListItem(train: any): string {
+    const controller: any = stateManager?.getController(train.id);
+    const blocks: string[] = controller?.span?.occupied_blocks || [];
+    const where = blocks.length ? blocks.join(', ') : 'between detectors';
+    return `
+            <div class="rr-card train-row train-row-ghost accent-muted mb-8" data-train-id="${train.id}">
+                <div class="rr-card-head">
+                    <div class="rr-card-title-col">
+                        <div class="rr-card-train font-mono">${train.id}</div>
+                    </div>
+                </div>
+                <div class="chip-row">
+                    <span class="chip chip-state chip-muted">GHOST</span>
+                    <span class="chip">not driveable</span>
+                </div>
+                <div class="rr-card-foot"><i class="ti ti-alert-triangle"></i> detected on ${where} — no cab, no route</div>
             </div>
         `;
   }
@@ -744,6 +810,14 @@ export class TrainEditorHandler {
       // Endpoint returned a body without a train — treat as gone, like a 404.
       console.warn('[TrainEditorHandler] Train not found:', trainId);
       await this.editor.closeStaleEditorTab('train-control', trainId);
+      return;
+    }
+
+    if (train.is_ghost) {
+      // A ghost train offers none of the operator's controls (design_new.md
+      // "Ghost trains", Shown as itself): no cab, no mode, no handle, nothing to
+      // save. It gets a read-only card saying what was detected and where.
+      this.editor.showSecondarySidebar(`${trainId}`, this.renderGhostTrainPanel(trainId, controller));
       return;
     }
 

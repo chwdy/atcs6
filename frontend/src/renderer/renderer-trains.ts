@@ -36,8 +36,13 @@ export function trainBodyFill(snap: {
   controlMode?: string | null;
   teardownPending?: boolean;
   ebActive?: boolean;
+  isGhost?: boolean;
 }): string {
   const p = getCanvasPalette();
+  // A ghost train is not one of the operator's trains: it gets a desaturated
+  // steel body (plus the dashed outline drawn with it), never a mode hue, since
+  // it has no cab, no mode and no brake to report.
+  if (snap.isGhost) return p.trainBodyGhost;
   if (snap.ebActive) return p.trainBodyEb;
   if (snap.teardownPending) return p.trainBodyTeardown;
   if (snap.controlMode === 'manual') return p.trainBodyManual;
@@ -67,6 +72,9 @@ export interface TrainSnap {
   teardownPending?: boolean;
   /** True while the emergency brake is active. Drives the purple body tint. */
   ebActive?: boolean;
+  /** True for a runtime-detected ghost train (design_new.md "Ghost trains").
+   *  Drives the steel body tint and the dashed body outline. */
+  isGhost?: boolean;
   span: TrainSnapSpan;
   waitingForBlockId?: string | null;
 }
@@ -74,6 +82,7 @@ export interface TrainSnap {
 export interface Train {
   id: string;
   num_cars?: number;
+  is_ghost?: boolean;
 }
 
 interface TrainTrack {
@@ -193,6 +202,7 @@ export class RendererTrainHandler {
       controlMode: controller.control_mode ?? null,
       teardownPending: controller.route_teardown_pending === true,
       ebActive: controller.eb_active === true,
+      isGhost: train.is_ghost === true,
       span: {
         occupiedTiles: controller.span.occupied_tiles,
         leadingEnd: controller.span.leading_end,
@@ -551,11 +561,17 @@ export class RendererTrainHandler {
     // Stroke each chunk independently. Butt caps at the chunk endpoints
     // (so tunnel-cut ends look clean); round joins between intermediate
     // points so the body bends smoothly through zigzag track.
-    const strokeChunk = (chunk: Point[], strokeStyle: string, lineWidth: number) => {
+    const strokeChunk = (
+      chunk: Point[],
+      strokeStyle: string,
+      lineWidth: number,
+      dash?: number[],
+    ) => {
       if (chunk.length < 2) return;
       this.ctx.save();
       this.ctx.strokeStyle = strokeStyle;
       this.ctx.lineWidth = lineWidth;
+      if (dash) this.ctx.setLineDash(dash);
 
       // First segment - butt cap at chunk start
       this.ctx.lineCap = 'butt';
@@ -585,16 +601,21 @@ export class RendererTrainHandler {
       this.ctx.restore();
     };
 
-    const drawBodySegments = (strokeStyle: string, lineWidth: number) => {
+    const drawBodySegments = (strokeStyle: string, lineWidth: number, dash?: number[]) => {
       for (const chunk of bodyChunks) {
-        strokeChunk(chunk, strokeStyle, lineWidth);
+        strokeChunk(chunk, strokeStyle, lineWidth, dash);
       }
     };
 
     // Draw dark border then mode-tinted fill (white in ATO/auto, light yellow
     // while manually driven, light purple while the route is being torn down).
-    drawBodySegments(p.ink, 5 * s);
-    drawBodySegments(trainBodyFill(trainSnap), 3 * s);
+    // A ghost train's outline is dashed and its fill steel: something is on the
+    // track that the app is only watching, not driving (design_new.md "Ghost
+    // trains", Shown as itself). The dash is the mark; the tint alone would read
+    // as just another mode.
+    const ghostDash = trainSnap.isGhost ? [4 * s, 3 * s] : undefined;
+    drawBodySegments(p.ink, 5 * s, ghostDash);
+    drawBodySegments(trainBodyFill(trainSnap), 3 * s, ghostDash);
 
     // === Draw end markers ===
     if (hasLeadingEnd) {

@@ -60,6 +60,7 @@
     --train-body-manual: #ffe066;
     --train-body-teardown: #c8a2ff;
     --train-body-eb: #8257e5;
+    --train-body-ghost: #8a8a99;
     /* "Locate" flash from the LayoutHighlighter — a bright caution-yellow pulse. */
     --canvas-highlight-locate: #ffd93d;
 }
@@ -93,6 +94,7 @@
     --train-body-manual: #b07d00;
     --train-body-teardown: #7c3aed;
     --train-body-eb: #7048cf;
+    --train-body-ghost: #5a5a66;
     --canvas-highlight-locate: #b07d00;
 }
 
@@ -125,5 +127,6 @@
     --train-body-manual: #ffe066;
     --train-body-teardown: #c8a2ff;
     --train-body-eb: #b07cff;
+    --train-body-ghost: #9a9aa8;
     --canvas-highlight-locate: #ffe46b;
 }

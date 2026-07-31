@@ -138,5 +138,14 @@ describe('RendererTrainHandler pure helpers', () => {
         trainBodyFill({ controlMode: 'manual', teardownPending: true, ebActive: true }),
       ).toBe('#8257e5');
     });
+
+    it('tints a ghost train steel, ahead of every mode hue', () => {
+      // A ghost has no cab, no mode and no brake, so a mode hue would be a lie
+      // about a train the app cannot drive (design_new.md "Ghost trains").
+      expect(trainBodyFill({ isGhost: true })).toBe('#8a8a99');
+      expect(
+        trainBodyFill({ isGhost: true, controlMode: 'manual', ebActive: true }),
+      ).toBe('#8a8a99');
+    });
   });
 });

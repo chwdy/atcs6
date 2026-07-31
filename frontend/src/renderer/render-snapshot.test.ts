@@ -58,6 +58,14 @@ describe('buildRenderSnapshot', () => {
     expect(t1.span.endB).toEqual({ tile: [1, 0], distance_cm: 90, entry_edge: 'E' });
   });
 
+  it('carries is_ghost through as the isGhost render flag', () => {
+    const { network, stateManager } = makeFixtures();
+    (network.trains as Array<{ id: string; is_ghost?: boolean }>)[1].is_ghost = true;
+    const snap = buildRenderSnapshot(network, stateManager);
+    expect(snap.trains['T1'].isGhost).toBe(false);
+    expect(snap.trains['T2'].isGhost).toBe(true);
+  });
+
   it('passes through a null cab unchanged', () => {
     const { network, stateManager } = makeFixtures();
     const snap = buildRenderSnapshot(network, stateManager);
