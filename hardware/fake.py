@@ -30,9 +30,11 @@ class FakeCh347Device:
         self._reg_ptr: Dict[int, int] = {}
         # 16-bit register file per I2C address (INA3221 shunt/bus/config/id).
         self.registers: Dict[int, Dict[int, int]] = {}
+        self.faults: set[str] = set()
 
     # -- lifecycle -------------------------------------------------------
     def open(self) -> None:
+        self._raise_if_fault("open_error")
         self.opened = True
 
     def close(self) -> None:
@@ -40,6 +42,9 @@ class FakeCh347Device:
 
     # -- I2C -------------------------------------------------------------
     def i2c_write(self, addr: int, data: bytes) -> bool:
+        self._raise_if_fault("i2c_write_error")
+        if "stuck_i2c_output" in self.faults:
+            return True
         if addr not in self.present:
             return False
         data = bytes(data)
@@ -57,6 +62,7 @@ class FakeCh347Device:
         return True
 
     def i2c_read(self, addr: int, length: int) -> Tuple[bool, bytes]:
+        self._raise_if_fault("i2c_read_error")
         if addr not in self.present:
             return False, b""
         reg = self._reg_ptr.get(addr)
@@ -77,15 +83,53 @@ class FakeCh347Device:
         return True, bytes(length)   # benign zeros; enough for a MODE1 probe
 
     def i2c_scan(self) -> List[int]:
+        self._raise_if_fault("i2c_read_error")
         return sorted(self.present)
 
     # -- SPI shift registers --------------------------------------------
     def latch_out(self, data: bytes, select: str) -> None:
+        self._raise_if_fault("shift_write_error")
+        if "stuck_shift_output" in self.faults:
+            return
         self.latched[select] = bytes(data)
 
     def load_in(self, count: int, select: str) -> bytes:
+        self._raise_if_fault("shift_read_error")
         raw = bytes(self.inputs.get(select, bytearray(count)))
         return (raw + bytes(count))[:count]
+
+    # -- deterministic fault injection ---------------------------------
+    ALLOWED_FAULTS = frozenset({
+        "disconnect",
+        "open_error",
+        "i2c_write_error",
+        "i2c_read_error",
+        "shift_write_error",
+        "shift_read_error",
+        "stuck_i2c_output",
+        "stuck_shift_output",
+    })
+
+    def set_fault(self, kind: str, enabled: bool = True) -> None:
+        kind = str(kind)
+        if kind not in self.ALLOWED_FAULTS:
+            raise ValueError(f"unknown virtual-hardware fault {kind!r}")
+        if enabled:
+            self.faults.add(kind)
+        else:
+            self.faults.discard(kind)
+
+    def clear_faults(self) -> None:
+        self.faults.clear()
+
+    def fault_status(self) -> Dict[str, bool]:
+        return {kind: kind in self.faults for kind in sorted(self.ALLOWED_FAULTS)}
+
+    def _raise_if_fault(self, operation_fault: str) -> None:
+        if "disconnect" in self.faults:
+            raise ConnectionError("virtual CH347 disconnected")
+        if operation_fault in self.faults:
+            raise OSError(f"injected virtual-hardware fault: {operation_fault}")
 
     # -- test helpers ----------------------------------------------------
     def duty_cycle(self, addr: int, channel: int) -> float:

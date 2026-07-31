@@ -631,8 +631,12 @@ def register(app, state: AppState) -> None:
     def _chip_spec(cfg, chip_id):
         return next((c for c in cfg.chips if c.chip_id == chip_id), None)
 
-    _NOT_DEVELOP = {"status": "error", "error": "session is not running in develop mode"}
+    _NOT_DEVELOP = {
+        "status": "error",
+        "error": "session is not running in Virtual Hardware",
+    }
 
+    @app.route("/api/virtual-hardware", methods=["GET"])
     @app.route("/api/debug/hw", methods=["GET"])
     def debug_hw_state():
         """Read-back of the fake device's per-block / per-switch state for the
@@ -708,8 +712,15 @@ def register(app, state: AppState) -> None:
                     ),
                 }
 
-        return jsonify({"develop_active": True, "blocks": blocks, "switches": switches})
+        return jsonify({
+            "virtual_hardware_active": True,
+            "develop_active": True,
+            "blocks": blocks,
+            "switches": switches,
+            "faults": device.fault_status(),
+        })
 
+    @app.route("/api/virtual-hardware/input/occupancy", methods=["PUT"])
     @app.route("/api/debug/hw/occupancy", methods=["POST"])
     def debug_hw_set_occupancy():
         """Set a block's fake '165 occupancy bit. Body: {block_id, occupied}."""
@@ -740,6 +751,7 @@ def register(app, state: AppState) -> None:
             )
         return jsonify({"ok": True, "block_id": block_id, "occupied": bool(occupied)})
 
+    @app.route("/api/virtual-hardware/input/current", methods=["PUT"])
     @app.route("/api/debug/hw/current", methods=["POST"])
     def debug_hw_set_current():
         """Set a block's fake current-sense reading in mA. Body: {block_id,
@@ -774,6 +786,31 @@ def register(app, state: AppState) -> None:
             else:
                 device.set_ina3221_current(addr, binding.port + 1, amps)
         return jsonify({"ok": True, "block_id": block_id, "current_ma": float(current_ma)})
+
+    @app.route("/api/virtual-hardware/fault", methods=["PUT"])
+    def virtual_hardware_set_fault():
+        device = _require_fake()
+        if device is None:
+            return jsonify(_NOT_DEVELOP), 409
+        data = request.get_json(silent=True) or {}
+        kind = data.get("kind")
+        if not kind:
+            return jsonify({"status": "error", "error": "kind is required"}), 400
+        try:
+            with state.simulation_lock:
+                device.set_fault(str(kind), bool(data.get("enabled", True)))
+        except ValueError as exc:
+            return jsonify({"status": "error", "error": str(exc)}), 400
+        return jsonify({"ok": True, "faults": device.fault_status()})
+
+    @app.route("/api/virtual-hardware/faults/clear", methods=["POST"])
+    def virtual_hardware_clear_faults():
+        device = _require_fake()
+        if device is None:
+            return jsonify(_NOT_DEVELOP), 409
+        with state.simulation_lock:
+            device.clear_faults()
+        return jsonify({"ok": True, "faults": device.fault_status()})
     @app.route("/api/operation/environment", methods=["GET"])
     def get_operation_environment():
         return jsonify({

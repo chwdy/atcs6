@@ -83,6 +83,53 @@ def test_pca9685_duty_and_probe():
     assert PCA9685(FakeCh347Device(), address=0x41).probe() is False
 
 
+def test_virtual_device_can_inject_transport_and_stuck_output_faults():
+    dev = FakeCh347Device(present_addresses={0x40})
+    chip = PCA9685(dev, address=0x40)
+    chip.configure()
+    chip.set_duty_cycle(0, 0.25)
+
+    dev.set_fault("stuck_i2c_output")
+    chip.set_duty_cycle(0, 0.75)
+    assert dev.duty_cycle(0x40, 0) < 0.3
+
+    dev.set_fault("i2c_write_error")
+    with pytest.raises(OSError, match="i2c_write_error"):
+        chip.set_duty_cycle(0, 0.5)
+
+    dev.clear_faults()
+    chip.set_duty_cycle(0, 0.5)
+    assert 0.49 < dev.duty_cycle(0x40, 0) < 0.51
+
+
+def test_virtual_transport_fault_enters_the_runtime_hardware_failure_path():
+    from runtime_payloads import HardwareFailure
+    from tests.test_ghost_trains import build_sim
+
+    network, sim, _detector = build_sim()
+    dev = FakeCh347Device(present_addresses={0x40})
+    specs = [
+        ChipConfig("pwm", "pca9685", i2c_address=0x40),
+        ChipConfig("out", "hc595", spi_select="cs0"),
+    ]
+    _inp, track, _switch = build_real_interfaces(
+        dev,
+        specs,
+        block_track={"BLK_0": ("pwm", 0, 1)},
+        block_occupancy={},
+        switch_output={},
+        output_enable={"pwm": ("out", 7)},
+    )
+    sim.power_controller.output_interface = track
+    sim.power_controller._sim_controller = sim
+    dev.set_fault("i2c_write_error")
+
+    assert sim.power_controller.set_block_voltage("BLK_0", 8.0) is False
+    assert sim.failed_runtime is True
+    assert isinstance(sim.failed_runtime_payload, HardwareFailure)
+    assert dev.latched_bit("cs0", 7) is True
+
+
 def test_hc595_bit_packing_across_cascade():
     dev = FakeCh347Device()
     chip = HC595Chain(dev, select="cs0", chain_length=3)

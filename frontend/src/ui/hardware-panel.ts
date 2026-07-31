@@ -82,6 +82,7 @@ interface DevReadback {
   develop_active?: boolean;
   blocks?: Record<string, { occupancy_bit: boolean | null; current_ma: number | null; volts: number | null; occupied: boolean | null }>;
   switches?: Record<string, any>;
+  faults?: Record<string, boolean>;
 }
 export interface DevRow {
   blockId: string;
@@ -968,9 +969,18 @@ function devSectionHtml(): string {
       <span class="hw-stage-title">Fake inputs</span></div>
     <p class="hw-stage-desc">This session runs on the in-memory fake device. Poke a block's occupancy detector or current channel and watch the real occupancy pipeline react. Current decides only while a block is driven; an idle block reads its digital bit.</p>`;
   const rows = devRows(devBindings, devReadback);
+  const faultKinds = [
+    'disconnect', 'i2c_write_error', 'i2c_read_error',
+    'shift_write_error', 'shift_read_error',
+    'stuck_i2c_output', 'stuck_shift_output',
+  ];
+  const faults = `<div class="hw-dev-rows"><div class="hw-dev-row"><span class="hw-dev-block">Faults</span><span class="hw-dev-read">${faultKinds.map((kind) => {
+    const active = !!devReadback?.faults?.[kind];
+    return `<button type="button" class="btn hw-btn-sm ${active ? 'btn-accent' : 'btn-secondary'}" data-hw="dev-fault" data-id="${kind}">${kind.split('_').join(' ')}</button>`;
+  }).join(' ')} <button type="button" class="btn hw-btn-sm btn-secondary" data-hw="dev-fault-clear">Clear all</button></span></div></div>`;
   if (!rows.length) {
     return `<section class="hw-dev-section">${head}
-      <p class="hw-dev-empty">No block has an occupancy detector or current-sense binding yet. Bind one in a block's editor to poke it here.</p></section>`;
+      <p class="hw-dev-empty">No block has an occupancy detector or current-sense binding yet. Bind one in a block's editor to poke it here.</p>${faults}</section>`;
   }
   const rowHtml = rows.map((r) => {
     const occ = r.hasDigital
@@ -995,7 +1005,7 @@ function devSectionHtml(): string {
     <div class="hw-dev-rows">
       <div class="hw-dev-row hw-dev-head"><span>Block</span><span>Occupancy</span><span>Current</span><span>Reads back</span></div>
       ${rowHtml}
-    </div></section>`;
+    </div>${faults}</section>`;
 }
 
 function controllerStageHtml(): string {
@@ -1394,6 +1404,8 @@ async function onClick(e: Event): Promise<void> {
     case 'develop': return toggleDevelop();
     case 'dev-occ': return void toggleDevOccupancy(id);
     case 'dev-current': return void setDevCurrent(id);
+    case 'dev-fault': return void toggleDevFault(id);
+    case 'dev-fault-clear': return void clearDevFaults();
     case 'save': return void save();
     case 'restart': return void restart();
     case 'jump': return jumpTo(target.dataset.key || '');
@@ -1513,6 +1525,25 @@ async function setDevCurrent(id: string): Promise<void> {
     await pollDev();
   } catch (e: any) {
     showToast(e?.message || 'Failed to set current.', 'error', 3000);
+  }
+}
+
+async function toggleDevFault(kind: string): Promise<void> {
+  const enabled = !devReadback?.faults?.[kind];
+  try {
+    await api.setVirtualHardwareFault(kind, enabled);
+    await pollDev();
+  } catch (e: any) {
+    showToast(e?.message || 'Failed to set Virtual Hardware fault.', 'error', 3000);
+  }
+}
+
+async function clearDevFaults(): Promise<void> {
+  try {
+    await api.clearVirtualHardwareFaults();
+    await pollDev();
+  } catch (e: any) {
+    showToast(e?.message || 'Failed to clear Virtual Hardware faults.', 'error', 3000);
   }
 }
 

@@ -575,14 +575,14 @@ export class API implements LayoutDataClient, SimClient {
 
   /** Read the fake device's per-block / per-switch state for the dev panel. */
   async getHwDebugState(): Promise<any> {
-    return this._request('/debug/hw', {}, 'getHwDebugState');
+    return this._request('/virtual-hardware', {}, 'getVirtualHardwareState');
   }
 
   /** Set a block's fake '165 occupancy bit. */
   async setHwDebugOccupancy(blockId: string, occupied: boolean): Promise<any> {
     return this._request(
-      '/debug/hw/occupancy',
-      { method: 'POST', body: { block_id: blockId, occupied } },
+      '/virtual-hardware/input/occupancy',
+      { method: 'PUT', body: { block_id: blockId, occupied } },
       'setHwDebugOccupancy'
     );
   }
@@ -591,9 +591,25 @@ export class API implements LayoutDataClient, SimClient {
    * while the block is driven. */
   async setHwDebugCurrent(blockId: string, currentMa: number): Promise<any> {
     return this._request(
-      '/debug/hw/current',
-      { method: 'POST', body: { block_id: blockId, current_ma: currentMa } },
+      '/virtual-hardware/input/current',
+      { method: 'PUT', body: { block_id: blockId, current_ma: currentMa } },
       'setHwDebugCurrent'
+    );
+  }
+
+  async setVirtualHardwareFault(kind: string, enabled: boolean): Promise<any> {
+    return this._request(
+      '/virtual-hardware/fault',
+      { method: 'PUT', body: { kind, enabled } },
+      'setVirtualHardwareFault'
+    );
+  }
+
+  async clearVirtualHardwareFaults(): Promise<any> {
+    return this._request(
+      '/virtual-hardware/faults/clear',
+      { method: 'POST', body: {} },
+      'clearVirtualHardwareFaults'
     );
   }
 

@@ -361,3 +361,25 @@ def test_commission_session_opens_on_fake(client):
     data = resp.get_json()
     assert data["ok"] is True
     assert len(data["ports"]) == 8
+
+
+def test_virtual_hardware_fault_api_controls_the_live_fake(client):
+    test_client, state = client
+    _boot_develop_session(state)
+
+    response = test_client.put(
+        "/api/virtual-hardware/fault",
+        json={"kind": "i2c_write_error", "enabled": True},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["faults"]["i2c_write_error"] is True
+    device = hardware_config.get_session_device()
+    with pytest.raises(OSError, match="i2c_write_error"):
+        device.i2c_write(0x40, b"\x00")
+    state_payload = test_client.get("/api/virtual-hardware").get_json()
+    assert state_payload["virtual_hardware_active"] is True
+    assert state_payload["faults"]["i2c_write_error"] is True
+
+    cleared = test_client.post("/api/virtual-hardware/faults/clear").get_json()
+    assert not any(cleared["faults"].values())
