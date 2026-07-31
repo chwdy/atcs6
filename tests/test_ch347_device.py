@@ -12,8 +12,14 @@ Hardware facts these tests encode (verify on the rig before trusting the wiring)
 - A '165 freezes its inputs while its load line is high and reloads when it drops.
 """
 
+import sys
+import threading
+import time
+import types
+
 import pytest
 
+from hardware import ch347_device
 from hardware.ch347_device import Ch347Device
 from hardware.fake import FakeCh347Device
 from hardware.interfaces import build_real_interfaces, gpio_transfer_cs
@@ -241,3 +247,93 @@ def test_build_real_interfaces_wires_a_gpio_latched_595():
     assert device.gpio_transfer_cs == "cs1"
     # Both chips were cleared at build, each through its own latch line.
     assert "cs0" in device.latched and "gpio4" in device.latched
+
+
+# --- hidapi's run-loop trap -------------------------------------------------
+# macOS hidapi pins one process-global IOHID manager to `CFRunLoopGetCurrent()`
+# the first time anything calls it, and IOKit stores that run loop without
+# retaining it. Pinned to a Flask request thread, the run loop is freed when the
+# request ends, and the next `hid.enumerate()` schedules devices onto freed
+# memory — an abort inside IOKit that no `except` can catch. Priming on the main
+# thread at boot is what keeps the pinned run loop alive for the whole process.
+@pytest.fixture
+def unprimed(monkeypatch):
+    """A darwin process that has not yet touched hidapi, with `hid` faked."""
+    monkeypatch.setattr(ch347_device, "_hid_runloop_primed", False)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    calls: list = []
+    monkeypatch.setitem(
+        sys.modules, "hid",
+        types.SimpleNamespace(enumerate=lambda: calls.append("enumerate") or []),
+    )
+    return calls
+
+
+def test_prime_hid_runloop_pins_the_manager_once(unprimed):
+    assert ch347_device.prime_hid_runloop() is True
+    assert ch347_device.prime_hid_runloop() is True
+    # Once is the whole point: hidapi creates and schedules the manager on its
+    # first call, so a second enumeration pins nothing and just costs a USB scan.
+    assert unprimed == ["enumerate"]
+
+
+def test_prime_hid_runloop_refuses_to_run_off_the_main_thread(unprimed):
+    result: list = []
+    worker = threading.Thread(
+        target=lambda: result.append(ch347_device.prime_hid_runloop())
+    )
+    worker.start()
+    worker.join()
+    # Priming here would pin the manager to a thread about to exit — exactly the
+    # crash. Report the bad boot order instead of causing it.
+    assert result == [False]
+    assert unprimed == []
+    assert ch347_device._hid_runloop_primed is False
+
+
+def test_prime_hid_runloop_without_the_usb_driver_is_not_fatal(unprimed, monkeypatch):
+    # `None` in sys.modules is how CPython spells "this import fails".
+    monkeypatch.setitem(sys.modules, "hid", None)
+    assert ch347_device.prime_hid_runloop() is False
+
+
+def test_prime_hid_runloop_is_a_no_op_off_darwin(unprimed, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    # hidraw / libusb keep no run-loop-bound global manager to pin.
+    assert ch347_device.prime_hid_runloop() is True
+    assert unprimed == []
+
+
+def test_opens_are_serialized(monkeypatch):
+    # `CH347HIDDev()` enumerates before it opens, and hidapi's global manager is
+    # unlocked, so two threads must never be inside the constructor at once.
+    guard = threading.Lock()
+    counts = {"in_flight": 0, "peak": 0}
+
+    class SlowHid(FakeHidDev):
+        def __init__(self) -> None:
+            super().__init__()
+            with guard:
+                counts["in_flight"] += 1
+                counts["peak"] = max(counts["peak"], counts["in_flight"])
+            time.sleep(0.02)
+            with guard:
+                counts["in_flight"] -= 1
+
+    monkeypatch.setitem(
+        sys.modules, "ch347api", types.SimpleNamespace(CH347HIDDev=SlowHid)
+    )
+    opened: list = []
+
+    def opener():
+        device = Ch347Device()
+        device.open()
+        opened.append(device._dev)
+
+    threads = [threading.Thread(target=opener) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(opened) == 4
+    assert counts["peak"] == 1

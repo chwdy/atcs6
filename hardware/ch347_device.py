@@ -25,6 +25,7 @@ without the USB driver still boots in sim mode.
 """
 
 import struct
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -56,6 +57,69 @@ _GPIO_OUT_LOW = 0xF0
 _GPIO_OUT_HIGH = 0xF8
 _GPIO_UNCHANGED = 0x00
 
+# Serializes the one call that touches hidapi's process-global state
+# (`CH347HIDDev()` enumerates before it opens). Nothing in hidapi's macOS
+# backend locks that manager, and this process opens transient devices from
+# several threads — every Hardware Setup request runs on its own Flask thread.
+_OPEN_LOCK = threading.Lock()
+
+# Set once `prime_hid_runloop` has pinned hidapi's manager (see below).
+_hid_runloop_primed = False
+
+
+def prime_hid_runloop() -> bool:
+    """Pin hidapi's process-global IOHID manager to the **main** thread's run
+    loop. Call once, from the main thread, before any worker thread can reach
+    the USB driver. Returns True when the manager is pinned (or there is
+    nothing to pin), False when the caller is too late or `hid` is missing.
+
+    macOS hidapi creates one process-global `IOHIDManager` on its first call
+    and schedules it on `CFRunLoopGetCurrent()` — the run loop of whichever
+    thread got there first (`init_hid_manager`). IOKit stores that
+    `CFRunLoopRef` *without retaining it*: the run loop's retain count stays 1,
+    held by the thread alone, so it is deallocated when that thread exits.
+    Every later `hid.enumerate()` re-runs `IOHIDManagerSetDeviceMatching`,
+    whose device applier calls `IOHIDDeviceScheduleWithRunLoop` on the stored
+    pointer — freed memory once that thread is gone. The process then dies
+    inside `CFRunLoopAddSource` with an uncaught Objective-C exception
+    (`-[NSIndirectTaggedPointerString member:]: unrecognized selector`), which
+    is an `abort()`, not something a Python `except` can catch.
+
+    Flask answers every request on its own short-lived thread, so without this
+    the first Hardware Setup action that opens the CH347 (Detect / Rescan, a
+    port test, a commission session) pins the manager to a thread that is gone
+    by the time the response is sent — and the *next* hardware action kills the
+    server. The main thread's run loop lives as long as the process, so priming
+    it costs one USB enumeration at boot and closes the window for good.
+
+    Priming runs even in sim mode: the operator can switch a running session to
+    real mode from the Hardware Setup screen, and by then the main thread is no
+    longer the one asking.
+    """
+    global _hid_runloop_primed
+    if _hid_runloop_primed:
+        return True
+    if sys.platform != "darwin":
+        # Only the macOS backend keeps a run-loop-bound global manager; the
+        # hidraw / libusb backends have nothing to pin.
+        _hid_runloop_primed = True
+        return True
+    if threading.current_thread() is not threading.main_thread():
+        # Priming here would pin the manager to *this* thread's run loop, which
+        # is the bug. Report it instead: the boot order is what needs fixing.
+        return False
+    try:
+        import hid
+    except ImportError:
+        return False   # no USB driver in this build; nothing can reach hidapi
+    try:
+        with _OPEN_LOCK:
+            hid.enumerate()
+    except Exception:
+        return False
+    _hid_runloop_primed = True
+    return True
+
 
 class Ch347Device:
     """One shared transport instance for all three real interfaces + self-test."""
@@ -77,7 +141,13 @@ class Ch347Device:
         from ch347api import CH347HIDDev
 
         try:
-            self._dev = CH347HIDDev()      # opens by VID/PID, interface 1
+            # `CH347HIDDev()` calls `hid.enumerate()` before it opens the path,
+            # and that walks hidapi's unlocked process-global manager. Two
+            # threads opening at once (a Hardware Setup request while a session
+            # is coming up) would race inside IOKit, so opens are serialized —
+            # see `_OPEN_LOCK` / `prime_hid_runloop`.
+            with _OPEN_LOCK:
+                self._dev = CH347HIDDev()  # opens by VID/PID, interface 1
         except TypeError as exc:
             # `ch347api` looks the bridge up by VID/PID and hands the result
             # straight to `hid.open_path`, so "nothing plugged in" arrives as
