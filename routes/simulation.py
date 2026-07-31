@@ -3,6 +3,7 @@ Simulation Control Routes - Server lifecycle, simulation start/stop, network
 payload, network stats/clear, and model-scale configuration.
 """
 
+import os
 import time
 
 from flask import jsonify, request
@@ -118,7 +119,38 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/health", methods=["GET"])
     def health():
-        return jsonify({"ok": True})
+        """Liveness probe, plus enough identity for the client to tell a
+        reconnect apart from a restart.
+
+        `boot_id` changes on every new process. The connection monitor compares
+        it across a dropped connection: same id means the socket blipped and the
+        page is still valid; a different id means a new server is answering and
+        the page must reload (and the previous run's shutdown is worth
+        reporting).
+        """
+        import shutdown
+
+        return jsonify(
+            {
+                "ok": True,
+                "boot_id": shutdown.BOOT_ID,
+                "pid": os.getpid(),
+                "uptime_seconds": round(time.time() - shutdown._started_at, 1),
+            }
+        )
+
+    @app.route("/api/server/shutdown-report", methods=["GET"])
+    def shutdown_report():
+        """How the previous server process ended (shutdown.py).
+
+        `null` when this is the first run on this machine. Otherwise a record
+        whose `clean` flag is the operationally important part: a false value
+        means the process was killed outright and never drove its outputs to
+        the safe state, so the layout may have been left energized.
+        """
+        import shutdown
+
+        return jsonify({"previous": shutdown.read_last_shutdown()})
 
     @app.route("/api/server/restart", methods=["POST"])
     def restart_server():

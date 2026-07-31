@@ -259,9 +259,33 @@ def main() -> None:
 
         ensure_frontend_bundle(skip=args.skip_frontend_build)
 
+    # Supervise the reload child ourselves instead of letting Werkzeug do it.
+    # Werkzeug's reloader parent runs `subprocess.call`, whose bare `except:`
+    # SIGKILLs the child the moment the parent takes a SIGTERM — so the process
+    # that owns the track never runs enter_safe_state(). Our supervisor forwards
+    # the signal and waits for the child to safe its outputs first. See
+    # shutdown.py. This call does not return; nothing below runs in the parent,
+    # so the parent no longer bootstraps a second (unused) runtime either.
+    if not args.no_reload and not is_reloader_child:
+        from shutdown import supervise_reloader_child
+
+        raise SystemExit(supervise_reloader_child(port=args.port))
+
     global network, path_dispatcher, sim_controller, persistence_manager
     global simulation_lock, simulation_running, simulation_speed, last_update_time
     global state, app
+
+    # First thing in the process that owns the hardware, before bootstrap opens
+    # a device and long before Flask starts answering requests on worker
+    # threads. macOS hidapi pins its process-global IOHID manager to the run
+    # loop of whichever thread reaches it first and IOKit does not retain that
+    # run loop, so the first Hardware Setup request to open the CH347 would pin
+    # it to a run loop that dies with the request — and the next hardware
+    # action would abort the process inside IOKit, past any Python `except`.
+    # See hardware.ch347_device.prime_hid_runloop.
+    from hardware.ch347_device import prime_hid_runloop
+
+    prime_hid_runloop()
 
     from bootstrap import bootstrap_runtime
     from runtime import start_all_threads
@@ -274,16 +298,6 @@ def main() -> None:
         # operator can review an earlier run's incidents later.
         event_log_path="event_log.jsonl",
     )
-
-    # design_new.md Power, Hardware interface boundary — loss-of-control
-    # fail-safe: a process shutdown must
-    # drive outputs to the safe state (block voltages 0, switch motors
-    # de-energized). The simulation-stop route issues the same enter_safe_state
-    # call. Registered only on the real `python server.py` boot, not in tests.
-    import atexit
-
-    if sim_controller is not None:
-        atexit.register(sim_controller.enter_safe_state)
 
     simulation_lock = threading.Lock()
     simulation_running = False
@@ -300,6 +314,18 @@ def main() -> None:
         simulation_speed=simulation_speed,
         last_update_time=last_update_time,
     )
+
+    # design_new.md Power, Hardware interface boundary — loss-of-control
+    # fail-safe: a process shutdown must drive outputs to the safe state (block
+    # voltages 0, switch motors de-energized). The simulation-stop route issues
+    # the same enter_safe_state call. shutdown.py owns it for every exit path
+    # this process can observe, reports whether it actually succeeded, and
+    # leaves a record the UI reads back. It also detects a *previous* run that
+    # was killed outright (SIGKILL / host crash), which no handler can catch.
+    # Registered only on the real `python server.py` boot, not in tests.
+    from shutdown import install_shutdown_reporting
+
+    install_shutdown_reporting(sim_controller, state=state, port=args.port)
 
     app = create_app(state)
 
