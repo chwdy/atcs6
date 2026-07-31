@@ -87,6 +87,8 @@ def _develop_opener(cfg):
 
 def register(app, state: AppState) -> None:
     """Register the hardware-configuration routes."""
+    if not hasattr(state, "commissioning_active"):
+        state.commissioning_active = False
 
     @contextmanager
     def _bus_guard():
@@ -513,6 +515,11 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/hardware/commission/open", methods=["POST"])
     def hardware_commission_open():
+        if not state.commissioning_active:
+            return jsonify({
+                "ok": False,
+                "error": "enter commissioning before opening the device",
+            }), 409
         data = request.get_json(silent=True) or {}
         try:
             cfg = hardware_config.config_from_payload(data.get("config", {}))
@@ -785,4 +792,93 @@ def register(app, state: AppState) -> None:
             "status": "success",
             "selected": selected.value,
             "active": state.sim_controller.operation_mode.value,
+        })
+
+    @app.route("/api/operation/commissioning/enter", methods=["POST"])
+    def enter_commissioning():
+        if state.simulation_running:
+            return jsonify({"status": "error", "error": "stop operation first"}), 409
+        selected = operation_environment.get_selected()
+        if selected is OperationMode.SIMULATION:
+            return jsonify({
+                "status": "error",
+                "error": "Simulation has no hardware to commission",
+            }), 409
+        with state.simulation_lock:
+            state.sim_controller.deactivate_environment(
+                [{"code": "commissioning", "message": "commissioning owns the device"}],
+                environment=selected,
+            )
+            hardware_config.close_live_device()
+            state.commissioning_active = True
+        return jsonify({"status": "success", "commissioning": True})
+
+    @app.route("/api/operation/commissioning/exit", methods=["POST"])
+    def exit_commissioning():
+        from hardware import commission
+
+        with state.simulation_lock:
+            commission.get_session().close()
+            state.commissioning_active = False
+        return jsonify({
+            "status": "success",
+            "commissioning": False,
+            "requires_activation": True,
+        })
+
+    def _readiness():
+        return hardware_config.activation_report(
+            hardware_config.get_hardware_config(),
+            operation_environment.get_selected(),
+            state.network.blocks.keys(),
+            state.network.switches.keys(),
+            external_safety_available=hardware_config.external_safety_available(),
+        )
+
+    @app.route("/api/operation/readiness", methods=["GET"])
+    def get_operation_readiness():
+        return jsonify(_readiness())
+
+    @app.route("/api/operation/activate", methods=["POST"])
+    def activate_operation_environment():
+        if state.commissioning_active:
+            return jsonify({
+                "status": "error",
+                "error": "exit commissioning before activation",
+            }), 409
+        if state.simulation_running:
+            return jsonify({
+                "status": "error",
+                "error": "stop operation before activating an environment",
+            }), 409
+        selected = operation_environment.get_selected()
+        report = _readiness()
+        with state.simulation_lock:
+            if not report["ready"]:
+                state.sim_controller.deactivate_environment(
+                    report["issues"], environment=selected
+                )
+                return jsonify({"status": "blocked", **report}), 409
+            try:
+                state.sim_controller.enter_safe_state()
+                hardware_config.close_live_device()
+                interfaces = hardware_config.build_session_interfaces(
+                    hardware_config.get_hardware_config(),
+                    environment=selected,
+                    track_polarity_of=hardware_config.track_polarity_reversed,
+                )
+                state.sim_controller.activate_interfaces(selected, *interfaces)
+            except hardware_config.HardwareBackendUnavailable as exc:
+                issue = {"code": "backend_unavailable", "message": str(exc)}
+                state.sim_controller.deactivate_environment([issue], environment=selected)
+                return jsonify({
+                    "status": "blocked",
+                    "ready": False,
+                    "environment": selected.value,
+                    "issues": [issue],
+                }), 409
+        return jsonify({
+            "status": "success",
+            "environment": selected.value,
+            "active": True,
         })

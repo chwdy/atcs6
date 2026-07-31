@@ -68,6 +68,7 @@ def _real_payload(**overrides):
             "SW_A": {"chip_id": "sw1", "port_main": 5, "port_diverge": 6},
         },
         "block_occupancy": {"B1": {"chip_id": "in1", "port": 2}},
+        "output_enable": {"pwm1": {"chip_id": "sw1", "port": 7}},
     }
     payload.update(overrides)
     return payload
@@ -806,6 +807,8 @@ def test_commission_currents_endpoint_with_fake(client, monkeypatch):
 
     cfg_payload = {"enabled": True,
                    "chips": [{"chip_id": "cur1", "kind": "ina3221", "i2c_address": "0x41"}]}
+    operation_environment.select(OperationMode.REAL_HARDWARE, persist=False)
+    assert client.post("/api/operation/commissioning/enter").status_code == 200
     assert client.post("/api/hardware/commission/open",
                        json={"config": cfg_payload}).get_json()["ok"] is True
     resp = client.post("/api/hardware/commission/currents",
@@ -822,6 +825,7 @@ def test_commission_endpoints_with_fake(client, monkeypatch):
     monkeypatch.setattr(chdev, "open_ch347_device", lambda port=None: fake)
 
     client.put("/api/hardware/config", json=_real_payload())
+    assert client.post("/api/operation/commissioning/enter").status_code == 200
     assert client.post("/api/hardware/commission/open",
                        json={"config": _real_payload()}).get_json()["ok"] is True
     # Port 5 is SW_A's main coil: holding it on would burn the point motor, so
@@ -851,6 +855,8 @@ def test_commission_open_clears_the_shift_out_chain(client, monkeypatch):
     monkeypatch.setattr(chdev, "open_ch347_device", lambda port=None: fake)
     fake.latch_out(bytes([0xFF, 0xFF, 0xFF]), "cs0")     # as if left energized
     assert fake.latched_bit("cs0", 5) is True
+    operation_environment.select(OperationMode.REAL_HARDWARE, persist=False)
+    assert client.post("/api/operation/commissioning/enter").status_code == 200
 
     assert client.post("/api/hardware/commission/open",
                        json={"config": _real_payload()}).get_json()["ok"] is True
@@ -860,16 +866,22 @@ def test_commission_open_clears_the_shift_out_chain(client, monkeypatch):
 
 
 # --- bootstrap wiring ------------------------------------------------------
-def test_bootstrap_falls_back_to_sim_when_device_unavailable(monkeypatch):
+def test_bootstrap_keeps_real_environment_inactive_when_device_unavailable(monkeypatch):
     import bootstrap
     import hardware.ch347_device as chdev
     monkeypatch.setattr(chdev, "open_ch347_device",
                         lambda port=None: (_ for _ in ()).throw(RuntimeError("no device")))
-    hardware_config.apply_updates(_real_payload())   # persists a real config
+    hardware_config.set_output_safety_lease_factory(
+        lambda cfg, device: object()
+    )
+    hardware_config.apply_updates(_real_payload(
+        block_track={}, switch_output={}, block_occupancy={}
+    ))
     _network, _dispatcher, sim, _persistence = bootstrap.bootstrap_runtime(
         demo=False, setup_train=False
     )
-    assert sim.operation_mode == OperationMode.SIM
+    assert sim.operation_mode == OperationMode.REAL_HARDWARE
+    assert sim.environment_active is False
     assert isinstance(sim.input_interface, SimulatedOccupancyDriver)
     assert isinstance(sim.power_controller.output_interface, SimulatedTrackDriver)
     assert isinstance(
@@ -885,11 +897,21 @@ def test_bootstrap_real_mode_wires_ch347_interfaces(monkeypatch):
         TrackDriver,
     )
     _patch_fake_device(monkeypatch)
-    hardware_config.apply_updates(_real_payload())
+    class Lease:
+        def acquire(self): return True
+        def renew(self): return True
+        def revoke(self): return None
+    hardware_config.set_output_safety_lease_factory(
+        lambda cfg, device: Lease()
+    )
+    hardware_config.apply_updates(_real_payload(
+        block_track={}, switch_output={}, block_occupancy={}
+    ))
     _network, _dispatcher, sim, _persistence = bootstrap.bootstrap_runtime(
         demo=False, setup_train=False
     )
     assert sim.operation_mode == OperationMode.REAL
+    assert sim.environment_active is True
     assert isinstance(sim.input_interface, OccupancyDriver)
     assert isinstance(sim.power_controller.output_interface, TrackDriver)
     assert isinstance(

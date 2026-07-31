@@ -82,6 +82,8 @@ class SimulationController:
         input_interface: Optional[Any] = None,
         block_output_interface: Optional[Any] = None,
         switch_output_interface: Optional[Any] = None,
+        environment_active: bool = True,
+        activation_issues: Optional[List[Dict[str, Any]]] = None,
     ):
         self.network = network
         self.path_dispatcher = path_dispatcher
@@ -98,6 +100,8 @@ class SimulationController:
             if isinstance(operation_mode, OperationMode)
             else operation_environment.parse(operation_mode)
         )
+        self.environment_active = bool(environment_active)
+        self.activation_issues = list(activation_issues or [])
         self._input_interface_override = input_interface
         self._block_output_interface_override = block_output_interface
         self._switch_output_interface_override = switch_output_interface
@@ -248,7 +252,7 @@ class SimulationController:
         # train ticks (Phase 1/2/3 skipped) for the rest of this session.
         # There is no release path in v1: the operator restarts the server
         # to begin a new session.
-        if self.failed_runtime:
+        if not self.environment_active or self.failed_runtime:
             return
 
         # The per-train lookahead memo is a tick-local optimization: it is only
@@ -500,7 +504,7 @@ class SimulationController:
         only re-report what is already committed — real work for a guaranteed
         no-op, on every idle pass.
         """
-        if self.operation_mode is OperationMode.SIMULATION:
+        if not self.environment_active or self.operation_mode is OperationMode.SIMULATION:
             return
         if self.failed_runtime:
             return
@@ -548,6 +552,64 @@ class SimulationController:
             self.power_controller.enter_safe_state()
         if self.switch_output_interface is not None:
             self.switch_output_interface.enter_safe_state()
+
+    def activate_interfaces(
+        self,
+        environment: OperationMode,
+        input_interface: Optional[Any],
+        block_output_interface: Optional[Any],
+        switch_output_interface: Optional[Any],
+    ) -> None:
+        """Atomically replace the whole environment boundary while stopped."""
+        self.enter_safe_state()
+        self.environment_active = False
+        self.operation_mode = operation_environment.parse(environment)
+
+        self.power_controller = (
+            BlockPowerController(self.network, output_interface=block_output_interface)
+            if block_output_interface is not None
+            else BlockPowerController(self.network)
+        )
+        self.power_controller._sim_controller = self
+        self.network.power_controller = self.power_controller
+        self.switch_output_interface = (
+            switch_output_interface
+            if switch_output_interface is not None
+            else SimulatedSwitchDriver()
+        )
+        self.network.switch_output_interface = self.switch_output_interface
+        self.input_interface = (
+            input_interface
+            if input_interface is not None
+            else SimulatedOccupancyDriver(self.network, self.controllers)
+        )
+        self.network.input_interface = self.input_interface
+        self.block_occupancy_detector = BlockOccupancyDetector(
+            network=self.network,
+            input_interface=self.input_interface,
+            controllers=self.controllers,
+            notify=lambda kind, message: self.notification_center.emit(
+                source="BlockOccupancyDetector",
+                kind=kind,
+                severity=Severity.WARNING,
+                payload={"message": message},
+            ),
+        )
+        self.failed_runtime = False
+        self.failed_runtime_payload = None
+        self.failed_runtime_at = None
+        self.activation_issues = []
+        self.environment_active = True
+
+    def deactivate_environment(
+        self, issues: List[Dict[str, Any]], environment: Optional[OperationMode] = None
+    ) -> None:
+        """Leave outputs safe and expose why the selected environment is inactive."""
+        self.enter_safe_state()
+        if environment is not None:
+            self.operation_mode = operation_environment.parse(environment)
+        self.environment_active = False
+        self.activation_issues = list(issues)
 
     def _detect_block_occupancy(self) -> None:
         """Step 0 of the tick: read every block's current detector, debounce,
@@ -2032,6 +2094,8 @@ def build_network_payload(
         payload["failed_runtime_conflict"] = None
         payload["operation_mode"] = OperationMode.SIMULATION.value
         payload["operation_environment"] = OperationMode.SIMULATION.value
+        payload["environment_active"] = False
+        payload["activation_issues"] = []
         payload["occupancy_is_real"] = False
         return payload
 
@@ -2086,6 +2150,8 @@ def build_network_payload(
     # ghost-adoption control is offered at all.
     payload["operation_mode"] = sim_controller.operation_mode.value
     payload["operation_environment"] = sim_controller.operation_mode.value
+    payload["environment_active"] = bool(sim_controller.environment_active)
+    payload["activation_issues"] = list(sim_controller.activation_issues)
     payload["occupancy_is_real"] = bool(sim_controller.occupancy_is_real)
 
     # Fatal physical-entry conflict halt (set by enter_failed_runtime). While

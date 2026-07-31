@@ -227,7 +227,20 @@ def bootstrap_runtime(
     operation_environment.load_from_disk()
     hw_cfg = hardware_config.get_hardware_config()
     selected_environment = operation_environment.get_selected()
+    readiness = hardware_config.activation_report(
+        hw_cfg,
+        selected_environment,
+        network.blocks.keys(),
+        network.switches.keys(),
+        external_safety_available=hardware_config.external_safety_available(),
+    )
+    environment_active = bool(readiness["ready"])
+    activation_issues = list(readiness["issues"])
     try:
+        if not environment_active:
+            raise hardware_config.HardwareBackendUnavailable(
+                "; ".join(issue["message"] for issue in activation_issues)
+            )
         input_interface, block_output_interface, switch_output_interface = (
             hardware_config.build_session_interfaces(
                 hw_cfg,
@@ -240,9 +253,15 @@ def bootstrap_runtime(
         )
         operation_mode = selected_environment
     except hardware_config.HardwareBackendUnavailable as exc:
-        print(f"[bootstrap] {exc}; falling back to sim mode")
+        print(f"[bootstrap] {selected_environment.value} inactive: {exc}")
         input_interface = block_output_interface = switch_output_interface = None
-        operation_mode = OperationMode.SIMULATION
+        operation_mode = selected_environment
+        environment_active = False
+        if not activation_issues:
+            activation_issues = [{
+                "code": "backend_unavailable",
+                "message": str(exc),
+            }]
 
     sim_controller = SimulationController(
         network,
@@ -252,6 +271,8 @@ def bootstrap_runtime(
         input_interface=input_interface,
         block_output_interface=block_output_interface,
         switch_output_interface=switch_output_interface,
+        environment_active=environment_active,
+        activation_issues=activation_issues,
     )
     if sim_controller.power_controller:
         sim_controller.power_controller._sim_controller = sim_controller

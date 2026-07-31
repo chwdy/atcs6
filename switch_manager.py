@@ -484,6 +484,11 @@ class SwitchManager:
         switch = self._switch_registry.get(switch_id)
         if switch is None:
             return (False, f"Unknown switch {switch_id}")
+        if (
+            self.simulation_controller is not None
+            and not getattr(self.simulation_controller, "environment_active", True)
+        ):
+            return (False, "selected operating environment is not active")
 
         old_position = int(switch.position)
         success, message = switch.apply_position_change(

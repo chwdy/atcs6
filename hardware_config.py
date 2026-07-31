@@ -262,6 +262,7 @@ _session_device: Optional[Any] = None
 # holds it fails, and it used to fail with "is it plugged in?" on a bridge that
 # was plugged in and working. A borrowed device is never closed by the borrower.
 _live_device: Optional[Any] = None
+_output_safety_lease_factory: Optional[Callable[[HardwareConfig, Any], Any]] = None
 
 
 def get_hardware_config() -> HardwareConfig:
@@ -289,6 +290,28 @@ def get_live_device() -> Optional[Any]:
     interleave with a tick on the same bus.
     """
     return _live_device
+
+
+def set_output_safety_lease_factory(
+    factory: Optional[Callable[[HardwareConfig, Any], Any]],
+) -> None:
+    """Install the board-specific independent safety-gate factory."""
+    global _output_safety_lease_factory
+    _output_safety_lease_factory = factory
+
+
+def external_safety_available() -> bool:
+    return _output_safety_lease_factory is not None
+
+
+def close_live_device() -> None:
+    """Release the current hardware-backed session device after outputs are safe."""
+    global _session_device, _live_device
+    device = _live_device
+    _session_device = None
+    _live_device = None
+    if device is not None:
+        device.close()
 
 
 def is_real(cfg: Optional[HardwareConfig] = None) -> bool:
@@ -1021,6 +1044,73 @@ def coverage_report(
     }
 
 
+def activation_report(
+    cfg: HardwareConfig,
+    environment: OperationMode,
+    block_ids: Iterable[str],
+    switch_ids: Iterable[str],
+    *,
+    external_safety_available: bool = False,
+) -> Dict[str, Any]:
+    """Return the fail-closed readiness verdict for one whole environment."""
+    environment = operation_environment.parse(environment)
+    if environment is OperationMode.SIMULATION:
+        return {"ready": True, "environment": environment.value, "issues": []}
+
+    blocks = sorted(set(block_ids))
+    switches = sorted(set(switch_ids))
+    issues: List[Dict[str, Any]] = []
+
+    def issue(code: str, message: str, ids: Optional[List[str]] = None) -> None:
+        entry: Dict[str, Any] = {"code": code, "message": message}
+        if ids:
+            entry["ids"] = ids
+        issues.append(entry)
+
+    if not cfg.chips:
+        issue("no_chips", "Hardware Setup has no chips")
+    missing_track = [block_id for block_id in blocks if block_id not in cfg.block_track]
+    detected = set(cfg.block_occupancy) | set(cfg.block_occupancy_current)
+    missing_occupancy = [block_id for block_id in blocks if block_id not in detected]
+    missing_switch = [switch_id for switch_id in switches if switch_id not in cfg.switch_output]
+    known_blocks, known_switches = set(blocks), set(switches)
+    stale = sorted(
+        (set(cfg.block_track) | set(cfg.block_occupancy) | set(cfg.block_occupancy_current))
+        - known_blocks
+    )
+    stale_switches = sorted(set(cfg.switch_output) - known_switches)
+    if missing_track:
+        issue("missing_track_binding", "Blocks are missing track-output bindings", missing_track)
+    if missing_occupancy:
+        issue("missing_occupancy_binding", "Blocks are missing occupancy bindings", missing_occupancy)
+    if missing_switch:
+        issue("missing_switch_binding", "Switches are missing throw bindings", missing_switch)
+    if stale:
+        issue("stale_block_binding", "Bindings name blocks not in the loaded layout", stale)
+    if stale_switches:
+        issue("stale_switch_binding", "Bindings name switches not in the loaded layout", stale_switches)
+
+    bound_track_chips = {binding.chip_id for binding in cfg.block_track.values()}
+    missing_inhibit = sorted(bound_track_chips - set(cfg.output_enable))
+    if missing_inhibit:
+        issue(
+            "missing_output_inhibit",
+            "Track chips are missing active-high /OE inhibit bindings",
+            missing_inhibit,
+        )
+    if environment is OperationMode.REAL_HARDWARE and not external_safety_available:
+        issue(
+            "missing_external_safety_lease",
+            "Real Hardware requires a proven independent renewable output-safety lease",
+        )
+
+    return {
+        "ready": not issues,
+        "environment": environment.value,
+        "issues": issues,
+    }
+
+
 # The maps a plain (chip_id, port) binding covers. `block_track`, `switch_output`,
 # and `block_occupancy_current` carry more than one field per entry, so each has
 # its own setter below.
@@ -1322,10 +1412,11 @@ def reset_to_defaults() -> HardwareConfig:
     Production never couples these stores; this helper resets the separate
     environment singleton as well so an isolated test starts in Simulation.
     """
-    global _config, _session_device, _live_device
+    global _config, _session_device, _live_device, _output_safety_lease_factory
     _config = HardwareConfig()
     _session_device = None
     _live_device = None
+    _output_safety_lease_factory = None
     operation_environment.reset_to_defaults()
     return _config
 
@@ -1426,6 +1517,7 @@ def build_session_interfaces(
                 current_sense_min_drive_v=cfg.current_sense_min_drive_v,
                 track_polarity_of=track_polarity_of,
                 watchdog_timeout_s=None,
+                output_safety_lease=None,
             )
         except Exception as exc:
             raise HardwareBackendUnavailable(
@@ -1454,6 +1546,11 @@ def build_session_interfaces(
         ) from exc
 
     try:
+        safety_lease = (
+            _output_safety_lease_factory(cfg, device)
+            if _output_safety_lease_factory is not None
+            else None
+        )
         interfaces = build_real_interfaces(
             device,
             cfg.chips,
@@ -1468,6 +1565,7 @@ def build_session_interfaces(
             # A real session drives real track; arm the loss-of-control watchdog
             # (design_new.md "Power -> Hardware interface boundary").
             watchdog_timeout_s=DEFAULT_WATCHDOG_TIMEOUT_S,
+            output_safety_lease=safety_lease,
         )
     except Exception as exc:
         try:

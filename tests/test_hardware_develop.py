@@ -354,6 +354,7 @@ def test_commission_session_opens_on_fake(client):
     test_client, _ = client
     payload = _develop_payload()
     hardware_config.apply_updates(payload, persist=False)
+    assert test_client.post("/api/operation/commissioning/enter").status_code == 200
     resp = test_client.post("/api/hardware/commission/open", json={"config": payload})
     assert resp.get_json()["ok"] is True
     resp = test_client.post("/api/hardware/commission/inputs", json={"chip_id": "in1"})
