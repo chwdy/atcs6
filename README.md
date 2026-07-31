@@ -143,7 +143,7 @@ ATO reads these to plan its braking curve (it brakes at a configurable fraction 
 
 ```bash
 # From the repo root, using the project's conda env:
-conda run -n general python server.py
+conda run -n general python server.py --port 5007
 ```
 
 On startup the server:
@@ -151,7 +151,7 @@ On startup the server:
 1. runs its own regression test suite and **refuses to boot if anything fails** (this is by design — you never serve a broken simulator),
 2. builds the frontend bundle if it's missing or stale,
 3. loads a demo layout, and
-4. serves the app at **http://localhost:5001**.
+4. serves the app at **http://localhost:5007**.
 
 Open that URL and you'll land in the editor with a worked-example layout already running.
 
@@ -159,7 +159,7 @@ Useful flags:
 
 | Flag | Effect |
 | --- | --- |
-| `--port 5007` | Serve on a different port |
+| `--port PORT` | Override the default port (5007) |
 | `--no-demo` | Start with an empty layout to build from scratch |
 | `--scene demo_3` | Boot a specific example layout (`demo_main`, `demo_3`, `demo_4`, `demo_5`) |
 | `--skip-startup-tests` | Skip the boot-time test gate (faster, for iterating) |

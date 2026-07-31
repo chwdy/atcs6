@@ -39,7 +39,16 @@ Design Principles:
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Iterator,
+    List,
+    Optional,
+    Set,
+    Tuple,
+)
 
 from constants import STOPPED_SPEED_THRESHOLD_KMH
 from enums import BRAKE_MULTIPLIERS, POWER_MULTIPLIERS, Direction, HandlePosition, TrainState
@@ -63,6 +72,18 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+# How far short of a block seam a capped end is parked. Small enough to be
+# invisible against centimetre track geometry, large enough that the end
+# stays inside its tile instead of tipping over into the next one — landing
+# exactly on the seam would put the head on the first tile of the very block
+# the cap is holding it out of (design_new.md "Power", The calculated span
+# never runs ahead of the detector).
+_SEAM_HOLD_EPSILON_CM = 1e-6
+
+# Tile budget for one cap walk. A cap only ever looks one tick's travel
+# ahead, so this is a runaway-geometry backstop, not a reach limit.
+_CAP_WALK_MAX_TILES = 200
 
 # Edge opposites for track geometry
 OPPOSITE_EDGES = {"N": "S", "S": "N", "E": "W", "W": "E"}
@@ -171,6 +192,12 @@ class TrainPhysics:
     # it in place; the result is written back into a fresh TrainSpan for the
     # PhysicsSpanUpdate. None outside a movement step.
     _work: Optional["_SpanWorkState"] = None
+    # The detected block this tick's cap is holding the head out of, or None
+    # when no cap is holding it there (design_new.md "Power", The calculated
+    # span never runs ahead of the detector). Per-tick derived state, recomputed
+    # from the confirmed set every tick and read back through
+    # `pending_entry_block`.
+    _pending_entry_block: Optional[str] = None
 
     # =========================================================================
     # Internal Helpers
@@ -251,6 +278,10 @@ class TrainPhysics:
 
         event_time = time.time()
 
+        # No cap carries across ticks: it is recomputed below from this tick's
+        # confirmed set, and an OFF train that returns early has none at all.
+        self._pending_entry_block = None
+
         # 1. Skip movement if powered off, but still set voltage to 0 and emit
         # the canonical no-boundary callback so controller-owned span/speed
         # storage stays canonical even on OFF ticks.
@@ -304,8 +335,13 @@ class TrainPhysics:
         )
 
 
-        # 9. Calculate distance to move
+        # 9. Calculate distance to move, then hold it inside what the block
+        # detector confirms (design_new.md "Power", The calculated span never
+        # runs ahead of the detector). The cap shortens the step only — it never
+        # touches `new_speed`, so the controller keeps braking and stopping
+        # against the capped span with no branch for having been capped.
         distance_cm = self._speed_to_distance(new_speed, delta)
+        distance_cm = self.cap_distance_to_detected_occupancy(train, distance_cm)
 
         # 10. Move train position. _move_train / _advance_end may force a stop
         # when the train hits the end of track; that stop is captured in
@@ -1411,9 +1447,21 @@ class TrainPhysics:
         head_is_a = controller._head_end_label() == "end_a"
         self._work = _work_from_span(span, head_is_a)
 
+        # Only a block the head can actually reach by going forward can be
+        # reconciled by going forward. A block behind the span — the locomotive
+        # is standing further back than the calculated position put it, and
+        # attribution has just given that block to this train — would otherwise
+        # keep `disagrees()` true for every step of the walk, and the span would
+        # be marched across the layout hunting track it will never cover. Such a
+        # block still belongs to the train; the span simply does not move for it.
+        entered_ahead = self._entered_blocks_ahead(set(entered))
+        if not entered_ahead and not vacated:
+            self._work = None
+            return False
+
         def disagrees() -> bool:
             occupied = set(self._work.occupied_blocks or [])
-            if any(block_id not in occupied for block_id in entered):
+            if any(block_id not in occupied for block_id in entered_ahead):
                 return True
             if any(block_id in occupied for block_id in vacated):
                 return True
@@ -1431,6 +1479,304 @@ class TrainPhysics:
             ps.current_span = _span_from_work(self._work)
         self._work = None
         return moved
+
+    def _entered_blocks_ahead(self, entered: Set[str]) -> Set[str]:
+        """Of `entered`, the blocks the head reaches by travelling forward.
+
+        A pure look — it walks the rail ahead of the head and reports which of
+        the given blocks lie along it, moving nothing. The walk is bounded by the
+        same tile budget the seam cap uses, which is what keeps a block that is
+        behind the span (or on track the points do not lead to) out of the
+        result.
+        """
+        work = self._work
+        if work is None or not entered:
+            return set()
+        if work.head_is_a:
+            tile, distance, entry = (
+                work.end_a_tile,
+                work.end_a_distance_cm,
+                work.end_a_entry_edge,
+            )
+        else:
+            tile, distance, entry = (
+                work.end_b_tile,
+                work.end_b_distance_cm,
+                work.end_b_entry_edge,
+            )
+
+        wanted = set(entered)
+        found: Set[str] = set()
+        for next_tile, _travelled in self._walk_forward_tiles(
+            tile, distance, entry, float("inf")
+        ):
+            block_id = self._block_of_tile(next_tile)
+            if block_id in wanted:
+                found.add(block_id)
+                wanted.discard(block_id)
+                if not wanted:
+                    break
+        return found
+
+    # =========================================================================
+    # Physical-detection reconciliation (hold at the seam)
+    # =========================================================================
+
+    @property
+    def pending_entry_block(self) -> Optional[str]:
+        """The detected block this tick's cap is holding the head out of.
+
+        It carries this train's `track_voltage` for as long as the cap holds,
+        because the locomotive has to be driven onto the very block whose
+        detector releases the cap (design_new.md "Power", Block power-controller
+        role). `SimulationController` also reads it so the de-energize drain
+        leaves that block alone.
+        """
+        return self._pending_entry_block
+
+    def cap_distance_to_detected_occupancy(
+        self, train: "Train", distance_cm: float
+    ) -> float:
+        """Shorten this tick's step so the calculated span stays inside what the
+        detector confirms (design_new.md "Power", The calculated span never runs
+        ahead of the detector).
+
+        The mirror of `reconcile_to_detected_occupancy`, which pulls a span
+        forward to where the detector says the train already is. This holds a
+        span back from where the detector has not yet said the train is: the head
+        stops at the entry seam of the next detected block until that block
+        confirms occupied, and the tail stops at the exit seam of the rearmost
+        detected block the span holds until that block confirms clear. A span is
+        rigid, so the tighter of the two caps decides the whole tick.
+
+        Returns a distance in `[0, distance_cm]` — never negative, so a cap
+        stops a train rather than dragging it backwards. Inert whenever the
+        session detects no blocks (the simulated driver reports none, which is
+        what keeps it from deadlocking against a current map it builds from this
+        very span), and inert for a ghost train, which integrates no motion of
+        its own.
+        """
+        self._pending_entry_block = None
+        if distance_cm < 0:
+            return 0.0
+        if self._work is None or self.network is None:
+            return distance_cm
+        if getattr(train, "is_ghost", False):
+            return distance_cm
+
+        detector = self._block_occupancy_detector()
+        if detector is None:
+            return distance_cm
+        detected = detector.detected_block_ids()
+        if not detected:
+            return distance_cm
+        confirmed = detector.confirmed_occupied
+
+        # Walk a hair past the requested distance so a train already standing on
+        # a seam (parked there by an earlier tick's cap) still finds the block it
+        # is waiting on, and keeps it energized.
+        limit_cm = distance_cm + 2 * _SEAM_HOLD_EPSILON_CM
+
+        allowed = distance_cm
+        head_cap, pending = self._head_entry_cap(detected, confirmed, limit_cm)
+        if head_cap is not None:
+            allowed = min(allowed, max(0.0, head_cap - _SEAM_HOLD_EPSILON_CM))
+            self._pending_entry_block = pending
+        tail_cap = self._tail_exit_cap(detected, confirmed, limit_cm)
+        if tail_cap is not None:
+            allowed = min(allowed, max(0.0, tail_cap - _SEAM_HOLD_EPSILON_CM))
+        if allowed > 0.0 and self._held_block_behind(train, detected, confirmed):
+            return 0.0
+        return allowed
+
+    def _head_entry_cap(
+        self, detected: Set[str], confirmed: Set[str], limit_cm: float
+    ) -> Tuple[Optional[float], Optional[str]]:
+        """Distance the head may travel before it would enter a detected block
+        the detector has not confirmed, plus that block's id.
+
+        `(None, None)` when no such block lies within `limit_cm`.
+
+        **A held head always ends up inside a block.** Switch tiles belong to no
+        block and carry no detection, so a run of them between two blocks is
+        track nothing can vouch for. Stopping the head there would claim a
+        position no detector supports, and it would strand the train: a head in
+        no block has no current block to resolve, so `PathDispatcher.create_path`
+        can no longer plan for it. The hold is therefore taken at the exit seam
+        of the last block the head is actually in, not at the far block's edge.
+
+        The one head this cannot hold is one already standing outside every
+        block. Rather than pin it there for good, it is left free to run to the
+        next block boundary, where the ordinary hold applies again.
+        """
+        work = self._work
+        if work is None:
+            return None, None
+        if work.head_is_a:
+            tile, distance, entry = (
+                work.end_a_tile,
+                work.end_a_distance_cm,
+                work.end_a_entry_edge,
+            )
+        else:
+            tile, distance, entry = (
+                work.end_b_tile,
+                work.end_b_distance_cm,
+                work.end_b_entry_edge,
+            )
+
+        current_block = self._block_of_tile(tile)
+        if current_block is None:
+            return None, None
+
+        # Where the head would leave the block it is in now. On a run straight
+        # from one block into the next this is the next block's entry seam, so
+        # the hold is unchanged; across a switch it is the earlier seam, which is
+        # the last point the head is still somewhere a detector answers for.
+        leaves_current_block_at: Optional[float] = None
+
+        for next_tile, travelled in self._walk_forward_tiles(
+            tile, distance, entry, limit_cm
+        ):
+            block_id = self._block_of_tile(next_tile)
+            if block_id != current_block and leaves_current_block_at is None:
+                leaves_current_block_at = travelled
+            if block_id is None or block_id == current_block:
+                continue
+            if block_id in detected and block_id not in confirmed:
+                return leaves_current_block_at, block_id
+            current_block = block_id
+            leaves_current_block_at = None
+        return None, None
+
+    def _held_block_behind(
+        self, train: "Train", detected: Set[str], confirmed: Set[str]
+    ) -> Optional[str]:
+        """A confirmed detected block this train holds that its span neither
+        covers nor can reach by going forward — the locomotive standing behind
+        the calculated span, most plainly because reversed rail wiring drove it
+        opposite to the commanded direction.
+
+        Attribution hands such a block to the adjacent ordinary train rather
+        than minting a ghost, and the forward-only snap deliberately does not
+        move the span for it. The tail rule still applies to it: the tail may
+        not run away from a block whose detector says this train is standing
+        there, so while one exists the whole span is pinned (a span is rigid).
+        The pin releases through the ordinary vacate path — the loco returns,
+        the block's current stops, the confirmed clear releases `occupied_by`.
+        """
+        work = self._work
+        network = self.network
+        if work is None or network is None:
+            return None
+        span_blocks = set(work.occupied_blocks or [])
+        stray: Set[str] = set()
+        for block_id, block in network.blocks.items():
+            if getattr(block, "occupied_by", None) != train.train_id:
+                continue
+            if block_id in span_blocks:
+                continue
+            if block_id in detected and block_id in confirmed:
+                stray.add(block_id)
+        if not stray:
+            return None
+        # A held confirmed block the head CAN reach forward is the snap's job,
+        # not a pin — it only sits outside the span for the instants the
+        # forward walk has not yet covered it.
+        behind = stray - self._entered_blocks_ahead(stray)
+        return min(behind) if behind else None
+
+    def _tail_exit_cap(
+        self, detected: Set[str], confirmed: Set[str], limit_cm: float
+    ) -> Optional[float]:
+        """Distance the tail may travel before it would leave a detected block
+        the detector still confirms occupied, or None when nothing holds it.
+
+        The span drops a block when its rearmost tile moves out of it, so the
+        stop is the first tile ahead that belongs to any other block — including
+        a switch tile, which belongs to none.
+        """
+        work = self._work
+        if work is None:
+            return None
+        if work.head_is_a:
+            tile, distance, entry = (
+                work.end_b_tile,
+                work.end_b_distance_cm,
+                work.end_b_entry_edge,
+            )
+        else:
+            tile, distance, entry = (
+                work.end_a_tile,
+                work.end_a_distance_cm,
+                work.end_a_entry_edge,
+            )
+
+        tail_block = self._block_of_tile(tile)
+        if tail_block is None or tail_block not in detected:
+            return None
+        if tail_block not in confirmed:
+            return None
+
+        for next_tile, travelled in self._walk_forward_tiles(
+            tile, distance, entry, limit_cm
+        ):
+            if self._block_of_tile(next_tile) != tail_block:
+                return travelled
+        return None
+
+    def _walk_forward_tiles(
+        self,
+        tile: Tuple[int, int],
+        distance_cm: float,
+        entry_edge: str,
+        limit_cm: float,
+    ) -> Iterator[Tuple[Tuple[int, int], float]]:
+        """Walk forward from one span end, yielding `(tile, travelled_cm)` for
+        each tile the end would reach, where `travelled_cm` is how far the end
+        moves to sit exactly on that tile's entry seam.
+
+        Stops at `limit_cm`, at the end of track, and at the tile budget. Records
+        nothing and mutates nothing — the movement helpers own actually moving
+        the train.
+        """
+        current_tile = tile
+        current_entry = entry_edge
+        tile_length = self._get_tile_length_cm(current_tile)
+        travelled = max(0.0, tile_length - distance_cm) if tile_length > 0 else 0.0
+
+        for _ in range(_CAP_WALK_MAX_TILES):
+            if travelled > limit_cm:
+                return
+            exit_edge = self._calculate_exit_edge(current_tile, current_entry)
+            if not exit_edge:
+                return
+            next_tile = self._get_neighbor_tile(current_tile, exit_edge)
+            if next_tile is None:
+                return
+            next_entry = self._entry_edge_on_next(current_tile, exit_edge, next_tile)
+            yield next_tile, travelled
+            current_tile = next_tile
+            current_entry = next_entry
+            length = self._get_tile_length_cm(current_tile)
+            if length > 0:
+                travelled += length
+
+    def _block_of_tile(self, tile: Tuple[int, int]) -> Optional[str]:
+        """The block a tile belongs to, or None for a tile that belongs to none
+        (a switch tile carries no block and no detection)."""
+        if self.network is None:
+            return None
+        track = self.network.tracks.get(tile)
+        return getattr(track, "block_id", None) if track else None
+
+    def _block_occupancy_detector(self):
+        """The runtime's `BlockOccupancyDetector`, or None in an isolated unit
+        test. Reached through the `BlockManager` back-reference the network
+        already carries, the same way `_ghost_tracker` reaches its tracker."""
+        manager = getattr(self.network, "block_manager", None)
+        sim = getattr(manager, "simulation_controller", None)
+        return getattr(sim, "block_occupancy_detector", None)
 
     def _ghost_tracker(self):
         """The runtime's `GhostTrainTracker`, or None in an isolated unit test.
@@ -1584,20 +1930,37 @@ class TrainPhysics:
             power_controller.set_block_voltage(block_id, voltage)
 
     def _held_blocks_for_train(self, train: "Train") -> Set[str]:
-        """Blocks this train holds: occupied span plus reserved-ahead corridor.
+        """Blocks this train holds: occupied span, blocks the detector confirms
+        it is standing on, and its reserved-ahead corridor.
 
-        Occupied blocks come from the movement scratchpad (the physics-canonical
-        view of where the train is this tick). The reserved-ahead corridor is the
+        Span blocks come from the movement scratchpad (the physics-canonical view
+        of where the train is this tick). The reserved-ahead corridor is the
         dispatcher-owned future authority, read from the BlockManager's per-train
-        reserved index (`reserved_blocks_for_train`) — the O(reserved) reverse of
-        `Block.reserved_for_train`, not an all-blocks scan.
+        reserved index (`reserved_blocks_for_train`).
+
+        The detector half exists because the two views can disagree about where
+        the train is, and the rail must never go dead under a locomotive on
+        either reading. A block the detector confirms this train is standing on —
+        one attribution handed it because it neighbours the span (design_new.md
+        "Power", Attribution) — is not in the calculated span and need not be
+        reserved, so without this it would carry no voltage at all and the
+        locomotive standing on it could not move. It is read by scanning
+        `occupied_by` rather than from an index, because that field has writers
+        outside `BlockManager` (adoption's re-key, initial placement) and a
+        hand-maintained reverse index would drift from them.
         """
         held = self._get_blocks_for_train(train)
         if self.network is None:
             return held
+        train_id = train.train_id
+        held |= {
+            block_id
+            for block_id, block in self.network.blocks.items()
+            if getattr(block, "occupied_by", None) == train_id
+        }
         block_manager = getattr(self.network, "block_manager", None)
         if block_manager is not None:
-            held |= block_manager.reserved_blocks_for_train(train.train_id)
+            held |= block_manager.reserved_blocks_for_train(train_id)
         else:
             # Fallback for a network with no BlockManager wired (isolated unit
             # tests). Production networks always create one (RailwayNetwork).
@@ -1616,6 +1979,13 @@ class TrainPhysics:
         energized set is exactly the held set (`_held_blocks_for_train`:
         occupied + reserved-ahead).
 
+        The one block outside the held set is this train's `pending-entry block`
+        — the detected block a cap is holding its head out of. Its calculated
+        span stops short of that block, so without this the rail the locomotive
+        has to roll onto to release its own cap would be dead. A train driving
+        under a reservation already has that block through the reserved-ahead
+        half; this reaches the one driving without one.
+
         A ghost train commands no `track_voltage` at all, so its set is empty and
         a block held only by a ghost is driven to `0` by the de-energize drain.
         Putting voltage on the rail under a train the app cannot steer or stop is
@@ -1624,7 +1994,10 @@ class TrainPhysics:
         """
         if getattr(train, "is_ghost", False):
             return set()
-        return self._held_blocks_for_train(train)
+        energized = self._held_blocks_for_train(train)
+        if self._pending_entry_block is not None:
+            energized.add(self._pending_entry_block)
+        return energized
 
     # =========================================================================
     # Track Geometry Helpers

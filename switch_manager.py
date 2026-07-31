@@ -232,7 +232,9 @@ class SwitchManager:
             # (releasing the locks; it does not restore an earlier
             # `Switch.position`). In simulation this never fails — the simulated
             # interface accepts every throw.
-            fail_reason = self._drive_throw(switch, int(req.locked_state))
+            fail_reason = self._drive_throw(
+                switch, int(req.locked_state), force=True
+            )
             if fail_reason is not None:
                 self._emit_throw_diagnostic(req.switch_id, fail_reason)
                 switch.release_lock(
@@ -556,7 +558,9 @@ class SwitchManager:
             return getattr(self.network, "switch_output_interface", None)
         return None
 
-    def _drive_throw(self, switch: "Switch", target_state: int) -> Optional[str]:
+    def _drive_throw(
+        self, switch: "Switch", target_state: int, *, force: bool = False
+    ) -> Optional[str]:
         """Drive the physical throw (design_new.md "Power", Switch throw output).
 
         Behaves the same for every caller, and callers issue it on every
@@ -576,6 +580,16 @@ class SwitchManager:
         throw is issued. That is what aligns the physical layout to the model on
         the first command that names each switch.
 
+        `force` drops even that skip, and lock acquisition uses it. Having
+        driven a coil once is not evidence the points seated: a solenoid can
+        stall, bounce back, or be moved by hand afterwards, and the motor
+        reports nothing either way. A train is about to run over these points,
+        and points sitting on the wrong side feed that train's `track voltage`
+        down the other branch, lighting the occupancy detector on a block the
+        train is nowhere near. Re-driving the coil costs one pulse and removes
+        the whole failure, so acquisition always throws rather than reasoning
+        about whether it needs to.
+
         The throw is blind: a solenoid point motor reports nothing back, so
         there is no confirmation step and `None` is not a claim that the points
         moved. The one failure this can report is a command that never left the
@@ -586,9 +600,10 @@ class SwitchManager:
         iface = self._resolve_switch_output()
         if iface is None:
             return None
-        last = iface.get_last_throw(switch.switch_id)
-        if last is not None and int(last) == int(target_state):
-            return None                    # the motor was last driven there
+        if not force:
+            last = iface.get_last_throw(switch.switch_id)
+            if last is not None and int(last) == int(target_state):
+                return None                # the motor was last driven there
         if not iface.set_throw(switch.switch_id, int(target_state)):
             return "throw not issued (no hardware binding for this switch)"
         return None

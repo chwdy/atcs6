@@ -14,10 +14,11 @@ leaves everything here unchanged.
 
 import logging
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from block_occupancy import OccupancyInput
 from block_power import MAX_TRACK_VOLTAGE, TrackOutput
+from constants import LIGHTING_CLEAR_HOLD_READS
 from switch_power import SwitchOutput
 
 from hardware.catalog import (
@@ -53,6 +54,12 @@ CurrentBindingMap = Dict[str, Tuple[str, int, float, float]]
 
 # Direct-call fallback deadband; the config layer passes its own resolved value.
 _IDLE_DEADBAND_V = 0.25
+# Direct-call fallback for the drive level at or above which the current-sense
+# channel is trusted to decide occupancy; below it a drive is too weak to put a
+# readable load on the sensor (see `OccupancyDriver`). It sits above the default
+# `SpeedProfile.lighting_voltage`, because a lit-but-stationary train must land
+# in the lighting zone rather than be judged as driven.
+_CURRENT_SENSE_MIN_DRIVE_V = 4.0
 
 
 def _resolved_bus(spec: Any, ck: Any) -> str:
@@ -142,8 +149,8 @@ class TrackDriver(TrackOutput):
     inputs of that block's H-bridge, chosen independently (not a fixed pair).
 
     `polarity_of` reports whether a block's rails are wired the opposite way
-    round from the nominal-positive sense its geometry implies
-    (`Block.polarity_reversed`); when it answers True the two channels trade
+    round from the nominal-positive sense its geometry implies (the rail
+    binding's `reversed` flag); when it answers True the two channels trade
     places, so a positive commanded voltage drives what the binding calls
     `reverse`. It is a callable rather than a snapshot so an operator flipping a
     block in the editor takes effect on the next write, without rebuilding the
@@ -300,19 +307,59 @@ def resolve_detector_bit(bit: bool, *, active_low: bool) -> bool:
 
 class OccupancyDriver(OccupancyInput):
     """Hybrid block occupancy: a digital detector ('165) plus a current-sense
-    channel (INA3221 or INA219), selected per block by whether the block is being
-    driven.
+    channel (INA3221 or INA219), selected per block by how hard the block is
+    being driven.
 
-    While a block is powered its rail voltage is a poor occupancy signal, so the
-    current channel decides (abs current above the block's threshold). When the
-    block is idle the '165 detector decides. `voltage_of` reports the last
-    commanded block voltage (from the real track interface); a block over the
-    deadband is "driven". A block may have both sources, only one, or neither:
+    `voltage_of` reports the last commanded block voltage (from the real track
+    interface). Its magnitude puts the block in one of three zones, because the
+    two detectors are trustworthy in different ones:
 
-      - driven + has current   -> current channel
+      - **idle** (|V| <= `idle_deadband_v`): nothing is driving the rails, so
+        there is no current to sense and the '165 detector decides.
+      - **driven** (|V| >= `current_sense_min_drive_v`): the rail voltage swamps
+        the '165's comparator, but a motor under real drive draws a current the
+        sense channel reads cleanly, so the current channel decides.
+      - **lighting** (between the two): a stopped-but-lit locomotive. **No
+        single read may clear a block here.** The drive is strong enough to
+        disturb the '165 (a low-duty PWM makes its bit flicker with sampling
+        phase) yet far too weak to put a readable load on the current channel,
+        which just reads ~0 mA. Either source may CONFIRM on one read, but a
+        clear has to be earned: the block is let go only after BOTH sources
+        have read clear for `LIGHTING_CLEAR_HOLD_READS` consecutive reads, and
+        until then the last reported value holds.
+
+    That release rule is not merely a debounce, and neither was the indefinite
+    hold it replaced. Occupancy and drive are a closed loop — a block that reads
+    clear is released, which cuts its voltage, which changes which detector
+    answers — so a false clear in the lighting zone used to send the block
+    around a confirm/vacate limit cycle at a few hertz, with the track voltage
+    pulsing in step. The sustained-agreement window breaks that loop at its one
+    open link: a detector flickering under PWM asserts occupied somewhere inside
+    the window and resets the count, so it delays the release rather than racing
+    it, and the cycle cannot re-form.
+
+    Holding forever broke the loop too, but it made the hold a latch: a block
+    both sources called clear stayed OCCUPIED for as long as software kept
+    driving it, and software kept driving it *because* it was occupied. Nothing
+    physical could ever release it. Requiring sustained agreement keeps the
+    stability and gives the latch an exit.
+
+    The trade is deliberate and fail-safe in the direction that matters: a
+    single blind read never clears a block, and a locomotive that keeps its
+    detector alive holds its block indefinitely. The exposure it accepts is a
+    locomotive that goes invisible to BOTH sources for the whole window — one
+    drawing under `threshold_ma` whose '165 also reads clear. Raising the
+    profile's `lighting_voltage` is what keeps a real lit loco above that floor;
+    the window only decides how long a genuinely silent block waits.
+
+    A block may have both sources, only one, or neither:
+
+      - driven + has current    -> current channel
+      - lighting                -> either source confirms; clears only on
+                                   sustained agreement from both
       - otherwise + has digital -> '165 bit
-      - idle + only current    -> current channel (reads ~0 with no drive; best effort)
-      - no binding             -> not detected (False)
+      - idle + only current     -> current channel (reads ~0 with no drive; best effort)
+      - no binding              -> not detected (False)
 
     Detector polarity is resolved here too. A comparator with no inverter stage
     (an LM339 driving the '165 directly) pulls its output LOW when a train draws
@@ -324,7 +371,7 @@ class OccupancyDriver(OccupancyInput):
 
     This all stays below `read_block_currents()`, so the detector above the
     interface still sees only a per-block boolean — it never learns which source
-    answered, or what polarity the wiring uses.
+    answered, what zone it was in, or what polarity the wiring uses.
     """
 
     def __init__(
@@ -336,6 +383,8 @@ class OccupancyDriver(OccupancyInput):
         voltage_of: Optional[Callable[[str], float]] = None,
         idle_deadband_v: float = _IDLE_DEADBAND_V,
         digital_active_low: Optional[Dict[str, bool]] = None,
+        current_sense_min_drive_v: float = _CURRENT_SENSE_MIN_DRIVE_V,
+        lighting_clear_hold_reads: int = LIGHTING_CLEAR_HOLD_READS,
     ) -> None:
         self._digital_chips = digital_chips
         self._digital = digital_bindings
@@ -344,28 +393,127 @@ class OccupancyDriver(OccupancyInput):
         self._voltage_of = voltage_of
         self._idle_deadband_v = idle_deadband_v
         self._digital_active_low = digital_active_low or {}
+        self._current_sense_min_drive_v = current_sense_min_drive_v
+        self._lighting_clear_hold_reads = lighting_clear_hold_reads
+        # What this driver last reported per block. Read only in the lighting
+        # zone, where it is what stops a blind read from clearing a block.
+        self._last_reported: Dict[str, bool] = {}
+        # Consecutive lighting-zone reads on which BOTH sources called a block
+        # clear. Reset by any occupied read and by leaving the zone, so it only
+        # ever counts unbroken agreement; at the threshold the block is released
+        # and the count starts over.
+        self._lighting_clear_counts: Dict[str, int] = {}
+        # Per-block detail of the last read_block_currents() call — which source
+        # answered, what it measured, and the commanded drive state at the time.
+        # Diagnostic read-back for the raw-occupancy debug endpoint only.
+        self._last_read_detail: Dict[str, Dict[str, Any]] = {}
+
+    def detected_block_ids(self) -> Set[str]:
+        """Every block wired to a detector — the union of the two occupancy
+        binding maps, which is exactly the key set `read_block_currents()`
+        answers for."""
+        return set(self._digital) | set(self._current)
 
     def read_block_currents(self) -> Dict[str, bool]:
         digital_cache: Dict[str, bytes] = {}
         result: Dict[str, bool] = {}
+        detail: Dict[str, Dict[str, Any]] = {}
         for block_id in set(self._digital) | set(self._current):
-            driven = self._is_driven(block_id)
-            if driven and block_id in self._current:
-                result[block_id] = self._read_current(block_id)
+            zone = self._drive_zone(block_id)
+            if zone != "lighting":
+                # The window counts unbroken agreement inside the zone only. A
+                # block that left it was answered by a source trusted to clear
+                # on its own, so nothing carries over when it comes back.
+                self._lighting_clear_counts[block_id] = 0
+            entry: Dict[str, Any] = {
+                "zone": zone,
+                "driven": zone == "driven",
+                "commanded_volts": (
+                    round(self._voltage_of(block_id), 2)
+                    if self._voltage_of is not None
+                    else None
+                ),
+            }
+            if zone == "lighting":
+                # No single read can clear a block here — see the class
+                # docstring. Both sources are read (either may CONFIRM), and the
+                # last reported value holds through a both-clear read until they
+                # have agreed for `_lighting_clear_hold_reads` reads running.
+                entry["source"] = "held"
+                digital = (
+                    self._read_digital(block_id, digital_cache, entry)
+                    if block_id in self._digital
+                    else False
+                )
+                current = (
+                    self._read_current(block_id, entry)
+                    if block_id in self._current
+                    else False
+                )
+                held = self._last_reported.get(block_id, False)
+                if digital or current:
+                    self._lighting_clear_counts[block_id] = 0
+                    entry["clear_count"] = 0
+                    entry["held_from_previous"] = False
+                    result[block_id] = True
+                else:
+                    count = self._lighting_clear_counts.get(block_id, 0) + 1
+                    released = count >= self._lighting_clear_hold_reads
+                    # Start the window over on release, so a block that
+                    # re-confirms and goes quiet again waits the full window
+                    # rather than dropping out on its next silent read.
+                    self._lighting_clear_counts[block_id] = 0 if released else count
+                    entry["clear_count"] = 0 if released else count
+                    entry["clear_hold_reads"] = self._lighting_clear_hold_reads
+                    entry["held_from_previous"] = held and not released
+                    result[block_id] = held and not released
+            elif zone == "driven" and block_id in self._current:
+                entry["source"] = "current"
+                result[block_id] = self._read_current(block_id, entry)
             elif block_id in self._digital:
-                result[block_id] = self._read_digital(block_id, digital_cache)
+                entry["source"] = "digital"
+                result[block_id] = self._read_digital(block_id, digital_cache, entry)
             elif block_id in self._current:
-                result[block_id] = self._read_current(block_id)
+                entry["source"] = "current"
+                result[block_id] = self._read_current(block_id, entry)
             else:
+                entry["source"] = "none"
                 result[block_id] = False
+            detail[block_id] = entry
+        self._last_read_detail = detail
+        self._last_reported = dict(result)
         return result
 
-    def _is_driven(self, block_id: str) -> bool:
-        if self._voltage_of is None:
-            return False
-        return abs(self._voltage_of(block_id)) > self._idle_deadband_v
+    def last_read_detail(self) -> Dict[str, Dict[str, Any]]:
+        """Per-block detail of the last read: source ("current"/"digital"), the
+        measured mA or raw bit, and the commanded drive state. Diagnostic only."""
+        return self._last_read_detail
 
-    def _read_digital(self, block_id: str, cache: Dict[str, bytes]) -> bool:
+    def _drive_zone(self, block_id: str) -> str:
+        """Which detector regime this block's COMMANDED voltage puts it in:
+        "idle", "lighting", or "driven" (see the class docstring).
+
+        Commanded, not measured: the question is how hard software is driving
+        the rails, which is what decides whether a detector can be believed.
+        """
+        if self._voltage_of is None:
+            return "idle"
+        volts = abs(self._voltage_of(block_id))
+        if volts <= self._idle_deadband_v:
+            return "idle"
+        if volts >= self._current_sense_min_drive_v:
+            return "driven"
+        return "lighting"
+
+    def _is_driven(self, block_id: str) -> bool:
+        return self._drive_zone(block_id) == "driven"
+
+    def _read_digital(
+        self,
+        block_id: str,
+        cache: Dict[str, bytes],
+        detail: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         chip_id, port = self._digital[block_id]
         chip = self._digital_chips.get(chip_id)
         if chip is None:
@@ -377,13 +525,17 @@ class OccupancyDriver(OccupancyInput):
         if byte_idx >= len(data):
             return False
         bit = bool(data[byte_idx] & (1 << bit_idx))
+        if detail is not None:
+            detail["raw_bit"] = bit
         # Convert the wiring's polarity to the interface's meaning: True is
         # always "current detected", whichever way the detector drives the line.
         return resolve_detector_bit(
             bit, active_low=self._digital_active_low.get(chip_id, False)
         )
 
-    def _read_current(self, block_id: str) -> bool:
+    def _read_current(
+        self, block_id: str, detail: Optional[Dict[str, Any]] = None
+    ) -> bool:
         chip_id, port, baseline_a, threshold_a = self._current[block_id]
         chip = self._current_chips.get(chip_id)
         if chip is None:
@@ -391,7 +543,13 @@ class OccupancyDriver(OccupancyInput):
         try:
             current = chip.read_current(port + 1)   # port 0 -> sensor channel 1
         except Exception:
+            if detail is not None:
+                detail["current_ma"] = None
             return False
+        if detail is not None:
+            detail["current_ma"] = round(current * 1000.0, 3)
+            detail["threshold_ma"] = round(threshold_a * 1000.0, 3)
+            detail["baseline_ma"] = round(baseline_a * 1000.0, 3)
         return abs(current - baseline_a) >= threshold_a
 
 
@@ -439,6 +597,8 @@ def build_real_interfaces(
     idle_deadband_v: float = _IDLE_DEADBAND_V,
     track_polarity_of: Optional[Callable[[str], bool]] = None,
     watchdog_timeout_s: Optional[float] = None,
+    current_sense_min_drive_v: float = _CURRENT_SENSE_MIN_DRIVE_V,
+    lighting_clear_hold_reads: int = LIGHTING_CLEAR_HOLD_READS,
 ) -> Tuple[Optional[OccupancyInput], Optional[TrackOutput], Optional[SwitchOutput]]:
     """Instantiate + initialize chips grouped by role and wire the three
     interfaces. A role with no chip returns `None` (its simulated default is
@@ -447,7 +607,7 @@ def build_real_interfaces(
     of the '165 digital detector and the INA3221 current channels; the returned
     input interface selects between them per block by drive state.
 
-    `track_polarity_of` reports a block's `polarity_reversed` wiring flag to the
+    `track_polarity_of` reports a block's rail-binding `reversed` flag to the
     track driver, which swaps that block's two rails when resolving its binding.
 
     `watchdog_timeout_s` arms the loss-of-control watchdog on both output
@@ -534,6 +694,35 @@ def build_real_interfaces(
     # beats a burning solenoid nobody is watching.
     _assert_switch_ports_low(switch_chips, switch_output)
 
+    def _resync_hardware() -> None:
+        """Redo the live init above against the chips already built.
+
+        A reopened USB bridge is a blank bridge, and a bridge that dropped
+        because its supply sagged probably took the chips down with it: a '595
+        that lost power comes back with undefined register contents, which on a
+        coil bit is a point motor burning with nobody watching. So this repeats
+        the build's own order — chains low first, then the slow I2C setup — and
+        ends on the same bindings check. Track voltage is deliberately not
+        restored: `configure()` leaves every PWM channel at zero, and the
+        control loop re-commands voltage on its next tick anyway, so the safe
+        state is both the correct landing point and a self-healing one.
+        """
+        for chip in switch_chips.values():
+            chip.all_off()
+        for chip in track_chips.values():
+            chip.configure()
+        for chip in current_chips.values():
+            chip.configure()
+        for _tc_id, (drive_chip_id, port) in (output_enable or {}).items():
+            drive = switch_chips.get(drive_chip_id)
+            if drive is not None:
+                drive.set_output(port, False)
+        _assert_switch_ports_low(switch_chips, switch_output)
+
+    register_hook = getattr(device, "add_reconnect_hook", None)
+    if register_hook is not None:      # the fake device has no link to lose
+        register_hook(_resync_hardware)
+
     input_iface: Optional[OccupancyInput] = None
     if digital_chips or current_chips:
         input_iface = OccupancyDriver(
@@ -543,6 +732,8 @@ def build_real_interfaces(
             current_bindings=block_occupancy_current or {},
             voltage_of=(block_out.get_actual_voltage if block_out is not None else None),
             idle_deadband_v=idle_deadband_v,
+            current_sense_min_drive_v=current_sense_min_drive_v,
+            lighting_clear_hold_reads=lighting_clear_hold_reads,
             # Which shift-in chains are wired active-low, so the interface can
             # normalize their bits (design_new.md Power, Block occupancy detection).
             digital_active_low={

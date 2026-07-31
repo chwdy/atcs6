@@ -25,12 +25,22 @@ Architecture:
 import logging
 import time
 from datetime import datetime
-from typing import Any, Callable, Dict, Literal, Optional, Set, Tuple, TYPE_CHECKING
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Set,
+    Tuple,
+    TYPE_CHECKING,
+)
 
 from ghost_trains import GhostTrainTracker
 from network import RailwayNetwork
 from train import Train, TrainCar
-from enums import TrainState, Direction, OperationMode
+from enums import TrainState, Direction, HandlePosition, OperationMode
 from block_power import BlockPowerController
 from switch_power import SimulatedSwitchDriver
 from block_occupancy import SimulatedOccupancyDriver, BlockOccupancyDetector
@@ -364,14 +374,103 @@ class SimulationController:
         Shared by the tick and by `poll_hardware_occupancy`: a detector-driven
         commit changes block state exactly like a moving train's does, so the
         voltage and signal consequences must follow it either way.
+
+        **The calculated span is what decides, never debounced
+        `Block.occupied_by`.** `BlockManager` queues a block on the debounced
+        signal, which is right for queueing but wrong for the final test: a
+        detector that briefly reads clear under a stationary locomotive would
+        drop the rail out from under it. Cutting the rail then makes the block
+        idle, the idle detector reads the locomotive again, the block
+        re-energizes, and the drive-state read flips the occupancy source back —
+        a block a train is standing on oscillates between powered and dead
+        instead of settling. `_calculated_hold_blocks()` is the same
+        calculated-span-plus-reservations set the emission side drives, so a
+        block under a span is never zeroed however its detector reads
+        (design_new.md "Power", De-energize against the same source).
         """
+        held = self._calculated_hold_blocks()
         if self.block_manager is not None:
             for block_id in self.block_manager.take_blocks_to_deenergize():
+                if block_id in held:
+                    continue
                 self.power_controller.set_block_voltage(block_id, 0.0)
         else:
-            self.power_controller.deenergize_unheld_blocks()
+            self.power_controller.deenergize_unheld_blocks(skip=held)
 
         self.network.update_signals_from_blocks()
+
+    def _entries_for_adjacent_trains(self, unmatched: Set[str]) -> Dict[str, Set[str]]:
+        """Give each unmatched confirmed entry to an ordinary train already
+        holding a block next to it (design_new.md "Power", Attribution).
+
+        A locomotive standing across a block boundary draws current on both
+        blocks. The far one matches no reservation and no span, so without this
+        it would be read as a second object and handed a ghost — which then
+        de-energizes it, because a ghost is never energized, stranding the very
+        locomotive the app is driving. Adjacency is the same connectivity walk
+        ghost identity uses: only the first block across undetected track counts,
+        so a block with empty blocks between it and every train is still a ghost.
+        """
+        out: Dict[str, Set[str]] = {}
+        for block_id in sorted(unmatched):
+            train_id = self._adjacent_train_for_block(block_id)
+            if train_id is not None:
+                out.setdefault(train_id, set()).add(block_id)
+        return out
+
+    def _adjacent_train_for_block(self, block_id: str) -> Optional[str]:
+        """The ordinary train holding a block next to `block_id`, or None.
+
+        The calculated span is tried before `Block.occupied_by` because the span
+        is where the app is driving the train and it leads confirmed occupancy on
+        entry — the block a train has just been given may not have confirmed yet.
+        """
+        for neighbour_id in sorted(self.ghost_trains.reachable_blocks(block_id)):
+            for train_id in sorted(self.controllers):
+                train = self.network.trains.get(train_id)
+                if train is None or getattr(train, "is_ghost", False):
+                    continue
+                span = getattr(
+                    getattr(self.controllers[train_id], "physics_sync", None),
+                    "current_span",
+                    None,
+                )
+                if span is not None and neighbour_id in (span.occupied_blocks or []):
+                    return train_id
+            block = self.network.blocks.get(neighbour_id)
+            owner = getattr(block, "occupied_by", None) if block else None
+            if owner is not None and not self.ghost_trains.is_ghost(owner):
+                return owner
+        return None
+
+    def _calculated_hold_blocks(self) -> Set[str]:
+        """Every block some controllable train holds this tick, by calculation.
+
+        The union, over every train that is not a ghost, of its calculated span's
+        `occupied_blocks`, its `pending-entry block`, and its reserved-ahead
+        corridor — exactly the emission set `TrainPhysics` drives each tick
+        (design_new.md "Power", Energized set: calculated span plus
+        reservations). Ghost trains are excluded because they command no
+        `track_voltage`, so a block held only by a ghost is driven to `0`.
+        """
+        held: Set[str] = set()
+        for train_id, physics in self.physics_instances.items():
+            train = self.network.trains.get(train_id)
+            if train is None or getattr(train, "is_ghost", False):
+                continue
+            controller = self.controllers.get(train_id)
+            span = getattr(
+                getattr(controller, "physics_sync", None), "current_span", None
+            )
+            if span is not None:
+                held.update(span.occupied_blocks or [])
+            pending = physics.pending_entry_block
+            if pending is not None:
+                held.add(pending)
+        for block_id, block in self.network.blocks.items():
+            if getattr(block, "reserved_for_train", None) is not None:
+                held.add(block_id)
+        return held
 
     def poll_hardware_occupancy(self) -> None:
         """Read the block detectors and commit what they say, with the
@@ -478,11 +577,24 @@ class SimulationController:
             entered, vacated
         )
 
-        # A confirmed entry that matches no existing train belongs to a ghost
-        # train (design_new.md "Attribution"): `GhostTrainTracker` resolves it to
-        # a ghost `train_id` — a new ghost, or one continuing its run across an
-        # undetected switch tile — and from here the ghost is an ordinary train,
-        # so its slice is written and committed exactly like every other train's.
+        # A confirmed entry next to a block an ordinary train already holds is
+        # that train standing across the boundary — one train on two blocks, not
+        # a new object (design_new.md "Attribution"). This runs before the ghost
+        # step, so a ghost is minted only for current that is genuinely
+        # disconnected from every train.
+        if unmatched:
+            for train_id, block_ids in self._entries_for_adjacent_trains(
+                unmatched
+            ).items():
+                entered_by_train.setdefault(train_id, set()).update(block_ids)
+                unmatched -= block_ids
+
+        # What is left matches no existing train and is not next to one, so it
+        # belongs to a ghost train (design_new.md "Attribution"):
+        # `GhostTrainTracker` resolves it to a ghost `train_id` — a new ghost, or
+        # one continuing its run across an undetected switch tile — and from here
+        # the ghost is an ordinary train, so its slice is written and committed
+        # exactly like every other train's.
         if unmatched:
             for ghost_id, block_ids in self.ghost_trains.attribute_unmatched_entries(
                 unmatched, self._ghost_clock()
@@ -528,6 +640,138 @@ class SimulationController:
                 train, controller
             )
 
+        self._update_presence_unknown(detector)
+
+    def _update_presence_unknown(self, detector) -> None:
+        """Flag each train whose calculated position no physical reading backs
+        (design_new.md "Power", Presence unknown).
+
+        A train's evidence set is every wired block it could show current on:
+        its span's blocks plus the blocks it holds (`Block.occupied_by`),
+        intersected with what the session actually detects. When that set is
+        non-empty and every block in it reads confirmed clear, the locomotive
+        has physically left everything the model claims for it — the span
+        represents nothing detected, so the train may be gone. The UI shows a
+        question mark and offers removal; nothing here removes anything.
+
+        Inert cases stay False: a session that detects nothing physical (the
+        simulated driver), a train standing only on unwired blocks (no reading
+        to contradict it), and a ghost (its span IS its confirmed blocks, and a
+        ghost with none is retired by `GhostTrainTracker`).
+        """
+        detected = detector.detected_block_ids()
+        confirmed = detector.confirmed_occupied if detected else set()
+        held_by_train: Dict[str, Set[str]] = {}
+        if detected:
+            for block_id, block in self.network.blocks.items():
+                holder = getattr(block, "occupied_by", None)
+                if holder is not None:
+                    held_by_train.setdefault(holder, set()).add(block_id)
+        for train_id, controller in self.controllers.items():
+            unknown = False
+            train = self.network.trains.get(train_id)
+            if (
+                detected
+                and train is not None
+                and not getattr(train, "is_ghost", False)
+            ):
+                span = controller.physics_sync.current_span
+                evidence = set(span.occupied_blocks or []) if span else set()
+                evidence |= held_by_train.get(train_id, set())
+                wired = evidence & detected
+                unknown = bool(wired) and not (wired & confirmed)
+            became_unknown = unknown and not controller.presence_unknown
+            controller.presence_unknown = unknown
+            if unknown:
+                # Repeat the containment before Phase 1 on every detector read,
+                # not just the rising edge.  An API call between ticks may have
+                # powered the record or attached fresh authority; none of that
+                # may survive long enough to plan or move while no occupancy
+                # backs the identifier.
+                self._release_lost_train(
+                    train_id, controller, notify=became_unknown
+                )
+
+    def _release_lost_train(
+        self,
+        train_id: str,
+        controller: TrainController,
+        *,
+        notify: bool = True,
+    ) -> None:
+        """A train the detector no longer accounts for stops being predicted and
+        stops holding anything (design_new.md "Power", Presence unknown).
+
+        The calculated position is an estimate anchored to physical detection;
+        with the anchor gone there is nothing to integrate forward and no
+        grounds to keep resources from other trains. So on the tick the flag
+        rises: the route run is torn down, the active path is cancelled (which
+        releases its reservations and switch locks), every block the train
+        still holds is released — each such block reads confirmed clear, which
+        is what raised the flag, so no detector state is contradicted — and the
+        controller is written straight to `OFF` at zero speed. The direct write
+        rather than `power_off_cmd()` for the same reasons `clear_failed_runtime`
+        uses one: that command is stopped-only against a possibly non-zero
+        frozen speed, and it defers to a later Phase 3. The span stays as the
+        last estimate, so the question mark has a place on the layout; the
+        record itself is kept for the operator to remove.
+        """
+        route_executor = getattr(self, "route_executor", None)
+        if route_executor is not None:
+            route_executor.remove_train_route_run(train_id)
+
+        dispatcher = self.path_dispatcher
+        if dispatcher is not None:
+            path_id = dispatcher.active_path_id_by_train(train_id)
+            if path_id:
+                dispatcher.cancel_path(
+                    path_id,
+                    initiator="presence_unknown",
+                    reason="no occupancy backs this train's position",
+                )
+
+        for block_id, block in list(self.network.blocks.items()):
+            if getattr(block, "occupied_by", None) == train_id:
+                if self.block_manager:
+                    self.block_manager.clear_block(block_id)
+                else:
+                    block.release()
+
+        self._freeze_lost_train_controller(controller)
+
+        if notify:
+            self.notification_center.emit(
+                source="SimulationController",
+                kind="train_presence_unknown",
+                severity=Severity.WARNING,
+                event_time=time.time(),
+                train_id=train_id,
+                payload={
+                    "message": (
+                        f"no occupancy detected under {train_id}; it was stopped "
+                        "and its route, path, and blocks were released"
+                    ),
+                },
+            )
+
+    @staticmethod
+    def _freeze_lost_train_controller(controller: TrainController) -> None:
+        """Keep an unconfirmed identifier inert until detection returns.
+
+        Step 0 calls this on the rising edge after releasing resources, and the
+        per-train loop calls it again while ``presence_unknown`` remains true.
+        Reapplying it matters: a command accepted just before the detector read
+        must not revive a record that no longer represents a detected train.
+        """
+        controller.commands.command_inbox.clear()
+        controller.ops.state = TrainState.OFF
+        controller.ops.handle_position = HandlePosition.N
+        controller.manual.reset_power_percent_for_safety()
+        controller.physics_sync.current_speed_kmh = 0.0
+        controller.physics_sync.queued_progress_reports.clear()
+        controller.eb.active = False
+        controller.ato.running = False
+
     # =========================================================================
     # Per-train three-phase transaction
     # =========================================================================
@@ -547,6 +791,16 @@ class SimulationController:
         """
         controller = self._get_or_create_controller(train)
         physics = self._get_or_create_physics(train)
+
+        # A question-mark identifier has no physical occupancy backing its
+        # estimate.  It is a diagnostic record, not a train to keep predicting:
+        # do not drain commands or integrate physics while presence is unknown.
+        # Step 0 clears the flag automatically if detection returns, at which
+        # point the ordinary transaction resumes from the retained last span.
+        if controller.presence_unknown:
+            self._freeze_lost_train_controller(controller)
+            self._sync_persistent_train_state(train, controller)
+            return
 
         # Phase 2 - Execute.
         # TrainController.tick(...) begins by draining the queued operator
@@ -1071,9 +1325,482 @@ class SimulationController:
         )
         return train
 
+    def adopt_ghost_train(
+        self,
+        ghost_train_id: str,
+        new_train_id: str,
+        *,
+        max_speed_kmh: float,
+        length_cm: float,
+        direction: str,
+        head_tile: Optional[Tuple[int, int]] = None,
+        cab: Optional[Literal["A", "B"]] = None,
+        train_type: Optional[str] = None,
+        name: Optional[str] = None,
+        min_radius_cm: Optional[float] = None,
+        max_slope: Optional[float] = None,
+        speed_profile_id: Optional[str] = None,
+        roster_entry_id: Optional[str] = None,
+    ) -> Train:
+        """Turn a ghost train into an ordinary, driveable train.
+
+        The operator has looked at the layout and can say what the detector
+        found: which locomotive it is, how long, which way it faces. That is the
+        one piece a ghost is missing, and supplying it is all adoption does
+        (design_new.md "Ghost trains", Adoption).
+
+        The `Train` object itself survives — same record, same controller, same
+        physics instance, same held blocks — because block occupancy is
+        edge-triggered off the detector (`BlockOccupancyDetector.step`). Deleting
+        the ghost and adding a fresh train in its place would release blocks that
+        are still drawing current, and no new entry would ever fire for them, so
+        they would sit `FREE` under a train that is physically standing on them.
+        Adoption therefore re-keys in place instead: `train_id` changes to
+        `new_train_id` across every registry that keys on it, and `is_ghost`
+        flips to `False`.
+
+        Placement is the operator's declaration, not a guess. A ghost's span
+        claims whole blocks because nobody knows where inside them it sits;
+        `place_train` rebuilds the span from the real consist length at the
+        facing given here. With no `head_tile` the consist is centered in the
+        detected track (`_centered_adoption_placement`), which is what the
+        detector supports: it says the train is somewhere in these blocks, not
+        that it is flush against a boundary. A `head_tile` overrides that.
+
+        Either way the body must stay inside the blocks the detector confirmed.
+        A block reading no current has nothing standing on it, so a consist that
+        would reach into one is refused rather than claiming it.
+
+        Args:
+            ghost_train_id: The `train_id` of the ghost to adopt.
+            new_train_id: The id the adopted train keeps from here on. May equal
+                `ghost_train_id` to keep the generated one.
+            max_speed_kmh: Operational max speed in km/h.
+            length_cm: Real consist length in centimetres.
+            direction: Facing: "NORTH", "EAST", "SOUTH", or "WEST"
+                (case-insensitive).
+            head_tile: Optional (x, y) to put the head on, flush at that tile's
+                exit edge in `direction`. Must be a tile the ghost currently
+                claims. Omit it to center the consist in the detected track.
+            cab: Optional initial cab ("A" or "B"), written directly as
+                `add_train` does for a fresh train.
+            train_type: Optional train model / type label.
+            name: Optional display name (also used for the locomotive id).
+            min_radius_cm: Optional minimum curve radius in centimetres.
+            max_slope: Optional maximum climbable grade, percent.
+            speed_profile_id: Optional existing `SpeedProfile` to adopt. When
+                omitted, a fresh default profile is built for the new id.
+            roster_entry_id: Optional **Train Roster** entry to seed config from,
+                exactly as `add_train` does.
+
+        Returns:
+            The adopted `Train` (the same object the ghost used, re-keyed).
+
+        Raises:
+            ValueError: If the train is unknown or is not a ghost, if
+                `new_train_id` is blank or already taken, if `direction` is not a
+                compass name, if `head_tile` is not a tile the ghost claims, if
+                the ghost claims no tiles at all, if the consist does not fit on
+                the track behind the head, or if it would reach into a block the
+                detector reports clear.
+        """
+        # ---- Validate everything before mutating anything. -----------------
+        ghost = self.network.trains.get(ghost_train_id)
+        if ghost is None:
+            raise ValueError(f"Unknown train: {ghost_train_id!r}")
+        if not getattr(ghost, "is_ghost", False):
+            raise ValueError(
+                f"Train {ghost_train_id!r} is not a ghost train; only a ghost "
+                f"can be adopted"
+            )
+        if not self.occupancy_is_real:
+            # A ghost is a report from a real detector about a real locomotive.
+            # Where occupancy is derived from the model there is nothing
+            # physical to adopt, so the operation is refused rather than
+            # inventing a train (design_new.md "Ghost trains", Adoption).
+            raise ValueError(
+                "Ghost trains can only be adopted when block occupancy is read "
+                "from real detectors; this session derives occupancy from the "
+                "model"
+            )
+
+        new_train_id = (new_train_id or "").strip()
+        if not new_train_id:
+            raise ValueError("new_train_id is required")
+        if new_train_id != ghost_train_id and new_train_id in self.network.trains:
+            raise ValueError(f"Train {new_train_id!r} already exists")
+
+        try:
+            resolved_direction = Direction[direction.upper()]
+        except (AttributeError, KeyError):
+            raise ValueError(f"Invalid direction: {direction!r}")
+
+        controller = self.controllers.get(ghost_train_id)
+        span = controller.physics_sync.current_span if controller is not None else None
+        claimed_tiles = [tuple(t) for t in (getattr(span, "occupied_tiles", None) or [])]
+        if not claimed_tiles:
+            # A ghost in the undetected gap holds nothing and claims nothing, so
+            # there is no position to adopt it at (design_new.md "The gap").
+            raise ValueError(
+                f"Ghost train {ghost_train_id!r} is not standing on any detected "
+                f"block right now; wait for it to be detected again"
+            )
+        head_offset_cm = 0.0
+        if head_tile is None:
+            head_tile, head_offset_cm = self._centered_adoption_placement(
+                claimed_tiles, resolved_direction, float(length_cm)
+            )
+        else:
+            head_tile = (int(head_tile[0]), int(head_tile[1]))
+            if head_tile not in claimed_tiles:
+                raise ValueError(
+                    f"head_tile {head_tile!r} is not a tile ghost train "
+                    f"{ghost_train_id!r} is standing on"
+                )
+
+        # Roster import (design_new.md "Train Roster"), on the same terms as
+        # `add_train`: the entry is a template, and the adopted train is a
+        # separate runtime instance.
+        roster_entry = None
+        roster = getattr(self.network, "train_roster", None)
+        if roster_entry_id and roster is not None:
+            roster_entry = roster.get_entry(roster_entry_id)
+        if roster_entry is not None:
+            if roster_entry.max_speed is not None:
+                max_speed_kmh = float(roster_entry.max_speed)
+            if roster_entry.consist_length_cm is not None:
+                length_cm = float(roster_entry.consist_length_cm)
+            if roster_entry.min_radius_cm is not None and min_radius_cm is None:
+                min_radius_cm = float(roster_entry.min_radius_cm)
+            if max_slope is None:
+                max_slope = float(roster_entry.max_slope)
+            if speed_profile_id is None and roster_entry.speed_profile_id:
+                if (
+                    self.network.speed_profiles.get(roster_entry.speed_profile_id)
+                    is not None
+                ):
+                    speed_profile_id = roster_entry.speed_profile_id
+
+        old_profile_id = getattr(ghost, "speed_profile_id", None)
+        controller = self.get_or_create_controller(ghost_train_id)
+
+        # ---- Configure and place, still under the ghost's own id. -----------
+        # Placement runs before the re-key so a consist that does not fit leaves
+        # nothing half-adopted: the only things changed by then are plain field
+        # writes on the `Train`, which the rollback below puts back. Doing it the
+        # other way round would strand a train that is re-keyed and no longer a
+        # ghost but has never been placed.
+        rollback = (ghost.consist, ghost.max_speed, ghost.model, ghost.car_number)
+        ghost.consist = [
+            TrainCar(
+                car_id=f"{new_train_id}_loco",
+                car_type=(train_type or "LOCOMOTIVE"),
+                length_cm=float(length_cm),
+                max_speed=float(max_speed_kmh),
+            )
+        ]
+        ghost.max_speed = float(max_speed_kmh)
+        if train_type is not None:
+            ghost.model = train_type
+        if name is not None:
+            ghost.car_number = name
+        if min_radius_cm is not None:
+            ghost.min_radius_cm = float(min_radius_cm)
+        if max_slope is not None:
+            ghost.max_slope = float(max_slope)
+        # Flipped before placement so `place_train` -> `occupy_blocks` treats
+        # this as an ordinary train: no de-energize marking, and the blocks it
+        # already holds re-occupy idempotently instead of conflicting.
+        ghost.is_ghost = False
+
+        # The blocks the detector confirmed under this ghost. The declared
+        # consist must fit inside them: a block reading no current has nothing
+        # standing on it, so no train's body can reach into one.
+        detected_blocks = {
+            block_id
+            for block_id, block in self.network.blocks.items()
+            if getattr(block, "occupied_by", None) == ghost_train_id
+        }
+
+        try:
+            placed_span = self.network.place_train(
+                ghost,
+                head_tile[0],
+                head_tile[1],
+                resolved_direction,
+                head_offset_cm=head_offset_cm,
+                confine_to_blocks=detected_blocks,
+            )
+        except ValueError as exc:
+            ghost.consist, ghost.max_speed, ghost.model, ghost.car_number = rollback
+            ghost.is_ghost = True
+            raise ValueError(
+                f"{exc} Give a shorter length, face it the other way, pick a "
+                f"different front tile, or wait until every block it stands on "
+                f"reads current."
+            ) from exc
+
+        controller.physics_sync.current_span = placed_span
+        if cab is not None:
+            controller.commands.cab = cab
+
+        # ---- Re-key onto the operator's id. --------------------------------
+        # Read the held set after placement, so a block the rebuilt span reaches
+        # into (the body extending past what the ghost held) comes along too.
+        held_blocks = sorted(
+            block_id
+            for block_id, block in self.network.blocks.items()
+            if getattr(block, "occupied_by", None) == ghost_train_id
+        )
+        self._rekey_train(ghost_train_id, new_train_id, held_blocks)
+        train = self.network.trains[new_train_id]
+        self.ghost_trains.forget(ghost_train_id)
+        self.get_or_create_physics(new_train_id)
+
+        # The ghost's default profile was anchored to a blank train's max_speed
+        # and named after the generated id, so it is retired in favour of one
+        # built for the real locomotive — unless the operator named an existing
+        # profile (or a roster entry did) to keep measured curves attached.
+        profiles = getattr(self.network, "speed_profiles", None)
+        if speed_profile_id and profiles is not None and profiles.get(speed_profile_id):
+            train.speed_profile_id = speed_profile_id
+        elif profiles is not None:
+            from speed_profile import make_default_speed_profile
+
+            profile = make_default_speed_profile(new_train_id, max_speed_kmh)
+            profiles.register(profile)
+            train.speed_profile_id = profile.profile_id
+        if (
+            profiles is not None
+            and old_profile_id
+            and old_profile_id != train.speed_profile_id
+        ):
+            profiles.remove(old_profile_id)
+
+        # ---- Give back what it does not actually stand on. ------------------
+        span_blocks = set(getattr(placed_span, "occupied_blocks", None) or [])
+        surplus = sorted(set(held_blocks) - span_blocks)
+        self._hand_surplus_blocks_to_ghosts(new_train_id, surplus)
+
+        try:
+            self.network.update_signals_from_blocks()
+        except Exception as exc:
+            self.notification_center.emit(
+                source="SimulationController",
+                kind="signal_refresh_failed",
+                severity=Severity.WARNING,
+                event_time=time.time(),
+                train_id=new_train_id,
+                payload={"context": "adopt_ghost_train", "reason": str(exc)},
+            )
+
+        self.notification_center.emit(
+            source="SimulationController",
+            kind=EventKind.TRAIN_PLACED,
+            severity=Severity.INFO,
+            event_time=time.time(),
+            train_id=new_train_id,
+            payload={
+                "adopted_from_ghost_id": ghost_train_id,
+                "head_tile": [head_tile[0], head_tile[1]],
+                "initial_direction": resolved_direction.name,
+                "max_speed_kmh": float(max_speed_kmh),
+                "length_cm": float(length_cm),
+                "held_blocks": held_blocks,
+            },
+        )
+        return train
+
+    def _centered_adoption_placement(
+        self,
+        claimed_tiles: List[Tuple[int, int]],
+        direction: Direction,
+        length_cm: float,
+    ) -> Tuple[Tuple[int, int], float]:
+        """Where to put the head so the consist sits centered in what was detected.
+
+        A ghost claims whole blocks because nobody knows where inside them it
+        sits, and the operator declaring a length does not tell the app that
+        either. Centering is the honest reading of that: the same amount of
+        detected track is left unaccounted for in front of the train as behind
+        it. Putting the head at the first claimed tile instead would stand every
+        adopted train flush against a block boundary, which is the one position
+        the detector gives no reason to believe.
+
+        Returns `(head_tile, head_offset_cm)` for `place_train`: the tile whose
+        exit leaves the detected track in the declared direction, and how far
+        back from that exit edge the head sits.
+
+        Falls back to the first claimed tile flush at its exit edge when the
+        detected track has no single front tile for this facing — a ring of
+        blocks with no end, or a facing no claimed tile can exit through, which
+        `place_train` then reports on its own terms.
+
+        The detected length is the sum of the claimed tiles' lengths. A ghost
+        holding two blocks joined by a switch tile is centered to within half
+        that switch's length, since a switch carries no detection and so is not
+        among the claimed tiles.
+        """
+        DIR_TO_EDGE = {"NORTH": "N", "SOUTH": "S", "EAST": "E", "WEST": "W"}
+        exit_edge = DIR_TO_EDGE.get(direction.name)
+        claimed = set(claimed_tiles)
+
+        fronts = []
+        for tile in claimed_tiles:
+            track = self.network.get_track(tile[0], tile[1])
+            if track is None or exit_edge not in (track.edges or ()):
+                continue
+            if self.network._get_neighbor_coords(tile[0], tile[1], exit_edge) not in claimed:
+                fronts.append(tile)
+        if len(fronts) != 1:
+            return claimed_tiles[0], 0.0
+
+        detected_length_cm = sum(
+            self.network._get_tile_length_cm(x, y) for (x, y) in claimed_tiles
+        )
+        # Negative slack means the operator declared more train than the
+        # detector sees. The head stays flush at the front and `place_train`
+        # decides whether the overhang lands on undetected track (a switch tile,
+        # which is fine) or on a block reading no current (which it refuses).
+        return fronts[0], max(0.0, (detected_length_cm - length_cm) / 2.0)
+
+    def _hand_surplus_blocks_to_ghosts(
+        self, train_id: str, surplus: List[str]
+    ) -> Dict[str, Set[str]]:
+        """Hand back blocks an adopted train holds but does not stand on.
+
+        A ghost claims whole blocks because its real extent is unknown. Adoption
+        replaces that guess with the operator's declared consist, and whatever
+        the rebuilt span does not cover is not this train — it is current on
+        track no train the app controls is standing on, which is the definition
+        of a ghost. So it becomes one.
+
+        Keeping those blocks on the adopted train instead would wall the train
+        off from its own route: a block with `occupied_by` set is not an eligible
+        reservation candidate for *anyone*, including its own holder (see
+        `BlockManager.reserve_blocks_for_path`), and the dispatcher excludes only
+        the train's span blocks from the candidate set. The train would hold
+        authority-blocking track ahead of itself and never acquire a path.
+        Releasing them outright is equally wrong: they are drawing current, and
+        the detector reports changes rather than levels, so nothing would ever
+        re-occupy them and another train could be routed straight in.
+
+        Returns `ghost_id -> block ids` for the blocks handed over.
+        """
+        manager = self.block_manager
+        if manager is None or not surplus:
+            return {}
+
+        for block_id in sorted(surplus):
+            manager.on_block_tail_vacated(block_id, train_id, None)
+
+        # Ordinary Step-0 attribution: connected surplus blocks become one ghost,
+        # and a group touching a ghost that is already there joins it.
+        attribution = self.ghost_trains.attribute_unmatched_entries(
+            set(surplus), self._ghost_clock()
+        )
+        for ghost_id, block_ids in attribution.items():
+            manager.occupy_blocks(sorted(block_ids), ghost_id)
+            self.ghost_trains.write_detected_span(ghost_id, set(block_ids), set())
+
+        # Say so. Otherwise the operator adopts a train, finds its route refused
+        # because the block ahead is occupied, and has no way to connect that to
+        # the length they typed in.
+        self.notification_center.emit(
+            source="SimulationController",
+            kind="adoption_surplus_blocks",
+            severity=Severity.WARNING,
+            event_time=time.time(),
+            train_id=train_id,
+            payload={
+                "message": (
+                    f"{', '.join(sorted(surplus))} still read current but "
+                    f"{train_id} is not long enough to reach them; they are "
+                    f"tracked as ghost trains. If that is really {train_id}, "
+                    f"adopt it again with the full consist length."
+                ),
+                "blocks": sorted(surplus),
+                "ghost_train_ids": sorted(attribution),
+            },
+        )
+        return attribution
+
+    def _rekey_train(
+        self, old_train_id: str, new_train_id: str, held_blocks: List[str]
+    ) -> None:
+        """Move a train's whole runtime identity from one `train_id` to another.
+
+        Every registry that keys on `train_id` is rewritten in place — the dicts
+        are shared by reference with `BlockOccupancyDetector`,
+        `SimulatedOccupancyDriver`, and `RouteExecutor`, so they are mutated
+        rather than rebound. Block ownership moves through the canonical
+        `BlockManager` writers (release, then occupy) so no block is ever owned
+        by two ids and the voltage drain still sees the release, matching how
+        `GhostTrainTracker._hand_block_to` hands a block between ghosts.
+
+        Only ever called for a train that holds no path, route run, or
+        reservation — that is, a ghost being adopted. It is not a general
+        rename.
+        """
+        if old_train_id == new_train_id:
+            return
+
+        train = self.network.trains.pop(old_train_id)
+        train.train_id = new_train_id
+        self.network.trains[new_train_id] = train
+
+        controller = self.controllers.pop(old_train_id, None)
+        if controller is not None:
+            controller.train_id = new_train_id
+            self.controllers[new_train_id] = controller
+
+        physics = self.physics_instances.pop(old_train_id, None)
+        if physics is not None:
+            physics.train_id = new_train_id
+            self.physics_instances[new_train_id] = physics
+
+        manager = self.block_manager
+        for block_id in held_blocks:
+            block = self.network.blocks.get(block_id)
+            if block is None:
+                continue
+            if manager is not None:
+                manager.on_block_tail_vacated(block_id, old_train_id, None)
+                manager.occupy_blocks([block_id], new_train_id)
+            else:
+                block.occupied_by = new_train_id
+
+        # Switches carry no detection, so a ghost never owns one; sweep anyway
+        # so the rename leaves no stale id behind if that ever changes.
+        for switch in getattr(self.network, "switches", {}).values():
+            if getattr(switch, "occupied_by", None) == old_train_id:
+                switch.occupied_by = new_train_id
+            occupants = getattr(switch, "physical_occupants", None)
+            if isinstance(occupants, dict):
+                for route, owner in list(occupants.items()):
+                    if owner == old_train_id:
+                        occupants[route] = new_train_id
+
+        if old_train_id in self._detected_change_train_ids:
+            self._detected_change_train_ids.discard(old_train_id)
+            self._detected_change_train_ids.add(new_train_id)
+
     # =========================================================================
     # Failed-runtime gate
     # =========================================================================
+
+    @property
+    def occupancy_is_real(self) -> bool:
+        """True when block occupancy comes from real detectors, not the model.
+
+        This is the "the layout is not a simulation" test, and it follows the
+        occupancy interface specifically rather than the run mode as a whole —
+        a real-mode session that leaves occupancy simulated still runs its
+        occupancy by calculation (design_new.md "Run modes", point 3). It is
+        what gates ghost adoption and what the UI reads to stop calling a
+        railway with live detectors a simulation.
+        """
+        return not isinstance(self.input_interface, SimulatedOccupancyDriver)
 
     def enter_failed_runtime(self, payload: FatalPhysicalEntryConflict) -> None:
         """Halt further train ticks until manually released.
@@ -1107,6 +1834,65 @@ class SimulationController:
                 "prior_owner_path_id": payload.prior_owner_path_id,
             },
         )
+
+    def clear_failed_runtime(self) -> FatalPhysicalEntryConflict:
+        """Release the halt so the session can carry on, with every train off.
+
+        A fatal conflict says two trains claim one piece of track. On a real
+        layout the operator goes and sorts that out — moves the loco, fixes the
+        detector, lifts the stray car off the rail — and then wants to keep
+        running. Making them restart the process to do it would throw away the
+        whole layout state for a problem they have already fixed, so the halt is
+        a gate that reopens rather than a session-ending error.
+
+        Reopening it does not resume mid-motion. Every train is written straight
+        to `OFF` at zero speed with its handle at `N` and any EB cleared, so
+        nothing moves until the operator powers it back up deliberately. This is
+        a direct write rather than a queued `power_off_cmd()`, for two reasons:
+        the command is stopped-only and the frozen speed may be non-zero, and it
+        defers its work to a Phase 3 that cannot run while the gate is shut.
+        Track voltage stays at the `0` `enter_safe_state()` left it at; the next
+        tick re-emits from each train's energized set, which is empty while they
+        are all `OFF`.
+
+        Returns:
+            The conflict payload that caused the halt, so the caller can report
+            what was cleared.
+
+        Raises:
+            ValueError: If the runtime is not halted.
+        """
+        if not self.failed_runtime:
+            raise ValueError("The runtime is not halted; there is nothing to clear")
+
+        payload = self.failed_runtime_payload
+        for controller in self.controllers.values():
+            controller.ops.state = TrainState.OFF
+            controller.ops.handle_position = HandlePosition.N
+            controller.physics_sync.current_speed_kmh = 0.0
+            controller.eb.active = False
+            controller.ato.running = False
+
+        self.failed_runtime = False
+        self.failed_runtime_payload = None
+        self.failed_runtime_at = None
+
+        self.notification_center.emit(
+            source="SimulationController",
+            kind="fatal_runtime_cleared",
+            severity=Severity.WARNING,
+            event_time=time.time(),
+            train_id=payload.incoming_train_id if payload is not None else None,
+            payload={
+                "message": (
+                    "fatal conflict cleared by the operator; every train is off "
+                    "and the runtime is running again"
+                ),
+                "resource_type": payload.resource_type if payload else None,
+                "resource_id": payload.resource_id if payload else None,
+            },
+        )
+        return payload
 
     # =========================================================================
     # Path completion / cancellation delegation
@@ -1202,6 +1988,8 @@ def build_network_payload(
         payload["simulation_time"] = 0.0
         payload["failed_runtime"] = False
         payload["failed_runtime_conflict"] = None
+        payload["operation_mode"] = OperationMode.SIM.value
+        payload["occupancy_is_real"] = False
         return payload
 
     payload["simulation_time"] = float(sim_controller.simulation_time)
@@ -1249,6 +2037,12 @@ def build_network_payload(
     payload["dispatcher_progress_by_train_id"] = dispatcher_progress_by_train_id
     payload["assigned_routes_by_train_id"] = assigned_routes_by_train_id
     payload["route_runs_by_train_id"] = route_runs_by_train_id
+
+    # Run mode (design_new.md "Run modes"). The UI reads these to stop calling a
+    # railway with real hardware on it a simulation, and to decide whether the
+    # ghost-adoption control is offered at all.
+    payload["operation_mode"] = sim_controller.operation_mode.value
+    payload["occupancy_is_real"] = bool(sim_controller.occupancy_is_real)
 
     # Fatal physical-entry conflict halt (set by enter_failed_runtime). While
     # it is set, update() skips every train tick — the trains freeze at their

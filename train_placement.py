@@ -11,7 +11,7 @@ unchanged.
 from __future__ import annotations
 
 import random
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from enums import Direction
 from network import DEFAULT_TRAIN_LENGTH_CM
@@ -35,12 +35,16 @@ class TrainPlacement:
         tile_x: int,
         tile_y: int,
         direction: Optional[Direction] = None,
+        *,
+        head_offset_cm: float = 0.0,
+        confine_to_blocks: Optional[Iterable[str]] = None,
     ) -> "TrainSpan":
         """
         Place a train on a tile with proper positioning based on direction and length.
 
         Train placement rules:
-        1. Train HEAD (end_a) is always placed at the EXIT edge of the specified tile
+        1. Train HEAD (end_a) is placed `head_offset_cm` back from the EXIT edge
+           of the specified tile — at the exit edge itself by default
         2. Train tail (end_b) extends backward - MUST fit on available track
         3. Builds the canonical TrainSpan with both physical ends tracked precisely
         4. Occupies all blocks the train covers
@@ -49,6 +53,17 @@ class TrainPlacement:
             train: Train to place
             tile_x, tile_y: Target tile coordinates
             direction: Direction the train will be heading (random if None)
+            head_offset_cm: How far back along the track from that exit edge the
+                head sits. `0.0` (the default) is flush at the edge. Larger
+                offsets walk backward through earlier tiles, so a caller can put
+                the head anywhere on the track behind the exit edge instead of
+                only at tile boundaries.
+            confine_to_blocks: When given, the placed body must stay inside these
+                blocks; a body reaching any other block is a `ValueError` raised
+                before anything is occupied. Tiles belonging to no block (switch
+                tiles carry no detection) are always allowed. Adoption passes the
+                blocks the detector actually confirmed, so a declared consist can
+                never claim track the detector reports clear.
 
         Returns:
             The canonical `TrainSpan` for the placed train (4-field schema).
@@ -56,7 +71,9 @@ class TrainPlacement:
             (`add_train` / API re-placement).
 
         Raises:
-            ValueError: If no track at position, or train doesn't fit on available track
+            ValueError: If no track at position, if the head offset or the train
+                doesn't fit on available track, or if the body leaves
+                `confine_to_blocks`.
         """
         from train_span import SpanEndLocator, TrainSpan
 
@@ -115,6 +132,17 @@ class TrainPlacement:
         head_distance_cm = tile_length_cm
         head_entry_edge = entry_edge
 
+        # A head offset slides the head back along the track from that exit
+        # edge. Walking it is the same backward trace the body uses, so an
+        # offset longer than this tile lands correctly on an earlier one and an
+        # offset with no track behind it raises the same "does not fit" error.
+        if head_offset_cm > 0:
+            (_, head_tile, head_distance_cm, head_entry_edge) = (
+                self._calculate_occupied_tiles(
+                    head_tile, head_distance_cm, head_entry_edge, head_offset_cm
+                )
+            )
+
         # Calculate occupied tiles and tail position
         # This will raise ValueError if train doesn't fit
         (occupied_tiles, tail_tile, tail_distance_cm, tail_entry_edge) = (
@@ -133,6 +161,19 @@ class TrainPlacement:
                 if block_id not in seen_blocks:
                     occupied_blocks.append(block_id)
                     seen_blocks.add(block_id)
+
+        # Checked before the span is built and before anything is occupied, so a
+        # body that reaches too far leaves the caller's world untouched.
+        if confine_to_blocks is not None:
+            allowed: Set[str] = set(confine_to_blocks)
+            outside = [b for b in occupied_blocks if b not in allowed]
+            if outside:
+                raise ValueError(
+                    f"A {train_length_cm:.0f} cm train with its front on tile "
+                    f"{head_tile} facing {direction.name} reaches into "
+                    f"{', '.join(sorted(outside))}, outside the track it may "
+                    f"occupy ({', '.join(sorted(allowed)) or 'none'})."
+                )
 
         # Build the canonical 4-field TrainSpan (design_new.md TrainSpan
         # schema). `_calculate_occupied_tiles` returns tiles tail-to-head; the

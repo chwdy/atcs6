@@ -209,6 +209,7 @@ def _drive_sequence(
     reverse: int,
     volts: float = MAX_TRACK_VOLTAGE,
     hold_s: float = TRACK_TEST_HOLD_S,
+    on_voltage: Optional[Callable[[float], None]] = None,
 ) -> None:
     """Drive a block's two rails through both polarities so the user can watch a
     loco move: full voltage one way, both rails off, full voltage the other way.
@@ -218,21 +219,37 @@ def _drive_sequence(
     ever driven at a time, since both high would shoot through the bridge. The
     track is returned to zero in a `finally` so an exception mid-sequence (a
     dropped USB bridge, an interrupted request) still leaves the rails dead.
+
+    `on_voltage` is called with the voltage each leg puts on the rails, signed in
+    terms of the two channels passed in (`forward` positive), as the leg starts —
+    so a caller can mirror the sweep somewhere the operator watches it while it
+    runs. The `finally`'s zero is reported too, so a sweep that dies partway
+    leaves the mirror dead alongside the rails rather than latched at the last
+    leg it managed to drive.
     """
     chip.configure()
     duty = min(abs(volts) / MAX_TRACK_VOLTAGE, 1.0) if MAX_TRACK_VOLTAGE else 0.0
+
+    def _report(driven: float) -> None:
+        if on_voltage is not None:
+            on_voltage(driven)
+
     try:
         chip.set_duty_cycle(reverse, 0.0)      # forward rail hot, reverse at ground
         chip.set_duty_cycle(forward, duty)
+        _report(volts)
         time.sleep(hold_s)
         chip.set_duty_cycle(forward, 0.0)      # both rails off
         chip.set_duty_cycle(reverse, 0.0)
+        _report(0.0)
         time.sleep(hold_s)
         chip.set_duty_cycle(reverse, duty)     # reverse rail hot, forward at ground
+        _report(-volts)
         time.sleep(hold_s)
     finally:
         chip.set_duty_cycle(forward, 0.0)
         chip.set_duty_cycle(reverse, 0.0)
+        _report(0.0)
 
 
 def run_track_test(
@@ -240,11 +257,28 @@ def run_track_test(
     block_id: str,
     device: Optional[Any] = None,
     open_device: Optional[Callable[[], Any]] = None,
+    on_voltage: Optional[Callable[[float], None]] = None,
+    polarity_reversed: bool = False,
 ) -> Dict[str, Any]:
     """Sweep a block's track through both polarities (the block editor's track
     Test button). Reads the block's `block_track` binding, then drives its two
     bound channels forward / off / reverse so a loco on the block runs, stops,
-    and reverses. Leaves the track de-energized."""
+    and reverses. Leaves the track de-energized.
+
+    `on_voltage` reports each leg as it starts, as the *nominal* signed voltage —
+    the same value the runtime would command through `TrackOutput.set_voltage`
+    for those rails — so a caller can mirror the sweep onto the model and the
+    operator sees the block energize while it happens.
+
+    That nominal sign is what `polarity_reversed` (the block's rail-binding
+    `TrackBinding.reversed` flag) is for. The sweep drives the binding's two
+    channels raw, deliberately: driving the rails the binding names is what makes
+    a block wired the wrong way round show itself, by running the loco backwards
+    on the first leg. But the driver resolves a nominal positive command to the
+    *other* channel on such a block, so mirroring the first leg as positive would
+    have the model and the driver disagreeing about the same two rails. Reversed,
+    the first leg is nominally negative.
+    """
     binding = cfg.block_track.get(block_id)
     if binding is None:
         return {"ok": False, "error": f"block {block_id!r} has no track binding"}
@@ -261,9 +295,19 @@ def run_track_test(
             return {"ok": False, "error": str(exc)}
         close_after = True
 
+    nominal: Optional[Callable[[float], None]] = None
+    if on_voltage is not None:
+        sign = -1.0 if polarity_reversed else 1.0
+
+        def nominal(driven: float, _sign: float = sign) -> None:
+            # `driven or 0.0` keeps the off legs at a plain 0.0: flipping the
+            # sign of zero gives -0.0, which is equal to zero but reads as a
+            # negative rail everywhere it is shown.
+            on_voltage(_sign * driven if driven else 0.0)
+
     try:
         chip = build_chip(device, spec)
-        _drive_sequence(chip, binding.forward, binding.reverse)
+        _drive_sequence(chip, binding.forward, binding.reverse, on_voltage=nominal)
         return {"ok": True, "volts": MAX_TRACK_VOLTAGE, "hold_s": TRACK_TEST_HOLD_S}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
@@ -304,14 +348,21 @@ def run_occupancy_test(
         close_after = True
 
     try:
-        deadband = _idle_deadband_v()
+        deadband = _idle_deadband_v(cfg)
+        min_drive = _current_sense_min_drive_v(cfg)
         track = _read_track_state(device, cfg, block_id)
         digital = _read_digital_detector(device, cfg, block_id)
         current = _read_current_detector(device, cfg, block_id)
 
-        driven = abs(track["volts"]) > deadband if track["bound"] else False
+        volts = abs(track["volts"]) if track["bound"] else 0.0
+        zone = "idle" if volts <= deadband else (
+            "driven" if volts >= min_drive else "lighting"
+        )
+        driven = zone == "driven"
         # The same precedence the runtime interface uses.
-        if driven and current["bound"]:
+        if zone == "lighting":
+            source = "held"
+        elif driven and current["bound"]:
             source = "current"
         elif digital["bound"]:
             source = "digital"
@@ -320,14 +371,25 @@ def run_occupancy_test(
         else:
             source = "none"
 
-        decided = {"digital": digital, "current": current}.get(source)
-        occupied = bool(decided and decided.get("occupied"))
+        if source == "held":
+            # The lighting zone: either detector may confirm on one read, but a
+            # clear takes sustained agreement from both. A test is a one-shot
+            # read with no previous value to hold and no window to count, so it
+            # reports what the two detectors see between them — and `held_zone`
+            # tells the UI that this single clear would not have vacated the
+            # block on its own.
+            occupied = bool(digital.get("occupied") or current.get("occupied"))
+        else:
+            decided = {"digital": digital, "current": current}.get(source)
+            occupied = bool(decided and decided.get("occupied"))
         return {
             "ok": True,
             "block_id": block_id,
             "track": track,
             "driven": driven,
+            "zone": zone,
             "deadband_v": deadband,
+            "min_drive_v": min_drive,
             "digital": digital,
             "current": current,
             "source": source,
@@ -343,12 +405,30 @@ def run_occupancy_test(
                 pass
 
 
-def _idle_deadband_v() -> float:
-    """The drive-state deadband the runtime uses (imported here rather than at
-    module scope so config keeps depending on hardware, not the reverse)."""
+def _idle_deadband_v(cfg: Any) -> float:
+    """The drive-state deadband the runtime uses, taken from the configuration
+    the session was built with — both zone thresholds are per-configuration
+    tunables, and `build_real_interfaces` hands these same two values to
+    `OccupancyDriver`. Reading the module default instead would make the bench
+    test disagree with the running session on any block whose operator tuned
+    them, which is the one case the settings exist for.
+
+    The default is the fallback for a config that does not carry the field at
+    all (a directly-constructed test stub). Imported here rather than at module
+    scope so config keeps depending on hardware, not the reverse."""
     from hardware_config import DEFAULT_IDLE_DEADBAND_V
 
-    return DEFAULT_IDLE_DEADBAND_V
+    value = getattr(cfg, "idle_deadband_v", None)
+    return DEFAULT_IDLE_DEADBAND_V if value is None else float(value)
+
+
+def _current_sense_min_drive_v(cfg: Any) -> float:
+    """The drive floor above which the current channel decides, resolved the
+    same way and for the same reason as `_idle_deadband_v`."""
+    from hardware_config import DEFAULT_CURRENT_SENSE_MIN_DRIVE_V
+
+    value = getattr(cfg, "current_sense_min_drive_v", None)
+    return DEFAULT_CURRENT_SENSE_MIN_DRIVE_V if value is None else float(value)
 
 
 def _spec_for(cfg: Any, chip_id: str) -> Optional[Any]:

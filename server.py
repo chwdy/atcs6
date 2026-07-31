@@ -195,7 +195,7 @@ def main() -> None:
         --no-sim: Don't start simulation thread
         --no-autosave: Don't start autosave thread
         --no-reload: Disable auto-reload on file changes (default: reload enabled)
-        --port: Port to run on (default: 5001)
+        --port: Port to run on (default: 5007)
         --scene: Scene to boot and gate startup tests to (sets ATCS_SCENE)
     """
     import argparse
@@ -222,7 +222,7 @@ def main() -> None:
     parser.add_argument(
         "--no-reload", action="store_true", help="Disable auto-reload on file changes"
     )
-    parser.add_argument("--port", type=int, default=5001, help="Port to run on")
+    parser.add_argument("--port", type=int, default=5007, help="Port to run on")
     parser.add_argument(
         "--scene",
         type=str,
@@ -270,6 +270,16 @@ def main() -> None:
         from shutdown import supervise_reloader_child
 
         raise SystemExit(supervise_reloader_child(port=args.port))
+
+    # Without the supervisor nobody binds until werkzeug does, at the very end
+    # of this function. Settle the port now -- offering to stop whatever holds
+    # it -- rather than bootstrap the runtime (which opens the CH347) only to
+    # die with errno 48 afterwards.
+    if args.no_reload and not is_reloader_child:
+        from shutdown import ensure_port_available
+
+        if not ensure_port_available(port=args.port):
+            raise SystemExit(1)
 
     global network, path_dispatcher, sim_controller, persistence_manager
     global simulation_lock, simulation_running, simulation_speed, last_update_time

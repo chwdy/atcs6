@@ -610,7 +610,10 @@ class TestBlockPowerController:
             name="Test",
         )
         voltage = controller._calculate_voltage_for_train(train_running, profile)
-        assert voltage == 8.0
+        # The default voltage->power curve is linear from this profile's own
+        # lighting_voltage (0%) to max_voltage (100%), so 60 km/h -> 60% power
+        # -> 3.0 + 0.6 * (12.0 - 3.0).
+        assert voltage == pytest.approx(8.4)
 
 
     def test_release_block(self, controller: BlockPowerController):
@@ -1113,7 +1116,9 @@ class TestStateBasedVoltageOutput:
             name="Test",
         )
         voltage = controller._calculate_voltage_for_train(train, profile)
-        assert voltage == 8.0
+        # Default curve anchors: lighting_voltage 3.0 (0%) -> max_voltage 12.0
+        # (100%), so 60 km/h -> 60% power -> 8.4 V.
+        assert voltage == pytest.approx(8.4)
 
 
 

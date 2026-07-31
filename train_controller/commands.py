@@ -449,6 +449,15 @@ class OperatorCommands:
         if cab is None and c.ops.state == TrainState.RUNNING_AT_STATION:
             return CommandResult(False, "cannot deselect cab while dwelling")
 
+        old_head = "end_b" if old_cab == "B" else "end_a"
+        new_head = "end_b" if cab == "B" else "end_a"
+        reframe_error = c._reframe_span_for_head_change(old_head, new_head)
+        if reframe_error is not None:
+            return CommandResult(False, reframe_error)
+
+        # Commit the cab only after both span locators have been successfully
+        # re-expressed.  The head selector and its geometry therefore change as
+        # one operation and can never disagree in the renderer or physics.
         self.cab = cab
 
         # Per design_new.md: changing cab is part of the depart-acceptance
@@ -459,31 +468,6 @@ class OperatorCommands:
         prev_state = c.ops.state
         if prev_state != TrainState.RUNNING_AT_STATION:
             c.ops.state = TrainState.READY
-
-        # When switching cabs (A <-> B) the physical train doesn't move (the
-        # driver walks to the other end), but the travel direction reverses.
-        # The cab itself is the head selector (cab "A" -> end_a, "B" -> end_b),
-        # so head/tail swap automatically on the next read. We still re-express
-        # each physical end's in-tile frame on the controller-owned span: flip
-        # `entry_edge` and set `distance_cm = tile_length - distance_cm` so the
-        # ends describe the same physical points in the now-reversed travel
-        # frame (design_new.md TrainSpan schema; head/tail derive from cab).
-        if cab is not None and old_cab in ("A", "B") and old_cab != cab:
-            span = getattr(c.physics_sync, "current_span", None)
-            if span is not None and c.network:
-                for end in (span.end_a, span.end_b):
-                    if end.tile and end.entry_edge:
-                        track = c.network.get_track(*end.tile)
-                        if track:
-                            exits = track.get_exits(
-                                end.entry_edge, use_switch_state=True
-                            )
-                            if exits:
-                                end.entry_edge = exits[0]
-                            tile_length = c.network._get_tile_length_cm(
-                                end.tile[0], end.tile[1]
-                            )
-                            end.distance_cm = tile_length - end.distance_cm
 
         return CommandResult(True, f"Cab set to {cab}")
 

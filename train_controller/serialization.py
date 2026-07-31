@@ -123,6 +123,12 @@ def controller_to_dict(controller: "TrainController") -> Dict[str, Any]:
         "route_teardown_pending": (
             controller.route_hooks.phase_latches.is_route_teardown_pending()
         ),
+        # True while no wired block backs this train's calculated position —
+        # every block its span or its holdings could show current on reads
+        # confirmed clear, so the train may physically be gone. The UI marks
+        # the train with a question mark and offers removal (design_new.md
+        # "Power", Presence unknown).
+        "presence_unknown": bool(getattr(controller, "presence_unknown", False)),
         # Live "current path error" projection for the train panel badge
         # and the Quick Route no-path toast. Surfaces the active
         # RouteRun.last_error ONLY while the train currently has no live

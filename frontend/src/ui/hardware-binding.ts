@@ -21,7 +21,11 @@ import { chipDisplayName, pickPorts } from './port-picker';
 interface Binding { chip_id: string; port: number; }
 /** A block's track wiring: the two PWM channels driving its rails, picked
  * independently so they need not be an adjacent pair. */
-interface TrackBinding { chip_id: string; forward: number; reverse: number; }
+/** `reversed` is the rail-polarity flag stored with the wiring: the two rails
+ * are wired the opposite way round, so the driver swaps the channels as it
+ * resolves the binding (design_new.md "Power", Rail polarity lives on the rail
+ * binding). */
+interface TrackBinding { chip_id: string; forward: number; reverse: number; reversed?: boolean; }
 interface CurrentBinding extends Binding {
   baseline_ma?: number | null;
   threshold_ma?: number | null;
@@ -150,6 +154,17 @@ function notLiveNoteHtml(cfg: HwConfig): string {
   return `<p class="text-warning text-xs mt-4">Hardware is not live yet — these save now and Test works, but the simulation uses them only after you enable it in Hardware&nbsp;Setup.</p>`;
 }
 
+/** Toast after a binding save. The session wires its interfaces once at boot, so
+ * a binding saved now reaches the runtime only after a restart — but say that
+ * only when hardware is actually enabled. While it is off, a restart changes
+ * nothing (the session is wired to the simulated drivers by definition) and the
+ * standing `notLiveNoteHtml` warning already names the real next step, so adding
+ * "restart to apply" here would just point at the wrong lever. */
+function noteBindingSaved(cfg: HwConfig, what: string): void {
+  if (!cfg.enabled) return;
+  showToast(`${what} saved — restart the server to apply.`, 'info', 4000);
+}
+
 function channelOptions(
   chips: HwChip[],
   current: Binding | undefined,
@@ -264,11 +279,15 @@ function occRow(key: string, value: string, deciding: boolean): string {
 /** Render the occupancy-test report: drive state, each detector, the verdict. */
 export function occupancyResultHtml(res: any): string {
   const track = res.track || {};
+  // Three drive zones, not two: "lit" is the band where a stopped train is
+  // powered for its lights but draws nothing a current sensor can read.
+  const zoneLabel =
+    res.zone === 'driven' ? 'driving' : res.zone === 'lighting' ? 'lit, not driving' : 'idle';
   const trackText = !track.bound
     ? 'no port bound — read as idle'
     : track.error
       ? `could not read (${track.error})`
-      : `${fmt(track.volts)} V · ${res.driven ? 'driving' : 'idle'}`;
+      : `${fmt(track.volts)} V · ${zoneLabel}`;
 
   const digital = res.digital || {};
   // The pin level and the conclusion are two different facts once a polarity is
@@ -291,16 +310,25 @@ export function occupancyResultHtml(res: any): string {
         + `(baseline ${fmt(current.baseline_ma)}, trips at ±${fmt(current.threshold_ma)}) · `
         + `${current.occupied ? 'occupied' : 'clear'}`;
 
+  // The lighting zone ("held") is the stopped-but-lit band between the idle
+  // deadband and the current-sense floor. No single read can be trusted to CLEAR
+  // a block there — a clear takes both detectors agreeing for a run of reads —
+  // so the verdict has to say so. A "Clear" the runtime would not have acted on
+  // would otherwise read as a wiring fault.
   const verdict =
     res.source === 'none'
       ? 'No detector bound to this block'
-      : `${res.occupied ? 'Occupied' : 'Clear'} — the block is `
-        + `${res.driven ? 'driving' : 'idle'}, so the `
-        + `${res.source === 'current' ? 'driving' : 'idle'} detector decides`;
+      : res.source === 'held'
+        ? `${res.occupied ? 'Occupied' : 'No detector sees a train'} — the block is `
+          + `lit but not driving (under ${fmt(res.min_drive_v)} V), so both detectors `
+          + `are read and one reading alone cannot clear it`
+        : `${res.occupied ? 'Occupied' : 'Clear'} — the block is `
+          + `${res.driven ? 'driving' : 'idle'}, so the `
+          + `${res.source === 'current' ? 'driving' : 'idle'} detector decides`;
 
   return `${occRow('Track power', trackText, false)}
-    ${occRow("Idle detector ('165)", digitalText, res.source === 'digital')}
-    ${occRow('Driving detector (current)', currentText, res.source === 'current')}
+    ${occRow("Idle detector ('165)", digitalText, res.source === 'digital' || res.source === 'held')}
+    ${occRow('Driving detector (current)', currentText, res.source === 'current' || res.source === 'held')}
     <div class="hw-occ-verdict ${res.source === 'none' ? 'is-unbound' : res.occupied ? 'is-occupied' : 'is-clear'}">
       ${esc(verdict)}
     </div>`;
@@ -446,6 +474,7 @@ export function bindSwitchHardwareSection(cfg: HwConfig | null, switchId: string
       }
       if (testBtn) testBtn.disabled = !cfg.switch_output[switchId];
       flashField(flashTarget, 'ok');
+      noteBindingSaved(cfg, 'Switch wiring');
     } catch (e: any) {
       flashField(flashTarget, 'err');
       showToast(e?.message || 'Could not save switch wiring.', 'error', 4000);
@@ -552,6 +581,7 @@ export function bindHardwareSection(cfg: HwConfig | null, logicalId: string): vo
         }
         if (testBtn) testBtn.disabled = !sel.value;
         flashField(sel, 'ok');
+        noteBindingSaved(cfg, 'Binding');
       } catch (e: any) {
         flashField(sel, 'err');
         showToast(e?.message || 'Could not save binding.', 'error', 4000);
@@ -591,10 +621,14 @@ export function bindHardwareSection(cfg: HwConfig | null, logicalId: string): vo
       await api.updateTrackBinding(logicalId, forward.chip_id, forward.line, reverse.line);
       cfg.block_track[logicalId] = {
         chip_id: forward.chip_id, forward: forward.line, reverse: reverse.line,
+        // A channel edit keeps the stored polarity flag (the server does the
+        // same when `reversed` is omitted from the PUT).
+        reversed: cfg.block_track[logicalId]?.reversed === true,
       };
       pickBtn.textContent = trackBindingSummary(cfg, logicalId);
       if (trackTestBtn) trackTestBtn.disabled = false;
       flashField(pickBtn, 'ok');
+      noteBindingSaved(cfg, 'Track wiring');
     } catch (e: any) {
       flashField(pickBtn, 'err');
       showToast(e?.message || 'Could not save the track wiring.', 'error', 4000);
@@ -680,6 +714,7 @@ export function bindHardwareSection(cfg: HwConfig | null, logicalId: string): vo
         }
         if (calRow) calRow.hidden = !curSel.value;
         flashField(flashTarget, 'ok');
+        noteBindingSaved(cfg, 'Current-sense binding');
       } catch (e: any) {
         flashField(flashTarget, 'err');
         showToast(e?.message || 'Could not save current binding.', 'error', 4000);

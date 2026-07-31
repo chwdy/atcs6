@@ -75,6 +75,10 @@ export interface TrainSnap {
   /** True for a runtime-detected ghost train (design_new.md "Ghost trains").
    *  Drives the steel body tint and the dashed body outline. */
   isGhost?: boolean;
+  /** True while no wired block backs the calculated position — the train may
+   *  physically be gone (design_new.md "Power", Presence unknown). Drives the
+   *  question-mark badge at the head. */
+  presenceUnknown?: boolean;
   span: TrainSnapSpan;
   waitingForBlockId?: string | null;
 }
@@ -203,6 +207,7 @@ export class RendererTrainHandler {
       teardownPending: controller.route_teardown_pending === true,
       ebActive: controller.eb_active === true,
       isGhost: train.is_ghost === true,
+      presenceUnknown: (controller as { presence_unknown?: unknown }).presence_unknown === true,
       span: {
         occupiedTiles: controller.span.occupied_tiles,
         leadingEnd: controller.span.leading_end,
@@ -519,10 +524,7 @@ export class RendererTrainHandler {
       chunk.push({ x: cx + offset.x, y: cy + offset.y });
     };
 
-    if (!hasLeadingEnd) {
-      // No cab active: simple direct line between ends regardless of track path
-      currentChunk.push({ x: headPos.x, y: headPos.y });
-    } else if (occupiedTileCount === 1) {
+    if (occupiedTileCount === 1) {
       // Same tile - direct line
       currentChunk.push({ x: headPos.x, y: headPos.y });
     } else {
@@ -636,6 +638,11 @@ export class RendererTrainHandler {
     // === Draw "stuck waiting" indicator (debug overlay) ===
     this._drawStuckIndicator(headPos.x, headPos.y, trainSnap.waitingForBlockId);
 
+    // === Draw presence-unknown badge ===
+    if (trainSnap.presenceUnknown) {
+      this._drawPresenceUnknownBadge(headPos.x, headPos.y);
+    }
+
     // === Draw label ===
     const headTrackBits = getTrackBits(headTile);
     this.drawTrainLabel(train, headPos.x, headPos.y, headTrackBits, trainSnap.facing, headTile[0], headTile[1], tracks);
@@ -714,6 +721,37 @@ export class RendererTrainHandler {
     this.ctx.closePath();
     this.ctx.fill();
 
+    this.ctx.restore();
+  }
+
+  /**
+   * Presence-unknown badge: an amber "?" disc floated above the head marker.
+   * Drawn while `presence_unknown` is set on the controller payload — no wired
+   * block backs this train's calculated position, so the span may represent
+   * nothing physically on the track (design_new.md "Power", Presence unknown).
+   * Warning amber, not danger red: it is doubt, not a detected fault.
+   */
+  _drawPresenceUnknownBadge(headX: number, headY: number): void {
+    const p = getCanvasPalette();
+    const s = this.scale;
+    const r = 7 * s;
+    const cx = headX + 10 * s;
+    const cy = headY - 12 * s;
+
+    this.ctx.save();
+    this.ctx.beginPath();
+    this.ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    this.ctx.fillStyle = p.warning;
+    this.ctx.fill();
+    this.ctx.strokeStyle = withAlpha(p.overlayBg, 0.9);
+    this.ctx.lineWidth = Math.min(Math.max(1.0, s * 0.35), 2.0);
+    this.ctx.stroke();
+
+    this.ctx.fillStyle = p.overlayBg;
+    this.ctx.font = `bold ${10 * s}px sans-serif`;
+    this.ctx.textAlign = 'center';
+    this.ctx.textBaseline = 'middle';
+    this.ctx.fillText('?', cx, cy + 0.5 * s);
     this.ctx.restore();
   }
 

@@ -13,6 +13,12 @@ This file collects directives for working in this repo. Every rule below is glob
 
 This project requires the `general` conda environment. Run Python through it for everything: server boot, scripts, ad-hoc `python -c` snippets, pytest, dependency checks.
 
+- **Follow `README.md` for verification.** The canonical completion gate is
+  `conda activate general` followed by `./run_all_tests.sh`. Targeted pytest or
+  frontend commands are useful during iteration, but do not replace that gate.
+- **Use port 5007 for the development server.** Always launch `server.py` with
+  `--port 5007` and use `http://localhost:5007` for browser and API checks.
+
 - **Always call the env's Python binary directly:** `/opt/homebrew/anaconda3/envs/general/bin/python ...`. Examples:
   ```
   /opt/homebrew/anaconda3/envs/general/bin/python -c "import flask; print(flask.__version__)"

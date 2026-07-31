@@ -23,6 +23,13 @@ which is not a detector commit) and none other.
   keeps its id if it reappears through undetected track.
 - **Span** — exactly the blocks it holds, claiming their full extent.
 - **Retirement** — a ghost still holding nothing when its hold window ends.
+- **Adoption** — forgetting a ghost the operator has set up as a real train
+  (`SimulationController.adopt_ghost_train(...)` owns that conversion).
+
+A ghost is not driveable *as a ghost*, but it is not a dead end either: the
+operator can tell the app what it is looking at, and from then on it is an
+ordinary train. That is adoption, and it is the only way `is_ghost` ever goes
+back to `False`.
 """
 
 from __future__ import annotations
@@ -134,7 +141,7 @@ class GhostTrainTracker:
     def _existing_ghost_for_entry(
         self, block_id: str, assigned_here: Dict[str, str]
     ) -> Optional[str]:
-        neighbours = self._reachable_blocks(block_id)
+        neighbours = self.reachable_blocks(block_id)
 
         for neighbour_id in sorted(neighbours):
             # A neighbour this same read already handed to a ghost counts: two
@@ -366,14 +373,27 @@ class GhostTrainTracker:
         )
         return train
 
-    def _retire(self, ghost_id: str) -> None:
-        """Retire a ghost that held no blocks for the whole hold window."""
+    def forget(self, ghost_id: str) -> None:
+        """Drop every scrap of tracker bookkeeping for `ghost_id`.
+
+        Used when a ghost stops being a ghost — the operator adopted it as a
+        real train (design_new.md "Ghost trains", Adoption). The `Train`, its
+        controller, and the blocks it holds all survive; only the tracker's own
+        identity/hold state goes, so the adopted train is never absorbed into a
+        neighbouring ghost group, never gap-held, and never retired. Its
+        `train_id` still counts as used, because `_fresh_id` skips ids the
+        network already holds.
+        """
         self._gap_hold_since.pop(ghost_id, None)
         self._blocks_before_gap.pop(ghost_id, None)
         self._last_held_blocks.pop(ghost_id, None)
         self._created_at.pop(ghost_id, None)
         for key in [k for k in self._block_held_since if k[0] == ghost_id]:
             self._block_held_since.pop(key, None)
+
+    def _retire(self, ghost_id: str) -> None:
+        """Retire a ghost that held no blocks for the whole hold window."""
+        self.forget(ghost_id)
 
         train = self._network.trains.get(ghost_id)
         profile_id = getattr(train, "speed_profile_id", None) if train else None
@@ -479,7 +499,7 @@ class GhostTrainTracker:
     def _chain_order(self, held: Set[str]) -> List[str]:
         """`held` ordered end to end along connectivity when it forms a chain."""
         adjacency = {
-            block_id: sorted(self._reachable_blocks(block_id) & held)
+            block_id: sorted(self.reachable_blocks(block_id) & held)
             for block_id in sorted(held)
         }
         ends = [b for b in sorted(held) if len(adjacency[b]) <= 1]
@@ -520,8 +540,13 @@ class GhostTrainTracker:
                 return sorted(found)[0]
         return None
 
-    def _reachable_blocks(self, block_id: str) -> Set[str]:
+    def reachable_blocks(self, block_id: str) -> Set[str]:
         """Every block reachable from `block_id` through undetected track.
+
+        Public because attribution needs the same neighbour test before it
+        ever reaches a ghost: a confirmed block next to one an ordinary train
+        already holds belongs to that train (see `BlockOccupancyDetector`,
+        and design_new.md "Power", Attribution).
 
         Undetected track is everything between two blocks: bare switch tiles
         (crossed on their live `Switch.position`) and any track tile no block
@@ -592,7 +617,7 @@ class GhostTrainTracker:
             unvisited.discard(seed)
             while frontier:
                 current = frontier.pop()
-                for neighbour in sorted(self._reachable_blocks(current) & ghost_held):
+                for neighbour in sorted(self.reachable_blocks(current) & ghost_held):
                     if neighbour in unvisited:
                         unvisited.discard(neighbour)
                         group.add(neighbour)

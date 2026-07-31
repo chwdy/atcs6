@@ -1264,17 +1264,21 @@ export function bindDirectionSegment(
 // controls above, with two cells instead of three. Distinct from the travel
 // direction control it sits near: that one is a routing policy the pathfinder
 // reads, this one is wiring — which physical rail a positive voltage drives.
-// Sends `{ polarity_reversed }` to the block PATCH endpoint.
+// The flag lives on the block's `block_track` hardware binding and auto-saves
+// with it (design_new.md "Power", Rail polarity lives on the rail binding), so
+// the control is disabled until the rails are bound: with no binding there is
+// no wiring to describe.
 // ============================================================================
 
 export function renderPolaritySegment(
   entityKind: string,
   entity: { polarity_reversed?: boolean } | null,
-  opts: { idBase?: string; label?: string; help?: string } = {}
+  opts: { idBase?: string; label?: string; help?: string; disabled?: boolean } = {}
 ): string {
   const reversed = !!(entity && entity.polarity_reversed);
   const idBase = (opts.idBase || `${entityKind}-polarity`).replace(/[^a-z0-9-]/gi, '-');
   const label = opts.label || 'Track direction';
+  const disabledAttr = opts.disabled ? 'disabled' : '';
   const help =
     opts.help ||
     'Which rail a positive voltage drives. Flip this when a block runs trains backwards ' +
@@ -1287,12 +1291,12 @@ export function renderPolaritySegment(
                 <button type="button"
                     class="switch-btn ${reversed ? '' : 'active'}"
                     id="${idBase}-normal"
-                    data-polarity="normal"
+                    data-polarity="normal" ${disabledAttr}
                     title="Rails wired as the layout expects">Normal</button>
                 <button type="button"
                     class="switch-btn ${reversed ? 'active' : ''}"
                     id="${idBase}-reversed"
-                    data-polarity="reversed"
+                    data-polarity="reversed" ${disabledAttr}
                     title="Rails swapped — a positive voltage drives the other rail">Reversed</button>
             </div>
             <div class="text-xxs text-muted mt-4">${help}</div>
@@ -1301,8 +1305,9 @@ export function renderPolaritySegment(
 }
 
 // Wire the two buttons of a `renderPolaritySegment` block. `onChange` receives
-// `(reversed, payload)` where `payload = {polarity_reversed}`, ready to send to
-// the block PATCH endpoint.
+// `(reversed, payload)` where `payload = {polarity_reversed}`; the block panel
+// routes it onto the block's `block_track` hardware binding (PUT
+// /api/hardware/binding), which auto-persists like every other wiring edit.
 export function bindPolaritySegment(
   idBase: string,
   onChange: (reversed: boolean, payload: { polarity_reversed: boolean }) => void

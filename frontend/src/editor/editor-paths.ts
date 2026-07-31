@@ -163,6 +163,22 @@ export class PathEditorHandler {
     }
   }
 
+  /**
+   * The train whose calculated span covers `blockId`, or null.
+   *
+   * Source: the `controllers_by_train_id` sibling payload's `span`, the same
+   * one the canvas draws each train from.
+   */
+  trainIdSpanningBlock(blockId: string): string | null {
+    const controllers = this.cachedNetwork?.controllers_by_train_id || {};
+    for (const [trainId, controller] of Object.entries<any>(controllers)) {
+      if (controller?.span?.occupied_blocks?.includes(blockId)) {
+        return trainId;
+      }
+    }
+    return null;
+  }
+
   async handleRouteFirstClick(gridPos: any, track: any): Promise<void> {
     if (!track) {
       showToast('No track at this position', 'warning', 3000);
@@ -179,9 +195,19 @@ export class PathEditorHandler {
     this.pathToolState.startPosition = { x: gridPos.x, y: gridPos.y };
     this.pathToolState.active = true;
 
-    const block = this.cachedNetwork?.blocks?.[blockId];
-    if (block?.occupied_by) {
-      this.pathToolState.trainId = block.occupied_by;
+    // Resolve the train from the calculated span first, then from confirmed
+    // occupancy. The span is what puts the train on the canvas, so the span is
+    // what the operator just clicked; `Block.occupied_by` follows the block
+    // detector and lags it (and reads empty for a block with no detector at
+    // all). `create_path` itself starts from the train's span, so gating the
+    // click on `occupied_by` was stricter than the call it leads to — a train
+    // drawn on the block could be refused as "no train here".
+    const trainId =
+      this.trainIdSpanningBlock(blockId) ??
+      this.cachedNetwork?.blocks?.[blockId]?.occupied_by ??
+      null;
+    if (trainId) {
+      this.pathToolState.trainId = trainId;
     } else {
       showToast('No train at start block; pick a block occupied by a train', 'warning', 3000);
       await this.resetRouteToolState();

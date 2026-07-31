@@ -82,6 +82,7 @@ def test_as_dict_shape():
         "enabled", "develop", "controller", "chips",
         "block_track", "block_occupancy", "block_occupancy_current",
         "switch_output", "output_enable", "idle_deadband_v",
+        "current_sense_min_drive_v",
     }
 
 

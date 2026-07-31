@@ -72,7 +72,9 @@ def test_saved_layout_carries_the_hardware_configuration(manager):
     assert hw["enabled"] is True
     assert hw["develop"] is True
     assert {c["chip_id"] for c in hw["chips"]} == {"pwm1", "sw1", "in1"}
-    assert hw["block_track"]["B1"] == {"chip_id": "pwm1", "forward": 0, "reverse": 1}
+    assert hw["block_track"]["B1"] == {
+        "chip_id": "pwm1", "forward": 0, "reverse": 1, "reversed": False,
+    }
     assert hw["switch_output"]["SW_A"]["port_main"] == 5
     # exactly the on-disk form, no derived enrichment
     assert set(hw) == set(hardware_config.persisted_dict())

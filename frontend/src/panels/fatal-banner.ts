@@ -4,11 +4,12 @@
  * When the runtime is halted (failed_runtime), update() skips every train tick —
  * trains freeze at their last state (often RUNNING_MOVING / handle Px) while the
  * clock keeps advancing, and play/pause cannot recover it. Per design_new.md
- * "Fatal physical-entry conflict procedure", this state is terminal for the
- * session in v1: there is no release path, so this banner's only action is to
- * restart the server and begin a new session. The three helpers are pure
- * derivations from the conflict record; updateFatalBanner does the DOM + the
- * canvas conflict-flash via the passed renderer.
+ * "Fatal physical-entry conflict procedure", the halt is a gate that reopens:
+ * the operator sorts the conflict out on the layout and clears it, and the
+ * session carries on with every train off. Restarting the server stays available
+ * as the heavier option. The helpers are pure derivations from the conflict
+ * record; updateFatalBanner does the DOM + the canvas conflict-flash via the
+ * passed renderer.
  */
 
 /** Minimal renderer surface this module needs (the collision strobe). */
@@ -67,6 +68,17 @@ export function resolveConflictTiles(network: any, c: any): Array<[number, numbe
   return tiles;
 }
 
+/** What this session is: a simulation, or a railway with hardware on it.
+ *
+ *  design_new.md "Run modes": once block occupancy is read from real detectors,
+ *  the app is not simulating a layout any more, it is operating one, and the
+ *  wording follows. `occupancy_is_real` is the specific test rather than the run
+ *  mode as a whole, because a real-mode session that leaves occupancy simulated
+ *  still runs its occupancy by calculation. */
+export function runtimeNoun(network: any): string {
+  return network?.occupancy_is_real ? 'Operation' : 'Simulation';
+}
+
 /** Show/hide the fatal-conflict halt banner and flash the collision site. */
 export function updateFatalBanner(network: any, renderer: ConflictFlashRenderer): void {
   const banner = document.getElementById('fatal-banner');
@@ -77,15 +89,21 @@ export function updateFatalBanner(network: any, renderer: ConflictFlashRenderer)
     return;
   }
 
+  const titleEl = document.querySelector('.fatal-banner-title');
   const detailEl = document.getElementById('fatal-banner-detail');
   const metaEl = document.getElementById('fatal-banner-meta');
   const c = network.failed_runtime_conflict;
-  const tail = ' All trains are halted for the rest of this session. Restart the server to begin a new one.';
+  const noun = runtimeNoun(network);
+  const tail =
+    ' Every train is halted. Sort it out on the layout, then clear the conflict to carry on — every train comes back off.';
 
+  if (titleEl) {
+    titleEl.textContent = `${noun} halted — fatal track conflict`;
+  }
   if (detailEl) {
     detailEl.textContent = c
       ? describeFatalConflict(c) + tail
-      : 'A fatal track conflict halted the simulation.' + tail;
+      : `A fatal track conflict halted the ${noun.toLowerCase()}.` + tail;
   }
   if (metaEl) {
     metaEl.textContent = c ? fatalConflictMeta(c) : '';

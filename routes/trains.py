@@ -193,6 +193,58 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": "Train not found"}), 404
         return jsonify({"status": "success", "message": f"Train {train_id} deleted"})
 
+    @app.route("/api/trains/<train_id>/adopt", methods=["POST"])
+    def adopt_ghost_train(train_id):
+        """Set a ghost train up as a real, driveable train.
+
+        The ghost keeps its blocks and its controller; the body supplies the
+        identity, consist and facing the detector could never know
+        (design_new.md "Ghost trains", Adoption). The adopted train's new id is
+        in the response, since it is usually not the one in the URL.
+        """
+        data = request.json or {}
+        try:
+            train = train_service.adopt_ghost_train(
+                state,
+                train_id,
+                new_train_id=data.get("new_train_id") or data.get("id"),
+                length_cm=data.get("length_cm", 100.0),
+                max_speed_kmh=data.get("max_speed", 100.0),
+                direction=data.get("direction", "EAST"),
+                head_tile=data.get("head_tile"),
+                cab=data.get("cab"),
+                car_number=data.get("car_number", ""),
+                train_type=data.get("train_type"),
+                min_radius_cm=data.get("min_radius_cm"),
+                max_slope=data.get("max_slope"),
+                speed_profile_id=data.get("speed_profile_id"),
+                roster_entry_id=data.get("roster_entry_id"),
+            )
+        except NotFoundError:
+            return jsonify({"error": "Train not found"}), 404
+        except ValidationError as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 400
+
+        return jsonify(
+            {
+                "status": "success",
+                "adopted_from_ghost_id": train_id,
+                **_train_to_dict(train, state.network),
+            }
+        )
+
+    @app.route("/api/trains/<train_id>/why-stopped", methods=["GET"])
+    def why_stopped(train_id):
+        """Explain why a train is not moving, one gate at a time.
+
+        The gates are ordered the way they actually bite; `blocking_gate` names
+        the first one that is shut, which is the only one worth fixing.
+        """
+        try:
+            return jsonify(train_service.diagnose_stopped_train(state, train_id))
+        except NotFoundError:
+            return jsonify({"error": "Train not found"}), 404
+
     # ============================================================================
     # Train Power and Direction Control
     # ============================================================================

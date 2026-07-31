@@ -76,6 +76,9 @@
                 </div>
                 <div class="inspector-controls">
                     <button id="btn-diagnostics-toggle" class="btn" title="Toggle diagnostics"><i class="ti ti-microscope"></i> Diagnostics</button>
+                    <button id="btn-occupancy-toggle" class="btn btn-icon-only" title="Raw occupancy — what the detectors actually read" aria-label="Toggle raw occupancy monitor">
+                        <i class="ti ti-activity-heartbeat"></i>
+                    </button>
                     <button id="btn-display" class="btn btn-icon-only" title="Display — editor &amp; layout themes" aria-label="Display settings: editor and layout themes" aria-haspopup="true" aria-expanded="false">
                         <i class="ti ti-palette"></i>
                     </button>
@@ -92,10 +95,11 @@
         <div id="fatal-banner" class="fatal-banner" hidden role="alert" aria-live="assertive">
             <i class="ti ti-alert-octagon-filled fatal-banner-icon" aria-hidden="true"></i>
             <div class="fatal-banner-body">
-                <div class="fatal-banner-title">Simulation halted — fatal track conflict</div>
+                <div class="fatal-banner-title">Operation halted — fatal track conflict</div>
                 <div class="fatal-banner-detail" id="fatal-banner-detail"></div>
                 <div class="fatal-banner-meta" id="fatal-banner-meta"></div>
             </div>
+            <button id="btn-clear-fatal" class="btn fatal-banner-btn" type="button">Clear Conflict</button>
             <button id="btn-restart-fatal" class="btn fatal-banner-btn" type="button">Restart Server</button>
         </div>
 

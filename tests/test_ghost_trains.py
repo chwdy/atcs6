@@ -391,16 +391,30 @@ def test_the_dispatcher_never_creates_a_path_for_a_ghost():
 
 
 def test_a_ghost_is_not_written_to_saved_state():
+    """Runtime only: a restart re-detects whatever is still drawing current."""
     network, sim, detector = build_sim()
     detector.current = {"BLK_1": True}
     tick(sim)
     ghost_id = only_ghost(network)
 
     saved_ids = {t["id"] for t in network.to_layout_dict()["trains"]}
-    snapshot_ids = {t["id"] for t in network.to_dict()["trains"]}
 
     assert ghost_id not in saved_ids
-    assert ghost_id not in snapshot_ids
+
+
+def test_a_ghost_is_in_the_live_payload_so_it_shows_as_itself():
+    """Shown as itself: a ghost appears in the train list and on the layout,
+    which is also how the operator reaches the panel that adopts it. The save
+    payload is the one that leaves ghosts out, not the live one."""
+    network, sim, detector = build_sim()
+    detector.current = {"BLK_1": True}
+    tick(sim)
+    ghost_id = only_ghost(network)
+
+    live = {t["id"]: t for t in network.to_dict()["trains"]}
+
+    assert ghost_id in live
+    assert live[ghost_id]["is_ghost"] is True
 
 
 def test_a_real_train_entering_a_ghost_held_block_is_the_ordinary_conflict():

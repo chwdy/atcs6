@@ -9,6 +9,7 @@ import time
 from flask import jsonify, request
 
 from app_state import AppState
+from services import ValidationError, train_service
 from simulation import build_network_payload
 
 
@@ -116,6 +117,20 @@ def register(app, state: AppState) -> None:
                 "speed": state.simulation_speed,
             }
         )
+
+    @app.route("/api/runtime/clear-fatal", methods=["POST"])
+    def clear_fatal_conflict():
+        """Release a fatal-conflict halt, leaving every train off.
+
+        The operator has gone and sorted the conflict out on the layout; this
+        reopens the gate so the session carries on instead of demanding a
+        process restart that would throw the whole layout state away.
+        """
+        try:
+            cleared = train_service.clear_failed_runtime(state)
+        except ValidationError as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 400
+        return jsonify({"status": "success", "cleared_conflict": cleared})
 
     @app.route("/api/health", methods=["GET"])
     def health():

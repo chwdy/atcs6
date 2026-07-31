@@ -63,7 +63,12 @@ const windowStateKey = (id: string): string => `window:${id}`;
  *  always exist regardless of the registry); 'tab-group' is every window
  *  spawned by splitting a tab (Phase 5) — always floating, always holds a
  *  TabGroup. */
-export type PersistedWindowKind = 'home' | 'diagnostics' | 'tab-group' | 'train-monitor';
+export type PersistedWindowKind =
+  | 'home'
+  | 'diagnostics'
+  | 'tab-group'
+  | 'train-monitor'
+  | 'occupancy-monitor';
 
 export interface WindowRegistryEntry {
   id: string;
@@ -113,6 +118,11 @@ export interface WindowState {
     refreshHz: number;
     sortMode: 'asc' | 'desc' | null;
     collapsedGroups: string[];
+  };
+  /** Only for the 'occupancy-monitor' kind — its toolbar settings. */
+  occupancyMonitor?: {
+    refreshHz: number;
+    filter: string;
   };
 }
 

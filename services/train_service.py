@@ -26,7 +26,7 @@ import functools
 from typing import Any, List, Optional, Tuple
 
 from app_state import AppState
-from enums import CommandResult, Direction, HandlePosition
+from enums import CommandResult, Direction, HandlePosition, TrainState
 from services.exceptions import ConflictError, NotFoundError, ValidationError
 from train import Train, TrainCar
 from train_route import RouteStartMode
@@ -277,6 +277,239 @@ def update_train(
         )
 
     return train
+
+
+def adopt_ghost_train(
+    state: AppState,
+    train_id: str,
+    *,
+    new_train_id: Optional[str] = None,
+    length_cm: float = 100.0,
+    max_speed_kmh: float = 100.0,
+    direction: str = "EAST",
+    head_tile: Optional[dict] = None,
+    cab: Optional[str] = None,
+    car_number: str = "",
+    train_type: Optional[str] = None,
+    min_radius_cm: Optional[float] = None,
+    max_slope: Optional[float] = None,
+    speed_profile_id: Optional[str] = None,
+    roster_entry_id: Optional[str] = None,
+) -> Train:
+    """Set a ghost train up as a real, driveable train.
+
+    The operator tells the app what the detector found — which locomotive, how
+    long, which way round — and from then on it is an ordinary train
+    (design_new.md "Ghost trains", Adoption). `SimulationController` owns the
+    conversion; this layer parses and validates the request shape.
+
+    Raises:
+        NotFoundError when no train has that id.
+        ValidationError when there is no runtime, the train is not a ghost, the
+            session reads occupancy from the model, or any field is unusable.
+    """
+    with state.simulation_lock:
+        require_train(state, train_id)
+        if state.sim_controller is None:
+            raise ValidationError("No simulation runtime is running")
+
+        if cab is not None:
+            cab = str(cab).strip().upper()
+            if cab not in ("A", "B"):
+                raise ValidationError(f"Invalid cab: {cab!r} (expected 'A' or 'B')")
+
+        tile: Optional[Tuple[int, int]] = None
+        if head_tile is not None:
+            if not isinstance(head_tile, dict):
+                raise ValidationError("head_tile must be an object with x and y")
+            try:
+                tile = (int(head_tile["x"]), int(head_tile["y"]))
+            except (KeyError, TypeError, ValueError):
+                raise ValidationError("head_tile must include x and y")
+
+        try:
+            length_cm = float(length_cm)
+            max_speed_kmh = float(max_speed_kmh)
+        except (TypeError, ValueError):
+            raise ValidationError("length_cm and max_speed_kmh must be numbers")
+        if length_cm <= 0:
+            raise ValidationError("length_cm must be greater than 0")
+        if max_speed_kmh <= 0:
+            raise ValidationError("max_speed_kmh must be greater than 0")
+
+        try:
+            train = state.sim_controller.adopt_ghost_train(
+                train_id,
+                (new_train_id or train_id),
+                max_speed_kmh=max_speed_kmh,
+                length_cm=length_cm,
+                direction=direction,
+                head_tile=tile,
+                cab=cab,
+                train_type=train_type,
+                name=car_number or None,
+                min_radius_cm=min_radius_cm,
+                max_slope=max_slope,
+                speed_profile_id=speed_profile_id,
+                roster_entry_id=roster_entry_id,
+            )
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+
+        state.network.update_signals_from_blocks()
+        return train
+
+
+def diagnose_stopped_train(state: AppState, train_id: str) -> dict:
+    """Walk every gate between a standing train and a moving one.
+
+    A train that will not move is the hardest thing in this app to diagnose,
+    because each gate is individually reasonable and none of them says anything.
+    The route is assigned but Phase 1 never plans it because the train is `OFF`;
+    the path exists but ATO was never told to go; everything is green but the
+    block has no track binding so the rail is dead. From the layout all of those
+    look identical: a train that sits there.
+
+    The gates are walked in the order they actually bite, and the first failing
+    one is the answer — fixing a later gate while an earlier one is shut changes
+    nothing. Every gate carries what to do about it.
+
+    Returns `{train_id, moving, blocking_gate, gates: [...]}` where each gate is
+    `{name, ok, detail, fix}`.
+
+    Raises:
+        NotFoundError when no train has that id.
+    """
+    train = require_train(state, train_id)
+    sim = state.sim_controller
+    gates: List[dict] = []
+
+    def gate(name: str, ok: bool, detail: str, fix: str = "") -> None:
+        gates.append({"name": name, "ok": bool(ok), "detail": detail, "fix": fix})
+
+    if sim is None:
+        gate("runtime", False, "no simulation runtime is running",
+             "Switch to Operation mode.")
+        return {"train_id": train_id, "moving": False,
+                "blocking_gate": "runtime", "gates": gates}
+
+    controller = sim.get_controller(train_id)
+    if controller is None:
+        gate("controller", False, "this train has no controller",
+             "Re-place the train.")
+        return {"train_id": train_id, "moving": False,
+                "blocking_gate": "controller", "gates": gates}
+
+    speed = float(controller.physics_sync.current_speed_kmh)
+
+    # 1. The runtime has to be running at all.
+    gate("runtime_halted", not sim.failed_runtime,
+         "a fatal track conflict has every train halted" if sim.failed_runtime
+         else "runtime is live",
+         "Sort the conflict out on the layout, then Clear Conflict.")
+
+    gate("playing", bool(state.simulation_running),
+         "the clock is paused" if not state.simulation_running else "clock is running",
+         "Press Play.")
+
+    # 2. A ghost is not driveable, and an OFF train never plans a route:
+    #    `RouteExecutor.tick_train_phase1(...)` returns immediately for `OFF`.
+    gate("not_a_ghost", not getattr(train, "is_ghost", False),
+         "this is a ghost train — the app has never been told what it is"
+         if getattr(train, "is_ghost", False) else "a real train",
+         "Set it up as a real train from its panel.")
+
+    powered = controller.ops.state is not TrainState.OFF
+    gate("powered", powered,
+         "the train is powered off" if not powered else f"state {controller.ops.state.name}",
+         "Press Power On. While a train is OFF its route is never planned at all.")
+
+    cab = controller.commands.cab
+    gate("cab_selected", cab is not None,
+         "no cab is selected, so the train has no forward end"
+         if cab is None else f"cab {cab}",
+         "Pick Cab A or Cab B.")
+
+    # 3. Authority. No path means no ATC limit, which means no voltage.
+    path_id = sim.path_dispatcher.active_path_id_by_train(train_id)
+    route_id = sim.route_executor.assigned_route_id_for(train_id)
+    if path_id:
+        gate("authority", True, f"holding path {path_id}")
+    elif route_id:
+        gate("authority", False,
+             f"route {route_id} is assigned but no path has been acquired",
+             "Usually the track ahead is not free — check for an occupied or "
+             "reserved block on the way, including a ghost train.")
+    else:
+        gate("authority", False, "no route assigned and no path",
+             "Assign a route, or create a path to a destination.")
+
+    # 4. Told to go.
+    mode = controller.commands.control_mode
+    if mode == "ato":
+        gate("told_to_go", bool(controller.ato.running),
+             "ATO is not running" if not controller.ato.running else "ATO running",
+             "Press Depart / GO.")
+    else:
+        at_neutral = controller.ops.handle_position is HandlePosition.N
+        gate("told_to_go", not at_neutral,
+             "the handle is at N" if at_neutral
+             else f"handle {controller.ops.handle_position.name}",
+             "Notch the handle up to a power position.")
+
+    # 5. ATC. Zero limit is the usual last stop before "nothing happens".
+    limit, reason, _code = controller.atc.speed_limit_with_code()
+    gate("atc_allows_movement", limit > 0,
+         f"ATC limit is {limit:.1f} km/h ({reason})" if limit <= 0
+         else f"ATC limit {limit:.1f} km/h",
+         "The train is not authorised to move yet; the authority gate above is "
+         "usually the reason.")
+
+    # 6. The rail itself. Everything above can be green on a dead block.
+    unreachable = sorted(
+        getattr(sim.power_controller, "_unreachable_blocks", set())
+        & set(_blocks_of(controller))
+    )
+    gate("track_output_reachable", not unreachable,
+         f"the output driver cannot drive {', '.join(unreachable)}"
+         if unreachable else "track output is reachable",
+         "Bind those blocks to a track chip in Hardware Setup — the software is "
+         "commanding voltage that never reaches the rail.")
+
+    blocking = next((g["name"] for g in gates if not g["ok"]), None)
+    return {
+        "train_id": train_id,
+        "moving": speed > 0,
+        "speed_kmh": round(speed, 2),
+        "blocking_gate": blocking,
+        "gates": gates,
+    }
+
+
+def _blocks_of(controller) -> List[str]:
+    span = controller.physics_sync.current_span
+    return list(getattr(span, "occupied_blocks", None) or [])
+
+
+def clear_failed_runtime(state: AppState) -> dict:
+    """Release a fatal-conflict halt and leave every train off.
+
+    Raises:
+        ValidationError when there is no runtime, or it is not halted.
+    """
+    with state.simulation_lock:
+        if state.sim_controller is None:
+            raise ValidationError("No simulation runtime is running")
+        try:
+            payload = state.sim_controller.clear_failed_runtime()
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+    return {
+        "resource_type": payload.resource_type if payload else None,
+        "resource_id": payload.resource_id if payload else None,
+        "incoming_train_id": payload.incoming_train_id if payload else None,
+        "prior_owner_train_id": payload.prior_owner_train_id if payload else None,
+    }
 
 
 def delete_train(state: AppState, train_id: str) -> bool:

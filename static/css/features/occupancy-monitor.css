@@ -1,0 +1,282 @@
+/* Raw Occupancy monitor — live read-back of what the detectors see, one row per
+   detected block (panels/occupancy-monitor.ts). The outer window chrome is built
+   by FloatingWindow (layout/floating-window.css); this file styles only what is
+   mounted inside it.
+
+   Row grammar: a 5-column grid whose optional sub-line and debounce bar span the
+   full width. A settled block is one quiet line; a block mid-transition grows
+   the extra lines that explain it. That way the panel is scannable at rest and
+   only gets dense where something is happening. */
+
+.floating-window[data-window-id="occupancy-monitor"] .floating-window-content {
+    font-family: var(--font-main);
+    font-size: 12px;
+}
+
+/* ---- Toolbar ---- */
+.occ-toolbar {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.occ-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1 1 0;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+}
+
+.occ-field select {
+    height: var(--control-height-xs);
+    background-color: var(--bg-dark);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    padding: 0 6px;
+    font-family: var(--font-main);
+    font-size: 12px;
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+.occ-icon-btn {
+    height: var(--control-height-xs);
+    width: var(--control-height-xs);
+    background-color: var(--bg-dark);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.occ-icon-btn:hover {
+    border-color: var(--accent-color);
+    color: var(--accent-hover);
+}
+
+/* ---- USB link strip ----
+   Present only in real mode; sim mode has no link, and the panel hides the row
+   rather than printing "n/a" (a permanent row that says nothing trains the eye
+   to skip the row that will one day say something). */
+.occ-link {
+    padding: 5px 10px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.occ-link-ok {
+    color: var(--text-secondary);
+}
+
+.occ-link-warn {
+    color: var(--warning-color);
+    background-color: rgba(var(--warning-rgb), 0.1);
+}
+
+/* A dropped bridge is a fault, which is what danger is reserved for. */
+.occ-link-danger {
+    color: var(--danger-color);
+    background-color: rgba(var(--danger-rgb), 0.12);
+}
+
+/* ---- Body ---- */
+.occ-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+}
+
+/* The header and each row are separate grids, so every column is a fixed track
+   or an fr — `auto` would size per-grid and drift out of alignment. The last
+   track is sized to its HEADER ("Raw · Conf"), not to the two dots it holds:
+   the dots are 9px and 11px, and a track that fit only them clipped the label
+   and pushed the whole grid into horizontal overflow. */
+.occ-head,
+.occ-row {
+    display: grid;
+    grid-template-columns:
+        minmax(70px, 1.3fr)
+        minmax(52px, 0.7fr)
+        minmax(66px, 1fr)
+        minmax(60px, 0.9fr)
+        62px;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+}
+
+.occ-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background-color: var(--bg-panel, var(--bg-dark));
+    border-bottom: 1px solid var(--border-color);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-tertiary);
+}
+
+.occ-row {
+    border-bottom: 1px dotted var(--border-color);
+}
+
+.occ-row:last-child {
+    border-bottom: none;
+}
+
+/* Mid-debounce: raw and the verdict disagree. An accent rail, not a status
+   color — settling is normal operation, not a fault. */
+.occ-row-settling {
+    background-color: rgba(var(--accent-rgb), 0.06);
+    box-shadow: inset 2px 0 0 var(--accent-color);
+}
+
+/* The confirmed verdict just flipped — the event the panel exists to catch. */
+.occ-row-flash {
+    animation: occ-flash var(--occ-flash-duration, 0.9s) ease-out 1;
+}
+
+@keyframes occ-flash {
+    0% { background-color: rgba(var(--accent-rgb), 0.32); }
+    100% { background-color: transparent; }
+}
+
+.occ-block {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.occ-source {
+    min-width: 0;
+}
+
+.occ-reading,
+.occ-drive {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.occ-dash {
+    color: var(--text-tertiary);
+}
+
+/* The drive zone rides under its voltage: the two are one fact — how hard the
+   rails are being driven — and that is what decides which detector is believed. */
+.occ-zone {
+    display: block;
+    font-family: var(--font-main);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-tertiary);
+}
+
+/* ---- Raw / confirmed dots ----
+   Two dots, in reading order: what the hardware said, then what the runtime
+   believes. Side by side because the disagreement between them is the whole
+   point — a single "occupied" light cannot show a block mid-transition. */
+.occ-state {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+}
+
+.occ-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 1px solid var(--border-color);
+    background-color: transparent;
+    flex: none;
+}
+
+.occ-dot.occ-dot-on {
+    background-color: var(--danger-color);
+    border-color: var(--danger-color);
+}
+
+/* The verdict dot is the one the layout paints, so it carries the heavier mark. */
+.occ-dot-verdict {
+    width: 11px;
+    height: 11px;
+}
+
+.occ-dot-verdict.occ-dot-on {
+    box-shadow: 0 0 0 2px rgba(var(--danger-rgb), 0.25);
+}
+
+.occ-col-state {
+    text-align: right;
+}
+
+/* ---- Sub-line + debounce bar (full-width, inside the row grid) ---- */
+.occ-sub,
+.occ-debounce {
+    grid-column: 1 / -1;
+}
+
+.occ-sub {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    padding-top: 2px;
+}
+
+.occ-debounce {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding-top: 3px;
+}
+
+.occ-debounce-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.occ-debounce-track {
+    flex: 1 1 auto;
+    height: 3px;
+    border-radius: 2px;
+    background-color: var(--bg-hover);
+    overflow: hidden;
+}
+
+.occ-debounce-fill {
+    display: block;
+    height: 100%;
+    background-color: var(--accent-color);
+}
+
+/* ---- Footer ---- */
+.occ-footer {
+    padding: 4px 10px 6px;
+    border-top: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-family: var(--font-mono);
+}

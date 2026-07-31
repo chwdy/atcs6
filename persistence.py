@@ -199,6 +199,29 @@ class PersistenceManager:
         data = wrapper.get("hardware")
         if not isinstance(data, dict):
             return {"hardware": "absent"}
+
+        # Legacy lift: rail polarity used to live on the Block
+        # (`polarity_reversed` in the snapshot's block dicts) and now lives on
+        # the `block_track` binding (design_new.md "Power", Rail polarity lives
+        # on the rail binding). A layout saved under the old schema would
+        # otherwise load a corrected block back to normal wiring — silently
+        # reversing it on the rails. Only ever sets the flag: a new-schema save
+        # carries `reversed` in the binding itself and has no block-level key.
+        try:
+            snapshot_blocks = (wrapper.get("snapshot") or {}).get("blocks") or {}
+            track_map = data.get("block_track")
+            if isinstance(track_map, dict):
+                for block_id, block_data in snapshot_blocks.items():
+                    if not isinstance(block_data, dict):
+                        continue
+                    if not block_data.get("polarity_reversed"):
+                        continue
+                    binding = track_map.get(block_id)
+                    if isinstance(binding, dict) and "reversed" not in binding:
+                        binding["reversed"] = True
+        except Exception as e:
+            print(f"[Persistence] Legacy polarity lift skipped: {e}")
+
         try:
             hardware_config.apply_snapshot(data)
         except Exception as e:

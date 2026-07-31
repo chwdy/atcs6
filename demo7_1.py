@@ -96,12 +96,15 @@ PLATFORMS = [
 # "Main" vs "Siding". Every entry here is a one-segment block, so the name lands
 # on both the segment and its owning block — except SEG_4F110A, whose block is
 # named by its BLOCK_GROUPS entry below.
+#
+# NOTE: this comment is hand-added to a generated file and json_to_scene.py
+# drops it on the next re-bake. Paste it back if you re-run the baker.
 BLOCKS = [
-    ('SEG_4F110A', 'SW Leg', [(3, 7), (3, 6), (3, 5), (4, 5), (4, 4), (5, 4), (6, 4), (7, 4)], 0.0, None),
-    ('SEG_4F4CF0', 'NE Leg', [(12, 9), (12, 10), (12, 11), (12, 12), (11, 12), (11, 13), (10, 13), (9, 13)], 0.0, None),
-    ('SEG_4F5CE3', 'NW Leg', [(3, 8), (4, 8), (4, 9), (5, 9), (5, 10), (6, 10), (6, 11), (7, 11), (7, 12), (8, 12), (8, 13)], 0.0, None),
-    ('SEG_4F6CD7', 'Passing Loop Main', [(7, 6), (7, 7), (8, 7), (8, 8), (9, 8), (9, 9), (10, 9)], 0.0, None),
-    ('SEG_4F7A2F', 'Passing Loop Siding', [(8, 5), (8, 6), (9, 6), (9, 7), (10, 7), (10, 8), (11, 8)], 0.0, None),
+    ('SEG_4F110A', 'SW Leg', [(3, 7), (3, 6), (3, 5), (4, 5), (4, 4), (5, 4), (6, 4), (7, 4)], 50.0, None),
+    ('SEG_4F4CF0', 'NE Leg', [(9, 13), (10, 13), (11, 12), (11, 13), (12, 9), (12, 10), (12, 11), (12, 12)], 50.0, None),
+    ('SEG_4F5CE3', 'NW Leg', [(3, 8), (4, 8), (4, 9), (5, 9), (5, 10), (6, 10), (6, 11), (7, 11), (7, 12), (8, 12), (8, 13)], 50.0, None),
+    ('SEG_4F6CD7', 'Passing Loop Main', [(7, 6), (7, 7), (8, 7), (8, 8), (9, 8), (9, 9), (10, 9)], 50.0, None),
+    ('SEG_4F7A2F', 'Passing Loop Siding', [(8, 5), (8, 6), (9, 6), (9, 7), (10, 7), (10, 8), (11, 8)], 50.0, None),
 ]
 
 

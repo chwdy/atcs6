@@ -303,10 +303,22 @@ export class BlockGroupingEditorHandler {
                 <!-- Rail polarity sits with the hardware section, not with the
                      segment panel's "Allowed travel direction": that one is a
                      routing policy, this one is wiring, and it pairs with the
-                     rail binding directly below. Block-scoped because a block is
-                     fed as one — it covers every member segment. -->
+                     rail binding directly below. The flag lives ON that rail
+                     binding and auto-saves with it (design_new.md "Power", Rail
+                     polarity lives on the rail binding), so it is disabled
+                     until the rails are bound. -->
                 <div class="control-section control-section-divider mt-12 pt-12">
-                    ${renderPolaritySegment('block', block, { idBase: 'block-polarity' })}
+                    ${renderPolaritySegment(
+                      'block',
+                      { polarity_reversed: hwCfg?.block_track?.[blockId]?.reversed === true },
+                      {
+                        idBase: 'block-polarity',
+                        disabled: !hwCfg?.block_track?.[blockId],
+                        help: hwCfg?.block_track?.[blockId]
+                          ? undefined
+                          : 'Bind the track power channels below first — polarity is stored on that rail binding.',
+                      }
+                    )}
                 </div>
 
                 ${hardwareSectionHtml(hwCfg, blockId, BLOCK_HW_SLOTS)}
@@ -336,15 +348,25 @@ export class BlockGroupingEditorHandler {
 
     // Rail polarity auto-applies on click (§5C), same contract as the segment
     // panel's availability / direction controls: no success toast, and a reject
-    // re-renders so the active cell rolls back to the server's value.
-    bindPolaritySegment('block-polarity', async (_reversed, payload) => {
+    // re-renders so the active cell rolls back to the server's value. The write
+    // goes to the block's `block_track` hardware binding — PUT
+    // /api/hardware/binding — which persists on its own, no layout save needed
+    // (design_new.md "Power", Rail polarity lives on the rail binding).
+    bindPolaritySegment('block-polarity', async (reversed, _payload) => {
+      const binding = hwCfg?.block_track?.[blockId];
+      if (!binding) {
+        showToast('Bind the track power channels first — polarity is stored on that rail binding.', 'error', 4000);
+        return;
+      }
       try {
-        const result = await this.api.updateBlock(blockId, payload);
+        const result = await this.api.updateTrackBinding(
+          blockId, binding.chip_id, binding.forward, binding.reverse, reversed
+        );
         if (result && result.error) {
           showToast(`Cannot change track direction: ${result.error}`, 'error', 4000);
           this.showDetail(blockId);
         } else {
-          await this.editor.host?.refreshNetwork();
+          binding.reversed = reversed;
         }
       } catch (err: any) {
         console.error('Failed to update block track direction:', err);

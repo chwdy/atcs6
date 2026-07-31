@@ -36,7 +36,6 @@ layouts
 plans
 !docs/plans/
 !docs/plans/**
-AGENTS.md
 .opencode/package-lock.json
 
 # Frontend build pipeline (longterm_todo.md item #8)

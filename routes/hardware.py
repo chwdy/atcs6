@@ -18,7 +18,9 @@
   double-click). The pulse is held long enough to read on a meter, and the
   request may name its own width (`pulse_s`).
 - `POST /api/hardware/track-test` sweeps a block's two bound track channels
-  through both polarities so a loco runs, stops, and reverses.
+  through both polarities so a loco runs, stops, and reverses. Each leg is
+  mirrored onto `Block.current_voltage` while it is held, so the layout shows the
+  block energized instead of sitting at 0 V through a test driving real rails.
 - `POST /api/hardware/occupancy-test` reads both of one block's occupancy
   detectors and reports which one decides and what it says.
 - `POST /api/hardware/switch-test` throws one switch to a named position — the
@@ -140,6 +142,39 @@ def register(app, state: AppState) -> None:
             )
         )
 
+    @app.route("/api/hardware/occupancy/raw", methods=["GET"])
+    def get_raw_occupancy():
+        """Diagnostic read-back of the last tick's occupancy read, pre-debounce.
+
+        Returns exactly what `BlockOccupancyDetector.step()` saw on its most
+        recent read — the raw per-block boolean, the confirmed verdict, and the
+        live debounce counters — plus, on the real driver, which source answered
+        (digital '165 bit vs INA current) and what it measured. No hardware
+        traffic happens here: everything is recorded state, so polling this
+        endpoint fast cannot perturb the bus or the tick. `read_count` increments
+        once per detector read; a poller dedupes on it.
+
+        Carries the USB link state alongside, because "every block froze at once"
+        and "the bridge dropped off the bus" look identical from the block rows
+        alone. `link_status()` takes no lock and issues no traffic, so it answers
+        even while the bus is stalled mid-reconnect — which is when it matters.
+        """
+        import time as _time
+
+        with state.simulation_lock:
+            snapshot = state.sim_controller.block_occupancy_detector.debug_snapshot()
+            detail_fn = getattr(
+                state.sim_controller.input_interface, "last_read_detail", None
+            )
+            if callable(detail_fn):
+                for block_id, entry in (detail_fn() or {}).items():
+                    snapshot["blocks"].setdefault(block_id, {}).update(entry)
+        device = hardware_config.get_live_device()
+        link_fn = getattr(device, "link_status", None)
+        snapshot["link"] = link_fn() if callable(link_fn) else None
+        snapshot["monotonic"] = _time.monotonic()
+        return jsonify(snapshot)
+
     @app.route("/api/hardware/catalog", methods=["GET"])
     def get_hardware_catalog():
         from hardware.catalog import catalog_payload
@@ -257,7 +292,16 @@ def register(app, state: AppState) -> None:
         track, so it holds `simulation_lock` for its ~3 seconds: the runtime
         must not be writing block voltages into the middle of it, and it must
         not be writing over the runtime's. A stalled tick for the length of a
-        test the operator deliberately started is the cheaper side of that."""
+        test the operator deliberately started is the cheaper side of that.
+
+        The sweep is mirrored onto `Block.current_voltage` leg by leg, for the
+        same reason the switch throw test writes `Switch.position`: a test that
+        energizes real rails while the model still reads 0 V leaves the operator
+        watching a layout that disagrees with the track in front of them. It is
+        what the block-voltage debug overlay draws from, and the poll runs at
+        200 ms against legs held for a second, so the block visibly swings one
+        way, drops to zero, and swings the other. The runtime is frozen on the
+        lock while that happens and recomputes the block on its next tick."""
         data = request.get_json(silent=True) or {}
         try:
             cfg = hardware_config.config_from_payload(data.get("config", {}))
@@ -269,12 +313,34 @@ def register(app, state: AppState) -> None:
             return jsonify({"status": "error", "error": "block_id is required"}), 400
         from hardware import self_test
 
+        block = state.network.get_block(str(block_id)) if state.network else None
+
+        def _mirror(volts: float) -> None:
+            if block is not None:
+                block.current_voltage = volts
+
+        mirror = {
+            "on_voltage": _mirror,
+            # From the same config payload the sweep drives, so bench test and
+            # runtime resolve the flag identically (design_new.md "Power", Rail
+            # polarity lives on the rail binding).
+            "polarity_reversed": (
+                bool(cfg.block_track[str(block_id)].reversed)
+                if str(block_id) in cfg.block_track
+                else False
+            ),
+        }
+
         device = hardware_config.get_live_device()
         if device is not None:
             with state.simulation_lock:
-                return jsonify(self_test.run_track_test(cfg, str(block_id), device=device))
+                return jsonify(
+                    self_test.run_track_test(cfg, str(block_id), device=device, **mirror)
+                )
         return jsonify(
-            self_test.run_track_test(cfg, str(block_id), open_device=_develop_opener(cfg))
+            self_test.run_track_test(
+                cfg, str(block_id), open_device=_develop_opener(cfg), **mirror
+            )
         )
 
     @app.route("/api/hardware/switch-test", methods=["POST"])
@@ -402,12 +468,15 @@ def register(app, state: AppState) -> None:
             with state.simulation_lock:
                 if map_name == "block_track":
                     # A block's track binds two PWM channels (forward + reverse),
-                    # chosen independently (design_new.md Power, Hardware configuration).
+                    # chosen independently (design_new.md Power, Hardware
+                    # configuration), plus the `reversed` rail-polarity flag —
+                    # omitted, the flag keeps its stored value.
                     hardware_config.set_track_binding(
                         str(logical_id),
                         data.get("chip_id"),
                         data.get("forward"),
                         data.get("reverse"),
+                        polarity_reversed=data.get("reversed"),
                     )
                 elif map_name == "switch_output":
                     # A switch binds two coil ports plus an optional standby bit

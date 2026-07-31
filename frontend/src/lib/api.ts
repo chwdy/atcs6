@@ -370,6 +370,19 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
+  /**
+   * Diagnostic read-back of the last detection tick, pre-debounce: per block the
+   * raw read, the confirmed verdict, the live debounce counters, and — on the
+   * real driver — which source answered and what it measured. Plus the USB link
+   * state (null in sim mode, which has no link to lose).
+   *
+   * Reads recorded state only; it issues no bus traffic, so polling it fast
+   * cannot perturb the tick or the detectors it is reporting on.
+   */
+  async getRawOccupancy(options?: RequestOptions): Promise<any> {
+    return this._request('/hardware/occupancy/raw', options ?? {}, 'getRawOccupancy');
+  }
+
   /** Set (or clear, when chipId is null) one port binding, keyed by logical id.
    * `extra` carries the current map's per-channel calibration (baseline/threshold mA). */
   async updateHardwareBinding(
@@ -387,12 +400,15 @@ export class API implements LayoutDataClient, SimClient {
   }
 
   /** Set (or clear, when chipId is null) one block's track wiring: the two PWM
-   * channels driving its rails, chosen independently (not a fixed pair). */
+   * channels driving its rails, chosen independently (not a fixed pair).
+   * `reversed` is the rail-polarity flag stored on the same binding; leave it
+   * undefined to keep the stored value across a channel edit. */
   async updateTrackBinding(
     blockId: string,
     chipId: string | null,
     forward: number | null,
-    reverse: number | null
+    reverse: number | null,
+    reversed?: boolean
   ): Promise<any> {
     return this._request(
       '/hardware/binding',
@@ -404,6 +420,7 @@ export class API implements LayoutDataClient, SimClient {
           chip_id: chipId,
           forward,
           reverse,
+          ...(reversed === undefined ? {} : { reversed }),
         },
       },
       'updateTrackBinding'
@@ -1061,6 +1078,70 @@ export class API implements LayoutDataClient, SimClient {
   /** Get train lookahead data for the train monitor. */
   async getTrainLookahead(trainId: string): Promise<any> {
     return this._request(`/trains/${encodeURIComponent(trainId)}/lookahead`, {}, 'getTrainLookahead');
+  }
+
+  /**
+   * Set a ghost train up as a real, driveable train.
+   *
+   * The ghost keeps its blocks and its controller; the body supplies the
+   * identity, consist and facing the detector could never know (design_new.md
+   * "Ghost trains", Adoption). The adopted train's id is usually not the one in
+   * the URL, so read it back from the response.
+   */
+  async adoptGhostTrain(
+    trainId: string,
+    body: {
+      new_train_id: string;
+      length_cm: number;
+      max_speed: number;
+      direction: string;
+      head_tile?: { x: number; y: number };
+      cab?: string;
+      car_number?: string;
+      train_type?: string;
+      speed_profile_id?: string;
+    }
+  ): Promise<any> {
+    return this._request(
+      `/trains/${encodeURIComponent(trainId)}/adopt`,
+      {
+        method: 'POST',
+        body,
+      },
+      'adoptGhostTrain'
+    );
+  }
+
+  /**
+   * Explain why a train is not moving.
+   *
+   * Returns `{blocking_gate, gates: [{name, ok, detail, fix}]}` with the gates
+   * in the order they actually bite — `blocking_gate` names the first shut one,
+   * which is the only one worth fixing.
+   */
+  async getWhyStopped(trainId: string): Promise<any> {
+    return this._request(
+      `/trains/${encodeURIComponent(trainId)}/why-stopped`,
+      {},
+      'getWhyStopped'
+    );
+  }
+
+  /**
+   * Release a fatal-conflict halt, leaving every train off.
+   *
+   * The operator has sorted the conflict out on the layout; this reopens the
+   * gate so the session carries on instead of demanding a process restart that
+   * would throw the whole layout state away.
+   */
+  async clearFatalConflict(): Promise<any> {
+    return this._request(
+      '/runtime/clear-fatal',
+      {
+        method: 'POST',
+      },
+      'clearFatalConflict'
+    );
   }
 
   // === Train Control API ===

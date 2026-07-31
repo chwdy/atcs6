@@ -1319,8 +1319,17 @@ function gateHtml(): string {
     `<span class="hw-check ${c.ok ? 'ok' : 'warn'}"${c.ok ? '' : ` data-hw="jump" data-key="${c.key}"`}>` +
     `<i class="ti ti-${c.ok ? 'check' : 'alert-triangle'}" aria-hidden="true"></i> ${esc(c.label)}</span>`).join('');
   const effEnabled = state.enabled && ready;
-  const enableTitle = effEnabled ? 'Hardware enabled' : ready ? 'Enable hardware' : 'Simulation only';
-  const enableSub = ready ? 'applies after restart' : 'clear the amber steps first';
+  // One constant label, so the TOGGLE POSITION is what carries on/off. Naming
+  // the off state in the label instead ("Simulation only") inverted its meaning:
+  // a switch sitting off under those words reads as "simulation-only is off, so
+  // hardware must be on" — the opposite of the truth. The sub-line names the
+  // current consequence and the next step.
+  const enableTitle = 'Use real hardware';
+  const enableSub = !ready
+    ? 'simulation only — clear the amber steps first'
+    : effEnabled
+      ? 'applies after restart'
+      : 'off — simulation only';
   const restart = savedSinceEdit
     ? `<span class="hw-restart-note">Applies after a restart.</span>
        <button type="button" class="btn btn-primary" data-hw="restart">Restart now</button>`
@@ -1356,7 +1365,8 @@ function gateHtml(): string {
     <div class="hw-gate-actions">
       ${deadband}
       ${devToggle}
-      <label class="hw-enable ${effEnabled ? 'on' : ''} ${ready ? '' : 'locked'}" data-hw="enable">
+      <label class="hw-enable ${effEnabled ? 'on' : ''} ${ready ? '' : 'locked'}" data-hw="enable"
+        title="On, the running simulation reads your detectors and drives your track and points. Off, it runs entirely on the simulated drivers and never touches the rig.">
         <span class="hw-enable-text"><span class="hw-enable-label">${enableTitle}</span>
           <span class="hw-enable-sub">${enableSub}</span></span>
         <span class="hw-toggle"></span>

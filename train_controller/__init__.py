@@ -180,6 +180,14 @@ class TrainController:
     # one warning instead of one per tick. A plain transient flag, not a latch.
     _overspeed_warned: bool = False
 
+    # True while every wired block this train could show up on — its span
+    # blocks and its held blocks — reads confirmed clear, so no physical
+    # detection backs the calculated position and the train may be gone
+    # (design_new.md "Power", Presence unknown). Written each tick by
+    # `SimulationController._detect_block_occupancy`; stays False in a session
+    # that detects nothing physical.
+    presence_unknown: bool = False
+
     # -------------------------------------------------------------------------
     # Power & Safety State
     # -------------------------------------------------------------------------
@@ -1238,6 +1246,49 @@ class TrainController:
         """Which physical span end ("end_a"/"end_b") is the head for the
         selected cab. Cab "B" -> end_b; cab "A" or None -> end_a."""
         return "end_b" if self.commands.cab == "B" else "end_a"
+
+    def _reframe_span_for_head_change(
+        self, old_head: str, new_head: str
+    ) -> Optional[str]:
+        """Atomically re-express both span locators when the head end changes.
+
+        A cab change does not move the physical train, but it reverses the
+        head-forward traversal frame used by each ``SpanEndLocator``.  Compute
+        both replacements before writing either one so a malformed endpoint
+        can never leave the cab and span describing opposite directions.
+
+        Returns ``None`` on success, otherwise a user-facing reason.  On
+        failure the span is untouched.
+        """
+        if old_head == new_head:
+            return None
+        span = getattr(self.physics_sync, "current_span", None)
+        if span is None:
+            return None
+        if self.network is None:
+            return "Cannot switch cab without network geometry"
+
+        replacements = []
+        for label, end in (("end_a", span.end_a), ("end_b", span.end_b)):
+            if not end.tile or not end.entry_edge:
+                return f"Cannot switch cab: {label} has no traversal frame"
+            track = self.network.get_track(*end.tile)
+            if track is None:
+                return f"Cannot switch cab: {label} is not on track"
+            exits = track.get_exits(end.entry_edge, use_switch_state=True)
+            if not exits:
+                return f"Cannot switch cab: {label} has no reverse traversal"
+            tile_length = self.network._get_tile_length_cm(
+                end.tile[0], end.tile[1]
+            )
+            replacements.append(
+                (end, exits[0], float(tile_length) - float(end.distance_cm))
+            )
+
+        for end, entry_edge, distance_cm in replacements:
+            end.entry_edge = entry_edge
+            end.distance_cm = distance_cm
+        return None
 
     def _head_span_locator(self):
         """`SpanEndLocator` for the head end of `current_span`, or None."""

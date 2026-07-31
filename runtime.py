@@ -12,8 +12,9 @@ TODO List:
 
 import threading
 import time
+import traceback
 from datetime import datetime
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 
 from app_state import AppState
 from enums import OperationMode
@@ -35,6 +36,13 @@ AUTOSAVE_FILENAME = "_autosave"
 # than real time) rather than teleporting; sub-second steps are physically fine.
 MAX_SIM_DELTA_SECONDS = 1.0
 
+# Cadence of the loop, and how often a stuck fault is re-reported. A fault that
+# survives its own recovery (a USB bridge that stays unplugged, say) fails every
+# single tick; printing its traceback ten times a second buries the one line
+# that says when it started, so repeats are counted and summarized instead.
+TICK_INTERVAL_SECONDS = 0.1
+ERROR_REPEAT_SUMMARY_EVERY = 100   # ~10s at the tick interval
+
 
 def _clamp_sim_delta(delta_seconds: float, simulation_speed: float) -> float:
     """Per-tick sim delta = wall-clock delta x speed, clamped to
@@ -42,6 +50,66 @@ def _clamp_sim_delta(delta_seconds: float, simulation_speed: float) -> float:
     return min(
         max(delta_seconds, 0.0) * simulation_speed, MAX_SIM_DELTA_SECONDS
     )
+
+
+class FaultLog:
+    """Collapses consecutive identical faults from a loop that must not exit.
+
+    A stuck fault fails every tick — a USB bridge that stayed off the bus is the
+    one that prompted this — and at 10 Hz its traceback scrolls the line that
+    says when the trouble started off the screen within seconds. The first
+    occurrence prints in full; identical repeats are counted, summarized
+    periodically, and totalled when the fault changes or clears.
+
+    Sameness is `(type, str(exc))`, not the traceback: the same failure reached
+    from two call sites is still the same failure to whoever is reading the log,
+    and a message that varies (a changing device path, say) is worth seeing.
+    """
+
+    def __init__(
+        self, tag: str, summary_every: int = ERROR_REPEAT_SUMMARY_EVERY
+    ) -> None:
+        self._tag = tag
+        self._summary_every = max(1, int(summary_every))
+        self._signature: Optional[Tuple[str, str]] = None
+        self._repeats = 0
+
+    def report(self, exc: BaseException) -> None:
+        signature = (type(exc).__name__, str(exc))
+        if signature == self._signature:
+            self._repeats += 1
+            if self._repeats % self._summary_every == 0:
+                print(
+                    f"[{self._tag}] STILL FAILING: {exc} "
+                    f"({self._repeats + 1} consecutive ticks)"
+                )
+            return
+        self._flush()
+        self._signature = signature
+        self._repeats = 0
+        print(f"[{self._tag}] ERROR: {exc}")
+        # Explicit rather than `print_exc()`: this is reachable outside an
+        # `except` block, where the implicit form prints "NoneType: None".
+        traceback.print_exception(type(exc), exc, exc.__traceback__)
+        print(f"[{self._tag}] Continuing despite error...")
+
+    def clear(self) -> None:
+        """Record a tick that succeeded, closing out any run of faults."""
+        if self._signature is None:
+            return
+        print(
+            f"[{self._tag}] recovered after {self._repeats + 1} failed tick(s): "
+            f"{self._signature[1]}"
+        )
+        self._signature = None
+        self._repeats = 0
+
+    def _flush(self) -> None:
+        if self._repeats:
+            print(
+                f"[{self._tag}] (previous error repeated {self._repeats} "
+                f"more times)"
+            )
 
 
 def _reads_hardware(state: AppState) -> bool:
@@ -68,6 +136,7 @@ def create_simulation_loop(state: AppState) -> Callable[[], None]:
 
     def simulation_loop() -> None:
         last_update_time = datetime.now()
+        faults = FaultLog("SimulationLoop")
         while True:
             try:
                 current_time = datetime.now()
@@ -95,14 +164,14 @@ def create_simulation_loop(state: AppState) -> Callable[[], None]:
                     # sim-mode session never contends for it while idle.
                     with state.simulation_lock:
                         state.sim_controller.poll_hardware_occupancy()
-
-                time.sleep(0.1)
             except Exception as e:
-                print(f"[SimulationLoop] ERROR: {e}")
-                import traceback
-
-                traceback.print_exc()
-                print("[SimulationLoop] Continuing despite error...")
+                faults.report(e)
+            else:
+                faults.clear()
+            # Outside the try, so a failing tick still paces itself. Inside, a
+            # stuck fault would skip its own sleep and spin the loop at full
+            # speed — pinning a core and hammering whatever just failed.
+            time.sleep(TICK_INTERVAL_SECONDS)
 
     return simulation_loop
 

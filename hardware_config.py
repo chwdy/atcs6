@@ -59,9 +59,22 @@ _I2C_MIN, _I2C_MAX = 0x03, 0x77
 # channel; abs(current - baseline) at/above the threshold marks it occupied. A
 # per-channel `CurrentBinding` may override the threshold/baseline; None on a
 # field means "use the default below".
-DEFAULT_CURRENT_THRESHOLD_MA = 15.0
+DEFAULT_CURRENT_THRESHOLD_MA = 3.0
 DEFAULT_CURRENT_BASELINE_MA = 0.0
 DEFAULT_IDLE_DEADBAND_V = 0.25
+# The drive level at or above which the current channel is trusted to DECIDE
+# occupancy. Between this and the idle deadband sits the lighting zone, where a
+# stopped-but-lit train drives the rails too weakly to load the current sensor
+# yet strongly enough to disturb the '165 — so no single read may clear a block
+# there (see `hardware.interfaces.OccupancyDriver`). Tunable because where a
+# locomotive starts drawing a readable current depends on the locomotive.
+#
+# It must stay ABOVE the profile's `lighting_voltage` (default 3.0 V): a
+# stopped-but-lit train is by definition not being driven, and putting its
+# standby level at or above this bound would hand its block to the current
+# channel alone — the one source a lit, motionless locomotive is least likely
+# to register on.
+DEFAULT_CURRENT_SENSE_MIN_DRIVE_V = 4.0
 
 
 class HardwareConfigError(ValueError):
@@ -139,11 +152,21 @@ class TrackBinding:
     `reverse` the other. They are chosen independently (not a fixed adjacent
     pair), so the two rails may sit on any two of the chip's 16 channels. Voltage
     magnitude sets duty on whichever channel matches the sign; the other rests at
-    zero, so the two inputs are never driven together."""
+    zero, so the two inputs are never driven together.
+
+    `reversed` records that the block's two rails are wired the opposite way
+    round from the nominal-positive sense its tile order implies. It is wiring
+    config, so it lives with the wiring and auto-persists with every other
+    binding edit. The concrete driver swaps the two channels as it resolves the
+    binding when it is set; the `forward`/`reverse` channels themselves are
+    never rebound, because one of those physical rails may carry the block's
+    idle detection feed (design_new.md "Power", Rail polarity lives on the rail
+    binding)."""
 
     chip_id: str
     forward: int
     reverse: int
+    reversed: bool = False
 
     @property
     def channels(self) -> List[int]:
@@ -214,17 +237,24 @@ class HardwareConfig:
     # build and held; there is no per-tick coast window. Empty when /OE is tied
     # enabled in hardware.
     output_enable: Dict[str, PortBinding] = field(default_factory=dict)
-    # Drive threshold for the hybrid occupancy detector: a block whose commanded
-    # voltage exceeds this magnitude is "driven" and read by its current channel;
-    # at or below it the '165 detector answers. Tunable because how small a
-    # commanded voltage still counts as parked is a property of the layout's
-    # drivers and detectors, not a constant. `None` means the module default.
+    # Lower edge of the hybrid occupancy detector's drive zones: at or below this
+    # magnitude a block is idle and its '165 detector answers. Tunable because
+    # how small a commanded voltage still counts as parked is a property of the
+    # layout's drivers and detectors, not a constant. `None` means the module
+    # default.
     idle_deadband_v: float = DEFAULT_IDLE_DEADBAND_V
+    # Upper edge of the same scale: at or above this magnitude the current
+    # channel decides. Between the two is the lighting zone, where no read may
+    # clear a block (see `hardware.interfaces.OccupancyDriver`).
+    current_sense_min_drive_v: float = DEFAULT_CURRENT_SENSE_MIN_DRIVE_V
 
 
 # A deadband at or above this would swallow ordinary crawl voltages and leave
 # every block reading idle, so the config layer refuses it.
 MAX_IDLE_DEADBAND_V = 5.0
+# Ceiling for the current-sense drive floor: a floor above the maximum track
+# voltage would put every block in the lighting zone, where nothing ever clears.
+MAX_TRACK_VOLTAGE = 12.0
 
 _config = HardwareConfig()
 
@@ -297,7 +327,12 @@ def _binding_dict(m: Dict[str, PortBinding]) -> Dict[str, Dict[str, Any]]:
 
 def _track_binding_dict(m: Dict[str, TrackBinding]) -> Dict[str, Dict[str, Any]]:
     return {
-        lid: {"chip_id": b.chip_id, "forward": b.forward, "reverse": b.reverse}
+        lid: {
+            "chip_id": b.chip_id,
+            "forward": b.forward,
+            "reverse": b.reverse,
+            "reversed": b.reversed,
+        }
         for lid, b in m.items()
     }
 
@@ -352,6 +387,7 @@ def _persist_dict(cfg: HardwareConfig) -> Dict[str, Any]:
         "switch_output": _switch_binding_dict(cfg.switch_output),
         "output_enable": _binding_dict(cfg.output_enable),
         "idle_deadband_v": cfg.idle_deadband_v,
+        "current_sense_min_drive_v": cfg.current_sense_min_drive_v,
     }
 
 
@@ -455,6 +491,7 @@ def _parse_track_bindings(data: Any) -> Dict[str, TrackBinding]:
             chip_id=str(raw.get("chip_id", "")).strip(),
             forward=_req_port(raw, "forward", lid, "track binding"),
             reverse=_req_port(raw, "reverse", lid, "track binding"),
+            reversed=bool(raw.get("reversed", False)),
         )
     return out
 
@@ -518,9 +555,14 @@ def _merged_from_updates(updates: Dict[str, Any]) -> HardwareConfig:
         switch_output=dict(_config.switch_output),
         output_enable=dict(_config.output_enable),
         idle_deadband_v=_config.idle_deadband_v,
+        current_sense_min_drive_v=_config.current_sense_min_drive_v,
     )
     if "idle_deadband_v" in updates:
         merged.idle_deadband_v = _parse_deadband(updates["idle_deadband_v"])
+    if "current_sense_min_drive_v" in updates:
+        merged.current_sense_min_drive_v = _parse_min_drive(
+            updates["current_sense_min_drive_v"]
+        )
     if "enabled" in updates:
         merged.enabled = bool(updates["enabled"])
     if "develop" in updates:
@@ -554,6 +596,16 @@ def _validate(cfg: HardwareConfig) -> None:
         raise HardwareConfigError(
             f"idle_deadband_v must be at least 0 and below {MAX_IDLE_DEADBAND_V} V, "
             f"got {cfg.idle_deadband_v}"
+        )
+
+    # The two edges bound the lighting zone between them, so the floor must sit
+    # above the deadband. Setting it AT the deadband is allowed and means "no
+    # lighting zone" — the old two-way idle/driven split.
+    if not (cfg.idle_deadband_v <= cfg.current_sense_min_drive_v <= MAX_TRACK_VOLTAGE):
+        raise HardwareConfigError(
+            f"current_sense_min_drive_v must be between idle_deadband_v "
+            f"({cfg.idle_deadband_v} V) and {MAX_TRACK_VOLTAGE} V, "
+            f"got {cfg.current_sense_min_drive_v}"
         )
 
     if cfg.controller.kind not in CONTROLLER_CATALOG:
@@ -1024,11 +1076,14 @@ def set_track_binding(
     forward: Optional[int] = None,
     reverse: Optional[int] = None,
     *,
+    polarity_reversed: Any = None,
     persist: bool = True,
 ) -> HardwareConfig:
     """Set or clear one block's track wiring (the per-entity block editor's
     Hardware section). `chip_id` None/empty clears it; otherwise both the forward
-    and reverse PWM channels are required. The whole configuration is
+    and reverse PWM channels are required. `polarity_reversed` sets the binding's
+    `reversed` wiring flag; None keeps the existing value, so a channel edit does
+    not silently reset a corrected block. The whole configuration is
     re-validated, so an out-of-range, role-mismatched, equal, or already-used
     channel is rejected and nothing is committed."""
     candidate = _copy_config()
@@ -1040,14 +1095,34 @@ def set_track_binding(
             raise HardwareConfigError(
                 "forward and reverse channels are both required when chip_id is set"
             )
+        prior = target.get(block_id)
         target[block_id] = TrackBinding(
-            chip_id=str(chip_id), forward=int(forward), reverse=int(reverse)
+            chip_id=str(chip_id),
+            forward=int(forward),
+            reverse=int(reverse),
+            reversed=(
+                bool(polarity_reversed)
+                if polarity_reversed is not None
+                else bool(prior.reversed) if prior is not None else False
+            ),
         )
     _validate(candidate)
     _apply(candidate)
     if persist:
         save_to_disk()
     return _config
+
+
+def track_polarity_reversed(block_id: str) -> bool:
+    """Whether `block_id`'s rails are wired reversed, per the live configuration.
+
+    The track driver's `polarity_of` read (design_new.md "Power", Rail polarity
+    lives on the rail binding). Reads the module-level `_config` on every call —
+    not a snapshot — so an editor flip lands on the next track write without a
+    session rebuild. A block with no rail binding has no rails to be reversed:
+    False."""
+    binding = _config.block_track.get(block_id)
+    return bool(binding.reversed) if binding is not None else False
 
 
 def set_switch_binding(
@@ -1134,6 +1209,19 @@ def _parse_deadband(raw: Any) -> float:
         ) from exc
 
 
+def _parse_min_drive(raw: Any) -> float:
+    """The current-sense drive floor from either config path. `None` means the
+    module default, matching `_parse_deadband`."""
+    if raw is None:
+        return DEFAULT_CURRENT_SENSE_MIN_DRIVE_V
+    try:
+        return float(raw)
+    except (TypeError, ValueError) as exc:
+        raise HardwareConfigError(
+            f"current_sense_min_drive_v must be a number, got {raw!r}"
+        ) from exc
+
+
 def _config_from_dict(payload: Any) -> HardwareConfig:
     """Build a standalone `HardwareConfig` from a whole-configuration dict, with
     no merge against the singleton and no validation: an absent section takes its
@@ -1150,6 +1238,9 @@ def _config_from_dict(payload: Any) -> HardwareConfig:
         switch_output=_parse_switch_bindings(payload.get("switch_output", {})),
         output_enable=_parse_bindings(payload.get("output_enable", {})),
         idle_deadband_v=_parse_deadband(payload.get("idle_deadband_v")),
+        current_sense_min_drive_v=_parse_min_drive(
+            payload.get("current_sense_min_drive_v")
+        ),
     )
 
 
@@ -1282,10 +1373,10 @@ def build_session_interfaces(
     initialize a chip raises `HardwareBackendUnavailable`, which `bootstrap.py`
     turns into a sim-mode fallback.
 
-    `track_polarity_of` answers `Block.polarity_reversed` for the track driver.
-    This module knows only logical ids, never the network, so the caller supplies
-    the lookup; passing the live network's read (rather than a snapshot) is what
-    lets an operator flip a block's rails without rebuilding the session.
+    `track_polarity_of` answers a block's rail-binding `reversed` flag for the
+    track driver — `track_polarity_reversed` above is the canonical lookup, and
+    a caller passes it (rather than a snapshot) so an operator can flip a
+    block's rails without rebuilding the session.
     """
     cfg = cfg if cfg is not None else _config
     if not is_real(cfg):
@@ -1316,6 +1407,7 @@ def build_session_interfaces(
                 block_occupancy_current=_current_binding_tuples(cfg.block_occupancy_current),
                 output_enable=_binding_tuples(cfg.output_enable),
                 idle_deadband_v=cfg.idle_deadband_v,
+                current_sense_min_drive_v=cfg.current_sense_min_drive_v,
                 track_polarity_of=track_polarity_of,
                 watchdog_timeout_s=None,
             )
@@ -1355,6 +1447,7 @@ def build_session_interfaces(
             block_occupancy_current=_current_binding_tuples(cfg.block_occupancy_current),
             output_enable=_binding_tuples(cfg.output_enable),
             idle_deadband_v=cfg.idle_deadband_v,
+            current_sense_min_drive_v=cfg.current_sense_min_drive_v,
             track_polarity_of=track_polarity_of,
             # A real session drives real track; arm the loss-of-control watchdog
             # (design_new.md "Power -> Hardware interface boundary").

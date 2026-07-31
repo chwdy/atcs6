@@ -52,4 +52,16 @@ describe('renderPolaritySegment', () => {
     // The user-facing promise this field makes: one block, every segment.
     expect(renderPolaritySegment('block', null)).toContain('every segment in the block');
   });
+
+  it('renders both cells disabled when the rails are not bound', () => {
+    // The flag lives on the `block_track` binding, so with no binding there is
+    // nothing to store it on — the panel disables the control and says why.
+    const html = renderPolaritySegment('block', null, { idBase: 'p', disabled: true });
+    expect(html.match(/ disabled/g)?.length).toBe(2);
+  });
+
+  it('renders enabled cells by default', () => {
+    const html = renderPolaritySegment('block', null, { idBase: 'p' });
+    expect(html.match(/ disabled/g)).toBeNull();
+  });
 });

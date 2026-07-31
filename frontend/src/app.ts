@@ -16,7 +16,7 @@ import { SimRendererOverlay } from './renderer/sim-overlay';
 import { Editor } from './editor/editor';
 import { SimEditorPlugin } from './editor/sim-plugin';
 import { TrainMonitor } from './panels/train-monitor';
-import { updateFatalBanner } from './panels/fatal-banner';
+import { runtimeNoun, updateFatalBanner } from './panels/fatal-banner';
 import { startRestartReconnectFlow } from './ui/restart-flow';
 import {
   startConnectionMonitor,
@@ -101,6 +101,12 @@ class App {
       console.warn('[App] Connection monitor init failed:', e)
     );
     this.refreshNetwork();
+    // The network poll (block/switch state, incl. hardware occupancy) runs
+    // continuously regardless of play/pause: the backend keeps committing
+    // hardware occupancy while stopped (real mode), so the client must keep
+    // asking or the layout freezes at whatever it looked like at the last
+    // Pause. Play/Pause only toggles simulation ticking on the server.
+    this.startSimulationPolling();
   }
 
 
@@ -110,22 +116,53 @@ class App {
       if (this.isSimulationRunning) {
         // Pause
         api.controlSimulation('stop').catch((e: any) => console.error('[App] Pause error:', e));
-        this.stopSimulationPolling();
+        this.isSimulationRunning = false;
         this.updatePlaybackUI(false);
       } else {
         // Play
         api.controlSimulation('start').catch((e: any) => console.error('[App] Play error:', e));
-        this.startSimulationPolling();
+        this.isSimulationRunning = true;
         this.updatePlaybackUI(true);
       }
     });
+
+    // Clearing is the ordinary way out of a fatal conflict: the operator has
+    // gone and sorted it out on the layout, and the session carries on rather
+    // than losing the whole layout state to a process restart. Every train comes
+    // back OFF, so nothing moves until it is powered up deliberately.
+    const clearFatalBtn = document.getElementById('btn-clear-fatal') as HTMLButtonElement | null;
+    if (clearFatalBtn) {
+      clearFatalBtn.addEventListener('click', async () => {
+        const confirmed = await showConfirmModal({
+          title: 'Clear the conflict?',
+          message: 'Only clear this once the track is actually sorted out — two trains claimed the same place, and the app cannot see that you have fixed it.',
+          detail: 'Every train comes back powered off and stopped. Nothing moves until you power it up again.',
+          confirmText: 'Clear',
+          cancelText: 'Cancel',
+          confirmVariant: 'danger'
+        });
+        if (!confirmed) return;
+
+        clearFatalBtn.disabled = true;
+        try {
+          await api.clearFatalConflict();
+          showToast('Conflict cleared — every train is off.', 'success', 4000);
+          await this.refreshNetwork();
+        } catch (e: any) {
+          console.error('[App] Clear conflict failed:', e);
+          showToast('Could not clear the conflict: ' + (e?.message ?? e), 'error', 5000);
+        } finally {
+          clearFatalBtn.disabled = false;
+        }
+      });
+    }
 
     const restartFatalBtn = document.getElementById('btn-restart-fatal') as HTMLButtonElement | null;
     if (restartFatalBtn) {
       restartFatalBtn.addEventListener('click', async () => {
         const confirmed = await showConfirmModal({
           title: 'Restart Server?',
-          message: 'This session cannot continue after a fatal track conflict — the server process will exit and relaunch.',
+          message: 'The server process will exit and relaunch, throwing away everything since the last save.',
           detail: 'Unsaved layout edits will be flushed to autosave first. The page will reload automatically when the server is back (~3–5s).',
           confirmText: 'Restart',
           cancelText: 'Cancel',
@@ -220,6 +257,7 @@ class App {
 
     document.getElementById('mode-edit')!.classList.toggle('active', !isSim);
     document.getElementById('mode-sim')!.classList.toggle('active', isSim);
+    this.syncRuntimeNounUI(this.currentNetwork);
 
     if (!this.editor) return;
 
@@ -247,6 +285,20 @@ class App {
     }
   }
 
+  /** Stop calling a railway with real detectors on it a simulation.
+   *
+   *  design_new.md "Run modes": the header split is editor mode versus
+   *  operation mode, and what operation mode *is* depends on the hardware —
+   *  once block occupancy is read from real detectors the app is operating a
+   *  layout, not simulating one. The mode button and the play/pause tooltip
+   *  follow `occupancy_is_real`; nothing else about the split changes. */
+  syncRuntimeNounUI(network: any): void {
+    const noun = runtimeNoun(network);
+    const modeBtn = document.getElementById('mode-sim');
+    if (modeBtn && modeBtn.textContent !== noun) modeBtn.textContent = noun;
+    const playBtn = document.getElementById('btn-play-pause');
+    if (playBtn) playBtn.setAttribute('title', `Start/Pause ${noun}`);
+  }
 
   updatePlaybackUI(isPlaying: boolean): void {
     const btn = document.getElementById('btn-play-pause');
@@ -824,6 +876,7 @@ class App {
 
       // Surface a fatal-conflict halt (failed_runtime) if one is active.
       updateFatalBanner(network, this.renderer);
+      this.syncRuntimeNounUI(network);
       noteRequestSuccess();
     } catch (e: any) {
       console.error('[App] Failed to refresh network:', e);
@@ -1219,7 +1272,6 @@ class App {
    */
   startSimulationPolling(): void {
     if (this.simulationInterval) return;
-    this.isSimulationRunning = true;
     this.simulationInterval = setInterval(async () => {
       await this.refreshNetwork();
 
@@ -1254,7 +1306,6 @@ class App {
       clearInterval(this.simulationInterval);
       this.simulationInterval = null;
     }
-    this.isSimulationRunning = false;
     // One final refresh to show stopped state
     this.refreshNetwork();
   }

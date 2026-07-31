@@ -93,7 +93,7 @@ class SpeedCalibration:
     def _commanded_voltages(profile) -> List[float]:
         """`CALIBRATION_VOLTAGE_STEPS` evenly-spaced voltages from the profile's
         `lighting_voltage` (0% power anchor) to its `max_voltage` (100%)."""
-        lo = float(getattr(profile, "lighting_voltage", 2.0))
+        lo = float(getattr(profile, "lighting_voltage", 3.0))
         hi = float(getattr(profile, "max_voltage", 12.0))
         n = max(2, int(CALIBRATION_VOLTAGE_STEPS))
         return [lo + (hi - lo) * i / (n - 1) for i in range(n)]

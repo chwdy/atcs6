@@ -151,8 +151,12 @@ describe('occupancy test report', () => {
     ok: true,
     block_id: BLOCK,
     track: { bound: true, chip_id: 'track0', port: 0, volts: 0 },
+    // The backend reports the drive zone and the `driven` shorthand together;
+    // the rows read `zone`, so a fixture that overrides one overrides both.
+    zone: 'idle',
     driven: false,
     deadband_v: 0.25,
+    min_drive_v: 4,
     digital: { bound: true, chip_id: 'det0', port: 3, value: true, occupied: true },
     current: {
       bound: true, chip_id: 'cur0', port: 1, baseline_ma: 0, threshold_ma: 15,
@@ -191,6 +195,7 @@ describe('occupancy test report', () => {
   it('hands the verdict to the current detector once the block is driven', () => {
     const html = occupancyResultHtml(report({
       track: { bound: true, chip_id: 'track0', port: 0, volts: 12 },
+      zone: 'driven',
       driven: true,
       source: 'current',
       occupied: false,
@@ -218,7 +223,7 @@ describe('occupancy test report', () => {
   it('reads a reverse-polarity block as driven', () => {
     const html = occupancyResultHtml(report({
       track: { bound: true, chip_id: 'track0', port: 0, volts: -9 },
-      driven: true, source: 'current', occupied: true,
+      zone: 'driven', driven: true, source: 'current', occupied: true,
     }));
     expect(rowsOf(html)[0]).toContain('-9.0 V · driving');
   });

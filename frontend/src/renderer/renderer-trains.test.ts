@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { TRACK_EW, TRACK_NS, TRACK_NW } from '../lib/constants';
 import { RendererTrainHandler, trainBodyFill, type TrainHandlerRenderer, type TrainSnap } from './renderer-trains';
 
 // renderer-trains.js had no test before the migration; this is fresh coverage
@@ -109,6 +110,51 @@ describe('RendererTrainHandler pure helpers', () => {
     const spy = vi.spyOn(handler, 'drawTrainFromSnapshot').mockImplementation(() => {});
     handler.drawTrain({ id: 'T1' });
     expect(spy).toHaveBeenCalledWith({ id: 'T1' }, snap);
+  });
+
+  it('draws a cabless ghost body along every tile in its bent span', () => {
+    const renderer = makeRenderer();
+    const lineTo = vi.fn();
+    renderer.ctx = {
+      save: vi.fn(),
+      restore: vi.fn(),
+      beginPath: vi.fn(),
+      moveTo: vi.fn(),
+      lineTo,
+      stroke: vi.fn(),
+      setLineDash: vi.fn(),
+    } as unknown as CanvasRenderingContext2D;
+    renderer.currentNetwork = {
+      tracks: [
+        { x: 0, y: 0, track_bits: TRACK_EW },
+        { x: 1, y: 0, track_bits: TRACK_NW },
+        { x: 1, y: 1, track_bits: TRACK_NS },
+      ],
+    };
+    const handler = new RendererTrainHandler(renderer);
+    vi.spyOn(handler, 'drawEndMarker').mockImplementation(() => {});
+    vi.spyOn(handler, 'drawTrainLabel').mockImplementation(() => {});
+
+    handler.drawTrainFromSnapshot(
+      { id: 'GHOST_1', is_ghost: true },
+      {
+        id: 'GHOST_1',
+        cab: null,
+        facing: null,
+        isGhost: true,
+        span: {
+          occupiedTiles: [[0, 0], [1, 0], [1, 1]],
+          leadingEnd: '',
+          endA: { tile: [0, 0], distance_cm: 25, entry_edge: 'W' },
+          endB: { tile: [1, 1], distance_cm: 25, entry_edge: 'S' },
+        },
+      },
+    );
+
+    // The bend's shared track edge is part of both border and fill strokes.
+    // A straight endpoint-to-endpoint shortcut never visits this point.
+    expect(lineTo).toHaveBeenCalledWith(10, 10);
+    expect(renderer.ctx.setLineDash).toHaveBeenCalledWith([4, 3]);
   });
 
   describe('trainBodyFill', () => {

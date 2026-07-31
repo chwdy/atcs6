@@ -298,7 +298,7 @@ def test_track_voltage_bipolar_h_bridge(wired):
 
 
 def test_reversed_polarity_swaps_the_two_rails():
-    """`Block.polarity_reversed` trades the block's two channels: a positive
+    """The rail binding's `reversed` flag trades the block's two channels: a positive
     voltage drives the rail the binding calls `reverse`. The binding itself is
     untouched, which is what lets the detection rail stay where it is wired."""
     dev = FakeCh347Device(present_addresses={0x40})
@@ -511,6 +511,136 @@ def test_hybrid_occupancy_selects_source_by_drive_state():
     assert inp.read_block_currents()["B1"] is False
     dev.set_ina3221_current(0x41, 1, 0.030)      # 30 mA > 15 mA -> occupied
     assert inp.read_block_currents()["B1"] is True
+
+
+def _lighting_zone_block(hold_reads=3):
+    """A block bound to both sources, wired so 2 V lands in the lighting zone.
+
+    Returns (device, occupancy input, track output) with B1 already commanded to
+    2 V — between the 0.25 V idle deadband and the 4 V current-sense floor.
+    """
+    dev = FakeCh347Device(present_addresses={0x40, 0x41})
+    specs = [
+        ChipConfig("pwm1", "pca9685", i2c_address=0x40),
+        ChipConfig("in1", "hc165", spi_select="cs1"),
+        ChipConfig("cur1", "ina3221", i2c_address=0x41),
+    ]
+    inp, blk, _sw = build_real_interfaces(
+        dev, specs,
+        block_track={"B1": ("pwm1", 0, 1)},
+        block_occupancy={"B1": ("in1", 3)},
+        switch_output={},
+        block_occupancy_current={"B1": ("cur1", 0, 0.0, 0.015)},  # CH1, 15 mA
+        idle_deadband_v=0.25,
+        current_sense_min_drive_v=4.0,
+        lighting_clear_hold_reads=hold_reads,
+    )
+    blk.set_voltage("B1", 2.0)
+    return dev, inp, blk
+
+
+def test_lighting_zone_confirms_on_either_source():
+    # Between the deadband and the current-sense floor neither source can be
+    # trusted to clear, but either one seeing current confirms on one read.
+    dev, inp, _blk = _lighting_zone_block()
+    dev.set_ina3221_current(0x41, 1, 0.030)      # current sees it, '165 does not
+    assert inp.read_block_currents()["B1"] is True
+
+    dev, inp, _blk = _lighting_zone_block()
+    dev.set_input_bit("cs1", 3, True, width=1)   # '165 sees it, current does not
+    assert inp.read_block_currents()["B1"] is True
+
+
+def test_lighting_zone_holds_through_a_both_clear_read():
+    # One blind read must not vacate the block — that is the confirm/vacate loop
+    # between occupancy and drive.
+    dev, inp, _blk = _lighting_zone_block(hold_reads=3)
+    dev.set_input_bit("cs1", 3, True, width=1)
+    assert inp.read_block_currents()["B1"] is True
+    dev.set_input_bit("cs1", 3, False, width=1)  # both sources now clear
+    assert inp.read_block_currents()["B1"] is True
+    assert inp.read_block_currents()["B1"] is True
+
+
+def test_lighting_zone_releases_after_sustained_both_clear():
+    # ...but the hold is not a latch: sustained agreement releases the block.
+    dev, inp, _blk = _lighting_zone_block(hold_reads=3)
+    dev.set_input_bit("cs1", 3, True, width=1)
+    assert inp.read_block_currents()["B1"] is True
+    dev.set_input_bit("cs1", 3, False, width=1)
+    assert inp.read_block_currents()["B1"] is True     # 1st clear
+    assert inp.read_block_currents()["B1"] is True     # 2nd
+    assert inp.read_block_currents()["B1"] is False    # 3rd -> released
+    assert inp.read_block_currents()["B1"] is False    # and stays released
+
+
+def test_lighting_zone_flicker_resets_the_clear_window():
+    # A '165 flickering under the rail drive asserts occupied inside the window;
+    # that must restart the count, so flicker delays a release instead of
+    # racing one.
+    dev, inp, _blk = _lighting_zone_block(hold_reads=3)
+    dev.set_input_bit("cs1", 3, True, width=1)
+    assert inp.read_block_currents()["B1"] is True
+    for _ in range(20):
+        dev.set_input_bit("cs1", 3, False, width=1)
+        assert inp.read_block_currents()["B1"] is True     # 1st clear
+        assert inp.read_block_currents()["B1"] is True     # 2nd clear
+        dev.set_input_bit("cs1", 3, True, width=1)         # flicker back on
+        assert inp.read_block_currents()["B1"] is True
+    # Still occupied after 60 reads, because no window ever ran to completion.
+    assert inp.read_block_currents()["B1"] is True
+
+
+def test_lighting_zone_clear_window_resets_on_leaving_the_zone():
+    # The window counts unbroken agreement inside the zone only. A block driven
+    # up out of it was answered by a source trusted to clear alone, so its
+    # part-finished count must not carry back in.
+    dev, inp, blk = _lighting_zone_block(hold_reads=3)
+    dev.set_input_bit("cs1", 3, True, width=1)
+    assert inp.read_block_currents()["B1"] is True
+    dev.set_input_bit("cs1", 3, False, width=1)
+    assert inp.read_block_currents()["B1"] is True     # 1st clear
+    assert inp.read_block_currents()["B1"] is True     # 2nd clear
+    blk.set_voltage("B1", 8.0)                         # driven: current decides
+    dev.set_ina3221_current(0x41, 1, 0.030)
+    assert inp.read_block_currents()["B1"] is True
+    blk.set_voltage("B1", 2.0)                         # back to lighting
+    dev.set_ina3221_current(0x41, 1, 0.0)
+    assert inp.read_block_currents()["B1"] is True     # count restarted at 1
+    assert inp.read_block_currents()["B1"] is True
+    assert inp.read_block_currents()["B1"] is False
+
+
+def test_lighting_zone_release_window_restarts_after_a_reconfirm():
+    # After a release the count starts over, so a block that re-confirms and
+    # goes quiet again waits the full window instead of dropping out on its
+    # next silent read.
+    dev, inp, _blk = _lighting_zone_block(hold_reads=3)
+    dev.set_input_bit("cs1", 3, True, width=1)
+    assert inp.read_block_currents()["B1"] is True
+    dev.set_input_bit("cs1", 3, False, width=1)
+    for _ in range(2):
+        assert inp.read_block_currents()["B1"] is True
+    assert inp.read_block_currents()["B1"] is False    # released
+    dev.set_input_bit("cs1", 3, True, width=1)
+    assert inp.read_block_currents()["B1"] is True     # re-confirmed
+    dev.set_input_bit("cs1", 3, False, width=1)
+    assert inp.read_block_currents()["B1"] is True     # full window again
+    assert inp.read_block_currents()["B1"] is True
+    assert inp.read_block_currents()["B1"] is False
+
+
+def test_lighting_voltage_default_stays_below_the_current_sense_floor():
+    # A stopped-but-lit train must land in the lighting zone. If its standby
+    # voltage reached the current-sense floor, its block would be judged by the
+    # current channel alone — the one source a motionless loco is least likely
+    # to register on.
+    from hardware_config import DEFAULT_CURRENT_SENSE_MIN_DRIVE_V
+    from speed_profile import DEFAULT_SPEED_PROFILE, SpeedProfile
+
+    assert DEFAULT_SPEED_PROFILE.lighting_voltage < DEFAULT_CURRENT_SENSE_MIN_DRIVE_V
+    per_train = SpeedProfile(profile_id="t", name="T")
+    assert per_train.lighting_voltage < DEFAULT_CURRENT_SENSE_MIN_DRIVE_V
 
 
 def test_current_only_block_reads_ina_regardless_of_drive():
@@ -1027,6 +1157,79 @@ def test_track_test_sweeps_the_blocks_two_bound_channels(monkeypatch):
     assert dev.duty_cycle(0x40, 4) == 0.0 and dev.duty_cycle(0x40, 9) == 0.0
 
 
+def test_drive_sequence_reports_each_leg_it_drives():
+    # The mirror the block-voltage overlay reads: full one way, zero, full the
+    # other, zero — reported as each leg starts, not once at the end.
+    dev = FakeCh347Device(present_addresses={0x40})
+    chip = PCA9685(dev, address=0x40)
+    seen = []
+    self_test._drive_sequence(
+        chip, forward=4, reverse=9, hold_s=0.0, on_voltage=seen.append
+    )
+    assert seen == [12.0, 0.0, -12.0, 0.0]
+
+
+def test_drive_sequence_reports_zero_when_a_write_raises():
+    # A sweep that dies with a rail hot must leave the mirror dead too, or the
+    # layout keeps claiming voltage on a block the finally just de-energized.
+    dev = FakeCh347Device(present_addresses={0x40})
+    chip = PCA9685(dev, address=0x40)
+    chip.configure()
+    original = chip.set_duty_cycle
+    calls = {"n": 0}
+
+    def flaky(channel, duty):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise IOError("bridge dropped")
+        original(channel, duty)
+
+    chip.set_duty_cycle = flaky
+    seen = []
+    with pytest.raises(IOError):
+        self_test._drive_sequence(
+            chip, forward=0, reverse=1, hold_s=0.0, on_voltage=seen.append
+        )
+    assert seen[-1] == 0.0
+
+
+def test_track_test_mirrors_the_sweep_as_nominal_voltage(monkeypatch):
+    monkeypatch.setattr(self_test, "TRACK_TEST_HOLD_S", 0.0)
+    dev = FakeCh347Device(present_addresses={0x40})
+    cfg = HardwareConfig(
+        controller=ControllerConfig(kind="ch347"),
+        chips=[ChipConfig("pwm1", "pca9685", i2c_address=0x40)],
+        block_track={"B1": TrackBinding("pwm1", 4, 9)},
+    )
+    seen = []
+    assert self_test.run_track_test(
+        cfg, "B1", device=dev, on_voltage=seen.append
+    )["ok"] is True
+    assert seen == [12.0, 0.0, -12.0, 0.0]
+
+
+def test_track_test_mirror_follows_block_polarity(monkeypatch):
+    # The sweep always drives the binding's channels raw — that is what makes a
+    # backwards-wired block reveal itself. But the driver resolves a nominal
+    # positive command to the other channel on a reversed block, so the mirrored
+    # sign flips to match, and the model never disagrees with the driver about
+    # which way the rails it just drove are pointing.
+    monkeypatch.setattr(self_test, "TRACK_TEST_HOLD_S", 0.0)
+    dev = FakeCh347Device(present_addresses={0x40})
+    cfg = HardwareConfig(
+        controller=ControllerConfig(kind="ch347"),
+        chips=[ChipConfig("pwm1", "pca9685", i2c_address=0x40)],
+        block_track={"B1": TrackBinding("pwm1", 4, 9)},
+    )
+    seen = []
+    res = self_test.run_track_test(
+        cfg, "B1", device=dev, on_voltage=seen.append, polarity_reversed=True
+    )
+    assert res["ok"] is True
+    assert seen == [-12.0, 0.0, 12.0, 0.0]
+    assert dev.duty_cycle(0x40, 4) == 0.0 and dev.duty_cycle(0x40, 9) == 0.0
+
+
 def test_track_test_reports_a_block_with_no_track_binding():
     dev = FakeCh347Device(present_addresses={0x40})
     cfg = HardwareConfig(
@@ -1124,6 +1327,48 @@ def test_occupancy_test_below_the_deadband_still_counts_as_idle():
     res = self_test.run_occupancy_test(_occupancy_cfg(), "B1", device=dev)
     assert res["driven"] is False
     assert res["source"] == "digital" and res["occupied"] is False
+
+
+def test_occupancy_test_uses_the_configured_current_sense_floor():
+    # Both zone thresholds are per-configuration tunables, and the runtime
+    # OccupancyDriver is built with the configured values (see the
+    # `build_real_interfaces` call site in hardware_config). Resolving them from
+    # the module defaults instead would have the bench test and the running
+    # session reaching different verdicts about the same block — on exactly the
+    # layouts whose operator tuned the setting.
+    from hardware_config import DEFAULT_CURRENT_SENSE_MIN_DRIVE_V
+
+    dev = _occupancy_device()
+    dev.set_input_bit("cs1", 3, True)                    # detector: occupied
+    dev.set_ina3221_current(0x41, 2, 0.001)              # current: near zero
+    PCA9685(dev, address=0x40).set_duty_cycle(0, 0.5)    # 6 V on the rails
+
+    res = self_test.run_occupancy_test(_occupancy_cfg(), "B1", device=dev)
+    assert res["min_drive_v"] == DEFAULT_CURRENT_SENSE_MIN_DRIVE_V
+    assert res["zone"] == "driven" and res["source"] == "current"
+
+    cfg = _occupancy_cfg()
+    cfg.current_sense_min_drive_v = 8.0                  # the operator raises it
+    res = self_test.run_occupancy_test(cfg, "B1", device=dev)
+    assert res["min_drive_v"] == 8.0
+    # Same rails, same reads: the raised floor puts them in the lighting zone.
+    assert res["zone"] == "lighting" and res["source"] == "held"
+
+
+def test_occupancy_test_uses_the_configured_idle_deadband():
+    dev = _occupancy_device()
+    dev.set_input_bit("cs1", 3, True)
+    dev.set_ina3221_current(0x41, 2, 0.001)
+    PCA9685(dev, address=0x40).set_duty_cycle(0, 0.05)   # 0.6 V — over the default
+
+    res = self_test.run_occupancy_test(_occupancy_cfg(), "B1", device=dev)
+    assert res["zone"] == "lighting"
+
+    cfg = _occupancy_cfg()
+    cfg.idle_deadband_v = 1.0                            # the operator widens it
+    res = self_test.run_occupancy_test(cfg, "B1", device=dev)
+    assert res["deadband_v"] == 1.0
+    assert res["zone"] == "idle" and res["source"] == "digital"
 
 
 def test_occupancy_test_current_only_block_uses_current_when_idle():

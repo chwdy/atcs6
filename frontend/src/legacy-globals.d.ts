@@ -18,4 +18,8 @@ interface Window {
   // The singleton diagnostics panel (diagnostics.ts) self-bootstraps onto window
   // so the toolbar diagnostics toggle can reach it.
   diagnosticsPanel?: { init(): void; toggle(): void; show(): void; hide(): void };
+
+  // The singleton raw-occupancy monitor (occupancy-monitor.ts), on window for
+  // the same reason: its toolbar toggle is plain markup in index.html.
+  occupancyMonitor?: { init(): void; toggle(): void; show(): void; hide(): void };
 }

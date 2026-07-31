@@ -40,14 +40,23 @@ This module closes that hole from three sides:
    marker still present at the *next* boot proves the previous run died with
    its outputs in an unknown state, which is reported loudly to the console and
    handed to the UI via `/api/server/shutdown-report`.
+
+The supervisor also owns the listening socket, so the other end of that story --
+booting onto a port a previous run still holds -- lands here too.
+`offer_port_takeover()` names the holder and asks whether to stop it, because
+the answer matters more on this project than on most: the process holding the
+port is usually the one holding the track, and asking it to stop is what makes
+it de-energize the layout on the way out.
 """
 
 from __future__ import annotations
 
 import atexit
+import errno
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -71,6 +80,12 @@ HEARTBEAT_INTERVAL_S = 5.0
 # How long the supervisor waits for the session process to finish its own
 # shutdown (safe state + record write) before escalating to SIGKILL.
 CHILD_GRACE_S = 10.0
+
+# How long a process we asked to vacate the port gets before we report it as
+# stuck. If it is a previous supervisor it spends up to CHILD_GRACE_S of that
+# waiting on *its* child to safe the outputs, so anything tighter would call a
+# working shutdown a hang.
+PORT_TAKEOVER_GRACE_S = CHILD_GRACE_S + 5.0
 
 # Identifies this process to the browser. The UI compares it across a reconnect
 # to tell "the server restarted" from "the connection blipped".
@@ -433,6 +448,223 @@ def _simulation_summary(state: Any) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Port takeover: offer to stop whatever already holds the port
+# ---------------------------------------------------------------------------
+
+
+def _capture(cmd: list[str], timeout: float = 5.0) -> str:
+    """stdout of a short probe command, or "" if it is missing or misbehaves."""
+    try:
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout
+
+
+def _port_listeners(port: int) -> list[dict[str, Any]]:
+    """The processes listening on `port`, or [] if they cannot be identified.
+
+    `lsof -F` prints one field per line, tagged by its first character, grouped
+    under the `p<pid>` line of the process they belong to -- so a single scan
+    collects pid (p), parent pid (R) and command name (c). The full argv comes
+    from `ps`, because lsof's `c` is only the truncated command name and the
+    argv is what tells the operator which server this actually is.
+    """
+    text = _capture(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-FpcR"])
+    found: dict[int, dict[str, Any]] = {}
+    current: Optional[int] = None
+    for line in text.splitlines():
+        tag, value = line[:1], line[1:]
+        if tag == "p":
+            current = int(value) if value.isdigit() else None
+            if current is not None:
+                found.setdefault(current, {"pid": current, "ppid": None, "argv": ""})
+        elif current is None or current not in found:
+            continue
+        elif tag == "R":
+            found[current]["ppid"] = int(value) if value.isdigit() else None
+        elif tag == "c":
+            found[current].setdefault("command", value)
+    for pid, info in found.items():
+        argv = _capture(["ps", "-p", str(pid), "-o", "args="]).strip()
+        info["argv"] = argv or info.get("command") or "?"
+    return sorted(found.values(), key=lambda info: info["pid"])
+
+
+def _signal_targets(listeners: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop any listener whose parent is also listening.
+
+    A reload supervisor binds the socket and hands the inheritable fd to its
+    child, so both processes show up on the port. The SIGTERM belongs to the
+    supervisor: it forwards the signal, waits for the child to safe its outputs,
+    and only then releases the port. Signalling the child instead would race its
+    own parent, which is still trying to restart it.
+    """
+    pids = {info["pid"] for info in listeners}
+    return [info for info in listeners if info.get("ppid") not in pids]
+
+
+def _port_is_free(host: str, port: int) -> bool:
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+def _wait_for_port(host: str, port: int, timeout: float) -> bool:
+    """Poll until the port can be bound -- not merely until a pid disappears.
+
+    Those are different questions: a parent can exit while a child still holds
+    the listening fd it inherited, and only a bind can tell us the difference.
+    """
+    deadline = time.time() + timeout
+    while True:
+        if _port_is_free(host, port):
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.25)
+
+
+def _can_prompt() -> bool:
+    """Is there a human at this terminal who can answer?
+
+    isatty() alone is not enough. A backgrounded run (`python server.py &`)
+    still has the terminal on stdin, but reading it raises SIGTTIN and stops the
+    job -- so the process group must also be the terminal's foreground group.
+    """
+    try:
+        if not sys.stdin.isatty():
+            return False
+        return os.getpgrp() == os.tcgetpgrp(sys.stdin.fileno())
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def _ask_yes_no(question: str) -> bool:
+    try:
+        answer = input(f"{question} [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer in ("y", "yes")
+
+
+def offer_port_takeover(
+    host: str,
+    port: int,
+    log: Callable[[str], None] = print,
+) -> bool:
+    """Ask whether to stop whatever holds `port`. True once the port is free.
+
+    Only called after a bind has actually failed with EADDRINUSE. Nothing is
+    signalled without a "yes" typed at the terminal; with no terminal to ask,
+    this reports what it found and leaves the other process alone.
+    """
+    listeners = _port_listeners(port)
+    targets = _signal_targets(listeners)
+
+    log("")
+    log(f"Port {port} is already in use.")
+    if not targets:
+        log("  Could not identify what is holding it (lsof unavailable, or the")
+        log("  owner is another user). Free the port, or serve on another one:")
+        log(f"      python server.py --port {port + 1}")
+        return False
+
+    for info in listeners:
+        log(f"  pid {info['pid']}  {info['argv']}")
+
+    marker = _read_json(RUN_MARKER_PATH)
+    if marker and marker.get("pid") in {info["pid"] for info in listeners}:
+        log("")
+        log("  That is this project's own server, still holding the layout.")
+        log("  Stopping it drives block voltages to 0 and de-energizes the")
+        log("  switch coils before it lets go of the port.")
+
+    if not _can_prompt():
+        log("")
+        log("  No terminal attached, so there is no one to ask -- leaving it be.")
+        return False
+
+    log("")
+    pronoun = "it" if len(targets) == 1 else "them"
+    if not _ask_yes_no(f"  Stop {pronoun} and take port {port}?"):
+        log("  Left running.")
+        return False
+    return _stop_listeners(targets, host, port, log)
+
+
+def _stop_listeners(
+    targets: list[dict[str, Any]],
+    host: str,
+    port: int,
+    log: Callable[[str], None],
+) -> bool:
+    for info in targets:
+        pid = info["pid"]
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue  # exited between the scan and now; the port may free itself
+        except PermissionError:
+            log(f"  pid {pid} belongs to another user -- cannot signal it.")
+            return False
+        log(f"  SIGTERM -> pid {pid}")
+
+    log(f"  waiting up to {PORT_TAKEOVER_GRACE_S:.0f}s for the port to be released")
+    if _wait_for_port(host, port, PORT_TAKEOVER_GRACE_S):
+        log(f"  port {port} released")
+        return True
+
+    log(f"  port {port} is still held after {PORT_TAKEOVER_GRACE_S:.0f}s.")
+    if not _ask_yes_no(
+        "  Force-kill it? It gets no chance to de-energize the layout first:"
+    ):
+        log("  Left running.")
+        return False
+
+    # Force takes every listener, not just the ancestors: nothing is being safed
+    # anyway, and killing only a parent would strand the child still holding the
+    # listening fd -- the port would stay busy with no one left to ask.
+    for info in _port_listeners(port) or targets:
+        try:
+            os.kill(info["pid"], signal.SIGKILL)
+        except OSError:
+            continue
+        log(f"  SIGKILL -> pid {info['pid']}")
+
+    if not _wait_for_port(host, port, 5.0):
+        log(f"  port {port} is STILL held. Nothing more to try from here.")
+        return False
+    # The killed process never reached its shutdown path, so its run marker is
+    # still on disk -- claim_run_marker() in the session process we are about to
+    # start will find it and report the outputs as being in an unknown state.
+    log(f"  port {port} released by force -- the layout was NOT safed first.")
+    return True
+
+
+def ensure_port_available(
+    host: str = "127.0.0.1",
+    port: int = 5001,
+    log: Callable[[str], None] = print,
+) -> bool:
+    """Pre-flight for paths that bind late (werkzeug's own `app.run`).
+
+    Asking here beats letting a full bootstrap -- which opens the CH347 -- run
+    to completion only to die with errno 48 at the very last step.
+    """
+    if _port_is_free(host, port):
+        return True
+    return offer_port_takeover(host, port, log)
+
+
+# ---------------------------------------------------------------------------
 # The supervisor: replaces werkzeug's reloader parent
 # ---------------------------------------------------------------------------
 
@@ -459,8 +691,6 @@ def _bind_listen_socket(host: str, port: int):
     too. It also means the port is held by the supervisor across reloads, so a
     restart cannot lose the port to a race.
     """
-    import socket
-
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((host, port))
@@ -488,8 +718,16 @@ def supervise_reloader_child(
     try:
         sock = _bind_listen_socket(host, port)
     except OSError as exc:
-        log(f"Could not bind {host}:{port} — {exc}")
-        return 1
+        # "Already in use" is the one bind failure the operator can resolve from
+        # right here, so offer that instead of just dying with errno 48.
+        if exc.errno != errno.EADDRINUSE or not offer_port_takeover(host, port, log):
+            log(f"Could not bind {host}:{port} — {exc}")
+            return 1
+        try:
+            sock = _bind_listen_socket(host, port)
+        except OSError as exc:
+            log(f"Could not bind {host}:{port} — {exc}")
+            return 1
 
     env = os.environ.copy()
     env["WERKZEUG_RUN_MAIN"] = "true"

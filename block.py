@@ -108,7 +108,6 @@ class Block(TrackResource):
         grade_percent: Optional[float] = None,
         speed_limit_kmh: Optional[float] = None,
         is_holding_point: bool = False,
-        polarity_reversed: bool = False,
         occupied_seconds: float = 0.0,
         occupied_by: Optional[str] = None,
         caution: Optional[CautionState] = None,
@@ -129,16 +128,11 @@ class Block(TrackResource):
         # "Path And PathDispatcher").
         self.is_holding_point = is_holding_point
 
-        # Static config flag: this block's two rails are wired the opposite way
-        # round from the nominal-positive sense its geometry implies, so a
-        # positive commanded voltage must drive the other rail. Electrical only —
-        # it is not `allowed_travel_directions`, which is a routing policy and
-        # never reaches the hardware. Read by the track driver when it resolves
-        # this block's rail binding (design_new.md "Power -> Track polarity"), so
-        # a change takes effect on the next write with no session rebuild. The
-        # block is the unit here: a block is fed as one, so the flag covers every
-        # member segment and a segment has no polarity of its own.
-        self.polarity_reversed = polarity_reversed
+        # Rail polarity is NOT a block field. A block whose rails are wired the
+        # opposite way round is corrected on its `block_track` hardware binding
+        # (`TrackBinding.reversed`, hardware_config.py), which auto-persists
+        # like every other wiring edit (design_new.md "Power", Rail polarity
+        # lives on the rail binding).
 
         # Maintenance counter: total simulated seconds a train has occupied this
         # block. Written once per tick by SimulationController.update(...) and
@@ -379,7 +373,6 @@ class Block(TrackResource):
             "manual": self.manual,
             "current_voltage": self.current_voltage,
             "allowed_travel_directions": sorted(self.allowed_travel_directions),
-            "polarity_reversed": self.polarity_reversed,
             "ordered_tiles": [
                 [int(x), int(y), str(edge)] for (x, y, edge) in self.ordered_tiles
             ],
@@ -415,7 +408,6 @@ class Block(TrackResource):
             "disabled": self.disabled,
             "manual": self.manual,
             "allowed_travel_directions": sorted(self.allowed_travel_directions),
-            "polarity_reversed": self.polarity_reversed,
             "ordered_tiles": [
                 [int(x), int(y), str(edge)] for (x, y, edge) in self.ordered_tiles
             ],
@@ -455,7 +447,6 @@ class Block(TrackResource):
                 block_id=data["block_id"],
                 name=data.get("name", ""),
                 is_holding_point=bool(data.get("is_holding_point", False)),
-                polarity_reversed=bool(data.get("polarity_reversed", False)),
                 disabled=bool(data.get("disabled", False)),
                 manual=bool(data.get("manual", False)),
                 allowed_travel_directions=(
@@ -499,7 +490,6 @@ class Block(TrackResource):
             min_radius_cm=data.get("min_radius_cm"),
             grade_percent=data.get("grade_percent"),
             is_holding_point=bool(data.get("is_holding_point", False)),
-            polarity_reversed=bool(data.get("polarity_reversed", False)),
             speed_limit_kmh=data.get("speed_limit_kmh", data.get("max_speed_kmh")),
             disabled=bool(data.get("disabled", False)),
             manual=bool(data.get("manual", False)),

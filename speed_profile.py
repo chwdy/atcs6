@@ -56,7 +56,7 @@ class SpeedProfile:
         voltage_power_curve: List of (voltage, power_percent) calibration points
             for the first stage (`track_voltage <-> power_percent`). Voltage
             ascending, power_percent ascending. Default is linear across the
-            usable range: lighting_voltage (2 V) -> 0%, max_voltage (12 V) -> 100%.
+            usable range: lighting_voltage (3 V) -> 0%, max_voltage (12 V) -> 100%.
         lighting_voltage: Voltage at which the train is lit but still holds
             (the stopped-but-lit states use it) and the 0%-power point of
             voltage_power_curve. At exactly this voltage power is 0 and the
@@ -75,11 +75,17 @@ class SpeedProfile:
     # Default left empty here and synthesized in __post_init__ as a linear ramp
     # anchored to this profile's own `lighting_voltage` (0%) and `max_voltage`
     # (100%), per design_new.md "SpeedProfile". With the default
-    # lighting_voltage=2.0 / max_voltage=12.0 this reproduces the historical
-    # [(2.0, 0.0), (12.0, 100.0)] curve.
+    # lighting_voltage=3.0 / max_voltage=12.0 this is [(3.0, 0.0), (12.0, 100.0)].
     voltage_power_curve: List[Tuple[float, float]] = field(default_factory=list)
 
-    lighting_voltage: float = 2.0  # Lit-but-stationary voltage; also the 0%-power anchor of voltage_power_curve
+    # Lit-but-stationary voltage; also the 0%-power anchor of
+    # voltage_power_curve. Set high enough that a lit, motionless locomotive
+    # draws a current its block's sense channel can actually read — below that
+    # the channel reports ~0 mA and the block's occupancy rests on the '165
+    # alone (see `hardware.interfaces.OccupancyDriver`, lighting zone). It must
+    # stay below `DEFAULT_CURRENT_SENSE_MIN_DRIVE_V`, or a standby block reads
+    # as driven.
+    lighting_voltage: float = 3.0
     acceleration_rate: float = 10.0  # km/h per second
     deceleration_rate: float = 15.0  # km/h per second (service brake)
     emergency_brake_rate: float = 30.0  # km/h per second
@@ -305,7 +311,7 @@ class SpeedProfile:
             name=data.get("name", ""),
             power_speed_curve=power_tuples,
             voltage_power_curve=voltage_power_tuples,
-            lighting_voltage=float(data.get("lighting_voltage", 2.0)),
+            lighting_voltage=float(data.get("lighting_voltage", 3.0)),
             acceleration_rate=float(data.get("acceleration_rate", 10.0)),
             deceleration_rate=float(data.get("deceleration_rate", 15.0)),
             emergency_brake_rate=float(data.get("emergency_brake_rate", 30.0)),
@@ -327,7 +333,7 @@ class SpeedProfile:
 DEFAULT_SPEED_PROFILE = SpeedProfile(
     profile_id="default",
     name="Default HO Scale",
-    lighting_voltage=2.0,
+    lighting_voltage=3.0,
     acceleration_rate=10.0,
     deceleration_rate=15.0,
     emergency_brake_rate=30.0,

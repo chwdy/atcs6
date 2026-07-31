@@ -33,6 +33,16 @@ export class TrainEditorHandler {
   _placeFacing: string | null;
   _placeExits: string[];
   _placeLengthCm: number;
+  // Ghost-adoption state: which way the train faces, and — only when the
+  // operator overrides the centred default — which claimed tile the front sits
+  // on. Both are things only the operator can know; see renderGhostTrainPanel.
+  // The claimed tiles are kept so the facings on offer can be worked out.
+  _adoptHeadTile: { x: number; y: number } | null;
+  _adoptFacing: string | null;
+  _adoptClaimedTiles: Array<[number, number]>;
+  // Last gate-relevant controller state the why-stopped banner was refreshed
+  // for, so a live controller push does not re-ask on every tick.
+  _lastGateKey: string | null;
 
   constructor(editor: EditorHost) {
     this.editor = editor;
@@ -46,6 +56,10 @@ export class TrainEditorHandler {
     this._placeFacing = null;
     this._placeExits = [];
     this._placeLengthCm = 100;
+    this._adoptHeadTile = null;
+    this._adoptFacing = null;
+    this._adoptClaimedTiles = [];
+    this._lastGateKey = null;
   }
 
   get api(): any {
@@ -630,10 +644,98 @@ export class TrainEditorHandler {
    *  is nothing to operate. Read-only by construction — it renders no cab, mode,
    *  handle, ATO or save control, because the API refuses every one of them for a
    *  ghost (design_new.md "Ghost trains", Never driven / Shown as itself). */
+  /** The detail panel for a ghost train (design_new.md "Ghost trains").
+   *
+   *  A ghost has no controls, because the app knows nothing about it beyond
+   *  which blocks read current. What it does have is a way out: the operator
+   *  has looked at the layout and can say what the detector found, and
+   *  supplying that is the whole of adoption. So the panel is a read-only
+   *  report of what was detected, followed by the form that turns it into an
+   *  ordinary train. */
   renderGhostTrainPanel(trainId: string, controller: any): string {
     const blocks: string[] = controller?.span?.occupied_blocks || [];
     const tiles: Array<[number, number]> = controller?.span?.occupied_tiles || [];
     const where = blocks.length ? blocks.join(', ') : '—';
+
+    // A ghost in the undetected gap holds nothing, so there is no position to
+    // adopt it at — the panel says so instead of offering a form that fails.
+    const adoptable = tiles.length > 0;
+    this._adoptClaimedTiles = tiles.map(([x, y]) => [x, y] as [number, number]);
+    // Centred is the default, and a null head tile is how that is asked for.
+    // The detector says the train is somewhere in these blocks; it does not say
+    // the train is flush against a boundary, and standing it at the first
+    // claimed tile would say exactly that. Picking a tile below overrides it.
+    this._adoptHeadTile = null;
+    this._adoptFacing = null;
+
+    const tileOptions = tiles
+      .map(([x, y]) => `<option value="${x},${y}">Front at (${x}, ${y})</option>`)
+      .join('');
+
+    const adoptSection = adoptable
+      ? `
+                <section class="tc-section">
+                    <header class="tc-section-header">Set up as a real train</header>
+                    <p class="tc-hint">
+                        Tell the app what is on the track and it becomes an ordinary train —
+                        same blocks, no interruption. Only you can know which locomotive this
+                        is, how long it is, and which way it is pointing.
+                    </p>
+                    <div class="at-form">
+                        <div class="input-large-container">
+                            <label class="input-large-label" for="ghost-adopt-id">Train ID</label>
+                            <input type="text" id="ghost-adopt-id" class="input-large-field" placeholder="e.g., TRAIN_01">
+                        </div>
+
+                        <div class="input-small-row">
+                            <label class="input-small-label input-small-label-inline" for="ghost-adopt-name">Name</label>
+                            <input type="text" id="ghost-adopt-name" class="input-small-field" placeholder="optional">
+                        </div>
+
+                        <div class="input-small-row">
+                            <label class="input-small-label input-small-label-inline" for="ghost-adopt-head">Position</label>
+                            <select id="ghost-adopt-head" class="input-small-field">
+                                <option value="" selected>Centred in the blocks</option>
+                                ${tileOptions}
+                            </select>
+                        </div>
+
+                        <div class="input-large-container">
+                            <label class="input-large-label">Facing</label>
+                            <div id="ghost-adopt-facing-slot">${this._renderAdoptFacingOptions()}</div>
+                        </div>
+
+                        <div class="input-small-row">
+                            <label class="input-small-label input-small-label-inline" for="ghost-adopt-length">Length</label>
+                            <input type="number" id="ghost-adopt-length" class="input-small-field" value="100" min="10" step="10">
+                            <span class="at-unit">cm</span>
+                        </div>
+
+                        <div class="input-small-row">
+                            <label class="input-small-label input-small-label-inline" for="ghost-adopt-max-speed">Max speed</label>
+                            <input type="number" id="ghost-adopt-max-speed" class="input-small-field" value="100" min="1" max="500">
+                            <span class="at-unit">km/h</span>
+                        </div>
+
+                        <div class="input-small-row">
+                            <label class="input-small-label input-small-label-inline" for="ghost-adopt-profile">Speed profile</label>
+                            <select id="ghost-adopt-profile" class="input-small-field">
+                                <option value="">Default</option>
+                            </select>
+                        </div>
+
+                        <button id="btn-adopt-ghost" class="btn btn-accent btn-full mt-16" disabled>Set up as real train</button>
+                    </div>
+                </section>`
+      : `
+                <section class="tc-section">
+                    <header class="tc-section-header">Set up as a real train</header>
+                    <p class="tc-hint">
+                        It is between detectors right now, so there is nowhere to set it up.
+                        Wait until it is standing on a block again.
+                    </p>
+                </section>`;
+
     return `
             <div class="tc-panel train-control-panel train-control-panel-ghost" data-train-id="${trainId}">
                 <section class="tc-section tc-section-task">
@@ -644,7 +746,7 @@ export class TrainEditorHandler {
                     <div class="banner banner-warn tc-banner">
                         ⚠ Something is drawing current on the track that this app did not
                         put there. It is tracked so other trains keep clear of it, and it
-                        cannot be driven from here — go deal with it on the layout.
+                        cannot be driven until you tell the app what it is.
                     </div>
                     <dl class="tc-status-fields">
                         <div class="tc-field tc-field-wide">
@@ -661,16 +763,166 @@ export class TrainEditorHandler {
                         </div>
                     </dl>
                 </section>
+                ${adoptSection}
             </div>
         `;
+  }
+
+  /** Facing choices for adoption. Two exits read as Cab A / Cab B, matching the
+   *  add-train form. */
+  _renderAdoptFacingOptions(): string {
+    const DIR_WORD: Record<string, string> = { N: 'North', E: 'East', S: 'South', W: 'West' };
+    const exits: string[] = this._adoptExits();
+    if (exits.length === 0) {
+      return `<div class="switch-group fluid"><button type="button" class="switch-btn" disabled>No track direction here</button></div>`;
+    }
+    const twoWay = exits.length === 2;
+    const btns = exits
+      .map((edge, i) => {
+        const active = edge === this._adoptFacing ? 'active' : '';
+        const cab = twoWay ? `Cab ${i === 0 ? 'A' : 'B'} · ` : '';
+        return `<button type="button" class="switch-btn ${active}" data-adopt-facing="${edge}">${cab}→ ${DIR_WORD[edge] ?? edge}</button>`;
+      })
+      .join('');
+    return `<div class="switch-group fluid">${btns}</div>`;
+  }
+
+  /** Wire the ghost panel's adoption form after it mounts. */
+  async _initGhostAdoptHandlers(ghostTrainId: string): Promise<void> {
+    const idInput = document.getElementById('ghost-adopt-id') as HTMLInputElement | null;
+    if (!idInput) return; // Not adoptable (ghost is in the detector gap).
+    if (!idInput.value) idInput.value = `TRAIN_${Date.now().toString().slice(-4)}`;
+
+    try {
+      const profiles = await this.api.getSpeedProfiles();
+      const sel = document.getElementById('ghost-adopt-profile') as HTMLSelectElement | null;
+      if (sel && Array.isArray(profiles)) {
+        for (const p of profiles) {
+          const id = p?.profile_id ?? p?.id;
+          if (!id) continue;
+          const opt = document.createElement('option');
+          opt.value = id;
+          opt.textContent = p?.name || id;
+          sel.appendChild(opt);
+        }
+      }
+    } catch (err) {
+      console.debug('[TrainEditorHandler] speed profiles load failed:', err);
+    }
+
+    const headSel = document.getElementById('ghost-adopt-head') as HTMLSelectElement | null;
+    if (headSel) {
+      headSel.onchange = () => {
+        const [x, y] = headSel.value.split(',').map((v) => parseInt(v, 10));
+        this._adoptHeadTile = Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+        // The facing choices belong to the tile, so they are rebuilt with it.
+        this._adoptFacing = null;
+        this._refreshAdoptUI();
+      };
+    }
+
+    const submit = document.getElementById('btn-adopt-ghost') as HTMLButtonElement | null;
+    if (submit) submit.onclick = () => this._submitAdoptGhost(ghostTrainId);
+
+    this._refreshAdoptUI();
+  }
+
+  /** Re-render the facing segment and re-gate the submit button. */
+  _refreshAdoptUI(): void {
+    const slot = document.getElementById('ghost-adopt-facing-slot');
+    if (slot) slot.innerHTML = this._renderAdoptFacingOptions();
+    document
+      .querySelectorAll<HTMLElement>('#ghost-adopt-facing-slot .switch-btn[data-adopt-facing]')
+      .forEach((btn) => {
+        btn.onclick = () => {
+          this._adoptFacing = btn.dataset.adoptFacing || null;
+          this._refreshAdoptUI();
+        };
+      });
+
+    const submit = document.getElementById('btn-adopt-ghost') as HTMLButtonElement | null;
+    // Only the facing is required: with no head tile the consist is centred in
+    // the detected track, which is the default.
+    if (submit) submit.disabled = !this._adoptFacing;
+  }
+
+  async _submitAdoptGhost(ghostTrainId: string): Promise<void> {
+    const newId = inputValue('ghost-adopt-id').trim();
+    if (!newId) {
+      showToast('Please enter a train ID', 'error', 3000);
+      return;
+    }
+    if (!this._adoptFacing) {
+      showToast('Choose which way it faces', 'error', 3000);
+      return;
+    }
+
+    const DIR: Record<string, string> = { N: 'NORTH', E: 'EAST', S: 'SOUTH', W: 'WEST' };
+    const body: any = {
+      new_train_id: newId,
+      length_cm: Math.max(1, parseFloat(inputValue('ghost-adopt-length')) || 100),
+      max_speed: parseFloat(inputValue('ghost-adopt-max-speed')) || 100,
+      direction: DIR[this._adoptFacing] || 'EAST',
+      // Two exits were offered as Cab A / Cab B in that order, so the chosen
+      // facing names the cab at the front.
+      cab: this._adoptFacing === (this._adoptExits()[1] ?? null) ? 'B' : 'A',
+    };
+    // Omitted unless the operator overrode the centred default, because
+    // omitting it is what asks the runtime to centre the consist.
+    if (this._adoptHeadTile) {
+      body.head_tile = { x: this._adoptHeadTile.x, y: this._adoptHeadTile.y };
+    }
+    const name = inputValue('ghost-adopt-name').trim();
+    if (name) body.car_number = name;
+    const profile = inputValue('ghost-adopt-profile');
+    if (profile) body.speed_profile_id = profile;
+
+    try {
+      await this.api.adoptGhostTrain(ghostTrainId, body);
+      showToast(`${ghostTrainId} is now train "${newId}"`, 'success', 4000);
+      await window.app?.refreshNetwork();
+      // Reopen on the adopted train — the ghost id it was showing is gone.
+      await this.showTrainControlPanel(newId);
+    } catch (err: any) {
+      console.error('[TrainEditorHandler] Failed to adopt ghost train:', err);
+      showToast('Could not set it up: ' + (err?.message ?? err), 'error', 5000);
+    }
+  }
+
+  /** The facings adoption can offer.
+   *
+   *  With a head tile chosen, they are that tile's exits: that is where the
+   *  front goes, so the front can only face where that tile leads. Centred, the
+   *  front ends up at one of the two ends of the detected track, so the offer is
+   *  every exit that leaves the claimed tiles — the same test the runtime uses
+   *  to work out which end is the front for a given facing. Claimed order, so
+   *  the near end reads as Cab A and the far end as Cab B. */
+  _adoptExits(): string[] {
+    const tile = this._adoptHeadTile;
+    if (tile) {
+      const track = this._trackAt(tile.x, tile.y);
+      return track ? getTrackExits(track.track_bits || 0) : [];
+    }
+    const claimed = new Set(this._adoptClaimedTiles.map(([x, y]) => `${x},${y}`));
+    const exits: string[] = [];
+    for (const [x, y] of this._adoptClaimedTiles) {
+      const track = this._trackAt(x, y);
+      if (!track) continue;
+      for (const edge of getTrackExits(track.track_bits || 0)) {
+        const [nx, ny] = getNeighborPosition(x, y, edge);
+        if (!claimed.has(`${nx},${ny}`) && !exits.includes(edge)) exits.push(edge);
+      }
+    }
+    return exits;
   }
 
   /** The trains-list card for a ghost train (design_new.md "Ghost trains",
    *  Shown as itself): the same .rr-card shell as any train so the operator sees
    *  it in the list, marked apart by a GHOST chip and the muted accent, and
-   *  offering none of the controls — a ghost cannot be edited, driven, or
-   *  deleted from the app, only dealt with on the layout. The foot caption names
-   *  the blocks it is standing on, which is the whole of what is known about it. */
+   *  offering none of a real train's controls. The one action it does offer is
+   *  "Set up" — opening the panel where the operator says what the detector
+   *  found (Adoption). The foot caption names the blocks it is standing on,
+   *  which is the whole of what is known about it. */
   renderGhostTrainListItem(train: any): string {
     const controller: any = stateManager?.getController(train.id);
     const blocks: string[] = controller?.span?.occupied_blocks || [];
@@ -681,12 +933,15 @@ export class TrainEditorHandler {
                     <div class="rr-card-title-col">
                         <div class="rr-card-train font-mono">${train.id}</div>
                     </div>
+                    <div class="route-row-actions">
+                        <button class="rr-flat-btn" onclick="window.app.selectTrain('${train.id}')">Set up</button>
+                    </div>
                 </div>
                 <div class="chip-row">
                     <span class="chip chip-state chip-muted">GHOST</span>
-                    <span class="chip">not driveable</span>
+                    <span class="chip">not driveable yet</span>
                 </div>
-                <div class="rr-card-foot"><i class="ti ti-alert-triangle"></i> detected on ${where} — no cab, no route</div>
+                <div class="rr-card-foot"><i class="ti ti-alert-triangle"></i> detected on ${where} — tell the app what it is to drive it</div>
             </div>
         `;
   }
@@ -816,8 +1071,10 @@ export class TrainEditorHandler {
     if (train.is_ghost) {
       // A ghost train offers none of the operator's controls (design_new.md
       // "Ghost trains", Shown as itself): no cab, no mode, no handle, nothing to
-      // save. It gets a read-only card saying what was detected and where.
+      // save. It gets a card saying what was detected and where, plus the one
+      // thing that is actionable — setting it up as a real train (Adoption).
       this.editor.showSecondarySidebar(`${trainId}`, this.renderGhostTrainPanel(trainId, controller));
+      setTimeout(() => this._initGhostAdoptHandlers(trainId), 0);
       return;
     }
 
@@ -878,6 +1135,10 @@ export class TrainEditorHandler {
     const handlePosition = controller?.handle_position || 'N';
     const powerOn = controller?.power_on ?? false;
     const emergencyActive = controller?.eb_active ?? false;
+    // No wired block backs the calculated position — the train may physically
+    // be gone (design_new.md "Power", Presence unknown). The span represents
+    // nothing detected, so the panel says so and offers removal.
+    const presenceUnknown = controller?.presence_unknown === true;
     const atoRunning = controller?.ato_running ?? false;
     const handleClass = this.getHandleVisualClass(handlePosition);
     const obcStateClass = this.getObcStateClass(powerOn, emergencyActive);
@@ -976,6 +1237,16 @@ export class TrainEditorHandler {
                         <span id="obc-ato-running-badge" class="tc-running-badge ${atoRunning ? '' : 'hidden'}">▶ ATO</span>
                         <span id="train-eb-badge" class="tc-eb-badge tc-status-emergency ${emergencyActive ? '' : 'hidden'}">EB ACTIVE</span>
                     </header>
+                    <!-- Filled by _refreshWhyStopped: the first gate standing
+                         between this train and moving. Every gate on its own
+                         looks reasonable, so a standing train otherwise explains
+                         nothing at all. -->
+                    <div id="train-why-stopped" class="banner banner-warn tc-banner" hidden></div>
+                    ${presenceUnknown ? `
+                    <div id="train-presence-unknown-banner" class="banner banner-warn tc-banner">
+                        <div>? No occupancy detected under this train — nothing on the track backs its position. It may have been picked up or run somewhere undetected.</div>
+                        <button id="train-presence-remove-btn" class="btn btn-sm btn-danger-ghost mt-4"><i class="ti ti-trash"></i> Remove train</button>
+                    </div>` : ''}
                     <dl class="tc-status-fields">
                         <div class="tc-field">
                             <dt class="tc-field-label">Plan ID</dt>
@@ -1239,10 +1510,70 @@ export class TrainEditorHandler {
     }
 
     setTimeout(() => this.initTrainControlHandlers(trainId), 0);
+    this._refreshWhyStopped(trainId);
+  }
+
+  /** Fill the "why isn't it moving" banner from the runtime's gate walk.
+   *
+   *  Only shown while the train is standing still and something is actually
+   *  holding it: a moving train needs no explanation, and a train the operator
+   *  has deliberately parked should not nag. */
+  async _refreshWhyStopped(trainId: string): Promise<void> {
+    const el = document.getElementById('train-why-stopped');
+    if (!el) return;
+    let report: any;
+    try {
+      report = await this.api.getWhyStopped(trainId);
+    } catch (err) {
+      console.debug('[TrainEditorHandler] why-stopped unavailable:', err);
+      el.hidden = true;
+      return;
+    }
+    // The panel may have been swapped for another train while this was in
+    // flight; a stale answer is worse than none.
+    if (this._trainId && this._trainId !== trainId) return;
+    if (report?.moving || !report?.blocking_gate) {
+      el.hidden = true;
+      return;
+    }
+    const gate = (report.gates || []).find((g: any) => g.name === report.blocking_gate);
+    if (!gate) {
+      el.hidden = true;
+      return;
+    }
+    el.innerHTML =
+      `<strong>Not moving:</strong> ${gate.detail}.` + (gate.fix ? ` ${gate.fix}` : '');
+    el.hidden = false;
   }
 
   async initTrainControlHandlers(trainId: string): Promise<void> {
     const api: any = this.api;
+
+    // Presence-unknown removal: the span backs no physical detection, so the
+    // operator may take the record off the board. Same confirm + delete flow
+    // as the trains-list delete button.
+    const presenceRemoveBtn = this.editor.$id('train-presence-remove-btn') as HTMLButtonElement | null;
+    if (presenceRemoveBtn) {
+      presenceRemoveBtn.onclick = async () => {
+        const confirmed = await showConfirmModal({
+          title: 'Remove Train',
+          message: `Remove train "${trainId}"?`,
+          detail: 'No occupancy backs this train — its span represents nothing detected on the track.',
+          confirmText: 'Remove',
+          confirmVariant: 'danger',
+        });
+        if (!confirmed) return;
+        try {
+          await api.deleteTrain(trainId);
+          showToast(`Train "${trainId}" removed`, 'success', 3000);
+          this.editor.hideSecondarySidebar();
+          window.app?.refreshNetwork();
+        } catch (err: any) {
+          console.error('[TrainEditorHandler] Failed to remove train:', err);
+          showToast('Failed to remove train: ' + err.message, 'error', 5000);
+        }
+      };
+    }
 
     /** Execute a button action with consistent error handling and feedback. */
     const executeAction = async (
@@ -1660,6 +1991,22 @@ export class TrainEditorHandler {
   /** Update Controller display elements without full panel refresh. */
   _updateControllerDisplay(controller: any): void {
     if (!controller) return;
+
+    // Re-ask why it is standing still, but only on a state change worth
+    // re-asking on — the answer only moves when power, cab, ATO or authority
+    // does, and this runs on every live controller push.
+    const gateKey = [
+      controller.state,
+      controller.cab,
+      controller.ato_running,
+      controller.handle_position,
+      controller.assigned_path_id ?? controller.ato_path_id ?? null,
+      (controller.current_speed || 0) > 0,
+    ].join('|');
+    if (this._trainId && gateKey !== this._lastGateKey) {
+      this._lastGateKey = gateKey;
+      this._refreshWhyStopped(this._trainId);
+    }
 
     const handlePosition = controller.handle_position || 'N';
     const powerOn = controller.power_on ?? false;

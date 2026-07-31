@@ -10,10 +10,16 @@ evidence a SIGKILL leaves behind.
 
 import json
 import os
+import signal
+import socket
 
 import pytest
 
 import shutdown
+
+
+def _never_called(*args, **kwargs):
+    raise AssertionError(f"should not have been called: {args} {kwargs}")
 
 
 @pytest.fixture(autouse=True)
@@ -163,6 +169,117 @@ def test_supervisor_stamps_the_signal_onto_the_childs_record():
     assert record["signal_name"] == "SIGTERM"
     assert record["initiator"] == "supervisor"
     assert record["child_exit_code"] == 0
+
+
+# --- port takeover --------------------------------------------------------
+
+# One lsof -F block per process: `p` opens it, `R`/`c`/`f` describe it. The
+# supervisor (2200) and the child that inherited its listening fd (2201) both
+# appear -- that pairing is the whole reason _signal_targets exists.
+LSOF_SUPERVISOR_AND_CHILD = "p2200\nR1\ncpython3.12\nf3\np2201\nR2200\ncpython3.12\nf3\nf6\n"
+
+
+def _fake_capture(lsof_output):
+    def capture(cmd, timeout=5.0):
+        return f"argv of {cmd[2]}" if cmd[0] == "ps" else lsof_output
+
+    return capture
+
+
+def test_port_listeners_parses_lsof_and_annotates_with_argv(monkeypatch):
+    monkeypatch.setattr(shutdown, "_capture", _fake_capture(LSOF_SUPERVISOR_AND_CHILD))
+
+    listeners = shutdown._port_listeners(5001)
+
+    assert [i["pid"] for i in listeners] == [2200, 2201]
+    assert [i["ppid"] for i in listeners] == [1, 2200]
+    assert listeners[0]["argv"] == "argv of 2200"
+
+
+def test_only_the_ancestor_is_signalled_not_the_fd_inheriting_child(monkeypatch):
+    """SIGTERM to the child would race the supervisor that is trying to restart
+    it; SIGTERM to the supervisor drains the child and releases the port."""
+    monkeypatch.setattr(shutdown, "_capture", _fake_capture(LSOF_SUPERVISOR_AND_CHILD))
+
+    targets = shutdown._signal_targets(shutdown._port_listeners(5001))
+
+    assert [i["pid"] for i in targets] == [2200]
+
+
+def test_takeover_signals_nothing_without_a_terminal_to_ask(monkeypatch):
+    """A backgrounded or supervised boot has no one to answer, so the other
+    process must survive untouched -- the boot just fails as it always did."""
+    monkeypatch.setattr(shutdown, "_capture", _fake_capture(LSOF_SUPERVISOR_AND_CHILD))
+    monkeypatch.setattr(shutdown, "_can_prompt", lambda: False)
+    monkeypatch.setattr(shutdown, "_stop_listeners", _never_called)
+
+    assert shutdown.offer_port_takeover("127.0.0.1", 5001, log=lambda _m: None) is False
+
+
+def test_takeover_signals_nothing_when_the_answer_is_no(monkeypatch):
+    monkeypatch.setattr(shutdown, "_capture", _fake_capture(LSOF_SUPERVISOR_AND_CHILD))
+    monkeypatch.setattr(shutdown, "_can_prompt", lambda: True)
+    monkeypatch.setattr(shutdown, "_ask_yes_no", lambda question: False)
+    monkeypatch.setattr(shutdown, "_stop_listeners", _never_called)
+
+    assert shutdown.offer_port_takeover("127.0.0.1", 5001, log=lambda _m: None) is False
+
+
+def test_takeover_declines_when_the_holder_cannot_be_identified(monkeypatch):
+    """No lsof, or a holder owned by another user: there is nothing to offer."""
+    monkeypatch.setattr(shutdown, "_capture", _fake_capture(""))
+    monkeypatch.setattr(shutdown, "_can_prompt", lambda: True)
+    monkeypatch.setattr(shutdown, "_ask_yes_no", _never_called)
+
+    assert shutdown.offer_port_takeover("127.0.0.1", 5001, log=lambda _m: None) is False
+
+
+def test_takeover_sigterms_the_target_and_reports_the_port_free(monkeypatch):
+    signalled = []
+    monkeypatch.setattr(shutdown, "_capture", _fake_capture(LSOF_SUPERVISOR_AND_CHILD))
+    monkeypatch.setattr(shutdown, "_can_prompt", lambda: True)
+    monkeypatch.setattr(shutdown, "_ask_yes_no", lambda question: True)
+    monkeypatch.setattr(shutdown, "_wait_for_port", lambda host, port, timeout: True)
+    monkeypatch.setattr(os, "kill", lambda pid, sig: signalled.append((pid, sig)))
+
+    assert shutdown.offer_port_takeover("127.0.0.1", 5001, log=lambda _m: None) is True
+    assert signalled == [(2200, signal.SIGTERM)]
+
+
+def test_force_kill_takes_every_listener_not_just_the_ancestor(monkeypatch):
+    """Nothing is being safed at this point, and killing only the parent would
+    strand the child on the port with no one left to ask about it."""
+    signalled = []
+    monkeypatch.setattr(shutdown, "_capture", _fake_capture(LSOF_SUPERVISOR_AND_CHILD))
+    monkeypatch.setattr(shutdown, "_can_prompt", lambda: True)
+    monkeypatch.setattr(shutdown, "_ask_yes_no", lambda question: True)
+    # SIGTERM leaves the port held; the retry after SIGKILL finds it free.
+    waits = iter([False, True])
+    monkeypatch.setattr(shutdown, "_wait_for_port", lambda h, p, t: next(waits))
+    monkeypatch.setattr(os, "kill", lambda pid, sig: signalled.append((pid, sig)))
+
+    assert shutdown.offer_port_takeover("127.0.0.1", 5001, log=lambda _m: None) is True
+    assert signalled == [
+        (2200, signal.SIGTERM),
+        (2200, signal.SIGKILL),
+        (2201, signal.SIGKILL),
+    ]
+
+
+def test_ensure_port_available_asks_nobody_when_the_port_is_free(monkeypatch):
+    monkeypatch.setattr(shutdown, "_port_is_free", lambda host, port: True)
+    monkeypatch.setattr(shutdown, "offer_port_takeover", _never_called)
+
+    assert shutdown.ensure_port_available("127.0.0.1", 5001) is True
+
+
+def test_a_free_port_is_free_and_a_bound_one_is_not():
+    with socket.socket() as held:
+        held.bind(("127.0.0.1", 0))
+        held.listen(1)
+        port = held.getsockname()[1]
+        assert shutdown._port_is_free("127.0.0.1", port) is False
+    assert shutdown._port_is_free("127.0.0.1", port) is True
 
 
 # --- record durability ----------------------------------------------------

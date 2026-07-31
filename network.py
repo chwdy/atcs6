@@ -9,7 +9,17 @@ coordinator for all railway system components.
 
 from collections import deque
 import logging
-from typing import Dict, List, Optional, Set, Tuple, Any, Union, TYPE_CHECKING
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    Union,
+    TYPE_CHECKING,
+)
 import uuid
 from track import Tile, EDGE_MASKS, BIT_TO_EDGES
 from train import Train
@@ -1019,9 +1029,19 @@ class RailwayNetwork:
         tile_x: int,
         tile_y: int,
         direction: Optional[Direction] = None,
+        *,
+        head_offset_cm: float = 0.0,
+        confine_to_blocks: Optional[Iterable[str]] = None,
     ) -> "TrainSpan":
         """Forward to `TrainPlacement.place_train(...)`."""
-        return self._get_train_placement().place_train(train, tile_x, tile_y, direction)
+        return self._get_train_placement().place_train(
+            train,
+            tile_x,
+            tile_y,
+            direction,
+            head_offset_cm=head_offset_cm,
+            confine_to_blocks=confine_to_blocks,
+        )
 
     def _get_tile_length_cm(self, x: int, y: int) -> float:
         """
@@ -1597,12 +1617,13 @@ class RailwayNetwork:
 
         return {
             "tracks": enriched_tracks,
-            # Ghost trains are runtime-only: they are not written to saved
-            # state and not restored, because a restart re-detects whatever is
-            # still drawing current (design_new.md "Ghost trains", Runtime only).
-            "trains": [
-                t.to_dict(self) for t in self.trains.values() if not t.is_ghost
-            ],
+            # Every train, ghosts included. This is the live UI payload, and a
+            # ghost must appear in the train list and on the layout, marked apart
+            # from the trains the operator controls (design_new.md "Ghost
+            # trains", Shown as itself) — it is also how the operator reaches the
+            # panel that adopts it. The save payload is the one that leaves them
+            # out; see `to_layout_dict`.
+            "trains": [t.to_dict(self) for t in self.trains.values()],
             "blocks": {k: v.to_dict() for k, v in self.blocks.items()},
             "signals": {k: v.to_dict() for k, v in self.signals.items()},
             "platforms": [

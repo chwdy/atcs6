@@ -12,9 +12,13 @@ The module includes:
 - BlockPowerController: Main controller for voltage management
 """
 
+import logging
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Any, TYPE_CHECKING
+from typing import Any, Dict, Optional, Set, TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 MAX_TRACK_VOLTAGE = 12.0
 # Lighting voltage is a per-train property: it lives on the train's
@@ -155,6 +159,11 @@ class BlockPowerController:
     # it asks `TrainPhysics.compute_track_voltage(...)` for the scalar.
     _sim_controller: Optional[Any] = None
 
+    # Blocks whose voltage write the driver has already refused. Reporting is
+    # once-per-block: a train sits on a block for thousands of ticks, and the
+    # fault is a static wiring/configuration one, not a per-tick event.
+    _unreachable_blocks: Set[str] = field(default_factory=set)
+
     def enter_safe_state(self) -> None:
         """Put the block output hardware into its safe state — every block track
         voltage at 0 (design_new.md "Power", Safe state / fail-safe). Issued by
@@ -206,24 +215,81 @@ class BlockPowerController:
         """
         Set voltage for a specific block.
 
+        A real driver refuses the write for a block it cannot reach — one with
+        no `block_track` binding, or a binding naming a chip the session did not
+        build. `Block.current_voltage` records what actually reached the rail,
+        so a refused write leaves it at `0`: the model must not claim a block is
+        energized when the rail is dead, or the operator sees a train the app
+        believes is running and a locomotive that never moves.
+
+        The first refusal per block is reported through `NotificationCenter`,
+        because a silently dead rail is the hardest possible fault to diagnose
+        from the layout. It is reported once, not every tick — a train sits on a
+        block for thousands of ticks and the stream must stay readable.
+
         Args:
             block_id: Block identifier
             voltage: Voltage to set (will be clamped to limits)
 
         Returns:
-            True if successful
+            True when the write landed, False when the driver refused it.
         """
         # Clamp voltage to limits
         clamped = max(self.min_voltage, min(self.max_voltage, voltage))
 
-        # Update block's stored voltage if network available
+        landed = self.output_interface.set_voltage(block_id, clamped)
+
         if self.network:
             block = self.network.blocks.get(block_id)
             if block:
-                block.current_voltage = clamped
+                block.current_voltage = clamped if landed else 0.0
 
-        # Output to interface
-        return self.output_interface.set_voltage(block_id, clamped)
+        if not landed and block_id not in self._unreachable_blocks:
+            self._unreachable_blocks.add(block_id)
+            self._emit_unreachable(block_id, clamped)
+
+        return landed
+
+    def _emit_unreachable(self, block_id: str, voltage: float) -> None:
+        """Report a block the output driver cannot drive (once per block)."""
+        center = None
+        if self._sim_controller is not None:
+            center = getattr(self._sim_controller, "notification_center", None)
+        if center is None:
+            logger.warning(
+                "Track voltage %.2fV for block %s was refused by the output "
+                "driver: no track binding, or its chip is not configured. "
+                "Nothing will move on this block.",
+                voltage,
+                block_id,
+            )
+            return
+        from notification_center import Severity
+
+        try:
+            center.emit(
+                source="BlockPowerController",
+                kind="block_track_output_unreachable",
+                severity=Severity.ERROR,
+                event_time=time.time(),
+                payload={
+                    "message": (
+                        f"block {block_id} was commanded {voltage:.2f}V but the "
+                        f"output driver refused it: it has no track binding, or "
+                        f"the chip that binding names is not configured. Nothing "
+                        f"will move on this block until that is fixed in "
+                        f"Hardware Setup."
+                    ),
+                    "block_id": block_id,
+                    "commanded_voltage": round(float(voltage), 3),
+                },
+            )
+        except Exception:
+            # A reporting failure must not mask the underlying output fault.
+            logger.warning(
+                "Track voltage for block %s was refused by the output driver",
+                block_id,
+            )
 
     def get_block_voltage(self, block_id: str) -> float:
         """
@@ -255,7 +321,9 @@ class BlockPowerController:
         """
         self.set_block_voltage(block_id, 0.0)
 
-    def deenergize_unheld_blocks(self) -> None:
+    def deenergize_unheld_blocks(
+        self, skip: Optional[Set[str]] = None
+    ) -> None:
         """Drop every block that no train holds back to 0V (full reconciliation).
 
         A block is *held* when a train physically occupies it (``occupied_by``)
@@ -263,6 +331,13 @@ class BlockPowerController:
         voltage emission (TrainPhysics) only drives a train's own held blocks, so
         a block a train has vacated and released would otherwise keep its last
         commanded voltage forever.
+
+        ``skip`` names blocks to leave alone whatever this test says. The runtime
+        passes the trains' ``pending-entry blocks`` — detected blocks a span cap
+        is holding a head out of, which are neither occupied nor necessarily
+        reserved, and which must stay live for the locomotive to reach the
+        detector that releases its own cap (design_new.md "Power", Block
+        power-controller role).
 
         A ghost train is excluded from that test: it commands no voltage, so a
         block held only by a ghost is driven to ``0`` (design_new.md "Ghost
@@ -276,8 +351,11 @@ class BlockPowerController:
         """
         if not self.network:
             return
+        exempt = skip or set()
         trains = getattr(self.network, "trains", {}) or {}
         for block_id, block in self.network.blocks.items():
+            if block_id in exempt:
+                continue
             occupant = getattr(block, "occupied_by", None)
             occupant_train = trains.get(occupant) if occupant else None
             held_by_occupant = occupant is not None and not getattr(

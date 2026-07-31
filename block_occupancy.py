@@ -57,6 +57,18 @@ class OccupancyInput(ABC):
         """
         raise NotImplementedError
 
+    def detected_block_ids(self) -> Set[str]:
+        """The blocks this input can answer for (design_new.md "Power",
+        Hardware interface boundary).
+
+        A real driver returns the union of its occupancy binding maps. The
+        default is empty, which is the honest answer for an input that senses
+        nothing physical: a block outside this set never has a physical reading
+        behind it, so nothing may be held waiting on one (see
+        `TrainPhysics.cap_distance_to_detected_occupancy`).
+        """
+        return set()
+
 
 class SimulatedOccupancyDriver(OccupancyInput):
     """In-memory default used when no real hardware is connected.
@@ -75,6 +87,17 @@ class SimulatedOccupancyDriver(OccupancyInput):
     ) -> None:
         self._network = network
         self._controllers = controllers
+
+    def detected_block_ids(self) -> Set[str]:
+        """Empty, and it must stay empty.
+
+        This driver builds its current map *from* the live spans, so a train the
+        span cap held out of a block would leave that block reading clear
+        forever and its own cap would never release. Reporting no detected
+        blocks is what makes the cap inert here (design_new.md "Power", The
+        calculated span never runs ahead of the detector).
+        """
+        return set()
 
     def read_block_currents(self) -> Dict[str, bool]:
         currents: Dict[str, bool] = {bid: False for bid in self._network.blocks}
@@ -119,11 +142,18 @@ class BlockOccupancyDetector:
     _on_counts: Dict[str, int] = field(default_factory=dict)
     _off_counts: Dict[str, int] = field(default_factory=dict)
     _confirmed: Set[str] = field(default_factory=set)
+    # Last raw read + a monotonically increasing read counter, recorded every
+    # `step()` for the /api/hardware/occupancy/raw debug endpoint. Diagnostic
+    # read-back only: nothing in the runtime consumes these.
+    _last_raw: Dict[str, bool] = field(default_factory=dict)
+    _read_count: int = 0
 
     def step(self) -> Tuple[Set[str], Set[str]]:
         """Read the raw currents, advance debounce, and return
         (newly_entered, newly_vacated) confirmed-block sets for this tick."""
         raw = self.input_interface.read_block_currents()
+        self._last_raw = dict(raw)
+        self._read_count += 1
         new_confirmed: Set[str] = set()
         for block_id in self.network.blocks:
             present = bool(raw.get(block_id, False))
@@ -146,10 +176,39 @@ class BlockOccupancyDetector:
         self._confirmed = new_confirmed
         return entered, vacated
 
+    def debug_snapshot(self) -> Dict[str, object]:
+        """What the last `step()` saw, per block: the raw pre-debounce read, the
+        confirmed verdict, and the live debounce counters. `read_count` lets a
+        poller detect whether a new read happened between two samples. Purely a
+        diagnostic read-back for the raw-occupancy debug endpoint."""
+        blocks: Dict[str, Dict[str, object]] = {}
+        for block_id in set(self._last_raw) | self._confirmed:
+            blocks[block_id] = {
+                "raw": bool(self._last_raw.get(block_id, False)),
+                "confirmed": block_id in self._confirmed,
+                "on_count": self._on_counts.get(block_id, 0),
+                "off_count": self._off_counts.get(block_id, 0),
+            }
+        return {
+            "read_count": self._read_count,
+            "on_threshold": self.on_threshold,
+            "off_threshold": self.off_threshold,
+            "blocks": blocks,
+        }
+
     @property
     def confirmed_occupied(self) -> Set[str]:
         """The current confirmed-occupied block set (the occupancy authority)."""
         return set(self._confirmed)
+
+    def detected_block_ids(self) -> Set[str]:
+        """The blocks the wired input can answer for, passed straight through.
+
+        `TrainPhysics` reads this to decide which blocks may hold a calculated
+        span back: a block with no physical reading behind it is never capped
+        against, because nothing would ever release such a cap.
+        """
+        return self.input_interface.detected_block_ids()
 
     def seed_occupied(self, block_ids: Iterable[str]) -> None:
         """Adopt externally-committed occupancy as already confirmed.

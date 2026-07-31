@@ -1,18 +1,17 @@
-"""Block.polarity_reversed: persistence, the service write surface, and the
-line it draws against the routing-policy field it sits next to.
+"""Rail polarity lives on the `block_track` hardware binding.
 
-design_new.md "Power -> Track polarity": a static, operator-set wiring flag
-saying this block's two rails are wired the opposite way round from the
-nominal-positive sense its geometry implies. The track driver reads it when
-resolving the block's rail binding, so a positive commanded voltage drives the
-other rail; nothing above the hardware interface sees it.
+design_new.md "Power", Rail polarity lives on the rail binding: a block whose
+two rails are wired the opposite way round from the nominal-positive sense its
+tile order implies is corrected with `TrackBinding.reversed`, stored WITH the
+wiring in the hardware configuration — so a flip auto-persists like every other
+binding edit instead of waiting on a layout save. The concrete track driver
+swaps the two channels as it resolves the binding; the channels themselves are
+never rebound, because one physical rail may carry the idle detection feed.
 
-It is deliberately NOT `allowed_travel_directions`, which is a routing policy
-the pathfinder reads and which never reaches hardware. The two live on the same
-entity and one test below pins that they stay independent.
-
-The flag is block-scoped because a block is fed as one unit: it covers every
-member segment, and a segment has no polarity of its own.
+It is deliberately NOT `Block.allowed_travel_directions`, which is a routing
+policy the pathfinder reads and which never reaches hardware — and it is no
+longer a Block field at all: the block PATCH rejects `polarity_reversed` with a
+pointer at the binding surface.
 """
 
 import threading
@@ -20,62 +19,85 @@ from datetime import datetime
 
 import pytest
 
+import hardware_config
 from app_state import AppState
-from block import Block
 from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
-from segment import Segment
 from services import block_service
 from services.exceptions import ValidationError
 from simulation import SimulationController
 
 
-# --- persistence ----------------------------------------------------------
-
-
-def test_polarity_defaults_normal():
-    assert Block(block_id="BLK_X").polarity_reversed is False
-
-
-def test_to_dict_roundtrip():
-    b = Block(block_id="BLK_P", length_cm=10.0, polarity_reversed=True)
-    payload = b.to_dict()
-    assert payload["polarity_reversed"] is True
-    assert Block.from_dict(payload).polarity_reversed is True
-
-
-def test_to_layout_dict_roundtrip():
-    """Wiring config, so it belongs in the layout save (unlike runtime fields
-    such as current_voltage, which to_layout_dict drops)."""
-    b = Block(block_id="BLK_P", length_cm=10.0, polarity_reversed=True)
-    payload = b.to_layout_dict()
-    assert payload["polarity_reversed"] is True
-    assert Block.from_dict(payload).polarity_reversed is True
-
-
-def test_nested_segment_snapshot_carries_polarity():
-    """The nested-`segments` from_dict branch is a separate constructor call
-    from the inline-geometry one, so it needs its own coverage."""
-    b = Block(
-        block_id="BLK_P",
-        polarity_reversed=True,
-        segments=[Segment(segment_id="SEG_1", length_cm=10.0)],
+@pytest.fixture(autouse=True)
+def _isolated_hw_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        hardware_config, "CONFIG_PATH", str(tmp_path / "hardware_config.json")
     )
-    payload = b.to_layout_dict()
-    assert payload["segments"]                      # the nested branch, not inline
-    assert Block.from_dict(payload).polarity_reversed is True
+    hardware_config.reset_to_defaults()
+    yield
+    hardware_config.reset_to_defaults()
 
 
-def test_legacy_snapshot_without_the_key_loads_normal():
-    """A layout saved before this field existed reads as normally wired, which
-    is the only safe default: it is what those layouts were running."""
-    payload = Block(block_id="BLK_P", length_cm=10.0).to_layout_dict()
-    del payload["polarity_reversed"]
-    assert Block.from_dict(payload).polarity_reversed is False
+def _bind_track(block_id: str = "BLK_P", **kwargs) -> None:
+    hardware_config.apply_updates(
+        {
+            "chips": [{"chip_id": "pwm1", "kind": "pca9685", "i2c_address": "0x40"}],
+            "block_track": {
+                block_id: {"chip_id": "pwm1", "forward": 0, "reverse": 1, **kwargs}
+            },
+        },
+        persist=False,
+    )
 
 
-# --- service write surface -------------------------------------------------
+# --- the binding flag -------------------------------------------------------
+
+
+def test_binding_defaults_normal():
+    _bind_track()
+    binding = hardware_config.get_hardware_config().block_track["BLK_P"]
+    assert binding.reversed is False
+
+
+def test_flag_round_trips_through_the_persisted_dict():
+    """`_persist_dict` and `_parse_track_bindings` serve both parse paths
+    (section PATCH and whole-snapshot layout load), so one round trip covers
+    the trap of a key added to one and dropped by the other."""
+    _bind_track(reversed=True)
+    snapshot = hardware_config.as_dict()
+    hardware_config.reset_to_defaults()
+    hardware_config.apply_snapshot(snapshot, persist=False)
+    assert hardware_config.get_hardware_config().block_track["BLK_P"].reversed is True
+
+
+def test_set_track_binding_writes_the_flag():
+    _bind_track()
+    hardware_config.set_track_binding(
+        "BLK_P", "pwm1", 0, 1, polarity_reversed=True, persist=False
+    )
+    assert hardware_config.get_hardware_config().block_track["BLK_P"].reversed is True
+
+
+def test_channel_edit_keeps_the_stored_flag():
+    """Re-picking the two rail channels must not silently reset a corrected
+    block back to normal wiring — omitted, the flag keeps its value."""
+    _bind_track(reversed=True)
+    hardware_config.set_track_binding("BLK_P", "pwm1", 2, 3, persist=False)
+    binding = hardware_config.get_hardware_config().block_track["BLK_P"]
+    assert (binding.forward, binding.reverse, binding.reversed) == (2, 3, True)
+
+
+def test_track_polarity_reversed_reads_the_live_config():
+    """The driver's `polarity_of` read: live, not a snapshot, and False for a
+    block with no rail binding (no rails to be reversed)."""
+    assert hardware_config.track_polarity_reversed("BLK_P") is False
+    _bind_track(reversed=True)
+    assert hardware_config.track_polarity_reversed("BLK_P") is True
+    assert hardware_config.track_polarity_reversed("BLK_OTHER") is False
+
+
+# --- the block PATCH surface ------------------------------------------------
 
 
 @pytest.fixture
@@ -96,53 +118,88 @@ def state():
     )
 
 
-def test_service_created_block_defaults_normal(state):
-    block = state.network.create_segment("BLK_P")
-    assert block.polarity_reversed is False
-
-
-def test_update_block_toggles_polarity(state):
+def test_block_patch_rejects_polarity_with_a_pointer(state):
     state.network.create_segment("BLK_P")
-    block_service.update_block(state, "BLK_P", data={"polarity_reversed": True})
-    assert state.network.get_block("BLK_P").polarity_reversed is True
-    block_service.update_block(state, "BLK_P", data={"polarity_reversed": False})
-    assert state.network.get_block("BLK_P").polarity_reversed is False
+    with pytest.raises(ValidationError, match="rail binding"):
+        block_service.update_block(state, "BLK_P", data={"polarity_reversed": True})
 
 
-def test_polarity_is_not_a_geometry_field(state):
-    """Geometry is rejected on the block PATCH and edited on the segment.
-    Polarity is config, so it must go through here rather than 400."""
-    state.network.create_segment("BLK_P")
-    with pytest.raises(ValidationError):
-        block_service.update_block(state, "BLK_P", data={"length_cm": 50.0})
-    block_service.update_block(state, "BLK_P", data={"polarity_reversed": True})
-    assert state.network.get_block("BLK_P").polarity_reversed is True
-
-
-def test_polarity_has_no_occupancy_precondition(state):
-    """Unlike `disabled`, flipping polarity under a held block is allowed: the
-    driver reads it on the next write, so the worst case is that the train
-    reverses — no state is corrupted, and refusing would strand an operator
-    fixing wiring on exactly the block they are watching."""
-    state.network.create_segment("BLK_P")
-    state.network.get_block("BLK_P").occupied_by = "T1"
-    block_service.update_block(state, "BLK_P", data={"polarity_reversed": True})
-    assert state.network.get_block("BLK_P").polarity_reversed is True
-
-
-def test_polarity_and_travel_direction_are_independent(state):
-    """The two direction-ish fields on a block: one is wiring, one is routing
-    policy. Writing either must leave the other alone."""
+def test_travel_direction_still_edits_normally(state):
+    """The routing-policy neighbour is untouched by the move."""
     state.network.create_segment("BLK_P")
     block_service.update_block(
         state, "BLK_P", data={"allowed_travel_directions": ["forward"]}
     )
-    block_service.update_block(state, "BLK_P", data={"polarity_reversed": True})
-    block = state.network.get_block("BLK_P")
-    assert block.allowed_travel_directions == {"forward"}
-    assert block.polarity_reversed is True
+    assert state.network.get_block("BLK_P").allowed_travel_directions == {"forward"}
 
-    block_service.update_block(
-        state, "BLK_P", data={"allowed_travel_directions": ["forward", "reverse"]}
-    )
-    assert state.network.get_block("BLK_P").polarity_reversed is True
+
+# --- legacy layout lift -----------------------------------------------------
+
+
+def test_legacy_layout_polarity_lifts_onto_the_binding(tmp_path):
+    """A layout saved when polarity was a Block field must not load a corrected
+    block back to normal wiring: the loader lifts `polarity_reversed` from the
+    snapshot's block dicts onto the hardware section's binding."""
+    import json
+
+    wrapper = {
+        "name": "legacy",
+        "snapshot": {
+            "tracks": [],
+            "trains": [],
+            "blocks": {"BLK_P": {"block_id": "BLK_P", "length_cm": 0, "polarity_reversed": True}},
+            "signals": {},
+            "platforms": [],
+            "station_groups": [],
+            "switches": {},
+            "tunnels": [],
+        },
+        "hardware": {
+            "enabled": False,
+            "chips": [{"chip_id": "pwm1", "kind": "pca9685", "i2c_address": "0x40"}],
+            "block_track": {"BLK_P": {"chip_id": "pwm1", "forward": 0, "reverse": 1}},
+        },
+    }
+    path = tmp_path / "legacy_layout.json"
+    path.write_text(json.dumps(wrapper))
+
+    pm = PersistenceManager(storage_dir=str(tmp_path))
+    result = pm.load_layout_with_fallback("legacy_layout", RailwayNetwork())
+
+    assert result.get("hardware") == "applied"
+    assert hardware_config.get_hardware_config().block_track["BLK_P"].reversed is True
+
+
+def test_new_schema_save_needs_no_lift(tmp_path):
+    """A binding that already carries `reversed: false` is left alone even if a
+    stray legacy block key says otherwise — the binding is the authority."""
+    import json
+
+    wrapper = {
+        "name": "mixed",
+        "snapshot": {
+            "tracks": [],
+            "trains": [],
+            "blocks": {"BLK_P": {"block_id": "BLK_P", "length_cm": 0, "polarity_reversed": True}},
+            "signals": {},
+            "platforms": [],
+            "station_groups": [],
+            "switches": {},
+            "tunnels": [],
+        },
+        "hardware": {
+            "enabled": False,
+            "chips": [{"chip_id": "pwm1", "kind": "pca9685", "i2c_address": "0x40"}],
+            "block_track": {
+                "BLK_P": {"chip_id": "pwm1", "forward": 0, "reverse": 1, "reversed": False}
+            },
+        },
+    }
+    path = tmp_path / "mixed_layout.json"
+    path.write_text(json.dumps(wrapper))
+
+    pm = PersistenceManager(storage_dir=str(tmp_path))
+    result = pm.load_layout_with_fallback("mixed_layout", RailwayNetwork())
+
+    assert result.get("hardware") == "applied"
+    assert hardware_config.get_hardware_config().block_track["BLK_P"].reversed is False

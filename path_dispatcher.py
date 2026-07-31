@@ -171,14 +171,48 @@ class PathDispatcher:
         return ctrl._get_head_tile() if ctrl is not None else None
 
     def _get_current_block_id_for_train(self, train) -> Optional[str]:
-        """Resolve the train's current block (head tile)."""
+        """Resolve the train's current block (head tile).
+
+        A head standing on a switch tile belongs to no block, so the tile alone
+        cannot answer. That is an ordinary place for a train to be stopped — a
+        switch carries no detection and a consist can straddle one — and the
+        train is still plainly on the block its body occupies behind that switch,
+        which is the block planning must start from. Falling back to the
+        head-side span block is the same "inward occupied block" rule
+        `_resolve_create_start_block` already applies one step later.
+
+        Refusing here instead would reject the train before any of the planning
+        that knows how to handle a head on a switch has run, and report it as a
+        train whose position cannot be resolved rather than as what it is. When
+        authority genuinely cannot be built from that position, the best-effort
+        path still says so through `HEAD_ON_SWITCH_NO_BLOCK_AUTHORITY`.
+        """
         head_tile = self._head_tile_for_train(train)
         if not head_tile:
             return None
         track = self.network.get_track(*head_tile)
         if track is None:
             return None
-        return track.block_id
+        return track.block_id or self._head_side_span_block(train)
+
+    def _head_side_span_block(self, train) -> Optional[str]:
+        """The block at the head end of the train's span, or None.
+
+        `occupied_blocks` runs `end_a` to `end_b`, so the head-side entry is the
+        first or last depending on which end the cab makes the head.
+        """
+        ctrl = self._get_controller(getattr(train, "train_id", None))
+        if ctrl is None:
+            return None
+        span = ctrl.get_current_span()
+        occupied = list(getattr(span, "occupied_blocks", None) or []) if span else []
+        if not occupied:
+            return None
+        head_is_a = True
+        label = getattr(ctrl, "_head_end_label", None)
+        if callable(label):
+            head_is_a = label() == "end_a"
+        return occupied[0] if head_is_a else occupied[-1]
 
     def _resolve_create_start_block(
         self,

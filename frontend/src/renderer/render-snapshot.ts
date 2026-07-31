@@ -32,6 +32,7 @@ export interface TrainController {
   control_mode?: unknown;
   route_teardown_pending?: unknown;
   eb_active?: unknown;
+  presence_unknown?: unknown;
   span?: ControllerSpan | null;
 }
 
@@ -70,6 +71,9 @@ export interface RenderSnapshotTrain {
   /** True for a runtime-detected ghost train the app cannot drive. Drives the
    *  steel body tint and the dashed outline that mark it apart. */
   isGhost: boolean;
+  /** True while no wired block backs the calculated position — the train may
+   *  physically be gone. Drives the question-mark badge at the head. */
+  presenceUnknown: boolean;
   span: RenderSnapshotSpan;
   waitingForBlockId: unknown;
 }
@@ -112,6 +116,7 @@ export function buildRenderSnapshot(
       teardownPending: controller.route_teardown_pending === true,
       ebActive: controller.eb_active === true,
       isGhost: train.is_ghost === true,
+      presenceUnknown: controller.presence_unknown === true,
       span: {
         occupiedTiles: span.occupied_tiles,
         leadingEnd: span.leading_end,
