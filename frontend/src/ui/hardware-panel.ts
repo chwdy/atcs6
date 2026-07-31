@@ -18,8 +18,8 @@
  *   3. What your layout is wired to — the tally of blocks and switches actually
  *      bound to those chips, and what breaks for the ones that are not. Read
  *      only: the binding itself is done in the per-entity editors.
- *   4. Go live (footer)    — one readiness checklist gates the Enable switch;
- *      enabling applies on the next session build, so a save offers a restart.
+ *   4. Run Environment (footer) — select Simulation, Virtual Hardware, or Real
+ *      Hardware, review readiness, then activate it without restarting.
  *
  * setupHardwarePanel() wires the delegated handlers once; refreshHardwarePanel()
  * loads the catalog + persisted config and renders — call it each time the modal
@@ -27,7 +27,6 @@
  */
 import { api } from '../lib/api';
 import { showToast } from '../lib/toast';
-import { startRestartReconnectFlow } from './restart-flow';
 
 const BUS_ORDER = ['i2c', 'spi', 'gpio'] as const;
 const BUS_LABEL: Record<string, string> = { i2c: 'I²C', spi: 'SPI', gpio: 'GPIO' };
@@ -55,8 +54,6 @@ interface ChipCfg {
   active_low: boolean;
 }
 interface HwState {
-  enabled: boolean;
-  develop: boolean;
   controller: { kind: string; device_port: string | null };
   chips: ChipCfg[];
   // Drive threshold for the hybrid occupancy detector: a block commanded above
@@ -71,14 +68,23 @@ interface HwState {
 //   untested — no scan has run yet, or a shift register nobody has tested.
 type ChipState = 'alive' | 'noresp' | 'untested';
 
-// Develop mode (fake hardware) — the running session's mode info and the raw
-// binding maps the "Fake inputs" section pokes. See devRows() for the row model.
-interface SessionInfo { operation_mode: string; develop_active: boolean; }
+// The running environment and raw binding maps used by Virtual Hardware.
+interface SessionInfo {
+  operation_environment: string;
+  virtual_hardware_active: boolean;
+}
+interface EnvironmentInfo {
+  selected: 'simulation' | 'virtual_hardware' | 'real_hardware';
+  active: string;
+  is_active: boolean;
+  commissioning?: boolean;
+}
 interface DevBindings {
   block_occupancy: Record<string, any>;
   block_occupancy_current: Record<string, any>;
 }
 interface DevReadback {
+  virtual_hardware_active?: boolean;
   develop_active?: boolean;
   blocks?: Record<string, { occupancy_bit: boolean | null; current_ma: number | null; volts: number | null; occupied: boolean | null }>;
   switches?: Record<string, any>;
@@ -122,8 +128,6 @@ const DEFAULT_IDLE_DEADBAND_V = 0.25;
 const MAX_IDLE_DEADBAND_V = 5.0;
 
 const DEFAULT_STATE: HwState = {
-  enabled: false,
-  develop: false,
   controller: { kind: 'ch347', device_port: null },
   chips: [],
   idleDeadbandV: DEFAULT_IDLE_DEADBAND_V,
@@ -143,11 +147,14 @@ let controllerReachable = false;
 let savedSinceEdit = false;
 let adding = false;
 
-// Develop mode: the running session's mode info, the binding maps the Fake-input
-// section pokes, its latest read-back, and the 1 s poll while the modal is open.
+// Virtual Hardware: running-session info, bindings, latest read-back, and poll.
 let sessionInfo: SessionInfo | null = null;
 let devBindings: DevBindings = { block_occupancy: {}, block_occupancy_current: {} };
 let devReadback: DevReadback | null = null;
+let environmentInfo: EnvironmentInfo = {
+  selected: 'simulation', active: 'simulation', is_active: true,
+};
+let activationReadiness: any = { ready: true, issues: [] };
 let virtualRig: any = null;
 let virtualRigBlocksDraft = '';
 let devPollTimer: any = null;
@@ -814,18 +821,22 @@ export async function refreshHardwarePanel(): Promise<void> {
   coverage = null;
   devBindings = { block_occupancy: {}, block_occupancy_current: {} };
   try {
-    const [cat, cfg, cov] = await Promise.all([
+    const [cat, cfg, cov, env, ready] = await Promise.all([
       api.getHardwareCatalog(),
       api.getHardwareConfig(),
       // Coverage is advisory, so it must never be the reason the panel fails to
       // open: a failure here leaves the section unrendered and nothing else.
       api.getHardwareCoverage().catch(() => null),
+      api.getOperationEnvironment(),
+      api.getOperationReadiness(),
     ]);
     catalog = cat as Catalog;
     coverage = (cov as Coverage) || null;
     const raw = cfg?.config || {};
     state = normalizeConfig(raw);
     sessionInfo = cfg?.session || null;
+    environmentInfo = env as EnvironmentInfo;
+    activationReadiness = ready || { ready: false, issues: [] };
     // Capture the raw binding maps before normalizeConfig strips them — the
     // Fake-inputs section pokes blocks by their occupancy / current bindings.
     devBindings = {
@@ -843,8 +854,6 @@ export async function refreshHardwarePanel(): Promise<void> {
 
 function normalizeConfig(cfg: any): HwState {
   return {
-    enabled: !!cfg.enabled,
-    develop: !!cfg.develop,
     controller: { kind: cfg.controller?.kind || 'ch347', device_port: cfg.controller?.device_port ?? null },
     chips: (cfg.chips || []).map((c: any): ChipCfg => ({
       chip_id: String(c.chip_id),
@@ -865,8 +874,7 @@ function normalizeConfig(cfg: any): HwState {
 // --- payload: controller + chips only (binding maps stay untouched) --------
 function payload(): any {
   return {
-    enabled: state.enabled,
-    develop: state.develop,
+    environment: environmentInfo.selected,
     controller: { kind: state.controller.kind, device_port: state.controller.device_port },
     chips: state.chips.map((c) => ({
       chip_id: c.chip_id, kind: c.kind, bus: c.bus, i2c_address: c.i2c_address,
@@ -961,15 +969,14 @@ function coverageNames(ids: string[]): string {
   return rest > 0 ? `${shown} and ${rest} more` : shown;
 }
 
-// --- develop-mode "Fake inputs" section ------------------------------------
-// Rendered only when the RUNNING session is on the fake device
-// (`session.develop_active`): a row per bound block with an Occupied toggle, a
+// --- Virtual Hardware controls ---------------------------------------------
+// Rendered only when Virtual Hardware is actually active: a row per bound block with an Occupied toggle, a
 // current-mA field, and the live read-back the 1 s poll refreshes.
 function devSectionHtml(): string {
-  if (!sessionInfo?.develop_active) return '';
+  if (!sessionInfo?.virtual_hardware_active) return '';
   const head = `<div class="hw-stage-head"><span class="hw-stage-num"><i class="ti ti-flask" aria-hidden="true"></i></span>
-      <span class="hw-stage-title">Fake inputs</span></div>
-    <p class="hw-stage-desc">This session runs on the in-memory fake device. Poke a block's occupancy detector or current channel and watch the real occupancy pipeline react. Current decides only while a block is driven; an idle block reads its digital bit.</p>`;
+      <span class="hw-stage-title">Virtual Hardware controls</span></div>
+    <p class="hw-stage-desc">Drive the configured detector channels, place a virtual train, or inject a device fault. These controls exercise the same HAL and safety paths as Real Hardware.</p>`;
   const rows = devRows(devBindings, devReadback);
   const faultKinds = [
     'disconnect', 'i2c_write_error', 'i2c_read_error',
@@ -1335,44 +1342,26 @@ function nextChipId(kind: string): string {
 
 // --- footer gate -----------------------------------------------------------
 function gateHtml(): string {
-  const checks = readiness();
-  const ready = isReady();
-  const pills = checks.map((c) =>
-    `<span class="hw-check ${c.ok ? 'ok' : 'warn'}"${c.ok ? '' : ` data-hw="jump" data-key="${c.key}"`}>` +
-    `<i class="ti ti-${c.ok ? 'check' : 'alert-triangle'}" aria-hidden="true"></i> ${esc(c.label)}</span>`).join('');
-  const effEnabled = state.enabled && ready;
-  // One constant label, so the TOGGLE POSITION is what carries on/off. Naming
-  // the off state in the label instead ("Simulation only") inverted its meaning:
-  // a switch sitting off under those words reads as "simulation-only is off, so
-  // hardware must be on" — the opposite of the truth. The sub-line names the
-  // current consequence and the next step.
-  const enableTitle = 'Use real hardware';
-  const enableSub = !ready
-    ? 'simulation only — clear the amber steps first'
-    : effEnabled
-      ? 'applies after restart'
-      : 'off — simulation only';
-  const restart = savedSinceEdit
-    ? `<span class="hw-restart-note">Applies after a restart.</span>
-       <button type="button" class="btn btn-primary" data-hw="restart">Restart now</button>`
-    : `<button type="button" class="btn ${effEnabled ? 'btn-accent' : 'btn-secondary'}" data-hw="save">Save</button>`;
-  const devActive = !!sessionInfo?.develop_active;
-  // Truth badge: this session is really running on the fake device.
-  const badge = devActive
-    ? `<span class="hw-develop-badge" title="This session is running on the in-memory fake device — no USB hardware.">
-        <i class="ti ti-flask" aria-hidden="true"></i> DEVELOP · fake hardware</span>`
-    : (state.develop ? `<span class="hw-develop-hint">develop saved — restart to apply</span>` : '');
-  // The develop toggle is NOT gated by the readiness checklist: its purpose is
-  // hardware-free work, so it can be flipped and saved before any chip responds.
-  const devToggle = `<label class="hw-develop ${state.develop ? 'on' : ''}" data-hw="develop"
-      title="Run the real-mode stack against an in-memory fake device — build and test with no hardware attached. Applies after restart.">
-      <span class="hw-toggle"></span>
-      <span class="hw-develop-text"><span class="hw-develop-label">Develop mode</span>
-        <span class="hw-develop-sub">fake hardware</span></span>
-    </label>`;
-  // Which occupancy source answers for a block depends on whether it is being
-  // driven, and this is where that line sits. Not gated by the readiness
-  // checklist — it is a number, not a chip, and costs nothing to set early.
+  const labels: Record<string, string> = {
+    simulation: 'Simulation',
+    virtual_hardware: 'Virtual Hardware',
+    real_hardware: 'Real Hardware',
+  };
+  const choices = Object.entries(labels).map(([value, label]) =>
+    `<button type="button" class="btn hw-btn-sm ${environmentInfo.selected === value ? 'btn-accent' : 'btn-secondary'}" data-hw="environment" data-id="${value}">${label}</button>`
+  ).join(' ');
+  const activeLabel = labels[environmentInfo.active] || environmentInfo.active;
+  const selectedLabel = labels[environmentInfo.selected];
+  const selectedActive = environmentInfo.is_active
+    && environmentInfo.active === environmentInfo.selected;
+  const status = environmentInfo.commissioning
+    ? 'Commissioning owns the device; exit it before activation.'
+    : selectedActive
+      ? `${activeLabel} is active.`
+      : `${selectedLabel} is selected but not active.`;
+  const issues = (activationReadiness?.issues || []).map((issue: any) =>
+    `<span class="hw-check warn"><i class="ti ti-alert-triangle" aria-hidden="true"></i> ${esc(issue.message || issue.code)}</span>`
+  ).join('');
   const deadband = `<label class="hw-deadband" title="A block commanded above this voltage is read by its current-sense channel; at or below it, by its '165 detector.">
       <span class="hw-deadband-text"><span class="hw-deadband-label">Idle threshold</span>
         <span class="hw-deadband-sub">below this, a block counts as parked</span></span>
@@ -1383,17 +1372,12 @@ function gateHtml(): string {
         <span class="hw-deadband-unit">V</span>
       </span>
     </label>`;
-  return `<div class="hw-checklist">${pills}${badge}</div>
+  return `<div class="hw-checklist"><strong>Run Environment</strong> ${choices}
+      <span class="hw-check ${selectedActive ? 'ok' : 'warn'}">${esc(status)}</span>${issues}</div>
     <div class="hw-gate-actions">
       ${deadband}
-      ${devToggle}
-      <label class="hw-enable ${effEnabled ? 'on' : ''} ${ready ? '' : 'locked'}" data-hw="enable"
-        title="On, the running simulation reads your detectors and drives your track and points. Off, it runs entirely on the simulated drivers and never touches the rig.">
-        <span class="hw-enable-text"><span class="hw-enable-label">${enableTitle}</span>
-          <span class="hw-enable-sub">${enableSub}</span></span>
-        <span class="hw-toggle"></span>
-      </label>
-      ${restart}
+      <button type="button" class="btn btn-secondary" data-hw="save">Save Hardware Setup</button>
+      <button type="button" class="btn btn-primary" data-hw="activate">Activate ${esc(selectedLabel)}</button>
     </div>`;
 }
 
@@ -1412,8 +1396,8 @@ async function onClick(e: Event): Promise<void> {
     case 'add-open': adding = true; render(); syncAddForm(); return;
     case 'add-cancel': adding = false; render(); return;
     case 'add-commit': return commitAdd();
-    case 'enable': return toggleEnable();
-    case 'develop': return toggleDevelop();
+    case 'environment': return void selectEnvironment(id);
+    case 'activate': return void activateEnvironment();
     case 'dev-occ': return void toggleDevOccupancy(id);
     case 'dev-current': return void setDevCurrent(id);
     case 'dev-fault': return void toggleDevFault(id);
@@ -1423,7 +1407,6 @@ async function onClick(e: Event): Promise<void> {
     case 'dev-rig-stall': return void commandVirtualRig('stall');
     case 'dev-rig-remove': return void commandVirtualRig('remove');
     case 'save': return void save();
-    case 'restart': return void restart();
     case 'jump': return jumpTo(target.dataset.key || '');
   }
 }
@@ -1492,34 +1475,45 @@ function removeChip(id: string): void {
   render();
 }
 
-function toggleEnable(): void {
-  if (!isReady()) { showToast('Finish the amber steps to enable hardware.', 'warning', 3600); return; }
-  state.enabled = !state.enabled;
-  onEdit();
-  render();
-}
-
-function toggleDevelop(): void {
-  state.develop = !state.develop;
-  // Flipping the toggle changes which device a scan talks to, so whatever the
-  // last scan proved was proof about the OTHER device: fake addresses would go
-  // on reading as "Connected" after switching to real, and vice versa. Retire
-  // it the same way re-strapping a chip does (see `setChip`) — the bridge drops
-  // back to unproven until Detect is pressed against the device now selected.
+async function selectEnvironment(selected: string): Promise<void> {
+  try {
+    environmentInfo = await api.selectOperationEnvironment(selected) as EnvironmentInfo;
+    activationReadiness = await api.getOperationReadiness();
+  } catch (e: any) {
+    showToast(e?.message || 'Could not select the environment.', 'error', 3500);
+    return;
+  }
   controllerReachable = false;
   scanned = false;
   i2cScan = [];
   manualProven = new Set();
-  onEdit();
   render();
-  // Detect follows the toggle immediately — the scan is run against the config
-  // being edited, so no Save is needed to change which device answers. Saving
-  // (and restarting) is what moves the running SESSION onto the fake.
-  showToast(
-    state.develop
-      ? 'Develop mode on — Detect now runs against the fake device.'
-      : 'Develop mode off — Detect now talks to the real board.',
-    'info', 4000);
+}
+
+async function activateEnvironment(): Promise<void> {
+  try {
+    await stopCommissioning();
+    await api.setHardwareConfig(payload());
+    activationReadiness = await api.getOperationReadiness();
+    await api.activateOperationEnvironment();
+    const [env, ready, cfg] = await Promise.all([
+      api.getOperationEnvironment(),
+      api.getOperationReadiness(),
+      api.getHardwareConfig(),
+    ]);
+    environmentInfo = env as EnvironmentInfo;
+    activationReadiness = ready;
+    sessionInfo = cfg?.session || null;
+    savedSinceEdit = true;
+    render();
+    startDevPoll();
+    showToast(`${environmentInfo.selected.split('_').join(' ')} is active.`, 'success', 2500);
+  } catch (e: any) {
+    environmentInfo = await api.getOperationEnvironment().catch(() => environmentInfo) as EnvironmentInfo;
+    activationReadiness = await api.getOperationReadiness().catch(() => activationReadiness);
+    render();
+    showToast(e?.message || 'Environment activation was blocked.', 'error', 5000);
+  }
 }
 
 // --- develop-mode fake-input poking ----------------------------------------
@@ -1581,19 +1575,19 @@ async function commandVirtualRig(action: string): Promise<void> {
 }
 
 function startDevPoll(): void {
-  if (devPollTimer || !sessionInfo?.develop_active) return;
+  if (devPollTimer || !sessionInfo?.virtual_hardware_active) return;
   void pollDev();
   devPollTimer = setInterval(() => void pollDev(), 1000);
 }
 
 async function pollDev(): Promise<void> {
-  if (!sessionInfo?.develop_active) return;
+  if (!sessionInfo?.virtual_hardware_active) return;
   try {
     const [res, rig] = await Promise.all([
       api.getHwDebugState(),
       api.getVirtualRigScenario(),
     ]);
-    if (res?.develop_active) {
+    if (res?.virtual_hardware_active || res?.develop_active) {
       devReadback = res;
       virtualRig = rig?.scenario ?? null;
       // Don't clobber a current-mA field the user is editing.
@@ -1765,28 +1759,19 @@ async function toggleLive(id: string): Promise<void> {
   activityTimer = setInterval(poll, 500);
 }
 
-// --- save / restart --------------------------------------------------------
+// --- save ------------------------------------------------------------------
 async function save(): Promise<void> {
   const btn = document.querySelector<HTMLButtonElement>('[data-hw="save"]');
   if (btn) btn.disabled = true;
   try {
-    if (state.enabled && !isReady()) { state.enabled = false; render(); showToast('Hardware stayed off — finish the checklist.', 'warning', 4000); return; }
     await api.setHardwareConfig(payload());
     savedSinceEdit = true;
+    activationReadiness = await api.getOperationReadiness();
     render();
-    showToast('Hardware setup saved — restart to apply.', 'success', 2500);
+    showToast('Hardware Setup saved.', 'success', 2200);
   } catch (e: any) {
     showToast(e?.message || 'Failed to save hardware setup.', 'error', 4000);
   } finally {
     if (btn) btn.disabled = false;
   }
-}
-
-async function restart(): Promise<void> {
-  try { await api.restartServer(); } catch (e) {
-    console.error('[App] Hardware restart request failed:', e);
-    showToast('Could not reach server to restart.', 'error', 4000);
-    return;
-  }
-  startRestartReconnectFlow();
 }

@@ -136,13 +136,6 @@ export interface FloatingWindowOptions {
 
 const DEFAULT_MIN_W = 260;
 const DEFAULT_MIN_H = 180;
-/** Width at which a window is wide enough to lay its content out horizontally —
- *  today that means the working-set navigator flipping from a vertical tree to
- *  a horizontal tab strip (see `.window--wide` in layout/shell.css). Set just
- *  past `.secondary-sidebar`'s 500px docked max-width, so the docked inspector
- *  always stays narrow-form and only a deliberately widened floating window
- *  crosses over. */
-const WIDE_WINDOW_WIDTH = 520;
 const VIEWPORT_MARGIN = 8;
 const RESIZE_MARGIN = 6;
 const RESIZE_DIRECTIONS = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
@@ -178,7 +171,6 @@ export class FloatingWindow {
   private hidden = false;
   private unwatchDpr: () => void = () => {};
   private unwatchViewport: () => void = () => {};
-  private widthObserver: ResizeObserver | null = null;
 
   constructor(opts: FloatingWindowOptions) {
     this.id = opts.id;
@@ -219,7 +211,6 @@ export class FloatingWindow {
     this.rootEl.addEventListener('pointerdown', () => this.focus());
     this.unwatchDpr = watchDprChange(() => this.reclampToViewport());
     this.unwatchViewport = watchViewportResize(() => this.reclampToViewport());
-    this.setupWidthClass();
     this.applyCoarsePointerSizing();
     if (opts.initialHidden) {
       this.setHidden(true);
@@ -486,28 +477,6 @@ export class FloatingWindow {
     this.rootEl.style.top = `${top}px`;
   }
 
-  /** Keep `.window--wide` in sync with the window's own width, so content can
-   *  lay itself out by the room it actually has rather than by the viewport.
-   *  Deliberately a class and not a CSS container query: `container-type:
-   *  inline-size` implies `contain: layout`, which would make this window the
-   *  containing block for its `position: fixed` descendants — the hardware port
-   *  picker renders inside the inspector and anchors against the viewport. */
-  private setupWidthClass(): void {
-    const apply = (width: number): void => {
-      this.rootEl.classList.toggle('window--wide', width >= WIDE_WINDOW_WIDTH);
-    };
-    if (typeof ResizeObserver === 'undefined') {
-      apply(this.rootEl.getBoundingClientRect().width);
-      return;
-    }
-    this.widthObserver = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        apply(entry.contentRect.width);
-      }
-    });
-    this.widthObserver.observe(this.rootEl);
-  }
-
   private applyCoarsePointerSizing(): void {
     const scale = coarsePointerScale(isCoarsePointer());
     this.rootEl.style.setProperty('--floating-window-handle-scale', String(scale));
@@ -614,7 +583,6 @@ export class FloatingWindow {
   destroy(): void {
     this.unwatchDpr();
     this.unwatchViewport();
-    this.widthObserver?.disconnect();
     this.content?.unmount?.();
     this.rootEl.remove();
     this.manager.unregister(this);

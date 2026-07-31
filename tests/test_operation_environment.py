@@ -71,10 +71,14 @@ def test_environment_api_reports_selected_separately_from_active(
             "status": "success",
             "selected": "real_hardware",
             "active": "simulation",
+            "is_active": True,
         }
         assert client.get("/api/operation/environment").get_json() == {
             "selected": "real_hardware",
             "active": "simulation",
+            "is_active": True,
+            "activation_issues": [],
+            "commissioning": False,
         }
 
 

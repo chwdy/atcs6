@@ -544,20 +544,19 @@ textarea {
     cursor: not-allowed;
 }
 
-/* Narrow form (the default, and the only form the docked 350px panel takes):
-   a vertical navigator — tabs stack under collapsible type headers as a
-   type → instance tree. Capped at 42vh so a large working set scrolls instead
-   of pushing the panel's actual content off the bottom. The horizontal form a
-   wide window switches to lives under `.window--wide` further down. */
+/* Working-set strip: always horizontal, including in the docked inspector.
+   Navigation consumes one compact row and overflows sideways like VS Code /
+   Adobe tabs, leaving vertical space to the panel's actual content. */
 .secondary-sidebar-tabs {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     flex-wrap: nowrap;
     align-items: stretch;
-    gap: 1px;
-    padding: var(--space-4);
-    max-height: 42vh;
-    overflow-y: auto;
+    gap: var(--space-4);
+    padding: var(--space-4) var(--space-4) 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
     border-bottom: 1px solid var(--border-color);
     background: rgba(255, 255, 255, 0.02);
 }
@@ -571,64 +570,18 @@ textarea {
     background-color: rgba(var(--accent-rgb), 0.08);
 }
 
-/* Navigator: open tabs grouped by entity type (Trains, Blocks, …) so a busy
-   working set reads as a type → instance tree, not one mixed flat strip. */
-.secondary-nav-group {
-    display: flex;
-    flex-direction: column;
-}
-
-.secondary-nav-group + .secondary-nav-group {
-    margin-top: var(--space-4);
-}
-
-.secondary-nav-group-header {
-    display: flex;
-    align-items: center;
-    gap: var(--space-4);
-    padding: 2px 6px;
-    font-size: 0.58rem;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--text-muted);
-}
-
-.secondary-nav-group-icon {
-    font-size: 11px;
-    opacity: 0.7;
-    line-height: 1;
-}
-
-.secondary-nav-group-label {
-    font-weight: 700;
-}
-
-.secondary-nav-group-count {
-    margin-left: auto;
-    padding: 0 6px;
-    font-size: 0.55rem;
-    text-transform: none;
-    color: var(--text-muted);
-    background: var(--bg-hover);
-    border-radius: 8px;
-}
-
-/* Instance rows indent under their group header. */
-.secondary-nav-group .secondary-tab {
-    margin-left: 8px;
-}
-
-/* Tab strip per DESIGN_LANGUAGE.md §3 — flat tabs; active state is a 2px left
-   accent border plus a subtle tint that marks the selected row in the stack. */
+/* Flat tabs; the active state uses a bottom underline that meets the strip's
+   divider. Tabs keep their natural width and overflow on the x-axis. */
 .secondary-tab {
     display: flex;
     align-items: center;
     gap: var(--space-4);
     padding: 3px 6px;
     color: var(--text-secondary);
-    border-left: 2px solid transparent;
-    border-radius: var(--control-radius-sm);
+    border-bottom: 2px solid transparent;
+    border-radius: var(--control-radius-sm) var(--control-radius-sm) 0 0;
     min-width: 0;
+    flex-shrink: 0;
     transition: color 0.15s, background-color 0.15s, border-color 0.15s;
 }
 
@@ -639,7 +592,7 @@ textarea {
 
 .secondary-tab.active {
     color: var(--accent-hover);
-    border-left-color: var(--accent-color);
+    border-bottom-color: var(--accent-color);
     background-color: rgba(var(--accent-rgb), 0.08);
 }
 
@@ -750,83 +703,6 @@ textarea {
 .secondary-tab-popout:hover {
     color: var(--accent-color);
     opacity: 1;
-}
-
-/* ---------------------------------------------------------------------------
-   Wide form of the working-set navigator — one horizontal scrolling strip
-   (VS Code / Adobe style) instead of the vertical tree.
-
-   `.window--wide` is set by FloatingWindow's ResizeObserver (lib/window-manager.ts)
-   at 520px, just past the docked panel's 500px max-width: the docked inspector
-   therefore always keeps the vertical tree, because a 350px-wide horizontal
-   strip would show barely two tabs, while any floating window the user widens
-   gets the row. Type grouping survives the flip — groups become inline segments
-   reading left to right, separated by a rule — so a wide strip still says which
-   tabs are Trains and which are Blocks.
-
-   A CSS container query would express "when this panel is wide" more directly,
-   but `container-type: inline-size` implies `contain: layout`, which makes the
-   element a containing block for its `position: fixed` descendants. The
-   hardware port picker (ui/port-picker.ts) renders inside this panel and
-   positions itself against the viewport, so containment would break it.
-   --------------------------------------------------------------------------- */
-.window--wide .secondary-sidebar-tabs {
-    flex-direction: row;
-    align-items: stretch;
-    gap: var(--space-4);
-    max-height: none;
-    overflow-x: auto;
-    overflow-y: hidden;
-    /* No bottom padding: the active tab's underline should meet the strip's
-       own bottom rule, per DESIGN_LANGUAGE.md §3. */
-    padding-bottom: 0;
-    scrollbar-width: thin;
-}
-
-.window--wide .secondary-nav-group {
-    flex-direction: row;
-    align-items: center;
-    gap: var(--space-4);
-    flex-shrink: 0;
-}
-
-/* Groups read as segments of one strip, divided by a rule rather than stacked. */
-.window--wide .secondary-nav-group + .secondary-nav-group {
-    margin-top: 0;
-    margin-left: var(--space-4);
-    padding-left: var(--space-8);
-    border-left: 1px solid var(--border-color);
-}
-
-/* The group header collapses to an inline marker. The count goes: in a row the
-   tabs it counts are already visible beside it, so it is pure width. */
-.window--wide .secondary-nav-group-header {
-    padding: 0;
-    flex-shrink: 0;
-}
-
-.window--wide .secondary-nav-group-count {
-    display: none;
-}
-
-/* Instance rows lose the tree indent — there is no tree to indent under. */
-.window--wide .secondary-nav-group .secondary-tab {
-    margin-left: 0;
-}
-
-/* Active mark rotates with the strip: the 2px accent moves from the left border
-   to a bottom underline overlapping the strip's divider (DESIGN_LANGUAGE.md §3's
-   fixed-pane form). Inactive tabs keep a transparent 2px bottom border so the
-   underline never shifts row heights. */
-.window--wide .secondary-tab {
-    flex-shrink: 0;
-    border-left: none;
-    border-bottom: 2px solid transparent;
-    border-radius: var(--control-radius-sm) var(--control-radius-sm) 0 0;
-}
-
-.window--wide .secondary-tab.active {
-    border-bottom-color: var(--accent-color);
 }
 
 /* ---------------------------------------------------------------------------

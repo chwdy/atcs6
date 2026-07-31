@@ -159,7 +159,7 @@ Useful flags:
 
 | Flag | Effect |
 | --- | --- |
-| `--port PORT` | Override the default port (5007) |
+| `--port PORT` | Override Flask's default port (5001); coding agents use 5007 |
 | `--no-demo` | Start with an empty layout to build from scratch |
 | `--scene demo_3` | Boot a specific example layout (`demo_main`, `demo_3`, `demo_4`, `demo_5`) |
 | `--skip-startup-tests` | Skip the boot-time test gate (faster, for iterating) |

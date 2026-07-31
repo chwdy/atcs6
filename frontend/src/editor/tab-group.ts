@@ -1,16 +1,16 @@
 // TabGroup — an instantiable working set of tabs: preview/pinned semantics,
-// the type→instance navigator, parent-link navigation, and stale-tab
+// the horizontal working-set strip, parent-link navigation, and stale-tab
 // pruning. This was singleton state directly on EditorUIHandler
 // (secondaryTabs / activeSecondaryTabId / secondaryPanelPinned / …); pulling
 // it into its own class means more than one can exist — the home secondary
 // sidebar is the first instance, and splitting a tab out (a later phase)
-// creates additional instances, each with the exact same tab/navigator/
+// creates additional instances, each with the exact same tab-strip/
 // preview-pin/stale-prune behavior, just pointed at different DOM via `dom`.
 //
 // TabGroup owns no window chrome (drag/resize/dock/float) — that's
 // lib/window-manager.ts's FloatingWindow. TabGroup owns no storage I/O
 // either — see onPersist. This mirrors DESIGN_LANGUAGE.md §12 "Editor
-// navigation": one implementation for every panel's tab/navigator behavior.
+// navigation": one implementation for every panel's tab-strip behavior.
 
 import type { EditorHost } from './types';
 
@@ -18,6 +18,7 @@ import type { EditorHost } from './types';
  *  view of one entity. Their tabs get a bold label so a list tab (e.g. all
  *  trains) reads differently from an instance tab (e.g. one specific train). */
 const LIST_PANEL_EDITOR_TYPES = new Set([
+  'block-list',
   'trains-list',
   'paths-list',
   'routes-list',
@@ -34,6 +35,7 @@ const LIST_PANEL_EDITOR_TYPES = new Set([
 const PREVIEW_ELIGIBLE_EDITOR_TYPES = new Set([
   'tile',
   'block',
+  'block-detail',
   'signal',
   'platform',
   'switch',
@@ -225,10 +227,9 @@ export class TabGroup {
 
   // ---- Display / navigator ----
 
-  /** Display label + tooltip for a tab. Detail tabs are titled by the entity
-   *  they hold (`BLK_588D28`, `#1000001`) — not by the editor's name — so two
-   *  open blocks stay distinguishable. List tabs keep their list name. The
-   *  tooltip carries the full lineage (`Blocks › BLK_588D28`). */
+  /** Display label + tooltip for a tab. Detail tabs use the entity's display
+   *  name with its stable id as fallback; list tabs keep their plural name.
+   *  The tooltip carries both lineage and id when the visible label is named. */
   getTabDisplay(tab: SecondaryTab): { label: string; tooltip: string } {
     const segments = this.editor.getPanelLineage(tab) || [];
     if (segments.length === 0) {
@@ -236,16 +237,20 @@ export class TabGroup {
       return { label: fallback, tooltip: fallback };
     }
     const label = segments[segments.length - 1].label || tab?.title || 'Editor';
-    const tooltip = segments.length > 1 ? segments.map((s: any) => s.label).join(' › ') : label;
+    const lineage = segments.length > 1 ? segments.map((s: any) => s.label).join(' › ') : label;
+    const tooltip = tab.editorId && label !== tab.editorId ? `${lineage} — ${tab.editorId}` : lineage;
     return { label, tooltip };
   }
 
-  /** Tabler icon class for the entity-type indicator in the vertical tab strip.
+  /** Tabler icon class for the entity-type indicator in the tab strip.
    *  Icon values are registered in static/icon-selections.json. */
   getTabIconClass(editorType: string | null): string {
     const iconMap: Record<string, string> = {
       'tile': 'ti-square',
       'block': 'ti-square',
+      'block-detail': 'ti-square',
+      'block-list': 'ti-square',
+      'segment': 'ti-line',
       'signal': 'ti-traffic-lights',
       'platform': 'ti-building',
       'switch': 'ti-git-branch',
@@ -269,38 +274,6 @@ export class TabGroup {
       'speed-profiles-list': 'ti-gauge',
     };
     return iconMap[editorType || ''] ?? 'ti-file';
-  }
-
-  /** Map a granular editorType to its top-level navigator group (e.g. both
-   *  'train-control' and 'trains-list' fall under Trains). The navigator stacks
-   *  open tabs under these group headers as a type → instance tree. */
-  getNavigatorGroup(editorType: string | null): { key: string; label: string; icon: string } {
-    const groups: Record<string, { key: string; label: string; icon: string }> = {
-      'tile': { key: 'tile', label: 'Tiles', icon: 'ti-square' },
-      'block': { key: 'block', label: 'Blocks', icon: 'ti-square' },
-      'signal': { key: 'signal', label: 'Signals', icon: 'ti-traffic-lights' },
-      'platform': { key: 'platform', label: 'Platforms', icon: 'ti-building' },
-      'switch': { key: 'switch', label: 'Switches', icon: 'ti-git-branch' },
-      'switches-list': { key: 'switch', label: 'Switches', icon: 'ti-git-branch' },
-      'tunnel': { key: 'tunnel', label: 'Tunnels', icon: 'ti-building-tunnel' },
-      'train-control': { key: 'train', label: 'Trains', icon: 'ti-train' },
-      'trains-list': { key: 'train', label: 'Trains', icon: 'ti-train' },
-      'route-editor': { key: 'route', label: 'Routes', icon: 'ti-map-2' },
-      'route-run-editor': { key: 'route', label: 'Routes', icon: 'ti-map-2' },
-      'route-runs-list': { key: 'route', label: 'Routes', icon: 'ti-map-2' },
-      'routes-list': { key: 'route', label: 'Routes', icon: 'ti-map-2' },
-      'path': { key: 'path', label: 'Paths', icon: 'ti-route' },
-      'path-setup': { key: 'path', label: 'Paths', icon: 'ti-route' },
-      'extend-path-setup': { key: 'path', label: 'Paths', icon: 'ti-route' },
-      'paths-list': { key: 'path', label: 'Paths', icon: 'ti-route' },
-      'station-group': { key: 'station', label: 'Stations', icon: 'ti-home' },
-      'station-group-detail': { key: 'station', label: 'Stations', icon: 'ti-home' },
-      'station-group-list': { key: 'station', label: 'Stations', icon: 'ti-home' },
-      'speed-profile': { key: 'speed', label: 'Speed profiles', icon: 'ti-gauge' },
-      'speed-profiles-list': { key: 'speed', label: 'Speed profiles', icon: 'ti-gauge' },
-      'multi-select': { key: 'selection', label: 'Selection', icon: 'ti-marquee-2' },
-    };
-    return groups[editorType || ''] ?? { key: 'other', label: 'Other', icon: 'ti-file' };
   }
 
   renderTabs(): void {
@@ -345,41 +318,37 @@ export class TabGroup {
       );
     };
 
-    // Group the open tabs by top-level entity type: a type → instance tree so
-    // many open entities stay legible instead of one mixed flat strip.
-    const groups = new Map<string, { label: string; icon: string; tabs: SecondaryTab[] }>();
-    for (const tab of this.tabs) {
-      const g = this.getNavigatorGroup(tab.editorType);
-      let bucket = groups.get(g.key);
-      if (!bucket) {
-        bucket = { label: g.label, icon: g.icon, tabs: [] };
-        groups.set(g.key, bucket);
-      }
-      bucket.tabs.push(tab);
-    }
+    // One horizontal working-set strip at every window width. Entity icons and
+    // descriptive labels carry type + identity without spending scarce panel
+    // height on repeated group headings.
+    tabsEl.innerHTML = this.tabs.map(renderRow).join('');
 
-    tabsEl.innerHTML = Array.from(groups.values())
-      .map(
-        (bucket) =>
-          `<div class="secondary-nav-group">` +
-          `<div class="secondary-nav-group-header">` +
-          `<i class="ti ${bucket.icon} secondary-nav-group-icon" aria-hidden="true"></i>` +
-          `<span class="secondary-nav-group-label">${this.escapeHtml(bucket.label)}</span>` +
-          `<span class="secondary-nav-group-count">${bucket.tabs.length}</span>` +
-          `</div>` +
-          bucket.tabs.map(renderRow).join('') +
-          `</div>`
-      )
-      .join('');
-
-    // Scroll the active tab into view. 'nearest' on both axes covers either
-    // strip orientation (vertical tree / horizontal row, see `.window--wide`)
-    // and scrolls only when the tab is actually out of view, so re-rendering
-    // the strip never yanks an already-visible tab to an edge.
+    // Scroll the active tab into view. 'nearest' scrolls only when the tab is
+    // actually out of view, so re-rendering never yanks a visible tab to an edge.
     const activeEl = tabsEl.querySelector('.secondary-tab.active');
     if (activeEl && typeof activeEl.scrollIntoView === 'function') {
       activeEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
+  }
+
+  /** Refresh the visible and persisted title of every matching entity tab. */
+  updateTabTitle(editorType: string, editorId: string | null, title: string): void {
+    let changed = false;
+    for (const tab of this.tabs) {
+      if (tab.editorType === editorType && tab.editorId === editorId && tab.title !== title) {
+        tab.title = title;
+        changed = true;
+      }
+    }
+    if (!changed) return;
+
+    if (this.currentPanel?.editorType === editorType && this.currentPanel?.editorId === editorId) {
+      this.currentPanel.title = title;
+      const titleEl = this.dom.titleEl();
+      if (titleEl) titleEl.textContent = title;
+    }
+    this.renderTabs();
+    this.persist();
   }
 
   // ---- Tab lifecycle ----
@@ -646,7 +615,14 @@ export class TabGroup {
       case 'train-control':
         return !(Array.isArray(network?.trains) && network.trains.some((t: any) => t.id === id));
       case 'block':
+      case 'block-detail':
         return !(id != null && network?.blocks && id in network.blocks);
+      case 'segment':
+        return !(
+          id != null &&
+          network?.blocks &&
+          Object.values(network.blocks).some((block: any) => (block?.segment_ids || []).includes(id))
+        );
       case 'signal':
         return !(id != null && network?.signals && id in network.signals);
       case 'switch':

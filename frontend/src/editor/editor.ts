@@ -493,17 +493,25 @@ export class Editor {
    *  One entry for list panels; `[parent list, entity]` for detail panels. The
    *  last entry's label is the panel's entity-titled tab label; the first
    *  entry, when navigable (non-null editorType), backs the header's
-   *  `← Parent` button. A null-editorType parent is context only — blocks /
-   *  signals / platforms have no list panel to go to. */
+   *  `← Parent` button. A null-editorType parent is context only — signals and
+   *  platforms have no list panel to go to. */
   getPanelLineage(entityView: any): any[] {
     const type = entityView?.editorType || entityView?.type || null;
     const id = entityView?.editorId || entityView?.id || null;
+    const title = String(entityView?.title || '').trim();
 
     switch (type) {
       case 'segment':
         return [
           { label: 'Segments', editorType: null, editorId: null },
-          { label: id || 'Segment', editorType: 'segment', editorId: id },
+          { label: title && title !== 'Segment Editor' ? title : id || 'Segment', editorType: 'segment', editorId: id },
+        ];
+      case 'block-list':
+        return [{ label: 'Blocks', editorType: 'block-list', editorId: null }];
+      case 'block-detail':
+        return [
+          { label: 'Blocks', editorType: 'block-list', editorId: null },
+          { label: title && title !== 'Block' ? title : id || 'Block', editorType: 'block-detail', editorId: id },
         ];
       case 'signal':
         return [
@@ -2156,7 +2164,7 @@ export class Editor {
         detail: 'Train',
         icon: 'ti ti-train',
         onSelect: () => {
-          (window as any).app?.selectTrain?.(train.id);
+          void this.showTrainControlPanel(train.id);
         },
       });
     }

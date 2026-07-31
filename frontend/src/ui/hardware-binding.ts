@@ -9,8 +9,8 @@
  * standby bit for drivers that need it. Its test alternates the two coils once a
  * second and lights the one it just fired.
  *
- * Both are shown only when real hardware is enabled and a chip of the right role
- * is configured, so a pure-simulation layout never sees them. Both live here to
+ * Both are shown only when a chip of the right role is configured, so a
+ * pure-simulation layout never sees them. Both live here to
  * keep port selection in one place.
  */
 import { api } from '../lib/api';
@@ -46,7 +46,8 @@ interface HwChip {
   bus?: string; i2c_address?: number | null; spi_select?: string | null;
 }
 export interface HwConfig {
-  enabled: boolean;
+  operation_environment?: string;
+  environment_active?: boolean;
   chips: HwChip[];
   block_track: Record<string, TrackBinding>;
   block_occupancy: Record<string, Binding>;
@@ -99,7 +100,12 @@ function esc(s: any): string {
 export async function fetchHardwareConfig(): Promise<HwConfig | null> {
   try {
     const res = await api.getHardwareConfig();
-    return (res && res.config) || null;
+    if (!res?.config) return null;
+    return {
+      ...res.config,
+      operation_environment: res.session?.operation_environment,
+      environment_active: !!res.session?.environment_active,
+    };
   } catch {
     return null;
   }
@@ -114,11 +120,10 @@ function slotChips(cfg: HwConfig, slot: HwSlot): HwChip[] {
 
 /** Section HTML, or '' when no chip fills any slot.
  *
- * Gated on chips existing, not on the real-hardware `enabled` flag: binding a
+ * Gated on chips existing, not on the selected Run Environment: binding a
  * port to a block is bench configuration you do before the rig is powered or
  * even attached, so it must not wait on going live. A pure-simulation layout has
- * no chips, so it still sees nothing. `enabled` only governs whether the running
- * simulation drives the hardware — see `notLiveNoteHtml`. */
+ * no chips, so it still sees nothing. */
 export function hardwareSectionHtml(cfg: HwConfig | null, logicalId: string, slots: HwSlot[]): string {
   if (!cfg) return '';
   const usable = slots.filter((s) => slotChips(cfg, s).length > 0);
@@ -144,25 +149,16 @@ export function hardwareSectionHtml(cfg: HwConfig | null, logicalId: string, slo
     </div>`;
 }
 
-/** A one-line reminder shown while chips are configured but real hardware is not
- * yet enabled. Bindings save and the Test buttons work now (they open the
- * controller directly, for commissioning), but the running simulation will not
- * drive or read the hardware until it is enabled in Hardware Setup. Empty once
- * enabled. */
+/** A one-line reminder when the current run is not using the configured rig. */
 function notLiveNoteHtml(cfg: HwConfig): string {
-  if (cfg.enabled) return '';
-  return `<p class="text-warning text-xs mt-4">Hardware is not live yet — these save now and Test works, but the simulation uses them only after you enable it in Hardware&nbsp;Setup.</p>`;
+  if (cfg.environment_active && cfg.operation_environment !== 'simulation') return '';
+  return `<p class="text-warning text-xs mt-4">This Hardware Setup is not active. Wiring saves now and Test works; activate Virtual Hardware or Real Hardware from Run Environment to use it.</p>`;
 }
 
-/** Toast after a binding save. The session wires its interfaces once at boot, so
- * a binding saved now reaches the runtime only after a restart — but say that
- * only when hardware is actually enabled. While it is off, a restart changes
- * nothing (the session is wired to the simulated drivers by definition) and the
- * standing `notLiveNoteHtml` warning already names the real next step, so adding
- * "restart to apply" here would just point at the wrong lever. */
+/** Remind an operator that a changed live binding must be re-activated. */
 function noteBindingSaved(cfg: HwConfig, what: string): void {
-  if (!cfg.enabled) return;
-  showToast(`${what} saved — restart the server to apply.`, 'info', 4000);
+  if (!cfg.environment_active || cfg.operation_environment === 'simulation') return;
+  showToast(`${what} saved — activate the environment again to apply.`, 'info', 4000);
 }
 
 function channelOptions(
@@ -367,8 +363,8 @@ function coilRowHtml(side: CoilSide, chips: HwChip[], current: Binding | undefin
 
 /** Switch Hardware section, or '' when no switch chip exists.
  *
- * Gated on a switch-output chip existing, not on the real-hardware `enabled`
- * flag — coil wiring is bench configuration, the same reasoning as
+ * Gated on a switch-output chip existing, not on the selected Run Environment
+ * — coil wiring is bench configuration, the same reasoning as
  * `hardwareSectionHtml`. */
 export function switchHardwareSectionHtml(cfg: HwConfig | null, switchId: string): string {
   if (!cfg) return '';

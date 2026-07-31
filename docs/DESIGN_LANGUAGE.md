@@ -668,30 +668,18 @@ control."
 - **Hover** — `background-color: var(--bg-hover)`, `color: var(--text-primary)`.
 - **Active** — `color: var(--accent-hover)`, plus a 2px `border-bottom: var(--accent-color)` with `margin-bottom: -1px` so the active underline overlaps the strip's bottom rule (the active tab "owns" that segment of the divider). Inactive tabs carry a 2px transparent `border-bottom` so the active underline doesn't shift heights between tabs.
 
-**Working-set variant (the editor navigator).** The secondary sidebar's tab
-strip holds an open-ended, data-driven set of open panels, so it relaxes the
-fixed-pane rules and becomes a vertical **navigator**: open tabs group under
-collapsible type headers — Trains, Routes, Blocks, Switches, Signals, Platforms,
-Stations, Paths, Tiles, Speed profiles — as a type → instance tree, so many open
-entities stay legible instead of crowding one flat row. Each group header carries
-its type icon, label, and a count of the tabs under it; a granular editor type
-maps to its group through `getSecondaryTabGroup`.
+**Working-set variant (the editor navigator).** The secondary sidebar holds an
+open-ended, data-driven set of panels in one horizontal scrolling row at every
+window width. It never becomes a vertical list: navigation gets one compact row
+and the panel body keeps the remaining height. Each tab carries an entity-type
+icon and a unique identity label. Detail labels resolve in this order: display
+name, stable id, generic type fallback. Generic plural labels such as `Blocks`
+or `Segments` belong only to collection tabs; detail tabs must never form an
+indistinguishable run of repeated type names. The full lineage and stable id may
+live in the tooltip when the visible display name is shorter. The active tab is
+scrolled into view horizontally after the strip changes.
 
-**The navigator turns horizontal once its window is wide.** Past 520px — just
-past the docked panel's 500px ceiling, so the docked inspector never crosses it —
-the tree lays itself out as a single scrolling row instead, the shape a wide
-editor window should have. Grouping survives the flip: each type becomes an
-inline segment reading left to right, its header collapsed to icon + label
-(the count goes — the tabs it counts are visible right beside it) and separated
-from the next by a vertical rule. The active mark rotates with the strip, from
-the 2px left border to the 2px bottom underline of the fixed-pane form above.
-The lever is a `.window--wide` class that `FloatingWindow` sets from a
-`ResizeObserver` on its own root, *not* a CSS container query: `container-type:
-inline-size` implies `contain: layout`, which would make the panel the
-containing block for the `position: fixed` elements that render inside it (the
-hardware port picker) and break their viewport anchoring.
-
-Two kinds of tab live in the tree:
+Two kinds of tab live in the strip:
 
 - **Preview tab** — opening an entity by inspecting it on the canvas (a tile,
   block, switch, signal, platform, train, tunnel, station, or speed profile)
@@ -735,18 +723,17 @@ working set without breaking it up. A pinned window carries a 2px accent rule
 along the top of its header (`.window--pinned`) so it is obvious why the next
 inspect opened elsewhere.
 
-Every tab carries a close `×`. Tabs are titled by the record they hold
-(`BLK_588D28`, `#1000001`), never by the editor's name — two open blocks must
-read apart at a glance. List tabs (all trains, all routes) keep their list name
-in bold, so collections read apart from instances. Labels clamp with ellipsis
-(opaque identifiers, §5 Overflow); the tab tooltip carries the full lineage
-(`Blocks › BLK_588D28`).
+Every tab carries a close `×`. Detail tabs are titled by the record they hold:
+its display name when present, otherwise its stable id (`BLK_588D28`,
+`#1000001`) — never by the editor's generic name. List tabs (all trains, all
+routes) keep their plural list name in bold, so collections read apart from
+instances. Labels clamp with ellipsis (§5 Overflow); the tooltip carries the
+full lineage and stable id (`Blocks › North Yard — BLK_588D28`).
 
-Reference: `.secondary-nav-group` (+ `-header`, `-icon`, `-label`, `-count`) and
-`.secondary-tab` (+ `--preview`, `--list`, `.secondary-tab-pin`) in
-[layout/shell.css](../static/css/layout/shell.css); `renderSecondaryTabs` /
-`getSecondaryTabGroup` / `pinTab` in
-[editor-ui.ts](../frontend/src/editor/editor-ui.ts).
+Reference: `.secondary-tab` (+ `--preview`, `--list`,
+`.secondary-tab-pin`) in [layout/shell.css](../static/css/layout/shell.css);
+`TabGroup.renderTabs` / `TabGroup.updateTabTitle` / `TabGroup.pinTab` in
+[tab-group.ts](../frontend/src/editor/tab-group.ts).
 
 ### Accent-tint CTA (the panel-safe "primary")
 
@@ -1800,10 +1787,7 @@ panel's body:
 
 ```
 [← Routes]  Route Editor                    [pin] [×]
-▾ Trains 1            ← navigator: type groups, each with a count
-   T_NWY_1
-▾ Routes 1
-   RT_4F2A
+[🚆 T_NWY_1] [⌁ Main Line] [↝ RT_4F2A] →  ← horizontal working set
 ```
 
 - **Parent link** — when the open panel is the detail view of a record
@@ -1811,16 +1795,15 @@ panel's body:
   labeled with the destination (`← Routes`), never the ambiguous word
   "Back." It opens the list, re-activating the list's tab when one is
   already open. List panels, and detail views with no list home
-  (blocks, signals, platforms), show no parent link. Keyboard:
+  (signals, platforms), show no parent link. Keyboard:
   Alt+Left.
 - **Pin** — takes this group out of the active chain, so no new tab
   opens here and canvas clicks don't retarget it. Tabler `ti-pin`,
   icon-only; the window gains an accent rule along its header's top
   edge while pinned. See §3 "Group states" for the full model.
-- **Tabs** — the working-set navigator (§3) sits directly under the
-  header, grouping open tabs under collapsible type headers. No breadcrumb
-  row: the parent link covers "go up," the tab label names the record, and
-  the tab tooltip carries the lineage.
+- **Tabs** — the horizontal working-set strip (§3) sits directly under the
+  header. No breadcrumb row: the parent link covers "go up," the tab label
+  names the record, and the tab tooltip carries the lineage and stable id.
 
 A long editor panel (Route Editor, Path Editor) also shouldn't bury
 Save in the bottom section. Sections describe what they edit; Save
@@ -2030,8 +2013,7 @@ When in doubt, copy the structure of one of these:
 - **Floating debug panel's own content** → [diagnostics.css](../static/css/features/diagnostics.css) — toolbar + scrolling body + footer mounted inside the shared chrome above. Toolbar keeps `border-bottom` because it shares `--bg-panel` with the body (per the §2 toolbar rule: same surface → hairline separator needed).
 - **Bottom dock** → [train-monitor.css](../static/css/features/train-monitor.css) — header + multi-column body + status footer, full-width, fixed height. Header has no border; the segmented view-distance control inside the header is a bordered container of flat ghosts (no internal dividers).
 - **Sidebar form** → [train-control.css](../static/css/features/train-control.css) — sectioned vertical stack inside a secondary sidebar. Status rows use the 3px left-border accent only, no surrounding 1px box.
-- **Working-set navigator** → [layout/shell.css](../static/css/layout/shell.css) `.secondary-sidebar-tabs` › `.secondary-nav-group` › `.secondary-tab` — open tabs grouped under collapsible type headers (icon · label · count) as a type → instance tree; a preview tab reuses one slot until pinned (§3 Working-set variant).
-- **Wide navigator** → [layout/shell.css](../static/css/layout/shell.css) `.window--wide .secondary-sidebar-tabs` — past 520px the tree becomes one horizontal scrolling strip, groups as inline segments, active mark rotated to a bottom underline. Class set by `FloatingWindow`'s ResizeObserver (§3 Working-set variant).
+- **Working-set navigator** → [layout/shell.css](../static/css/layout/shell.css) `.secondary-sidebar-tabs` › `.secondary-tab` — one horizontal scrolling strip at every width; entity icon + unique name/id label, with a preview tab reusing one slot until pinned (§3 Working-set variant).
 - **Pinned group** → [layout/shell.css](../static/css/layout/shell.css) `.window--pinned .secondary-sidebar-header` — 2px accent rule inset along the header's top edge, marking a group that is out of the active chain (§3 Group states).
 
 **Not a reference — outside this doc.** The standalone debug page

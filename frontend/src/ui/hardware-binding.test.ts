@@ -17,7 +17,8 @@ const BLOCK = 'BLK_1';
 /** A block wired to track power plus both occupancy detectors. */
 function cfg(overrides: Partial<HwConfig> = {}): HwConfig {
   return {
-    enabled: true,
+    operation_environment: 'real_hardware',
+    environment_active: true,
     chips: [
       { chip_id: 'track0', kind: 'pca9685', role: 'track_output', port_kind: 'bipolar_pair', port_count: 8, line_count: 16, label: 'Main PWM' },
       { chip_id: 'det0', kind: 'hc165', role: 'occupancy_input', port_kind: 'digital_in', port_count: 8, line_count: 8, label: 'Detectors' },
@@ -49,24 +50,25 @@ function optionsOf(html: string, selectClass: string): string[] {
 
 describe('block hardware section', () => {
   it('renders nothing when no chip is configured, so a simulated layout never sees it', () => {
-    // Gated on chips, not on the enabled flag: a pure-sim layout has no chips.
+    // Gated on chips, not on the active environment: a pure-sim layout has no chips.
     expect(section(null)).toBe('');
     expect(section(cfg({ chips: [] }))).toBe('');
-    expect(section(cfg({ chips: [], enabled: true }))).toBe('');
+    expect(section(cfg({ chips: [], environment_active: true }))).toBe('');
   });
 
-  it('shows the section for binding before hardware is enabled', () => {
+  it('shows the section for binding before a hardware environment is active', () => {
     // The port bindings are bench configuration, so they must not wait on the
-    // real-hardware enable gate — the section renders with enabled off.
-    const html = section(cfg({ enabled: false }));
+    // activation gate — the section renders while the setup is inactive.
+    const html = section(cfg({ environment_active: false }));
     expect(html).toContain('hw-bind-section');
     expect(html).toContain('Track power');
     expect(html).toContain('Test occupancy');
   });
 
-  it('warns that hardware is not live only while it is disabled', () => {
-    expect(section(cfg({ enabled: false }))).toContain('Hardware is not live yet');
-    expect(section(cfg({ enabled: true }))).not.toContain('Hardware is not live yet');
+  it('warns when the Hardware Setup is not the active run environment', () => {
+    expect(section(cfg({ environment_active: false }))).toContain('Hardware Setup is not active');
+    expect(section(cfg({ environment_active: true }))).not.toContain('Hardware Setup is not active');
+    expect(section(cfg({ operation_environment: 'simulation' }))).toContain('Hardware Setup is not active');
   });
 
   it('opens the picker for track power instead of a dropdown of fixed pairs', () => {
@@ -274,7 +276,8 @@ describe('switch hardware section', () => {
   /** A layout with one '595 chain for switches plus a track chip to ignore. */
   function swCfg(overrides: Partial<HwConfig> = {}): HwConfig {
     return {
-      enabled: true,
+      operation_environment: 'real_hardware',
+      environment_active: true,
       chips: [
         { chip_id: 'sw0', kind: 'hc595', role: 'switch_output', port_kind: 'digital_out', port_count: 8, label: 'Points' },
         { chip_id: 'track0', kind: 'pca9685', role: 'track_output', port_kind: 'bipolar_pair', port_count: 8, label: 'Track PWM' },
@@ -302,15 +305,15 @@ describe('switch hardware section', () => {
     expect(switchHardwareSectionHtml(trackOnly, SWITCH)).toBe('');
   });
 
-  it('shows the section for coil wiring before hardware is enabled', () => {
+  it('shows the section for coil wiring before a hardware environment is active', () => {
     // Coil wiring is bench configuration, so — like the block section — it does
-    // not wait on the real-hardware enable gate.
-    const html = switchHardwareSectionHtml(swCfg({ enabled: false }), SWITCH);
+    // not wait on environment activation.
+    const html = switchHardwareSectionHtml(swCfg({ environment_active: false }), SWITCH);
     expect(html).toContain('hw-switch-section');
     expect(html).toContain('data-side="main"');
-    expect(html).toContain('Hardware is not live yet');
-    expect(switchHardwareSectionHtml(swCfg({ enabled: true }), SWITCH))
-      .not.toContain('Hardware is not live yet');
+    expect(html).toContain('Hardware Setup is not active');
+    expect(switchHardwareSectionHtml(swCfg({ environment_active: true }), SWITCH))
+      .not.toContain('Hardware Setup is not active');
   });
 
   it('offers a coil row per side, listing only switch-role ports', () => {

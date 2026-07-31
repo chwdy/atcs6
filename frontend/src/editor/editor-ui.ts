@@ -1,8 +1,8 @@
 // editor-ui.ts — Editor UI Handler (secondary sidebar, JSON viewer, bit/visual
 // track editors).
 //
-// The tab/navigator working-set logic (preview/pinned tabs, the type→instance
-// navigator, stale-tab pruning) lives in TabGroup (tab-group.ts) —
+// The working-set logic (horizontal tabs, preview/pinned semantics, stale-tab
+// pruning) lives in TabGroup (tab-group.ts) —
 // instantiable, so more than one can exist once a tab is split into its own
 // window (a later phase). The window chrome (dock/float toggle, drag,
 // 8-direction resize, double-click-to-fit) lives in FloatingWindow
@@ -705,6 +705,14 @@ export class EditorUIHandler {
       this.homeWindow.setHidden(false);
     }
     target.show(title, content);
+  }
+
+  /** Propagate an entity rename to whichever working set owns its tab. */
+  updatePanelTitle(editorType: string, editorId: string | null, title: string): void {
+    this.homeTabGroup?.updateTabTitle(editorType, editorId, title);
+    for (const { tabGroup } of this.spawnedGroups.values()) {
+      tabGroup.updateTabTitle(editorType, editorId, title);
+    }
   }
 
   /** Toggle the whole inspector between docked (left) and a floating,

@@ -330,7 +330,8 @@ export class BlockGroupingEditorHandler {
             </div>
         `;
 
-    this.editor.showSecondarySidebar('Block', content);
+    const displayName = String(block.name || '').trim() || blockId;
+    this.editor.showSecondarySidebar(displayName, content);
     this._setColorLayer(true);
     setTimeout(() => this._initDetailHandlers(blockId, hwCfg), 0);
   }
@@ -340,10 +341,15 @@ export class BlockGroupingEditorHandler {
     bindHardwareSection(hwCfg, blockId);
 
     // Name auto-saves on blur (§5C) — a field flash is the only ack.
-    bindFieldAutoSave(this.editor.$id('block-detail-name') as HTMLInputElement | null, {
+    const nameInput = this.editor.$id('block-detail-name') as HTMLInputElement | null;
+    bindFieldAutoSave(nameInput, {
       parse: parseText,
       commit: (value) => this.api.updateBlock(blockId, { name: value }),
-      onApplied: () => this.editor.host?.refreshNetwork(),
+      onApplied: async () => {
+        const title = nameInput?.value.trim() || blockId;
+        this.editor.uiHandler?.updatePanelTitle('block-detail', blockId, title);
+        await this.editor.host?.refreshNetwork();
+      },
     });
 
     // Rail polarity auto-applies on click (§5C), same contract as the segment

@@ -312,7 +312,8 @@ export class SegmentEditorHandler {
             </div>
         `;
 
-    this.editor.showSecondarySidebar(`Segment Editor`, content);
+    const displayName = String(segment.name || '').trim() || segmentId;
+    this.editor.showSecondarySidebar(displayName, content);
 
     // Focus the block direction arrows on the owning block so its F / R arrows
     // show on the map while the editor is open (the renderer derives them from
@@ -389,7 +390,11 @@ export class SegmentEditorHandler {
     bindFieldAutoSave(nameInput, {
       parse: parseText,
       commit: (value) => this.api.updateSegment(segmentId, { name: value }),
-      onApplied: refreshAfterSave,
+      onApplied: async () => {
+        const title = nameInput?.value.trim() || segmentId;
+        this.editor.uiHandler?.updatePanelTitle('segment', segmentId, title);
+        await refreshAfterSave();
+      },
     });
 
     // Length — required whole millimetres ≥ 0, stored as cm (÷10).

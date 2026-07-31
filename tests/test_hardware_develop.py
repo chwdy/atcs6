@@ -264,6 +264,7 @@ def test_config_get_reports_session_info(client):
     test_client, state = client
     data = test_client.get("/api/hardware/config").get_json()
     assert data["session"]["operation_environment"] == "simulation"
+    assert data["session"]["environment_active"] is True
     assert data["session"]["virtual_hardware_active"] is False
     _boot_develop_session(state)
     data = test_client.get("/api/hardware/config").get_json()

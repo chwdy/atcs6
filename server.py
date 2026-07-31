@@ -195,7 +195,7 @@ def main() -> None:
         --no-sim: Don't start simulation thread
         --no-autosave: Don't start autosave thread
         --no-reload: Disable auto-reload on file changes (default: reload enabled)
-        --port: Port to run on (default: 5007)
+        --port: Port to run on (default: 5001)
         --scene: Scene to boot and gate startup tests to (sets ATCS_SCENE)
     """
     import argparse
@@ -222,7 +222,7 @@ def main() -> None:
     parser.add_argument(
         "--no-reload", action="store_true", help="Disable auto-reload on file changes"
     )
-    parser.add_argument("--port", type=int, default=5007, help="Port to run on")
+    parser.add_argument("--port", type=int, default=5001, help="Port to run on")
     parser.add_argument(
         "--scene",
         type=str,

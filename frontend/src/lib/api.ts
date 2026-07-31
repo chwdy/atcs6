@@ -283,6 +283,30 @@ export class API implements LayoutDataClient, SimClient {
     return this._request('/hardware/config', {}, 'getHardwareConfig');
   }
 
+  async getOperationEnvironment(): Promise<any> {
+    return this._request('/operation/environment', {}, 'getOperationEnvironment');
+  }
+
+  async selectOperationEnvironment(selected: string): Promise<any> {
+    return this._request(
+      '/operation/environment',
+      { method: 'PUT', body: { selected } },
+      'selectOperationEnvironment'
+    );
+  }
+
+  async getOperationReadiness(): Promise<any> {
+    return this._request('/operation/readiness', {}, 'getOperationReadiness');
+  }
+
+  async activateOperationEnvironment(): Promise<any> {
+    return this._request(
+      '/operation/activate',
+      { method: 'POST', body: {} },
+      'activateOperationEnvironment'
+    );
+  }
+
   /**
    * Persist a new hardware configuration (chip inventory + port bindings). The
    * server validates it and writes it to the app-managed config file; it takes

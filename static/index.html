@@ -82,7 +82,7 @@
                     <button id="btn-display" class="btn btn-icon-only" title="Display — editor &amp; layout themes" aria-label="Display settings: editor and layout themes" aria-haspopup="true" aria-expanded="false">
                         <i class="ti ti-palette"></i>
                     </button>
-                    <button id="btn-hardware" class="btn btn-icon-only" title="Hardware setup — virtual, GPIO, I²C" aria-label="Open hardware setup">
+                    <button id="btn-hardware" class="btn btn-icon-only" title="Run environment and hardware setup" aria-label="Open run environment and hardware setup">
                         <i class="ti ti-plug"></i>
                     </button>
                     <button id="btn-settings" class="btn btn-icon-only" title="Settings &amp; Debug Info" aria-label="Open settings">
@@ -482,11 +482,11 @@
     <div id="hardware-modal" class="modal">
         <div class="modal-content hw-modal-content">
             <div class="modal-header">
-                <h3>Hardware Setup</h3>
+                <h3>Run Environment &amp; Hardware Setup</h3>
                 <button class="close-btn" data-close-modal>&times;</button>
             </div>
             <div class="modal-body">
-                <p class="hw-intro">Find the chips on your control board and confirm each one is really there. Blocks and switches are wired to ports in their own editor panels.</p>
+                <p class="hw-intro">Choose how this run should interact with the railway. Hardware Setup below describes the rig shared by Virtual Hardware and Real Hardware.</p>
                 <div id="hw-body"></div>
             </div>
             <div class="modal-footer hw-gate" id="hw-gate"></div>

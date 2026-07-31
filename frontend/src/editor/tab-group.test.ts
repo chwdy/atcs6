@@ -91,6 +91,17 @@ describe('TabGroup.show — preview-reuse invariant', () => {
     expect(group.tabs[0].editorId).toBe('BLK_2');
   });
 
+  it('treats the current block-detail type as a preview instead of piling up block tabs', () => {
+    const { group, editor } = makeGroup({ _currentEditorType: 'block-detail', _currentEditorId: 'BLK_1' });
+    group.show('North Yard', 'a');
+
+    editor._currentEditorId = 'BLK_2';
+    group.show('South Yard', 'b');
+
+    expect(group.tabs).toHaveLength(1);
+    expect(group.tabs[0]).toMatchObject({ editorType: 'block-detail', editorId: 'BLK_2', title: 'South Yard', pinned: false });
+  });
+
   it('opens its own kept tab for a list-panel type (not preview-eligible), never replaced', () => {
     const { group, editor } = makeGroup({ _currentEditorType: 'trains-list', _currentEditorId: null });
     group.show('Trains', 'a');
@@ -121,6 +132,42 @@ describe('TabGroup.show — preview-reuse invariant', () => {
     const { group, onPersist } = makeGroup({ _currentEditorType: 'block', _currentEditorId: 'BLK_1' });
     group.show('Block A', 'a');
     expect(onPersist).toHaveBeenCalled();
+  });
+});
+
+describe('TabGroup horizontal working-set strip', () => {
+  it('renders tabs directly in one strip without vertical type-group wrappers', () => {
+    const { group, editor, tabsEl } = makeGroup({
+      _currentEditorType: 'trains-list',
+      getPanelLineage: (snapshot: any) => [{ label: snapshot.title, editorType: snapshot.editorType }],
+    });
+    group.show('Trains', 'a');
+    editor._currentEditorType = 'routes-list';
+    group.show('Routes', 'b');
+
+    expect(tabsEl.innerHTML).not.toContain('secondary-nav-group');
+    expect(tabsEl.innerHTML).toContain('>Trains</button>');
+    expect(tabsEl.innerHTML).toContain('>Routes</button>');
+  });
+
+  it('updates a matching entity title immediately after rename and persists it', () => {
+    const { group, titleEl, tabsEl, onPersist } = makeGroup({
+      _currentEditorType: 'segment',
+      _currentEditorId: 'SEG_1',
+      getPanelLineage: (snapshot: any) => [
+        { label: 'Segments', editorType: null },
+        { label: snapshot.title, editorType: 'segment', editorId: snapshot.editorId },
+      ],
+    });
+    group.show('SEG_1', 'a');
+    onPersist.mockClear();
+
+    group.updateTabTitle('segment', 'SEG_1', 'Platform Lead');
+
+    expect(group.tabs[0].title).toBe('Platform Lead');
+    expect(titleEl.textContent).toBe('Platform Lead');
+    expect(tabsEl.innerHTML).toContain('>Platform Lead</button>');
+    expect(onPersist).toHaveBeenCalledTimes(1);
   });
 });
 

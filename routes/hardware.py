@@ -115,6 +115,7 @@ def register(app, state: AppState) -> None:
             "session": {
                 "operation_environment": state.sim_controller.operation_mode.value,
                 "operation_mode": state.sim_controller.operation_mode.value,
+                "environment_active": state.sim_controller.environment_active,
                 "virtual_hardware_active": hardware_config.get_session_device() is not None,
                 "develop_active": hardware_config.get_session_device() is not None,
             },
@@ -853,6 +854,9 @@ def register(app, state: AppState) -> None:
         return jsonify({
             "selected": operation_environment.get_selected().value,
             "active": state.sim_controller.operation_mode.value,
+            "is_active": bool(state.sim_controller.environment_active),
+            "activation_issues": list(state.sim_controller.activation_issues),
+            "commissioning": bool(state.commissioning_active),
         })
 
     @app.route("/api/operation/environment", methods=["PUT"])
@@ -866,6 +870,7 @@ def register(app, state: AppState) -> None:
             "status": "success",
             "selected": selected.value,
             "active": state.sim_controller.operation_mode.value,
+            "is_active": bool(state.sim_controller.environment_active),
         })
 
     @app.route("/api/operation/commissioning/enter", methods=["POST"])
