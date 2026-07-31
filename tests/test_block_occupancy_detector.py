@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from block_occupancy import BlockOccupancyDetector, OccupancyInput
-from constants import UNKNOWN_TRAIN_ID
 
 
 class ScriptedInput(OccupancyInput):
@@ -157,9 +156,10 @@ def test_attribute_entered_uses_reserved_for_train():
     net, det = make_detector(["A"], [{"A": True}], on=1)
     net.blocks["A"].reserved_for_train = "T1"
     entered, _ = det.step()
-    entered_by_train, vacated_by_train = det.attribute(entered, set())
+    entered_by_train, vacated_by_train, unmatched = det.attribute(entered, set())
     assert entered_by_train == {"T1": {"A"}}
     assert vacated_by_train == {}
+    assert unmatched == set()
 
 
 def test_attribute_entered_falls_back_to_span_owner():
@@ -171,21 +171,22 @@ def test_attribute_entered_falls_back_to_span_owner():
     net, det = make_detector(["A"], [{"A": True}], on=1, controllers=controllers)
     # reserved_for_train stays None -> must fall back to the covering train.
     entered, _ = det.step()
-    entered_by_train, _ = det.attribute(entered, set())
+    entered_by_train, _, unmatched = det.attribute(entered, set())
     assert entered_by_train == {"T2": {"A"}}
+    assert unmatched == set()
 
 
-def test_attribute_unresolved_entry_becomes_unknown_occupant():
+def test_attribute_unresolved_entry_is_reported_as_unmatched():
     net, det = make_detector(["A"], [{"A": True}], on=1)
     entered, _ = det.step()
     assert entered == {"A"}
-    # No reserving train and no covering span -> unmodeled (unknown) occupant
-    # (design_new.md "Attribution"): attributed to the reserved sentinel and kept
-    # confirmed so it blocks availability there. `attribute()` is a pure
-    # attribution step — the Step-0 preamble commits the sentinel slice through
-    # `BlockManager.occupy_blocks(...)`, so no block state is written here.
-    entered_by_train, _ = det.attribute(entered, set())
-    assert entered_by_train == {UNKNOWN_TRAIN_ID: {"A"}}
+    # No reserving train and no covering span -> the entry belongs to a ghost
+    # train (design_new.md "Attribution"). `attribute()` is a pure attribution
+    # step: it reports the block as unmatched and writes no block state and
+    # registers no train. The Step-0 preamble hands it to GhostTrainTracker.
+    entered_by_train, _, unmatched = det.attribute(entered, set())
+    assert entered_by_train == {}
+    assert unmatched == {"A"}
     assert net.blocks["A"].occupied_by is None
     assert det.confirmed_occupied == {"A"}
 
@@ -196,9 +197,10 @@ def test_attribute_vacated_uses_occupied_by():
     net.blocks["A"].occupied_by = "T1"
     _, vacated = det.step()  # vacate (off=1)
     assert vacated == {"A"}
-    entered_by_train, vacated_by_train = det.attribute(set(), vacated)
+    entered_by_train, vacated_by_train, unmatched = det.attribute(set(), vacated)
     assert vacated_by_train == {"T1": {"A"}}
     assert entered_by_train == {}
+    assert unmatched == set()
 
 
 def test_attribute_vacated_already_clear_is_benign():
@@ -206,5 +208,5 @@ def test_attribute_vacated_already_clear_is_benign():
     det.step()
     _, vacated = det.step()
     # occupied_by stays None (already cleared elsewhere) -> nothing attributed.
-    _, vacated_by_train = det.attribute(set(), vacated)
+    _, vacated_by_train, _unmatched = det.attribute(set(), vacated)
     assert vacated_by_train == {}

@@ -1386,11 +1386,25 @@ class TrainPhysics:
         position. Returns True if it moved the span.
         """
         ps = controller.physics_sync
+        entered = ps.pending_detected_entered_blocks
+        vacated = ps.pending_detected_vacated_blocks
+
+        if getattr(train, "is_ghost", False):
+            # Forward-only protects integrated motion from being snapped
+            # backwards; a ghost integrates none of its own, so there is nothing
+            # to protect and its corrected span is simply its confirmed-occupied
+            # blocks (design_new.md "Power -> Ghost trains", Span).
+            # `GhostTrainTracker` owns that construction.
+            tracker = self._ghost_tracker()
+            if tracker is None:
+                return False
+            return tracker.write_detected_span(
+                train.train_id, set(entered), set(vacated)
+            )
+
         span = ps.current_span
         if span is None:
             return False
-        entered = ps.pending_detected_entered_blocks
-        vacated = ps.pending_detected_vacated_blocks
         if not entered and not vacated:
             return False
 
@@ -1417,6 +1431,16 @@ class TrainPhysics:
             ps.current_span = _span_from_work(self._work)
         self._work = None
         return moved
+
+    def _ghost_tracker(self):
+        """The runtime's `GhostTrainTracker`, or None in an isolated unit test.
+
+        Reached through the `BlockManager` back-reference the network already
+        carries, so physics keeps no `SimulationController` reference of its own.
+        """
+        manager = getattr(self.network, "block_manager", None)
+        sim = getattr(manager, "simulation_controller", None)
+        return getattr(sim, "ghost_trains", None)
 
     def _advance_head_to_next_tile(self, train: "Train") -> bool:
         """Move the head end to the next forward tile (at its entry seam) and
@@ -1591,7 +1615,15 @@ class TrainPhysics:
         it owns the one `track voltage` its member segments share — so the
         energized set is exactly the held set (`_held_blocks_for_train`:
         occupied + reserved-ahead).
+
+        A ghost train commands no `track_voltage` at all, so its set is empty and
+        a block held only by a ghost is driven to `0` by the de-energize drain.
+        Putting voltage on the rail under a train the app cannot steer or stop is
+        the hazard the ghost rule exists to contain (design_new.md "Ghost
+        trains", Never energized).
         """
+        if getattr(train, "is_ghost", False):
+            return set()
         return self._held_blocks_for_train(train)
 
     # =========================================================================

@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import Callable, Optional
 
 from app_state import AppState
+from enums import OperationMode
 
 # Configuration
 AUTOSAVE_INTERVAL = 300  # 5 minutes in seconds
@@ -41,6 +42,18 @@ def _clamp_sim_delta(delta_seconds: float, simulation_speed: float) -> float:
     return min(
         max(delta_seconds, 0.0) * simulation_speed, MAX_SIM_DELTA_SECONDS
     )
+
+
+def _reads_hardware(state: AppState) -> bool:
+    """True when this session's occupancy comes from real detectors.
+
+    Read without the simulation lock: the backend is chosen once when the
+    session is built and never changes under a running loop, so there is
+    nothing here to race with — and taking the lock on every idle pass of a
+    sim-mode session would contend with request handlers for no reason.
+    """
+    controller = getattr(state, "sim_controller", None)
+    return getattr(controller, "operation_mode", None) is OperationMode.REAL
 
 
 def create_simulation_loop(state: AppState) -> Callable[[], None]:
@@ -72,6 +85,16 @@ def create_simulation_loop(state: AppState) -> Callable[[], None]:
                     )
                     with state.simulation_lock:
                         state.sim_controller.update(sim_delta)
+                elif _reads_hardware(state):
+                    # Stopped, but the detectors have not stopped detecting.
+                    # Occupancy is what the hardware says it is, so it is read
+                    # and committed on the same cadence whether or not trains
+                    # are being ticked; `poll_hardware_occupancy` runs Step 0
+                    # and its commit alone, so nothing else about "stopped"
+                    # changes. The mode is checked before taking the lock so a
+                    # sim-mode session never contends for it while idle.
+                    with state.simulation_lock:
+                        state.sim_controller.poll_hardware_occupancy()
 
                 time.sleep(0.1)
             except Exception as e:

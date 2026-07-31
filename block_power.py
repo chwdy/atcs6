@@ -264,6 +264,10 @@ class BlockPowerController:
         a block a train has vacated and released would otherwise keep its last
         commanded voltage forever.
 
+        A ghost train is excluded from that test: it commands no voltage, so a
+        block held only by a ghost is driven to ``0`` (design_new.md "Ghost
+        trains", Never energized).
+
         The per-tick path is event-driven: `BlockManager` queues each block as
         its holder clears and `SimulationController` drains
         `BlockManager.take_blocks_to_deenergize()` to drive those to 0V. This
@@ -272,9 +276,15 @@ class BlockPowerController:
         """
         if not self.network:
             return
+        trains = getattr(self.network, "trains", {}) or {}
         for block_id, block in self.network.blocks.items():
+            occupant = getattr(block, "occupied_by", None)
+            occupant_train = trains.get(occupant) if occupant else None
+            held_by_occupant = occupant is not None and not getattr(
+                occupant_train, "is_ghost", False
+            )
             held = (
-                getattr(block, "occupied_by", None) is not None
+                held_by_occupant
                 or getattr(block, "reserved_for_train", None) is not None
             )
             if not held and float(getattr(block, "current_voltage", 0.0)) != 0.0:

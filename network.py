@@ -1597,7 +1597,12 @@ class RailwayNetwork:
 
         return {
             "tracks": enriched_tracks,
-            "trains": [t.to_dict(self) for t in self.trains.values()],
+            # Ghost trains are runtime-only: they are not written to saved
+            # state and not restored, because a restart re-detects whatever is
+            # still drawing current (design_new.md "Ghost trains", Runtime only).
+            "trains": [
+                t.to_dict(self) for t in self.trains.values() if not t.is_ghost
+            ],
             "blocks": {k: v.to_dict() for k, v in self.blocks.items()},
             "signals": {k: v.to_dict() for k, v in self.signals.items()},
             "platforms": [
@@ -1638,7 +1643,12 @@ class RailwayNetwork:
         """
         return {
             "tracks": [t.to_layout_dict() for t in self.tracks.values()],
-            "trains": [t.to_dict(self) for t in self.trains.values()],
+            # Ghost trains are runtime-only: they are not written to saved
+            # state and not restored, because a restart re-detects whatever is
+            # still drawing current (design_new.md "Ghost trains", Runtime only).
+            "trains": [
+                t.to_dict(self) for t in self.trains.values() if not t.is_ghost
+            ],
             "blocks": {k: v.to_layout_dict() for k, v in self.blocks.items()},
             "signals": {k: v.to_layout_dict() for k, v in self.signals.items()},
             "platforms": [

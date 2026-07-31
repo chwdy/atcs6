@@ -87,6 +87,12 @@ class Train:
     total_distance_cm: float = 0.0  # Cumulative distance travelled (cm)
     total_run_time_seconds: float = 0.0  # Cumulative powered-on time (s)
 
+    # `False` on every train the operator places, `True` only on a runtime-created
+    # ghost train (design_new.md "Power -> Ghost trains"). Set once at creation and
+    # never edited; it is the predicate every rule about ghosts tests. Ghosts are
+    # runtime-only — they are not written to saved state and not restored.
+    is_ghost: bool = False
+
     # `assigned_route_id` is not carried on `Train`. The canonical store is
     # `RouteExecutor.execution_states[train_id].route_id`; callers ask
     # `RouteExecutor.assigned_route_id_for(train_id)`.
@@ -131,6 +137,9 @@ class Train:
             "speed_profile_id": self.speed_profile_id,
             "total_distance_cm": self.total_distance_cm,
             "total_run_time_seconds": self.total_run_time_seconds,
+            # Read by the UI so a ghost is shown as itself, marked apart from the
+            # trains the operator controls (design_new.md "Ghost trains").
+            "is_ghost": self.is_ghost,
         }
 
         return data

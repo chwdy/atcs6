@@ -1,12 +1,14 @@
-"""HAL safe-state (M1) + unknown-occupant attribution (M2).
+"""HAL safe-state (M1) + ghost-train attribution (M2).
 
 design_new.md "Power":
 - enter_safe_state() (2235): the runtime drives every block track voltage to 0
   and de-energizes every switch motor when it stops driving outputs (simulation
   stop or process shutdown).
-- Attribution (2243): a confirmed block entry that matches no modeled train is
-  committed to the reserved UNKNOWN_TRAIN_ID sentinel (not a wrong train, not
-  dropped) and cleared when its current drops for the off-window.
+- Attribution + Ghost trains: a confirmed block entry that matches no existing
+  train belongs to a ghost train — a `Train` the Step-0 preamble creates, with
+  its own `train_id` and its own `TrainController` — so its entries and vacates
+  commit through the ordinary per-train chain instead of a side channel into
+  `Block.occupied_by`.
 
 Both paths are real-hardware-only — the simulated detector builds current from
 live spans and the simulated outputs have no physical effect — so they are
@@ -16,7 +18,6 @@ exercised here as unit contracts.
 from block import Block
 from block_occupancy import BlockOccupancyDetector, SimulatedOccupancyDriver
 from block_power import BlockPowerController, SimulatedTrackDriver
-from constants import UNKNOWN_TRAIN_ID
 from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from simulation import SimulationController
@@ -60,7 +61,7 @@ def test_simulation_controller_enter_safe_state_drives_all_outputs_safe():
     assert sim.switch_output_interface.get_last_throw("S1") is None
 
 
-# ----------------------------------------------------------- M2 unknown occupant
+# ------------------------------------------------------------- M2 ghost trains
 
 def _detector():
     network = RailwayNetwork()
@@ -74,58 +75,25 @@ def _detector():
     return network, detector
 
 
-def test_unattributable_entry_attributes_to_unknown_without_writing_block_state():
+def test_unattributable_entry_is_unmatched_without_writing_block_state():
     network, detector = _detector()
     block = network.blocks["BLK_X"]
-    # No reserving train, no covering span -> unmodeled occupant. `attribute()`
-    # is pure: it routes the block to the sentinel and writes nothing.
-    entered_by_train, _ = detector.attribute({"BLK_X"}, set())
-    assert entered_by_train == {UNKNOWN_TRAIN_ID: {"BLK_X"}}
+    # No reserving train, no covering span -> the entry belongs to a ghost.
+    # `attribute()` is pure: it reports the block as unmatched and writes
+    # nothing, leaving creation to GhostTrainTracker.
+    entered_by_train, _, unmatched = detector.attribute({"BLK_X"}, set())
+    assert entered_by_train == {}
+    assert unmatched == {"BLK_X"}
     assert block.occupied_by is None
 
 
-def test_unknown_vacate_attributes_to_unknown_without_writing_block_state():
+def test_ghost_vacate_attributes_to_the_ghost_without_writing_block_state():
     network, detector = _detector()
     block = network.blocks["BLK_X"]
-    block.occupied_by = UNKNOWN_TRAIN_ID
-    _, vacated_by_train = detector.attribute(set(), {"BLK_X"})
-    assert vacated_by_train == {UNKNOWN_TRAIN_ID: {"BLK_X"}}
-    assert block.occupied_by == UNKNOWN_TRAIN_ID
-
-
-# design_new.md "Attribution": the unmodeled occupant has no per-train Phase-3
-# transaction, so the Step-0 preamble commits it through the single writer
-# `BlockManager.occupy_blocks(...)`.
-def _sim_with_block():
-    network = RailwayNetwork()
-    network.blocks["BLK_X"] = Block(block_id="BLK_X", length_cm=100.0)
-    sim = SimulationController(network, PathDispatcher(network))
-    return network, sim
-
-
-def test_preamble_commits_unknown_occupant_through_block_manager():
-    network, sim = _sim_with_block()
-    block = network.blocks["BLK_X"]
-    sim._commit_unknown_occupancy({"BLK_X"}, set())
-    assert block.occupied_by == UNKNOWN_TRAIN_ID
-    assert sim.failed_runtime is False
-
-
-def test_preamble_unknown_occupant_on_held_block_is_a_fatal_conflict():
-    network, sim = _sim_with_block()
-    block = network.blocks["BLK_X"]
-    block.occupied_by = "T1"
-    # Real hardware reads current on a block software believes T1 holds. The
-    # commit must raise the fatal physical-entry conflict, not silently
-    # overwrite T1's ownership.
-    sim._commit_unknown_occupancy({"BLK_X"}, set())
-    assert sim.failed_runtime is True
-    assert block.occupied_by == "T1"
-
-
-def test_preamble_clears_the_unknown_occupant_on_vacate():
-    network, sim = _sim_with_block()
-    block = network.blocks["BLK_X"]
-    block.occupied_by = UNKNOWN_TRAIN_ID
-    sim._commit_unknown_occupancy(set(), {"BLK_X"})
-    assert block.occupied_by is None
+    block.occupied_by = "GHOST_1"
+    _, vacated_by_train, unmatched = detector.attribute(set(), {"BLK_X"})
+    # A ghost is an ordinary train to attribution: its vacate resolves through
+    # `Block.occupied_by` like any other train's.
+    assert vacated_by_train == {"GHOST_1": {"BLK_X"}}
+    assert unmatched == set()
+    assert block.occupied_by == "GHOST_1"

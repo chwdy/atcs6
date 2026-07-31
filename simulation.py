@@ -25,9 +25,9 @@ Architecture:
 import logging
 import time
 from datetime import datetime
-from typing import Any, Dict, Literal, Optional, Set, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, Literal, Optional, Set, Tuple, TYPE_CHECKING
 
-from constants import UNKNOWN_TRAIN_ID
+from ghost_trains import GhostTrainTracker
 from network import RailwayNetwork
 from train import Train, TrainCar
 from enums import TrainState, Direction, OperationMode
@@ -109,6 +109,11 @@ class SimulationController:
         self.controllers: Dict[str, TrainController] = {}
         self.physics_instances: Dict[str, TrainPhysics] = {}
 
+        # Trains this tick's Step-0 detector read attributed a block entry or
+        # vacate to. Rewritten every `_detect_block_occupancy()`; read by the
+        # Phase-3 gate for a still-OFF transaction (design_new.md ":2181").
+        self._detected_change_train_ids: Set[str] = set()
+
         # Initialize components with shared controllers. The block/switch power
         # output interfaces come from the session-build override (real backend)
         # or default to the simulated interfaces (sim mode) — design_new.md
@@ -150,6 +155,15 @@ class SimulationController:
                 payload={"message": message},
             ),
         )
+        # Ghost trains (design_new.md "Power -> Ghost trains"): the Step-0 owner of
+        # every confirmed entry that matches no existing train. It creates and
+        # retires the ghost `Train` records; their block commits then run through
+        # the ordinary per-train chain like any other train's.
+        self.ghost_trains = GhostTrainTracker(network, self)
+        # The clock the ghost tracker's hold windows are measured against — see
+        # `_ghost_clock` for why it is wall-clock and not `simulation_time`.
+        # Replaceable so a test can age a window out without sleeping.
+        self.ghost_clock: Callable[[], float] = time.monotonic
         self.route_executor = RouteExecutor(network, path_dispatcher, self.controllers)
         self.speed_profile_registry = network.speed_profiles
         self.simulation_time: float = 0.0
@@ -293,22 +307,14 @@ class SimulationController:
                 if self.failed_runtime:
                     return
 
-            # After every train has emitted its held-block voltages, drop any block
-            # whose holder cleared this tick (tail vacate / reservation release) to
-            # 0V. BlockManager queued those blocks as their holders cleared and
-            # re-checks each is still unheld, so the energized set is exactly each
-            # train's occupied blocks plus its reserved-ahead corridor (design_new.md
-            # "Power", Block power-controller role). The all-blocks sweep is the
-            # fallback for a runtime with no BlockManager wired.
-            if self.block_manager is not None:
-                for block_id in self.block_manager.take_blocks_to_deenergize():
-                    self.power_controller.set_block_voltage(block_id, 0.0)
-            else:
-                self.power_controller.deenergize_unheld_blocks()
+            # Ghost identity follows connectivity, and only the committed
+            # `Block.occupied_by` says which blocks each ghost ended the tick
+            # holding — so the ghost reconciliation (merge, split, gap hold,
+            # retirement) runs once here, after every train's Phase 3
+            # (design_new.md "Power -> Ghost trains").
+            self.ghost_trains.reconcile(self._ghost_clock())
 
-            # After all trains, refresh signals so they reflect every block state
-            # change (including path completions) committed during the tick.
-            self.network.update_signals_from_blocks()
+            self._settle_after_commits()
 
             # Maintenance counter: accrue occupied time for every block holding a
             # train this tick (see design_new.md "Maintenance counters").
@@ -316,6 +322,113 @@ class SimulationController:
                 if _blk.occupied_by is not None:
                     _blk.occupied_seconds += delta_seconds
 
+            net.bump_lookahead_world_version()
+        finally:
+            net._lookahead_memo_active = False
+
+    def _ghost_clock(self) -> float:
+        """The clock `GhostTrainTracker` measures its hold windows against.
+
+        Wall-clock monotonic, not `simulation_time`. A ghost is a physical thing
+        rolling on physical track: the gap hold it sits in while it crosses an
+        undetected switch tile elapses in real seconds, and it goes on elapsing
+        while the app is stopped — `poll_hardware_occupancy` keeps detecting and
+        committing there, and a ghost that lost its blocks under a frozen
+        `simulation_time` would never age out of the hold and never retire.
+
+        The tracker only ever uses this to compare two of its own stamps
+        (how long a hold has run, which of two ghosts is older), never against
+        anything on the timeline `simulation_time` measures, so the swap is
+        contained to it. Ghosts also exist only in real mode — the simulated
+        detector builds current from live spans, so it produces no unattributed
+        entries — and there the two clocks track each other anyway.
+
+        `ghost_clock` is the seam a test drives to age a hold window out without
+        sleeping; nothing in the runtime replaces it.
+        """
+        return self.ghost_clock()
+
+    def _settle_after_commits(self) -> None:
+        """Drain the de-energize queue and refresh signals, after every train's
+        Phase 3 has committed.
+
+        After every train has emitted its held-block voltages, drop any block
+        whose holder cleared this pass (tail vacate / reservation release) to
+        0V. BlockManager queued those blocks as their holders cleared and
+        re-checks each is still unheld, so the energized set is exactly each
+        train's occupied blocks plus its reserved-ahead corridor (design_new.md
+        "Power", Block power-controller role). The all-blocks sweep is the
+        fallback for a runtime with no BlockManager wired. Signals are then
+        refreshed so they reflect every block state change committed above.
+
+        Shared by the tick and by `poll_hardware_occupancy`: a detector-driven
+        commit changes block state exactly like a moving train's does, so the
+        voltage and signal consequences must follow it either way.
+        """
+        if self.block_manager is not None:
+            for block_id in self.block_manager.take_blocks_to_deenergize():
+                self.power_controller.set_block_voltage(block_id, 0.0)
+        else:
+            self.power_controller.deenergize_unheld_blocks()
+
+        self.network.update_signals_from_blocks()
+
+    def poll_hardware_occupancy(self) -> None:
+        """Read the block detectors and commit what they say, with the
+        simulation stopped (design_new.md "Power -> Block occupancy detection").
+
+        Real hardware does not stop reporting when the operator presses Stop. A
+        loco lifted onto the rails, a hand-pushed cut of wagons, a train left
+        standing from the last session — all of it is on the track and the
+        detectors see it, so the app has to show it. Without this the '165 is
+        only ever scanned from inside `update()`, which the runtime loop skips
+        while stopped, and every block reads FREE no matter what is standing on
+        it — including at boot, which is stopped by definition.
+
+        This is the tick's Step 0 and its commit, and nothing else: no Phase-1
+        planning, no Phase-2 command drain, no physics integration. Stopped has
+        to keep meaning stopped — queued operator commands still wait for the
+        resume, no route is planned, no train is moved. What does run is the
+        path design_new.md already defines for an occupant the app does not
+        drive (":2181"): Step 0 attributes the confirmed transitions, each
+        affected train enqueues a detected-blocks-only report, and its Phase 3
+        commits it.
+
+        Sim mode is left alone. Its simulated detector derives current from the
+        live spans, so a poll with no motion between it and the last one can
+        only re-report what is already committed — real work for a guaranteed
+        no-op, on every idle pass.
+        """
+        if self.operation_mode is not OperationMode.REAL:
+            return
+        if self.failed_runtime:
+            return
+
+        net = self.network
+        net._lookahead_memo_active = True
+        net.bump_lookahead_world_version()
+        try:
+            self._detect_block_occupancy()
+            net.bump_lookahead_world_version()
+
+            # Only trains Step 0 attributed something to: every other train's
+            # slice is empty, so its Phase 3 would have nothing to commit.
+            for train_id in sorted(self._detected_change_train_ids):
+                train = self.network.trains.get(train_id)
+                controller = self.controllers.get(train_id)
+                if train is None or controller is None:
+                    continue
+                # The Phase-2 physics callback would normally turn the slice
+                # into a progress report; there is no Phase 2 here, so the
+                # controller is asked for that report directly.
+                controller.enqueue_detected_blocks_report(time.time())
+                self._commit_train_phase3(controller, train)
+                net.bump_lookahead_world_version()
+                if self.failed_runtime:
+                    return
+
+            self.ghost_trains.reconcile(self._ghost_clock())
+            self._settle_after_commits()
             net.bump_lookahead_world_version()
         finally:
             net._lookahead_memo_active = False
@@ -342,6 +455,13 @@ class SimulationController:
         "Power -> Block occupancy detection"). The controller drains its slice in
         on_physics_updated and the existing on_controller_progress flow commits
         Block.occupied_by.
+
+        Also records which trains this tick's read attributed a block change to,
+        in `_detected_change_train_ids`. Phase 2 consumes and clears the pending
+        sets themselves, so that set is the only thing left by Phase-3 time that
+        can answer "did Step 0 attribute a block entry or vacate to this train
+        this tick?" — the condition under which a still-OFF transaction must run
+        Phase 3 anyway (design_new.md ":2181").
         """
         detector = self.block_occupancy_detector
 
@@ -354,18 +474,22 @@ class SimulationController:
         )
 
         entered, vacated = detector.step()
-        entered_by_train, vacated_by_train = detector.attribute(entered, vacated)
-
-        # An unmodeled occupant has no per-train Phase-3 transaction, so the
-        # preamble commits its slice here — entry through the single writer
-        # `BlockManager.occupy_blocks(...)`, which reports the fatal conflict
-        # itself when the block is already held by another train (design_new.md
-        # "Attribution"). Committed one block at a time so a conflict on one
-        # block does not roll back a clean entry on another.
-        self._commit_unknown_occupancy(
-            entered_by_train.pop(UNKNOWN_TRAIN_ID, set()),
-            vacated_by_train.pop(UNKNOWN_TRAIN_ID, set()),
+        entered_by_train, vacated_by_train, unmatched = detector.attribute(
+            entered, vacated
         )
+
+        # A confirmed entry that matches no existing train belongs to a ghost
+        # train (design_new.md "Attribution"): `GhostTrainTracker` resolves it to
+        # a ghost `train_id` — a new ghost, or one continuing its run across an
+        # undetected switch tile — and from here the ghost is an ordinary train,
+        # so its slice is written and committed exactly like every other train's.
+        if unmatched:
+            for ghost_id, block_ids in self.ghost_trains.attribute_unmatched_entries(
+                unmatched, self._ghost_clock()
+            ).items():
+                entered_by_train.setdefault(ghost_id, set()).update(block_ids)
+
+        self._detected_change_train_ids = set(entered_by_train) | set(vacated_by_train)
 
         # Reset every train's slice, then write this tick's attributed sets.
         for controller in self.controllers.values():
@@ -380,10 +504,22 @@ class SimulationController:
             if controller is not None:
                 controller.physics_sync.pending_detected_vacated_blocks = set(block_ids)
 
+        # A ghost's tail-vacate direction is the block it moved into, known right
+        # here rather than buffered from a calculated tail exit (design_new.md
+        # "Ghost trains", Direction).
+        for train_id in sorted(self._detected_change_train_ids):
+            if self.ghost_trains.is_ghost(train_id):
+                self.ghost_trains.note_vacate_directions(
+                    train_id,
+                    entered_by_train.get(train_id, set()),
+                    vacated_by_train.get(train_id, set()),
+                )
+
         # Physical detection outranks the calculated position: snap each affected
         # train's span forward to the block seam where the detector leads it
-        # (inert under the v1 simulated sensor; active with real hardware).
-        for train_id in sorted(set(entered_by_train) | set(vacated_by_train)):
+        # (inert under the v1 simulated sensor; active with real hardware). For a
+        # ghost the same call writes the span its detected blocks describe.
+        for train_id in sorted(self._detected_change_train_ids):
             controller = self.controllers.get(train_id)
             train = self.network.trains.get(train_id)
             if controller is None or train is None:
@@ -391,29 +527,6 @@ class SimulationController:
             self._get_or_create_physics(train).reconcile_to_detected_occupancy(
                 train, controller
             )
-
-    def _commit_unknown_occupancy(
-        self, entered: Set[str], vacated: Set[str]
-    ) -> None:
-        """Commit the unmodeled-occupant slice of the Step-0 detector read.
-
-        Entry routes through `BlockManager.occupy_blocks(...)` so the
-        `occupied_by` single-writer rule holds and an entry onto a block another
-        train already holds raises the fatal physical-entry conflict rather than
-        silently clobbering its owner. The clear is a direct field write: an
-        unknown occupant carries no traversal direction, so it has no CAUTION
-        transition to run through `on_block_tail_vacated(...)`.
-        """
-        if self.block_manager is not None:
-            for block_id in sorted(entered):
-                if not self.block_manager.occupy_blocks([block_id], UNKNOWN_TRAIN_ID):
-                    # occupy_blocks already reported the conflict through
-                    # enter_failed_runtime(...), which halts the runtime.
-                    return
-        for block_id in sorted(vacated):
-            block = self.network.blocks.get(block_id)
-            if block is not None and block.occupied_by == UNKNOWN_TRAIN_ID:
-                block.occupied_by = None
 
     # =========================================================================
     # Per-train three-phase transaction
@@ -442,10 +555,31 @@ class SimulationController:
         controller.tick(delta_seconds)
         physics.tick(delta_seconds)
 
-        # Phase 3 - Feedback / cleanup.
-        # If the controller is still OFF after the command drain, Phase 3 is
-        # skipped for this transaction even though Phase 2 physics ran.
-        if controller.ops.state == TrainState.OFF:
+        self._commit_train_phase3(controller, train)
+
+    def _commit_train_phase3(
+        self, controller: TrainController, train: Train
+    ) -> None:
+        """Phase 3 - Feedback / cleanup for one train.
+
+        Split out of `_update_train` because the stopped-simulation hardware
+        poll runs this phase and nothing else: it has detector observations to
+        commit but no Phase-1 planning and no Phase-2 execution to run first
+        (see `poll_hardware_occupancy`).
+
+        If the controller is still OFF after the command drain, Phase 3 is
+        skipped for this transaction even though Phase 2 physics ran — unless
+        Step 0 attributed a block entry or vacate to this train this tick
+        (design_new.md ":2181", ":2641"). The skip is about having no movement
+        to commit, not about power: a train that moves without power — pushed
+        by hand, or an occupant the app does not control — still has its block
+        entries and vacates committed, and Phase 3 is the only path that
+        commits them.
+        """
+        if (
+            controller.ops.state == TrainState.OFF
+            and train.train_id not in self._detected_change_train_ids
+        ):
             self._sync_persistent_train_state(train, controller)
             return
 

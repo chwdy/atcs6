@@ -83,8 +83,13 @@ class ProgressReportBuilder:
 
         # 2/3. Build progress report from tile delta and enqueue for Phase 3.
         if self._c.ops.state == TrainState.OFF:
-            # Powered-off transactions: storage updated, but Phase 3 is
-            # skipped — do not enqueue a report.
+            # Powered-off transactions append no dispatcher/route progress to the
+            # mailbox BEYOND the block observations folded in from the Step-0
+            # detected sets (design_new.md ":2181"). Those observations are the
+            # only path by which a train that moves without power — pushed by
+            # hand, or a ghost train, which is always OFF — commits its block
+            # entries and vacates, and Phase 3 runs for exactly those ticks.
+            self._enqueue_detected_blocks_only_report(event_time)
             return
 
         # Build a tile_xy -> sequence_index lookup from the active path so
@@ -243,6 +248,52 @@ class ProgressReportBuilder:
             deviation_reason=None,
         )
         self._c.physics_sync.queued_progress_reports.append(report)
+
+    def enqueue_detected_blocks_report(self, event_time: float) -> None:
+        """Public entry to the detected-blocks-only report, for a caller that
+        has no span update to apply.
+
+        The Phase-2 physics callback reaches the same builder through the
+        powered-off branch of `on_physics_updated`. The stopped-simulation
+        hardware poll has no callback at all — it integrates no motion — so it
+        enqueues through here instead. Same report either way: whatever the
+        detector confirmed this pass, with no route progress and no deviation
+        verdict.
+        """
+        self._enqueue_detected_blocks_only_report(event_time)
+
+    def _enqueue_detected_blocks_only_report(self, event_time: float) -> None:
+        """Queue a report carrying nothing but this tick's detected block events.
+
+        The still-OFF form of the Phase-2 callback: no movement happened, so
+        there are no tile deltas, and a powered-off transaction carries no route
+        progress — the block events go out with no `sequence_index` and no
+        deviation verdict. Enqueues nothing when Step 0 attributed no block change
+        to this train.
+        """
+        ps = self._c.physics_sync
+        if not ps.pending_detected_entered_blocks and (
+            not ps.pending_detected_vacated_blocks
+        ):
+            return
+
+        entered_resources: List[ResourceEvent] = []
+        tail_vacated_resources: List[ResourceEvent] = []
+        self._emit_detected_block_events(
+            entered_resources, tail_vacated_resources, {}, {}
+        )
+        ps.queued_progress_reports.append(
+            ControllerProgressReport(
+                train_id=self._c.train_id,
+                event_time=float(event_time),
+                entered_resources=entered_resources,
+                tail_vacated_resources=tail_vacated_resources,
+                current_head_sequence_index=None,
+                deviation=False,
+                deviation_kind=None,
+                deviation_reason=None,
+            )
+        )
 
     def _emit_detected_block_events(
         self,

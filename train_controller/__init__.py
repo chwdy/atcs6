@@ -1719,6 +1719,18 @@ class TrainController:
         """
         self.progress_report.on_physics_updated(event_time, span_update)
 
+    def enqueue_detected_blocks_report(self, event_time: float) -> None:
+        """Queue a Phase-3 report carrying only this tick's detector-confirmed
+        block events. Delegates to ``ProgressReportBuilder``.
+
+        The stopped-simulation hardware poll's stand-in for the Phase-2 physics
+        callback: that poll integrates no motion, so there is no span update to
+        apply and nothing else the callback would contribute — but the detected
+        blocks still have to reach Phase 3, which is the only path that commits
+        them (see `SimulationController.poll_hardware_occupancy`).
+        """
+        self.progress_report.enqueue_detected_blocks_report(event_time)
+
     # -------------------------------------------------------------------------
     # Lookahead Calculation (shared by ATC and ATO)
     # -------------------------------------------------------------------------

@@ -810,6 +810,17 @@ class PathDispatcher:
                 reason=f"Train {train_id} not found",
             )
 
+        if getattr(train, "is_ghost", False):
+            # `PathDispatcher` never creates a path for a ghost train: it has no
+            # cab, no route and no operator controls, so there is nothing to
+            # grant authority to (design_new.md "Ghost trains", Never driven).
+            return self._reject(
+                failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
+                requested_destination_block_id=requested_destination_block_id or None,
+                requested_destination_direction=requested_destination_direction,
+                reason=f"Train {train_id} is a ghost train; it is never given a path",
+            )
+
         if not requested_destination_block_id:
             return self._reject(
                 failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,

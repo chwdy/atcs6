@@ -73,14 +73,13 @@ DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS: float = 5.0
 OCCUPANCY_ON_THRESHOLD: int = 1
 OCCUPANCY_OFF_THRESHOLD: int = 3
 
-# Reserved sentinel for an "unknown" / unmodeled block occupant per
-# design_new.md "Power -> Block occupancy detection" (Attribution): when the
-# current detector confirms a block occupied but no modeled train reserves or
-# covers it, `Block.occupied_by` is set to this value (a value no real train
-# uses) rather than committed to a wrong train or silently dropped. Only
-# reachable with real hardware — the simulated detector builds current from live
-# train spans, so every confirmed block already matches a modeled train.
-UNKNOWN_TRAIN_ID: str = "__UNKNOWN_OCCUPANT__"
+# How long a ghost train that holds no blocks at all is held before it is
+# retired (design_new.md "Power -> Ghost trains", The gap). Switch tiles carry no
+# detection, so a ghost rolling through one holds nothing for a moment; within
+# this window a confirmed entry no existing train accounts for, on a block
+# reachable through undetected track, is that same ghost continuing its run and
+# keeps its `train_id`.
+GHOST_GAP_HOLD_S: float = 5.0
 
 # Speed calibration (design_new.md "Speed calibration"). A calibration pass
 # commands a fixed sweep of CALIBRATION_VOLTAGE_STEPS track-voltage steps from

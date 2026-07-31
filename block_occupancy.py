@@ -31,7 +31,6 @@ from typing import Callable, Dict, Iterable, Optional, Set, Tuple, TYPE_CHECKING
 from constants import (
     OCCUPANCY_OFF_THRESHOLD,
     OCCUPANCY_ON_THRESHOLD,
-    UNKNOWN_TRAIN_ID,
 )
 
 if TYPE_CHECKING:
@@ -173,25 +172,31 @@ class BlockOccupancyDetector:
 
     def attribute(
         self, entered: Set[str], vacated: Set[str]
-    ) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
+    ) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]], Set[str]]:
         """Attribute confirmed transitions to trains.
 
-        Returns (entered_by_train, vacated_by_train), each a map
-        train_id -> set of block_ids.
+        Returns (entered_by_train, vacated_by_train, unmatched_entries): the two
+        maps are train_id -> set of block_ids, and `unmatched_entries` holds the
+        entered blocks that match no existing train.
 
         Entered blocks attribute to `Block.reserved_for_train` (the train that
         reserved the block it is entering), falling back to the train whose live
-        span covers the block. An entered block that resolves to no modeled train
-        attributes to the reserved `UNKNOWN_TRAIN_ID` sentinel (an unmodeled
-        occupant). Vacated blocks attribute to `Block.occupied_by`; a vacate
-        whose block is already clear is a benign double-clear and is skipped.
+        span covers the block. Vacated blocks attribute to `Block.occupied_by`; a
+        vacate whose block is already clear is a benign double-clear and is
+        skipped.
 
-        This is a pure attribution step: it writes no block state. The Step-0
-        preamble commits both slices — a known train's through its Phase-3
-        transaction, the `UNKNOWN_TRAIN_ID` slice through
-        `BlockManager.occupy_blocks(...)` (design_new.md "Attribution").
+        A confirmed entry that matches no existing train belongs to a **ghost
+        train** (design_new.md "Attribution"), but creating one is not this pure
+        attribution step's job: it writes no block state and registers no train.
+        The Step-0 preamble hands `unmatched_entries` to `GhostTrainTracker`,
+        which resolves each block to a ghost `train_id` — new or continuing — and
+        the result merges into `entered_by_train`. From that point the ghost is an
+        ordinary train, so every slice commits through its own Phase-3
+        transaction and nothing here needs a side channel into
+        `Block.occupied_by`.
         """
         entered_by_train: Dict[str, Set[str]] = {}
+        unmatched_entries: Set[str] = set()
         for block_id in entered:
             block = self.network.blocks.get(block_id)
             train_id = getattr(block, "reserved_for_train", None) if block else None
@@ -199,16 +204,15 @@ class BlockOccupancyDetector:
                 train_id = self._span_owner(block_id)
             if train_id is None:
                 # design_new.md "Attribution": a confirmed entry that matches no
-                # modeled train is an unmodeled (unknown) occupant. It has no
-                # per-train Phase-3 transaction, so the preamble commits it.
-                # Unreachable under the simulated detector, which builds current
-                # from live spans.
-                train_id = UNKNOWN_TRAIN_ID
+                # existing train is a ghost train. Unreachable under the
+                # simulated detector, which builds current from live spans.
+                unmatched_entries.add(block_id)
                 self._emit(
                     "block_attribution_unknown",
-                    f"confirmed entry on block {block_id} matches no modeled "
-                    f"train; attributing to unknown occupant",
+                    f"confirmed entry on block {block_id} matches no existing "
+                    f"train; attributing to a ghost train",
                 )
+                continue
             entered_by_train.setdefault(train_id, set()).add(block_id)
 
         vacated_by_train: Dict[str, Set[str]] = {}
@@ -219,7 +223,7 @@ class BlockOccupancyDetector:
                 continue
             vacated_by_train.setdefault(train_id, set()).add(block_id)
 
-        return entered_by_train, vacated_by_train
+        return entered_by_train, vacated_by_train, unmatched_entries
 
     def _span_owner(self, block_id: str) -> Optional[str]:
         """The train whose live span currently covers `block_id`, if any."""

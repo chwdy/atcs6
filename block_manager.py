@@ -297,6 +297,11 @@ class BlockManager:
         # Read `reserved_for_train` before clearing `reservation`.
         self._index_drop_reserved(block_id, block.reserved_for_train)
         block.reservation = None
+        # A ghost holds a block but commands no voltage, so entry by a ghost
+        # queues the feed for the end-of-tick 0V check instead of energizing it
+        # (design_new.md "Ghost trains", Never energized).
+        if self._is_ghost_train(train_id):
+            self._mark_for_deenergize(block_id)
         self._record_history(
             block_id, "occupy", prior_state, BlockState.OCCUPIED, train_id
         )
@@ -342,13 +347,27 @@ class BlockManager:
         A block is one power feed (design_new.md "One train per Block (power
         domain)"), so it stays energized while it is held and is powered off
         only once nothing holds it.
+
+        A ghost train does not count as a holder for this test: it commands no
+        voltage, and a block held only by a ghost is driven to `0` (design_new.md
+        "Ghost trains", Never energized).
         """
         block = self._block_registry.get(block_id)
         if block is None:
             return False
-        return (
-            block.occupied_by is not None or block.reserved_for_train is not None
-        )
+        if block.reserved_for_train is not None:
+            return True
+        occupant = block.occupied_by
+        return occupant is not None and not self._is_ghost_train(occupant)
+
+    def _is_ghost_train(self, train_id: Optional[str]) -> bool:
+        """True when `train_id` names a ghost train (design_new.md "Ghost
+        trains"). False whenever the network is not wired, which keeps the
+        power tests conservative in isolated unit tests."""
+        if train_id is None or self.network is None:
+            return False
+        train = getattr(self.network, "trains", {}).get(train_id)
+        return bool(train is not None and getattr(train, "is_ghost", False))
 
     def _emit_diagnostic(self, message: str, *, block_id: str, train_id: Optional[str] = None) -> None:
         """Emit a runtime diagnostic through `NotificationCenter`.
@@ -789,7 +808,7 @@ class BlockManager:
         self,
         block_id: str,
         train_id: str,
-        direction: str,
+        direction: Optional[str],
     ) -> bool:
         """Record a tail-vacate observation for a block.
 
@@ -804,10 +823,16 @@ class BlockManager:
         - If the block does not exist, returns ``False`` (silent no-op).
         - If `block.occupied_by != train_id`, leaves the block unchanged,
           emits a one-shot diagnostic, returns ``False``.
-        - Otherwise: clear `occupied_by`, set
-          `block.caution = CautionState(exit_edge=direction)`, then call
+        - Otherwise: clear `occupied_by`; when `direction` is an edge, set
+          `block.caution = CautionState(exit_edge=direction)`; then call
           `_reevaluate_caution_blocks()` to cascade any ready-to-FREE blocks
           and returns ``True``.
+
+        ``direction`` is the vacated block's forward `exit_edge`, or ``None``
+        when the train left the detected area and no exit edge is known
+        (design_new.md ":1043"). With no edge there is no forward neighbour to
+        consult and no direction to protect, so no caution is written and the
+        block's computed state goes straight to FREE.
         """
         block = self._block_registry.get(block_id)
         if block is None:
@@ -825,7 +850,7 @@ class BlockManager:
 
         prior_state = block.state
         block.occupied_by = None
-        block.caution = CautionState(exit_edge=direction)
+        block.caution = CautionState(exit_edge=direction) if direction else None
         self._mark_for_deenergize(block_id)
         # design_new.md "Event log": the train vacated a block (tail cleared).
         # Carries the exit edge so the log / replay can render direction.
