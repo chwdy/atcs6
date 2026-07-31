@@ -8,7 +8,7 @@ exposed:
      direction. For a tunnel hop the delta is meaningless, so a SOUTH-
      bound train emerging from a `(1,0,W) ↔ (11,10,N)` tunnel was
      reported as NORTH.
-  2. `_bfs_walks_with_switch_mode`'s "extend through the destination
+  2. `_bfs_walks`'s "extend through the destination
      block" loop used `OPPOSITE_EDGE[exit]` to derive the entry edge on
      the next tile. Across a W↔N tunnel the actual entry ("N") is not
      the opposite of the previous exit ("W"), so the loop broke

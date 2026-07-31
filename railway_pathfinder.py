@@ -124,7 +124,6 @@ class RailwayPathfinder:
         request = GraphWalkQuery(
             start_locator=start_locator,
             end_locator=end_locator,
-            switch_handling="topology_only",
             requested_destination_direction=direction_constraint,
             return_tiles=True,
             return_blocks=True,
@@ -145,8 +144,8 @@ class RailwayPathfinder:
 
         Per design_new.md "Pathfinding home" (lines 1926–1942): accepts a
         ``GraphWalkQuery`` with tile-precise locators, skips disabled
-        blocks/switches, respects or ignores current switch state according to
-        ``request.switch_handling``, rejects candidates whose terminal
+        blocks/switches, searches topology-only regardless of current switch
+        position, rejects candidates whose terminal
         traversal does not satisfy ``request.requested_destination_direction``,
         also rejects candidates whose traversal violates
         ``Block.allowed_travel_directions`` when ``request.manual_override``
@@ -169,7 +168,6 @@ class RailwayPathfinder:
         if not end_block_id or end_block_id not in self.network.blocks:
             return []
 
-        use_switch_state = request.switch_handling == "respect_current_state"
         exclude: Set[str] = request.exclude_resources or set()
 
         # Steps 1-2 (BFS enumeration + dedup) are a pure function of the static
@@ -188,8 +186,7 @@ class RailwayPathfinder:
         # and cached. Cacheable only for the topology-only / no-exclusion / full-
         # payload search (the find_ordered_walk path); other callers build fresh.
         cacheable = (
-            not use_switch_state and not exclude
-            and request.return_tiles and request.return_blocks
+            not exclude and request.return_tiles and request.return_blocks
         )
         candidates: Optional[List[GraphWalkCandidate]] = (
             self.network.get_cached_walks(start_block_id, end_block_id)
@@ -198,7 +195,7 @@ class RailwayPathfinder:
         )
         if candidates is None:
             raw_walks = self._enumerate_walks(
-                start_block_id, end_block_id, use_switch_state, exclude
+                start_block_id, end_block_id, exclude
             )
             candidates = self._build_candidates(raw_walks, request)
             if cacheable:
@@ -732,7 +729,6 @@ class RailwayPathfinder:
         self,
         start_block_id: str,
         end_block_id: str,
-        use_switch_state: bool,
         exclude: Set[str],
     ) -> List[PathSegment]:
         """Steps 1-2 of ``query_graph_walks``: BFS from every start-block
@@ -756,40 +752,35 @@ class RailwayPathfinder:
                 neighbor = self.network.get_neighbor(*start_pos, edge)
                 if neighbor and neighbor.block_id != start_block_id:
                     raw_walks.extend(
-                        self._bfs_walks_with_switch_mode(
+                        self._bfs_walks(
                             start_pos,
                             edge,
                             start_block_id,
                             end_block_id,
-                            use_switch_state=use_switch_state,
                             exclude_resources=exclude,
                         )
                     )
         return self._deduplicate_walks(raw_walks)
 
-    def _bfs_walks_with_switch_mode(
+    def _bfs_walks(
         self,
         start_pos: Tuple[int, int],
         start_exit: str,
         start_block_id: str,
         end_block_id: str,
-        use_switch_state: bool = False,
         exclude_resources: Optional[Set[str]] = None,
     ) -> List[PathSegment]:
         """BFS through the network from one start (position, exit) pair.
 
-        Generalised form that supports switch-state-aware traversal and
-        resource exclusion.  Pass ``use_switch_state=False`` with an empty
-        exclusion set for plain topology-only traversal.
+        Traverses topology only: every topological exit is explored,
+        whatever the current switch position, with optional resource
+        exclusion.
 
         Args:
             start_pos: Starting tile coordinate.
             start_exit: Edge on ``start_pos`` to exit from first.
             start_block_id: Block ID of the starting tile.
             end_block_id: Block ID of the target tile.
-            use_switch_state: When ``True``, only follows the switch throw
-                that is currently active (``Switch.position``); when
-                ``False``, explores all topological exits.
             exclude_resources: Optional set of block or switch IDs to skip.
                 Any tile whose block_id or switch_id is in this set
                 is not entered during BFS.
@@ -913,9 +904,7 @@ class RailwayPathfinder:
             )
             if not entry_edge or entry_edge not in next_track.edges:
                 continue
-            all_exits = next_track.get_exits(
-                entry_edge, use_switch_state=use_switch_state
-            )
+            all_exits = next_track.get_exits(entry_edge, use_switch_state=False)
             if not all_exits:
                 continue
             if next_track.is_switch:

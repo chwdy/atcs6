@@ -120,8 +120,6 @@ class GraphWalkQuery:
     Fields:
         start_locator: Tile-precise start locator.
         end_locator: Tile-precise end locator.
-        switch_handling: Whether the search respects current Switch.position
-            or searches topology-only for later acquisition.
         requested_destination_direction: Optional terminal direction filter;
             candidates whose terminal traversal does not match are rejected.
         exclude_resources: Optional set of resource IDs to exclude from the
@@ -132,9 +130,6 @@ class GraphWalkQuery:
 
     start_locator: GraphLocator
     end_locator: GraphLocator
-    switch_handling: Literal["respect_current_state", "topology_only"] = (
-        "topology_only"
-    )
     requested_destination_direction: Optional[Literal["forward", "reverse"]] = None
     exclude_resources: Optional[Set[str]] = None
     return_tiles: bool = True
