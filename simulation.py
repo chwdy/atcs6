@@ -41,6 +41,7 @@ from ghost_trains import GhostTrainTracker
 from network import RailwayNetwork
 from train import Train, TrainCar
 from enums import TrainState, Direction, HandlePosition, OperationMode
+import operation_environment
 from block_power import BlockPowerController
 from switch_power import SimulatedSwitchDriver
 from block_occupancy import SimulatedOccupancyDriver, BlockOccupancyDetector
@@ -95,7 +96,7 @@ class SimulationController:
         self.operation_mode: OperationMode = (
             operation_mode
             if isinstance(operation_mode, OperationMode)
-            else OperationMode(operation_mode)
+            else operation_environment.parse(operation_mode)
         )
         self._input_interface_override = input_interface
         self._block_output_interface_override = block_output_interface
@@ -499,7 +500,7 @@ class SimulationController:
         only re-report what is already committed — real work for a guaranteed
         no-op, on every idle pass.
         """
-        if self.operation_mode is not OperationMode.REAL:
+        if self.operation_mode is OperationMode.SIMULATION:
             return
         if self.failed_runtime:
             return
@@ -2029,7 +2030,8 @@ def build_network_payload(
         payload["simulation_time"] = 0.0
         payload["failed_runtime"] = False
         payload["failed_runtime_conflict"] = None
-        payload["operation_mode"] = OperationMode.SIM.value
+        payload["operation_mode"] = OperationMode.SIMULATION.value
+        payload["operation_environment"] = OperationMode.SIMULATION.value
         payload["occupancy_is_real"] = False
         return payload
 
@@ -2083,6 +2085,7 @@ def build_network_payload(
     # railway with real hardware on it a simulation, and to decide whether the
     # ghost-adoption control is offered at all.
     payload["operation_mode"] = sim_controller.operation_mode.value
+    payload["operation_environment"] = sim_controller.operation_mode.value
     payload["occupancy_is_real"] = bool(sim_controller.occupancy_is_real)
 
     # Fatal physical-entry conflict halt (set by enter_failed_runtime). While

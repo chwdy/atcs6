@@ -1,8 +1,7 @@
-"""C7 — Run modes: the sim/real backend injection seam.
+"""Operating environments share one backend-injection seam.
 
-design_new.md "Run modes": operation mode runs against one of two hardware
-backends — sim mode (the v1 default; wires the simulated interfaces) or real
-mode (injects a real implementation of each interface behind the same contract).
+design_new.md "Run modes": Simulation, Virtual Hardware, and Real Hardware
+select complete interface sets behind the same contract.
 The backend is chosen once when the operation session is built and never
 switched mid-run; no code above the interfaces branches on the mode — it
 manifests only as which interfaces are wired.
@@ -34,7 +33,8 @@ def test_default_is_sim_mode_with_simulated_interfaces():
 
 def test_operation_mode_accepts_string_and_enum():
     assert _sim(operation_mode="real").operation_mode == OperationMode.REAL
-    assert _sim(operation_mode=OperationMode.REAL).operation_mode == OperationMode.REAL
+    assert _sim(operation_mode="virtual_hardware").operation_mode == OperationMode.VIRTUAL_HARDWARE
+    assert _sim(operation_mode=OperationMode.REAL_HARDWARE).operation_mode == OperationMode.REAL_HARDWARE
 
 
 def test_backend_injection_seam_wires_provided_interfaces():
@@ -63,5 +63,6 @@ def test_backend_injection_seam_wires_provided_interfaces():
 
 
 def test_operation_mode_values():
-    assert OperationMode.SIM.value == "sim"
-    assert OperationMode.REAL.value == "real"
+    assert OperationMode.SIMULATION.value == "simulation"
+    assert OperationMode.VIRTUAL_HARDWARE.value == "virtual_hardware"
+    assert OperationMode.REAL_HARDWARE.value == "real_hardware"

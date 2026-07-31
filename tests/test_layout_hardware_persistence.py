@@ -17,6 +17,8 @@ import json
 import pytest
 
 import hardware_config
+import operation_environment
+from enums import OperationMode
 from network import RailwayNetwork
 from persistence import PersistenceManager
 
@@ -27,6 +29,11 @@ def _isolated_hw_config(tmp_path, monkeypatch):
     a test never touches the repository's real `hardware_config.json`."""
     monkeypatch.setattr(
         hardware_config, "CONFIG_PATH", str(tmp_path / "hardware_config.json")
+    )
+    monkeypatch.setattr(
+        operation_environment,
+        "ENVIRONMENT_PATH",
+        str(tmp_path / "operation_environment.json"),
     )
     hardware_config.reset_to_defaults()
     yield
@@ -69,8 +76,8 @@ def test_saved_layout_carries_the_hardware_configuration(manager):
         wrapper = json.load(fh)
 
     hw = wrapper["hardware"]
-    assert hw["enabled"] is True
-    assert hw["develop"] is True
+    assert "enabled" not in hw
+    assert "develop" not in hw
     assert {c["chip_id"] for c in hw["chips"]} == {"pwm1", "sw1", "in1"}
     assert hw["block_track"]["B1"] == {
         "chip_id": "pwm1", "forward": 0, "reverse": 1, "reversed": False,
@@ -80,11 +87,11 @@ def test_saved_layout_carries_the_hardware_configuration(manager):
     assert set(hw) == set(hardware_config.persisted_dict())
 
 
-def test_sim_mode_layout_carries_the_all_virtual_defaults(manager):
+def test_empty_setup_is_saved_independently_of_environment(manager):
     with open(_save(manager, "virtual")["path"]) as fh:
         hw = json.load(fh)["hardware"]
-    assert hw["enabled"] is False
     assert hw["chips"] == []
+    assert "enabled" not in hw and "develop" not in hw
 
 
 def test_list_layouts_reports_has_hardware(manager):
@@ -99,6 +106,7 @@ def test_loading_a_layout_adopts_and_persists_its_wiring(manager):
     _save(manager)
     hardware_config.reset_to_defaults()
     assert hardware_config.is_real() is False
+    operation_environment.select(OperationMode.REAL_HARDWARE, persist=False)
 
     result = manager.load_layout_with_fallback("wired", RailwayNetwork())
 
@@ -106,7 +114,6 @@ def test_loading_a_layout_adopts_and_persists_its_wiring(manager):
     assert result["hardware"] == "applied"
     cfg = hardware_config.get_hardware_config()
     assert hardware_config.is_real() is True
-    assert hardware_config.is_develop() is True
     assert cfg.block_track["B1"].forward == 0
     assert cfg.switch_output["SW_A"].port_diverge == 6
     # written through to the app-managed file, so it survives the restart that
@@ -141,7 +148,7 @@ def test_layout_without_a_hardware_section_leaves_the_configuration_alone(manage
     result = manager.load_layout_with_fallback("legacy", RailwayNetwork())
 
     assert result["hardware"] == "absent"
-    assert hardware_config.is_real() is True
+    assert hardware_config.is_develop() is True
     assert hardware_config.get_hardware_config().block_track["B1"].reverse == 1
 
 

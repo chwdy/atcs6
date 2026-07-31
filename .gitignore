@@ -54,4 +54,5 @@ event_log.jsonl
 
 # App-managed hardware backend selection (design_new.md Power, Hardware configuration)
 hardware_config.json
+operation_environment.json
 i2c.ipynb

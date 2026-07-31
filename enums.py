@@ -12,24 +12,21 @@ from typing import Any, Dict, Optional
 
 
 class OperationMode(Enum):
-    """The hardware backend an operation session runs against (design_new.md
-    "Run modes").
+    """The session's selected operating environment.
 
-    Operation mode runs the railway against one of two backends, chosen once
-    when the session is built and never switched mid-run. Both share one
-    identical core; the mode changes only which hardware interfaces are wired,
-    the pacing, and the occupancy-authority source — no code above the
-    interfaces branches on it.
-
-    - SIM: the in-memory run; wires the simulated interfaces and reads
-      occupancy "by calculation". What v1 ships and exercises.
-    - REAL: the same operation on real hardware; wires a real implementation of
-      each interface behind the same contract. The real implementations are not
-      part of v1 — v1 defines the contract a real backend satisfies.
+    The three environments share one control core. Simulation bypasses Hardware
+    Setup, Virtual Hardware exercises that setup against a controllable fake
+    device, and Real Hardware uses the physical device. The short names remain
+    aliases for older callers during the migration; their serialized values are
+    the canonical environment names.
     """
 
-    SIM = "sim"
-    REAL = "real"
+    SIMULATION = "simulation"
+    VIRTUAL_HARDWARE = "virtual_hardware"
+    REAL_HARDWARE = "real_hardware"
+
+    SIM = SIMULATION
+    REAL = REAL_HARDWARE
 
 
 class PathStatus(Enum):

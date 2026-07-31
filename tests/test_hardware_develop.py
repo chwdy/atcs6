@@ -20,6 +20,7 @@ from datetime import datetime
 import pytest
 
 import hardware_config
+import operation_environment
 from enums import OperationMode
 from hardware.fake import FakeCh347Device
 
@@ -30,6 +31,11 @@ def _isolated_hw_config(tmp_path, monkeypatch):
     atexit so factory tests do not leak process-exit handlers."""
     monkeypatch.setattr(
         hardware_config, "CONFIG_PATH", str(tmp_path / "hardware_config.json")
+    )
+    monkeypatch.setattr(
+        operation_environment,
+        "ENVIRONMENT_PATH",
+        str(tmp_path / "operation_environment.json"),
     )
     monkeypatch.setattr(hardware_config.atexit, "register", lambda *a, **k: None)
     hardware_config.reset_to_defaults()
@@ -68,32 +74,29 @@ def _develop_payload(**overrides):
 
 # --- config round-trip ------------------------------------------------------
 def test_develop_defaults_false():
-    cfg = hardware_config.get_hardware_config()
-    assert cfg.develop is False
+    assert operation_environment.get_selected() is OperationMode.SIMULATION
     assert hardware_config.is_develop() is False
 
 
-def test_develop_round_trips_through_updates_and_disk():
+def test_virtual_hardware_round_trips_in_its_separate_store():
     hardware_config.apply_updates(_develop_payload())
     assert hardware_config.as_dict()["develop"] is True
     with open(hardware_config.CONFIG_PATH) as fh:
-        assert json.load(fh)["develop"] is True
+        assert "develop" not in json.load(fh)
+    with open(operation_environment.ENVIRONMENT_PATH) as fh:
+        assert json.load(fh)["selected"] == "virtual_hardware"
     hardware_config.reset_to_defaults()
-    assert hardware_config.get_hardware_config().develop is False
+    assert operation_environment.get_selected() is OperationMode.SIMULATION
     hardware_config.load_from_disk()
-    assert hardware_config.get_hardware_config().develop is True
+    assert hardware_config.is_develop() is False
+    operation_environment.load_from_disk()
     assert hardware_config.is_develop() is True
 
 
-def test_develop_flag_alone_is_not_develop_mode():
-    # develop only means something in real mode (enabled + >=1 chip).
+def test_legacy_develop_flag_selects_virtual_hardware_independently():
     hardware_config.apply_updates({"develop": True}, persist=False)
-    assert hardware_config.get_hardware_config().develop is True
-    assert hardware_config.is_develop() is False
-    assert hardware_config.derive_operation_mode() == OperationMode.SIM
-    # Still sim: the factory returns no overrides and stashes no device.
-    assert hardware_config.build_session_interfaces() == (None, None, None)
-    assert hardware_config.get_session_device() is None
+    assert hardware_config.is_develop() is True
+    assert hardware_config.derive_operation_mode() == OperationMode.VIRTUAL_HARDWARE
 
 
 # --- factory ---------------------------------------------------------------
@@ -110,8 +113,7 @@ def test_factory_develop_wires_interfaces_on_fake_without_driver():
     assert isinstance(blk, TrackDriver)
     assert isinstance(sw, SwitchDriver)
     assert isinstance(inp, OccupancyDriver)
-    # It is still real mode; develop only swaps the device source.
-    assert hardware_config.derive_operation_mode() == OperationMode.REAL
+    assert hardware_config.derive_operation_mode() == OperationMode.VIRTUAL_HARDWARE
     # The session device is the opened fake, reachable for the debug endpoints.
     device = hardware_config.get_session_device()
     assert isinstance(device, FakeCh347Device)
@@ -261,7 +263,8 @@ def test_debug_missing_fields_400(client):
 def test_config_get_reports_session_info(client):
     test_client, state = client
     data = test_client.get("/api/hardware/config").get_json()
-    assert data["session"] == {"operation_mode": "sim", "develop_active": False}
+    assert data["session"]["operation_environment"] == "simulation"
+    assert data["session"]["virtual_hardware_active"] is False
     _boot_develop_session(state)
     data = test_client.get("/api/hardware/config").get_json()
     assert data["session"]["develop_active"] is True
@@ -312,7 +315,7 @@ def test_scan_still_fails_without_develop(client):
 def test_scan_follows_payload_develop_off_over_persisted_on(client):
     test_client, _ = client
     hardware_config.apply_updates(_develop_payload(), persist=False)
-    assert hardware_config.get_hardware_config().develop is True
+    assert hardware_config.is_develop() is True
     resp = test_client.post(
         "/api/hardware/scan", json={"config": _develop_payload(develop=False)}
     )
@@ -324,7 +327,7 @@ def test_scan_follows_payload_develop_off_over_persisted_on(client):
 def test_scan_follows_payload_develop_on_over_persisted_off(client):
     test_client, _ = client
     hardware_config.apply_updates(_develop_payload(develop=False), persist=False)
-    assert hardware_config.get_hardware_config().develop is False
+    assert hardware_config.is_develop() is False
     resp = test_client.post(
         "/api/hardware/scan", json={"config": _develop_payload(develop=True)}
     )

@@ -113,7 +113,7 @@ class FaultLog:
 
 
 def _reads_hardware(state: AppState) -> bool:
-    """True when this session's occupancy comes from real detectors.
+    """True when this session reads a setup-aware occupancy device.
 
     Read without the simulation lock: the backend is chosen once when the
     session is built and never changes under a running loop, so there is
@@ -121,7 +121,10 @@ def _reads_hardware(state: AppState) -> bool:
     sim-mode session would contend with request handlers for no reason.
     """
     controller = getattr(state, "sim_controller", None)
-    return getattr(controller, "operation_mode", None) is OperationMode.REAL
+    return getattr(controller, "operation_mode", None) in (
+        OperationMode.VIRTUAL_HARDWARE,
+        OperationMode.REAL_HARDWARE,
+    )
 
 
 def create_simulation_loop(state: AppState) -> Callable[[], None]:

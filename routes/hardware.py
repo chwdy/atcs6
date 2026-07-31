@@ -46,6 +46,8 @@ from flask import jsonify, request
 
 from app_state import AppState
 import hardware_config
+import operation_environment
+from enums import OperationMode
 
 
 def _develop_opener(cfg):
@@ -66,7 +68,8 @@ def _develop_opener(cfg):
     NOT `is_develop`, because commissioning runs on the fake BEFORE the user can
     enable hardware (enabling requires every chip proven), so it must not also
     require `enabled`."""
-    if not cfg.develop:
+    requested = getattr(cfg, "_requested_environment", None)
+    if requested is not OperationMode.VIRTUAL_HARDWARE:
         return None
     from hardware.fake import FakeCh347Device
 
@@ -105,7 +108,9 @@ def register(app, state: AppState) -> None:
             # booted with (honest about a sim fallback) and whether it runs on
             # the fake device (the develop badge + dev section key off this).
             "session": {
+                "operation_environment": state.sim_controller.operation_mode.value,
                 "operation_mode": state.sim_controller.operation_mode.value,
+                "virtual_hardware_active": hardware_config.get_session_device() is not None,
                 "develop_active": hardware_config.get_session_device() is not None,
             },
         })
@@ -762,3 +767,22 @@ def register(app, state: AppState) -> None:
             else:
                 device.set_ina3221_current(addr, binding.port + 1, amps)
         return jsonify({"ok": True, "block_id": block_id, "current_ma": float(current_ma)})
+    @app.route("/api/operation/environment", methods=["GET"])
+    def get_operation_environment():
+        return jsonify({
+            "selected": operation_environment.get_selected().value,
+            "active": state.sim_controller.operation_mode.value,
+        })
+
+    @app.route("/api/operation/environment", methods=["PUT"])
+    def update_operation_environment():
+        data = request.get_json(silent=True) or {}
+        try:
+            selected = operation_environment.select(data.get("selected"))
+        except ValueError as exc:
+            return jsonify({"status": "error", "error": str(exc)}), 400
+        return jsonify({
+            "status": "success",
+            "selected": selected.value,
+            "active": state.sim_controller.operation_mode.value,
+        })

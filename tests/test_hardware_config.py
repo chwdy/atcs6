@@ -23,6 +23,7 @@ from datetime import datetime
 import pytest
 
 import hardware_config
+import operation_environment
 from block_occupancy import SimulatedOccupancyDriver
 from block_power import SimulatedTrackDriver
 from enums import OperationMode
@@ -36,6 +37,11 @@ def _isolated_hw_config(tmp_path, monkeypatch):
     atexit so factory tests do not leak process-exit handlers."""
     monkeypatch.setattr(
         hardware_config, "CONFIG_PATH", str(tmp_path / "hardware_config.json")
+    )
+    monkeypatch.setattr(
+        operation_environment,
+        "ENVIRONMENT_PATH",
+        str(tmp_path / "operation_environment.json"),
     )
     monkeypatch.setattr(hardware_config.atexit, "register", lambda *a, **k: None)
     hardware_config.reset_to_defaults()
@@ -70,10 +76,9 @@ def _real_payload(**overrides):
 # --- defaults / serialization ---------------------------------------------
 def test_defaults_are_all_virtual_sim_mode():
     cfg = hardware_config.get_hardware_config()
-    assert cfg.enabled is False
     assert cfg.chips == []
     assert cfg.controller.kind == "ch347"
-    assert hardware_config.derive_operation_mode() == OperationMode.SIM
+    assert operation_environment.get_selected() == OperationMode.SIMULATION
 
 
 def test_as_dict_shape():
@@ -102,9 +107,9 @@ def test_enabled_with_chip_is_real():
     assert hardware_config.derive_operation_mode() == OperationMode.REAL
 
 
-def test_enabled_without_chips_is_sim():
+def test_environment_selection_is_independent_of_setup_completeness():
     hardware_config.apply_updates({"enabled": True, "chips": []}, persist=False)
-    assert hardware_config.derive_operation_mode() == OperationMode.SIM
+    assert hardware_config.derive_operation_mode() == OperationMode.REAL_HARDWARE
 
 
 def test_chips_but_not_enabled_is_sim():
@@ -506,13 +511,13 @@ def test_apply_updates_persists_and_round_trips():
     hardware_config.apply_updates(_real_payload())
     with open(hardware_config.CONFIG_PATH) as fh:
         on_disk = json.load(fh)
-    assert on_disk["enabled"] is True
+    assert "enabled" not in on_disk and "develop" not in on_disk
     assert {c["chip_id"] for c in on_disk["chips"]} == {"pwm1", "sw1", "in1"}
     # a fresh load reproduces it
     hardware_config.reset_to_defaults()
     assert hardware_config.is_real() is False
     hardware_config.load_from_disk()
-    assert hardware_config.is_real() is True
+    assert hardware_config.is_real() is False
     assert len(hardware_config.get_hardware_config().chips) == 3
 
 
@@ -682,7 +687,8 @@ def test_put_valid_config_succeeds_and_persists(client):
     assert resp.status_code == 200
     assert resp.get_json()["status"] == "success"
     with open(hardware_config.CONFIG_PATH) as fh:
-        assert json.load(fh)["enabled"] is True
+        persisted = json.load(fh)
+    assert "enabled" not in persisted and "develop" not in persisted
 
 
 def test_put_invalid_config_returns_400_and_writes_nothing(client):

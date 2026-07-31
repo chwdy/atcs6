@@ -26,6 +26,7 @@ import os
 from types import ModuleType
 
 import hardware_config
+import operation_environment
 from enums import OperationMode
 from network import RailwayNetwork
 from notification_center import NotificationCenter
@@ -223,22 +224,25 @@ def bootstrap_runtime(
     # HardwareBackendUnavailable; fall back to sim mode so the server still boots
     # (the selection stays on disk, and takes effect once its driver lands).
     hardware_config.load_from_disk()
+    operation_environment.load_from_disk()
     hw_cfg = hardware_config.get_hardware_config()
+    selected_environment = operation_environment.get_selected()
     try:
         input_interface, block_output_interface, switch_output_interface = (
             hardware_config.build_session_interfaces(
                 hw_cfg,
+                environment=selected_environment,
                 # Read through to the live configuration, so flipping a block's
                 # rail polarity in the editor lands on the next track write
                 # rather than waiting for a restart.
                 track_polarity_of=hardware_config.track_polarity_reversed,
             )
         )
-        operation_mode = hardware_config.derive_operation_mode(hw_cfg)
+        operation_mode = selected_environment
     except hardware_config.HardwareBackendUnavailable as exc:
         print(f"[bootstrap] {exc}; falling back to sim mode")
         input_interface = block_output_interface = switch_output_interface = None
-        operation_mode = OperationMode.SIM
+        operation_mode = OperationMode.SIMULATION
 
     sim_controller = SimulationController(
         network,
