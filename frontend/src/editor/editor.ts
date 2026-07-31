@@ -79,6 +79,16 @@ export interface HostApp {
   updateTrainDebugPanel?(train: any): void;
 }
 
+/**
+ * Human label for an entity: its name when it has one, else its id. Ids are
+ * generated (`SEG_4F4CF0`, `BLK_C37589A5`) and an un-grouped segment shares its
+ * id with the block that owns it, so an id-only label cannot tell the two apart.
+ */
+function entityLabel(name: unknown, id: string): string {
+  const trimmed = typeof name === 'string' ? name.trim() : '';
+  return trimmed || id;
+}
+
 export class Editor {
   renderer: any;
   api: FullDataClient;
@@ -2167,10 +2177,17 @@ export class Editor {
       });
     }
     // A tile belongs to a segment (geometry) and to the block that owns it
-    // (power / occupancy). Offer both, each opening its own editor.
+    // (power / occupancy). Offer both, each opening its own editor. An
+    // un-grouped segment is its own single-segment block sharing its id, so
+    // labelling by raw id makes the Block row read as the segment — name the
+    // rows instead, and fall back to the id only when a name is unset.
+    const block = track.block_section_id
+      ? this.cachedNetwork?.blocks?.[track.block_section_id]
+      : null;
     if (track.segment_id) {
+      const segment = (block?.segments || []).find((s: any) => s.segment_id === track.segment_id);
       entityItems.push({
-        label: track.segment_id,
+        label: entityLabel(segment?.name, track.segment_id),
         detail: 'Segment',
         icon: 'ti ti-square-dashed',
         onSelect: () => this.segmentHandler.showEditor(track.segment_id),
@@ -2178,7 +2195,7 @@ export class Editor {
     }
     if (track.block_section_id) {
       entityItems.push({
-        label: track.block_section_id,
+        label: entityLabel(block?.name, track.block_section_id),
         detail: 'Block',
         icon: 'ti ti-bolt',
         onSelect: () => this.blockGroupingHandler.showDetail(track.block_section_id),

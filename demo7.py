@@ -68,11 +68,15 @@ PLATFORMS = [
 ]
 
 
+# One quadrant of the oval per entry. Names are compass-true for the layout
+# grid (NORTH is +y, EAST is +x, per `Direction` in enums.py), so "SW Quadrant"
+# is the corner at low x / low y. Each is a one-segment block, so the name lands
+# on both the segment and its owning block.
 BLOCKS = [
-    ('BLK_AA62D2', '', [(3, 8), (3, 7), (3, 6), (4, 6), (4, 5), (5, 5), (6, 5)], 0.0, None),
-    ('BLK_AA6FB5', '', [(6, 12), (6, 11), (5, 11), (5, 10), (4, 10), (4, 9), (3, 9)], 0.0, None),
-    ('BLK_AA7B7E', '', [(10, 9), (10, 10), (10, 11), (9, 11), (9, 12), (8, 12), (7, 12)], 0.0, None),
-    ('BLK_AA866E', '', [(7, 5), (7, 6), (8, 6), (8, 7), (9, 7), (9, 8), (10, 8)], 0.0, None),
+    ('BLK_AA62D2', 'SW Quadrant', [(3, 8), (3, 7), (3, 6), (4, 6), (4, 5), (5, 5), (6, 5)], 0.0, None),
+    ('BLK_AA6FB5', 'NW Quadrant', [(6, 12), (6, 11), (5, 11), (5, 10), (4, 10), (4, 9), (3, 9)], 0.0, None),
+    ('BLK_AA7B7E', 'NE Quadrant', [(10, 9), (10, 10), (10, 11), (9, 11), (9, 12), (8, 12), (7, 12)], 0.0, None),
+    ('BLK_AA866E', 'SE Quadrant', [(7, 5), (7, 6), (8, 6), (8, 7), (9, 7), (9, 8), (10, 8)], 0.0, None),
 ]
 
 
@@ -228,9 +232,10 @@ def create_comprehensive_demo() -> RailwayNetwork:
 
 
 # Blocks in loop order (each is adjacent to the next; the fourth wraps to the
-# first). AA62D2 top-left -> AA866E top-right -> AA7B7E bottom-right ->
-# AA6FB5 bottom-left -> back. Each is a one-segment block, so the id names both
-# the segment (its geometry) and the block (its power/occupancy).
+# first). SW Quadrant -> SE Quadrant -> NE Quadrant -> NW Quadrant -> back,
+# i.e. AA62D2 -> AA866E -> AA7B7E -> AA6FB5. Each is a one-segment block, so the
+# id names both the segment (its geometry) and the block (its power/occupancy),
+# and the `BLOCKS` name above is carried by both.
 LOOP_ORDER = ["BLK_AA62D2", "BLK_AA866E", "BLK_AA7B7E", "BLK_AA6FB5"]
 DEMO7_MODE = "lap_stop"
 HOLD_SECONDS = 5.0
