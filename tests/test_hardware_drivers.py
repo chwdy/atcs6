@@ -670,6 +670,84 @@ def test_output_enable_bit_driven_low_at_build():
     assert dev.latched_bit("cs0", 2) is False   # /OE low = PCA enabled, held
 
 
+def test_safe_state_disables_output_enable_before_leaving_the_session():
+    dev = FakeCh347Device(present_addresses={0x40})
+    specs = [
+        ChipConfig("pwm1", "pca9685", i2c_address=0x40),
+        ChipConfig("sw1", "hc595", spi_select="cs0"),
+    ]
+    _inp, blk, _sw = build_real_interfaces(
+        dev,
+        specs,
+        block_track={"B1": ("pwm1", 0, 1)},
+        block_occupancy={},
+        switch_output={},
+        output_enable={"pwm1": ("sw1", 2)},
+    )
+    assert blk.set_voltage("B1", 8.0) is True
+
+    blk.enter_safe_state()
+
+    assert dev.latched_bit("cs0", 2) is True  # /OE high = PCA disabled
+    assert dev.duty_cycle(0x40, 0) == 0.0
+    assert blk.set_voltage("B1", 8.0) is False
+
+
+def test_safety_inhibit_is_not_cleared_by_the_solenoid_hold_guard():
+    dev = FakeCh347Device()
+    released = []
+    chip = HC595Chain(
+        dev, select="cs0", max_high_s=0.03, on_auto_release=released.append
+    )
+    chip.set_guard_ignored_high({2})
+    chip.set_high_outputs({2, 5})  # /OE inhibit plus an accidentally hot coil
+
+    time.sleep(0.12)
+
+    assert dev.latched_bit("cs0", 2) is True
+    assert dev.latched_bit("cs0", 5) is False
+    assert released == [1 << 5]
+
+
+def test_failed_external_lease_renewal_revokes_output_before_write():
+    class Lease:
+        def __init__(self):
+            self.renew_ok = True
+            self.revoked = False
+
+        def acquire(self):
+            return True
+
+        def renew(self):
+            return self.renew_ok
+
+        def revoke(self):
+            self.revoked = True
+
+    lease = Lease()
+    dev = FakeCh347Device(present_addresses={0x40})
+    specs = [
+        ChipConfig("pwm1", "pca9685", i2c_address=0x40),
+        ChipConfig("sw1", "hc595", spi_select="cs0"),
+    ]
+    _inp, blk, _sw = build_real_interfaces(
+        dev,
+        specs,
+        block_track={"B1": ("pwm1", 0, 1)},
+        block_occupancy={},
+        switch_output={},
+        output_enable={"pwm1": ("sw1", 2)},
+        output_safety_lease=lease,
+    )
+    assert blk.set_voltage("B1", 8.0) is True
+    lease.renew_ok = False
+
+    assert blk.set_voltage("B1", 9.0) is False
+    assert lease.revoked is True
+    assert dev.latched_bit("cs0", 2) is True
+    assert dev.duty_cycle(0x40, 0) == 0.0
+
+
 def test_safe_state_zeros_outputs(wired):
     dev, _inp, blk, sw = wired
     blk.set_voltage("B2", 8.0)

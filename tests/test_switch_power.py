@@ -18,6 +18,7 @@ from track import Tile, TRACK_EW, TRACK_NW, TRACK_NS
 from switch import Switch
 from switch_manager import SwitchManager
 from switch_power import SimulatedSwitchDriver
+from runtime_payloads import HardwareFailure
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +134,33 @@ def test_request_position_change_rejects_unissued_throw():
     assert "no hardware binding" in reason
     # Commanded position stays authoritative — no rollback.
     assert int(sw.position) == 1
+
+
+def test_an_unissued_throw_latches_a_hardware_failure():
+    class RefusingInterface(SimulatedSwitchDriver):
+        def set_throw(self, switch_id, target_state):
+            return False
+
+    class Runtime:
+        def __init__(self, iface):
+            self.switch_output_interface = iface
+            self.failure = None
+
+        def enter_hardware_failure(self, failure):
+            self.failure = failure
+
+    net, _sw = _standard_switch_network()
+    runtime = Runtime(RefusingInterface())
+    mgr = SwitchManager(
+        switches=net.switches, simulation_controller=runtime, network=net
+    )
+
+    ok, _reason = mgr.request_position_change("SW_1_0", 1)
+
+    assert ok is False
+    assert isinstance(runtime.failure, HardwareFailure)
+    assert runtime.failure.component == "switch_output"
+    assert runtime.failure.resource_id == "SW_1_0"
 
 
 def test_request_position_change_no_interface_is_noop_success():

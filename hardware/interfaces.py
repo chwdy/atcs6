@@ -38,6 +38,7 @@ from hardware.chips.hc595 import HC595Chain
 from hardware.chips.ina219 import INA219
 from hardware.chips.ina3221 import INA3221
 from hardware.chips.pca9685 import PCA9685
+from hardware.safety import OutputSafetyLease, PhysicalOutputSupervisor
 from hardware.watchdog import OutputWatchdog
 
 # A binding map: logical id -> (chip_id, port).
@@ -164,14 +165,18 @@ class TrackDriver(TrackOutput):
         bindings: "TrackBindingMap",
         watchdog: Optional[OutputWatchdog] = None,
         polarity_of: Optional[Callable[[str], bool]] = None,
+        safety: Optional[PhysicalOutputSupervisor] = None,
     ) -> None:
         self._chips = chips_by_id
         self._bindings = bindings
         self._voltages: Dict[str, float] = {}
         self._watchdog = watchdog
         self._polarity_of = polarity_of
+        self._safety = safety
 
     def set_voltage(self, block_id: str, voltage: float) -> bool:
+        if self._safety is not None and not self._safety.renew():
+            return False
         binding = self._bindings.get(block_id)
         if binding is None:
             return False
@@ -185,8 +190,8 @@ class TrackDriver(TrackOutput):
         # Drive the channel matching the sign; the other rests at zero, so the
         # two H-bridge inputs are never driven together.
         if voltage >= 0:
-            chip.set_duty_cycle(forward, duty)
             chip.set_duty_cycle(reverse, 0.0)
+            chip.set_duty_cycle(forward, duty)
         else:
             chip.set_duty_cycle(forward, 0.0)
             chip.set_duty_cycle(reverse, duty)
@@ -207,8 +212,11 @@ class TrackDriver(TrackOutput):
         # also fire against a runtime that has deliberately stopped driving.
         if self._watchdog is not None:
             self._watchdog.disarm()
-        for chip in self._chips.values():
-            chip.all_off()
+        if self._safety is not None:
+            self._safety.revoke()
+        else:
+            for chip in self._chips.values():
+                chip.all_off()
         for block_id in self._voltages:
             self._voltages[block_id] = 0.0
 
@@ -250,14 +258,18 @@ class SwitchDriver(SwitchOutput):
         bindings: SwitchBindingMap,
         watchdog: Optional[OutputWatchdog] = None,
         pulse_s: float = SWITCH_THROW_PULSE_S,
+        safety: Optional[PhysicalOutputSupervisor] = None,
     ) -> None:
         self._chips = chips_by_id
         self._bindings = bindings
         self._last: Dict[str, int] = {}
         self._watchdog = watchdog
         self._pulse_s = pulse_s
+        self._safety = safety
 
     def set_throw(self, switch_id: str, target_state: int) -> bool:
+        if self._safety is not None and not self._safety.renew():
+            return False
         binding = self._bindings.get(switch_id)
         if binding is None:
             return False
@@ -289,8 +301,11 @@ class SwitchDriver(SwitchOutput):
     def enter_safe_state(self) -> None:
         if self._watchdog is not None:
             self._watchdog.disarm()
-        for chip in self._chips.values():
-            chip.all_off()
+        if self._safety is not None:
+            self._safety.revoke()
+        else:
+            for chip in self._chips.values():
+                chip.all_off()
         self._last.clear()
 
 
@@ -599,6 +614,7 @@ def build_real_interfaces(
     watchdog_timeout_s: Optional[float] = None,
     current_sense_min_drive_v: float = _CURRENT_SENSE_MIN_DRIVE_V,
     lighting_clear_hold_reads: int = LIGHTING_CLEAR_HOLD_READS,
+    output_safety_lease: Optional[OutputSafetyLease] = None,
 ) -> Tuple[Optional[OccupancyInput], Optional[TrackOutput], Optional[SwitchOutput]]:
     """Instantiate + initialize chips grouped by role and wire the three
     interfaces. A role with no chip returns `None` (its simulated default is
@@ -612,11 +628,15 @@ def build_real_interfaces(
 
     `watchdog_timeout_s` arms the loss-of-control watchdog on both output
     interfaces (design_new.md "Hardware interface boundary"); `None` leaves it
-    unarmed, which is what a test harness driving a fake device wants."""
+    unarmed, which is what a test harness driving a fake device wants.
+    `output_safety_lease`, when supplied, is the independent renewable gate:
+    activation must prove it and every output command renews it before writing.
+    Real Hardware readiness will require it; hardware-free tests may omit it."""
     track_chips: Dict[str, PCA9685] = {}
     switch_chips: Dict[str, HC595Chain] = {}
     digital_chips: Dict[str, HC165Chain] = {}
     current_chips: Dict[str, Any] = {}
+    output_enable = output_enable or {}
 
     # A GPIO-latched chip borrows a chip-select pad for its SPI transfer. Choose a
     # safe one before any chip is built, because the first `all_off()` latches.
@@ -633,7 +653,15 @@ def build_real_interfaces(
     for spec in chip_specs:
         if CHIP_CATALOG[spec.kind].role == ROLE_SWITCH:
             chip = build_chip(device, spec)
-            chip.all_off()
+            inhibit_ports = [
+                port
+                for _track_id, (drive_chip_id, port) in output_enable.items()
+                if drive_chip_id == spec.chip_id
+            ]
+            chip.set_guard_ignored_high(inhibit_ports)
+            # One latch: coils low, active-high /OE inhibits high. Never pass
+            # through the old all-low pattern that enables track output.
+            chip.set_high_outputs(inhibit_ports)
             switch_chips[spec.chip_id] = chip
 
     for spec in chip_specs:
@@ -651,6 +679,13 @@ def build_real_interfaces(
             else:
                 digital_chips[spec.chip_id] = chip
 
+    safety = PhysicalOutputSupervisor(
+        track_chips,
+        switch_chips,
+        output_enable,
+        lease=output_safety_lease,
+    )
+
     # One watchdog covers both output interfaces: loss of control must drop the
     # track AND the point motors. The targets list is filled just below, before
     # anything can pet the watchdog into an armed state.
@@ -658,6 +693,9 @@ def build_real_interfaces(
     watchdog: Optional[OutputWatchdog] = None
     if watchdog_timeout_s is not None and (track_chips or switch_chips):
         def _drop_to_safe_state() -> None:
+            # The shared supervisor revokes the physical gate; each interface
+            # also clears its own observable command state.
+            safety.revoke()
             for target in watchdog_targets:
                 target.enter_safe_state()
 
@@ -665,26 +703,23 @@ def build_real_interfaces(
 
     block_out = (
         TrackDriver(
-            track_chips, block_track, watchdog=watchdog, polarity_of=track_polarity_of
+            track_chips,
+            block_track,
+            watchdog=watchdog,
+            polarity_of=track_polarity_of,
+            safety=safety,
         )
         if track_chips
         else None
     )
     switch_out = (
-        SwitchDriver(switch_chips, switch_output, watchdog=watchdog)
+        SwitchDriver(switch_chips, switch_output, watchdog=watchdog, safety=safety)
         if switch_chips
         else None
     )
     watchdog_targets.extend(
         iface for iface in (block_out, switch_out) if iface is not None
     )
-
-    # Enable-and-hold each PCA's /OE (active-low): drive its '595 bit low once.
-    # There is no per-tick coast window, so nothing drives it high afterwards.
-    for _track_chip_id, (drive_chip_id, port) in (output_enable or {}).items():
-        drive = switch_chips.get(drive_chip_id)
-        if drive is not None:
-            drive.set_output(port, False)
 
     # Last word on the outputs before the session goes live: no bit a coil sits
     # on may be high. The clear above already guarantees it — this re-checks it
@@ -693,6 +728,9 @@ def build_real_interfaces(
     # for the whole session. Failing the build is right: an unusable session
     # beats a burning solenoid nobody is watching.
     _assert_switch_ports_low(switch_chips, switch_output)
+    # Release /OE only after every PWM and coil output has been initialized to
+    # its safe value. The supervisor owns this transition for the session.
+    safety.activate()
 
     def _resync_hardware() -> None:
         """Redo the live init above against the chips already built.
@@ -707,16 +745,11 @@ def build_real_interfaces(
         control loop re-commands voltage on its next tick anyway, so the safe
         state is both the correct landing point and a self-healing one.
         """
-        for chip in switch_chips.values():
-            chip.all_off()
+        safety.revoke()
         for chip in track_chips.values():
             chip.configure()
         for chip in current_chips.values():
             chip.configure()
-        for _tc_id, (drive_chip_id, port) in (output_enable or {}).items():
-            drive = switch_chips.get(drive_chip_id)
-            if drive is not None:
-                drive.set_output(port, False)
         _assert_switch_ports_low(switch_chips, switch_output)
 
     register_hook = getattr(device, "add_reconnect_hook", None)

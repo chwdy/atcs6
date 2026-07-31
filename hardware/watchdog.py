@@ -14,12 +14,10 @@ deadlocks, or returns without running its shutdown hook while the process is
 still alive.
 
 It cannot cover process death. The thread dies with the process, and a PCA9685
-holds its last PWM duty while a '595 holds its last latched bits, so the track
-stays energized. A build that must survive process death has to hold each
-PCA9685's `/OE` pin from retriggerable hardware external to this program — a
-board-level concern the software boundary cannot reach. `hardware_config`'s
-`output_enable` map names that pin; it is driven to the enabled level once at
-session build and never toggled, so external hardware is free to override it.
+holds its last PWM duty while a '595 holds its last latched bits. Real Hardware
+therefore also requires an external renewable output-safety lease whose gate
+fails disabled when renewal stops. `OutputWatchdog` is only the faster
+in-process backstop; it is never evidence that the independent gate exists.
 
 Bus access is safe: `Ch347Device` serializes every I2C/SPI operation under its
 own `RLock`, so a timeout firing concurrently with a control-loop write cannot

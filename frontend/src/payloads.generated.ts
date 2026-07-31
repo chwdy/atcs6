@@ -115,6 +115,13 @@ export interface FatalPhysicalEntryConflict {
   prior_owner_path_id: string | null;
 }
 
+export interface HardwareFailure {
+  component: string;
+  operation: string;
+  message: string;
+  resource_id: string | null;
+}
+
 export interface OccupyResult {
   outcome: string;
   reason: string | null;

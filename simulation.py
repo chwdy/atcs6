@@ -52,6 +52,7 @@ from train_physics import TrainPhysics, create_physics_for_train
 from runtime_payloads import (
     FatalConflictKind,
     FatalPhysicalEntryConflict,
+    HardwareFailure,
 )
 
 if TYPE_CHECKING:
@@ -111,7 +112,7 @@ class SimulationController:
         # payload is retained for inspection until manual cleanup releases
         # the gate.
         self.failed_runtime: bool = False
-        self.failed_runtime_payload: Optional[FatalPhysicalEntryConflict] = None
+        self.failed_runtime_payload: Optional[Any] = None
         # simulation_time at which the halt was entered, for the UI banner.
         self.failed_runtime_at: Optional[float] = None
 
@@ -1835,6 +1836,41 @@ class SimulationController:
             },
         )
 
+    def enter_hardware_failure(self, payload: HardwareFailure) -> None:
+        """Revoke output, latch the session, and reject in-place recovery.
+
+        This is idempotent because one bus failure can be observed by several
+        output calls in the same tick. The first failure is the canonical cause.
+        The flag is latched even if a best-effort safe-state write itself fails.
+        """
+        if self.failed_runtime:
+            return
+        safe_state_error: Optional[str] = None
+        try:
+            self.enter_safe_state()
+        except Exception as exc:  # noqa: BLE001 - the failure still must latch
+            safe_state_error = str(exc)
+            logger.exception("hardware safe-state command failed")
+        finally:
+            self.failed_runtime = True
+            self.failed_runtime_payload = payload
+            self.failed_runtime_at = self.simulation_time
+
+        self.notification_center.emit(
+            source="SimulationController",
+            kind="hardware_failure",
+            severity=Severity.FATAL,
+            event_time=time.time(),
+            payload={
+                "component": payload.component,
+                "operation": payload.operation,
+                "resource_id": payload.resource_id,
+                "message": payload.message,
+                "safe_state_error": safe_state_error,
+                "requires_new_activation": True,
+            },
+        )
+
     def clear_failed_runtime(self) -> FatalPhysicalEntryConflict:
         """Release the halt so the session can carry on, with every train off.
 
@@ -1866,6 +1902,11 @@ class SimulationController:
             raise ValueError("The runtime is not halted; there is nothing to clear")
 
         payload = self.failed_runtime_payload
+        if isinstance(payload, HardwareFailure):
+            raise ValueError(
+                "A hardware failure cannot be cleared in place; repair the "
+                "hardware and activate a newly validated session"
+            )
         for controller in self.controllers.values():
             controller.ops.state = TrainState.OFF
             controller.ops.handle_position = HandlePosition.N
@@ -2050,7 +2091,12 @@ def build_network_payload(
     # payload reflects that, so surface the flag + the conflict cause here so
     # the UI can show a halt banner and offer recovery.
     payload["failed_runtime"] = bool(sim_controller.failed_runtime)
-    fatal = sim_controller.failed_runtime_payload
+    failed_payload = sim_controller.failed_runtime_payload
+    fatal = (
+        failed_payload
+        if isinstance(failed_payload, FatalPhysicalEntryConflict)
+        else None
+    )
     payload["failed_runtime_conflict"] = (
         {
             "resource_type": fatal.resource_type,
@@ -2063,6 +2109,26 @@ def build_network_payload(
             "halted_at_sim_time": sim_controller.failed_runtime_at,
         }
         if fatal is not None
+        else None
+    )
+    hardware_failure = (
+        failed_payload if isinstance(failed_payload, HardwareFailure) else None
+    )
+    payload["failed_runtime_kind"] = (
+        "hardware_failure"
+        if hardware_failure is not None
+        else "physical_entry_conflict" if fatal is not None else None
+    )
+    payload["failed_runtime_hardware_failure"] = (
+        {
+            "component": hardware_failure.component,
+            "operation": hardware_failure.operation,
+            "resource_id": hardware_failure.resource_id,
+            "message": hardware_failure.message,
+            "halted_at_sim_time": sim_controller.failed_runtime_at,
+            "requires_new_activation": True,
+        }
+        if hardware_failure is not None
         else None
     )
 

@@ -600,6 +600,21 @@ class FatalPhysicalEntryConflict:
     prior_owner_path_id: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class HardwareFailure:
+    """A hardware-backed session lost the device contract after activation.
+
+    Unlike a physical-entry conflict, this halt cannot be cleared in place. The
+    operator must make the outputs safe, repair or replace the failed hardware,
+    and activate a newly validated session.
+    """
+
+    component: str
+    operation: str
+    message: str
+    resource_id: Optional[str] = None
+
+
 # =============================================================================
 # Switch lock claim payload
 # =============================================================================

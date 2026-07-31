@@ -171,7 +171,12 @@ class BlockPowerController:
         output interface, the controller delegates the zeroing/de-energizing
         to it.
         """
-        self.output_interface.enter_safe_state()
+        try:
+            self.output_interface.enter_safe_state()
+        finally:
+            if self.network is not None:
+                for block in self.network.blocks.values():
+                    block.current_voltage = 0.0
 
     def _calculate_voltage_for_train(
         self, train: "Train", speed_profile: Optional["SpeedProfile"] = None
@@ -237,7 +242,14 @@ class BlockPowerController:
         # Clamp voltage to limits
         clamped = max(self.min_voltage, min(self.max_voltage, voltage))
 
-        landed = self.output_interface.set_voltage(block_id, clamped)
+        failure_message: Optional[str] = None
+        try:
+            landed = self.output_interface.set_voltage(block_id, clamped)
+            if not landed:
+                failure_message = "output driver refused the write"
+        except Exception as exc:  # noqa: BLE001 - device errors enter one fatal path
+            landed = False
+            failure_message = f"output write raised {type(exc).__name__}: {exc}"
 
         if self.network:
             block = self.network.blocks.get(block_id)
@@ -248,7 +260,30 @@ class BlockPowerController:
             self._unreachable_blocks.add(block_id)
             self._emit_unreachable(block_id, clamped)
 
+        if not landed:
+            self._latch_hardware_failure(block_id, clamped, failure_message or "write failed")
+
         return landed
+
+    def _latch_hardware_failure(
+        self, block_id: str, voltage: float, message: str
+    ) -> None:
+        controller = self._sim_controller
+        enter = getattr(controller, "enter_hardware_failure", None)
+        if not callable(enter):
+            return
+        from runtime_payloads import HardwareFailure
+
+        enter(
+            HardwareFailure(
+                component="track_output",
+                operation="set_voltage",
+                resource_id=block_id,
+                message=(
+                    f"Could not command {voltage:.2f}V on block {block_id}: {message}"
+                ),
+            )
+        )
 
     def _emit_unreachable(self, block_id: str, voltage: float) -> None:
         """Report a block the output driver cannot drive (once per block)."""

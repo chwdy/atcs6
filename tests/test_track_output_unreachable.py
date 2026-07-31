@@ -13,6 +13,7 @@ and reports the refusal once per block.
 """
 
 from block_power import BlockPowerController
+from runtime_payloads import HardwareFailure
 from tests.test_ghost_trains import build_sim
 
 
@@ -53,6 +54,19 @@ def test_a_refused_write_never_claims_the_block_is_energized():
 
     assert pc.set_block_voltage("BLK_1", 10.0) is False
     assert network.blocks["BLK_1"].current_voltage == 0.0
+    assert sim.failed_runtime is True
+    assert isinstance(sim.failed_runtime_payload, HardwareFailure)
+    assert sim.failed_runtime_payload.resource_id == "BLK_1"
+
+
+def test_a_hardware_failure_cannot_be_cleared_in_place():
+    _network, sim, pc = power_controller({"BLK_1"})
+    pc.set_block_voltage("BLK_1", 10.0)
+
+    import pytest
+
+    with pytest.raises(ValueError, match="newly validated session"):
+        sim.clear_failed_runtime()
 
 
 def test_a_landed_write_still_records_its_voltage():

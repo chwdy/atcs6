@@ -25,7 +25,7 @@ test, holding a bit long enough to read on a meter) sleeps through
 
 import threading
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional, Set
 
 from hardware.catalog import MAX_OUTPUT_HIGH_S
 
@@ -52,6 +52,10 @@ class HC595Chain:
         # Re-entrant: the guard writes through the same locked path a caller does.
         self._lock = threading.RLock()
         self._guard: Optional[threading.Timer] = None
+        # Active-high safety/inhibit lines intentionally remain high in the
+        # safe state. They are excluded from the coil hold guard; clearing one
+        # on timeout could re-enable a power chip.
+        self._guard_ignored_high: Set[int] = set()
 
     @property
     def num_outputs(self) -> int:
@@ -78,6 +82,24 @@ class HC595Chain:
         with self._lock:
             self._state = bytearray(self.chain_length)
             self.write_all()
+
+    def set_high_outputs(self, indices: Iterable[int]) -> None:
+        """Atomically replace the whole latched pattern with ``indices`` high."""
+        with self._lock:
+            state = bytearray(self.chain_length)
+            for index in indices:
+                byte_idx, bit_idx = divmod(int(index), 8)
+                if byte_idx < 0 or byte_idx >= self.chain_length:
+                    raise IndexError(f"output index {index} out of range")
+                state[byte_idx] |= 1 << bit_idx
+            self._state = state
+            self.write_all()
+
+    def set_guard_ignored_high(self, indices: Iterable[int]) -> None:
+        """Exclude active-high safety lines from the solenoid hold guard."""
+        with self._lock:
+            self._guard_ignored_high = {int(index) for index in indices}
+            self._rearm_guard()
 
     def probe(self) -> bool:
         """Write-only part: success == the SPI transaction issued without error."""
@@ -110,7 +132,7 @@ class HC595Chain:
         if self._guard is not None:
             self._guard.cancel()
             self._guard = None
-        if self.max_high_s is None or not any(self._state):
+        if self.max_high_s is None or not self._unsafe_high_pattern():
             return
         self._guard = threading.Timer(self.max_high_s, self._release)
         # Daemon: a pending guard must never hold up interpreter shutdown.
@@ -120,12 +142,17 @@ class HC595Chain:
     def _release(self) -> None:
         """Deadline reached with bits still high — drive the chain low."""
         with self._lock:
-            released = int.from_bytes(bytes(self._state), "big")
+            released = self._unsafe_high_pattern()
             if not released:
                 return
-            self._state = bytearray(self.chain_length)
+            safe = bytearray(self.chain_length)
+            for index in self._guard_ignored_high:
+                byte_idx, bit_idx = divmod(index, 8)
+                if 0 <= byte_idx < self.chain_length:
+                    safe[byte_idx] |= 1 << bit_idx
+            self._state = safe
             try:
-                self.device.latch_out(bytes(self.chain_length), self.select)
+                self.device.latch_out(bytes(reversed(self._state)), self.select)
             except Exception:
                 # A failed release is the worst case (a coil may still be hot),
                 # but raising off a timer thread would only lose the report.
@@ -136,6 +163,16 @@ class HC595Chain:
                 self._on_auto_release(released)
             except Exception:  # noqa: BLE001 - reporting must not kill the thread
                 pass
+
+    def _unsafe_high_pattern(self) -> int:
+        pattern = 0
+        for index in range(self.num_outputs):
+            if index in self._guard_ignored_high:
+                continue
+            byte_idx, bit_idx = divmod(index, 8)
+            if self._state[byte_idx] & (1 << bit_idx):
+                pattern |= 1 << index
+        return pattern
 
     def cancel_guard(self) -> None:
         """Stop the timer thread. For teardown; the chain must already be low."""

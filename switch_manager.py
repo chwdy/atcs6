@@ -604,9 +604,38 @@ class SwitchManager:
             last = iface.get_last_throw(switch.switch_id)
             if last is not None and int(last) == int(target_state):
                 return None                # the motor was last driven there
-        if not iface.set_throw(switch.switch_id, int(target_state)):
-            return "throw not issued (no hardware binding for this switch)"
+        try:
+            issued = iface.set_throw(switch.switch_id, int(target_state))
+            failure = "output driver refused the throw" if not issued else None
+        except Exception as exc:  # noqa: BLE001 - device errors enter one fatal path
+            issued = False
+            failure = f"output throw raised {type(exc).__name__}: {exc}"
+        if not issued:
+            self._latch_hardware_failure(
+                switch.switch_id, int(target_state), failure or "throw failed"
+            )
+            return f"throw not issued (no hardware binding or output failure: {failure})"
         return None
+
+    def _latch_hardware_failure(
+        self, switch_id: str, target_state: int, message: str
+    ) -> None:
+        controller = self.simulation_controller
+        enter = getattr(controller, "enter_hardware_failure", None)
+        if not callable(enter):
+            return
+        from runtime_payloads import HardwareFailure
+
+        enter(
+            HardwareFailure(
+                component="switch_output",
+                operation="set_throw",
+                resource_id=switch_id,
+                message=(
+                    f"Could not command switch {switch_id} to {target_state}: {message}"
+                ),
+            )
+        )
 
     def _emit_diagnostic(
         self, message: str, switch_id: str, train_id: Optional[str] = None
