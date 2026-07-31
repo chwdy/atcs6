@@ -148,6 +148,8 @@ let adding = false;
 let sessionInfo: SessionInfo | null = null;
 let devBindings: DevBindings = { block_occupancy: {}, block_occupancy_current: {} };
 let devReadback: DevReadback | null = null;
+let virtualRig: any = null;
+let virtualRigBlocksDraft = '';
 let devPollTimer: any = null;
 
 // Layout coverage, refreshed with the config each time the modal opens.
@@ -978,9 +980,19 @@ function devSectionHtml(): string {
     const active = !!devReadback?.faults?.[kind];
     return `<button type="button" class="btn hw-btn-sm ${active ? 'btn-accent' : 'btn-secondary'}" data-hw="dev-fault" data-id="${kind}">${kind.split('_').join(' ')}</button>`;
   }).join(' ')} <button type="button" class="btn hw-btn-sm btn-secondary" data-hw="dev-fault-clear">Clear all</button></span></div></div>`;
+  const rigStatus = virtualRig?.active
+    ? `${virtualRig.block_id}${virtualRig.stalled ? ' · stalled' : ' · moving by steps'}`
+    : 'no virtual train';
+  const rig = `<div class="hw-dev-rows"><div class="hw-dev-row"><span class="hw-dev-block">Virtual train</span><span class="hw-dev-read">
+    <input type="text" class="setting-input-compact" data-hw="dev-rig-blocks" value="${esc(virtualRigBlocksDraft)}" placeholder="B1, B2, B3" />
+    <button type="button" class="btn hw-btn-sm btn-secondary" data-hw="dev-rig-start">Place</button>
+    <button type="button" class="btn hw-btn-sm btn-secondary" data-hw="dev-rig-advance">Enter next</button>
+    <button type="button" class="btn hw-btn-sm ${virtualRig?.stalled ? 'btn-accent' : 'btn-secondary'}" data-hw="dev-rig-stall">${virtualRig?.stalled ? 'Resume' : 'Stall'}</button>
+    <button type="button" class="btn hw-btn-sm btn-secondary" data-hw="dev-rig-remove">Remove</button>
+    <strong>${esc(rigStatus)}</strong></span></div></div>`;
   if (!rows.length) {
     return `<section class="hw-dev-section">${head}
-      <p class="hw-dev-empty">No block has an occupancy detector or current-sense binding yet. Bind one in a block's editor to poke it here.</p>${faults}</section>`;
+      <p class="hw-dev-empty">No block has an occupancy detector or current-sense binding yet. Bind one in a block's editor to poke it here.</p>${rig}${faults}</section>`;
   }
   const rowHtml = rows.map((r) => {
     const occ = r.hasDigital
@@ -1005,7 +1017,7 @@ function devSectionHtml(): string {
     <div class="hw-dev-rows">
       <div class="hw-dev-row hw-dev-head"><span>Block</span><span>Occupancy</span><span>Current</span><span>Reads back</span></div>
       ${rowHtml}
-    </div>${faults}</section>`;
+    </div>${rig}${faults}</section>`;
 }
 
 function controllerStageHtml(): string {
@@ -1406,6 +1418,10 @@ async function onClick(e: Event): Promise<void> {
     case 'dev-current': return void setDevCurrent(id);
     case 'dev-fault': return void toggleDevFault(id);
     case 'dev-fault-clear': return void clearDevFaults();
+    case 'dev-rig-start': return void commandVirtualRig('start');
+    case 'dev-rig-advance': return void commandVirtualRig('advance');
+    case 'dev-rig-stall': return void commandVirtualRig('stall');
+    case 'dev-rig-remove': return void commandVirtualRig('remove');
     case 'save': return void save();
     case 'restart': return void restart();
     case 'jump': return jumpTo(target.dataset.key || '');
@@ -1420,6 +1436,7 @@ function onChange(e: Event): void {
   else if (t.dataset.hw === 'latch') { setChip(id, (c) => { c.spi_select = (t as HTMLSelectElement).value; }); }
   else if (t.dataset.hw === 'addr') { setAddress(id, (t as HTMLInputElement).value); }
   else if (t.dataset.hw === 'ports') { setPorts(id, (t as HTMLInputElement).value); }
+  else if (t.dataset.hw === 'dev-rig-blocks') { virtualRigBlocksDraft = (t as HTMLInputElement).value; }
   else if (t.dataset.hw === 'polarity') {
     setChip(id, (c) => { c.active_low = (t as HTMLInputElement).value === 'low'; });
   }
@@ -1547,6 +1564,22 @@ async function clearDevFaults(): Promise<void> {
   }
 }
 
+async function commandVirtualRig(action: string): Promise<void> {
+  try {
+    const payload: any = {};
+    if (action === 'start') {
+      payload.blocks = virtualRigBlocksDraft.split(',').map((id) => id.trim()).filter(Boolean);
+    } else if (action === 'stall') {
+      payload.stalled = !virtualRig?.stalled;
+    }
+    const response = await api.commandVirtualRigScenario(action, payload);
+    virtualRig = response?.scenario ?? null;
+    render();
+  } catch (e: any) {
+    showToast(e?.message || 'Virtual Rig command failed.', 'error', 3000);
+  }
+}
+
 function startDevPoll(): void {
   if (devPollTimer || !sessionInfo?.develop_active) return;
   void pollDev();
@@ -1556,9 +1589,13 @@ function startDevPoll(): void {
 async function pollDev(): Promise<void> {
   if (!sessionInfo?.develop_active) return;
   try {
-    const res = await api.getHwDebugState();
+    const [res, rig] = await Promise.all([
+      api.getHwDebugState(),
+      api.getVirtualRigScenario(),
+    ]);
     if (res?.develop_active) {
       devReadback = res;
+      virtualRig = rig?.scenario ?? null;
       // Don't clobber a current-mA field the user is editing.
       const active = document.activeElement as HTMLElement | null;
       if (active?.getAttribute?.('data-hw') !== 'dev-current-in') render();

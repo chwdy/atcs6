@@ -613,6 +613,22 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
+  async getVirtualRigScenario(): Promise<any> {
+    return this._request(
+      '/virtual-hardware/scenario',
+      {},
+      'getVirtualRigScenario'
+    );
+  }
+
+  async commandVirtualRigScenario(action: string, payload: any = {}): Promise<any> {
+    return this._request(
+      '/virtual-hardware/scenario',
+      { method: 'POST', body: { action, ...payload } },
+      'commandVirtualRigScenario'
+    );
+  }
+
   // === Segment Geometry (the geometry axis: /api/segments) ===
   //
   // A `Segment` owns geometry only — ordered tiles, length, min radius, grade

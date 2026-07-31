@@ -89,6 +89,9 @@ def register(app, state: AppState) -> None:
     """Register the hardware-configuration routes."""
     if not hasattr(state, "commissioning_active"):
         state.commissioning_active = False
+    from hardware.virtual_rig import VirtualRig
+    virtual_rig = VirtualRig()
+    virtual_rig_device = {"value": None}
 
     @contextmanager
     def _bus_guard():
@@ -811,6 +814,40 @@ def register(app, state: AppState) -> None:
         with state.simulation_lock:
             device.clear_faults()
         return jsonify({"ok": True, "faults": device.fault_status()})
+
+    @app.route("/api/virtual-hardware/scenario", methods=["GET", "POST"])
+    def virtual_hardware_scenario():
+        device = _require_fake()
+        if device is None:
+            return jsonify(_NOT_DEVELOP), 409
+        if virtual_rig_device["value"] is not device:
+            virtual_rig.blocks = []
+            virtual_rig.index = None
+            virtual_rig.stalled = False
+            virtual_rig_device["value"] = device
+        if request.method == "GET":
+            return jsonify({"ok": True, "scenario": virtual_rig.status()})
+
+        data = request.get_json(silent=True) or {}
+        action = str(data.get("action", "status"))
+        cfg = hardware_config.get_hardware_config()
+        try:
+            with state.simulation_lock:
+                if action == "start":
+                    scenario = virtual_rig.start(cfg, device, data.get("blocks") or [])
+                elif action == "advance":
+                    scenario = virtual_rig.advance(cfg, device)
+                elif action == "stall":
+                    scenario = virtual_rig.set_stalled(bool(data.get("stalled", True)))
+                elif action == "remove":
+                    scenario = virtual_rig.remove(cfg, device)
+                elif action == "status":
+                    scenario = virtual_rig.status()
+                else:
+                    raise ValueError(f"unknown scenario action {action!r}")
+        except ValueError as exc:
+            return jsonify({"status": "error", "error": str(exc)}), 400
+        return jsonify({"ok": True, "scenario": scenario})
     @app.route("/api/operation/environment", methods=["GET"])
     def get_operation_environment():
         return jsonify({

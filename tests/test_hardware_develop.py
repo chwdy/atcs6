@@ -383,3 +383,21 @@ def test_virtual_hardware_fault_api_controls_the_live_fake(client):
 
     cleared = test_client.post("/api/virtual-hardware/faults/clear").get_json()
     assert not any(cleared["faults"].values())
+
+
+def test_virtual_rig_api_places_and_removes_a_train_through_detectors(client):
+    test_client, state = client
+    occupancy, _track, _switch = _boot_develop_session(state)
+
+    placed = test_client.post(
+        "/api/virtual-hardware/scenario",
+        json={"action": "start", "blocks": ["B1"]},
+    ).get_json()
+    assert placed["scenario"]["block_id"] == "B1"
+    assert occupancy.read_block_currents()["B1"] is True
+
+    removed = test_client.post(
+        "/api/virtual-hardware/scenario", json={"action": "remove"}
+    ).get_json()
+    assert removed["scenario"]["active"] is False
+    assert occupancy.read_block_currents()["B1"] is False
