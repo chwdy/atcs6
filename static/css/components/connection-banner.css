@@ -1,0 +1,77 @@
+/* Connection-loss banner (frontend/src/ui/connection-monitor.ts).
+ *
+ * Deliberately NOT the §6 `.banner` primitive: that one is a single-line
+ * diagnostic strip that lives inside a panel footer. This is app-level chrome
+ * that overlays the shell while the server is unreachable, so it gets its own
+ * shape and does not inherit panel-footer sizing.
+ *
+ * Warning, not danger: while we are still retrying, the state is "unknown",
+ * and DESIGN_LANGUAGE.md reserves danger for confirmed faults. A confirmed
+ * unsafe shutdown is reported by an error toast instead.
+ */
+
+.connection-banner {
+    position: fixed;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 9500; /* above the shell, below toasts (10000) */
+
+    display: flex;
+    align-items: center;
+    gap: 10px;
+
+    max-width: min(680px, calc(100vw - 32px));
+    padding: 8px 18px;
+
+    background: var(--bg-panel);
+    border: 1px solid var(--warning-color);
+    border-top: none;
+    border-radius: 0 0 var(--radius-md) var(--radius-md);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--text-primary);
+
+    /* Fade only. `transform` is load-bearing here (it does the centering), so
+     * animating it would leave the banner mispositioned any time the animation
+     * does not run to completion — a hidden/background tab never starts it at
+     * all, which strands the element at the `from` offset, off-screen. Opacity
+     * has no such failure mode: the resting state is the correct state. */
+    animation: connection-banner-in 0.22s ease;
+}
+
+.connection-banner-icon {
+    font-size: 16px;
+    flex-shrink: 0;
+    color: var(--warning-color);
+}
+
+.connection-banner-text {
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.connection-banner-detail {
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+@keyframes connection-banner-in {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .connection-banner {
+        animation: none;
+    }
+}

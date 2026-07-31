@@ -18,6 +18,11 @@ import { SimEditorPlugin } from './editor/sim-plugin';
 import { TrainMonitor } from './panels/train-monitor';
 import { updateFatalBanner } from './panels/fatal-banner';
 import { startRestartReconnectFlow } from './ui/restart-flow';
+import {
+  startConnectionMonitor,
+  noteRequestFailure,
+  noteRequestSuccess,
+} from './ui/connection-monitor';
 import { setupSettingsPanel } from './ui/settings-panel';
 import { setupHardwarePanel, refreshHardwarePanel } from './ui/hardware-panel';
 import { updateTrainDebugPanel as renderTrainDebugPanel, hideTrainDebugPanel as renderHideTrainDebugPanel } from './panels/train-debug-panel';
@@ -89,6 +94,12 @@ class App {
     this.setupViewControls();
     this.setupPanelToggles();
     this.watchToolRailFit();
+    // Learns this process's boot id (so a reconnect can tell "same server" from
+    // "restarted server") and reports a previous run that died without safing
+    // its outputs. Fire-and-forget: nothing else waits on it.
+    startConnectionMonitor().catch((e: any) =>
+      console.warn('[App] Connection monitor init failed:', e)
+    );
     this.refreshNetwork();
   }
 
@@ -622,8 +633,18 @@ class App {
 
   async loadSelectedLayout(filename: string): Promise<void> {
     try {
-      await api.loadLayout(filename);
+      const result = await api.loadLayout(filename);
       showToast('Layout loaded successfully', 'success');
+
+      // The layout carries its own hardware configuration. Adopting it changes
+      // the wiring the NEXT session builds on, so say so rather than let the
+      // chip inventory and bindings change silently.
+      if (result?.warning) {
+        showToast(`Warning: ${result.warning}`, 'warning');
+      } else if (result?.hardware === 'applied') {
+        showToast("This layout's hardware configuration was applied — restart to run on it", 'info');
+      }
+
       this.closeModal(document.getElementById('load-layout-modal'));
       await this.refreshNetwork();
     } catch (e: any) {
@@ -741,8 +762,10 @@ class App {
         this.editor.validateCurrentEditor();
         // Don't call drawWithHoverPreview here - setCachedNetwork triggers updateHoverPreview
         // which will call drawWithHoverPreview after re-validating the signal state
+        noteRequestSuccess();
       } catch (e: any) {
         console.error('[App] Failed to refresh network:', e);
+        noteRequestFailure(e);
       }
       return;
     }
@@ -801,8 +824,13 @@ class App {
 
       // Surface a fatal-conflict halt (failed_runtime) if one is active.
       updateFatalBanner(network, this.renderer);
+      noteRequestSuccess();
     } catch (e: any) {
       console.error('[App] Failed to refresh network:', e);
+      // The 200ms sim poll is the fastest thing the page does, so it is where
+      // a dead server shows up first. An HTTP error is ignored inside — the
+      // server answered, so it is alive.
+      noteRequestFailure(e);
     }
   }
 
