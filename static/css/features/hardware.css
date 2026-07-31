@@ -862,6 +862,51 @@
     cursor: pointer;
 }
 
+/* Idle-threshold field — same chip as the develop/enable toggles beside it, but
+   it carries a number instead of a switch, so no cursor: pointer. */
+.hw-deadband {
+    display: flex;
+    align-items: center;
+    gap: var(--space-8);
+    padding: var(--space-6) var(--space-10);
+    border-radius: var(--control-radius-sm);
+    border: 1px solid var(--border-color);
+    background: var(--bg-panel);
+}
+
+.hw-deadband-text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.hw-deadband-label {
+    font-size: var(--font-size-value);
+    font-weight: 650;
+    color: var(--text-primary);
+}
+
+.hw-deadband-sub {
+    font-size: var(--font-size-label);
+    color: var(--text-secondary);
+}
+
+.hw-deadband-field {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+}
+
+.hw-deadband-field .property-input {
+    width: 68px;
+    text-align: right;
+}
+
+.hw-deadband-unit {
+    font-size: var(--font-size-label);
+    color: var(--text-secondary);
+}
+
 .hw-develop-text {
     display: flex;
     flex-direction: column;
@@ -1307,4 +1352,75 @@
     margin-top: var(--space-10);
     padding-top: var(--space-8);
     border-top: 1px solid var(--border-color);
+}
+
+/* --- layout coverage (stage 3) --------------------------------------------
+   The tally of blocks / switches actually bound to a port. Warning, never
+   danger: an unwired block is configuration still in progress, not a fault on
+   the layout — see DESIGN_LANGUAGE.md on reserving danger for faults. */
+.hw-coverage {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-6);
+}
+
+.hw-coverage-row {
+    display: grid;
+    grid-template-columns: minmax(0, max-content) max-content minmax(0, 1fr);
+    align-items: baseline;
+    gap: var(--space-10);
+    padding: var(--space-8) var(--space-10);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    background: var(--bg-dark);
+}
+
+.hw-coverage-row.ok {
+    border-color: rgba(var(--success-rgb), 0.35);
+}
+
+.hw-coverage-row.warn {
+    border-color: rgba(var(--warning-rgb), 0.45);
+    background: rgba(var(--warning-rgb), 0.06);
+}
+
+.hw-coverage-label {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-6);
+    font-size: var(--font-size-body);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.hw-coverage-row.ok .hw-coverage-label i {
+    color: var(--success-color);
+}
+
+.hw-coverage-row.warn .hw-coverage-label i {
+    color: var(--warning-color);
+}
+
+.hw-coverage-count {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-label);
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.hw-coverage-note {
+    min-width: 0;
+    font-size: var(--font-size-micro);
+    line-height: 1.5;
+    color: var(--text-tertiary);
+}
+
+@media (max-width: 640px) {
+    .hw-coverage-row {
+        grid-template-columns: minmax(0, 1fr) max-content;
+    }
+
+    .hw-coverage-note {
+        grid-column: 1 / -1;
+    }
 }

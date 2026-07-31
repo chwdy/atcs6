@@ -184,9 +184,9 @@ def remove_segment_from_block(
 def update_block(state: AppState, block_id: str, *, data: Dict[str, Any]):
     """Update a block's config and/or availability flags (NOT geometry).
 
-    Handles ``name``, ``is_holding_point``, the ``disabled`` / ``manual``
-    availability flags, and the static ``allowed_travel_directions`` policy.
-    Geometry fields are rejected — they live on the member segments and are
+    Handles ``name``, ``is_holding_point``, ``polarity_reversed``, the
+    ``disabled`` / ``manual`` availability flags, and the static
+    ``allowed_travel_directions`` policy. Geometry fields are rejected — they live on the member segments and are
     written through ``services.segment_service.update_segment``.
 
     Mutations happen under ``state.simulation_lock`` so the per-tick phase loop
@@ -251,6 +251,15 @@ def update_block(state: AppState, block_id: str, *, data: Dict[str, Any]):
         # runtime state; it only biases best-effort truncation.
         if "is_holding_point" in data:
             block.is_holding_point = bool(data["is_holding_point"])
+
+        # Electrical rail polarity (design_new.md "Power -> Track polarity").
+        # Wiring config, not a routing policy and not geometry, so it takes no
+        # occupancy precondition: the track driver reads it on the next write, so
+        # flipping it under a moving train reverses that train rather than
+        # corrupting any state. Block-scoped because a block is fed as one unit —
+        # it covers every member segment.
+        if "polarity_reversed" in data:
+            block.polarity_reversed = bool(data["polarity_reversed"])
 
         # Static block-level travel policy per design_new.md
         # `Block.allowed_travel_directions`. Must be a non-empty subset of

@@ -30,7 +30,7 @@ API so the selection survives the restart that applies it.
 import atexit
 from dataclasses import dataclass, field, fields
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from enums import OperationMode
 from hardware.catalog import (
@@ -121,7 +121,10 @@ class ChipConfig:
 
 @dataclass
 class PortBinding:
-    """A logical id's physical channel: which chip, which port on it."""
+    """A logical id's physical channel: which chip, which port on it.
+
+    Detector polarity is not part of a binding: a chain is wired one way
+    throughout, so `ChipConfig.active_low` states it once for the whole chip."""
 
     chip_id: str
     port: int
@@ -155,7 +158,9 @@ class SwitchBinding:
     the other toward DIVERGE — so a switch takes two bits, not a level on one.
     `port_standby` is the optional bit wired to a motor driver's standby/enable
     pin (a TB6612 needs it high before either coil does anything); leave it None
-    when the driver is always enabled in hardware.
+    when the driver is always enabled in hardware. Unlike the coil bits it is not
+    exclusive to this switch — one TB6612 puts both of its motor channels behind
+    a single STBY pin, so both switches on it name the same standby bit.
     """
 
     chip_id: str
@@ -209,7 +214,17 @@ class HardwareConfig:
     # build and held; there is no per-tick coast window. Empty when /OE is tied
     # enabled in hardware.
     output_enable: Dict[str, PortBinding] = field(default_factory=dict)
+    # Drive threshold for the hybrid occupancy detector: a block whose commanded
+    # voltage exceeds this magnitude is "driven" and read by its current channel;
+    # at or below it the '165 detector answers. Tunable because how small a
+    # commanded voltage still counts as parked is a property of the layout's
+    # drivers and detectors, not a constant. `None` means the module default.
+    idle_deadband_v: float = DEFAULT_IDLE_DEADBAND_V
 
+
+# A deadband at or above this would swallow ordinary crawl voltages and leave
+# every block reading idle, so the config layer refuses it.
+MAX_IDLE_DEADBAND_V = 5.0
 
 _config = HardwareConfig()
 
@@ -219,6 +234,14 @@ _config = HardwareConfig()
 # input state on the live session.
 _session_device: Optional[Any] = None
 
+# Whichever device the live session opened — the fake above in develop mode, the
+# physical CH347 otherwise; None in sim mode, where the session opened nothing.
+# The commissioning tools borrow this rather than opening a second handle: the
+# controller is a single USB HID endpoint, so a transient open while a session
+# holds it fails, and it used to fail with "is it plugged in?" on a bridge that
+# was plugged in and working. A borrowed device is never closed by the borrower.
+_live_device: Optional[Any] = None
+
 
 def get_hardware_config() -> HardwareConfig:
     """Return the live hardware-configuration singleton."""
@@ -226,8 +249,25 @@ def get_hardware_config() -> HardwareConfig:
 
 
 def get_session_device() -> Optional[Any]:
-    """The live session's fake device (develop mode only); None otherwise."""
+    """The live session's fake device (develop mode only); None otherwise.
+
+    Deliberately narrower than `get_live_device`: the `/api/debug/hw` endpoints
+    gate on this because they inject fake input state, which only a fake can
+    accept.
+    """
     return _session_device
+
+
+def get_live_device() -> Optional[Any]:
+    """The device the running session holds — fake or real — or None in sim mode.
+
+    For a caller that only wants to talk to the controller and does not care
+    which kind it is: the commissioning tests borrow it instead of opening a
+    second handle the driver would refuse. Read-only or briefly-driving callers
+    must hold `simulation_lock` while they use it, so a bench test cannot
+    interleave with a tick on the same bus.
+    """
+    return _live_device
 
 
 def is_real(cfg: Optional[HardwareConfig] = None) -> bool:
@@ -311,6 +351,7 @@ def _persist_dict(cfg: HardwareConfig) -> Dict[str, Any]:
         "block_occupancy_current": _current_binding_dict(cfg.block_occupancy_current),
         "switch_output": _switch_binding_dict(cfg.switch_output),
         "output_enable": _binding_dict(cfg.output_enable),
+        "idle_deadband_v": cfg.idle_deadband_v,
     }
 
 
@@ -476,7 +517,10 @@ def _merged_from_updates(updates: Dict[str, Any]) -> HardwareConfig:
         block_occupancy_current=dict(_config.block_occupancy_current),
         switch_output=dict(_config.switch_output),
         output_enable=dict(_config.output_enable),
+        idle_deadband_v=_config.idle_deadband_v,
     )
+    if "idle_deadband_v" in updates:
+        merged.idle_deadband_v = _parse_deadband(updates["idle_deadband_v"])
     if "enabled" in updates:
         merged.enabled = bool(updates["enabled"])
     if "develop" in updates:
@@ -503,6 +547,15 @@ def _merged_from_updates(updates: Dict[str, Any]) -> HardwareConfig:
 # ---------------------------------------------------------------------------
 def _validate(cfg: HardwareConfig) -> None:
     """Raise `HardwareConfigError` if `cfg` is not a valid v1 configuration."""
+    # A negative deadband is meaningless (the test is on magnitude) and one at or
+    # above the ceiling would mark every block idle, silently retiring the
+    # current-sense source.
+    if not (0.0 <= cfg.idle_deadband_v < MAX_IDLE_DEADBAND_V):
+        raise HardwareConfigError(
+            f"idle_deadband_v must be at least 0 and below {MAX_IDLE_DEADBAND_V} V, "
+            f"got {cfg.idle_deadband_v}"
+        )
+
     if cfg.controller.kind not in CONTROLLER_CATALOG:
         raise HardwareConfigError(
             f"controller kind must be one of {list(CONTROLLER_CATALOG)}, "
@@ -665,10 +718,20 @@ def _validate_switch_bindings(
     chips_by_id: Dict[str, ChipConfig],
 ) -> None:
     """Each switch names one switch-role chip and two distinct coil bits on it,
-    plus an optional distinct standby bit. Two coils sharing a bit would drive
-    both directions at once, so a repeat within an entry is rejected the same way
-    a repeat across entries is."""
-    used: set = set()
+    plus an optional standby bit.
+
+    Coil bits are exclusive: two switches sharing one would throw both machines
+    from one command, and two coils of one switch sharing a bit would drive both
+    directions at once — so a repeat is rejected within an entry and across
+    entries alike.
+
+    A standby bit is *not* exclusive. One TB6612 carries two motor channels
+    behind a single STBY pin, so the two switches wired to it name the same
+    standby bit. What is still refused is a standby bit that is some switch's
+    coil: the driver raises standby for the whole pulse, which would energize
+    that coil for as long as the enable is up."""
+    coil_ports: Dict[Tuple[str, int], str] = {}
+    standby_ports: Dict[Tuple[str, int], str] = {}
     for logical_id, b in m.items():
         chip = chips_by_id.get(b.chip_id)
         if chip is None:
@@ -702,11 +765,25 @@ def _validate_switch_bindings(
                 )
             seen_here.add(port)
             key = (b.chip_id, port)
-            if key in used:
+            if label == "standby":
+                standby_ports.setdefault(key, logical_id)
+                continue
+            if key in coil_ports:
                 raise HardwareConfigError(
                     f"switch_output: port {port} on chip {b.chip_id!r} is bound more than once"
                 )
-            used.add(key)
+            coil_ports[key] = logical_id
+
+    # A standby bit may be shared between switches but never with a coil. This
+    # runs after the loop because either one can be declared first.
+    for (chip_id, port), logical_id in standby_ports.items():
+        owner = coil_ports.get((chip_id, port))
+        if owner is not None:
+            raise HardwareConfigError(
+                f"switch_output[{logical_id!r}] standby port {port} on chip "
+                f"{chip_id!r} is a coil bit of switch {owner!r}; standby is held "
+                f"high for the whole pulse"
+            )
 
 
 def _validate_no_coil_port_reuse(
@@ -818,6 +895,76 @@ def apply_updates(updates: Dict[str, Any], *, persist: bool = True) -> HardwareC
     if persist:
         save_to_disk()
     return _config
+
+
+def coverage_report(
+    cfg: HardwareConfig,
+    block_ids: Iterable[str],
+    switch_ids: Iterable[str],
+) -> Dict[str, Any]:
+    """Which entities in a layout are wired, and which bindings name entities
+    the layout does not have.
+
+    `_validate` answers a different question — whether each binding points at a
+    real chip and an in-range port — and answers it about the bindings that
+    exist. It has nothing to say about the ones that do not, so a configuration
+    covering three of twelve blocks passes it cleanly and goes live. In real
+    mode that is not a partial win: `OccupancyDriver.read_block_currents`
+    returns only bound blocks, and the detector reads a block missing from that
+    map as permanently clear — so an unbound block is one no train can ever be
+    detected entering, and a train rolling into it stops committing its
+    progress. An unbound switch is one no route can align. Neither announces
+    itself; both look like the app being broken.
+
+    So this reports the gaps by name, for the setup screen to show before the
+    operator goes live. Purely descriptive: it decides nothing and blocks
+    nothing, because a layout being wired up a block at a time is the normal way
+    to arrive at a wired one.
+
+    A block counts as detected if EITHER occupancy source is bound — the digital
+    detector or the current-sense channel — since the driver falls back to
+    whichever it has.
+    """
+    blocks = sorted(set(block_ids))
+    switches = sorted(set(switch_ids))
+    detected = set(cfg.block_occupancy) | set(cfg.block_occupancy_current)
+
+    def split(ids: List[str], bound: Any) -> Dict[str, List[str]]:
+        return {
+            "bound": [i for i in ids if i in bound],
+            "unbound": [i for i in ids if i not in bound],
+        }
+
+    # A binding whose logical id is not in the layout: a block or switch that
+    # was renamed or deleted after it was wired. Harmless to the runtime, which
+    # simply never addresses it, but it is dead configuration and it makes the
+    # counts above read as better coverage than there is.
+    known_blocks, known_switches = set(blocks), set(switches)
+    stale = {
+        "block_occupancy": sorted(set(cfg.block_occupancy) - known_blocks),
+        "block_occupancy_current": sorted(
+            set(cfg.block_occupancy_current) - known_blocks
+        ),
+        "block_track": sorted(set(cfg.block_track) - known_blocks),
+        "switch_output": sorted(set(cfg.switch_output) - known_switches),
+    }
+
+    return {
+        "enabled": bool(cfg.enabled),
+        "blocks": {
+            "total": len(blocks),
+            "occupancy": split(blocks, detected),
+            "track": split(blocks, set(cfg.block_track)),
+        },
+        "switches": {"total": len(switches), **split(switches, set(cfg.switch_output))},
+        "stale": stale,
+        "complete": not (
+            [b for b in blocks if b not in detected]
+            or [b for b in blocks if b not in cfg.block_track]
+            or [s for s in switches if s not in cfg.switch_output]
+            or any(stale.values())
+        ),
+    }
 
 
 # The maps a plain (chip_id, port) binding covers. `block_track`, `switch_output`,
@@ -973,12 +1120,26 @@ def set_current_binding(
     return _config
 
 
-def config_from_payload(payload: Dict[str, Any]) -> HardwareConfig:
-    """Build and validate a standalone `HardwareConfig` from a full payload
-    (no merge with the singleton). Used by the self-test / port-test endpoints
-    to exercise the config a user is editing before it is saved."""
+def _parse_deadband(raw: Any) -> float:
+    """The idle deadband from either config path. `None` (or an absent key, via
+    the caller) means the module default, so clearing the field on the setup
+    screen restores it rather than dropping to zero."""
+    if raw is None:
+        return DEFAULT_IDLE_DEADBAND_V
+    try:
+        return float(raw)
+    except (TypeError, ValueError) as exc:
+        raise HardwareConfigError(
+            f"idle_deadband_v must be a number, got {raw!r}"
+        ) from exc
+
+
+def _config_from_dict(payload: Any) -> HardwareConfig:
+    """Build a standalone `HardwareConfig` from a whole-configuration dict, with
+    no merge against the singleton and no validation: an absent section takes its
+    default rather than the singleton's current value."""
     payload = payload if isinstance(payload, dict) else {}
-    cfg = HardwareConfig(
+    return HardwareConfig(
         enabled=bool(payload.get("enabled", False)),
         develop=bool(payload.get("develop", False)),
         controller=_parse_controller(payload.get("controller", {})),
@@ -988,9 +1149,44 @@ def config_from_payload(payload: Dict[str, Any]) -> HardwareConfig:
         block_occupancy_current=_parse_current_bindings(payload.get("block_occupancy_current", {})),
         switch_output=_parse_switch_bindings(payload.get("switch_output", {})),
         output_enable=_parse_bindings(payload.get("output_enable", {})),
+        idle_deadband_v=_parse_deadband(payload.get("idle_deadband_v")),
     )
+
+
+def config_from_payload(payload: Dict[str, Any]) -> HardwareConfig:
+    """Build and validate a standalone `HardwareConfig` from a full payload
+    (no merge with the singleton). Used by the self-test / port-test endpoints
+    to exercise the config a user is editing before it is saved."""
+    cfg = _config_from_dict(payload)
     _validate(cfg)
     return cfg
+
+
+def persisted_dict() -> Dict[str, Any]:
+    """The current configuration in its exact on-disk form — the same dict
+    `save_to_disk` writes. This is what a layout save file carries in its
+    `hardware` section, so a layout is portable with its wiring."""
+    return _persist_dict(_config)
+
+
+def apply_snapshot(data: Any, *, persist: bool = True) -> HardwareConfig:
+    """Adopt a whole configuration at once (a layout file's `hardware` section)
+    and, by default, write it to the app-managed config file so it survives the
+    restart that applies it.
+
+    Unlike `apply_updates`, this replaces the configuration rather than merging:
+    a section absent from `data` resets to its default instead of keeping the
+    running value, because a snapshot is a complete configuration, not a partial
+    edit. Bindings naming a chip the snapshot does not carry are dropped the same
+    way the setup screen drops them. On any violation nothing is committed and
+    `HardwareConfigError` is raised."""
+    candidate = _config_from_dict(data)
+    _prune_dangling_bindings(candidate)
+    _validate(candidate)   # raises before any commit
+    _apply(candidate)
+    if persist:
+        save_to_disk()
+    return _config
 
 
 def save_to_disk(path: Optional[str] = None) -> None:
@@ -1024,9 +1220,10 @@ def load_from_disk(path: Optional[str] = None) -> HardwareConfig:
 def reset_to_defaults() -> HardwareConfig:
     """Restore the all-virtual defaults on the singleton (used by tests). Does
     not touch the on-disk file."""
-    global _config, _session_device
+    global _config, _session_device, _live_device
     _config = HardwareConfig()
     _session_device = None
+    _live_device = None
     return _config
 
 
@@ -1072,6 +1269,8 @@ def _current_binding_tuples(
 
 def build_session_interfaces(
     cfg: Optional[HardwareConfig] = None,
+    *,
+    track_polarity_of: Optional[Callable[[str], bool]] = None,
 ) -> Tuple[Optional[Any], Optional[Any], Optional[Any]]:
     """Resolve the configuration to the session's interface overrides:
     `(input_interface, block_output_interface, switch_output_interface)`.
@@ -1082,12 +1281,17 @@ def build_session_interfaces(
     `None` (simulated). Any failure to bring up the driver, open the device, or
     initialize a chip raises `HardwareBackendUnavailable`, which `bootstrap.py`
     turns into a sim-mode fallback.
+
+    `track_polarity_of` answers `Block.polarity_reversed` for the track driver.
+    This module knows only logical ids, never the network, so the caller supplies
+    the lookup; passing the live network's read (rather than a snapshot) is what
+    lets an operator flip a block's rails without rebuilding the session.
     """
     cfg = cfg if cfg is not None else _config
     if not is_real(cfg):
         return None, None, None
 
-    global _session_device
+    global _session_device, _live_device
     if cfg.develop:
         # Develop mode: the same real-mode stack on the in-memory fake device.
         # No ch347api needed, and the loss-of-control watchdog stays unarmed —
@@ -1111,7 +1315,8 @@ def build_session_interfaces(
                 _switch_binding_tuples(cfg.switch_output),
                 block_occupancy_current=_current_binding_tuples(cfg.block_occupancy_current),
                 output_enable=_binding_tuples(cfg.output_enable),
-                idle_deadband_v=DEFAULT_IDLE_DEADBAND_V,
+                idle_deadband_v=cfg.idle_deadband_v,
+                track_polarity_of=track_polarity_of,
                 watchdog_timeout_s=None,
             )
         except Exception as exc:
@@ -1119,6 +1324,7 @@ def build_session_interfaces(
                 f"failed to initialize fake hardware chips: {exc}"
             ) from exc
         _session_device = device
+        _live_device = device
         atexit.register(device.close)
         return interfaces
 
@@ -1148,7 +1354,8 @@ def build_session_interfaces(
             _switch_binding_tuples(cfg.switch_output),
             block_occupancy_current=_current_binding_tuples(cfg.block_occupancy_current),
             output_enable=_binding_tuples(cfg.output_enable),
-            idle_deadband_v=DEFAULT_IDLE_DEADBAND_V,
+            idle_deadband_v=cfg.idle_deadband_v,
+            track_polarity_of=track_polarity_of,
             # A real session drives real track; arm the loss-of-control watchdog
             # (design_new.md "Power -> Hardware interface boundary").
             watchdog_timeout_s=DEFAULT_WATCHDOG_TIMEOUT_S,
@@ -1165,5 +1372,8 @@ def build_session_interfaces(
     # The device holds a USB handle for the life of the session; release it at
     # process exit, after the safe-state zeroing that other atexit hooks issue
     # (they are registered later, so they run first under atexit's LIFO order).
+    # Publishing it as the live device is what lets the commissioning tests run
+    # against the rig instead of failing to open a second handle for it.
+    _live_device = device
     atexit.register(device.close)
     return interfaces

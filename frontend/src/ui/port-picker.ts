@@ -11,8 +11,9 @@
  *
  * Opened with `pickPorts(...)`, which resolves to the picked lines when the user
  * saves, or `null` when they cancel. The caller persists them; the picker itself
- * writes no configuration. Double-clicking an output line pulses it on the real
- * controller so a wire can be identified before it is bound.
+ * writes no configuration. Double-clicking an output line drives it high on the
+ * real controller for a second — long enough to read on a meter — so a wire can
+ * be identified before it is bound.
  */
 import { api } from '../lib/api';
 import { showToast } from '../lib/toast';
@@ -86,12 +87,34 @@ export function lineLabel(chip: PickerChip, line: number): string {
   return `P${line}`;
 }
 
-/** Where a chip sits, for the group header (mirrors the Hardware tab). */
-function chipCoordinate(chip: PickerChip): string {
+/** Where a chip sits on its bus — an I²C address or an SPI latch line. Empty
+ * when the chip has neither, which is the one case a name cannot be pinned to a
+ * physical part. */
+function chipAddress(chip: PickerChip): string {
   if (chip.i2c_address != null) {
     return `0x${Number(chip.i2c_address).toString(16).padStart(2, '0')}`;
   }
-  return chip.spi_select || chip.bus || '';
+  return (chip.spi_select || '').toUpperCase();
+}
+
+/** Where a chip sits, for the group header (mirrors the Hardware tab). */
+function chipCoordinate(chip: PickerChip): string {
+  return chipAddress(chip) || chip.bus || '';
+}
+
+/**
+ * A chip's name for a one-line reference, e.g. "ina219 0x41".
+ *
+ * The address is part of the name rather than a detail beside it: a rig with two
+ * of the same part reads "ina219" twice over, and the address is the only thing
+ * that says which one — the same designator that is on the chip's row in
+ * Hardware Setup. The bus is deliberately left out of this form: every chip on a
+ * bus shares it, so it tells two of them apart no better than the kind does.
+ */
+export function chipDisplayName(chip: PickerChip): string {
+  const name = chip.label || chip.kind;
+  const addr = chipAddress(chip);
+  return addr ? `${name} ${addr}` : name;
 }
 
 const key = (chipId: string, line: number) => `${chipId}::${line}`;
@@ -160,7 +183,7 @@ export function pickPorts(opts: PickPortsOptions): Promise<Record<string, Picked
           const p = picked[s.key];
           const chip = p && chips.find((c) => c.chip_id === p.chip_id);
           const value = p && chip
-            ? `${chip.label || chip.kind} · ${lineLabel(chip, p.line)}`
+            ? `${chipDisplayName(chip)} · ${lineLabel(chip, p.line)}`
             : 'not set';
           const cls = [
             'pp-slot',
@@ -203,16 +226,20 @@ export function pickPorts(opts: PickPortsOptions): Promise<Record<string, Picked
               : byOther
                 ? `${lineLabel(chip, line)} — already used by ${byOther}`
                 : opts.direction === 'output'
-                  ? `${lineLabel(chip, line)} — click to assign, double-click to pulse`
+                  ? `${lineLabel(chip, line)} — click to assign, double-click to pulse for 1 s`
                   : `${lineLabel(chip, line)} — click to assign`;
             return `<button type="button" class="${cls}" data-chip="${esc(chip.chip_id)}"
                 data-line="${line}" title="${esc(title)}">${esc(lineLabel(chip, line))}</button>`;
           }).join('');
           const coord = chipCoordinate(chip);
+          // An unlabelled chip is named by its kind, so repeating the kind in the
+          // meta line says nothing — the coordinate alone is what identifies it.
+          const name = chip.label || chip.kind;
+          const meta = [name === chip.kind ? '' : chip.kind, coord].filter(Boolean).join(' · ');
           return `<div class="pp-chip">
               <div class="pp-chip-head">
-                <span class="pp-chip-name">${esc(chip.label || chip.kind)}</span>
-                <span class="pp-chip-meta">${esc(chip.kind)}${coord ? ` · ${esc(coord)}` : ''}</span>
+                <span class="pp-chip-name">${esc(name)}</span>
+                <span class="pp-chip-meta">${esc(meta)}</span>
               </div>
               <div class="pp-grid">${cells}</div>
             </div>`;
@@ -236,7 +263,7 @@ export function pickPorts(opts: PickPortsOptions): Promise<Record<string, Picked
         <div class="pp-body">${gridHtml()}</div>
         <p class="pp-hint">${hint}${
           chips.length && opts.direction === 'output'
-            ? ' Double-click a line to pulse it on the controller.'
+            ? ' Double-click a line to drive it high for 1 s — long enough to read on a meter.'
             : ''
         }</p>
         <div class="pp-foot">

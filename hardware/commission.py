@@ -20,6 +20,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from hardware.catalog import SWITCH_THROW_PULSE_S
+from hardware.chips.hc595 import sleep_holding
 from hardware.interfaces import build_chip
 
 # Reclaim a session left open by an abandoned client after this long idle.
@@ -39,19 +40,40 @@ class CommissionSession:
         # (chip_id, port) pairs carrying a switch coil / standby bit, from the
         # config the session was opened with.
         self._switch_ports: set = set()
+        # True when `_device` belongs to a running operation session rather than
+        # to this one: it is neither cleared on open nor closed on close.
+        self._borrowed = False
         self._last = 0.0
 
-    def open(self, cfg: Any, open_device: Optional[Callable[[], Any]] = None) -> None:
+    def open(
+        self,
+        cfg: Any,
+        open_device: Optional[Callable[[], Any]] = None,
+        device: Optional[Any] = None,
+    ) -> None:
         """Open (or reclaim) the session for `cfg` and build its chip drivers.
 
         Clears every shift-out chain on the way in, the same as a real session
         build: a reclaimed session inherits whatever bits the abandoned client
-        left latched, and this screen exists to be poked at with coils wired up."""
+        left latched, and this screen exists to be poked at with coils wired up.
+
+        `device` borrows an already-open device — the running operation
+        session's — instead of opening one, because the controller is a single
+        USB endpoint and a second open is refused. A borrowed device is NOT
+        cleared on the way in and NOT closed on the way out: those chains are
+        driving a live layout, so dropping every bit would zero the track and
+        release the PCA output-enable hold mid-session. The caller is
+        responsible for serializing use against the tick.
+        """
         with self._lock:
             self._expire_locked()
-            if self._device is None:
+            if device is not None:
+                self._device = device
+                self._borrowed = True
+            elif self._device is None:
                 opener = open_device or (lambda: self._open_real(cfg))
                 self._device = opener()
+                self._borrowed = False
             self._chips = {c.chip_id: build_chip(self._device, c) for c in cfg.chips}
             self._kinds = {c.chip_id: c.kind for c in cfg.chips}
             self._configured = set()
@@ -63,9 +85,10 @@ class CommissionSession:
                 for b in getattr(cfg, "switch_output", {}).values()
                 for port in b.ports
             }
-            for chip in self._chips.values():
-                if hasattr(chip, "all_off"):
-                    chip.all_off()
+            if not self._borrowed:
+                for chip in self._chips.values():
+                    if hasattr(chip, "all_off"):
+                        chip.all_off()
             self._touch()
 
     def set_output(self, chip_id: str, line: int, duty: float) -> None:
@@ -129,6 +152,12 @@ class CommissionSession:
         standby low before the bit. What the user confirms at the bench is
         therefore the drive the runtime issues.
 
+        `pulse_s` therefore defaults to the runtime throw width and should stay
+        there for a "watch the switch throw" test. A caller measuring the bit
+        rather than watching the points (a meter on the pin) passes a longer
+        width; the sleep re-latches inside the guard window so the hold survives,
+        and it is the caller's business that a coil can be on the other end.
+
         The Hardware Setup output sweep also runs through here rather than
         `set_output`, because a bit it walks across may be wired to a coil; it
         names no `off_port`, having no notion of a coil pair. De-energizing runs
@@ -146,7 +175,7 @@ class CommissionSession:
                 chip.set_output(port, True)
                 if off_port is not None:
                     chip.set_output(off_port, False)
-                time.sleep(pulse_s)
+                sleep_holding(chip, pulse_s)
             finally:
                 if standby_port is not None:
                     chip.set_output(standby_port, False)
@@ -222,17 +251,22 @@ class CommissionSession:
     def _close_locked(self) -> None:
         if self._device is None:
             return
-        try:
-            for chip in self._chips.values():
-                if hasattr(chip, "all_off"):
-                    chip.all_off()
-        except Exception:
-            pass
-        try:
-            self._device.close()
-        except Exception:
-            pass
+        # A borrowed device is the running session's: it keeps driving after
+        # this screen is done with it, so neither the de-energizing sweep nor
+        # the close applies. Letting go of the reference is the whole of it.
+        if not self._borrowed:
+            try:
+                for chip in self._chips.values():
+                    if hasattr(chip, "all_off"):
+                        chip.all_off()
+            except Exception:
+                pass
+            try:
+                self._device.close()
+            except Exception:
+                pass
         self._device = None
+        self._borrowed = False
         self._chips = {}
         self._kinds = {}
         self._configured = set()

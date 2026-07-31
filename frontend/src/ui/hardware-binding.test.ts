@@ -102,6 +102,21 @@ describe('block hardware section', () => {
     expect(current.some((o) => o.startsWith('Detectors'))).toBe(false);
   });
 
+  it('addresses each sensor in the dropdown, so two of a kind are tellable apart', () => {
+    // Two unlabelled ina219s both read "ina219 · CH1" without the address, and
+    // the user cannot see which one a block would be bound to.
+    const html = section(cfg({
+      chips: [
+        { chip_id: 'cur0', kind: 'ina219', role: 'occupancy_input', port_kind: 'current_sense', port_count: 1, line_count: 1, bus: 'i2c', i2c_address: 0x40 },
+        { chip_id: 'cur1', kind: 'ina219', role: 'occupancy_input', port_kind: 'current_sense', port_count: 1, line_count: 1, bus: 'i2c', i2c_address: 0x41 },
+      ] as any,
+      block_occupancy_current: { [BLOCK]: { chip_id: 'cur1', port: 0 } },
+    }));
+    const current = optionsOf(html, 'hw-cur-select');
+    expect(current).toContain('ina219 0x40 · CH1');
+    expect(current).toContain('ina219 0x41 · CH1');
+  });
+
   it('gives the occupancy pair one shared test, and track power its own sweep', () => {
     const html = section(cfg());
     expect(html).toContain('hw-occ-test');       // one test for both detectors
@@ -161,7 +176,7 @@ describe('occupancy test report', () => {
     const html = occupancyResultHtml(report());
     const rows = rowsOf(html);
     expect(rows[0]).toContain('0.0 V · idle');
-    expect(rows[1]).toContain('P3 · occupied');
+    expect(rows[1]).toContain('P3 · reads 1 · occupied');
     // The current detector disagrees, and is still shown rather than hidden.
     expect(rows[2]).toContain('0.8 mA');
     expect(rows[2]).toContain('trips at ±15.0');
@@ -186,6 +201,18 @@ describe('occupancy test report', () => {
     expect(rows[2]).toContain('deciding');
     expect(verdict(html)).toBe('Clear — the block is driving, so the driving detector decides');
     expect(html).toContain('hw-occ-verdict is-clear');
+  });
+
+  it('shows the pin level next to the conclusion, and says when they differ', () => {
+    // On reversed wiring a pin reading 0 legitimately means occupied. Printing
+    // only the conclusion makes a correctly-configured detector look broken.
+    const html = occupancyResultHtml(report({
+      digital: {
+        bound: true, chip_id: 'det0', port: 3, value: false, occupied: true,
+        active_low: true,
+      },
+    }));
+    expect(rowsOf(html)[1]).toContain('P3 · reads 0 (reversed) · occupied');
   });
 
   it('reads a reverse-polarity block as driven', () => {

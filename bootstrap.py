@@ -226,7 +226,15 @@ def bootstrap_runtime(
     hw_cfg = hardware_config.get_hardware_config()
     try:
         input_interface, block_output_interface, switch_output_interface = (
-            hardware_config.build_session_interfaces(hw_cfg)
+            hardware_config.build_session_interfaces(
+                hw_cfg,
+                # Read through to the live block, so flipping a block's rail
+                # polarity in the editor lands on the next track write rather
+                # than waiting for a restart.
+                track_polarity_of=lambda block_id: bool(
+                    getattr(network.get_block(block_id), "polarity_reversed", False)
+                ),
+            )
         )
         operation_mode = hardware_config.derive_operation_mode(hw_cfg)
     except hardware_config.HardwareBackendUnavailable as exc:

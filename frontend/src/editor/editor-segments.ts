@@ -9,6 +9,9 @@
 // tracked separately throughout (`segmentId` vs `blockId`): for a single-segment
 // block they happen to be equal, which is exactly why they must never be mixed.
 //
+// Hardware port binding is NOT here: power is fed per block, so the Hardware
+// section lives on the Block panel (`editor-block-grouping.ts`).
+//
 // Owned by the Editor (`new SegmentEditorHandler(this)`).
 
 import { showToast } from '../lib/toast';
@@ -32,12 +35,6 @@ import {
   applyStructuralLock,
 } from '../lib/helpers';
 import { anchorToTiles } from '../lib/popover-anchor';
-import {
-  fetchHardwareConfig,
-  hardwareSectionHtml,
-  bindHardwareSection,
-  BLOCK_HW_SLOTS,
-} from '../ui/hardware-binding';
 
 export class SegmentEditorHandler {
   editor: EditorHost;
@@ -151,10 +148,6 @@ export class SegmentEditorHandler {
     } catch (err) {
       console.warn('[SegmentEditorHandler] Owning block not readable:', blockId, err);
     }
-
-    // Per-entity hardware binding (occupancy + track port). Null when hardware
-    // is off or the fetch fails, in which case the section renders nothing.
-    const hwCfg = await fetchHardwareConfig();
 
     // Occupancy / availability state comes from the owning block.
     const stateText = (block.state || 'free').toUpperCase();
@@ -299,8 +292,6 @@ export class SegmentEditorHandler {
                     })}
                 </div>
 
-                ${hardwareSectionHtml(hwCfg, blockId, BLOCK_HW_SLOTS)}
-
                 <!-- Maintenance — read-only usage counter (design_new.md
                      "Maintenance counters"); accrues while the simulation runs.
                      Occupancy time is measured on the owning block. -->
@@ -334,16 +325,10 @@ export class SegmentEditorHandler {
     this._setupSubscription(blockId);
 
     // Initialize event handlers after content is rendered
-    setTimeout(() => this.initEditorHandlers(segmentId, blockId, hwCfg), 0);
+    setTimeout(() => this.initEditorHandlers(segmentId, blockId), 0);
   }
 
-  async initEditorHandlers(
-    segmentId: string,
-    blockId: string,
-    hwCfg: any = null,
-  ): Promise<void> {
-    // Hardware binding is per BLOCK (occupancy detector + track feed).
-    bindHardwareSection(hwCfg, blockId);
+  async initEditorHandlers(segmentId: string, blockId: string): Promise<void> {
     const deleteBtn = this.editor.$id('delete-segment-btn') as HTMLButtonElement | null;
     const nameInput = this.editor.$id('segment-name-input') as HTMLInputElement | null;
     const lengthInput = this.editor.$id('segment-length-input') as HTMLInputElement | null;

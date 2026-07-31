@@ -81,7 +81,7 @@ def test_as_dict_shape():
     assert keys == {
         "enabled", "develop", "controller", "chips",
         "block_track", "block_occupancy", "block_occupancy_current",
-        "switch_output", "output_enable",
+        "switch_output", "output_enable", "idle_deadband_v",
     }
 
 
@@ -204,6 +204,61 @@ def test_rejects_non_cascadable_chain_length():
         hardware_config.config_from_payload({"chips": [
             {"chip_id": "p", "kind": "pca9685", "i2c_address": "0x40", "chain_length": 2},
         ]})
+
+
+# --- idle deadband: the drive threshold the hybrid detector selects on -------
+def test_idle_deadband_defaults_and_round_trips():
+    assert hardware_config.get_hardware_config().idle_deadband_v == (
+        hardware_config.DEFAULT_IDLE_DEADBAND_V
+    )
+    hardware_config.apply_updates({"idle_deadband_v": 1.5}, persist=False)
+    assert hardware_config.get_hardware_config().idle_deadband_v == 1.5
+    assert hardware_config.as_dict()["idle_deadband_v"] == 1.5
+
+
+def test_idle_deadband_null_restores_the_default():
+    hardware_config.apply_updates({"idle_deadband_v": 1.5}, persist=False)
+    hardware_config.apply_updates({"idle_deadband_v": None}, persist=False)
+    assert hardware_config.get_hardware_config().idle_deadband_v == (
+        hardware_config.DEFAULT_IDLE_DEADBAND_V
+    )
+
+
+def test_idle_deadband_survives_an_unrelated_update():
+    """Absent keys keep their value, so editing chips must not reset it."""
+    hardware_config.apply_updates({"idle_deadband_v": 0.8}, persist=False)
+    hardware_config.apply_updates(_real_payload(), persist=False)
+    assert hardware_config.get_hardware_config().idle_deadband_v == 0.8
+
+
+def test_idle_deadband_survives_the_layout_snapshot_round_trip():
+    """A layout file carries the whole hardware configuration, so the deadband
+    must come back with it — the persist path and the whole-config parse path
+    have to agree on the key."""
+    hardware_config.apply_updates({"idle_deadband_v": 1.25}, persist=False)
+    snapshot = hardware_config.persisted_dict()
+    hardware_config.reset_to_defaults()
+    hardware_config.apply_snapshot(snapshot, persist=False)
+    assert hardware_config.get_hardware_config().idle_deadband_v == 1.25
+
+
+def test_rejects_negative_idle_deadband():
+    with pytest.raises(hardware_config.HardwareConfigError):
+        hardware_config.config_from_payload({"idle_deadband_v": -0.1})
+
+
+def test_rejects_idle_deadband_that_would_retire_current_sense():
+    """At or above the ceiling every block reads idle, so the current-sense
+    source would never be selected — refused rather than silently ignored."""
+    with pytest.raises(hardware_config.HardwareConfigError):
+        hardware_config.config_from_payload(
+            {"idle_deadband_v": hardware_config.MAX_IDLE_DEADBAND_V}
+        )
+
+
+def test_rejects_non_numeric_idle_deadband():
+    with pytest.raises(hardware_config.HardwareConfigError):
+        hardware_config.config_from_payload({"idle_deadband_v": "loud"})
 
 
 def test_ina3221_requires_i2c_address():
@@ -378,6 +433,40 @@ def test_switch_standby_sharing_a_coil_port_rejected():
                 "SW": {"chip_id": "s", "port_main": 2, "port_diverge": 3, "port_standby": 2},
             },
         })
+
+
+def test_switch_standby_bit_may_be_shared_between_switches():
+    """One TB6612 drives two point motors behind a single STBY pin, so the two
+    switches on it name the same standby bit. Only the coils are exclusive."""
+    cfg = hardware_config.config_from_payload({
+        "chips": [{"chip_id": "s", "kind": "hc595", "spi_select": "cs0"}],
+        "switch_output": {
+            "SW_A": {"chip_id": "s", "port_main": 0, "port_diverge": 1, "port_standby": 2},
+            "SW_B": {"chip_id": "s", "port_main": 3, "port_diverge": 4, "port_standby": 2},
+        },
+    })
+    assert cfg.switch_output["SW_A"].port_standby == 2
+    assert cfg.switch_output["SW_B"].port_standby == 2
+
+
+def test_switch_standby_sharing_another_switch_coil_rejected():
+    """Standby is held high for the whole pulse, so a bit that is also some other
+    switch's coil would energize that coil for the length of every throw. Refused
+    whichever entry declares it first."""
+    chips = [{"chip_id": "s", "kind": "hc595", "spi_select": "cs0"}]
+    coil_first = {
+        "SW_A": {"chip_id": "s", "port_main": 0, "port_diverge": 1},
+        "SW_B": {"chip_id": "s", "port_main": 3, "port_diverge": 4, "port_standby": 1},
+    }
+    standby_first = {
+        "SW_B": coil_first["SW_B"],
+        "SW_A": coil_first["SW_A"],
+    }
+    for switch_output in (coil_first, standby_first):
+        with pytest.raises(hardware_config.HardwareConfigError, match="coil bit of switch"):
+            hardware_config.config_from_payload(
+                {"chips": chips, "switch_output": switch_output}
+            )
 
 
 def test_switch_standby_port_round_trips():

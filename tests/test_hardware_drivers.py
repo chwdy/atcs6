@@ -24,12 +24,14 @@ from hardware import self_test
 from hardware.catalog import (
     CHIP_CATALOG,
     MAX_OUTPUT_HIGH_S,
+    MAX_PORT_TEST_PULSE_S,
+    PORT_TEST_PULSE_S,
     SWITCH_THROW_PULSE_S,
     catalog_payload,
     ports_for_chip,
 )
 from hardware.chips.hc165 import HC165Chain
-from hardware.chips.hc595 import HC595Chain
+from hardware.chips.hc595 import HC595Chain, sleep_holding
 from hardware.chips.ina219 import INA219
 from hardware.chips.ina3221 import INA3221
 from hardware.chips.pca9685 import PCA9685
@@ -249,10 +251,12 @@ def test_port_test_de_energizes_a_coil_bit_when_the_pulse_raises(monkeypatch):
     dev = FakeCh347Device()
     chain = HC595Chain(dev, select="cs0")
 
-    def _boom(_seconds):
+    def _boom(_chip, _seconds):
         raise RuntimeError("bridge dropped mid-pulse")
 
-    monkeypatch.setattr(self_test, "time", _SleepSpy(_boom))
+    # A '595 hold goes through sleep_holding (it re-latches to outlive the hold
+    # guard), so that is where a mid-pulse failure lands.
+    monkeypatch.setattr(self_test, "sleep_holding", _boom)
     with pytest.raises(RuntimeError):
         self_test._pulse("hc595", chain, 5)
     assert dev.latched_bit("cs0", 5) is False
@@ -291,6 +295,60 @@ def test_track_voltage_bipolar_h_bridge(wired):
     assert blk.get_actual_voltage("B1") == -12.0
     # unbound block is a no-op failure
     assert blk.set_voltage("NOPE", 5.0) is False
+
+
+def test_reversed_polarity_swaps_the_two_rails():
+    """`Block.polarity_reversed` trades the block's two channels: a positive
+    voltage drives the rail the binding calls `reverse`. The binding itself is
+    untouched, which is what lets the detection rail stay where it is wired."""
+    dev = FakeCh347Device(present_addresses={0x40})
+    reversed_blocks = {"B2"}
+    _inp, blk, _sw = build_real_interfaces(
+        dev,
+        [ChipConfig("pwm1", "pca9685", i2c_address=0x40)],
+        block_track={"B1": ("pwm1", 0, 1), "B2": ("pwm1", 6, 7)},
+        block_occupancy={},
+        switch_output={},
+        track_polarity_of=lambda block_id: block_id in reversed_blocks,
+    )
+    # B1 is normal: +6 V drives the forward channel, as ever.
+    blk.set_voltage("B1", 6.0)
+    assert abs(dev.duty_cycle(0x40, 0) - 0.5) < 0.01
+    assert dev.duty_cycle(0x40, 1) == 0.0
+    # B2 is reversed: the same +6 V drives ch7, the one the binding calls reverse.
+    blk.set_voltage("B2", 6.0)
+    assert dev.duty_cycle(0x40, 6) == 0.0
+    assert abs(dev.duty_cycle(0x40, 7) - 0.5) < 0.01
+    # ... and a negative command drives the other one.
+    blk.set_voltage("B2", -6.0)
+    assert abs(dev.duty_cycle(0x40, 6) - 0.5) < 0.01
+    assert dev.duty_cycle(0x40, 7) == 0.0
+    # The commanded voltage is the nominal one either way: polarity is a wiring
+    # correction below the interface, so `get_actual_voltage` (and the drive-state
+    # test that reads it) never learns which rail carried it.
+    assert blk.get_actual_voltage("B2") == -6.0
+
+
+def test_polarity_is_read_per_write_not_captured_at_build():
+    """The driver holds a callable, not a snapshot, so flipping a block in the
+    editor lands on the next track write with no session rebuild."""
+    dev = FakeCh347Device(present_addresses={0x40})
+    reversed_blocks: set = set()
+    _inp, blk, _sw = build_real_interfaces(
+        dev,
+        [ChipConfig("pwm1", "pca9685", i2c_address=0x40)],
+        block_track={"B1": ("pwm1", 0, 1)},
+        block_occupancy={},
+        switch_output={},
+        track_polarity_of=lambda block_id: block_id in reversed_blocks,
+    )
+    blk.set_voltage("B1", 12.0)
+    assert abs(dev.duty_cycle(0x40, 0) - 1.0) < 0.01
+
+    reversed_blocks.add("B1")            # the operator flips it mid-session
+    blk.set_voltage("B1", 12.0)
+    assert dev.duty_cycle(0x40, 0) == 0.0
+    assert abs(dev.duty_cycle(0x40, 1) - 1.0) < 0.01
 
 
 def test_switch_throw_pulses_the_side_coil_and_rests_low(wired):
@@ -585,15 +643,74 @@ def test_port_test_read_current_returns_ma():
 def test_port_test_pulse_output():
     dev = FakeCh347Device()
     cfg = _cfg(ChipConfig("sw1", "hc595", spi_select="cs0"))
-    # hold_s default is 0.4s; patch time.sleep to keep the test fast.
-    import hardware.self_test as st
-    orig = st.time.sleep
-    st.time.sleep = lambda *_a, **_k: None
-    try:
-        result = self_test.run_port_test(cfg, "sw1", 3, "pulse_output", device=dev)
-    finally:
-        st.time.sleep = orig
+    # The default hold is a full second (measurable on a meter); ask for the
+    # shortest one so the test does not wait on it.
+    result = self_test.run_port_test(
+        cfg, "sw1", 3, "pulse_output", device=dev, pulse_s=0.0
+    )
     assert result["ok"] is True
+    assert dev.latched_bit("cs0", 3) is False     # de-energized on the way out
+
+
+def test_port_test_pulse_is_long_enough_to_measure():
+    """The bench pulse answers "is this the wire I think it is", read off a
+    multimeter — so the default width has to be measurable, not a throw blip."""
+    assert PORT_TEST_PULSE_S >= 1.0
+    assert PORT_TEST_PULSE_S > SWITCH_THROW_PULSE_S * 50
+
+
+def test_port_test_reports_the_width_it_held():
+    """The UI tells the user how long the line was driven, so the width the
+    server actually used comes back with the result."""
+    dev = FakeCh347Device()
+    cfg = _cfg(ChipConfig("sw1", "hc595", spi_select="cs0"))
+    result = self_test.run_port_test(
+        cfg, "sw1", 1, "pulse_output", device=dev, pulse_s=0.02
+    )
+    assert result["pulse_s"] == 0.02
+
+
+def test_port_test_pulse_width_is_clamped_and_defaulted():
+    """The width crosses REST, so a garbage or open-ended request cannot park a
+    line high: junk falls back to the default, over-long is cut to the ceiling."""
+    assert self_test.clamp_pulse_s(None) == PORT_TEST_PULSE_S
+    assert self_test.clamp_pulse_s("nonsense") == PORT_TEST_PULSE_S
+    assert self_test.clamp_pulse_s(float("nan")) == PORT_TEST_PULSE_S
+    assert self_test.clamp_pulse_s(9_999.0) == MAX_PORT_TEST_PULSE_S
+    assert self_test.clamp_pulse_s(-5.0) == 0.0
+    assert self_test.clamp_pulse_s("0.25") == 0.25
+    # A caller with a different default (the switch throw test) keeps it.
+    assert self_test.clamp_pulse_s(None, default=SWITCH_THROW_PULSE_S) == SWITCH_THROW_PULSE_S
+
+
+def test_a_measurable_hold_outlives_the_guard_without_raising_the_ceiling():
+    """A 1s port-test hold is longer than a guarded chain will hold a bit on one
+    write, so `sleep_holding` re-latches inside the window. The bit must still be
+    high at the end — a guard release mid-measurement would read as a dead wire."""
+    dev = FakeCh347Device()
+    released: list = []
+    chain = HC595Chain(dev, select="cs0", max_high_s=0.05,
+                       on_auto_release=released.append)
+    chain.set_output(2, True)
+    sleep_holding(chain, 0.2)                     # 4x the ceiling
+    assert dev.latched_bit("cs0", 2) is True      # never auto-released
+    assert released == []
+    chain.set_output(2, False)
+    chain.cancel_guard()
+
+
+def test_the_guard_still_fires_once_the_refreshes_stop():
+    """Refreshing must not disarm the guard permanently: once a holder stops
+    (crashed, stalled), the chain goes low on the usual deadline."""
+    dev = FakeCh347Device()
+    released: list = []
+    chain = HC595Chain(dev, select="cs0", max_high_s=0.05,
+                       on_auto_release=released.append)
+    chain.set_output(2, True)
+    sleep_holding(chain, 0.12)
+    time.sleep(0.15)                              # no more refreshes
+    assert released == [0b100]
+    assert dev.latched_bit("cs0", 2) is False
 
 
 def test_port_test_unknown_chip():
@@ -924,7 +1041,8 @@ def test_pulse_output_drives_a_single_pwm_channel():
     # The picker's double-click pulses one channel (raw line), not a pair.
     dev = FakeCh347Device(present_addresses={0x40})
     cfg = _cfg(ChipConfig("pwm1", "pca9685", i2c_address=0x40))
-    res = self_test.run_port_test(cfg, "pwm1", 5, "pulse_output", device=dev)
+    res = self_test.run_port_test(cfg, "pwm1", 5, "pulse_output", device=dev,
+                                  pulse_s=0.0)
     assert res["ok"] is True
     assert dev.duty_cycle(0x40, 5) == 0.0        # returned to off
     assert dev.duty_cycle(0x40, 10) == 0.0       # the old pair-mate is untouched
@@ -963,6 +1081,19 @@ def test_occupancy_test_idle_block_is_decided_by_the_digital_detector():
     # Both detectors are still reported, so a disagreement is visible.
     assert res["digital"]["occupied"] is True
     assert res["current"]["occupied"] is False
+
+
+def test_occupancy_test_applies_the_same_polarity_the_runtime_applies():
+    # The bench test and the runtime must not disagree about a block, or the
+    # polarity settings look broken exactly where they are doing their job.
+    cfg = _occupancy_cfg()
+    cfg.chips[1] = ChipConfig("in1", "hc165", spi_select="cs1", active_low=True)
+    dev = _occupancy_device()
+    dev.set_ina3221_current(0x41, 2, 0.001)
+    res = self_test.run_occupancy_test(cfg, "B1", device=dev)   # line sits at 0
+    assert res["digital"]["value"] is False        # the pin, unvarnished
+    assert res["digital"]["occupied"] is True      # what it means on this wiring
+    assert res["source"] == "digital" and res["occupied"] is True
 
 
 def test_occupancy_test_driven_block_is_decided_by_the_current_detector():

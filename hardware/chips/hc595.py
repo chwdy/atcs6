@@ -17,9 +17,14 @@ the chip holds its last latched bits with nothing running to clear them (see
 The guard is a backstop, not the mechanism: correct code still pulses and drops
 its own bits. Reaching the guard means something went wrong, so it reports
 through `on_auto_release`.
+
+A caller that *wants* a line high for longer than the ceiling (the bench port
+test, holding a bit long enough to read on a meter) sleeps through
+`sleep_holding` instead of `time.sleep`, which re-latches inside the window.
 """
 
 import threading
+import time
 from typing import Any, Callable, Optional
 
 from hardware.catalog import MAX_OUTPUT_HIGH_S
@@ -138,3 +143,38 @@ class HC595Chain:
             if self._guard is not None:
                 self._guard.cancel()
                 self._guard = None
+
+
+def sleep_holding(chip: Any, hold_s: float) -> None:
+    """Sleep `hold_s` while leaving `chip`'s current output state latched.
+
+    Drop-in for `time.sleep` in a driver that has just raised some bits and will
+    lower them afterwards. On a guarded chain, a hold longer than the ceiling
+    would trip the guard mid-hold, so this re-latches the *same* state every half
+    ceiling — every write re-arms the guard (see `_rearm_guard`), so refreshing
+    keeps a deliberate hold alive without raising the ceiling for everyone.
+
+    The guard keeps its job: it now expires MAX_OUTPUT_HIGH_S after the last
+    refresh, so a caller that stalls or dies mid-hold still de-energizes on the
+    same deadline it always did. What is given up is only the ability to catch a
+    *this* loop that runs too long, which is bounded by its own deadline.
+
+    Chips with no guard and no `write_all` (a PWM chip) just sleep — they hold
+    their setting until written again, and nothing burns.
+    """
+    hold_s = max(0.0, float(hold_s))
+    ceiling = getattr(chip, "max_high_s", None)
+    refresh = getattr(chip, "write_all", None)
+    if not ceiling or refresh is None or hold_s <= ceiling / 2.0:
+        time.sleep(hold_s)
+        return
+
+    deadline = time.monotonic() + hold_s
+    step = ceiling / 2.0
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.0:
+            return
+        time.sleep(min(remaining, step))
+        if time.monotonic() < deadline:
+            refresh()

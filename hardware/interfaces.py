@@ -139,24 +139,38 @@ def build_chip(device: Any, spec: Any) -> Any:
 
 class TrackDriver(TrackOutput):
     """Block track voltage over two PCA9685 PWM channels per block — the two
-    inputs of that block's H-bridge, chosen independently (not a fixed pair)."""
+    inputs of that block's H-bridge, chosen independently (not a fixed pair).
+
+    `polarity_of` reports whether a block's rails are wired the opposite way
+    round from the nominal-positive sense its geometry implies
+    (`Block.polarity_reversed`); when it answers True the two channels trade
+    places, so a positive commanded voltage drives what the binding calls
+    `reverse`. It is a callable rather than a snapshot so an operator flipping a
+    block in the editor takes effect on the next write, without rebuilding the
+    session — the binding names two physical rails and stays put, which matters
+    when the two are not interchangeable (one carries the idle detection rail).
+    """
 
     def __init__(
         self,
         chips_by_id: Dict[str, PCA9685],
         bindings: "TrackBindingMap",
         watchdog: Optional[OutputWatchdog] = None,
+        polarity_of: Optional[Callable[[str], bool]] = None,
     ) -> None:
         self._chips = chips_by_id
         self._bindings = bindings
         self._voltages: Dict[str, float] = {}
         self._watchdog = watchdog
+        self._polarity_of = polarity_of
 
     def set_voltage(self, block_id: str, voltage: float) -> bool:
         binding = self._bindings.get(block_id)
         if binding is None:
             return False
         chip_id, forward, reverse = binding
+        if self._polarity_of is not None and self._polarity_of(block_id):
+            forward, reverse = reverse, forward
         chip = self._chips.get(chip_id)
         if chip is None:
             return False
@@ -273,6 +287,17 @@ class SwitchDriver(SwitchOutput):
         self._last.clear()
 
 
+def resolve_detector_bit(bit: bool, *, active_low: bool) -> bool:
+    """A raw '165 bit as the meaning the rest of the system uses: True is
+    "current detected".
+
+    Polarity is a property of the chain: the chip's `active_low` says which way
+    its comparators drive the line, and every block on that chain reads the same
+    way. The single place this is decided, so the runtime read and the bench test
+    cannot answer a block differently."""
+    return bit != active_low
+
+
 class OccupancyDriver(OccupancyInput):
     """Hybrid block occupancy: a digital detector ('165) plus a current-sense
     channel (INA3221 or INA219), selected per block by whether the block is being
@@ -294,7 +319,8 @@ class OccupancyDriver(OccupancyInput):
     current, so its raw bit reads 0 occupied / 1 clear. `digital_active_low`
     names the chips wired that way and this class flips their bits, so the
     boolean leaving the interface always means "current detected" regardless of
-    how the detector is wired.
+    how the detector is wired. Polarity is set per chip, because a detector chain
+    is wired one way throughout.
 
     This all stays below `read_block_currents()`, so the detector above the
     interface still sees only a per-block boolean — it never learns which source
@@ -353,7 +379,9 @@ class OccupancyDriver(OccupancyInput):
         bit = bool(data[byte_idx] & (1 << bit_idx))
         # Convert the wiring's polarity to the interface's meaning: True is
         # always "current detected", whichever way the detector drives the line.
-        return not bit if self._digital_active_low.get(chip_id, False) else bit
+        return resolve_detector_bit(
+            bit, active_low=self._digital_active_low.get(chip_id, False)
+        )
 
     def _read_current(self, block_id: str) -> bool:
         chip_id, port, baseline_a, threshold_a = self._current[block_id]
@@ -409,6 +437,7 @@ def build_real_interfaces(
     block_occupancy_current: Optional[CurrentBindingMap] = None,
     output_enable: Optional[BindingMap] = None,
     idle_deadband_v: float = _IDLE_DEADBAND_V,
+    track_polarity_of: Optional[Callable[[str], bool]] = None,
     watchdog_timeout_s: Optional[float] = None,
 ) -> Tuple[Optional[OccupancyInput], Optional[TrackOutput], Optional[SwitchOutput]]:
     """Instantiate + initialize chips grouped by role and wire the three
@@ -417,6 +446,9 @@ def build_real_interfaces(
     channel enable) so hardware starts in a known state. Occupancy is the hybrid
     of the '165 digital detector and the INA3221 current channels; the returned
     input interface selects between them per block by drive state.
+
+    `track_polarity_of` reports a block's `polarity_reversed` wiring flag to the
+    track driver, which swaps that block's two rails when resolving its binding.
 
     `watchdog_timeout_s` arms the loss-of-control watchdog on both output
     interfaces (design_new.md "Hardware interface boundary"); `None` leaves it
@@ -472,7 +504,9 @@ def build_real_interfaces(
         watchdog = OutputWatchdog(_drop_to_safe_state, timeout_s=watchdog_timeout_s)
 
     block_out = (
-        TrackDriver(track_chips, block_track, watchdog=watchdog)
+        TrackDriver(
+            track_chips, block_track, watchdog=watchdog, polarity_of=track_polarity_of
+        )
         if track_chips
         else None
     )

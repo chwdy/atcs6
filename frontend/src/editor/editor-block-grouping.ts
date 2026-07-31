@@ -14,6 +14,11 @@
 //
 // This is the renamed power-district tool: grouping used to be a separate
 // "power district" wrapped around blocks, and is now the block itself.
+//
+// Because the block owns the power feed, it also owns the hardware binding for
+// it: the Hardware section (occupancy detector + track output ports) lives on
+// this panel, keyed by block id. It is not on the Segment panel — a segment has
+// no feed of its own.
 
 import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
@@ -23,7 +28,15 @@ import {
   parseText,
   showConfirmModal,
   applyStructuralLock,
+  renderPolaritySegment,
+  bindPolaritySegment,
 } from '../lib/helpers';
+import {
+  fetchHardwareConfig,
+  hardwareSectionHtml,
+  bindHardwareSection,
+  BLOCK_HW_SLOTS,
+} from '../ui/hardware-binding';
 
 /** Escape a string for safe use inside an HTML attribute value. */
 function escAttr(s: unknown): string {
@@ -213,6 +226,10 @@ export class BlockGroupingEditorHandler {
     const ownerBySegment: Record<string, string> = {};
     for (const s of allSegments) ownerBySegment[s.segment_id] = s._block_id;
     const addable = allSegments.filter((s: any) => !memberIds.includes(s.segment_id));
+
+    // Port binding for this block's feed (occupancy detector + track output).
+    // Null when the fetch fails, in which case the section renders nothing.
+    const hwCfg = await fetchHardwareConfig();
     const addOptions = addable
       .map((s: any) => {
         const owner = ownerBySegment[s.segment_id];
@@ -283,6 +300,17 @@ export class BlockGroupingEditorHandler {
                     <div class="text-muted text-xs mt-4">Adding a segment that is in another block moves it here.</div>
                 </div>
 
+                <!-- Rail polarity sits with the hardware section, not with the
+                     segment panel's "Allowed travel direction": that one is a
+                     routing policy, this one is wiring, and it pairs with the
+                     rail binding directly below. Block-scoped because a block is
+                     fed as one — it covers every member segment. -->
+                <div class="control-section control-section-divider mt-12 pt-12">
+                    ${renderPolaritySegment('block', block, { idBase: 'block-polarity' })}
+                </div>
+
+                ${hardwareSectionHtml(hwCfg, blockId, BLOCK_HW_SLOTS)}
+
                 <div class="mt-16 flex justify-between">
                     <button id="block-detail-back-btn" class="btn btn-sm btn-secondary" data-sim-keep>All Blocks</button>
                     <button id="block-detail-delete-btn" class="btn btn-sm btn-danger-ghost"><i class="ti ti-trash"></i> Ungroup block</button>
@@ -292,15 +320,37 @@ export class BlockGroupingEditorHandler {
 
     this.editor.showSecondarySidebar('Block', content);
     this._setColorLayer(true);
-    setTimeout(() => this._initDetailHandlers(blockId), 0);
+    setTimeout(() => this._initDetailHandlers(blockId, hwCfg), 0);
   }
 
-  _initDetailHandlers(blockId: string): void {
+  _initDetailHandlers(blockId: string, hwCfg: any = null): void {
+    // Hardware binding is per BLOCK (occupancy detector + track feed).
+    bindHardwareSection(hwCfg, blockId);
+
     // Name auto-saves on blur (§5C) — a field flash is the only ack.
     bindFieldAutoSave(this.editor.$id('block-detail-name') as HTMLInputElement | null, {
       parse: parseText,
       commit: (value) => this.api.updateBlock(blockId, { name: value }),
       onApplied: () => this.editor.host?.refreshNetwork(),
+    });
+
+    // Rail polarity auto-applies on click (§5C), same contract as the segment
+    // panel's availability / direction controls: no success toast, and a reject
+    // re-renders so the active cell rolls back to the server's value.
+    bindPolaritySegment('block-polarity', async (_reversed, payload) => {
+      try {
+        const result = await this.api.updateBlock(blockId, payload);
+        if (result && result.error) {
+          showToast(`Cannot change track direction: ${result.error}`, 'error', 4000);
+          this.showDetail(blockId);
+        } else {
+          await this.editor.host?.refreshNetwork();
+        }
+      } catch (err: any) {
+        console.error('Failed to update block track direction:', err);
+        showToast(`Cannot change track direction: ${err.message || err}`, 'error', 4000);
+        this.showDetail(blockId);
+      }
     });
 
     const assignBtn = this.editor.$id('block-assign-on-map-btn') as HTMLButtonElement | null;

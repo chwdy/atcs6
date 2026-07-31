@@ -8,10 +8,13 @@ be detected at all — it has no acknowledgement and no ID register, so a '595 o
 instead: `run_port_test` pulses one output line or reads one input line so the
 user can watch a wire respond.
 
-Every entry point accepts an already-open `device` (the fake, in tests) or falls
-back to opening a real `Ch347Device`. If a real session already holds the CH347,
-opening fails and the result reports the device as unreachable ("busy") rather
-than raising — commissioning is a sim-mode activity.
+Every entry point accepts an already-open `device` — the fake in tests, and the
+running session's controller when there is one — or falls back to opening a real
+`Ch347Device` of its own. The caller decides which: the routes hand over the live
+session's device (under `simulation_lock`) rather than letting a second open be
+refused, since the controller is a single USB endpoint and the tools are most
+useful on exactly the rig a session is holding. A passed-in device is used and
+left open; only a device opened here is closed here.
 """
 
 import time
@@ -21,9 +24,11 @@ from block_power import MAX_TRACK_VOLTAGE
 
 from hardware.catalog import (
     CHIP_CATALOG,
+    MAX_PORT_TEST_PULSE_S,
     PORT_CURRENT_SENSE,
-    SWITCH_THROW_PULSE_S,
+    PORT_TEST_PULSE_S,
 )
+from hardware.chips.hc595 import sleep_holding
 from hardware.interfaces import build_chip
 
 # How long the track direction test holds each leg of its sequence. Long enough
@@ -95,12 +100,17 @@ def run_port_test(
     action: str,
     device: Optional[Any] = None,
     open_device: Optional[Callable[[], Any]] = None,
+    pulse_s: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Pulse one output line ('595 bit / PCA9685 channel) or read one input line
     ('165 bit / current channel) so the user can confirm the wire physically
     responds. `port` is the raw line — a channel on a PWM chip, a bit on a shift
     register — so the port picker can drive any single channel (its double-click
-    pulse). The whole-block track direction sweep is `run_track_test`."""
+    pulse). The whole-block track direction sweep is `run_track_test`.
+
+    `pulse_s` overrides how long the line is held (default `PORT_TEST_PULSE_S`),
+    for a user measuring with something slower than an LED. The result echoes the
+    width actually used, so the UI can say what it just did."""
     spec = next((c for c in cfg.chips if c.chip_id == chip_id), None)
     if spec is None:
         return {"ok": False, "error": f"unknown chip {chip_id!r}"}
@@ -129,8 +139,9 @@ def run_port_test(
                 }
             return {"ok": True, "value": bool(chip.read_bit(port))}
         if action == "pulse_output":
-            _pulse(spec.kind, chip, port)
-            return {"ok": True}
+            hold_s = clamp_pulse_s(pulse_s)
+            _pulse(spec.kind, chip, port, hold_s=hold_s)
+            return {"ok": True, "pulse_s": hold_s}
         return {"ok": False, "error": f"unknown action {action!r}"}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
@@ -142,14 +153,19 @@ def run_port_test(
                 pass
 
 
-def _pulse(kind: str, chip: Any, line: int, hold_s: float = 0.4) -> None:
-    """Briefly drive one output line, then return it to the off state — the port
-    picker's double-click "does this wire respond" pulse.
+def _pulse(kind: str, chip: Any, line: int, hold_s: float = PORT_TEST_PULSE_S) -> None:
+    """Drive one output line for `hold_s`, then return it to the off state — the
+    port picker's double-click "does this wire respond" pulse.
 
     `line` is the raw channel/bit: a single PWM channel on a PCA9685 (0..15, not
-    a pair), a single output bit on a '595. A shift-out bit gets the much shorter
-    switch-coil pulse instead of `hold_s`, because it may be wired to a solenoid
-    point motor, which burns out if its coil is held energized.
+    a pair), a single output bit on a '595. Both kinds get the same width, long
+    enough to read on a meter (`PORT_TEST_PULSE_S`) rather than the switch-coil
+    throw width, which is unmeasurable by design — see there for why holding a
+    coil-bound bit this long is a bench-only activity.
+
+    A '595 hold longer than the chain's guard ceiling sleeps through
+    `sleep_holding`, which re-latches inside the window so the guard does not
+    release the line partway through the measurement.
 
     De-energizing runs in a `finally`: `run_port_test` reports a raised exception
     as a failed test, so without it a bridge that dropped mid-pulse would answer
@@ -157,7 +173,7 @@ def _pulse(kind: str, chip: Any, line: int, hold_s: float = 0.4) -> None:
     if kind == "hc595":
         try:
             chip.set_output(line, True)
-            time.sleep(SWITCH_THROW_PULSE_S)
+            sleep_holding(chip, hold_s)
         finally:
             chip.set_output(line, False)
     elif kind == "pca9685":
@@ -169,6 +185,22 @@ def _pulse(kind: str, chip: Any, line: int, hold_s: float = 0.4) -> None:
             chip.set_duty_cycle(line, 0.0)
     else:
         raise ValueError(f"chip kind {kind!r} has no pulse-output test")
+
+
+def clamp_pulse_s(value: Any, default: float = PORT_TEST_PULSE_S) -> float:
+    """Coerce a requested pulse width to a usable one.
+
+    The width crosses the REST boundary, so it is clamped rather than trusted:
+    anything unparseable falls back to `default`, and an over-long request is cut
+    to `MAX_PORT_TEST_PULSE_S`. The floor is 0 — a caller may legitimately ask
+    for the shortest possible blip."""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return default
+    if seconds != seconds:                       # NaN
+        return default
+    return max(0.0, min(seconds, MAX_PORT_TEST_PULSE_S))
 
 
 def _drive_sequence(
@@ -348,13 +380,23 @@ def _read_track_state(device: Any, cfg: Any, block_id: str) -> Dict[str, Any]:
 
 
 def _read_digital_detector(device: Any, cfg: Any, block_id: str) -> Dict[str, Any]:
-    """The block's '165 detector bit. A set bit means current present."""
+    """The block's '165 detector bit, resolved the way the runtime resolves it.
+
+    The raw bit does not mean "occupied" on its own — the chip's `active_low`
+    decides that (`resolve_detector_bit`). This reports both: `value` is what the
+    pin reads, `occupied` what the runtime would conclude. Reading only the pin
+    would make this test disagree with the simulation on exactly the wiring the
+    polarity setting exists for."""
+    from hardware.interfaces import resolve_detector_bit
+
     binding = cfg.block_occupancy.get(block_id)
     if binding is None:
         return {"bound": False}
     spec = _spec_for(cfg, binding.chip_id)
+    active_low = bool(getattr(spec, "active_low", False)) if spec is not None else False
     result: Dict[str, Any] = {
         "bound": True, "chip_id": binding.chip_id, "port": binding.port,
+        "active_low": active_low,
     }
     if spec is None:
         result["error"] = f"unknown chip {binding.chip_id!r}"
@@ -363,7 +405,7 @@ def _read_digital_detector(device: Any, cfg: Any, block_id: str) -> Dict[str, An
         chip = build_chip(device, spec)
         value = bool(chip.read_bit(binding.port))
         result["value"] = value
-        result["occupied"] = value
+        result["occupied"] = resolve_detector_bit(value, active_low=active_low)
     except Exception as exc:
         result["error"] = str(exc)
     return result

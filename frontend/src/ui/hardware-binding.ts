@@ -16,7 +16,7 @@
 import { api } from '../lib/api';
 import { flashField } from '../lib/helpers';
 import { showToast } from '../lib/toast';
-import { pickPorts } from './port-picker';
+import { chipDisplayName, pickPorts } from './port-picker';
 
 interface Binding { chip_id: string; port: number; }
 /** A block's track wiring: the two PWM channels driving its rails, picked
@@ -37,6 +37,9 @@ interface SwitchBinding {
 interface HwChip {
   chip_id: string; kind: string; role?: string; port_count?: number; label?: string;
   port_kind?: string;
+  /** Bus coordinate — carried so a row names *which* of two identical chips it
+   * binds (see `chipDisplayName`), not just the kind. */
+  bus?: string; i2c_address?: number | null; spi_select?: string | null;
 }
 export interface HwConfig {
   enabled: boolean;
@@ -158,7 +161,7 @@ function channelOptions(
       const val = `${chip.chip_id}::${p}`;
       const sel = current && current.chip_id === chip.chip_id && current.port === p ? ' selected' : '';
       const portLabel = currentSense ? `CH${p + 1}` : `P${p}`;
-      opts.push(`<option value="${esc(val)}"${sel}>${esc(chip.label || chip.kind)} · ${portLabel}</option>`);
+      opts.push(`<option value="${esc(val)}"${sel}>${esc(chipDisplayName(chip))} · ${portLabel}</option>`);
     }
   }
   return opts.join('');
@@ -193,7 +196,7 @@ export function trackBindingSummary(cfg: HwConfig, blockId: string): string {
   const b = cfg.block_track[blockId];
   if (!b) return 'not wired';
   const chip = cfg.chips.find((c) => c.chip_id === b.chip_id);
-  const name = chip ? chip.label || chip.kind : b.chip_id;
+  const name = chip ? chipDisplayName(chip) : b.chip_id;
   return `${name} · ch${b.forward} → ch${b.reverse}`;
 }
 
@@ -268,11 +271,16 @@ export function occupancyResultHtml(res: any): string {
       : `${fmt(track.volts)} V · ${res.driven ? 'driving' : 'idle'}`;
 
   const digital = res.digital || {};
+  // The pin level and the conclusion are two different facts once a polarity is
+  // set, so both are shown — a bare "occupied" against a pin reading 0 is what
+  // makes a reversed detector look like a broken one.
+  const flipped = !!digital.active_low;
   const digitalText = !digital.bound
     ? 'not bound'
     : digital.error
       ? `could not read (${digital.error})`
-      : `P${digital.port} · ${digital.occupied ? 'occupied' : 'clear'}`;
+      : `P${digital.port} · reads ${digital.value ? '1' : '0'}`
+        + `${flipped ? ' (reversed)' : ''} · ${digital.occupied ? 'occupied' : 'clear'}`;
 
   const current = res.current || {};
   const currentText = !current.bound
@@ -360,7 +368,8 @@ export function switchHardwareSectionHtml(cfg: HwConfig | null, switchId: string
         <span class="text-muted text-xs hw-sw-test-status"></span>
       </div>
       <p class="text-muted text-xs">Pick a coil bit per side — a switch is wired once both are set.
-        Test throws it main / diverge once a second and lights the coil it just fired.
+        Test throws it main / diverge once a second and lights the coil it just fired,
+        moving this switch's position with it so the points and the app stay in step.
         Each throw energizes the coil for 10&nbsp;ms only, so the motor cannot burn out.</p>
       ${notLiveNoteHtml(cfg)}
     </div>`;
@@ -480,38 +489,22 @@ export function bindSwitchHardwareSection(cfg: HwConfig | null, switchId: string
     const b = cfg.switch_output[switchId];
     if (!b) return;
 
-    testBtn.disabled = true;
-    try {
-      const res = await api.commissionOpen(cfg);
-      if (!res?.ok) {
-        // The raw driver error ("expected bytes, NoneType found") means nothing
-        // to someone at the bench, so it trails a sentence that does.
-        showToast(`Could not reach the controller — is it plugged in? (${res?.error || 'no detail'})`, 'error', 5000);
-        return;
-      }
-    } catch (e: any) {
-      showToast(`Could not reach the controller — is it plugged in? (${e?.message || 'no detail'})`, 'error', 5000);
-      return;
-    } finally {
-      testBtn.disabled = false;
-    }
-
     let side: CoilSide = 'main';
     const throwOnce = async () => {
       // The panel can be torn down under a running timer (the editor re-renders
       // on switch updates); stop rather than keep driving a detached section.
       if (!section.isConnected) { stopThrowTest(); return; }
-      const port = side === 'main' ? b.port_main : b.port_diverge;
-      // The other coil is the motor driver's other input: it is held low for the
-      // pulse so the two are never driven together (see set_throw's write order).
-      const offPort = side === 'main' ? b.port_diverge : b.port_main;
-      const standbyPort = b.port_standby ?? null;
       rowFor('main')?.classList.toggle('is-thrown', side === 'main');
       rowFor('diverge')?.classList.toggle('is-thrown', side === 'diverge');
-      lightCoil(side, standbyPort != null);
+      lightCoil(side, b.port_standby != null);
       if (testStatus) testStatus.textContent = `throwing ${side}`;
       try {
-        const res = await api.commissionPulse(b.chip_id, port, standbyPort, offPort);
+        // A commanded throw, not a bare coil pulse: this switch's own position
+        // follows the side being tested, so the points and the app still agree
+        // when the test stops. The server chooses which coil driver to use —
+        // the running session's, or the commissioning one — and opens nothing
+        // here, so a live session no longer looks like an unreachable bridge.
+        const res = await api.switchThrowTest(cfg, switchId, side === 'main' ? 0 : 1);
         if (!res?.ok) {
           showToast(res?.error || 'Throw failed.', 'error', 3500);
           stopThrowTest();
@@ -529,6 +522,9 @@ export function bindSwitchHardwareSection(cfg: HwConfig | null, switchId: string
 
     throwTest = {
       timer: window.setInterval(throwOnce, THROW_TEST_INTERVAL_MS),
+      // The server may have opened a commissioning session to pulse the coils;
+      // closing is harmless when it did not, and releases the controller when
+      // it did.
       stop: () => { void api.commissionClose().catch(() => { /* best effort */ }); },
     };
     setTestUi(true, 'throwing main');

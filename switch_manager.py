@@ -220,26 +220,31 @@ class SwitchManager:
                 block_manager = self._resolve_block_manager()
                 if block_manager is not None:
                     block_manager.on_switch_position_changed(req.switch_id)
-                # Drive the physical throw (design_new.md "Power", Switch throw
-                # output). Same behaviour as the operator path: a throw the
-                # hardware could not be commanded to make fails this switch's
-                # lock acquisition and rolls back the segment (releasing the
-                # locks; it does not restore an earlier `Switch.position`). In
-                # simulation this never fails — the simulated interface accepts
-                # every throw.
-                fail_reason = self._drive_throw(switch, int(req.locked_state))
-                if fail_reason is not None:
-                    self._emit_throw_diagnostic(req.switch_id, fail_reason)
-                    switch.release_lock(
-                        path_id=path_id,
-                        source_switch_id=req.source_switch_id,
-                    )
-                    self._rollback(recorded, path_id)
-                    return LockAcquireResult(
-                        success=False,
-                        failed_switch_id=req.switch_id,
-                        reason=f"throw_not_issued: {fail_reason}",
-                    )
+
+            # Drive the physical throw (design_new.md "Power", Switch throw
+            # output) whether or not `Switch.position` needed changing, and for
+            # the same reason as the operator path: a train is about to run over
+            # these points, and "the model already said MAIN" is not evidence
+            # that the motor was ever driven there. `_drive_throw` skips only
+            # what the output itself last drove. Same failure behaviour as
+            # before: a throw the hardware could not be commanded to make fails
+            # this switch's lock acquisition and rolls back the segment
+            # (releasing the locks; it does not restore an earlier
+            # `Switch.position`). In simulation this never fails — the simulated
+            # interface accepts every throw.
+            fail_reason = self._drive_throw(switch, int(req.locked_state))
+            if fail_reason is not None:
+                self._emit_throw_diagnostic(req.switch_id, fail_reason)
+                switch.release_lock(
+                    path_id=path_id,
+                    source_switch_id=req.source_switch_id,
+                )
+                self._rollback(recorded, path_id)
+                return LockAcquireResult(
+                    success=False,
+                    failed_switch_id=req.switch_id,
+                    reason=f"throw_not_issued: {fail_reason}",
+                )
             # Per design_new.md, `Switch.locks` is the canonical lock store.
             # `Tile` no longer exposes any lock surface; UI and API
             # readers resolve the owning `Switch` (via
@@ -489,18 +494,24 @@ class SwitchManager:
         if block_manager is not None:
             block_manager.on_switch_position_changed(switch_id)
 
-        # Only when the write actually changed the alignment: drive the
-        # physical throw (design_new.md "Power", Switch throw output). A throw
-        # the hardware could not be commanded to make is reported as a failed
-        # command; `Switch.position` is not rolled back, and the service layer
-        # surfaces this `(False, reason)` as the operator's `command_result`
-        # warning.
+        # Drive the physical throw (design_new.md "Power", Switch throw output)
+        # on every accepted command, including one that names the alignment
+        # `Switch.position` already held: the operator asking for MAIN on a
+        # switch the app already calls MAIN is how a divergence between the
+        # model and the actual points gets corrected, so it has to reach a coil.
+        # `_drive_throw` skips only what the output itself last drove there. A
+        # throw the hardware could not be commanded to make is reported as a
+        # failed command; `Switch.position` is not rolled back, and the service
+        # layer surfaces this `(False, reason)` as the operator's
+        # `command_result` warning.
+        fail_reason = self._drive_throw(switch, int(new_position))
+        if fail_reason is not None:
+            return (False, fail_reason)
+
+        # design_new.md "Event log": a confirmed operator alignment CHANGE is a
+        # SWITCH_THROWN event. A re-assert of the position already held is not
+        # one — the log records alignment changes, and nothing changed.
         if int(new_position) != old_position:
-            fail_reason = self._drive_throw(switch, int(new_position))
-            if fail_reason is not None:
-                return (False, fail_reason)
-            # design_new.md "Event log": a confirmed operator alignment change is
-            # a SWITCH_THROWN event.
             sc = self.simulation_controller
             nc = getattr(sc, "notification_center", None) if sc is not None else None
             if nc is not None:
@@ -548,19 +559,36 @@ class SwitchManager:
     def _drive_throw(self, switch: "Switch", target_state: int) -> Optional[str]:
         """Drive the physical throw (design_new.md "Power", Switch throw output).
 
-        Behaves the same for every caller. Returns `None` when the command was
-        issued, or a reason string when it could not be. When no output
-        interface is wired the throw is a no-op and this returns `None`.
+        Behaves the same for every caller, and callers issue it on every
+        commanded alignment — not only when `Switch.position` changed. What
+        decides whether a coil actually fires is the OUTPUT's own record of the
+        last throw it made, never the model's belief about where the points are.
+        The two are different things: `Switch.position` is what the app intends,
+        `get_last_throw` is what it has actually commanded the motor to do, and
+        they part company routinely — a scene that assigns positions at build
+        time, a bench test that pulses coils directly, a hand-thrown point, a
+        power cycle. Gating on the model meant a re-command of the position the
+        app already believed in was reported as a success while no coil moved,
+        which is precisely the state in which the operator most needs to be able
+        to say "go there" and have it happen.
+
+        With no last throw on record — a fresh session, every switch — the
+        throw is issued. That is what aligns the physical layout to the model on
+        the first command that names each switch.
 
         The throw is blind: a solenoid point motor reports nothing back, so
         there is no confirmation step and `None` is not a claim that the points
         moved. The one failure this can report is a command that never left the
         software — no hardware binding for this switch, or its chip is missing —
-        which `SwitchOutput.set_throw` signals by returning False.
+        which `SwitchOutput.set_throw` signals by returning False. When no output
+        interface is wired at all the throw is a no-op and this returns `None`.
         """
         iface = self._resolve_switch_output()
         if iface is None:
             return None
+        last = iface.get_last_throw(switch.switch_id)
+        if last is not None and int(last) == int(target_state):
+            return None                    # the motor was last driven there
         if not iface.set_throw(switch.switch_id, int(target_state)):
             return "throw not issued (no hardware binding for this switch)"
         return None

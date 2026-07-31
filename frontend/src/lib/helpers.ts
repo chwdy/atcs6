@@ -1258,6 +1258,77 @@ export function bindDirectionSegment(
 }
 
 // ============================================================================
+// TRACK POLARITY SEGMENTED CONTROL
+// ----------------------------------------------------------------------------
+// Same `switch-group` / `switch-btn` component and render/bind split as the two
+// controls above, with two cells instead of three. Distinct from the travel
+// direction control it sits near: that one is a routing policy the pathfinder
+// reads, this one is wiring — which physical rail a positive voltage drives.
+// Sends `{ polarity_reversed }` to the block PATCH endpoint.
+// ============================================================================
+
+export function renderPolaritySegment(
+  entityKind: string,
+  entity: { polarity_reversed?: boolean } | null,
+  opts: { idBase?: string; label?: string; help?: string } = {}
+): string {
+  const reversed = !!(entity && entity.polarity_reversed);
+  const idBase = (opts.idBase || `${entityKind}-polarity`).replace(/[^a-z0-9-]/gi, '-');
+  const label = opts.label || 'Track direction';
+  const help =
+    opts.help ||
+    'Which rail a positive voltage drives. Flip this when a block runs trains backwards ' +
+      'because its two rails are wired the other way round. Applies to every segment in ' +
+      'the block, and leaves the detection wiring where it is.';
+  return `
+        <div class="input-large-container mb-8" data-polarity-segment="${entityKind}" data-sim-keep>
+            <label class="input-large-label">${label}</label>
+            <div class="switch-group fluid" role="radiogroup" aria-label="${label}">
+                <button type="button"
+                    class="switch-btn ${reversed ? '' : 'active'}"
+                    id="${idBase}-normal"
+                    data-polarity="normal"
+                    title="Rails wired as the layout expects">Normal</button>
+                <button type="button"
+                    class="switch-btn ${reversed ? 'active' : ''}"
+                    id="${idBase}-reversed"
+                    data-polarity="reversed"
+                    title="Rails swapped — a positive voltage drives the other rail">Reversed</button>
+            </div>
+            <div class="text-xxs text-muted mt-4">${help}</div>
+        </div>
+    `;
+}
+
+// Wire the two buttons of a `renderPolaritySegment` block. `onChange` receives
+// `(reversed, payload)` where `payload = {polarity_reversed}`, ready to send to
+// the block PATCH endpoint.
+export function bindPolaritySegment(
+  idBase: string,
+  onChange: (reversed: boolean, payload: { polarity_reversed: boolean }) => void
+): void {
+  const cells: Array<[string, boolean]> = [
+    ['normal', false],
+    ['reversed', true],
+  ];
+  cells.forEach(([key, reversed]) => {
+    const btn = document.getElementById(`${idBase}-${key}`);
+    if (!btn) return;
+    btn.onclick = () => {
+      cells.forEach(([k]) => {
+        const b = document.getElementById(`${idBase}-${k}`);
+        if (b) b.classList.toggle('active', k === key);
+      });
+      try {
+        onChange(reversed, { polarity_reversed: reversed });
+      } catch (err) {
+        console.error('[polarity-segment] onChange failed', err);
+      }
+    };
+  });
+}
+
+// ============================================================================
 // TILE LIST RENDERING
 // ============================================================================
 

@@ -304,6 +304,20 @@ export class API implements LayoutDataClient, SimClient {
   }
 
   /**
+   * Which blocks and switches in the LOADED layout have no binding, and which
+   * saved bindings name entities the layout no longer has.
+   *
+   * Saving a config only validates the bindings that exist, so a half-wired
+   * layout saves and enables cleanly — and then, in real mode, an unbound block
+   * reads permanently clear and an unbound switch cannot be aligned. This is
+   * how the setup screen names those gaps instead of leaving them to be found
+   * as a train that stops moving.
+   */
+  async getHardwareCoverage(): Promise<any> {
+    return this._request('/hardware/coverage', {}, 'getHardwareCoverage');
+  }
+
+  /**
    * Open the controller and report the I2C addresses answering right now
    * (Hardware Setup's Detect / Rescan). Opens a transient device at
    * commissioning time, returning `{ok:false}` gracefully if none is attached or
@@ -322,16 +336,23 @@ export class API implements LayoutDataClient, SimClient {
   /**
    * Pulse one output port ('595 bit / PCA9685 pair) or read one input port
    * ('165 bit) so a single wire can be confirmed before binding.
+   *
+   * The pulse is held long enough to read on a multimeter (the server's
+   * PORT_TEST_PULSE_S, currently 1 s). `pulseS` overrides that width for a
+   * slower instrument; the server clamps it and echoes back the width used.
    */
   async runHardwarePortTest(
     config: any,
     chipId: string,
     port: number,
-    action: 'pulse_output' | 'read_input' | 'drive_sequence'
+    action: 'pulse_output' | 'read_input' | 'drive_sequence',
+    pulseS?: number
   ): Promise<any> {
+    const body: any = { config, chip_id: chipId, port, action };
+    if (pulseS !== undefined) body.pulse_s = pulseS;
     return this._request(
       '/hardware/port-test',
-      { method: 'POST', body: { config, chip_id: chipId, port, action } },
+      { method: 'POST', body },
       'runHardwarePortTest'
     );
   }
@@ -448,25 +469,45 @@ export class API implements LayoutDataClient, SimClient {
   /** Pulse one shift-out bit for the switch-coil pulse width on the held session,
    * raising `standbyPort` for the pulse when the motor driver needs one and
    * holding `offPort` (the driver's other input) low. A coil must never be held
-   * energized, so every '595 bit is driven this way. */
+   * energized, so every '595 bit is driven this way.
+   *
+   * The default width is the runtime throw (10 ms), so a throw test reproduces
+   * an operating throw. Pass `pulseS` only to measure the bit rather than watch
+   * the points — that holds a coil far longer than a throw does. */
   async commissionPulse(
     chipId: string,
     port: number,
     standbyPort?: number | null,
-    offPort?: number | null
+    offPort?: number | null,
+    pulseS?: number
   ): Promise<any> {
+    const body: any = {
+      chip_id: chipId,
+      port,
+      standby_port: standbyPort ?? null,
+      off_port: offPort ?? null,
+    };
+    if (pulseS !== undefined) body.pulse_s = pulseS;
     return this._request(
       '/hardware/commission/pulse',
-      {
-        method: 'POST',
-        body: {
-          chip_id: chipId,
-          port,
-          standby_port: standbyPort ?? null,
-          off_port: offPort ?? null,
-        },
-      },
+      { method: 'POST', body },
       'commissionPulse'
+    );
+  }
+
+  /** Throw one switch to `position` (0 = MAIN, 1 = DIVERGE) — the switch
+   * editor's Test throw.
+   *
+   * A real throw, not a coil poke: the server commands the alignment through
+   * SwitchManager, so `Switch.position` follows the direction being tested and
+   * the app never ends up believing the points are somewhere they are not. It
+   * picks the mechanism itself — the running session's switch driver when one
+   * is wired, the commissioning session's coil pulse otherwise. */
+  async switchThrowTest(config: any, switchId: string, position: 0 | 1): Promise<any> {
+    return this._request(
+      '/hardware/switch-test',
+      { method: 'POST', body: { config, switch_id: switchId, position } },
+      'switchThrowTest'
     );
   }
 

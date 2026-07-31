@@ -146,5 +146,70 @@ def test_request_position_change_no_interface_is_noop_success():
     assert int(sw.position) == 1
 
 
+# ---------------------------------------------------------------------------
+# What decides whether a coil fires is the OUTPUT's last throw, not the model's
+# position. The two part company routinely (a scene assigns positions at build
+# time, a bench test pulses coils directly, someone throws a point by hand), and
+# when they do, re-commanding the position the model already holds is the only
+# way an operator has to put the points back where the app thinks they are.
+# ---------------------------------------------------------------------------
+
+
+def test_a_switch_never_thrown_is_driven_even_at_its_current_position():
+    """At session build every `Switch.position` is a guess: the scene assigned
+    it and no coil was ever driven. The first command naming that alignment has
+    to reach the motor, or the app goes on trusting a guess."""
+    net, sw = _standard_switch_network()
+    net.switch_output_interface = SimulatedSwitchDriver()
+    mgr = SwitchManager(switches=net.switches, simulation_controller=None, network=net)
+    assert int(sw.position) == 0
+    assert net.switch_output_interface.get_last_throw("SW_1_0") is None
+
+    ok, msg = mgr.request_position_change("SW_1_0", 0)
+
+    assert ok, msg
+    assert net.switch_output_interface.get_last_throw("SW_1_0") == 0
+
+
+def test_recommanding_the_position_already_held_still_drives_the_coil():
+    """The operator's re-sync: the model and the points have drifted apart, and
+    asking for the alignment the model already believes in must move the motor."""
+    net, sw = _standard_switch_network()
+    net.switch_output_interface = SimulatedSwitchDriver()
+    mgr = SwitchManager(switches=net.switches, simulation_controller=None, network=net)
+    mgr.request_position_change("SW_1_0", 1)
+
+    # Something drove the points elsewhere without telling the model — a bench
+    # test, a hand throw, a power cycle. The output's record is what changes.
+    net.switch_output_interface.clear()
+
+    ok, msg = mgr.request_position_change("SW_1_0", 1)
+
+    assert ok, msg
+    assert int(sw.position) == 1
+    assert net.switch_output_interface.get_last_throw("SW_1_0") == 1
+
+
+def test_a_throw_the_output_just_made_is_not_repeated():
+    """The skip that remains: the output itself last drove this switch here, so
+    there is nothing to correct and no reason to pulse a solenoid again."""
+    throws = []
+
+    class CountingInterface(SimulatedSwitchDriver):
+        def set_throw(self, switch_id, target_state):
+            throws.append((switch_id, target_state))
+            return super().set_throw(switch_id, target_state)
+
+    net, _sw = _standard_switch_network()
+    net.switch_output_interface = CountingInterface()
+    mgr = SwitchManager(switches=net.switches, simulation_controller=None, network=net)
+
+    mgr.request_position_change("SW_1_0", 1)
+    mgr.request_position_change("SW_1_0", 1)
+    mgr.request_position_change("SW_1_0", 1)
+
+    assert throws == [("SW_1_0", 1)]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

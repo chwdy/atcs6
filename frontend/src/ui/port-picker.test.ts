@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { lineLabel } from './port-picker';
+import { chipDisplayName, lineLabel } from './port-picker';
 
 // `pickPorts` itself builds and drives a live popover, which needs a DOM this
 // suite does not have (no jsdom is installed). What is testable in isolation —
@@ -32,5 +32,31 @@ describe('line naming', () => {
 
   it('falls back to a port label for a chip with no port kind', () => {
     expect(lineLabel({ chip_id: 'c', kind: 'k' } as any, 2)).toBe('P2');
+  });
+});
+
+describe('chip naming', () => {
+  it('carries the I²C address, so two of the same part are distinguishable', () => {
+    // A rig with two ina219s reads "ina219" twice over; the address is the only
+    // thing on the row that says which one a binding points at.
+    const a = { chip_id: 'c0', kind: 'ina219', i2c_address: 0x40 } as any;
+    const b = { chip_id: 'c1', kind: 'ina219', i2c_address: 0x41 } as any;
+    expect(chipDisplayName(a)).toBe('ina219 0x40');
+    expect(chipDisplayName(b)).toBe('ina219 0x41');
+  });
+
+  it('addresses a labelled chip too — a label is no guarantee of uniqueness', () => {
+    expect(chipDisplayName({ chip_id: 'c', kind: 'ina219', label: 'Yard sense', i2c_address: 0x44 } as any))
+      .toBe('Yard sense 0x44');
+  });
+
+  it('names an SPI chip by its latch line, the coordinate it has instead', () => {
+    expect(chipDisplayName({ chip_id: 'c', kind: 'hc595', bus: 'spi', spi_select: 'cs0' } as any))
+      .toBe('hc595 CS0');
+  });
+
+  it('leaves a chip with no coordinate on its bare name', () => {
+    // The bus is deliberately not a fallback: every chip on it shares it.
+    expect(chipDisplayName({ chip_id: 'c', kind: 'hc595', bus: 'gpio' } as any)).toBe('hc595');
   });
 });

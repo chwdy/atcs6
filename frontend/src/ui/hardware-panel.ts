@@ -15,7 +15,10 @@
  *   1. Connect the bridge  — pick the controller, Detect it (scans the I2C bus).
  *   2. Your chips, by bus  — I2C / SPI / GPIO groups, each chip ordered by its
  *      address or latch line. Prove each chip: outputs Sweep, inputs Read live.
- *   3. Go live (footer)    — one readiness checklist gates the Enable switch;
+ *   3. What your layout is wired to — the tally of blocks and switches actually
+ *      bound to those chips, and what breaks for the ones that are not. Read
+ *      only: the binding itself is done in the per-entity editors.
+ *   4. Go live (footer)    — one readiness checklist gates the Enable switch;
  *      enabling applies on the next session build, so a save offers a restart.
  *
  * setupHardwarePanel() wires the delegated handlers once; refreshHardwarePanel()
@@ -56,6 +59,10 @@ interface HwState {
   develop: boolean;
   controller: { kind: string; device_port: string | null };
   chips: ChipCfg[];
+  // Drive threshold for the hybrid occupancy detector: a block commanded above
+  // this magnitude is read by its current channel, at or below it by its '165
+  // detector. Layout-specific, so it is configured rather than fixed.
+  idleDeadbandV: number;
 }
 // How sure we are that a configured chip is really on the board.
 //   alive    — an I²C address that answered the last scan, or a shift register
@@ -86,11 +93,39 @@ export interface DevRow {
   occupied: boolean | null;
 }
 
+// Layout coverage — which blocks / switches in the loaded layout are wired at
+// all. Distinct from chip readiness above: a board can be perfectly proven and
+// still have half the layout bound to nothing. See coverageRows().
+interface CoverageSplit { bound: string[]; unbound: string[]; }
+export interface Coverage {
+  enabled: boolean;
+  blocks: { total: number; occupancy: CoverageSplit; track: CoverageSplit };
+  switches: { total: number; bound: string[]; unbound: string[] };
+  stale: Record<string, string[]>;
+  complete: boolean;
+}
+export interface CoverageRow {
+  key: string;
+  label: string;
+  bound: number;
+  total: number;
+  missing: string[];
+  /** What goes wrong for the entities in `missing`, once hardware is live. */
+  consequence: string;
+}
+
+// Mirrors hardware_config.DEFAULT_IDLE_DEADBAND_V / MAX_IDLE_DEADBAND_V. The
+// server re-validates; these only keep the field from sending a value it will
+// reject.
+const DEFAULT_IDLE_DEADBAND_V = 0.25;
+const MAX_IDLE_DEADBAND_V = 5.0;
+
 const DEFAULT_STATE: HwState = {
   enabled: false,
   develop: false,
   controller: { kind: 'ch347', device_port: null },
   chips: [],
+  idleDeadbandV: DEFAULT_IDLE_DEADBAND_V,
 };
 
 let state: HwState = clone(DEFAULT_STATE);
@@ -113,6 +148,9 @@ let sessionInfo: SessionInfo | null = null;
 let devBindings: DevBindings = { block_occupancy: {}, block_occupancy_current: {} };
 let devReadback: DevReadback | null = null;
 let devPollTimer: any = null;
+
+// Layout coverage, refreshed with the config each time the modal opens.
+let coverage: Coverage | null = null;
 
 // Commissioning — a held device for the live input view and the output sweep.
 // Only one activity runs at a time; it is stopped on modal close / refresh.
@@ -153,6 +191,49 @@ export function devRows(bindings: DevBindings, readback: DevReadback | null): De
   });
 }
 
+// --- layout coverage rows (pure; unit-tested) ------------------------------
+// One row per kind of binding a layout entity needs, each carrying what goes
+// wrong for the entities that lack it. The consequences are not decoration:
+// half-wired is a state the config validator passes cleanly, and each of these
+// then shows up as the app quietly not working rather than as a warning.
+export function coverageRows(cov: Coverage | null): CoverageRow[] {
+  if (!cov) return [];
+  return [
+    {
+      key: 'occupancy',
+      label: 'Block detectors',
+      bound: cov.blocks.occupancy.bound.length,
+      total: cov.blocks.total,
+      missing: cov.blocks.occupancy.unbound,
+      consequence: 'read permanently clear — no train is ever detected entering them',
+    },
+    {
+      key: 'track',
+      label: 'Block track power',
+      bound: cov.blocks.track.bound.length,
+      total: cov.blocks.total,
+      missing: cov.blocks.track.unbound,
+      consequence: 'cannot be energized, so a train stops on reaching them',
+    },
+    {
+      key: 'switches',
+      label: 'Switch coils',
+      bound: cov.switches.bound.length,
+      total: cov.switches.total,
+      missing: cov.switches.unbound,
+      consequence: 'cannot be thrown, so no route can align them',
+    },
+  ];
+}
+
+/** Bindings naming entities the layout no longer has, flattened to one list. */
+export function staleBindings(cov: Coverage | null): string[] {
+  if (!cov) return [];
+  const seen = new Set<string>();
+  for (const ids of Object.values(cov.stale || {})) ids.forEach((id) => seen.add(id));
+  return Array.from(seen).sort();
+}
+
 // --- catalog-derived chip facts --------------------------------------------
 function catalogChip(kind: string): CatalogChip | undefined {
   return catalog?.chips.find((c) => c.kind === kind);
@@ -189,6 +270,74 @@ function latchLines(bus: string): string[] {
   return [];
 }
 function hexAddr(addr: number): string { return '0x' + addr.toString(16).padStart(2, '0'); }
+// "0x41" / "65" -> 65. NaN when there is nothing to read.
+export function parseAddr(raw: string): number {
+  const v = String(raw ?? '').trim();
+  if (!v) return NaN;
+  return v.toLowerCase().startsWith('0x') ? parseInt(v, 16) : parseInt(v, 10);
+}
+// I²C 7-bit peripheral range — mirrors `_I2C_MIN`/`_I2C_MAX` in
+// hardware_config.py, which is what actually accepts or rejects a saved
+// address. 0x00-0x02 and 0x78-0x7f are reserved.
+const I2C_MIN = 0x03, I2C_MAX = 0x77;
+
+// What an I²C chip's address dropdown offers, in groups.
+//
+// Once a scan has run the bus is the authority: the addresses that actually
+// answered are the whole list, because an address nothing answers on is an
+// address no chip is at. The chip kind's strap range is NOT a ceiling on them —
+// a breakout board can carry address pins the bare part does not, or ship
+// strapped outside the datasheet's nominal window, so a current-sense chip
+// answering at 0x45 must be selectable even though its A0 pin nominally spans
+// 0x40..0x43.
+//
+// With no scan there is nothing measured to list, so the strap range leads (it
+// is the good guess) and the rest of the legal range follows behind it, so the
+// strap range never becomes a cap on a board that sits outside it.
+//
+// The configured address is always present, so a saved value never silently
+// drops out of its own dropdown.
+export type AddrGroup = { label: string; addrs: number[] };
+export function addressGroups(
+  catalogAddrs: number[], scannedAddrs: number[], current: number | null,
+): AddrGroup[] {
+  const uniq = (xs: number[]) => Array.from(new Set(xs)).sort((a, b) => a - b);
+  if (scannedAddrs.length) {
+    const found = uniq(scannedAddrs);
+    const groups: AddrGroup[] = [{ label: 'Answering on the bus', addrs: found }];
+    if (current != null && !found.includes(current)) {
+      groups.push({ label: 'Configured, not answering', addrs: [current] });
+    }
+    return groups;
+  }
+  const straps = uniq(catalogAddrs);
+  const strapSet = new Set(straps);
+  const rest: number[] = [];
+  for (let a = I2C_MIN; a <= I2C_MAX; a++) if (!strapSet.has(a)) rest.push(a);
+  const groups: AddrGroup[] = [];
+  if (straps.length) groups.push({ label: 'Typical straps for this chip', addrs: straps });
+  groups.push({ label: straps.length ? 'Any other I²C address' : 'I²C address', addrs: rest });
+  return groups;
+}
+// Module-state wrapper over `addressGroups` for one configured chip.
+function addrGroupsFor(kind: string, current: number | null): AddrGroup[] {
+  const catalogAddrs = catalogChip(kind)?.i2c_addresses || [];
+  return addressGroups(catalogAddrs, detectedAddrs(), current);
+}
+// The last scan's addresses as numbers. Empty until a scan has actually run —
+// "no scan yet" and "scan found nothing" both mean there is no measurement.
+function detectedAddrs(): number[] {
+  if (!scanned) return [];
+  return i2cScan.map(parseAddr).filter((n) => Number.isFinite(n));
+}
+function addrGroupsHtml(groups: AddrGroup[], selected: number | null): string {
+  return groups.map((g) => {
+    const opts = g.addrs.map((a) =>
+      `<option value="${esc(hexAddr(a))}"${a === selected ? ' selected' : ''}>` +
+      `${esc(hexAddr(a))}${onBus(a) ? ' ●' : ''}</option>`).join('');
+    return `<optgroup label="${esc(g.label)}">${opts}</optgroup>`;
+  }).join('');
+}
 function coordText(chip: ChipCfg): string {
   if (chip.bus === 'i2c') return chip.i2c_address != null ? hexAddr(chip.i2c_address) : '';
   return (chip.spi_select || '').toUpperCase();
@@ -659,10 +808,18 @@ export async function refreshHardwarePanel(): Promise<void> {
   controllerReachable = false;
   sessionInfo = null;
   devReadback = null;
+  coverage = null;
   devBindings = { block_occupancy: {}, block_occupancy_current: {} };
   try {
-    const [cat, cfg] = await Promise.all([api.getHardwareCatalog(), api.getHardwareConfig()]);
+    const [cat, cfg, cov] = await Promise.all([
+      api.getHardwareCatalog(),
+      api.getHardwareConfig(),
+      // Coverage is advisory, so it must never be the reason the panel fails to
+      // open: a failure here leaves the section unrendered and nothing else.
+      api.getHardwareCoverage().catch(() => null),
+    ]);
     catalog = cat as Catalog;
+    coverage = (cov as Coverage) || null;
     const raw = cfg?.config || {};
     state = normalizeConfig(raw);
     sessionInfo = cfg?.session || null;
@@ -696,6 +853,9 @@ function normalizeConfig(cfg: any): HwState {
       label: c.label || '',
       active_low: !!c.active_low,
     })),
+    idleDeadbandV: Number.isFinite(Number(cfg.idle_deadband_v))
+      ? Number(cfg.idle_deadband_v)
+      : DEFAULT_IDLE_DEADBAND_V,
   };
 }
 
@@ -710,6 +870,7 @@ function payload(): any {
       chain_length: c.chain_length, spi_select: c.spi_select, label: c.label,
       active_low: c.active_low,
     })),
+    idle_deadband_v: state.idleDeadbandV,
   };
 }
 
@@ -739,8 +900,62 @@ function render(): void {
   const body = el('hw-body');
   const gate = el('hw-gate');
   if (!body || !gate || !catalog) return;
-  body.innerHTML = wiringDiagramHtml() + controllerStageHtml() + chipsStageHtml() + devSectionHtml();
+  body.innerHTML = wiringDiagramHtml() + controllerStageHtml() + chipsStageHtml()
+    + coverageStageHtml() + devSectionHtml();
   gate.innerHTML = gateHtml();
+}
+
+// --- layout coverage section ------------------------------------------------
+// Stage 3. The two stages above are about the board: which chips exist and
+// whether they answer. This one is about the layout: how much of it is actually
+// bound to those chips. A board can be perfectly proven with half the blocks
+// bound to nothing, and saving is no help — the config validator checks the
+// bindings that exist and has nothing to say about the ones nobody made.
+//
+// Reported, never enforced. Wiring a layout up an entity at a time is how it
+// gets wired, so this names the gap and leaves the judgement to the operator.
+const COVERAGE_NAME_LIMIT = 8;
+
+function coverageStageHtml(): string {
+  if (!coverage) return '';
+  if (!coverage.blocks.total && !coverage.switches.total) return '';
+  const rows = coverageRows(coverage);
+  const stale = staleBindings(coverage);
+  const done = coverage.complete;
+  const rowsHtml = rows.map(coverageRowHtml).join('');
+  const staleHtml = stale.length
+    ? `<div class="hw-coverage-row warn">
+        <span class="hw-coverage-label">Bindings with no entity</span>
+        <span class="hw-coverage-count">${stale.length}</span>
+        <span class="hw-coverage-note">saved against blocks or switches this layout no longer has — dead configuration, and it makes the counts above read better than they are: ${coverageNames(stale)}</span>
+      </div>`
+    : '';
+  return `<section class="hw-stage${done ? ' done' : ''}">
+    <div class="hw-stage-head"><span class="hw-stage-num">${done ? '✓' : '3'}</span>
+      <span class="hw-stage-title"><i class="ti ti-plug-connected" aria-hidden="true"></i> What your layout is wired to</span></div>
+    <p class="hw-stage-desc">Blocks and switches are bound to ports in their own editor panels, not here — this is the tally. Anything unwired below keeps working in simulation and silently stops working once hardware is live.</p>
+    <div class="hw-indent"><div class="hw-coverage">${rowsHtml}${staleHtml}</div></div>
+  </section>`;
+}
+
+function coverageRowHtml(row: CoverageRow): string {
+  if (!row.total) return '';
+  const ok = row.missing.length === 0;
+  return `<div class="hw-coverage-row ${ok ? 'ok' : 'warn'}" data-key="${row.key}">
+      <span class="hw-coverage-label">
+        <i class="ti ti-${ok ? 'check' : 'alert-triangle'}" aria-hidden="true"></i> ${esc(row.label)}</span>
+      <span class="hw-coverage-count">${row.bound} of ${row.total}</span>
+      <span class="hw-coverage-note">${
+        ok ? 'all wired' : `${esc(coverageNames(row.missing))} ${esc(row.consequence)}`
+      }</span>
+    </div>`;
+}
+
+/** Name the unwired entities, capped — a long list is a summary, not a census. */
+function coverageNames(ids: string[]): string {
+  const shown = ids.slice(0, COVERAGE_NAME_LIMIT).join(', ');
+  const rest = ids.length - COVERAGE_NAME_LIMIT;
+  return rest > 0 ? `${shown} and ${rest} more` : shown;
 }
 
 // --- develop-mode "Fake inputs" section ------------------------------------
@@ -924,14 +1139,14 @@ function polarityRowHtml(chip: ChipCfg): string {
 
 function coordCellHtml(chip: ChipCfg): string {
   if (chip.bus === 'i2c') {
-    const ck = catalogChip(chip.kind);
-    const addrs = ck?.i2c_addresses.length ? ck.i2c_addresses : chip.i2c_address != null ? [chip.i2c_address] : [];
-    // Addresses that answered the last scan are marked, so picking the strap the
-    // chip is actually set to is a matter of reading the list, not guessing.
-    const opts = addrs.map((a) =>
-      `<option value="${esc(hexAddr(a))}"${a === chip.i2c_address ? ' selected' : ''}>` +
-      `${esc(hexAddr(a))}${onBus(a) ? ' ●' : ''}</option>`).join('');
-    return `<span class="hw-coord"><select class="hw-coord-select" data-hw="addr" data-id="${esc(chip.chip_id)}" title="I²C address — ● marks an address answering on the bus">
+    // After a scan the list is what the bus answered, so picking the address the
+    // chip is actually at is reading the list, not guessing; before one it is
+    // the kind's straps first and the rest of the legal range behind them.
+    const opts = addrGroupsHtml(addrGroupsFor(chip.kind, chip.i2c_address), chip.i2c_address);
+    const title = detectedAddrs().length
+      ? 'I²C address — every address answering the last bus scan; ● marks one answering now'
+      : 'I²C address — detect the bus to list what is really there';
+    return `<span class="hw-coord"><select class="hw-coord-select" data-hw="addr" data-id="${esc(chip.chip_id)}" title="${title}">
       ${opts}
     </select></span>`;
   }
@@ -967,7 +1182,7 @@ function portsHtml(chip: ChipCfg): string {
   else if (ck?.port_kind === 'digital_in') legend = `${n} input bits`;
   else legend = `${n} current channels · mA`;
   const hint = dir === 'output'
-    ? (ck?.port_kind === 'bipolar_pair' ? 'click a channel to pulse it' : 'click a port to pulse it')
+    ? (ck?.port_kind === 'bipolar_pair' ? 'click a channel to drive it 1 s' : 'click a port to drive it 1 s')
     : 'Read live to watch these';
 
   const act = activity?.chipId === chip.chip_id ? activity : null;
@@ -982,7 +1197,7 @@ function portsHtml(chip: ChipCfg): string {
       else if (v) cls += ' live';
     }
     if (dir === 'output') {
-      pills.push(`<button type="button" class="${cls}${extra}" data-hw="pulse" data-id="${esc(chip.chip_id)}" data-port="${p}" title="${name} — click to pulse">${txt}</button>`);
+      pills.push(`<button type="button" class="${cls}${extra}" data-hw="pulse" data-id="${esc(chip.chip_id)}" data-port="${p}" title="${name} — click to drive high for 1 s">${txt}</button>`);
     } else {
       pills.push(`<span class="${cls}${extra}" title="${name}">${txt}</span>`);
     }
@@ -1035,8 +1250,17 @@ function syncAddForm(): void {
     const bus = busSel!.value;
     if (bus === 'i2c') {
       coordLbl!.textContent = 'Address';
+      // Same rule as a configured chip's dropdown: the bus wins over the strap
+      // range once it has been read. The pre-selection is the first answering
+      // address no configured chip has claimed — the one a chip just wired in
+      // is most likely sitting on — falling back to the kind's default.
+      const groups = addrGroupsFor(typeSel!.value, null);
+      const addrs = groups.flatMap((g) => g.addrs);
+      const claimed = new Set(state.chips.map((c) => c.i2c_address).filter((a) => a != null));
+      const pick = addrs.find((a) => onBus(a) && !claimed.has(a))
+        ?? (addrs.includes(ck!.default_i2c_address ?? -1) ? ck!.default_i2c_address : addrs[0]);
       coord!.innerHTML = `<select class="setting-select hw-coord-select" id="hw-af-coord-val">
-        ${ck!.i2c_addresses.map((a) => `<option value="${esc(hexAddr(a))}"${a === ck!.default_i2c_address ? ' selected' : ''}>${esc(hexAddr(a))}</option>`).join('')}
+        ${addrGroupsHtml(groups, pick ?? null)}
       </select>`;
     } else {
       coordLbl!.textContent = 'Latch line';
@@ -1063,8 +1287,7 @@ function commitAdd(): void {
     active_low: false,
   };
   if (bus === 'i2c') {
-    const raw = (coordVal?.value || '').trim();
-    const addr = raw.toLowerCase().startsWith('0x') ? parseInt(raw, 16) : parseInt(raw, 10);
+    const addr = parseAddr(coordVal?.value || '');
     if (!Number.isFinite(addr)) { showToast('Enter an I²C address (e.g. 0x40).', 'error'); return; }
     chip.i2c_address = addr;
   } else {
@@ -1116,8 +1339,22 @@ function gateHtml(): string {
       <span class="hw-develop-text"><span class="hw-develop-label">Develop mode</span>
         <span class="hw-develop-sub">fake hardware</span></span>
     </label>`;
+  // Which occupancy source answers for a block depends on whether it is being
+  // driven, and this is where that line sits. Not gated by the readiness
+  // checklist — it is a number, not a chip, and costs nothing to set early.
+  const deadband = `<label class="hw-deadband" title="A block commanded above this voltage is read by its current-sense channel; at or below it, by its '165 detector.">
+      <span class="hw-deadband-text"><span class="hw-deadband-label">Idle threshold</span>
+        <span class="hw-deadband-sub">below this, a block counts as parked</span></span>
+      <span class="hw-deadband-field">
+        <input type="number" data-hw="idle-deadband" class="property-input"
+          min="0" max="${MAX_IDLE_DEADBAND_V - 0.01}" step="0.05"
+          value="${state.idleDeadbandV}" aria-label="Idle threshold in volts">
+        <span class="hw-deadband-unit">V</span>
+      </span>
+    </label>`;
   return `<div class="hw-checklist">${pills}${badge}</div>
     <div class="hw-gate-actions">
+      ${deadband}
       ${devToggle}
       <label class="hw-enable ${effEnabled ? 'on' : ''} ${ready ? '' : 'locked'}" data-hw="enable">
         <span class="hw-enable-text"><span class="hw-enable-label">${enableTitle}</span>
@@ -1169,6 +1406,21 @@ function onChange(e: Event): void {
 function onInput(e: Event): void {
   const t = (e.target as HTMLElement).closest<HTMLElement>('[data-hw="device-port"]');
   if (t) { state.controller.device_port = (t as HTMLInputElement).value.trim() || null; onEdit(); }
+  const dead = (e.target as HTMLElement).closest<HTMLElement>('[data-hw="idle-deadband"]');
+  if (dead) { state.idleDeadbandV = parseDeadband((dead as HTMLInputElement).value); onEdit(); }
+}
+
+// Blank / unparseable reads as the default rather than 0, because 0 would mean
+// "any commanded voltage at all counts as driven" — a silent behavior change
+// from an empty box. Clamped to the range the server accepts.
+export function parseDeadband(raw: string): number {
+  const text = String(raw).trim();
+  // Number('') is 0, not NaN, so an empty box has to be caught before the parse
+  // or clearing the field would quietly mean "no deadband at all".
+  if (!text) return DEFAULT_IDLE_DEADBAND_V;
+  const n = Number(text);
+  if (!Number.isFinite(n)) return DEFAULT_IDLE_DEADBAND_V;
+  return Math.min(Math.max(n, 0), MAX_IDLE_DEADBAND_V - 0.01);
 }
 
 function setChip(id: string, mut: (c: ChipCfg) => void): void {
@@ -1182,8 +1434,7 @@ function setChip(id: string, mut: (c: ChipCfg) => void): void {
   render();
 }
 function setAddress(id: string, raw: string): void {
-  const v = raw.trim();
-  const addr = v ? (v.toLowerCase().startsWith('0x') ? parseInt(v, 16) : parseInt(v, 10)) : NaN;
+  const addr = parseAddr(raw);
   setChip(id, (c) => { c.i2c_address = Number.isFinite(addr) ? addr : null; });
 }
 function setPorts(id: string, raw: string): void {
@@ -1311,20 +1562,30 @@ async function scanBus(): Promise<void> {
   }
 }
 
-// Drive one line for a moment — the "does this wire respond" check. `line` is
-// the raw hardware line the grid pill stands for (a PWM channel, a shift-out
-// bit), which is exactly what run_port_test drives.
+// Drive one line for a measurable moment — the "does this wire respond" check.
+// `line` is the raw hardware line the grid pill stands for (a PWM channel, a
+// shift-out bit), which is exactly what run_port_test drives.
+//
+// The server holds the line ~1s so a meter can read it, which is long enough
+// that a second click lands mid-pulse; `pulsing` drops those rather than let two
+// tests interleave writes on one chip.
+let pulsing = false;
+
 async function pulsePort(id: string, line: number): Promise<void> {
-  if (activity) return;   // don't pulse while a sweep/live session holds the device
+  if (activity || pulsing) return;   // don't pulse while a sweep/live session (or another pulse) holds the device
   const chip = state.chips.find((c) => c.chip_id === id);
+  pulsing = true;
   try {
     const res = await api.runHardwarePortTest(payload(), id, line, 'pulse_output');
     if (!res?.ok) { showToast(res?.error || 'Port test failed.', 'error', 3500); return; }
     markProven(id);
     render();
-    showToast(`Pulsed ${chip ? lineLabel(chip, line) : line}.`, 'success', 1600);
+    const held = typeof res.pulse_s === 'number' ? ` for ${res.pulse_s.toFixed(1)} s` : '';
+    showToast(`Drove ${chip ? lineLabel(chip, line) : line} high${held}.`, 'success', 1600);
   } catch (e: any) {
     showToast(e?.message || 'Port test failed.', 'error', 3500);
+  } finally {
+    pulsing = false;
   }
 }
 

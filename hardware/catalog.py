@@ -60,13 +60,35 @@ GPIO_LINES: List[str] = [f"gpio{i}" for i in range(8)]
 # an operating session does.
 SWITCH_THROW_PULSE_S = 0.01
 
-# Longest any '595 output bit may stay high, in seconds. Nothing in this design
-# holds a shift-out bit high: a coil bit is pulsed for SWITCH_THROW_PULSE_S, a
-# driver standby bit drops with it, and a PCA9685 /OE bit is *held low*. So a bit
-# still high after this long is a fault — a caller that raised it and never
-# lowered it, a crash between the two writes, an API client driving a raw bit —
-# and `HC595Chain` forces it low rather than leave a solenoid energized. It is
-# 100x the throw pulse, so it can never cut a legitimate throw short.
+# How long the bench port test drives one output line, in seconds. This is a
+# different question from a throw: the port test asks "is this the wire I think
+# it is", and the answer is read off a multimeter or a scope, so the line must
+# stay high long enough to measure. A throw pulse is not — 10 ms reads as noise.
+# Callers may override it per test (`run_port_test` / `pulse_output` take a
+# width, and the REST endpoints pass one through), capped at
+# MAX_PORT_TEST_PULSE_S so a stray request cannot ask for an open-ended hold.
+#
+# A hold this long on a bit wired to a solenoid coil is the thing
+# SWITCH_THROW_PULSE_S exists to avoid, and the port grid will drive any bit,
+# coil-bound included. That is deliberate — measuring a coil wire is the point —
+# but it means the port test is a bench activity, not something to run against a
+# layout with point motors energized.
+PORT_TEST_PULSE_S = 1.0
+MAX_PORT_TEST_PULSE_S = 5.0
+
+# Longest any '595 output bit may stay high, in seconds, *without being
+# refreshed*. Nothing in this design parks a shift-out bit: a coil bit is pulsed
+# for SWITCH_THROW_PULSE_S, a driver standby bit drops with it, and a PCA9685 /OE
+# bit is *held low*. So a bit still high after this long with nobody re-latching
+# it is a fault — a caller that raised it and never lowered it, a crash between
+# the two writes, an API client driving a raw bit — and `HC595Chain` forces it
+# low rather than leave a solenoid energized. It is 100x the throw pulse, so it
+# can never cut a legitimate throw short.
+#
+# A hold longer than this stays legitimate by re-latching inside the window (see
+# `sleep_holding`), which is how a port test holds a line for a second without
+# weakening this ceiling: the guard still fires within MAX_OUTPUT_HIGH_S of the
+# moment the refreshes stop.
 MAX_OUTPUT_HIGH_S = 1.0
 
 

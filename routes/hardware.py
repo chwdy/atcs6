@@ -6,25 +6,39 @@
   the next session build (a restart), not the running session.
 - `GET /api/hardware/catalog` returns the selectable controller / chip metadata
   the Hardware Setup dropdowns read.
+- `GET /api/hardware/coverage` reports which blocks / switches in the loaded
+  layout have no binding, and which bindings name entities the layout no longer
+  has — the gap the config validator cannot see, because it checks the bindings
+  that exist and says nothing about the ones nobody made.
 - `POST /api/hardware/scan` opens the controller and reports the I2C addresses
   answering right now (Detect / Rescan). Shift registers cannot be detected, so
   they are proven by the interactive port test instead.
 - `POST /api/hardware/port-test` pulses one output line or reads one input line,
   so a single wire can be confirmed before binding (the port picker's per-channel
-  double-click).
+  double-click). The pulse is held long enough to read on a meter, and the
+  request may name its own width (`pulse_s`).
 - `POST /api/hardware/track-test` sweeps a block's two bound track channels
   through both polarities so a loco runs, stops, and reverses.
 - `POST /api/hardware/occupancy-test` reads both of one block's occupancy
   detectors and reports which one decides and what it says.
+- `POST /api/hardware/switch-test` throws one switch to a named position — the
+  switch editor's Test throw. It is a real throw, not a coil poke: the model's
+  `Switch.position` follows the direction being tested, so watching the points
+  move never leaves the app believing something the layout stopped doing.
 - `POST /api/hardware/commission/pulse` drives one shift-out bit for the
-  switch-coil pulse width on the held commissioning session, so the switch
-  editor's throw test energizes a coil for exactly as long as the runtime does.
+  switch-coil pulse width on the held commissioning session (the Hardware Setup
+  port grid's output sweep), for exactly as long as the runtime does — unless
+  the request widens it with `pulse_s`, to measure rather than watch.
 
-Scan / port-test open a transient device at commissioning time (sim mode,
-device free); if a real session already holds the CH347 they report it as
-unreachable rather than fighting for the handle, so they run outside the
-simulation lock.
+Every one of these tools needs the controller, and the controller is a single
+USB endpoint. With no session holding it they open a transient device of their
+own. With one — a real rig, or the develop-mode fake — they BORROW the session's
+device and run under `simulation_lock`, so the test serializes with the tick
+instead of losing a race to open a second handle. That fight used to be reported
+as "the controller is unreachable", on a bridge that was plugged in and working.
 """
+
+from contextlib import contextmanager
 
 from flask import jsonify, request
 
@@ -69,6 +83,17 @@ def _develop_opener(cfg):
 def register(app, state: AppState) -> None:
     """Register the hardware-configuration routes."""
 
+    @contextmanager
+    def _bus_guard():
+        """Serialize against the tick while a commissioning tool is using the
+        running session's controller. A no-op when it opened its own device —
+        there is then no tick sharing that bus to collide with."""
+        if hardware_config.get_live_device() is None:
+            yield
+        else:
+            with state.simulation_lock:
+                yield
+
     @app.route("/api/hardware/config", methods=["GET"])
     def get_hardware_configuration():
         return jsonify({
@@ -95,6 +120,26 @@ def register(app, state: AppState) -> None:
             return jsonify({"status": "error", "error": str(exc)}), 400
         return jsonify({"status": "success", "config": hardware_config.as_dict()})
 
+    @app.route("/api/hardware/coverage", methods=["GET"])
+    def get_hardware_coverage():
+        """Which blocks and switches in the LOADED layout are wired, and which
+        saved bindings name entities the layout no longer has.
+
+        The config PUT validates bindings that exist; it cannot know about the
+        ones that were never made. In real mode a block with no occupancy
+        binding reads permanently clear and a switch with no coil binding cannot
+        be aligned, so half-wired is a state worth being able to see rather than
+        discover as a train that stops committing progress. Reported, never
+        enforced — wiring a layout up an entity at a time is how it gets wired.
+        """
+        return jsonify(
+            hardware_config.coverage_report(
+                hardware_config.get_hardware_config(),
+                state.network.blocks.keys(),
+                state.network.switches.keys(),
+            )
+        )
+
     @app.route("/api/hardware/catalog", methods=["GET"])
     def get_hardware_catalog():
         from hardware.catalog import catalog_payload
@@ -113,6 +158,10 @@ def register(app, state: AppState) -> None:
             return jsonify({"status": "error", "error": str(exc)}), 400
         from hardware import self_test
 
+        device = hardware_config.get_live_device()
+        if device is not None:
+            with state.simulation_lock:
+                return jsonify(self_test.run_bus_scan(cfg, device=device))
         return jsonify(self_test.run_bus_scan(cfg, open_device=_develop_opener(cfg)))
 
     @app.route("/api/hardware/port-test", methods=["POST"])
@@ -138,9 +187,24 @@ def register(app, state: AppState) -> None:
             )
         from hardware import self_test
 
+        # `pulse_s` is optional: absent means the default measurable width.
+        device = hardware_config.get_live_device()
+        if device is not None:
+            with state.simulation_lock:
+                return jsonify(
+                    self_test.run_port_test(
+                        cfg, chip_id, int(port), action,
+                        device=device, pulse_s=data.get("pulse_s"),
+                    )
+                )
         return jsonify(
             self_test.run_port_test(
-                cfg, chip_id, int(port), action, open_device=_develop_opener(cfg)
+                cfg,
+                chip_id,
+                int(port),
+                action,
+                open_device=_develop_opener(cfg),
+                pulse_s=data.get("pulse_s"),
             )
         )
 
@@ -162,15 +226,22 @@ def register(app, state: AppState) -> None:
             return jsonify({"status": "error", "error": "block_id is required"}), 400
         from hardware import self_test
 
-        # In develop mode prefer the live session's fake device, so the verdict
-        # reflects state injected via /api/debug/hw (reads only, never drives;
-        # a passed-in device is never closed by run_occupancy_test).
+        # Borrow the running session's device when there is one — the physical
+        # CH347 as readily as the develop-mode fake. A second open would be
+        # refused by the driver, which is what used to make this test unusable
+        # on exactly the rig it exists to check. Reads only, never drives, and a
+        # passed-in device is never closed by run_occupancy_test.
+        device = hardware_config.get_live_device()
+        if device is not None:
+            # Serialize against the tick: same bus, and the detector read must
+            # not interleave with one.
+            with state.simulation_lock:
+                return jsonify(
+                    self_test.run_occupancy_test(cfg, str(block_id), device=device)
+                )
         return jsonify(
             self_test.run_occupancy_test(
-                cfg,
-                str(block_id),
-                device=hardware_config.get_session_device(),
-                open_device=_develop_opener(cfg),
+                cfg, str(block_id), open_device=_develop_opener(cfg)
             )
         )
 
@@ -179,8 +250,14 @@ def register(app, state: AppState) -> None:
         """Sweep a block's track through both polarities (the block editor's
         track Test button). Body: {config, block_id}. Drives the block's two
         bound PWM channels forward / off / reverse so a loco runs, stops, and
-        reverses, then leaves the track de-energized. Runs on a transient device
-        (commissioning), so it never fights a live session."""
+        reverses, then leaves the track de-energized.
+
+        Borrows the running session's device when there is one, rather than
+        opening a second handle the driver would refuse. That sweep drives real
+        track, so it holds `simulation_lock` for its ~3 seconds: the runtime
+        must not be writing block voltages into the middle of it, and it must
+        not be writing over the runtime's. A stalled tick for the length of a
+        test the operator deliberately started is the cheaper side of that."""
         data = request.get_json(silent=True) or {}
         try:
             cfg = hardware_config.config_from_payload(data.get("config", {}))
@@ -192,9 +269,123 @@ def register(app, state: AppState) -> None:
             return jsonify({"status": "error", "error": "block_id is required"}), 400
         from hardware import self_test
 
+        device = hardware_config.get_live_device()
+        if device is not None:
+            with state.simulation_lock:
+                return jsonify(self_test.run_track_test(cfg, str(block_id), device=device))
         return jsonify(
             self_test.run_track_test(cfg, str(block_id), open_device=_develop_opener(cfg))
         )
+
+    @app.route("/api/hardware/switch-test", methods=["POST"])
+    def hardware_switch_test():
+        """Throw one switch to a named position — the switch editor's Test
+        throw. Body: {config, switch_id, position} where position is 0 (MAIN)
+        or 1 (DIVERGE).
+
+        A test that moves the points and leaves `Switch.position` untouched
+        leaves the app believing something about the layout that stopped being
+        true while the operator watched. So the test IS a throw: it commands the
+        alignment it is testing, through the same `SwitchManager` path an
+        operator's throw takes, and the model ends up where the points ended up.
+
+        Which mechanism drives the coil depends on what is wired:
+
+        - A session with a real switch output owns those coils. The command goes
+          through `SwitchManager` and the driver pulses them, so the test is
+          exactly an operating throw — and no second handle on the controller is
+          needed.
+        - With no such output (commissioning: hardware configured but not yet
+          enabled, or being wired up in sim mode) the coils are pulsed through
+          the commissioning session, using this switch's configured binding, and
+          the model position is written after the pulse lands. That order
+          matters: a pulse that never reached a coil must not leave the model
+          claiming an alignment nothing moved to.
+        """
+        data = request.get_json(silent=True) or {}
+        try:
+            cfg = hardware_config.config_from_payload(data.get("config", {}))
+        except hardware_config.HardwareConfigError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
+        switch_id = data.get("switch_id")
+        position = data.get("position")
+        if not switch_id or position not in (0, 1):
+            return jsonify({
+                "ok": False,
+                "error": "switch_id and position (0 = MAIN, 1 = DIVERGE) are required",
+            }), 400
+        switch_id = str(switch_id)
+        position = int(position)
+
+        if state.network.switches.get(switch_id) is None:
+            return jsonify({"ok": False, "error": f"unknown switch {switch_id!r}"}), 404
+        switch_manager = getattr(state.network, "switch_manager", None)
+        if switch_manager is None:
+            return jsonify({"ok": False, "error": "runtime not initialised"}), 503
+
+        # The session owns the coils when it opened a controller AND wired a
+        # switch output onto it. Both halves matter: a real session with no
+        # switch chip configured still falls back to the simulated driver, which
+        # drives nothing, so the bench pulse is what the operator needs there.
+        from switch_power import SimulatedSwitchDriver
+
+        iface = getattr(state.sim_controller, "switch_output_interface", None)
+        drives_coils = (
+            hardware_config.get_live_device() is not None
+            and iface is not None
+            and not isinstance(iface, SimulatedSwitchDriver)
+        )
+
+        if not drives_coils:
+            # Commissioning: pulse the coils ourselves so there is something to
+            # watch, then let the throw below record it on the model.
+            binding = cfg.switch_output.get(switch_id)
+            if binding is None:
+                return jsonify({
+                    "ok": False,
+                    "error": f"switch {switch_id!r} has no coil binding to test",
+                }), 400
+            from hardware import commission
+            from hardware.catalog import SWITCH_THROW_PULSE_S
+            from hardware import self_test
+
+            coil = binding.port_main if position == 0 else binding.port_diverge
+            other = binding.port_diverge if position == 0 else binding.port_main
+            try:
+                session = commission.get_session()
+                session.open(
+                    cfg,
+                    open_device=_develop_opener(cfg),
+                    device=hardware_config.get_live_device(),
+                )
+                with _bus_guard():
+                    session.pulse_output(
+                        binding.chip_id,
+                        coil,
+                        standby_port=binding.port_standby,
+                        off_port=other,
+                        pulse_s=self_test.clamp_pulse_s(
+                            data.get("pulse_s"), default=SWITCH_THROW_PULSE_S
+                        ),
+                    )
+            except Exception as exc:
+                return jsonify({"ok": False, "error": str(exc)})
+
+        # The operator explicitly asked for this alignment, so a `manual` switch
+        # participates — the same override the manual throw controls send.
+        with state.simulation_lock:
+            ok, message = switch_manager.request_position_change(
+                switch_id, position, manual_override=True
+            )
+        return jsonify({
+            "ok": bool(ok),
+            "error": None if ok else message,
+            "message": message,
+            "switch_id": switch_id,
+            "position": position,
+            "driver": "runtime" if drives_coils else "commission",
+        })
 
     @app.route("/api/hardware/binding", methods=["PUT"])
     def update_hardware_binding():
@@ -240,7 +431,7 @@ def register(app, state: AppState) -> None:
                     )
                 else:
                     hardware_config.set_binding(
-                        map_name, str(logical_id), data.get("chip_id"), data.get("port")
+                        map_name, str(logical_id), data.get("chip_id"), data.get("port"),
                     )
         except hardware_config.HardwareConfigError as exc:
             return jsonify({"status": "error", "error": str(exc)}), 400
@@ -256,7 +447,13 @@ def register(app, state: AppState) -> None:
         from hardware import commission
 
         try:
-            commission.get_session().open(cfg, open_device=_develop_opener(cfg))
+            # Borrow the running session's controller when there is one; a
+            # second open of the same USB endpoint is refused by the driver.
+            commission.get_session().open(
+                cfg,
+                open_device=_develop_opener(cfg),
+                device=hardware_config.get_live_device(),
+            )
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)})
         return jsonify({"ok": True})
@@ -267,9 +464,10 @@ def register(app, state: AppState) -> None:
         from hardware import commission
 
         try:
-            commission.get_session().set_output(
-                data.get("chip_id"), int(data.get("port")), float(data.get("duty", 1.0))
-            )
+            with _bus_guard():
+                commission.get_session().set_output(
+                    data.get("chip_id"), int(data.get("port")), float(data.get("duty", 1.0))
+                )
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)})
         return jsonify({"ok": True})
@@ -279,19 +477,29 @@ def register(app, state: AppState) -> None:
         """Drive one shift-out bit for the switch-coil pulse width, optionally
         raising a driver standby bit for the pulse and holding the motor
         driver's other input low. Body: {chip_id, port, standby_port?,
-        off_port?}."""
+        off_port?, pulse_s?}.
+
+        `pulse_s` widens the pulse for a user measuring the bit instead of
+        watching the points; omitted, the pulse is the runtime throw width, so
+        the bench test reproduces an operating throw exactly."""
         data = request.get_json(silent=True) or {}
         from hardware import commission
+        from hardware import self_test
+        from hardware.catalog import SWITCH_THROW_PULSE_S
 
         standby = data.get("standby_port")
         off_port = data.get("off_port")
         try:
-            commission.get_session().pulse_output(
-                data.get("chip_id"),
-                int(data.get("port")),
-                standby_port=None if standby is None else int(standby),
-                off_port=None if off_port is None else int(off_port),
-            )
+            with _bus_guard():
+                commission.get_session().pulse_output(
+                    data.get("chip_id"),
+                    int(data.get("port")),
+                    standby_port=None if standby is None else int(standby),
+                    off_port=None if off_port is None else int(off_port),
+                    pulse_s=self_test.clamp_pulse_s(
+                        data.get("pulse_s"), default=SWITCH_THROW_PULSE_S
+                    ),
+                )
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)})
         return jsonify({"ok": True})
@@ -302,7 +510,8 @@ def register(app, state: AppState) -> None:
         from hardware import commission
 
         try:
-            bits = commission.get_session().read_inputs(data.get("chip_id"))
+            with _bus_guard():
+                bits = commission.get_session().read_inputs(data.get("chip_id"))
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)})
         return jsonify({"ok": True, "ports": [{"port": i, "value": v} for i, v in enumerate(bits)]})
@@ -313,7 +522,8 @@ def register(app, state: AppState) -> None:
         from hardware import commission
 
         try:
-            currents = commission.get_session().read_currents(data.get("chip_id"))
+            with _bus_guard():
+                currents = commission.get_session().read_currents(data.get("chip_id"))
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)})
         return jsonify({
