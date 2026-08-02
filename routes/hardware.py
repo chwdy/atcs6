@@ -676,14 +676,46 @@ def register(app, state: AppState) -> None:
                 | set(cfg.block_occupancy_current)
                 | set(cfg.block_track)
             ):
-                entry = {"occupancy_bit": None, "current_ma": None, "volts": None,
-                         "occupied": occupied.get(block_id)}
                 binding = cfg.block_occupancy.get(block_id)
+                cbind = cfg.block_occupancy_current.get(block_id)
+                tbind = cfg.block_track.get(block_id)
+                # The `has_*` flags say which detectors and outputs this block is
+                # WIRED to; the values below say what they currently read. The
+                # panel needs both: a null value means "unwired" or "the chip
+                # would not build", and only the flag tells those apart.
+                entry = {
+                    "has_digital": binding is not None,
+                    "has_current": cbind is not None,
+                    "has_track": tbind is not None,
+                    # `occupancy_bit` is the RAW register bit; `detector_present`
+                    # is that bit resolved through the chain's polarity, which is
+                    # what the pipeline reads and therefore what "is there a
+                    # train on it" means. On an active-low chain the two are
+                    # opposites, so a panel that showed only the raw bit would
+                    # report every idle block as clear and every occupied one as
+                    # clear too.
+                    "occupancy_bit": None, "detector_present": None,
+                    "active_low": None,
+                    "current_ma": None, "volts": None,
+                    "duty_forward": None, "duty_reverse": None,
+                    "track_reversed": bool(tbind.reversed) if tbind is not None else None,
+                    "threshold_ma": float(cbind.threshold_ma) if cbind is not None else None,
+                    "baseline_ma": float(cbind.baseline_ma or 0.0) if cbind is not None else None,
+                    "occupied": occupied.get(block_id),
+                }
                 if binding is not None:
+                    spec = _chip_spec(cfg, binding.chip_id)
+                    active_low = bool(getattr(spec, "active_low", False)) if spec else False
+                    entry["active_low"] = active_low
                     chip = chip_for(binding.chip_id)
                     if chip is not None:
-                        entry["occupancy_bit"] = bool(chip.read_bit(binding.port))
-                cbind = cfg.block_occupancy_current.get(block_id)
+                        from hardware.interfaces import resolve_detector_bit
+
+                        raw = bool(chip.read_bit(binding.port))
+                        entry["occupancy_bit"] = raw
+                        entry["detector_present"] = resolve_detector_bit(
+                            raw, active_low=active_low
+                        )
                 if cbind is not None:
                     chip = chip_for(cbind.chip_id)
                     if chip is not None:
@@ -693,13 +725,19 @@ def register(app, state: AppState) -> None:
                             )
                         except Exception:
                             pass
-                tbind = cfg.block_track.get(block_id)
                 if tbind is not None:
                     chip = chip_for(tbind.chip_id)
                     if chip is not None:
+                        # The two PWM duties as commanded, before the polarity
+                        # flag is applied — what the board is actually doing.
+                        # `volts` is the same pair resolved the way the driver
+                        # resolves it, which is what the layout should agree with.
                         fwd = device.duty_cycle(chip.address, tbind.forward)
                         rev = device.duty_cycle(chip.address, tbind.reverse)
-                        entry["volts"] = round((fwd - rev) * MAX_TRACK_VOLTAGE, 2)
+                        entry["duty_forward"] = round(fwd, 4)
+                        entry["duty_reverse"] = round(rev, 4)
+                        signed = (rev - fwd) if tbind.reversed else (fwd - rev)
+                        entry["volts"] = round(signed * MAX_TRACK_VOLTAGE, 2)
                 blocks[block_id] = entry
 
             switches = {}
@@ -790,6 +828,40 @@ def register(app, state: AppState) -> None:
             else:
                 device.set_ina3221_current(addr, binding.port + 1, amps)
         return jsonify({"ok": True, "block_id": block_id, "current_ma": float(current_ma)})
+
+    @app.route("/api/virtual-hardware/input/presence", methods=["PUT"])
+    def debug_hw_set_presence():
+        """Put a virtual object on a block's detectors, or lift it off. Body:
+        {block_id, present}.
+
+        The one-block form of what the scenario rig does per step, and the
+        control the bench places trains with. It writes every detector the block
+        is bound to at once, because which one the runtime believes depends on
+        how hard the block is being driven — setting the '165 bit alone leaves a
+        driven block still reading its current channel, which is how "the app
+        ignored my fake train" happens. The two raw endpoints above stay for
+        deliberately making the sources disagree."""
+        device = _require_fake()
+        if device is None:
+            return jsonify(_NOT_DEVELOP), 409
+        data = request.get_json(silent=True) or {}
+        block_id = data.get("block_id")
+        present = data.get("present")
+        if not block_id or present is None:
+            return jsonify({
+                "status": "error", "error": "block_id and present are required",
+            }), 400
+        from hardware.virtual_rig import set_block_presence
+
+        cfg = hardware_config.get_hardware_config()
+        try:
+            with state.simulation_lock:
+                set_block_presence(cfg, device, str(block_id), bool(present))
+        except ValueError as exc:
+            return jsonify({"status": "error", "error": str(exc)}), 404
+        return jsonify({
+            "ok": True, "block_id": str(block_id), "present": bool(present),
+        })
 
     @app.route("/api/virtual-hardware/fault", methods=["PUT"])
     def virtual_hardware_set_fault():

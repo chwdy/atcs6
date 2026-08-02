@@ -22,4 +22,8 @@ interface Window {
   // The singleton raw-occupancy monitor (occupancy-monitor.ts), on window for
   // the same reason: its toolbar toggle is plain markup in index.html.
   occupancyMonitor?: { init(): void; toggle(): void; show(): void; hide(): void };
+
+  // The singleton Virtual Bench (virtual-bench.ts) — the Virtual Hardware
+  // workbench. Same reason: its toolbar toggle is plain markup in index.html.
+  virtualBench?: { init(): void; toggle(): void; show(): void; hide(): void };
 }

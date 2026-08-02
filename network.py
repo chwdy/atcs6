@@ -1617,9 +1617,9 @@ class RailwayNetwork:
 
         return {
             "tracks": enriched_tracks,
-            # Every train, ghosts included. This is the live UI payload, and a
-            # ghost must appear in the train list and on the layout, marked apart
-            # from the trains the operator controls (design_new.md "Ghost
+            # Every train, unidentified trains included. This is the live UI payload, and a
+            # unidentified train must appear in the train list and on the layout, marked apart
+            # from the trains the operator controls (design_new.md "Unidentified train
             # trains", Shown as itself) — it is also how the operator reaches the
             # panel that adopts it. The save payload is the one that leaves them
             # out; see `to_layout_dict`.
@@ -1664,11 +1664,11 @@ class RailwayNetwork:
         """
         return {
             "tracks": [t.to_layout_dict() for t in self.tracks.values()],
-            # Ghost trains are runtime-only: they are not written to saved
+            # Unidentified trains are runtime-only: they are not written to saved
             # state and not restored, because a restart re-detects whatever is
-            # still drawing current (design_new.md "Ghost trains", Runtime only).
+            # still drawing current (design_new.md "Unidentified trains", Runtime only).
             "trains": [
-                t.to_dict(self) for t in self.trains.values() if not t.is_ghost
+                t.to_dict(self) for t in self.trains.values() if not t.is_unidentified
             ],
             "blocks": {k: v.to_layout_dict() for k, v in self.blocks.items()},
             "signals": {k: v.to_layout_dict() for k, v in self.signals.items()},

@@ -47,14 +47,29 @@ describe('devRows', () => {
   it('merges the device read-back into each row', () => {
     const rows = devRows(
       { block_occupancy: { B1: { chip_id: 'in1', port: 0 } }, block_occupancy_current: {} },
-      { blocks: { B1: { occupancy_bit: true, current_ma: 22.5, volts: 8.0, occupied: true } } }
+      { blocks: { B1: {
+        occupancy_bit: true, detector_present: true,
+        current_ma: 22.5, volts: 8.0, occupied: true,
+      } } } as any
     );
     expect(rows[0]).toMatchObject({
       occupancyBit: true,
+      detectorPresent: true,
       currentMa: 22.5,
       volts: 8.0,
       occupied: true,
     });
+  });
+
+  it('carries the resolved detector reading separately from the raw bit', () => {
+    // An active-low chain reads 0 when a train is drawing current, so the two
+    // are opposites. The row's controls are labelled from `detectorPresent`;
+    // keying them to the raw bit inverts them on every rig wired that way.
+    const rows = devRows(
+      { block_occupancy: { B1: { chip_id: 'in1', port: 0 } }, block_occupancy_current: {} },
+      { blocks: { B1: { occupancy_bit: false, detector_present: true, occupied: true } } } as any
+    );
+    expect(rows[0]).toMatchObject({ occupancyBit: false, detectorPresent: true });
   });
 
   it('leaves read-back fields null when a block is absent from the read-back', () => {
@@ -64,6 +79,7 @@ describe('devRows', () => {
     );
     expect(rows[0]).toMatchObject({
       occupancyBit: null,
+      detectorPresent: null,
       currentMa: null,
       volts: null,
       occupied: null,

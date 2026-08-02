@@ -103,6 +103,32 @@ def _hardware_config_file_off_limits(tmp_path, monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _selected_environment_starts_at_simulation(tmp_path, monkeypatch):
+    """Give every test the default Simulation environment and a per-test file.
+
+    The selected environment is module-global and `bootstrap` loads it from disk,
+    so without this a developer who leaves Virtual Hardware selected in their own
+    `operation_environment.json` runs the whole suite against hardware-backed
+    interfaces. That does not fail loudly — the trains simply never get track
+    voltage — so it surfaces as a dozen unrelated-looking routing and movement
+    failures. Redirecting the path also keeps a test that calls `select(...)`
+    from overwriting the developer's real selection. A test that is about the
+    environment sets the one it wants; this only fixes the starting point.
+    """
+    import operation_environment
+    from enums import OperationMode
+
+    monkeypatch.setattr(
+        operation_environment,
+        "ENVIRONMENT_PATH",
+        str(tmp_path / "operation_environment.json"),
+    )
+    monkeypatch.setattr(
+        operation_environment, "_selected", OperationMode.SIMULATION
+    )
+
+
 # Longest and next-longest tests, by node-id substring. Keep longest first.
 _LONGEST = "test_demo_5_no_path_revisit.py::test_t3_s_line_reassignment"
 _SECOND_LONGEST = (

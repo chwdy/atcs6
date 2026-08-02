@@ -244,10 +244,10 @@ def test_debug_unbound_block_404(client):
     test_client, state = client
     _boot_develop_session(state)
     resp = test_client.post("/api/debug/hw/occupancy",
-                            json={"block_id": "GHOST", "occupied": True})
+                            json={"block_id": "UNIDENTIFIED", "occupied": True})
     assert resp.status_code == 404
     resp = test_client.post("/api/debug/hw/current",
-                            json={"block_id": "GHOST", "current_ma": 25.0})
+                            json={"block_id": "UNIDENTIFIED", "current_ma": 25.0})
     assert resp.status_code == 404
 
 
@@ -258,6 +258,138 @@ def test_debug_missing_fields_400(client):
                             json={"block_id": "B1"}).status_code == 400
     assert test_client.post("/api/debug/hw/current",
                             json={"current_ma": 5.0}).status_code == 400
+
+
+# --- one-block presence (the bench's "place a train here") ------------------
+def test_presence_writes_both_detectors_so_the_verdict_holds_either_way(client):
+    """The reason presence exists: setting one source leaves the other saying
+    the opposite, and which one the runtime believes depends on the drive. A
+    placed object must read as present idle AND driven."""
+    test_client, state = client
+    inp, blk, _sw = _boot_develop_session(state)
+
+    resp = test_client.put("/api/virtual-hardware/input/presence",
+                           json={"block_id": "B1", "present": True})
+    assert resp.status_code == 200 and resp.get_json()["present"] is True
+
+    # Idle: the '165 bit answers.
+    assert inp.read_block_currents()["B1"] is True
+    data = test_client.get("/api/virtual-hardware").get_json()["blocks"]["B1"]
+    assert data["occupancy_bit"] is True
+    assert data["current_ma"] > data["baseline_ma"] + data["threshold_ma"]
+
+    # Driven: the current channel answers instead — same verdict.
+    blk.set_voltage("B1", 8.0)
+    assert inp.read_block_currents()["B1"] is True
+
+    test_client.put("/api/virtual-hardware/input/presence",
+                    json={"block_id": "B1", "present": False})
+    assert inp.read_block_currents()["B1"] is False
+    blk.set_voltage("B1", 0.0)
+    assert inp.read_block_currents()["B1"] is False
+
+
+def test_presence_rejects_an_unwired_block_and_a_missing_field(client):
+    test_client, state = client
+    _boot_develop_session(state)
+    assert test_client.put("/api/virtual-hardware/input/presence",
+                           json={"block_id": "UNIDENTIFIED", "present": True}).status_code == 404
+    assert test_client.put("/api/virtual-hardware/input/presence",
+                           json={"block_id": "B1"}).status_code == 400
+
+
+def test_presence_409s_outside_virtual_hardware(client):
+    test_client, _ = client
+    resp = test_client.put("/api/virtual-hardware/input/presence",
+                           json={"block_id": "B1", "present": True})
+    assert resp.status_code == 409
+
+
+# --- the read-back the Virtual Bench renders --------------------------------
+def test_readback_reports_binding_flags_and_the_commanded_duty_pair(client):
+    """The bench builds its rows straight off this payload, so it needs to tell
+    'unwired' from 'wired and reading zero' — that is what the has_* flags are
+    for — and it shows the duty pair the board was actually handed."""
+    test_client, state = client
+    _inp, blk, _sw = _boot_develop_session(state)
+    blk.set_voltage("B1", 6.0)
+
+    entry = test_client.get("/api/virtual-hardware").get_json()["blocks"]["B1"]
+    assert (entry["has_track"], entry["has_digital"], entry["has_current"]) == (True, True, True)
+    assert entry["duty_forward"] == pytest.approx(0.5, abs=0.02)
+    assert entry["duty_reverse"] == pytest.approx(0.0, abs=0.01)
+    assert entry["volts"] == pytest.approx(6.0, abs=0.1)
+    assert entry["track_reversed"] is False
+
+
+def test_readback_volts_follow_the_rail_polarity_flag(client):
+    """A block wired backwards drives the channel the binding calls `reverse`
+    for a positive command (TrackDriver swaps them). The read-back has to undo
+    that, or the panel shows the layout driving the opposite way from the model."""
+    test_client, state = client
+    payload = _develop_payload()
+    payload["block_track"]["B1"]["reversed"] = True
+    hardware_config.apply_updates(payload, persist=False)
+    # Same wiring bootstrap uses: the driver reads the flag through this
+    # callable, so omitting it would leave polarity unapplied at the source.
+    _inp, blk, _sw = hardware_config.build_session_interfaces(
+        track_polarity_of=hardware_config.track_polarity_reversed
+    )
+    state.sim_controller.input_interface = _inp
+    blk.set_voltage("B1", 6.0)
+
+    entry = test_client.get("/api/virtual-hardware").get_json()["blocks"]["B1"]
+    assert entry["track_reversed"] is True
+    assert entry["duty_forward"] == pytest.approx(0.0, abs=0.01)
+    assert entry["duty_reverse"] == pytest.approx(0.5, abs=0.02)
+    assert entry["volts"] == pytest.approx(6.0, abs=0.1)
+
+
+def test_readback_resolves_the_detector_bit_through_the_chain_polarity(client):
+    """An active-low chain pulls its line LOW when current flows, so the raw
+    register bit is the OPPOSITE of "a train is here". The read-back has to
+    carry the resolved reading too, or a panel keyed to the raw bit offers to
+    place a train on every block that already has one."""
+    test_client, state = client
+    payload = _develop_payload()
+    payload["chips"] = [
+        dict(c, active_low=True) if c["chip_id"] == "in1" else c
+        for c in payload["chips"]
+    ]
+    hardware_config.apply_updates(payload, persist=False)
+    inp, _blk, _sw = hardware_config.build_session_interfaces()
+    state.sim_controller.input_interface = inp
+
+    # An untouched fake reads all-zero, which on this chain means PRESENT.
+    entry = test_client.get("/api/virtual-hardware").get_json()["blocks"]["B1"]
+    assert entry["active_low"] is True
+    assert entry["occupancy_bit"] is False
+    assert entry["detector_present"] is True
+    assert inp.read_block_currents()["B1"] is True
+
+    # Lifting the object through the presence endpoint flips the raw bit to 1,
+    # and both the resolved reading and the pipeline agree it is now clear.
+    test_client.put("/api/virtual-hardware/input/presence",
+                    json={"block_id": "B1", "present": False})
+    entry = test_client.get("/api/virtual-hardware").get_json()["blocks"]["B1"]
+    assert entry["occupancy_bit"] is True
+    assert entry["detector_present"] is False
+    assert inp.read_block_currents()["B1"] is False
+
+
+def test_readback_lists_a_track_only_block(client):
+    """A block with rails but no detector still has an output worth watching."""
+    test_client, state = client
+    payload = _develop_payload()
+    payload["block_track"]["B_OUT_ONLY"] = {"chip_id": "pwm1", "forward": 2, "reverse": 3}
+    hardware_config.apply_updates(payload, persist=False)
+    _inp, _blk, _sw = hardware_config.build_session_interfaces()
+    state.sim_controller.input_interface = _inp
+
+    entry = test_client.get("/api/virtual-hardware").get_json()["blocks"]["B_OUT_ONLY"]
+    assert entry["has_track"] is True
+    assert (entry["has_digital"], entry["has_current"]) == (False, False)
+    assert entry["occupancy_bit"] is None and entry["current_ma"] is None
 
 
 def test_config_get_reports_session_info(client):

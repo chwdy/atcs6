@@ -194,17 +194,17 @@ def register(app, state: AppState) -> None:
         return jsonify({"status": "success", "message": f"Train {train_id} deleted"})
 
     @app.route("/api/trains/<train_id>/adopt", methods=["POST"])
-    def adopt_ghost_train(train_id):
-        """Set a ghost train up as a real, driveable train.
+    def adopt_unidentified_train(train_id):
+        """Set an unidentified train up as a real, driveable train.
 
-        The ghost keeps its blocks and its controller; the body supplies the
+        The unidentified train keeps its blocks and its controller; the body supplies the
         identity, consist and facing the detector could never know
-        (design_new.md "Ghost trains", Adoption). The adopted train's new id is
+        (design_new.md "Unidentified trains", Adoption). The adopted train's new id is
         in the response, since it is usually not the one in the URL.
         """
         data = request.json or {}
         try:
-            train = train_service.adopt_ghost_train(
+            train = train_service.adopt_unidentified_train(
                 state,
                 train_id,
                 new_train_id=data.get("new_train_id") or data.get("id"),
@@ -228,7 +228,7 @@ def register(app, state: AppState) -> None:
         return jsonify(
             {
                 "status": "success",
-                "adopted_from_ghost_id": train_id,
+                "adopted_from_unidentified_id": train_id,
                 **_train_to_dict(train, state.network),
             }
         )

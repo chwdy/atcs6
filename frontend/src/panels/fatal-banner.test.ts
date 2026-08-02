@@ -22,10 +22,10 @@ describe('describeFatalConflict', () => {
       resource_type: 'block',
       resource_id: 'BLK_1',
       incoming_train_id: 'T1',
-      prior_owner_train_id: 'GHOST_1',
+      prior_owner_train_id: 'UNIDENT_1',
       conflict_kind: 'occupied_by_other_train',
     });
-    expect(text).toBe('Train T1 tried to enter block BLK_1, but train GHOST_1 already occupies it.');
+    expect(text).toBe('Train T1 tried to enter block BLK_1, but train UNIDENT_1 already occupies it.');
   });
 });
 

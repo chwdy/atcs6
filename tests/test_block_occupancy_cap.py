@@ -324,10 +324,10 @@ def test_an_undetected_block_never_caps():
     assert physics.pending_entry_block is None
 
 
-def test_cap_is_inert_for_a_ghost_train():
+def test_cap_is_inert_for_an_unidentified_train():
     network = build_line()
     sim, train, controller, physics = place(network, head_x=0, length_cm=40.0)
-    train.is_ghost = True
+    train.is_unidentified = True
     wire_detector(sim, detected={"BLK_0", "BLK_1"}, confirmed={"BLK_0"})
     arm(physics, controller)
 

@@ -2335,20 +2335,28 @@ lavender stays clearly lighter, so the two don't read as one). The
 debug-only "stuck waiting" overlay draws a dashed orange leader from
 the train head to the block it is waiting on.
 
-**Ghost trains.** A ghost train — something the detectors found that the
-app did not put there and cannot drive — outranks every tint above:
-steel `--train-body-ghost`, drawn with a **dashed** outline and fill
-instead of the usual solid stroke. The dash carries the meaning; the
-tint alone would read as just one more mode. It takes no mode hue at
-all, because a ghost has no cab, no mode and no brake to report, and it
-must never borrow EB's purple — a ghost is not a fault, it is an
+**Unidentified trains.** An unidentified train — something the detectors
+found that the app did not put there and cannot drive — outranks every
+tint above: steel `--train-body-unidentified`, drawn with a **dashed**
+outline and fill instead of the usual solid stroke. The dash carries the
+meaning; the tint alone would read as just one more mode. It takes no
+mode hue at all, because it has no cab, no mode and no brake to report,
+and it must never borrow EB's purple — it is not a fault, it is an
 unknown. In panels the same rule holds: the trains-list card and the
-train panel show a `GHOST` state chip on the muted accent and render
-none of the operator controls, since the API refuses every one of them
-for a ghost. Reference: `trainBodyFill` in
+train panel show an `UNIDENTIFIED` state chip on the muted accent and
+render none of the operator controls, since the API refuses every one of
+them for it. Reference: `trainBodyFill` in
 [renderer-trains.ts](../frontend/src/renderer/renderer-trains.ts),
-`renderGhostTrainListItem` / `renderGhostTrainPanel` in
+`renderUnidentifiedTrainListItem` / `renderUnidentifiedTrainPanel` in
 [editor-trains.ts](../frontend/src/editor/editor-trains.ts).
+
+Do not confuse this with a **ghosted** train, which is the opposite case
+— a train the operator placed whose detected blocks all read clear, so
+the app holds an identity with no current behind it. It keeps its own
+identity and its retained span, and is marked with a question mark
+rather than the steel dash (design_new.md, **Power** → Ghosted trains).
+"Ghost" elsewhere in this document always means the button pattern (§3)
+or a placement preview (below), never a train.
 
 ### Selection and previews
 

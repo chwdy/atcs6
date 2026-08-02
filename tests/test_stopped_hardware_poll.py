@@ -56,7 +56,7 @@ def build_sim(mode=OperationMode.REAL, num_blocks: int = 3):
         operation_mode=mode,
         input_interface=detector,
     )
-    sim.ghost_clock = lambda: sim._fake_clock
+    sim.unidentified_clock = lambda: sim._fake_clock
     sim._fake_clock = 0.0
     return network, sim, detector
 
@@ -73,9 +73,9 @@ def test_a_stopped_poll_commits_a_detected_occupancy():
     block = network.blocks["BLK_1"]
     assert block.occupied_by is not None
     assert block.state == BlockState.OCCUPIED
-    # Nothing the app controls is on the layout, so the occupant is a ghost —
+    # Nothing the app controls is on the layout, so the occupant is an unidentified train —
     # committed through the ordinary per-train chain, not a side channel.
-    assert network.trains[block.occupied_by].is_ghost is True
+    assert network.trains[block.occupied_by].is_unidentified is True
 
 
 def test_a_stopped_poll_vacates_when_the_detector_clears():
@@ -93,11 +93,11 @@ def test_a_stopped_poll_vacates_when_the_detector_clears():
     assert network.blocks["BLK_1"].state == BlockState.FREE
 
 
-def test_a_stopped_poll_tracks_a_ghost_moving_between_blocks():
+def test_a_stopped_poll_tracks_an_unidentified_train_moving_between_blocks():
     network, sim, detector = build_sim()
     detector.current = {"BLK_0": True}
     sim.poll_hardware_occupancy()
-    ghost_id = network.blocks["BLK_0"].occupied_by
+    unidentified_id = network.blocks["BLK_0"].occupied_by
 
     # It rolls on: BLK_1 lights up before BLK_0 has cleared its debounce.
     detector.current = {"BLK_0": True, "BLK_1": True}
@@ -107,7 +107,7 @@ def test_a_stopped_poll_tracks_a_ghost_moving_between_blocks():
         sim.poll_hardware_occupancy()
 
     assert network.blocks["BLK_0"].occupied_by is None
-    assert network.blocks["BLK_1"].occupied_by == ghost_id
+    assert network.blocks["BLK_1"].occupied_by == unidentified_id
 
 
 # --------------------------------------------------- stopped stays stopped

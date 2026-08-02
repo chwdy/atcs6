@@ -390,7 +390,7 @@ def test_set_current_binding_sets_and_clears():
 def test_binding_unknown_chip_rejected():
     with pytest.raises(hardware_config.HardwareConfigError):
         hardware_config.config_from_payload(
-            {"switch_output": {"SW": {"chip_id": "ghost", "port_main": 0, "port_diverge": 1}}}
+            {"switch_output": {"SW": {"chip_id": "unidentified train", "port_main": 0, "port_diverge": 1}}}
         )
 
 
@@ -566,7 +566,7 @@ def test_load_invalid_config_keeps_defaults():
     with open(hardware_config.CONFIG_PATH, "w") as fh:
         json.dump({"enabled": True, "chips": [],
                    "switch_output": {
-                       "SW": {"chip_id": "ghost", "port_main": 0, "port_diverge": 1},
+                       "SW": {"chip_id": "unidentified train", "port_main": 0, "port_diverge": 1},
                    }}, fh)
     hardware_config.load_from_disk()
     assert hardware_config.derive_operation_mode() == OperationMode.SIM
@@ -797,6 +797,80 @@ def test_binding_endpoint_sets_current_binding(client):
                     json={"map": "block_occupancy_current", "logical_id": "B1"})
     assert r2.status_code == 200
     assert "B1" not in hardware_config.get_hardware_config().block_occupancy_current
+
+
+def test_binding_endpoint_sets_output_enable(client):
+    """The /OE inhibit is bindable through the same endpoint as the rest.
+
+    It is the only binding with no per-entity editor — it names a wire between
+    two chips — so Hardware Setup writes it here."""
+    client.put("/api/hardware/config", json=_real_payload(output_enable={}))
+
+    r = client.put("/api/hardware/binding", json={
+        "map": "output_enable", "logical_id": "pwm1", "chip_id": "sw1", "port": 7,
+    })
+    assert r.status_code == 200
+    bound = hardware_config.get_hardware_config().output_enable["pwm1"]
+    assert (bound.chip_id, bound.port) == ("sw1", 7)
+    report = hardware_config.activation_report(
+        hardware_config.get_hardware_config(),
+        OperationMode.VIRTUAL_HARDWARE, ["B1"], ["SW_A"],
+    )
+    assert report["ready"] is True
+    assert report["warnings"] == []
+
+    r2 = client.put("/api/hardware/binding",
+                    json={"map": "output_enable", "logical_id": "pwm1"})
+    assert r2.status_code == 200
+    assert "pwm1" not in hardware_config.get_hardware_config().output_enable
+
+
+def test_missing_output_enable_warns_but_does_not_block_activation(client):
+    """An /OE inhibit is wiring a rig may not have — a spare '595 bit routed to
+    the PCA's /OE pin. Without it safe state still zeroes every channel, so the
+    board can be turned off; it just loses the one-write board-wide off. That is
+    reported as a warning and must not refuse either hardware environment,
+    otherwise a rig that ties /OE enabled can never run."""
+    client.put("/api/hardware/config", json=_real_payload(output_enable={}))
+    cfg = hardware_config.get_hardware_config()
+
+    report = hardware_config.activation_report(
+        cfg, OperationMode.VIRTUAL_HARDWARE, ["B1"], ["SW_A"]
+    )
+    assert report["ready"] is True
+    assert report["issues"] == []
+    assert [w["code"] for w in report["warnings"]] == ["missing_output_inhibit"]
+    assert report["warnings"][0]["ids"] == ["pwm1"]
+
+    # Real Hardware carries the same warning; the only thing still blocking it
+    # is the independent renewable lease, which is a separate mechanism.
+    real = hardware_config.activation_report(
+        cfg, OperationMode.REAL_HARDWARE, ["B1"], ["SW_A"]
+    )
+    assert [w["code"] for w in real["warnings"]] == ["missing_output_inhibit"]
+    assert [i["code"] for i in real["issues"]] == ["missing_external_safety_lease"]
+
+
+def test_binding_endpoint_output_enable_rejects_coil_bit(client):
+    """A held inhibit and a pulsed coil cannot share a bit; the cross-map check
+    runs on this path too, so the UI cannot write the contradiction."""
+    client.put("/api/hardware/config", json=_real_payload(output_enable={}))
+    r = client.put("/api/hardware/binding", json={
+        "map": "output_enable", "logical_id": "pwm1", "chip_id": "sw1", "port": 5,
+    })
+    assert r.status_code == 400
+    assert "coil" in r.get_json()["error"]
+    assert "pwm1" not in hardware_config.get_hardware_config().output_enable
+
+
+def test_binding_endpoint_output_enable_rejects_non_track_key(client):
+    """The key is the track chip being inhibited, not the chip driving the bit."""
+    client.put("/api/hardware/config", json=_real_payload(output_enable={}))
+    r = client.put("/api/hardware/binding", json={
+        "map": "output_enable", "logical_id": "sw1", "chip_id": "sw1", "port": 4,
+    })
+    assert r.status_code == 400
+    assert not hardware_config.get_hardware_config().output_enable
 
 
 def test_commission_currents_endpoint_with_fake(client, monkeypatch):

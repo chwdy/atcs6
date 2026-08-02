@@ -37,7 +37,7 @@ from typing import (
     TYPE_CHECKING,
 )
 
-from ghost_trains import GhostTrainTracker
+from unidentified_trains import UnidentifiedTrainTracker
 from network import RailwayNetwork
 from train import Train, TrainCar
 from enums import TrainState, Direction, HandlePosition, OperationMode
@@ -171,15 +171,15 @@ class SimulationController:
                 payload={"message": message},
             ),
         )
-        # Ghost trains (design_new.md "Power -> Ghost trains"): the Step-0 owner of
+        # Unidentified trains (design_new.md "Power -> Unidentified trains"): the Step-0 owner of
         # every confirmed entry that matches no existing train. It creates and
-        # retires the ghost `Train` records; their block commits then run through
+        # retires the unidentified train `Train` records; their block commits then run through
         # the ordinary per-train chain like any other train's.
-        self.ghost_trains = GhostTrainTracker(network, self)
-        # The clock the ghost tracker's hold windows are measured against — see
-        # `_ghost_clock` for why it is wall-clock and not `simulation_time`.
+        self.unidentified_trains = UnidentifiedTrainTracker(network, self)
+        # The clock the unidentified train tracker's hold windows are measured against — see
+        # `_unidentified_clock` for why it is wall-clock and not `simulation_time`.
         # Replaceable so a test can age a window out without sleeping.
-        self.ghost_clock: Callable[[], float] = time.monotonic
+        self.unidentified_clock: Callable[[], float] = time.monotonic
         self.route_executor = RouteExecutor(network, path_dispatcher, self.controllers)
         self.speed_profile_registry = network.speed_profiles
         self.simulation_time: float = 0.0
@@ -323,12 +323,12 @@ class SimulationController:
                 if self.failed_runtime:
                     return
 
-            # Ghost identity follows connectivity, and only the committed
-            # `Block.occupied_by` says which blocks each ghost ended the tick
-            # holding — so the ghost reconciliation (merge, split, gap hold,
+            # Unidentified train identity follows connectivity, and only the committed
+            # `Block.occupied_by` says which blocks each unidentified train ended the tick
+            # holding — so the unidentified train reconciliation (merge, split, gap hold,
             # retirement) runs once here, after every train's Phase 3
-            # (design_new.md "Power -> Ghost trains").
-            self.ghost_trains.reconcile(self._ghost_clock())
+            # (design_new.md "Power -> Unidentified trains").
+            self.unidentified_trains.reconcile(self._unidentified_clock())
 
             self._settle_after_commits()
 
@@ -342,27 +342,27 @@ class SimulationController:
         finally:
             net._lookahead_memo_active = False
 
-    def _ghost_clock(self) -> float:
-        """The clock `GhostTrainTracker` measures its hold windows against.
+    def _unidentified_clock(self) -> float:
+        """The clock `UnidentifiedTrainTracker` measures its hold windows against.
 
-        Wall-clock monotonic, not `simulation_time`. A ghost is a physical thing
+        Wall-clock monotonic, not `simulation_time`. An unidentified train is a physical thing
         rolling on physical track: the gap hold it sits in while it crosses an
         undetected switch tile elapses in real seconds, and it goes on elapsing
         while the app is stopped — `poll_hardware_occupancy` keeps detecting and
-        committing there, and a ghost that lost its blocks under a frozen
+        committing there, and an unidentified train that lost its blocks under a frozen
         `simulation_time` would never age out of the hold and never retire.
 
         The tracker only ever uses this to compare two of its own stamps
-        (how long a hold has run, which of two ghosts is older), never against
+        (how long a hold has run, which of two unidentified trains is older), never against
         anything on the timeline `simulation_time` measures, so the swap is
-        contained to it. Ghosts also exist only in real mode — the simulated
+        contained to it. Unidentified trains also exist only in real mode — the simulated
         detector builds current from live spans, so it produces no unattributed
         entries — and there the two clocks track each other anyway.
 
-        `ghost_clock` is the seam a test drives to age a hold window out without
+        `unidentified_clock` is the seam a test drives to age a hold window out without
         sleeping; nothing in the runtime replaces it.
         """
-        return self.ghost_clock()
+        return self.unidentified_clock()
 
     def _settle_after_commits(self) -> None:
         """Drain the de-energize queue and refresh signals, after every train's
@@ -411,11 +411,11 @@ class SimulationController:
 
         A locomotive standing across a block boundary draws current on both
         blocks. The far one matches no reservation and no span, so without this
-        it would be read as a second object and handed a ghost — which then
-        de-energizes it, because a ghost is never energized, stranding the very
+        it would be read as a second object and handed an unidentified train — which then
+        de-energizes it, because an unidentified train is never energized, stranding the very
         locomotive the app is driving. Adjacency is the same connectivity walk
-        ghost identity uses: only the first block across undetected track counts,
-        so a block with empty blocks between it and every train is still a ghost.
+        unidentified train identity uses: only the first block across undetected track counts,
+        so a block with empty blocks between it and every train is still an unidentified train.
         """
         out: Dict[str, Set[str]] = {}
         for block_id in sorted(unmatched):
@@ -431,10 +431,10 @@ class SimulationController:
         is where the app is driving the train and it leads confirmed occupancy on
         entry — the block a train has just been given may not have confirmed yet.
         """
-        for neighbour_id in sorted(self.ghost_trains.reachable_blocks(block_id)):
+        for neighbour_id in sorted(self.unidentified_trains.reachable_blocks(block_id)):
             for train_id in sorted(self.controllers):
                 train = self.network.trains.get(train_id)
-                if train is None or getattr(train, "is_ghost", False):
+                if train is None or getattr(train, "is_unidentified", False):
                     continue
                 span = getattr(
                     getattr(self.controllers[train_id], "physics_sync", None),
@@ -445,24 +445,24 @@ class SimulationController:
                     return train_id
             block = self.network.blocks.get(neighbour_id)
             owner = getattr(block, "occupied_by", None) if block else None
-            if owner is not None and not self.ghost_trains.is_ghost(owner):
+            if owner is not None and not self.unidentified_trains.is_unidentified(owner):
                 return owner
         return None
 
     def _calculated_hold_blocks(self) -> Set[str]:
         """Every block some controllable train holds this tick, by calculation.
 
-        The union, over every train that is not a ghost, of its calculated span's
+        The union, over every train that is not an unidentified train, of its calculated span's
         `occupied_blocks`, its `pending-entry block`, and its reserved-ahead
         corridor — exactly the emission set `TrainPhysics` drives each tick
         (design_new.md "Power", Energized set: calculated span plus
-        reservations). Ghost trains are excluded because they command no
-        `track_voltage`, so a block held only by a ghost is driven to `0`.
+        reservations). Unidentified trains are excluded because they command no
+        `track_voltage`, so a block held only by an unidentified train is driven to `0`.
         """
         held: Set[str] = set()
         for train_id, physics in self.physics_instances.items():
             train = self.network.trains.get(train_id)
-            if train is None or getattr(train, "is_ghost", False):
+            if train is None or getattr(train, "is_unidentified", False):
                 continue
             controller = self.controllers.get(train_id)
             span = getattr(
@@ -532,7 +532,7 @@ class SimulationController:
                 if self.failed_runtime:
                     return
 
-            self.ghost_trains.reconcile(self._ghost_clock())
+            self.unidentified_trains.reconcile(self._unidentified_clock())
             self._settle_after_commits()
             net.bump_lookahead_world_version()
         finally:
@@ -643,8 +643,8 @@ class SimulationController:
 
         # A confirmed entry next to a block an ordinary train already holds is
         # that train standing across the boundary — one train on two blocks, not
-        # a new object (design_new.md "Attribution"). This runs before the ghost
-        # step, so a ghost is minted only for current that is genuinely
+        # a new object (design_new.md "Attribution"). This runs before the unidentified train
+        # step, so an unidentified train is minted only for current that is genuinely
         # disconnected from every train.
         if unmatched:
             for train_id, block_ids in self._entries_for_adjacent_trains(
@@ -654,16 +654,16 @@ class SimulationController:
                 unmatched -= block_ids
 
         # What is left matches no existing train and is not next to one, so it
-        # belongs to a ghost train (design_new.md "Attribution"):
-        # `GhostTrainTracker` resolves it to a ghost `train_id` — a new ghost, or
+        # belongs to an unidentified train (design_new.md "Attribution"):
+        # `UnidentifiedTrainTracker` resolves it to an unidentified train `train_id` — a new unidentified train, or
         # one continuing its run across an undetected switch tile — and from here
-        # the ghost is an ordinary train, so its slice is written and committed
+        # the unidentified train is an ordinary train, so its slice is written and committed
         # exactly like every other train's.
         if unmatched:
-            for ghost_id, block_ids in self.ghost_trains.attribute_unmatched_entries(
-                unmatched, self._ghost_clock()
+            for unidentified_id, block_ids in self.unidentified_trains.attribute_unmatched_entries(
+                unmatched, self._unidentified_clock()
             ).items():
-                entered_by_train.setdefault(ghost_id, set()).update(block_ids)
+                entered_by_train.setdefault(unidentified_id, set()).update(block_ids)
 
         self._detected_change_train_ids = set(entered_by_train) | set(vacated_by_train)
 
@@ -680,12 +680,12 @@ class SimulationController:
             if controller is not None:
                 controller.physics_sync.pending_detected_vacated_blocks = set(block_ids)
 
-        # A ghost's tail-vacate direction is the block it moved into, known right
+        # An unidentified train's tail-vacate direction is the block it moved into, known right
         # here rather than buffered from a calculated tail exit (design_new.md
-        # "Ghost trains", Direction).
+        # "Unidentified trains", Direction).
         for train_id in sorted(self._detected_change_train_ids):
-            if self.ghost_trains.is_ghost(train_id):
-                self.ghost_trains.note_vacate_directions(
+            if self.unidentified_trains.is_unidentified(train_id):
+                self.unidentified_trains.note_vacate_directions(
                     train_id,
                     entered_by_train.get(train_id, set()),
                     vacated_by_train.get(train_id, set()),
@@ -694,7 +694,7 @@ class SimulationController:
         # Physical detection outranks the calculated position: snap each affected
         # train's span forward to the block seam where the detector leads it
         # (inert under the v1 simulated sensor; active with real hardware). For a
-        # ghost the same call writes the span its detected blocks describe.
+        # unidentified train the same call writes the span its detected blocks describe.
         for train_id in sorted(self._detected_change_train_ids):
             controller = self.controllers.get(train_id)
             train = self.network.trains.get(train_id)
@@ -720,8 +720,8 @@ class SimulationController:
 
         Inert cases stay False: a session that detects nothing physical (the
         simulated driver), a train standing only on unwired blocks (no reading
-        to contradict it), and a ghost (its span IS its confirmed blocks, and a
-        ghost with none is retired by `GhostTrainTracker`).
+        to contradict it), and an unidentified train (its span IS its confirmed blocks, and a
+        unidentified train with none is retired by `UnidentifiedTrainTracker`).
         """
         detected = detector.detected_block_ids()
         confirmed = detector.confirmed_occupied if detected else set()
@@ -737,7 +737,7 @@ class SimulationController:
             if (
                 detected
                 and train is not None
-                and not getattr(train, "is_ghost", False)
+                and not getattr(train, "is_unidentified", False)
             ):
                 span = controller.physics_sync.current_span
                 evidence = set(span.occupied_blocks or []) if span else set()
@@ -1389,9 +1389,9 @@ class SimulationController:
         )
         return train
 
-    def adopt_ghost_train(
+    def adopt_unidentified_train(
         self,
-        ghost_train_id: str,
+        unidentified_train_id: str,
         new_train_id: str,
         *,
         max_speed_kmh: float,
@@ -1406,24 +1406,24 @@ class SimulationController:
         speed_profile_id: Optional[str] = None,
         roster_entry_id: Optional[str] = None,
     ) -> Train:
-        """Turn a ghost train into an ordinary, driveable train.
+        """Turn an unidentified train into an ordinary, driveable train.
 
         The operator has looked at the layout and can say what the detector
         found: which locomotive it is, how long, which way it faces. That is the
-        one piece a ghost is missing, and supplying it is all adoption does
-        (design_new.md "Ghost trains", Adoption).
+        one piece an unidentified train is missing, and supplying it is all adoption does
+        (design_new.md "Unidentified trains", Adoption).
 
         The `Train` object itself survives — same record, same controller, same
         physics instance, same held blocks — because block occupancy is
         edge-triggered off the detector (`BlockOccupancyDetector.step`). Deleting
-        the ghost and adding a fresh train in its place would release blocks that
+        the unidentified train and adding a fresh train in its place would release blocks that
         are still drawing current, and no new entry would ever fire for them, so
         they would sit `FREE` under a train that is physically standing on them.
         Adoption therefore re-keys in place instead: `train_id` changes to
-        `new_train_id` across every registry that keys on it, and `is_ghost`
+        `new_train_id` across every registry that keys on it, and `is_unidentified`
         flips to `False`.
 
-        Placement is the operator's declaration, not a guess. A ghost's span
+        Placement is the operator's declaration, not a guess. An unidentified train's span
         claims whole blocks because nobody knows where inside them it sits;
         `place_train` rebuilds the span from the real consist length at the
         facing given here. With no `head_tile` the consist is centered in the
@@ -1436,15 +1436,15 @@ class SimulationController:
         would reach into one is refused rather than claiming it.
 
         Args:
-            ghost_train_id: The `train_id` of the ghost to adopt.
+            unidentified_train_id: The `train_id` of the unidentified train to adopt.
             new_train_id: The id the adopted train keeps from here on. May equal
-                `ghost_train_id` to keep the generated one.
+                `unidentified_train_id` to keep the generated one.
             max_speed_kmh: Operational max speed in km/h.
             length_cm: Real consist length in centimetres.
             direction: Facing: "NORTH", "EAST", "SOUTH", or "WEST"
                 (case-insensitive).
             head_tile: Optional (x, y) to put the head on, flush at that tile's
-                exit edge in `direction`. Must be a tile the ghost currently
+                exit edge in `direction`. Must be a tile the unidentified train currently
                 claims. Omit it to center the consist in the detected track.
             cab: Optional initial cab ("A" or "B"), written directly as
                 `add_train` does for a fresh train.
@@ -1458,32 +1458,32 @@ class SimulationController:
                 exactly as `add_train` does.
 
         Returns:
-            The adopted `Train` (the same object the ghost used, re-keyed).
+            The adopted `Train` (the same object the unidentified train used, re-keyed).
 
         Raises:
-            ValueError: If the train is unknown or is not a ghost, if
+            ValueError: If the train is unknown or is not an unidentified train, if
                 `new_train_id` is blank or already taken, if `direction` is not a
-                compass name, if `head_tile` is not a tile the ghost claims, if
-                the ghost claims no tiles at all, if the consist does not fit on
+                compass name, if `head_tile` is not a tile the unidentified train claims, if
+                the unidentified train claims no tiles at all, if the consist does not fit on
                 the track behind the head, or if it would reach into a block the
                 detector reports clear.
         """
         # ---- Validate everything before mutating anything. -----------------
-        ghost = self.network.trains.get(ghost_train_id)
-        if ghost is None:
-            raise ValueError(f"Unknown train: {ghost_train_id!r}")
-        if not getattr(ghost, "is_ghost", False):
+        unidentified_train = self.network.trains.get(unidentified_train_id)
+        if unidentified_train is None:
+            raise ValueError(f"Unknown train: {unidentified_train_id!r}")
+        if not getattr(unidentified_train, "is_unidentified", False):
             raise ValueError(
-                f"Train {ghost_train_id!r} is not a ghost train; only a ghost "
+                f"Train {unidentified_train_id!r} is not an unidentified train; only an unidentified train "
                 f"can be adopted"
             )
         if not self.occupancy_is_real:
-            # A ghost is a report from a real detector about a real locomotive.
+            # An unidentified train is a report from a real detector about a real locomotive.
             # Where occupancy is derived from the model there is nothing
             # physical to adopt, so the operation is refused rather than
-            # inventing a train (design_new.md "Ghost trains", Adoption).
+            # inventing a train (design_new.md "Unidentified trains", Adoption).
             raise ValueError(
-                "Ghost trains can only be adopted when block occupancy is read "
+                "Unidentified trains can only be adopted when block occupancy is read "
                 "from real detectors; this session derives occupancy from the "
                 "model"
             )
@@ -1491,7 +1491,7 @@ class SimulationController:
         new_train_id = (new_train_id or "").strip()
         if not new_train_id:
             raise ValueError("new_train_id is required")
-        if new_train_id != ghost_train_id and new_train_id in self.network.trains:
+        if new_train_id != unidentified_train_id and new_train_id in self.network.trains:
             raise ValueError(f"Train {new_train_id!r} already exists")
 
         try:
@@ -1499,14 +1499,14 @@ class SimulationController:
         except (AttributeError, KeyError):
             raise ValueError(f"Invalid direction: {direction!r}")
 
-        controller = self.controllers.get(ghost_train_id)
+        controller = self.controllers.get(unidentified_train_id)
         span = controller.physics_sync.current_span if controller is not None else None
         claimed_tiles = [tuple(t) for t in (getattr(span, "occupied_tiles", None) or [])]
         if not claimed_tiles:
-            # A ghost in the undetected gap holds nothing and claims nothing, so
+            # An unidentified train in the undetected gap holds nothing and claims nothing, so
             # there is no position to adopt it at (design_new.md "The gap").
             raise ValueError(
-                f"Ghost train {ghost_train_id!r} is not standing on any detected "
+                f"Unidentified train train {unidentified_train_id!r} is not standing on any detected "
                 f"block right now; wait for it to be detected again"
             )
         head_offset_cm = 0.0
@@ -1518,8 +1518,8 @@ class SimulationController:
             head_tile = (int(head_tile[0]), int(head_tile[1]))
             if head_tile not in claimed_tiles:
                 raise ValueError(
-                    f"head_tile {head_tile!r} is not a tile ghost train "
-                    f"{ghost_train_id!r} is standing on"
+                    f"head_tile {head_tile!r} is not a tile unidentified train "
+                    f"{unidentified_train_id!r} is standing on"
                 )
 
         # Roster import (design_new.md "Train Roster"), on the same terms as
@@ -1545,17 +1545,17 @@ class SimulationController:
                 ):
                     speed_profile_id = roster_entry.speed_profile_id
 
-        old_profile_id = getattr(ghost, "speed_profile_id", None)
-        controller = self.get_or_create_controller(ghost_train_id)
+        old_profile_id = getattr(unidentified_train, "speed_profile_id", None)
+        controller = self.get_or_create_controller(unidentified_train_id)
 
-        # ---- Configure and place, still under the ghost's own id. -----------
+        # ---- Configure and place, still under the unidentified train's own id. -----------
         # Placement runs before the re-key so a consist that does not fit leaves
         # nothing half-adopted: the only things changed by then are plain field
         # writes on the `Train`, which the rollback below puts back. Doing it the
         # other way round would strand a train that is re-keyed and no longer a
-        # ghost but has never been placed.
-        rollback = (ghost.consist, ghost.max_speed, ghost.model, ghost.car_number)
-        ghost.consist = [
+        # unidentified train but has never been placed.
+        rollback = (unidentified_train.consist, unidentified_train.max_speed, unidentified_train.model, unidentified_train.car_number)
+        unidentified_train.consist = [
             TrainCar(
                 car_id=f"{new_train_id}_loco",
                 car_type=(train_type or "LOCOMOTIVE"),
@@ -1563,32 +1563,32 @@ class SimulationController:
                 max_speed=float(max_speed_kmh),
             )
         ]
-        ghost.max_speed = float(max_speed_kmh)
+        unidentified_train.max_speed = float(max_speed_kmh)
         if train_type is not None:
-            ghost.model = train_type
+            unidentified_train.model = train_type
         if name is not None:
-            ghost.car_number = name
+            unidentified_train.car_number = name
         if min_radius_cm is not None:
-            ghost.min_radius_cm = float(min_radius_cm)
+            unidentified_train.min_radius_cm = float(min_radius_cm)
         if max_slope is not None:
-            ghost.max_slope = float(max_slope)
+            unidentified_train.max_slope = float(max_slope)
         # Flipped before placement so `place_train` -> `occupy_blocks` treats
         # this as an ordinary train: no de-energize marking, and the blocks it
         # already holds re-occupy idempotently instead of conflicting.
-        ghost.is_ghost = False
+        unidentified_train.is_unidentified = False
 
-        # The blocks the detector confirmed under this ghost. The declared
+        # The blocks the detector confirmed under this unidentified train. The declared
         # consist must fit inside them: a block reading no current has nothing
         # standing on it, so no train's body can reach into one.
         detected_blocks = {
             block_id
             for block_id, block in self.network.blocks.items()
-            if getattr(block, "occupied_by", None) == ghost_train_id
+            if getattr(block, "occupied_by", None) == unidentified_train_id
         }
 
         try:
             placed_span = self.network.place_train(
-                ghost,
+                unidentified_train,
                 head_tile[0],
                 head_tile[1],
                 resolved_direction,
@@ -1596,8 +1596,8 @@ class SimulationController:
                 confine_to_blocks=detected_blocks,
             )
         except ValueError as exc:
-            ghost.consist, ghost.max_speed, ghost.model, ghost.car_number = rollback
-            ghost.is_ghost = True
+            unidentified_train.consist, unidentified_train.max_speed, unidentified_train.model, unidentified_train.car_number = rollback
+            unidentified_train.is_unidentified = True
             raise ValueError(
                 f"{exc} Give a shorter length, face it the other way, pick a "
                 f"different front tile, or wait until every block it stands on "
@@ -1610,18 +1610,18 @@ class SimulationController:
 
         # ---- Re-key onto the operator's id. --------------------------------
         # Read the held set after placement, so a block the rebuilt span reaches
-        # into (the body extending past what the ghost held) comes along too.
+        # into (the body extending past what the unidentified train held) comes along too.
         held_blocks = sorted(
             block_id
             for block_id, block in self.network.blocks.items()
-            if getattr(block, "occupied_by", None) == ghost_train_id
+            if getattr(block, "occupied_by", None) == unidentified_train_id
         )
-        self._rekey_train(ghost_train_id, new_train_id, held_blocks)
+        self._rekey_train(unidentified_train_id, new_train_id, held_blocks)
         train = self.network.trains[new_train_id]
-        self.ghost_trains.forget(ghost_train_id)
+        self.unidentified_trains.forget(unidentified_train_id)
         self.get_or_create_physics(new_train_id)
 
-        # The ghost's default profile was anchored to a blank train's max_speed
+        # The unidentified train's default profile was anchored to a blank train's max_speed
         # and named after the generated id, so it is retired in favour of one
         # built for the real locomotive — unless the operator named an existing
         # profile (or a roster entry did) to keep measured curves attached.
@@ -1644,7 +1644,7 @@ class SimulationController:
         # ---- Give back what it does not actually stand on. ------------------
         span_blocks = set(getattr(placed_span, "occupied_blocks", None) or [])
         surplus = sorted(set(held_blocks) - span_blocks)
-        self._hand_surplus_blocks_to_ghosts(new_train_id, surplus)
+        self._hand_surplus_blocks_to_unidentified(new_train_id, surplus)
 
         try:
             self.network.update_signals_from_blocks()
@@ -1655,7 +1655,7 @@ class SimulationController:
                 severity=Severity.WARNING,
                 event_time=time.time(),
                 train_id=new_train_id,
-                payload={"context": "adopt_ghost_train", "reason": str(exc)},
+                payload={"context": "adopt_unidentified_train", "reason": str(exc)},
             )
 
         self.notification_center.emit(
@@ -1665,7 +1665,7 @@ class SimulationController:
             event_time=time.time(),
             train_id=new_train_id,
             payload={
-                "adopted_from_ghost_id": ghost_train_id,
+                "adopted_from_unidentified_id": unidentified_train_id,
                 "head_tile": [head_tile[0], head_tile[1]],
                 "initial_direction": resolved_direction.name,
                 "max_speed_kmh": float(max_speed_kmh),
@@ -1683,7 +1683,7 @@ class SimulationController:
     ) -> Tuple[Tuple[int, int], float]:
         """Where to put the head so the consist sits centered in what was detected.
 
-        A ghost claims whole blocks because nobody knows where inside them it
+        An unidentified train claims whole blocks because nobody knows where inside them it
         sits, and the operator declaring a length does not tell the app that
         either. Centering is the honest reading of that: the same amount of
         detected track is left unaccounted for in front of the train as behind
@@ -1700,7 +1700,7 @@ class SimulationController:
         blocks with no end, or a facing no claimed tile can exit through, which
         `place_train` then reports on its own terms.
 
-        The detected length is the sum of the claimed tiles' lengths. A ghost
+        The detected length is the sum of the claimed tiles' lengths. An unidentified train
         holding two blocks joined by a switch tile is centered to within half
         that switch's length, since a switch carries no detection and so is not
         among the claimed tiles.
@@ -1728,16 +1728,16 @@ class SimulationController:
         # which is fine) or on a block reading no current (which it refuses).
         return fronts[0], max(0.0, (detected_length_cm - length_cm) / 2.0)
 
-    def _hand_surplus_blocks_to_ghosts(
+    def _hand_surplus_blocks_to_unidentified(
         self, train_id: str, surplus: List[str]
     ) -> Dict[str, Set[str]]:
         """Hand back blocks an adopted train holds but does not stand on.
 
-        A ghost claims whole blocks because its real extent is unknown. Adoption
+        An unidentified train claims whole blocks because its real extent is unknown. Adoption
         replaces that guess with the operator's declared consist, and whatever
         the rebuilt span does not cover is not this train — it is current on
         track no train the app controls is standing on, which is the definition
-        of a ghost. So it becomes one.
+        of an unidentified train. So it becomes one.
 
         Keeping those blocks on the adopted train instead would wall the train
         off from its own route: a block with `occupied_by` set is not an eligible
@@ -1749,7 +1749,7 @@ class SimulationController:
         the detector reports changes rather than levels, so nothing would ever
         re-occupy them and another train could be routed straight in.
 
-        Returns `ghost_id -> block ids` for the blocks handed over.
+        Returns `unidentified_id -> block ids` for the blocks handed over.
         """
         manager = self.block_manager
         if manager is None or not surplus:
@@ -1758,14 +1758,14 @@ class SimulationController:
         for block_id in sorted(surplus):
             manager.on_block_tail_vacated(block_id, train_id, None)
 
-        # Ordinary Step-0 attribution: connected surplus blocks become one ghost,
-        # and a group touching a ghost that is already there joins it.
-        attribution = self.ghost_trains.attribute_unmatched_entries(
-            set(surplus), self._ghost_clock()
+        # Ordinary Step-0 attribution: connected surplus blocks become one unidentified train,
+        # and a group touching an unidentified train that is already there joins it.
+        attribution = self.unidentified_trains.attribute_unmatched_entries(
+            set(surplus), self._unidentified_clock()
         )
-        for ghost_id, block_ids in attribution.items():
-            manager.occupy_blocks(sorted(block_ids), ghost_id)
-            self.ghost_trains.write_detected_span(ghost_id, set(block_ids), set())
+        for unidentified_id, block_ids in attribution.items():
+            manager.occupy_blocks(sorted(block_ids), unidentified_id)
+            self.unidentified_trains.write_detected_span(unidentified_id, set(block_ids), set())
 
         # Say so. Otherwise the operator adopts a train, finds its route refused
         # because the block ahead is occupied, and has no way to connect that to
@@ -1780,11 +1780,11 @@ class SimulationController:
                 "message": (
                     f"{', '.join(sorted(surplus))} still read current but "
                     f"{train_id} is not long enough to reach them; they are "
-                    f"tracked as ghost trains. If that is really {train_id}, "
+                    f"tracked as unidentified trains. If that is really {train_id}, "
                     f"adopt it again with the full consist length."
                 ),
                 "blocks": sorted(surplus),
-                "ghost_train_ids": sorted(attribution),
+                "unidentified_train_ids": sorted(attribution),
             },
         )
         return attribution
@@ -1800,10 +1800,10 @@ class SimulationController:
         rather than rebound. Block ownership moves through the canonical
         `BlockManager` writers (release, then occupy) so no block is ever owned
         by two ids and the voltage drain still sees the release, matching how
-        `GhostTrainTracker._hand_block_to` hands a block between ghosts.
+        `UnidentifiedTrainTracker._hand_block_to` hands a block between unidentified trains.
 
         Only ever called for a train that holds no path, route run, or
-        reservation — that is, a ghost being adopted. It is not a general
+        reservation — that is, an unidentified train being adopted. It is not a general
         rename.
         """
         if old_train_id == new_train_id:
@@ -1834,7 +1834,7 @@ class SimulationController:
             else:
                 block.occupied_by = new_train_id
 
-        # Switches carry no detection, so a ghost never owns one; sweep anyway
+        # Switches carry no detection, so an unidentified train never owns one; sweep anyway
         # so the rename leaves no stale id behind if that ever changes.
         for switch in getattr(self.network, "switches", {}).values():
             if getattr(switch, "occupied_by", None) == old_train_id:
@@ -1861,7 +1861,7 @@ class SimulationController:
         occupancy interface specifically rather than the run mode as a whole —
         a real-mode session that leaves occupancy simulated still runs its
         occupancy by calculation (design_new.md "Run modes", point 3). It is
-        what gates ghost adoption and what the UI reads to stop calling a
+        what gates unidentified train adoption and what the UI reads to stop calling a
         railway with live detectors a simulation.
         """
         return not isinstance(self.input_interface, SimulatedOccupancyDriver)
@@ -2147,7 +2147,7 @@ def build_network_payload(
 
     # Run mode (design_new.md "Run modes"). The UI reads these to stop calling a
     # railway with real hardware on it a simulation, and to decide whether the
-    # ghost-adoption control is offered at all.
+    # unidentified-adoption control is offered at all.
     payload["operation_mode"] = sim_controller.operation_mode.value
     payload["operation_environment"] = sim_controller.operation_mode.value
     payload["environment_active"] = bool(sim_controller.environment_active)

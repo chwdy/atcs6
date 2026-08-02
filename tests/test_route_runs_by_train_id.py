@@ -57,7 +57,7 @@ def test_route_run_summary_for_running_deviated_finished_missing():
     assert ex.route_run_summary_for("T1") is None
 
     # Train with no run at all.
-    assert ex.route_run_summary_for("GHOST") is None
+    assert ex.route_run_summary_for("UNIDENTIFIED") is None
 
 
 def test_build_network_payload_emits_route_runs_sibling():

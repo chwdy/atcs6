@@ -1,7 +1,7 @@
 """Train-level scenarios for the Virtual Hardware device.
 
 The rig writes the configured detector channels, never model occupancy. The
-ordinary HAL, debounce, attribution, ghost, and safety paths therefore consume
+ordinary HAL, debounce, attribution, unidentified train, and safety paths therefore consume
 the scenario exactly as they consume physical detector responses.
 """
 
@@ -11,6 +11,58 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from hardware.interfaces import build_chip
+
+
+def _chip_spec(cfg: Any, chip_id: str) -> Any:
+    return next((chip for chip in cfg.chips if chip.chip_id == chip_id), None)
+
+
+def has_presence_binding(cfg: Any, block_id: str) -> bool:
+    """Whether `block_id` has any detector this module can write."""
+    return block_id in cfg.block_occupancy or block_id in cfg.block_occupancy_current
+
+
+def set_block_presence(cfg: Any, device: Any, block_id: str, present: bool) -> None:
+    """Write every detector source `block_id` is bound to, consistently.
+
+    A block's occupancy is hybrid: which source the runtime believes depends on
+    how hard the block is being driven (see `OccupancyDriver`), so writing only
+    one of the two produces a reading the runtime may be ignoring. Placing a
+    virtual object on the detectors therefore means writing both — the '165 bit
+    AND a current comfortably clear of the channel's threshold — and lifting it
+    means clearing both. Every caller that puts a train somewhere goes through
+    here so the rig and the bench cannot drift apart on that rule.
+
+    Raises ValueError when the block has no detector binding at all, or names a
+    chip the config does not have.
+    """
+    digital = cfg.block_occupancy.get(block_id)
+    current = cfg.block_occupancy_current.get(block_id)
+    if digital is None and current is None:
+        raise ValueError(f"block {block_id!r} has no occupancy binding")
+
+    if digital is not None:
+        spec = _chip_spec(cfg, digital.chip_id)
+        if spec is None:
+            raise ValueError(f"occupancy binding for {block_id!r} names a missing chip")
+        chip = build_chip(device, spec)
+        raw_bit = (not present) if bool(getattr(spec, "active_low", False)) else present
+        device.set_input_bit(chip.select, digital.port, raw_bit, width=spec.chain_length)
+
+    if current is not None:
+        spec = _chip_spec(cfg, current.chip_id)
+        if spec is None:
+            raise ValueError(f"current binding for {block_id!r} names a missing chip")
+        chip = build_chip(device, spec)
+        baseline = float(current.baseline_ma or 0.0)
+        threshold = float(current.threshold_ma or 3.0)
+        # Clear of the threshold rather than at it: a reading that sits exactly
+        # on the boundary tests the comparator, not the app's reaction.
+        milliamps = baseline + threshold + 5.0 if present else baseline
+        if spec.kind == "ina219":
+            device.set_ina219_current(chip.address, milliamps / 1000.0)
+        else:
+            device.set_ina3221_current(chip.address, current.port + 1, milliamps / 1000.0)
 
 
 @dataclass
@@ -39,7 +91,7 @@ class VirtualRig:
         if not blocks:
             raise ValueError("scenario needs at least one block_id")
         for block_id in blocks:
-            if block_id not in cfg.block_occupancy and block_id not in cfg.block_occupancy_current:
+            if not has_presence_binding(cfg, block_id):
                 raise ValueError(f"block {block_id!r} has no occupancy binding")
         self.remove(cfg, device)
         self.blocks = blocks
@@ -80,34 +132,5 @@ class VirtualRig:
         self.stalled = False
         return self.status()
 
-    @staticmethod
-    def _chip_spec(cfg: Any, chip_id: str) -> Any:
-        return next((chip for chip in cfg.chips if chip.chip_id == chip_id), None)
-
     def _set_present(self, cfg: Any, device: Any, block_id: str, present: bool) -> None:
-        digital = cfg.block_occupancy.get(block_id)
-        if digital is not None:
-            spec = self._chip_spec(cfg, digital.chip_id)
-            if spec is None:
-                raise ValueError(f"occupancy binding for {block_id!r} names a missing chip")
-            chip = build_chip(device, spec)
-            raw_bit = (not present) if bool(getattr(spec, "active_low", False)) else present
-            device.set_input_bit(
-                chip.select, digital.port, raw_bit, width=spec.chain_length
-            )
-
-        current = cfg.block_occupancy_current.get(block_id)
-        if current is not None:
-            spec = self._chip_spec(cfg, current.chip_id)
-            if spec is None:
-                raise ValueError(f"current binding for {block_id!r} names a missing chip")
-            chip = build_chip(device, spec)
-            baseline = float(current.baseline_ma or 0.0)
-            threshold = float(current.threshold_ma or 3.0)
-            milliamps = baseline + threshold + 5.0 if present else baseline
-            if spec.kind == "ina219":
-                device.set_ina219_current(chip.address, milliamps / 1000.0)
-            else:
-                device.set_ina3221_current(
-                    chip.address, current.port + 1, milliamps / 1000.0
-                )
+        set_block_presence(cfg, device, block_id, present)

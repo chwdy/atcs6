@@ -244,12 +244,12 @@ class BlockOccupancyDetector:
         vacate whose block is already clear is a benign double-clear and is
         skipped.
 
-        A confirmed entry that matches no existing train belongs to a **ghost
+        A confirmed entry that matches no existing train belongs to a **unidentified train
         train** (design_new.md "Attribution"), but creating one is not this pure
         attribution step's job: it writes no block state and registers no train.
-        The Step-0 preamble hands `unmatched_entries` to `GhostTrainTracker`,
-        which resolves each block to a ghost `train_id` — new or continuing — and
-        the result merges into `entered_by_train`. From that point the ghost is an
+        The Step-0 preamble hands `unmatched_entries` to `UnidentifiedTrainTracker`,
+        which resolves each block to an unidentified train `train_id` — new or continuing — and
+        the result merges into `entered_by_train`. From that point the unidentified train is an
         ordinary train, so every slice commits through its own Phase-3
         transaction and nothing here needs a side channel into
         `Block.occupied_by`.
@@ -263,13 +263,13 @@ class BlockOccupancyDetector:
                 train_id = self._span_owner(block_id)
             if train_id is None:
                 # design_new.md "Attribution": a confirmed entry that matches no
-                # existing train is a ghost train. Unreachable under the
+                # existing train is an unidentified train. Unreachable under the
                 # simulated detector, which builds current from live spans.
                 unmatched_entries.add(block_id)
                 self._emit(
                     "block_attribution_unknown",
                     f"confirmed entry on block {block_id} matches no existing "
-                    f"train; attributing to a ghost train",
+                    f"train; attributing to an unidentified train",
                 )
                 continue
             entered_by_train.setdefault(train_id, set()).add(block_id)

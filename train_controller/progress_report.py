@@ -87,7 +87,7 @@ class ProgressReportBuilder:
             # mailbox BEYOND the block observations folded in from the Step-0
             # detected sets (design_new.md ":2181"). Those observations are the
             # only path by which a train that moves without power — pushed by
-            # hand, or a ghost train, which is always OFF — commits its block
+            # hand, or an unidentified train, which is always OFF — commits its block
             # entries and vacates, and Phase 3 runs for exactly those ticks.
             self._enqueue_detected_blocks_only_report(event_time)
             return

@@ -14,7 +14,7 @@ and reports the refusal once per block.
 
 from block_power import BlockPowerController
 from runtime_payloads import HardwareFailure
-from tests.test_ghost_trains import build_sim
+from tests.test_unidentified_trains import build_sim
 
 
 class RefusingTrackDriver:

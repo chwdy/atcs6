@@ -621,6 +621,17 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
+  /** Put a virtual object on a block's detectors, or lift it off — every source
+   *  the block is bound to, written together. This is what "place a train here"
+   *  calls; the two raw setters above are for making the sources disagree. */
+  async setHwDebugPresence(blockId: string, present: boolean): Promise<any> {
+    return this._request(
+      '/virtual-hardware/input/presence',
+      { method: 'PUT', body: { block_id: blockId, present } },
+      'setHwDebugPresence'
+    );
+  }
+
   async setVirtualHardwareFault(kind: string, enabled: boolean): Promise<any> {
     return this._request(
       '/virtual-hardware/fault',
@@ -1148,14 +1159,14 @@ export class API implements LayoutDataClient, SimClient {
   }
 
   /**
-   * Set a ghost train up as a real, driveable train.
+   * Set an unidentified train up as a real, driveable train.
    *
-   * The ghost keeps its blocks and its controller; the body supplies the
+   * The unidentified train keeps its blocks and its controller; the body supplies the
    * identity, consist and facing the detector could never know (design_new.md
-   * "Ghost trains", Adoption). The adopted train's id is usually not the one in
+   * "Unidentified trains", Adoption). The adopted train's id is usually not the one in
    * the URL, so read it back from the response.
    */
-  async adoptGhostTrain(
+  async adoptUnidentifiedTrain(
     trainId: string,
     body: {
       new_train_id: string;
@@ -1175,7 +1186,7 @@ export class API implements LayoutDataClient, SimClient {
         method: 'POST',
         body,
       },
-      'adoptGhostTrain'
+      'adoptUnidentifiedTrain'
     );
   }
 

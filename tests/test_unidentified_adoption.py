@@ -1,17 +1,17 @@
-"""Ghost-train adoption (design_new.md "Power" -> Ghost trains, Adoption).
+"""Unidentified train-train adoption (design_new.md "Power" -> Unidentified trains, Adoption).
 
-A ghost is what the detector found; adoption is the operator saying what it is.
+An unidentified train is what the detector found; adoption is the operator saying what it is.
 The `Train` record survives the conversion — same object, same controller, same
-held blocks — and only its identity, its configuration, and `is_ghost` change.
+held blocks — and only its identity, its configuration, and `is_unidentified` change.
 
-The alternative (delete the ghost, add a fresh train in its place) is what these
+The alternative (delete the unidentified train, add a fresh train in its place) is what these
 tests exist to rule out: block occupancy is edge-triggered off the detector
 (`BlockOccupancyDetector.step` diffs the confirmed set), so releasing a block
 that is still drawing current would leave it `FREE` with a locomotive standing on
 it and no future entry event to correct that.
 
-Only real hardware produces a ghost, so these tests inject a hand-driven
-`OccupancyInput` in place of the simulated one, exactly as `test_ghost_trains`
+Only real hardware produces an unidentified train, so these tests inject a hand-driven
+`OccupancyInput` in place of the simulated one, exactly as `test_unidentified_trains`
 does.
 """
 
@@ -24,17 +24,17 @@ from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from services import ValidationError, train_service
 from simulation import SimulationController
-from tests.test_ghost_trains import (
+from tests.test_unidentified_trains import (
     FakeDetector,
     build_sim,
-    ghost_ids,
-    only_ghost,
+    unidentified_ids,
+    only_unidentified,
     tick,
 )
 from track import Tile, TRACK_EW
 
 
-def adopt(sim, ghost_id, new_id="T1", **kwargs):
+def adopt(sim, unidentified_id, new_id="T1", **kwargs):
     """Adopt with the fields every call needs, overridable per test."""
     params = dict(
         max_speed_kmh=80.0,
@@ -43,26 +43,26 @@ def adopt(sim, ghost_id, new_id="T1", **kwargs):
         cab="A",
     )
     params.update(kwargs)
-    return sim.adopt_ghost_train(ghost_id, new_id, **params)
+    return sim.adopt_unidentified_train(unidentified_id, new_id, **params)
 
 
-def a_ghost_on(sim, detector, block_id="BLK_1"):
+def an_unidentified_on(sim, detector, block_id="BLK_1"):
     detector.current = {block_id: True}
     tick(sim)
-    return only_ghost(sim.network)
+    return only_unidentified(sim.network)
 
 
 # ------------------------------------------------------------------- the fix
 
 
-def test_adopting_a_ghost_does_not_halt_the_runtime():
+def test_adopting_an_unidentified_train_does_not_halt_the_runtime():
     """The bug this feature exists for: setting a detected train up as a real
-    one used to run `place_train` -> `occupy_blocks` against a ghost-held block,
+    one used to run `place_train` -> `occupy_blocks` against a unidentified-held block,
     which is the `occupied_by_other_train` fatal conflict."""
     network, sim, detector = build_sim()
-    ghost_id = a_ghost_on(sim, detector)
+    unidentified_id = an_unidentified_on(sim, detector)
 
-    adopt(sim, ghost_id)
+    adopt(sim, unidentified_id)
 
     assert sim.failed_runtime is False
     assert sim.failed_runtime_payload is None
@@ -70,12 +70,12 @@ def test_adopting_a_ghost_does_not_halt_the_runtime():
 
 def test_adoption_re_keys_the_train_across_every_registry():
     network, sim, detector = build_sim()
-    ghost_id = a_ghost_on(sim, detector)
+    unidentified_id = an_unidentified_on(sim, detector)
 
-    train = adopt(sim, ghost_id, "BR218")
+    train = adopt(sim, unidentified_id, "BR218")
 
     assert train.train_id == "BR218"
-    assert train.is_ghost is False
+    assert train.is_unidentified is False
     assert sorted(network.trains) == ["BR218"]
     assert sorted(sim.controllers) == ["BR218"]
     assert sorted(sim.physics_instances) == ["BR218"]
@@ -89,9 +89,9 @@ def test_the_adopted_train_keeps_standing_on_the_blocks_it_held():
     """The block must never go FREE in the handover — the locomotive is still
     on it, and the edge-triggered detector would never re-report it."""
     network, sim, detector = build_sim()
-    ghost_id = a_ghost_on(sim, detector)
+    unidentified_id = an_unidentified_on(sim, detector)
 
-    adopt(sim, ghost_id)
+    adopt(sim, unidentified_id)
 
     block = network.blocks["BLK_1"]
     assert block.occupied_by == "T1"
@@ -102,22 +102,22 @@ def test_the_adopted_train_keeps_standing_on_the_blocks_it_held():
     assert network.blocks["BLK_1"].state == BlockState.OCCUPIED
 
 
-def test_the_adopted_train_is_not_re_detected_as_a_new_ghost():
+def test_the_adopted_train_is_not_re_detected_as_a_new_unidentified_train():
     network, sim, detector = build_sim()
-    ghost_id = a_ghost_on(sim, detector)
+    unidentified_id = an_unidentified_on(sim, detector)
 
-    adopt(sim, ghost_id)
+    adopt(sim, unidentified_id)
     tick(sim, times=10)
 
-    assert ghost_ids(network) == []
+    assert unidentified_ids(network) == []
     assert sim.failed_runtime is False
 
 
-def test_blocks_the_consist_does_not_reach_go_back_to_being_ghosts():
-    """A ghost claims whole blocks because its extent is unknown. Adoption
+def test_blocks_the_consist_does_not_reach_go_back_to_being_unidentified_trains():
+    """An unidentified train claims whole blocks because its extent is unknown. Adoption
     replaces that with the operator's declared consist, and whatever the rebuilt
     span does not cover is not this train — it is current on track no train the
-    app controls stands on, which is a ghost.
+    app controls stands on, which is an unidentified train.
 
     Keeping it on the adopted train walls that train off from its own route: a
     block with `occupied_by` set is not an eligible reservation candidate for
@@ -125,15 +125,15 @@ def test_blocks_the_consist_does_not_reach_go_back_to_being_ghosts():
     network, sim, detector = build_sim()
     detector.current = {"BLK_0": True, "BLK_1": True}
     tick(sim)
-    ghost_id = only_ghost(network)
+    unidentified_id = only_unidentified(network)
 
     # A 50cm consist covers one 100cm block, not two.
-    adopt(sim, ghost_id, length_cm=50.0, head_tile=(0, 0))
+    adopt(sim, unidentified_id, length_cm=50.0, head_tile=(0, 0))
 
     assert network.blocks["BLK_0"].occupied_by == "T1"
     surplus_owner = network.blocks["BLK_1"].occupied_by
     assert surplus_owner != "T1"
-    assert sim.ghost_trains.is_ghost(surplus_owner)
+    assert sim.unidentified_trains.is_unidentified(surplus_owner)
     # Still OCCUPIED, so nothing is routed into it — the current is real.
     assert network.blocks["BLK_1"].state == BlockState.OCCUPIED
 
@@ -143,9 +143,9 @@ def test_an_adopted_train_never_holds_a_block_outside_its_own_span():
     network, sim, detector = build_sim(num_blocks=4)
     detector.current = {"BLK_0": True, "BLK_1": True, "BLK_2": True}
     tick(sim)
-    ghost_id = only_ghost(network)
+    unidentified_id = only_unidentified(network)
 
-    adopt(sim, ghost_id, length_cm=50.0, head_tile=(0, 0))
+    adopt(sim, unidentified_id, length_cm=50.0, head_tile=(0, 0))
 
     span = set(sim.controllers["T1"].physics_sync.current_span.occupied_blocks)
     owned = {b for b, blk in network.blocks.items() if blk.occupied_by == "T1"}
@@ -158,9 +158,9 @@ def test_the_operator_is_told_which_blocks_were_handed_back():
     network, sim, detector = build_sim()
     detector.current = {"BLK_0": True, "BLK_1": True}
     tick(sim)
-    ghost_id = only_ghost(network)
+    unidentified_id = only_unidentified(network)
 
-    adopt(sim, ghost_id, length_cm=50.0, head_tile=(0, 0))
+    adopt(sim, unidentified_id, length_cm=50.0, head_tile=(0, 0))
 
     recent = sim.notification_center.peek_recent(50)
     note = next(n for n in recent if n.kind == "adoption_surplus_blocks")
@@ -173,14 +173,14 @@ def test_a_consist_that_reaches_both_blocks_keeps_both():
     network, sim, detector = build_sim()
     detector.current = {"BLK_0": True, "BLK_1": True}
     tick(sim)
-    ghost_id = only_ghost(network)
+    unidentified_id = only_unidentified(network)
 
     # Head at the far end of BLK_1 with a 150cm consist reaches back into BLK_0.
-    adopt(sim, ghost_id, length_cm=150.0, head_tile=(1, 0))
+    adopt(sim, unidentified_id, length_cm=150.0, head_tile=(1, 0))
 
     owned = {b for b, blk in network.blocks.items() if blk.occupied_by == "T1"}
     assert owned == {"BLK_0", "BLK_1"}
-    assert sim.ghost_trains.ghost_ids == []
+    assert sim.unidentified_trains.unidentified_ids == []
 
 
 # ----------------------------------------------------------------- placement
@@ -208,7 +208,7 @@ def build_wide_sim(tiles_per_block: int = 3, block_len: float = 300.0):
     sim = SimulationController(
         network, PathDispatcher(network), input_interface=detector
     )
-    sim.ghost_clock = lambda: sim._fake_clock
+    sim.unidentified_clock = lambda: sim._fake_clock
     sim._fake_clock = 0.0
     return network, sim, detector
 
@@ -243,9 +243,9 @@ def test_the_adopted_train_is_centered_in_the_track_that_was_detected():
     network, sim, detector = build_wide_sim()
     detector.current = {"BLK_1": True}
     tick(sim, times=3)
-    ghost_id = only_ghost(network)
+    unidentified_id = only_unidentified(network)
 
-    adopt(sim, ghost_id, length_cm=100.0)
+    adopt(sim, unidentified_id, length_cm=100.0)
 
     span = sim.controllers["T1"].physics_sync.current_span
     # BLK_1 is 300-600 cm along the line; a 100 cm train centred in it is 400-500.
@@ -258,9 +258,9 @@ def test_centering_does_not_depend_on_which_way_it_faces():
     network, sim, detector = build_wide_sim()
     detector.current = {"BLK_1": True}
     tick(sim, times=3)
-    ghost_id = only_ghost(network)
+    unidentified_id = only_unidentified(network)
 
-    adopt(sim, ghost_id, length_cm=100.0, direction="WEST")
+    adopt(sim, unidentified_id, length_cm=100.0, direction="WEST")
 
     span = sim.controllers["T1"].physics_sync.current_span
     assert line_extent_cm(network, span) == (400.0, 500.0)
@@ -272,9 +272,9 @@ def test_a_declared_head_tile_puts_the_front_at_that_tiles_exit_edge():
     network, sim, detector = build_wide_sim()
     detector.current = {"BLK_1": True}
     tick(sim, times=3)
-    ghost_id = only_ghost(network)
+    unidentified_id = only_unidentified(network)
 
-    adopt(sim, ghost_id, length_cm=100.0, head_tile=(4, 0))
+    adopt(sim, unidentified_id, length_cm=100.0, head_tile=(4, 0))
 
     span = sim.controllers["T1"].physics_sync.current_span
     # Tile (4, 0) runs 400-500 cm along the line, so its EAST exit edge is 500
@@ -290,14 +290,14 @@ def test_the_body_never_reaches_a_block_that_reads_no_current():
     network, sim, detector = build_wide_sim()
     detector.current = {"BLK_1": True}
     tick(sim, times=3)
-    ghost_id = only_ghost(network)
+    unidentified_id = only_unidentified(network)
 
     with pytest.raises(ValueError, match="reaches into BLK_0"):
-        adopt(sim, ghost_id, length_cm=420.0)
+        adopt(sim, unidentified_id, length_cm=420.0)
 
-    # Refused before anything moved: still a ghost, neighbour still clear.
-    assert sim.ghost_trains.ghost_ids == [ghost_id]
-    assert network.blocks["BLK_1"].occupied_by == ghost_id
+    # Refused before anything moved: still an unidentified train, neighbour still clear.
+    assert sim.unidentified_trains.unidentified_ids == [unidentified_id]
+    assert network.blocks["BLK_1"].occupied_by == unidentified_id
     assert network.blocks["BLK_0"].occupied_by is None
     assert "T1" not in network.trains
 
@@ -306,22 +306,22 @@ def test_a_declared_head_tile_cannot_reach_past_the_detected_track_either():
     network, sim, detector = build_wide_sim()
     detector.current = {"BLK_1": True}
     tick(sim, times=3)
-    ghost_id = only_ghost(network)
+    unidentified_id = only_unidentified(network)
 
     with pytest.raises(ValueError, match="reaches into BLK_0"):
-        adopt(sim, ghost_id, length_cm=150.0, head_tile=(3, 0))
+        adopt(sim, unidentified_id, length_cm=150.0, head_tile=(3, 0))
 
     assert network.blocks["BLK_0"].occupied_by is None
-    assert sim.ghost_trains.ghost_ids == [ghost_id]
+    assert sim.unidentified_trains.unidentified_ids == [unidentified_id]
 
 
 def test_a_consist_spanning_two_detected_blocks_is_centered_across_both():
     network, sim, detector = build_wide_sim()
     detector.current = {"BLK_0": True, "BLK_1": True}
     tick(sim, times=3)
-    ghost_id = only_ghost(network)
+    unidentified_id = only_unidentified(network)
 
-    adopt(sim, ghost_id, length_cm=400.0)
+    adopt(sim, unidentified_id, length_cm=400.0)
 
     span = sim.controllers["T1"].physics_sync.current_span
     # 600 cm detected, 400 cm of train: 100 cm spare at each end, so the body
@@ -333,15 +333,15 @@ def test_a_consist_spanning_two_detected_blocks_is_centered_across_both():
 # ------------------------------------------------------------------- driving
 
 
-def test_an_adopted_train_accepts_operator_commands_a_ghost_refuses():
+def test_an_adopted_train_accepts_operator_commands_an_unidentified_train_refuses():
     network, sim, detector = build_sim()
-    ghost_id = a_ghost_on(sim, detector)
-    controller = sim.controllers[ghost_id]
+    unidentified_id = an_unidentified_on(sim, detector)
+    controller = sim.controllers[unidentified_id]
 
-    # As a ghost: no cab, and the service layer refuses to drive it.
+    # As an unidentified train: no cab, and the service layer refuses to drive it.
     assert controller.commands.cab is None
 
-    adopt(sim, ghost_id, cab="A")
+    adopt(sim, unidentified_id, cab="A")
 
     controller = sim.controllers["T1"]
     assert controller.commands.cab == "A"
@@ -350,56 +350,56 @@ def test_an_adopted_train_accepts_operator_commands_a_ghost_refuses():
 
 
 def test_adoption_rebuilds_the_span_from_the_real_consist_length():
-    """A ghost's span claims whole blocks because nobody knows where inside them
+    """An unidentified train's span claims whole blocks because nobody knows where inside them
     it sits; the operator's declared length and facing replace that guess."""
     network, sim, detector = build_sim()
-    ghost_id = a_ghost_on(sim, detector)
-    ghost_span = sim.controllers[ghost_id].physics_sync.current_span
-    assert ghost_span.end_b.distance_cm == pytest.approx(100.0)
+    unidentified_id = an_unidentified_on(sim, detector)
+    unidentified_span = sim.controllers[unidentified_id].physics_sync.current_span
+    assert unidentified_span.end_b.distance_cm == pytest.approx(100.0)
 
-    adopt(sim, ghost_id, length_cm=40.0, direction="EAST")
+    adopt(sim, unidentified_id, length_cm=40.0, direction="EAST")
 
     span = sim.controllers["T1"].physics_sync.current_span
     assert span.occupied_blocks == ["BLK_1"]
     assert span.occupied_tiles == [(1, 0)]
 
 
-def test_adoption_gives_the_train_its_own_profile_and_retires_the_ghosts():
+def test_adoption_gives_the_train_its_own_profile_and_retires_the_unidentified_trains():
     network, sim, detector = build_sim()
-    ghost_id = a_ghost_on(sim, detector)
-    ghost_profile_id = network.trains[ghost_id].speed_profile_id
-    assert network.speed_profiles.get(ghost_profile_id) is not None
+    unidentified_id = an_unidentified_on(sim, detector)
+    unidentified_profile_id = network.trains[unidentified_id].speed_profile_id
+    assert network.speed_profiles.get(unidentified_profile_id) is not None
 
-    train = adopt(sim, ghost_id, "T1", max_speed_kmh=80.0)
+    train = adopt(sim, unidentified_id, "T1", max_speed_kmh=80.0)
 
     assert train.speed_profile_id == "default_T1"
     profile = network.speed_profiles.get("default_T1")
     assert profile is not None
-    # Anchored to the real locomotive's max speed, not the blank ghost default.
+    # Anchored to the real locomotive's max speed, not the blank unidentified train default.
     assert profile.power_speed_curve[-1] == (100.0, 80.0)
-    assert network.speed_profiles.get(ghost_profile_id) is None
+    assert network.speed_profiles.get(unidentified_profile_id) is None
 
 
 def test_an_existing_speed_profile_can_be_kept_instead():
     network, sim, detector = build_sim()
-    ghost_id = a_ghost_on(sim, detector)
+    unidentified_id = an_unidentified_on(sim, detector)
     from speed_profile import make_default_speed_profile
 
     measured = make_default_speed_profile("measured_br218", 95.0)
     network.speed_profiles.register(measured)
 
-    train = adopt(sim, ghost_id, speed_profile_id=measured.profile_id)
+    train = adopt(sim, unidentified_id, speed_profile_id=measured.profile_id)
 
     assert train.speed_profile_id == measured.profile_id
 
 
 def test_adoption_carries_the_operators_configuration_onto_the_train():
     network, sim, detector = build_sim()
-    ghost_id = a_ghost_on(sim, detector)
+    unidentified_id = an_unidentified_on(sim, detector)
 
     train = adopt(
         sim,
-        ghost_id,
+        unidentified_id,
         max_speed_kmh=120.0,
         length_cm=64.0,
         name="Blue Pullman",
@@ -419,22 +419,22 @@ def test_adoption_carries_the_operators_configuration_onto_the_train():
 
 def test_the_new_id_may_be_the_generated_one():
     network, sim, detector = build_sim()
-    ghost_id = a_ghost_on(sim, detector)
+    unidentified_id = an_unidentified_on(sim, detector)
 
-    train = adopt(sim, ghost_id, ghost_id)
+    train = adopt(sim, unidentified_id, unidentified_id)
 
-    assert train.train_id == ghost_id
-    assert train.is_ghost is False
-    assert network.blocks["BLK_1"].occupied_by == ghost_id
+    assert train.train_id == unidentified_id
+    assert train.is_unidentified is False
+    assert network.blocks["BLK_1"].occupied_by == unidentified_id
 
 
-def test_the_head_tile_may_be_chosen_from_the_tiles_the_ghost_claims():
+def test_the_head_tile_may_be_chosen_from_the_tiles_the_unidentified_train_claims():
     network, sim, detector = build_sim()
     detector.current = {"BLK_0": True, "BLK_1": True}
     tick(sim)
-    ghost_id = only_ghost(network)
+    unidentified_id = only_unidentified(network)
 
-    adopt(sim, ghost_id, head_tile=(1, 0), length_cm=40.0)
+    adopt(sim, unidentified_id, head_tile=(1, 0), length_cm=40.0)
 
     span = sim.controllers["T1"].physics_sync.current_span
     assert span.occupied_tiles == [(1, 0)]
@@ -445,10 +445,10 @@ def test_the_head_tile_may_be_chosen_from_the_tiles_the_ghost_claims():
 
 def test_an_ordinary_train_cannot_be_adopted():
     network, sim, detector = build_sim()
-    ghost_id = a_ghost_on(sim, detector)
-    adopt(sim, ghost_id)
+    unidentified_id = an_unidentified_on(sim, detector)
+    adopt(sim, unidentified_id)
 
-    with pytest.raises(ValueError, match="not a ghost train"):
+    with pytest.raises(ValueError, match="not an unidentified train"):
         adopt(sim, "T1", "T2")
 
 
@@ -463,12 +463,12 @@ def test_a_taken_id_is_refused():
     network, sim, detector = build_sim()
     detector.current = {"BLK_0": True}
     tick(sim)
-    first = only_ghost(network)
+    first = only_unidentified(network)
     adopt(sim, first, "T1")
-    # A second, unconnected ghost elsewhere on the line.
+    # A second, unconnected unidentified train elsewhere on the line.
     detector.current = {"BLK_0": True, "BLK_2": True}
     tick(sim)
-    second = [g for g in ghost_ids(network)][0]
+    second = [g for g in unidentified_ids(network)][0]
 
     with pytest.raises(ValueError, match="already exists"):
         adopt(sim, second, "T1")
@@ -476,80 +476,80 @@ def test_a_taken_id_is_refused():
 
 def test_a_bad_direction_is_refused():
     network, sim, detector = build_sim()
-    ghost_id = a_ghost_on(sim, detector)
+    unidentified_id = an_unidentified_on(sim, detector)
 
     with pytest.raises(ValueError, match="Invalid direction"):
-        adopt(sim, ghost_id, direction="SIDEWAYS")
+        adopt(sim, unidentified_id, direction="SIDEWAYS")
 
 
-def test_a_head_tile_the_ghost_does_not_claim_is_refused():
+def test_a_head_tile_the_unidentified_train_does_not_claim_is_refused():
     network, sim, detector = build_sim()
-    ghost_id = a_ghost_on(sim, detector)
+    unidentified_id = an_unidentified_on(sim, detector)
 
-    with pytest.raises(ValueError, match="not a tile ghost train"):
-        adopt(sim, ghost_id, head_tile=(0, 0))
+    with pytest.raises(ValueError, match="not a tile unidentified train"):
+        adopt(sim, unidentified_id, head_tile=(0, 0))
 
 
-def test_a_ghost_in_the_undetected_gap_cannot_be_adopted():
+def test_an_unidentified_train_in_the_undetected_gap_cannot_be_adopted():
     """It is holding nothing, so there is no position to adopt it at."""
     network, sim, detector = build_sim()
-    ghost_id = a_ghost_on(sim, detector)
+    unidentified_id = an_unidentified_on(sim, detector)
     detector.current = {}
     tick(sim, times=OCCUPANCY_OFF_THRESHOLD)
-    assert sim.controllers[ghost_id].physics_sync.current_span is None
+    assert sim.controllers[unidentified_id].physics_sync.current_span is None
 
     with pytest.raises(ValueError, match="not standing on any detected block"):
-        adopt(sim, ghost_id)
+        adopt(sim, unidentified_id)
 
 
 def test_adoption_is_refused_when_occupancy_is_derived_from_the_model():
-    """A ghost is a report from a real detector about a real locomotive. Where
+    """An unidentified train is a report from a real detector about a real locomotive. Where
     occupancy is calculated there is nothing physical to adopt."""
     from block_occupancy import SimulatedOccupancyDriver
 
     network, sim, detector = build_sim()
-    ghost_id = a_ghost_on(sim, detector)
+    unidentified_id = an_unidentified_on(sim, detector)
     sim.input_interface = SimulatedOccupancyDriver(network, sim.controllers)
     assert sim.occupancy_is_real is False
 
     with pytest.raises(ValueError, match="real detectors"):
-        adopt(sim, ghost_id)
+        adopt(sim, unidentified_id)
 
 
 # -------------------------------------------------------- tracker bookkeeping
 
 
-def test_an_adopted_train_is_never_absorbed_by_a_neighbouring_ghost():
-    """Identity reconciliation groups ghost-held blocks by connectivity. The
+def test_an_adopted_train_is_never_absorbed_by_a_neighbouring_unidentified_train():
+    """Identity reconciliation groups unidentified-held blocks by connectivity. The
     adopted train's blocks must drop out of that entirely.
 
-    The new ghost is raised two blocks away, because a block *next to* the
+    The new unidentified train is raised two blocks away, because a block *next to* the
     adopted train is that train spanning two blocks rather than a new object
     (see `test_current_next_to_a_real_train_is_that_train`)."""
     network, sim, detector = build_sim(5)
-    ghost_id = a_ghost_on(sim, detector, "BLK_1")
+    unidentified_id = an_unidentified_on(sim, detector, "BLK_1")
 
-    adopt(sim, ghost_id)
+    adopt(sim, unidentified_id)
 
-    # A genuinely new ghost appears, disconnected from the adopted train.
+    # A genuinely new unidentified train appears, disconnected from the adopted train.
     detector.current = {"BLK_1": True, "BLK_4": True}
     tick(sim)
 
     assert network.blocks["BLK_1"].occupied_by == "T1"
-    assert network.blocks["BLK_4"].occupied_by in ghost_ids(network)
-    assert "T1" not in ghost_ids(network)
+    assert network.blocks["BLK_4"].occupied_by in unidentified_ids(network)
+    assert "T1" not in unidentified_ids(network)
 
 
 def test_the_generated_id_is_not_handed_out_again_after_adoption():
     network, sim, detector = build_sim(5)
-    ghost_id = a_ghost_on(sim, detector, "BLK_1")
-    adopt(sim, ghost_id, ghost_id)  # keeps GHOST_1 as its real id
+    unidentified_id = an_unidentified_on(sim, detector, "BLK_1")
+    adopt(sim, unidentified_id, unidentified_id)  # keeps UNIDENT_1 as its real id
 
     detector.current = {"BLK_1": True, "BLK_4": True}
     tick(sim)
 
-    new_ghosts = ghost_ids(network)
-    assert new_ghosts and ghost_id not in new_ghosts
+    new_unidentified = unidentified_ids(network)
+    assert new_unidentified and unidentified_id not in new_unidentified
 
 
 # ------------------------------------------------ one locomotive, one record
@@ -560,31 +560,31 @@ def test_current_next_to_a_real_train_is_that_train():
     blocks. The far block matches no reservation and no span, but it is not a
     second object — it is this train spanning two blocks.
 
-    Before this rule it was handed a ghost, and because a ghost is never
+    Before this rule it was handed an unidentified train, and because an unidentified train is never
     energized that block was driven to 0V, stranding the very locomotive the app
     was driving on dead rail."""
     network, sim, detector = build_sim(5)
-    ghost_id = a_ghost_on(sim, detector, "BLK_1")
-    adopt(sim, ghost_id)
+    unidentified_id = an_unidentified_on(sim, detector, "BLK_1")
+    adopt(sim, unidentified_id)
 
     detector.current = {"BLK_1": True, "BLK_0": True}
     tick(sim)
 
     assert network.blocks["BLK_0"].occupied_by == "T1"
-    assert ghost_ids(network) == []
+    assert unidentified_ids(network) == []
 
 
-def test_current_with_empty_blocks_in_between_is_still_a_ghost():
+def test_current_with_empty_blocks_in_between_is_still_an_unidentified_train():
     """Adjacency is the whole test: current that is not connected to any train
-    through undetected track is a genuine ghost."""
+    through undetected track is a genuine unidentified train."""
     network, sim, detector = build_sim(5)
-    ghost_id = a_ghost_on(sim, detector, "BLK_1")
-    adopt(sim, ghost_id)
+    unidentified_id = an_unidentified_on(sim, detector, "BLK_1")
+    adopt(sim, unidentified_id)
 
     detector.current = {"BLK_1": True, "BLK_3": True}
     tick(sim)
 
-    assert network.blocks["BLK_3"].occupied_by in ghost_ids(network)
+    assert network.blocks["BLK_3"].occupied_by in unidentified_ids(network)
     assert network.blocks["BLK_3"].occupied_by != "T1"
 
 
@@ -604,31 +604,31 @@ class _State:
 
 def test_the_service_layer_rejects_a_bad_cab():
     network, sim, detector = build_sim()
-    ghost_id = a_ghost_on(sim, detector)
+    unidentified_id = an_unidentified_on(sim, detector)
 
     with pytest.raises(ValidationError, match="Invalid cab"):
-        train_service.adopt_ghost_train(
-            _State(network, sim), ghost_id, new_train_id="T1", cab="C"
+        train_service.adopt_unidentified_train(
+            _State(network, sim), unidentified_id, new_train_id="T1", cab="C"
         )
 
 
 def test_the_service_layer_rejects_a_non_positive_length():
     network, sim, detector = build_sim()
-    ghost_id = a_ghost_on(sim, detector)
+    unidentified_id = an_unidentified_on(sim, detector)
 
     with pytest.raises(ValidationError, match="length_cm must be greater"):
-        train_service.adopt_ghost_train(
-            _State(network, sim), ghost_id, new_train_id="T1", length_cm=0
+        train_service.adopt_unidentified_train(
+            _State(network, sim), unidentified_id, new_train_id="T1", length_cm=0
         )
 
 
 def test_the_service_layer_adopts_through_the_runtime():
     network, sim, detector = build_sim()
-    ghost_id = a_ghost_on(sim, detector)
+    unidentified_id = an_unidentified_on(sim, detector)
 
-    train = train_service.adopt_ghost_train(
+    train = train_service.adopt_unidentified_train(
         _State(network, sim),
-        ghost_id,
+        unidentified_id,
         new_train_id="T1",
         length_cm=50.0,
         max_speed_kmh=80.0,
@@ -639,6 +639,6 @@ def test_the_service_layer_adopts_through_the_runtime():
     )
 
     assert train.train_id == "T1"
-    assert train.is_ghost is False
+    assert train.is_unidentified is False
     assert train.car_number == "Pendolino"
     assert sim.controllers["T1"].commands.cab == "B"

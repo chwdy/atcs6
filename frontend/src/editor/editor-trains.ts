@@ -33,9 +33,9 @@ export class TrainEditorHandler {
   _placeFacing: string | null;
   _placeExits: string[];
   _placeLengthCm: number;
-  // Ghost-adoption state: which way the train faces, and — only when the
+  // Unidentified train-adoption state: which way the train faces, and — only when the
   // operator overrides the centred default — which claimed tile the front sits
-  // on. Both are things only the operator can know; see renderGhostTrainPanel.
+  // on. Both are things only the operator can know; see renderUnidentifiedTrainPanel.
   // The claimed tiles are kept so the facings on offer can be worked out.
   _adoptHeadTile: { x: number; y: number } | null;
   _adoptFacing: string | null;
@@ -70,7 +70,7 @@ export class TrainEditorHandler {
     // Location and facing are spatial facts, so they're set on the map, not
     // typed as coordinates (DESIGN_LANGUAGE.md Principle 9). "Pick on map" drops
     // into a placement mode; clicking a track sets the location, the track's own
-    // exit directions become the Cab/facing choice, and a translucent ghost on
+    // exit directions become the Cab/facing choice, and a translucent unidentified train on
     // the canvas shows how long the train will be along the track.
     this._resetPlacementState();
 
@@ -182,7 +182,7 @@ export class TrainEditorHandler {
     this._refreshPlacementUI();
   }
 
-  /** Clear placement state and any canvas ghost. */
+  /** Clear placement state and any canvas placement ghost. */
   _resetPlacementState(): void {
     this._placePos = null;
     this._placeFacing = null;
@@ -262,7 +262,7 @@ export class TrainEditorHandler {
       onHover: (gridPos: any) => {
         const track = this._trackAt(gridPos.x, gridPos.y);
         if (!track || !track.block_section_id) {
-          // Off a block: keep a committed ghost (re-pick), else show nothing.
+          // Off a block: keep a committed unidentified train (re-pick), else show nothing.
           if (!this._placePos) {
             this.editor.renderer?.setTrainGhostPreview?.(null);
             this.editor.renderer?.requestRedraw?.();
@@ -294,7 +294,7 @@ export class TrainEditorHandler {
       onExit: () => {
         setStatus('Ready');
         // Drop the transient hover ghost; a committed placement re-asserts its
-        // locked ghost in _refreshPlacementUI immediately after exitMode.
+        // locked unidentified train in _refreshPlacementUI immediately after exitMode.
         if (!this._placePos) {
           this.editor.renderer?.setTrainGhostPreview?.(null);
           this.editor.renderer?.requestRedraw?.();
@@ -311,7 +311,7 @@ export class TrainEditorHandler {
     this.editor.renderer?.requestRedraw?.();
   }
 
-  /** Refresh the location text, facing segment, length note, ghost, and the
+  /** Refresh the location text, facing segment, length note, placement ghost, and the
    *  Add button's enabled state from the current placement state. */
   _refreshPlacementUI(): void {
     const locEl = document.getElementById('at-location-value');
@@ -413,7 +413,7 @@ export class TrainEditorHandler {
     return (this.editor.cachedNetwork?.tracks || []).find((t: any) => t.x === x && t.y === y);
   }
 
-  /** Exit placement mode (if active) and clear the canvas ghost. */
+  /** Exit placement mode (if active) and clear the canvas placement ghost. */
   _clearPlacement(): void {
     if (this.editor.activeMode?.toolName === 'place-train') {
       this.editor.exitMode();
@@ -599,7 +599,7 @@ export class TrainEditorHandler {
   }
 
   renderTrainListItem(train: any): string {
-    if (train.is_ghost) return this.renderGhostTrainListItem(train);
+    if (train.is_unidentified) return this.renderUnidentifiedTrainListItem(train);
     const controller: any = stateManager?.getController(train.id);
     const state = controller?.state || 'off';
     const accent = this.getTrainAccent(state);
@@ -640,24 +640,24 @@ export class TrainEditorHandler {
         `;
   }
 
-  /** The train panel for a ghost train: what was detected, where, and why there
+  /** The train panel for an unidentified train: what was detected, where, and why there
    *  is nothing to operate. Read-only by construction — it renders no cab, mode,
    *  handle, ATO or save control, because the API refuses every one of them for a
-   *  ghost (design_new.md "Ghost trains", Never driven / Shown as itself). */
-  /** The detail panel for a ghost train (design_new.md "Ghost trains").
+   *  unidentified train (design_new.md "Unidentified trains", Never driven / Shown as itself). */
+  /** The detail panel for an unidentified train (design_new.md "Unidentified trains").
    *
-   *  A ghost has no controls, because the app knows nothing about it beyond
+   *  An unidentified train has no controls, because the app knows nothing about it beyond
    *  which blocks read current. What it does have is a way out: the operator
    *  has looked at the layout and can say what the detector found, and
    *  supplying that is the whole of adoption. So the panel is a read-only
    *  report of what was detected, followed by the form that turns it into an
    *  ordinary train. */
-  renderGhostTrainPanel(trainId: string, controller: any): string {
+  renderUnidentifiedTrainPanel(trainId: string, controller: any): string {
     const blocks: string[] = controller?.span?.occupied_blocks || [];
     const tiles: Array<[number, number]> = controller?.span?.occupied_tiles || [];
     const where = blocks.length ? blocks.join(', ') : '—';
 
-    // A ghost in the undetected gap holds nothing, so there is no position to
+    // An unidentified train in the undetected gap holds nothing, so there is no position to
     // adopt it at — the panel says so instead of offering a form that fails.
     const adoptable = tiles.length > 0;
     this._adoptClaimedTiles = tiles.map(([x, y]) => [x, y] as [number, number]);
@@ -683,18 +683,18 @@ export class TrainEditorHandler {
                     </p>
                     <div class="at-form">
                         <div class="input-large-container">
-                            <label class="input-large-label" for="ghost-adopt-id">Train ID</label>
-                            <input type="text" id="ghost-adopt-id" class="input-large-field" placeholder="e.g., TRAIN_01">
+                            <label class="input-large-label" for="unidentified-adopt-id">Train ID</label>
+                            <input type="text" id="unidentified-adopt-id" class="input-large-field" placeholder="e.g., TRAIN_01">
                         </div>
 
                         <div class="input-small-row">
-                            <label class="input-small-label input-small-label-inline" for="ghost-adopt-name">Name</label>
-                            <input type="text" id="ghost-adopt-name" class="input-small-field" placeholder="optional">
+                            <label class="input-small-label input-small-label-inline" for="unidentified-adopt-name">Name</label>
+                            <input type="text" id="unidentified-adopt-name" class="input-small-field" placeholder="optional">
                         </div>
 
                         <div class="input-small-row">
-                            <label class="input-small-label input-small-label-inline" for="ghost-adopt-head">Position</label>
-                            <select id="ghost-adopt-head" class="input-small-field">
+                            <label class="input-small-label input-small-label-inline" for="unidentified-adopt-head">Position</label>
+                            <select id="unidentified-adopt-head" class="input-small-field">
                                 <option value="" selected>Centred in the blocks</option>
                                 ${tileOptions}
                             </select>
@@ -702,29 +702,29 @@ export class TrainEditorHandler {
 
                         <div class="input-large-container">
                             <label class="input-large-label">Facing</label>
-                            <div id="ghost-adopt-facing-slot">${this._renderAdoptFacingOptions()}</div>
+                            <div id="unidentified-adopt-facing-slot">${this._renderAdoptFacingOptions()}</div>
                         </div>
 
                         <div class="input-small-row">
-                            <label class="input-small-label input-small-label-inline" for="ghost-adopt-length">Length</label>
-                            <input type="number" id="ghost-adopt-length" class="input-small-field" value="100" min="10" step="10">
+                            <label class="input-small-label input-small-label-inline" for="unidentified-adopt-length">Length</label>
+                            <input type="number" id="unidentified-adopt-length" class="input-small-field" value="100" min="10" step="10">
                             <span class="at-unit">cm</span>
                         </div>
 
                         <div class="input-small-row">
-                            <label class="input-small-label input-small-label-inline" for="ghost-adopt-max-speed">Max speed</label>
-                            <input type="number" id="ghost-adopt-max-speed" class="input-small-field" value="100" min="1" max="500">
+                            <label class="input-small-label input-small-label-inline" for="unidentified-adopt-max-speed">Max speed</label>
+                            <input type="number" id="unidentified-adopt-max-speed" class="input-small-field" value="100" min="1" max="500">
                             <span class="at-unit">km/h</span>
                         </div>
 
                         <div class="input-small-row">
-                            <label class="input-small-label input-small-label-inline" for="ghost-adopt-profile">Speed profile</label>
-                            <select id="ghost-adopt-profile" class="input-small-field">
+                            <label class="input-small-label input-small-label-inline" for="unidentified-adopt-profile">Speed profile</label>
+                            <select id="unidentified-adopt-profile" class="input-small-field">
                                 <option value="">Default</option>
                             </select>
                         </div>
 
-                        <button id="btn-adopt-ghost" class="btn btn-accent btn-full mt-16" disabled>Set up as real train</button>
+                        <button id="btn-adopt-unidentified" class="btn btn-accent btn-full mt-16" disabled>Set up as real train</button>
                     </div>
                 </section>`
       : `
@@ -737,11 +737,11 @@ export class TrainEditorHandler {
                 </section>`;
 
     return `
-            <div class="tc-panel train-control-panel train-control-panel-ghost" data-train-id="${trainId}">
+            <div class="tc-panel train-control-panel train-control-panel-unidentified" data-train-id="${trainId}">
                 <section class="tc-section tc-section-task">
                     <header class="tc-status-headline">
                         <span class="tc-train-id">${trainId}</span>
-                        <span class="tc-state-badge">GHOST</span>
+                        <span class="tc-state-badge">UNIDENTIFIED</span>
                     </header>
                     <div class="banner banner-warn tc-banner">
                         ⚠ Something is drawing current on the track that this app did not
@@ -787,15 +787,15 @@ export class TrainEditorHandler {
     return `<div class="switch-group fluid">${btns}</div>`;
   }
 
-  /** Wire the ghost panel's adoption form after it mounts. */
-  async _initGhostAdoptHandlers(ghostTrainId: string): Promise<void> {
-    const idInput = document.getElementById('ghost-adopt-id') as HTMLInputElement | null;
-    if (!idInput) return; // Not adoptable (ghost is in the detector gap).
+  /** Wire the unidentified train panel's adoption form after it mounts. */
+  async _initUnidentifiedAdoptHandlers(unidentifiedTrainId: string): Promise<void> {
+    const idInput = document.getElementById('unidentified-adopt-id') as HTMLInputElement | null;
+    if (!idInput) return; // Not adoptable (unidentified train is in the detector gap).
     if (!idInput.value) idInput.value = `TRAIN_${Date.now().toString().slice(-4)}`;
 
     try {
       const profiles = await this.api.getSpeedProfiles();
-      const sel = document.getElementById('ghost-adopt-profile') as HTMLSelectElement | null;
+      const sel = document.getElementById('unidentified-adopt-profile') as HTMLSelectElement | null;
       if (sel && Array.isArray(profiles)) {
         for (const p of profiles) {
           const id = p?.profile_id ?? p?.id;
@@ -810,7 +810,7 @@ export class TrainEditorHandler {
       console.debug('[TrainEditorHandler] speed profiles load failed:', err);
     }
 
-    const headSel = document.getElementById('ghost-adopt-head') as HTMLSelectElement | null;
+    const headSel = document.getElementById('unidentified-adopt-head') as HTMLSelectElement | null;
     if (headSel) {
       headSel.onchange = () => {
         const [x, y] = headSel.value.split(',').map((v) => parseInt(v, 10));
@@ -821,18 +821,18 @@ export class TrainEditorHandler {
       };
     }
 
-    const submit = document.getElementById('btn-adopt-ghost') as HTMLButtonElement | null;
-    if (submit) submit.onclick = () => this._submitAdoptGhost(ghostTrainId);
+    const submit = document.getElementById('btn-adopt-unidentified') as HTMLButtonElement | null;
+    if (submit) submit.onclick = () => this._submitAdoptUnidentified(unidentifiedTrainId);
 
     this._refreshAdoptUI();
   }
 
   /** Re-render the facing segment and re-gate the submit button. */
   _refreshAdoptUI(): void {
-    const slot = document.getElementById('ghost-adopt-facing-slot');
+    const slot = document.getElementById('unidentified-adopt-facing-slot');
     if (slot) slot.innerHTML = this._renderAdoptFacingOptions();
     document
-      .querySelectorAll<HTMLElement>('#ghost-adopt-facing-slot .switch-btn[data-adopt-facing]')
+      .querySelectorAll<HTMLElement>('#unidentified-adopt-facing-slot .switch-btn[data-adopt-facing]')
       .forEach((btn) => {
         btn.onclick = () => {
           this._adoptFacing = btn.dataset.adoptFacing || null;
@@ -840,14 +840,14 @@ export class TrainEditorHandler {
         };
       });
 
-    const submit = document.getElementById('btn-adopt-ghost') as HTMLButtonElement | null;
+    const submit = document.getElementById('btn-adopt-unidentified') as HTMLButtonElement | null;
     // Only the facing is required: with no head tile the consist is centred in
     // the detected track, which is the default.
     if (submit) submit.disabled = !this._adoptFacing;
   }
 
-  async _submitAdoptGhost(ghostTrainId: string): Promise<void> {
-    const newId = inputValue('ghost-adopt-id').trim();
+  async _submitAdoptUnidentified(unidentifiedTrainId: string): Promise<void> {
+    const newId = inputValue('unidentified-adopt-id').trim();
     if (!newId) {
       showToast('Please enter a train ID', 'error', 3000);
       return;
@@ -860,8 +860,8 @@ export class TrainEditorHandler {
     const DIR: Record<string, string> = { N: 'NORTH', E: 'EAST', S: 'SOUTH', W: 'WEST' };
     const body: any = {
       new_train_id: newId,
-      length_cm: Math.max(1, parseFloat(inputValue('ghost-adopt-length')) || 100),
-      max_speed: parseFloat(inputValue('ghost-adopt-max-speed')) || 100,
+      length_cm: Math.max(1, parseFloat(inputValue('unidentified-adopt-length')) || 100),
+      max_speed: parseFloat(inputValue('unidentified-adopt-max-speed')) || 100,
       direction: DIR[this._adoptFacing] || 'EAST',
       // Two exits were offered as Cab A / Cab B in that order, so the chosen
       // facing names the cab at the front.
@@ -872,19 +872,19 @@ export class TrainEditorHandler {
     if (this._adoptHeadTile) {
       body.head_tile = { x: this._adoptHeadTile.x, y: this._adoptHeadTile.y };
     }
-    const name = inputValue('ghost-adopt-name').trim();
+    const name = inputValue('unidentified-adopt-name').trim();
     if (name) body.car_number = name;
-    const profile = inputValue('ghost-adopt-profile');
+    const profile = inputValue('unidentified-adopt-profile');
     if (profile) body.speed_profile_id = profile;
 
     try {
-      await this.api.adoptGhostTrain(ghostTrainId, body);
-      showToast(`${ghostTrainId} is now train "${newId}"`, 'success', 4000);
+      await this.api.adoptUnidentifiedTrain(unidentifiedTrainId, body);
+      showToast(`${unidentifiedTrainId} is now train "${newId}"`, 'success', 4000);
       await window.app?.refreshNetwork();
-      // Reopen on the adopted train — the ghost id it was showing is gone.
+      // Reopen on the adopted train — the unidentified train id it was showing is gone.
       await this.showTrainControlPanel(newId);
     } catch (err: any) {
-      console.error('[TrainEditorHandler] Failed to adopt ghost train:', err);
+      console.error('[TrainEditorHandler] Failed to adopt unidentified train:', err);
       showToast('Could not set it up: ' + (err?.message ?? err), 'error', 5000);
     }
   }
@@ -916,19 +916,19 @@ export class TrainEditorHandler {
     return exits;
   }
 
-  /** The trains-list card for a ghost train (design_new.md "Ghost trains",
+  /** The trains-list card for an unidentified train (design_new.md "Unidentified trains",
    *  Shown as itself): the same .rr-card shell as any train so the operator sees
-   *  it in the list, marked apart by a GHOST chip and the muted accent, and
+   *  it in the list, marked apart by a UNIDENTIFIED chip and the muted accent, and
    *  offering none of a real train's controls. The one action it does offer is
    *  "Set up" — opening the panel where the operator says what the detector
    *  found (Adoption). The foot caption names the blocks it is standing on,
    *  which is the whole of what is known about it. */
-  renderGhostTrainListItem(train: any): string {
+  renderUnidentifiedTrainListItem(train: any): string {
     const controller: any = stateManager?.getController(train.id);
     const blocks: string[] = controller?.span?.occupied_blocks || [];
     const where = blocks.length ? blocks.join(', ') : 'between detectors';
     return `
-            <div class="rr-card train-row train-row-ghost accent-muted mb-8" data-train-id="${train.id}">
+            <div class="rr-card train-row train-row-unidentified accent-muted mb-8" data-train-id="${train.id}">
                 <div class="rr-card-head">
                     <div class="rr-card-title-col">
                         <div class="rr-card-train font-mono">${train.id}</div>
@@ -938,7 +938,7 @@ export class TrainEditorHandler {
                     </div>
                 </div>
                 <div class="chip-row">
-                    <span class="chip chip-state chip-muted">GHOST</span>
+                    <span class="chip chip-state chip-muted">UNIDENTIFIED</span>
                     <span class="chip">not driveable yet</span>
                 </div>
                 <div class="rr-card-foot"><i class="ti ti-alert-triangle"></i> detected on ${where} — tell the app what it is to drive it</div>
@@ -1068,13 +1068,13 @@ export class TrainEditorHandler {
       return;
     }
 
-    if (train.is_ghost) {
-      // A ghost train offers none of the operator's controls (design_new.md
-      // "Ghost trains", Shown as itself): no cab, no mode, no handle, nothing to
+    if (train.is_unidentified) {
+      // An unidentified train offers none of the operator's controls (design_new.md
+      // "Unidentified trains", Shown as itself): no cab, no mode, no handle, nothing to
       // save. It gets a card saying what was detected and where, plus the one
       // thing that is actionable — setting it up as a real train (Adoption).
-      this.editor.showSecondarySidebar(`${trainId}`, this.renderGhostTrainPanel(trainId, controller));
-      setTimeout(() => this._initGhostAdoptHandlers(trainId), 0);
+      this.editor.showSecondarySidebar(`${trainId}`, this.renderUnidentifiedTrainPanel(trainId, controller));
+      setTimeout(() => this._initUnidentifiedAdoptHandlers(trainId), 0);
       return;
     }
 

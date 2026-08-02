@@ -297,10 +297,10 @@ class BlockManager:
         # Read `reserved_for_train` before clearing `reservation`.
         self._index_drop_reserved(block_id, block.reserved_for_train)
         block.reservation = None
-        # A ghost holds a block but commands no voltage, so entry by a ghost
+        # An unidentified train holds a block but commands no voltage, so entry by an unidentified train
         # queues the feed for the end-of-tick 0V check instead of energizing it
-        # (design_new.md "Ghost trains", Never energized).
-        if self._is_ghost_train(train_id):
+        # (design_new.md "Unidentified trains", Never energized).
+        if self._is_unidentified_train(train_id):
             self._mark_for_deenergize(block_id)
         self._record_history(
             block_id, "occupy", prior_state, BlockState.OCCUPIED, train_id
@@ -348,9 +348,9 @@ class BlockManager:
         domain)"), so it stays energized while it is held and is powered off
         only once nothing holds it.
 
-        A ghost train does not count as a holder for this test: it commands no
-        voltage, and a block held only by a ghost is driven to `0` (design_new.md
-        "Ghost trains", Never energized).
+        An unidentified train does not count as a holder for this test: it commands no
+        voltage, and a block held only by an unidentified train is driven to `0` (design_new.md
+        "Unidentified trains", Never energized).
         """
         block = self._block_registry.get(block_id)
         if block is None:
@@ -358,16 +358,16 @@ class BlockManager:
         if block.reserved_for_train is not None:
             return True
         occupant = block.occupied_by
-        return occupant is not None and not self._is_ghost_train(occupant)
+        return occupant is not None and not self._is_unidentified_train(occupant)
 
-    def _is_ghost_train(self, train_id: Optional[str]) -> bool:
-        """True when `train_id` names a ghost train (design_new.md "Ghost
+    def _is_unidentified_train(self, train_id: Optional[str]) -> bool:
+        """True when `train_id` names an unidentified train (design_new.md "Unidentified train
         trains"). False whenever the network is not wired, which keeps the
         power tests conservative in isolated unit tests."""
         if train_id is None or self.network is None:
             return False
         train = getattr(self.network, "trains", {}).get(train_id)
-        return bool(train is not None and getattr(train, "is_ghost", False))
+        return bool(train is not None and getattr(train, "is_unidentified", False))
 
     def _emit_diagnostic(self, message: str, *, block_id: str, train_id: Optional[str] = None) -> None:
         """Emit a runtime diagnostic through `NotificationCenter`.

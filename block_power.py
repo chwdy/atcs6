@@ -374,8 +374,8 @@ class BlockPowerController:
         detector that releases its own cap (design_new.md "Power", Block
         power-controller role).
 
-        A ghost train is excluded from that test: it commands no voltage, so a
-        block held only by a ghost is driven to ``0`` (design_new.md "Ghost
+        An unidentified train is excluded from that test: it commands no voltage, so a
+        block held only by an unidentified train is driven to ``0`` (design_new.md "Unidentified train
         trains", Never energized).
 
         The per-tick path is event-driven: `BlockManager` queues each block as
@@ -394,7 +394,7 @@ class BlockPowerController:
             occupant = getattr(block, "occupied_by", None)
             occupant_train = trains.get(occupant) if occupant else None
             held_by_occupant = occupant is not None and not getattr(
-                occupant_train, "is_ghost", False
+                occupant_train, "is_unidentified", False
             )
             held = (
                 held_by_occupant

@@ -17,8 +17,8 @@ import pytest
 from enums import HandlePosition, TrainState
 from runtime_payloads import FatalConflictKind, FatalPhysicalEntryConflict
 from services import ValidationError, train_service
-from tests.test_ghost_adoption import _State, a_ghost_on, adopt
-from tests.test_ghost_trains import build_sim, tick
+from tests.test_unidentified_adoption import _State, an_unidentified_on, adopt
+from tests.test_unidentified_trains import build_sim, tick
 
 
 def a_conflict(train_id="T1", block_id="BLK_1", prior="T0"):
@@ -34,8 +34,8 @@ def a_conflict(train_id="T1", block_id="BLK_1", prior="T0"):
 def a_halted_sim():
     """A runtime with one real train on it, halted by a fatal conflict."""
     network, sim, detector = build_sim()
-    ghost_id = a_ghost_on(sim, detector)
-    adopt(sim, ghost_id, "T1")
+    unidentified_id = an_unidentified_on(sim, detector)
+    adopt(sim, unidentified_id, "T1")
     controller = sim.controllers["T1"]
     controller.commands.power_on_cmd()
     controller.physics_sync.current_speed_kmh = 42.0

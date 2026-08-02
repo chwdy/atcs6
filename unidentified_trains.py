@@ -1,34 +1,34 @@
-"""Ghost trains — the runtime's model of current it detects on track that no
+"""Unidentified trains — the runtime's model of current it detects on track that no
 train the app controls is standing on.
 
-design_new.md "Power", Ghost trains: a locomotive placed on the rails by hand, a
+design_new.md "Power", Unidentified trains: a locomotive placed on the rails by hand, a
 car left behind, a train from before the app started. The app cannot drive it —
-driving needs a cab, a speed profile and a route, and a ghost was never set up
+driving needs a cab, a speed profile and a route, and an unidentified train was never set up
 with any of them — so all the runtime does is keep track of it, which is what
 keeps every other train clear of it.
 
-A ghost is an ordinary `Train` with `is_ghost = True` and its own
+An unidentified train is an ordinary `Train` with `is_unidentified = True` and its own
 `TrainController`, so its block entries and vacates flow through the same
 Step-0 -> Phase-2 callback -> Phase-3 coordinator/manager chain every other train
 uses. Nothing here writes `Block.occupied_by`; the two exceptions are the
-identity reconciliation below (a ghost-to-ghost handoff after a merge or split,
+identity reconciliation below (a unidentified-to-unidentified handoff after a merge or split,
 which is not a detector commit) and none other.
 
-`GhostTrainTracker` owns:
+`UnidentifiedTrainTracker` owns:
 
 - **Creation and identity** — a fresh `train_id` per connected group of
-  ghost-held blocks, absorbed forward as the group grows.
-- **The gap** — switch tiles carry no detection, so a ghost crossing one holds no
-  blocks for a moment; it is held with an empty span for `GHOST_GAP_HOLD_S` and
+  unidentified-held blocks, absorbed forward as the group grows.
+- **The gap** — switch tiles carry no detection, so an unidentified train crossing one holds no
+  blocks for a moment; it is held with an empty span for `UNIDENTIFIED_GAP_HOLD_S` and
   keeps its id if it reappears through undetected track.
 - **Span** — exactly the blocks it holds, claiming their full extent.
-- **Retirement** — a ghost still holding nothing when its hold window ends.
-- **Adoption** — forgetting a ghost the operator has set up as a real train
-  (`SimulationController.adopt_ghost_train(...)` owns that conversion).
+- **Retirement** — an unidentified train still holding nothing when its hold window ends.
+- **Adoption** — forgetting an unidentified train the operator has set up as a real train
+  (`SimulationController.adopt_unidentified_train(...)` owns that conversion).
 
-A ghost is not driveable *as a ghost*, but it is not a dead end either: the
+An unidentified train is not driveable *as an unidentified train*, but it is not a dead end either: the
 operator can tell the app what it is looking at, and from then on it is an
-ordinary train. That is adoption, and it is the only way `is_ghost` ever goes
+ordinary train. That is adoption, and it is the only way `is_unidentified` ever goes
 back to `False`.
 """
 
@@ -37,7 +37,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
-from constants import GHOST_GAP_HOLD_S
+from constants import UNIDENTIFIED_GAP_HOLD_S
 from network import _OPPOSITE_EDGE
 from train import Train
 from train_span import SpanEndLocator, TrainSpan
@@ -51,8 +51,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 _EDGES: Tuple[str, ...] = ("N", "E", "S", "W")
 
 
-class GhostTrainTracker:
-    """The ghost-train side of the Step-0 detector preamble."""
+class UnidentifiedTrainTracker:
+    """The unidentified-train side of the Step-0 detector preamble."""
 
     def __init__(
         self,
@@ -62,24 +62,24 @@ class GhostTrainTracker:
         self._network = network
         self._sim = simulation_controller
 
-        # Monotonic id source. A retired ghost's `train_id` is never reused
+        # Monotonic id source. A retired unidentified train's `train_id` is never reused
         # (design_new.md "Creation and identity"), so this only ever counts up.
         self._next_seq = 1
 
-        # ghost_id -> when the runtime created it. Used to pick which id survives
-        # when two ghost groups grow together (the older one keeps its id).
+        # unidentified_id -> when the runtime created it. Used to pick which id survives
+        # when two unidentified train groups grow together (the older one keeps its id).
         self._created_at: Dict[str, float] = {}
-        # (ghost_id, block_id) -> when this ghost first held that block. Used to
+        # (unidentified_id, block_id) -> when this unidentified train first held that block. Used to
         # pick which part of a split keeps the older id (the part holding the
-        # block the ghost held longest).
+        # block the unidentified train held longest).
         self._block_held_since: Dict[Tuple[str, str], float] = {}
-        # ghost_id -> when its span went empty, for ghosts currently in the gap
-        # hold. Absent means the ghost is holding blocks.
+        # unidentified_id -> when its span went empty, for unidentified trains currently in the gap
+        # hold. Absent means the unidentified train is holding blocks.
         self._gap_hold_since: Dict[str, float] = {}
-        # ghost_id -> the blocks it held at the moment its span went empty, so a
+        # unidentified_id -> the blocks it held at the moment its span went empty, so a
         # reappearance through undetected track can be matched back to it.
         self._blocks_before_gap: Dict[str, Set[str]] = {}
-        # ghost_id -> the blocks it held at the last reconcile that found it
+        # unidentified_id -> the blocks it held at the last reconcile that found it
         # holding anything, which is where `_blocks_before_gap` comes from.
         self._last_held_blocks: Dict[str, Set[str]] = {}
 
@@ -87,19 +87,19 @@ class GhostTrainTracker:
     # Reads
     # ------------------------------------------------------------------
 
-    def is_ghost(self, train_id: Optional[str]) -> bool:
-        """True when `train_id` names a ghost train currently in the network."""
+    def is_unidentified(self, train_id: Optional[str]) -> bool:
+        """True when `train_id` names an unidentified train currently in the network."""
         if train_id is None:
             return False
         train = self._network.trains.get(train_id)
-        return bool(train is not None and getattr(train, "is_ghost", False))
+        return bool(train is not None and getattr(train, "is_unidentified", False))
 
     @property
-    def ghost_ids(self) -> List[str]:
+    def unidentified_ids(self) -> List[str]:
         return sorted(
             train_id
             for train_id, train in self._network.trains.items()
-            if getattr(train, "is_ghost", False)
+            if getattr(train, "is_unidentified", False)
         )
 
     # ------------------------------------------------------------------
@@ -109,83 +109,83 @@ class GhostTrainTracker:
     def attribute_unmatched_entries(
         self, block_ids: Set[str], now: float
     ) -> Dict[str, Set[str]]:
-        """Attribute confirmed entries that match no existing train to ghosts.
+        """Attribute confirmed entries that match no existing train to unidentified trains.
 
-        Returns `ghost_id -> entered block ids`, ready for the caller to merge
-        into the ordinary attribution map: from here on the ghost is an ordinary
+        Returns `unidentified_id -> entered block ids`, ready for the caller to merge
+        into the ordinary attribution map: from here on the unidentified train is an ordinary
         train to every other rule.
 
         Each block goes, in order, to:
 
-        1. the ghost already holding a block reachable from it through
+        1. the unidentified train already holding a block reachable from it through
            undetected track, including one this same read just handed a
            neighbouring block — the group grew forward;
-        2. the gap-held ghost whose last held blocks are reachable from it the
-           same way — the same ghost continuing its run across a switch tile
+        2. the gap-held unidentified train whose last held blocks are reachable from it the
+           same way — the same unidentified train continuing its run across a switch tile
            (most recently held wins when more than one could account for it);
-        3. a newly created ghost.
+        3. a newly created unidentified train.
         """
         out: Dict[str, Set[str]] = {}
         assigned_here: Dict[str, str] = {}
         for block_id in sorted(block_ids):
-            ghost_id = self._existing_ghost_for_entry(block_id, assigned_here)
-            if ghost_id is None:
-                ghost_id = self._create_ghost(now).train_id
-            self._gap_hold_since.pop(ghost_id, None)
-            self._blocks_before_gap.pop(ghost_id, None)
-            self._block_held_since.setdefault((ghost_id, block_id), now)
-            assigned_here[block_id] = ghost_id
-            out.setdefault(ghost_id, set()).add(block_id)
+            unidentified_id = self._existing_unidentified_for_entry(block_id, assigned_here)
+            if unidentified_id is None:
+                unidentified_id = self._create_unidentified(now).train_id
+            self._gap_hold_since.pop(unidentified_id, None)
+            self._blocks_before_gap.pop(unidentified_id, None)
+            self._block_held_since.setdefault((unidentified_id, block_id), now)
+            assigned_here[block_id] = unidentified_id
+            out.setdefault(unidentified_id, set()).add(block_id)
         return out
 
-    def _existing_ghost_for_entry(
+    def _existing_unidentified_for_entry(
         self, block_id: str, assigned_here: Dict[str, str]
     ) -> Optional[str]:
         neighbours = self.reachable_blocks(block_id)
 
         for neighbour_id in sorted(neighbours):
-            # A neighbour this same read already handed to a ghost counts: two
-            # blocks confirmed on one tick are one ghost, not two.
+            # A neighbour this same read already handed to an unidentified train counts: two
+            # blocks confirmed on one tick are one unidentified train, not two.
             if neighbour_id in assigned_here:
                 return assigned_here[neighbour_id]
             block = self._network.blocks.get(neighbour_id)
             owner = getattr(block, "occupied_by", None) if block else None
-            if self.is_ghost(owner):
+            if self.is_unidentified(owner):
                 return owner
 
         candidates = [
-            (held_at, ghost_id)
-            for ghost_id, held_at in self._gap_hold_since.items()
-            if neighbours & set(self._blocks_before_gap.get(ghost_id, ()))
+            (held_at, unidentified_id)
+            for unidentified_id, held_at in self._gap_hold_since.items()
+            if neighbours & set(self._blocks_before_gap.get(unidentified_id, ()))
         ]
         if candidates:
-            # "If more than one held ghost could account for the entry, the one
+            # "If more than one held unidentified train could account for the entry, the one
             # whose hold began most recently takes it."
             return max(candidates)[1]
         return None
 
     def note_vacate_directions(
-        self, ghost_id: str, entered: Set[str], vacated: Set[str]
+        self, unidentified_id: str, entered: Set[str], vacated: Set[str]
     ) -> None:
-        """Record the caution direction for each block this ghost is vacating.
+        """Record the caution direction for each block this unidentified train is vacating.
 
-        A ghost has no calculated tail exit; its direction is simply the block it
+        An unidentified train has no calculated tail exit; its direction is simply the block it
         moved into (design_new.md "Direction"). When it vacates a block while
         still holding a neighbour, that neighbour's edge is the vacated block's
         `exit_edge`, so the block it left behind takes normal CAUTION. The edge
         goes into `physics_sync.pending_block_exit_edges`, the one carrier for a
         per-block tail-vacate direction, and the controller's Phase-2 callback
-        consumes it on this same tick — for a ghost it never buffers across ticks.
+        consumes it on this same tick — for an unidentified train it never buffers across ticks.
         """
         if not vacated:
             return
-        controller = self._sim.controllers.get(ghost_id)
+        controller = self._sim.controllers.get(unidentified_id)
         if controller is None:
             return
-        still_held = (self._held_blocks(ghost_id) | set(entered)) - set(vacated)
+        still_held = (self._held_blocks(unidentified_id) | set(entered)) - set(vacated)
         if not still_held:
             # Last block clearing: `direction` stays None, the block goes
-            # straight to FREE, and the ghost enters the gap hold.
+            # straight to FREE, and the unidentified train enters the gap hold.
             return
         for block_id in sorted(vacated):
             for edge in _EDGES:
@@ -195,37 +195,37 @@ class GhostTrainTracker:
                     break
 
     def write_detected_span(
-        self, ghost_id: str, entered: Set[str], vacated: Set[str]
+        self, unidentified_id: str, entered: Set[str], vacated: Set[str]
     ) -> bool:
-        """Set a ghost's span from this tick's detector slice, during Step 0.
+        """Set an unidentified train's span from this tick's detector slice, during Step 0.
 
         Called by `TrainPhysics.reconcile_to_detected_occupancy(...)`, which stays
         the Step-0 span writer for every train (design_new.md ":2629"): detection
-        is a ghost's only span source, and it arrives through that ordinary call.
+        is an unidentified train's only span source, and it arrives through that ordinary call.
         The blocks are the ones it holds now plus this tick's confirmed entries
         minus its confirmed vacates — the commits themselves land in Phase 3.
 
         Returns True when the span changed.
         """
-        held = (self._held_blocks(ghost_id) | set(entered)) - set(vacated)
-        return self._write_span(ghost_id, held)
+        held = (self._held_blocks(unidentified_id) | set(entered)) - set(vacated)
+        return self._write_span(unidentified_id, held)
 
     # ------------------------------------------------------------------
     # End of tick: identity reconciliation, span refresh, hold, retirement
     # ------------------------------------------------------------------
 
     def reconcile(self, now: float) -> None:
-        """Bring ghost identity, spans, and holds back in line with the blocks
+        """Bring unidentified train identity, spans, and holds back in line with the blocks
         the detector-confirmed commits actually left in place this tick.
 
         Runs after every train's Phase 3, so `Block.occupied_by` is committed.
-        Identity follows connectivity: one ghost per connected group of
-        ghost-held blocks. A group holding two ids (two ghosts grew together)
-        keeps the older id; a ghost whose blocks split into two groups keeps its
+        Identity follows connectivity: one unidentified train per connected group of
+        unidentified-held blocks. A group holding two ids (two unidentified trains grew together)
+        keeps the older id; an unidentified train whose blocks split into two groups keeps its
         id on the part holding the block it has held longest, and the other part
-        becomes a new ghost.
+        becomes a new unidentified train.
         """
-        groups = self._connected_ghost_groups()
+        groups = self._connected_unidentified_groups()
 
         claimed: Set[str] = set()
         absorbed: Set[str] = set()
@@ -242,39 +242,39 @@ class GhostTrainTracker:
             for block_id in sorted(group):
                 self._hand_block_to(block_id, survivor, now)
 
-        # An absorbed ghost did not roll into an undetected gap — another ghost
+        # An absorbed unidentified train did not roll into an undetected gap — another unidentified train
         # took over every block it held — so it is retired at once rather than
         # waiting out a hold window it is not in.
-        for ghost_id in sorted(absorbed):
-            if self.is_ghost(ghost_id) and not self._held_blocks(ghost_id):
-                self._retire(ghost_id)
+        for unidentified_id in sorted(absorbed):
+            if self.is_unidentified(unidentified_id) and not self._held_blocks(unidentified_id):
+                self._retire(unidentified_id)
 
-        for ghost_id in self.ghost_ids:
-            held = self._held_blocks(ghost_id)
+        for unidentified_id in self.unidentified_ids:
+            held = self._held_blocks(unidentified_id)
             if held:
-                self._gap_hold_since.pop(ghost_id, None)
-                self._blocks_before_gap.pop(ghost_id, None)
-                self._last_held_blocks[ghost_id] = set(held)
+                self._gap_hold_since.pop(unidentified_id, None)
+                self._blocks_before_gap.pop(unidentified_id, None)
+                self._last_held_blocks[unidentified_id] = set(held)
                 for key in [
                     k
                     for k in self._block_held_since
-                    if k[0] == ghost_id and k[1] not in held
+                    if k[0] == unidentified_id and k[1] not in held
                 ]:
                     self._block_held_since.pop(key, None)
-                self._write_span(ghost_id, held)
+                self._write_span(unidentified_id, held)
                 continue
 
             # Holding nothing: the gap hold (design_new.md "The gap").
-            self._write_span(ghost_id, set())
-            started = self._gap_hold_since.get(ghost_id)
+            self._write_span(unidentified_id, set())
+            started = self._gap_hold_since.get(unidentified_id)
             if started is None:
-                self._gap_hold_since[ghost_id] = now
-                self._blocks_before_gap[ghost_id] = set(
-                    self._last_held_blocks.get(ghost_id, set())
+                self._gap_hold_since[unidentified_id] = now
+                self._blocks_before_gap[unidentified_id] = set(
+                    self._last_held_blocks.get(unidentified_id, set())
                 )
                 continue
-            if now - started >= GHOST_GAP_HOLD_S:
-                self._retire(ghost_id)
+            if now - started >= UNIDENTIFIED_GAP_HOLD_S:
+                self._retire(unidentified_id)
 
     def _survivor_for_group(
         self,
@@ -283,20 +283,20 @@ class GhostTrainTracker:
         claimed: Set[str],
         now: float,
     ) -> str:
-        """The ghost id this connected group keeps."""
+        """The unidentified train id this connected group keeps."""
         available = sorted(
             (self._created_at.get(o, now), o)
             for o in owners
-            if self.is_ghost(o) and o not in claimed
+            if self.is_unidentified(o) and o not in claimed
         )
         if not available:
             # Every id in this group already survived another group: this group
-            # is the far side of a split, so it becomes a new ghost.
-            return self._create_ghost(now).train_id
+            # is the far side of a split, so it becomes a new unidentified train.
+            return self._create_unidentified(now).train_id
         if len(available) == 1:
             return available[0][1]
 
-        # Two ghost groups grew together, or a ghost split and this side holds
+        # Two unidentified train groups grew together, or an unidentified train split and this side holds
         # the block it has held longest. Both rules pick the same winner: the
         # oldest id that holds the longest-held block in this group.
         longest_held = min(
@@ -313,24 +313,24 @@ class GhostTrainTracker:
             return longest_held[1]
         return available[0][1]
 
-    def _hand_block_to(self, block_id: str, ghost_id: str, now: float) -> None:
-        """Move one block's ghost ownership to `ghost_id`.
+    def _hand_block_to(self, block_id: str, unidentified_id: str, now: float) -> None:
+        """Move one block's unidentified train ownership to `unidentified_id`.
 
-        Only ever runs for a ghost-to-ghost handoff after a merge or a split, and
+        Only ever runs for a unidentified-to-unidentified handoff after a merge or a split, and
         goes through the canonical `BlockManager` writers so the block never sits
         owned by two trains and the voltage drain still sees the release.
         """
         block = self._network.blocks.get(block_id)
-        if block is None or block.occupied_by == ghost_id:
+        if block is None or block.occupied_by == unidentified_id:
             return
         previous = block.occupied_by
         manager = self._sim.block_manager
-        if manager is None or not self.is_ghost(previous):
+        if manager is None or not self.is_unidentified(previous):
             return
         manager.on_block_tail_vacated(block_id, previous, None)
-        manager.occupy_blocks([block_id], ghost_id)
+        manager.occupy_blocks([block_id], unidentified_id)
         self._block_held_since.pop((previous, block_id), None)
-        self._block_held_since.setdefault((ghost_id, block_id), now)
+        self._block_held_since.setdefault((unidentified_id, block_id), now)
 
     # ------------------------------------------------------------------
     # Creation / retirement
@@ -338,19 +338,19 @@ class GhostTrainTracker:
 
     def _fresh_id(self) -> str:
         while True:
-            train_id = f"GHOST_{self._next_seq}"
+            train_id = f"UNIDENT_{self._next_seq}"
             self._next_seq += 1
             if train_id not in self._network.trains:
                 return train_id
 
-    def _create_ghost(self, now: float) -> Train:
-        """Build the ghost `Train`, its controller, and its physics instance.
+    def _create_unidentified(self, now: float) -> Train:
+        """Build the unidentified train `Train`, its controller, and its physics instance.
 
-        Blank train configuration with the default `SpeedProfile`, which a ghost
+        Blank train configuration with the default `SpeedProfile`, which an unidentified train
         never uses because it is never powered (design_new.md "SpeedProfile").
         """
         train_id = self._fresh_id()
-        train = Train(train_id=train_id, is_ghost=True)
+        train = Train(train_id=train_id, is_unidentified=True)
 
         profiles = getattr(self._network, "speed_profiles", None)
         if profiles is not None:
@@ -366,57 +366,57 @@ class GhostTrainTracker:
         self._created_at[train_id] = now
 
         self._emit(
-            "ghost_train_detected",
+            "unidentified_train_detected",
             f"current detected on track no controllable train covers; "
-            f"tracking it as ghost train {train_id}",
+            f"tracking it as unidentified train {train_id}",
             train_id,
         )
         return train
 
-    def forget(self, ghost_id: str) -> None:
-        """Drop every scrap of tracker bookkeeping for `ghost_id`.
+    def forget(self, unidentified_id: str) -> None:
+        """Drop every scrap of tracker bookkeeping for `unidentified_id`.
 
-        Used when a ghost stops being a ghost — the operator adopted it as a
-        real train (design_new.md "Ghost trains", Adoption). The `Train`, its
+        Used when an unidentified train stops being an unidentified train — the operator adopted it as a
+        real train (design_new.md "Unidentified trains", Adoption). The `Train`, its
         controller, and the blocks it holds all survive; only the tracker's own
         identity/hold state goes, so the adopted train is never absorbed into a
-        neighbouring ghost group, never gap-held, and never retired. Its
+        neighbouring unidentified train group, never gap-held, and never retired. Its
         `train_id` still counts as used, because `_fresh_id` skips ids the
         network already holds.
         """
-        self._gap_hold_since.pop(ghost_id, None)
-        self._blocks_before_gap.pop(ghost_id, None)
-        self._last_held_blocks.pop(ghost_id, None)
-        self._created_at.pop(ghost_id, None)
-        for key in [k for k in self._block_held_since if k[0] == ghost_id]:
+        self._gap_hold_since.pop(unidentified_id, None)
+        self._blocks_before_gap.pop(unidentified_id, None)
+        self._last_held_blocks.pop(unidentified_id, None)
+        self._created_at.pop(unidentified_id, None)
+        for key in [k for k in self._block_held_since if k[0] == unidentified_id]:
             self._block_held_since.pop(key, None)
 
-    def _retire(self, ghost_id: str) -> None:
-        """Retire a ghost that held no blocks for the whole hold window."""
-        self.forget(ghost_id)
+    def _retire(self, unidentified_id: str) -> None:
+        """Retire an unidentified train that held no blocks for the whole hold window."""
+        self.forget(unidentified_id)
 
-        train = self._network.trains.get(ghost_id)
+        train = self._network.trains.get(unidentified_id)
         profile_id = getattr(train, "speed_profile_id", None) if train else None
-        self._network.remove_train(ghost_id)
-        self._sim.controllers.pop(ghost_id, None)
-        self._sim.physics_instances.pop(ghost_id, None)
+        self._network.remove_train(unidentified_id)
+        self._sim.controllers.pop(unidentified_id, None)
+        self._sim.physics_instances.pop(unidentified_id, None)
         profiles = getattr(self._network, "speed_profiles", None)
         if profiles is not None and profile_id:
             profiles.remove(profile_id)
 
         self._emit(
-            "ghost_train_retired",
-            f"ghost train {ghost_id} drew no current for "
-            f"{GHOST_GAP_HOLD_S}s and is retired",
-            ghost_id,
+            "unidentified_train_retired",
+            f"unidentified train {unidentified_id} drew no current for "
+            f"{UNIDENTIFIED_GAP_HOLD_S}s and is retired",
+            unidentified_id,
         )
 
     # ------------------------------------------------------------------
     # Span
     # ------------------------------------------------------------------
 
-    def _write_span(self, ghost_id: str, held: Set[str]) -> bool:
-        """Set the ghost's span to exactly the blocks it holds.
+    def _write_span(self, unidentified_id: str, held: Set[str]) -> bool:
+        """Set the unidentified train's span to exactly the blocks it holds.
 
         Its length, and where inside those blocks it actually sits, are unknown,
         so the end locators sit at the outer boundaries of its end blocks and
@@ -424,7 +424,7 @@ class GhostTrainTracker:
         track the detector allows, which is the safe reading for a train nobody
         is driving (design_new.md "Span"). Returns True when the span changed.
         """
-        controller = self._sim.controllers.get(ghost_id)
+        controller = self._sim.controllers.get(unidentified_id)
         if controller is None:
             return False
         previous = controller.physics_sync.current_span
@@ -446,7 +446,7 @@ class GhostTrainTracker:
         controller.physics_sync.current_span = TrainSpan(
             # end_a sits at the entry edge of the first tile and end_b at the far
             # end of the last one: the outer boundaries of the end blocks. Each
-            # block contributes its own canonical tile order, since a ghost's
+            # block contributes its own canonical tile order, since an unidentified train's
             # real orientation is unknown.
             end_a=SpanEndLocator(
                 tile=(int(first[0]), int(first[1])),
@@ -483,9 +483,9 @@ class GhostTrainTracker:
         ]
 
     def _entry_edge_for(self, entry: Tuple[int, int, Optional[str]]) -> str:
-        """The entry edge to stamp on a ghost span end.
+        """The entry edge to stamp on an unidentified train span end.
 
-        A ghost's real orientation is unknown, so when the tile carries no
+        An unidentified train's real orientation is unknown, so when the tile carries no
         recorded forward-entry edge, any edge the tile actually has is an honest
         answer; picking the first in compass order keeps it deterministic.
         """
@@ -530,7 +530,7 @@ class GhostTrainTracker:
         """The first block reached leaving `block_id` through `edge`, if any.
 
         Used for the vacate direction: the edge whose walk lands on a block the
-        ghost still holds is the vacated block's `exit_edge`.
+        unidentified train still holds is the vacated block's `exit_edge`.
         """
         for tile in self._network.get_block_tracks(block_id):
             if edge not in (tile.edges or ()):
@@ -544,7 +544,7 @@ class GhostTrainTracker:
         """Every block reachable from `block_id` through undetected track.
 
         Public because attribution needs the same neighbour test before it
-        ever reaches a ghost: a confirmed block next to one an ordinary train
+        ever reaches an unidentified train: a confirmed block next to one an ordinary train
         already holds belongs to that train (see `BlockOccupancyDetector`,
         and design_new.md "Power", Attribution).
 
@@ -565,7 +565,7 @@ class GhostTrainTracker:
 
         Follows live connectivity across undetected track; a switch tile is
         crossed only through the exits its current position actually offers, so
-        a ghost is never credited with reaching a block the points do not lead to.
+        an unidentified train is never credited with reaching a block the points do not lead to.
         """
         reached: Set[str] = set()
         visited: Set[Tuple[int, int, str]] = set()
@@ -594,22 +594,22 @@ class GhostTrainTracker:
                 frontier.append((neighbour, onward))
         return reached
 
-    def _held_blocks(self, ghost_id: str) -> Set[str]:
+    def _held_blocks(self, unidentified_id: str) -> Set[str]:
         return {
             block_id
             for block_id, block in self._network.blocks.items()
-            if getattr(block, "occupied_by", None) == ghost_id
+            if getattr(block, "occupied_by", None) == unidentified_id
         }
 
-    def _connected_ghost_groups(self) -> List[Set[str]]:
-        """Connected groups of blocks currently held by ghosts."""
-        ghost_held = {
+    def _connected_unidentified_groups(self) -> List[Set[str]]:
+        """Connected groups of blocks currently held by unidentified trains."""
+        unidentified_held = {
             block_id
             for block_id, block in self._network.blocks.items()
-            if self.is_ghost(getattr(block, "occupied_by", None))
+            if self.is_unidentified(getattr(block, "occupied_by", None))
         }
         groups: List[Set[str]] = []
-        unvisited = set(ghost_held)
+        unvisited = set(unidentified_held)
         while unvisited:
             seed = sorted(unvisited)[0]
             group = {seed}
@@ -617,7 +617,7 @@ class GhostTrainTracker:
             unvisited.discard(seed)
             while frontier:
                 current = frontier.pop()
-                for neighbour in sorted(self.reachable_blocks(current) & ghost_held):
+                for neighbour in sorted(self.reachable_blocks(current) & unidentified_held):
                     if neighbour in unvisited:
                         unvisited.discard(neighbour)
                         group.add(neighbour)
@@ -635,7 +635,7 @@ class GhostTrainTracker:
 
         try:
             center.emit(
-                source="GhostTrainTracker",
+                source="UnidentifiedTrainTracker",
                 kind=kind,
                 severity=Severity.WARNING,
                 event_time=time.time(),

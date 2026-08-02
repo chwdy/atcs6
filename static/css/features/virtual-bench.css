@@ -1,0 +1,431 @@
+/* Virtual Bench — the Virtual Hardware workbench (panels/virtual-bench.ts). The
+   outer window chrome is built by FloatingWindow (layout/floating-window.css);
+   this file styles only what is mounted inside it.
+
+   Row grammar: a 5-column grid reading left to right as the loop the panel is
+   about — block, what the app drives, the bench test, what you tell the
+   detectors, what the app concluded. The optional raw-controls line spans the
+   full width beneath, so turning Raw on grows the rows rather than reflowing
+   the columns.
+
+   Color follows the house semantics (DESIGN_LANGUAGE §"Status colors"):
+   --success for an energized output, --danger for occupied and for an injected
+   fault, --accent for a mode the operator has armed. Nothing informational
+   borrows danger. */
+
+.floating-window[data-window-id="virtual-bench"] .floating-window-content {
+    font-family: var(--font-main);
+    font-size: 12px;
+}
+
+/* ---- Toolbar ---- */
+.vb-toolbar {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-color);
+    flex-wrap: wrap;
+}
+
+.vb-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1 1 90px;
+    min-width: 90px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+}
+
+.vb-field select {
+    height: var(--control-height-xs);
+    background-color: var(--bg-dark);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    padding: 0 6px;
+    font-family: var(--font-main);
+    font-size: 12px;
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+.vb-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: var(--control-height-xs);
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.vb-icon-btn,
+.vb-place-btn {
+    height: var(--control-height-xs);
+    background-color: var(--bg-dark);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    cursor: pointer;
+    font-family: var(--font-main);
+    font-size: 11px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+}
+
+.vb-icon-btn {
+    width: var(--control-height-xs);
+    font-size: 13px;
+}
+
+.vb-place-btn {
+    padding: 0 8px;
+}
+
+.vb-icon-btn:hover,
+.vb-place-btn:hover {
+    border-color: var(--accent-color);
+    color: var(--accent-hover);
+}
+
+/* Armed: canvas clicks now place trains instead of selecting. An accent, not a
+   status color — an armed mode is the operator's own doing, not a condition. */
+.vb-place-btn.is-armed {
+    background-color: color-mix(in srgb, var(--accent-color) 22%, transparent);
+    border-color: var(--accent-color);
+    color: var(--text-primary);
+}
+
+/* ---- Banner (wrong environment, or a fault deliberately injected) ---- */
+.vb-banner {
+    padding: 5px 10px;
+    font-size: 11px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.vb-banner-warn {
+    color: var(--warning-color);
+    background-color: rgba(var(--warning-rgb), 0.1);
+}
+
+.vb-banner-danger {
+    color: var(--danger-color);
+    background-color: rgba(var(--danger-rgb), 0.12);
+}
+
+/* ---- Body ---- */
+.vb-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+}
+
+.vb-section + .vb-section {
+    border-top: 1px solid var(--border-color);
+}
+
+.vb-section-head {
+    padding: 6px 10px 3px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-tertiary);
+}
+
+.vb-section-note {
+    display: block;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 10px;
+    color: var(--text-tertiary);
+    opacity: 0.85;
+}
+
+/* The header and each row are separate grids, so every column is a fixed track
+   or an fr — `auto` would size per-grid and drift out of alignment. */
+.vb-head,
+.vb-row {
+    display: grid;
+    /* The block column is sized to a generated id (BLK_C37589A5, SEG_4F4CF0),
+       not to a hand-typed "B1" — those are what a baked layout actually
+       carries, and an ellipsized id is unusable for telling two apart. */
+    grid-template-columns:
+        minmax(104px, 1.1fr)
+        minmax(84px, 1fr)
+        64px
+        minmax(124px, 1.3fr)
+        minmax(62px, 0.7fr);
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+}
+
+.vb-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background-color: var(--bg-panel, var(--bg-dark));
+    border-bottom: 1px solid var(--border-color);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-tertiary);
+}
+
+.vb-row {
+    border-bottom: 1px dotted var(--border-color);
+}
+
+.vb-row:last-child {
+    border-bottom: none;
+}
+
+/* A block carrying a virtual object. A left rail rather than a fill: the row
+   still has to be read, and the verdict cell is where the answer lives. */
+.vb-row-present {
+    box-shadow: inset 2px 0 0 var(--danger-color);
+}
+
+/* The switch rows are a 3-column variant of the same grid. */
+.vb-row-switch {
+    grid-template-columns: minmax(104px, 1.1fr) minmax(150px, 1.6fr) 1fr;
+}
+
+.vb-block {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ---- Track output ---- */
+.vb-drive {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.vb-drive-glyph {
+    display: inline-block;
+    width: 12px;
+    color: var(--text-tertiary);
+}
+
+/* Energized either way — the rails are live, which is the fact worth catching.
+   Direction is carried by the glyph, not by two competing colors. */
+.vb-drive-fwd,
+.vb-drive-rev {
+    color: var(--success-color);
+    font-weight: 650;
+}
+
+.vb-drive-fwd .vb-drive-glyph,
+.vb-drive-rev .vb-drive-glyph {
+    color: var(--success-color);
+}
+
+.vb-duty {
+    display: block;
+    font-size: 9px;
+    color: var(--text-tertiary);
+    font-weight: 400;
+}
+
+.vb-dash {
+    color: var(--text-tertiary);
+}
+
+/* ---- Buttons ---- */
+.vb-btn {
+    height: var(--control-height-xs);
+    padding: 0 7px;
+    background-color: var(--bg-dark);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    font-family: var(--font-main);
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+}
+
+.vb-btn:hover:not(:disabled) {
+    border-color: var(--accent-color);
+    color: var(--accent-hover);
+}
+
+.vb-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.vb-btn-xs {
+    height: 20px;
+    padding: 0 6px;
+    font-size: 10px;
+}
+
+/* A control whose state is ON: the stall latch, a raw bit set, an armed fault. */
+.vb-btn.is-on {
+    background-color: color-mix(in srgb, var(--accent-color) 22%, transparent);
+    border-color: var(--accent-color);
+}
+
+/* The object is on the detectors — the same danger the layout paints occupancy
+   with, so the panel and the canvas agree at a glance. */
+.vb-place.is-on {
+    background-color: color-mix(in srgb, var(--danger-color) 20%, transparent);
+    border-color: var(--danger-color);
+    color: var(--text-primary);
+}
+
+/* An injected fault is a fault, even a deliberate one. */
+.vb-fault.is-on {
+    background-color: color-mix(in srgb, var(--danger-color) 22%, transparent);
+    border-color: var(--danger-color);
+    color: var(--text-primary);
+}
+
+/* ---- Detector cell + verdict ---- */
+.vb-sensor {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.vb-reads {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.vb-verdict {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.vb-verdict.is-occupied {
+    color: var(--danger-color);
+    font-weight: 650;
+}
+
+/* ---- Raw controls (full-width sub-line, only with Raw on) ---- */
+.vb-raw {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding-top: 4px;
+    flex-wrap: wrap;
+}
+
+.vb-raw-ma {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.vb-input {
+    height: 20px;
+    width: 64px;
+    background-color: var(--bg-dark);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    padding: 0 5px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+
+.vb-input-wide {
+    width: auto;
+    flex: 1 1 140px;
+    min-width: 100px;
+    font-family: var(--font-main);
+}
+
+.vb-unit,
+.vb-raw-note {
+    font-size: 10px;
+    color: var(--text-tertiary);
+}
+
+/* ---- Switch coils ---- */
+.vb-coils {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-tertiary);
+}
+
+.vb-coil {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.vb-coil-dot {
+    width: 8px;
+    height: 8px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--bg-hover);
+    border: 1px solid var(--border-color);
+}
+
+/* Energized right now — the same green the switch editor's coil rows use. */
+.vb-coil.is-on {
+    color: var(--text-primary);
+}
+
+.vb-coil.is-on .vb-coil-dot {
+    background: var(--success-color);
+    border-color: var(--success-color);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--success-color) 30%, transparent);
+}
+
+/* ---- Strips (virtual train, faults) ---- */
+.vb-strip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px 8px;
+    flex-wrap: wrap;
+}
+
+.vb-strip-status {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+/* ---- Footer ---- */
+.vb-footer {
+    padding: 4px 10px 6px;
+    border-top: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-family: var(--font-mono);
+}

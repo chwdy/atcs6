@@ -19,6 +19,7 @@
 @import url('./features/train-monitor.css');
 @import url('./features/diagnostics.css');
 @import url('./features/occupancy-monitor.css');
+@import url('./features/virtual-bench.css');
 @import url('./features/speed-profiles.css');
 @import url('./features/hardware.css');
 @import url('./base/motion.css');

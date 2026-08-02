@@ -9,7 +9,7 @@ unit contracts:
   train left the detected area and no exit edge is known) the block clears
   `occupied_by`, writes no caution, and goes straight to FREE. The Step-0
   preamble's clear for a detected occupant the app does not control routes
-  through that same canonical entry (see the ghost-train tests), so the
+  through that same canonical entry (see the unidentified-train tests), so the
   de-energize queueing, BLOCK_VACATED event, and history record are not skipped.
 
 - design_new.md ":2181"/":2641" — Phase 3 is skipped for a still-OFF transaction
@@ -108,7 +108,7 @@ def _sim_with_off_train():
 
     dispatcher = _RecordingDispatcher()
     sim.path_dispatcher = dispatcher
-    # The train has never been powered on, which is also a ghost's standing
+    # The train has never been powered on, which is also an unidentified train's standing
     # condition (design_new.md ":2641": its controller stays OFF).
     assert controller.ops.state == TrainState.OFF
     return sim, train, controller, dispatcher

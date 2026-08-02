@@ -227,8 +227,9 @@ class HardwareConfig:
     switch_output: Dict[str, SwitchBinding] = field(default_factory=dict)
     # Optional per-PCA output-enable line: key = track (pca9685) chip_id, value =
     # the '595 bit wired to that PCA's /OE. Driven to enable once at session
-    # build and held; there is no per-tick coast window. Empty when /OE is tied
-    # enabled in hardware (legacy rigs; strict activation adds the independent gate).
+    # build and held; there is no per-tick coast window. An entry is absent when
+    # the rig ties /OE enabled in hardware; that costs the board-wide off state,
+    # so `activation_report` warns, but it does not block activation.
     output_enable: Dict[str, PortBinding] = field(default_factory=dict)
     # Lower edge of the hybrid occupancy detector's drive zones: at or below this
     # magnitude a block is idle and its '165 detector answers. Tunable because
@@ -1052,20 +1053,37 @@ def activation_report(
     *,
     external_safety_available: bool = False,
 ) -> Dict[str, Any]:
-    """Return the fail-closed readiness verdict for one whole environment."""
+    """Return the fail-closed readiness verdict for one whole environment.
+
+    `issues` are activation blockers; `warnings` are advisory and leave `ready`
+    true. Only setup a rig cannot operate without blocks activation — an
+    optional facility the rig simply does not have is reported, not enforced.
+    """
     environment = operation_environment.parse(environment)
     if environment is OperationMode.SIMULATION:
-        return {"ready": True, "environment": environment.value, "issues": []}
+        return {
+            "ready": True,
+            "environment": environment.value,
+            "issues": [],
+            "warnings": [],
+        }
 
     blocks = sorted(set(block_ids))
     switches = sorted(set(switch_ids))
     issues: List[Dict[str, Any]] = []
+    warnings: List[Dict[str, Any]] = []
 
-    def issue(code: str, message: str, ids: Optional[List[str]] = None) -> None:
+    def _entry(code: str, message: str, ids: Optional[List[str]]) -> Dict[str, Any]:
         entry: Dict[str, Any] = {"code": code, "message": message}
         if ids:
             entry["ids"] = ids
-        issues.append(entry)
+        return entry
+
+    def issue(code: str, message: str, ids: Optional[List[str]] = None) -> None:
+        issues.append(_entry(code, message, ids))
+
+    def warn(code: str, message: str, ids: Optional[List[str]] = None) -> None:
+        warnings.append(_entry(code, message, ids))
 
     if not cfg.chips:
         issue("no_chips", "Hardware Setup has no chips")
@@ -1090,12 +1108,19 @@ def activation_report(
     if stale_switches:
         issue("stale_switch_binding", "Bindings name switches not in the loaded layout", stale_switches)
 
+    # An /OE inhibit is wiring a rig may or may not have: it needs a spare '595
+    # bit routed to the PCA's /OE pin. Where it exists the driver holds it and
+    # safe state drops it first, which is strictly better; where it does not,
+    # safe state still zeroes every channel, so the board can be turned off —
+    # just one channel at a time rather than as a board. That is a weaker
+    # guarantee worth reporting, not a reason to refuse the environment.
     bound_track_chips = {binding.chip_id for binding in cfg.block_track.values()}
     missing_inhibit = sorted(bound_track_chips - set(cfg.output_enable))
     if missing_inhibit:
-        issue(
+        warn(
             "missing_output_inhibit",
-            "Track chips are missing active-high /OE inhibit bindings",
+            "Track chips have no /OE inhibit binding; safe state zeroes their "
+            "channels individually instead of disabling the board",
             missing_inhibit,
         )
     if environment is OperationMode.REAL_HARDWARE and not external_safety_available:
@@ -1108,13 +1133,16 @@ def activation_report(
         "ready": not issues,
         "environment": environment.value,
         "issues": issues,
+        "warnings": warnings,
     }
 
 
 # The maps a plain (chip_id, port) binding covers. `block_track`, `switch_output`,
 # and `block_occupancy_current` carry more than one field per entry, so each has
-# its own setter below.
-BINDING_MAPS = ("block_occupancy",)
+# its own setter below. `output_enable` keys on a track chip_id rather than a
+# layout entity, but its value is the same (chip_id, port) pair, so it shares the
+# generic setter; `_validate_output_enable` enforces the key's role.
+BINDING_MAPS = ("block_occupancy", "output_enable")
 
 
 def _copy_config() -> HardwareConfig:
@@ -1140,9 +1168,11 @@ def set_binding(
     persist: bool = True,
 ) -> HardwareConfig:
     """Set or clear a single port binding (used by the per-entity block/switch
-    editors). `chip_id` None/empty clears the binding. The whole configuration is
-    re-validated, so an out-of-range / role-mismatched / already-used port is
-    rejected and nothing is committed."""
+    editors and by the Hardware Setup /OE row). `logical_id` is the block for
+    `block_occupancy` and the track chip_id for `output_enable`. `chip_id`
+    None/empty clears the binding. The whole configuration is re-validated, so an
+    out-of-range / role-mismatched / already-used port — including a bit already
+    claimed by a switch coil — is rejected and nothing is committed."""
     if map_name not in BINDING_MAPS:
         raise HardwareConfigError(f"binding map must be one of {list(BINDING_MAPS)}, got {map_name!r}")
     candidate = _copy_config()

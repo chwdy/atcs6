@@ -112,7 +112,7 @@ describe('RendererTrainHandler pure helpers', () => {
     expect(spy).toHaveBeenCalledWith({ id: 'T1' }, snap);
   });
 
-  it('draws a cabless ghost body along every tile in its bent span', () => {
+  it('draws a cabless unidentified train body along every tile in its bent span', () => {
     const renderer = makeRenderer();
     const lineTo = vi.fn();
     renderer.ctx = {
@@ -136,12 +136,12 @@ describe('RendererTrainHandler pure helpers', () => {
     vi.spyOn(handler, 'drawTrainLabel').mockImplementation(() => {});
 
     handler.drawTrainFromSnapshot(
-      { id: 'GHOST_1', is_ghost: true },
+      { id: 'UNIDENT_1', is_unidentified: true },
       {
-        id: 'GHOST_1',
+        id: 'UNIDENT_1',
         cab: null,
         facing: null,
-        isGhost: true,
+        isUnidentified: true,
         span: {
           occupiedTiles: [[0, 0], [1, 0], [1, 1]],
           leadingEnd: '',
@@ -185,12 +185,12 @@ describe('RendererTrainHandler pure helpers', () => {
       ).toBe('#8257e5');
     });
 
-    it('tints a ghost train steel, ahead of every mode hue', () => {
-      // A ghost has no cab, no mode and no brake, so a mode hue would be a lie
-      // about a train the app cannot drive (design_new.md "Ghost trains").
-      expect(trainBodyFill({ isGhost: true })).toBe('#8a8a99');
+    it('tints an unidentified train steel, ahead of every mode hue', () => {
+      // An unidentified train has no cab, no mode and no brake, so a mode hue would be a lie
+      // about a train the app cannot drive (design_new.md "Unidentified trains").
+      expect(trainBodyFill({ isUnidentified: true })).toBe('#8a8a99');
       expect(
-        trainBodyFill({ isGhost: true, controlMode: 'manual', ebActive: true }),
+        trainBodyFill({ isUnidentified: true, controlMode: 'manual', ebActive: true }),
       ).toBe('#8a8a99');
     });
   });

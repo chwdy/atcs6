@@ -180,10 +180,10 @@ def test_attribute_unresolved_entry_is_reported_as_unmatched():
     net, det = make_detector(["A"], [{"A": True}], on=1)
     entered, _ = det.step()
     assert entered == {"A"}
-    # No reserving train and no covering span -> the entry belongs to a ghost
+    # No reserving train and no covering span -> the entry belongs to an unidentified train
     # train (design_new.md "Attribution"). `attribute()` is a pure attribution
     # step: it reports the block as unmatched and writes no block state and
-    # registers no train. The Step-0 preamble hands it to GhostTrainTracker.
+    # registers no train. The Step-0 preamble hands it to UnidentifiedTrainTracker.
     entered_by_train, _, unmatched = det.attribute(entered, set())
     assert entered_by_train == {}
     assert unmatched == {"A"}

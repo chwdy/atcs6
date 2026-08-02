@@ -1425,13 +1425,13 @@ class TrainPhysics:
         entered = ps.pending_detected_entered_blocks
         vacated = ps.pending_detected_vacated_blocks
 
-        if getattr(train, "is_ghost", False):
+        if getattr(train, "is_unidentified", False):
             # Forward-only protects integrated motion from being snapped
-            # backwards; a ghost integrates none of its own, so there is nothing
+            # backwards; an unidentified train integrates none of its own, so there is nothing
             # to protect and its corrected span is simply its confirmed-occupied
-            # blocks (design_new.md "Power -> Ghost trains", Span).
-            # `GhostTrainTracker` owns that construction.
-            tracker = self._ghost_tracker()
+            # blocks (design_new.md "Power -> Unidentified trains", Span).
+            # `UnidentifiedTrainTracker` owns that construction.
+            tracker = self._unidentified_tracker()
             if tracker is None:
                 return False
             return tracker.write_detected_span(
@@ -1553,7 +1553,7 @@ class TrainPhysics:
         stops a train rather than dragging it backwards. Inert whenever the
         session detects no blocks (the simulated driver reports none, which is
         what keeps it from deadlocking against a current map it builds from this
-        very span), and inert for a ghost train, which integrates no motion of
+        very span), and inert for an unidentified train, which integrates no motion of
         its own.
         """
         self._pending_entry_block = None
@@ -1561,7 +1561,7 @@ class TrainPhysics:
             return 0.0
         if self._work is None or self.network is None:
             return distance_cm
-        if getattr(train, "is_ghost", False):
+        if getattr(train, "is_unidentified", False):
             return distance_cm
 
         detector = self._block_occupancy_detector()
@@ -1658,7 +1658,7 @@ class TrainPhysics:
         opposite to the commanded direction.
 
         Attribution hands such a block to the adjacent ordinary train rather
-        than minting a ghost, and the forward-only snap deliberately does not
+        than minting an unidentified train, and the forward-only snap deliberately does not
         move the span for it. The tail rule still applies to it: the tail may
         not run away from a block whose detector says this train is standing
         there, so while one exists the whole span is pinned (a span is rigid).
@@ -1773,20 +1773,20 @@ class TrainPhysics:
     def _block_occupancy_detector(self):
         """The runtime's `BlockOccupancyDetector`, or None in an isolated unit
         test. Reached through the `BlockManager` back-reference the network
-        already carries, the same way `_ghost_tracker` reaches its tracker."""
+        already carries, the same way `_unidentified_tracker` reaches its tracker."""
         manager = getattr(self.network, "block_manager", None)
         sim = getattr(manager, "simulation_controller", None)
         return getattr(sim, "block_occupancy_detector", None)
 
-    def _ghost_tracker(self):
-        """The runtime's `GhostTrainTracker`, or None in an isolated unit test.
+    def _unidentified_tracker(self):
+        """The runtime's `UnidentifiedTrainTracker`, or None in an isolated unit test.
 
         Reached through the `BlockManager` back-reference the network already
         carries, so physics keeps no `SimulationController` reference of its own.
         """
         manager = getattr(self.network, "block_manager", None)
         sim = getattr(manager, "simulation_controller", None)
-        return getattr(sim, "ghost_trains", None)
+        return getattr(sim, "unidentified_trains", None)
 
     def _advance_head_to_next_tile(self, train: "Train") -> bool:
         """Move the head end to the next forward tile (at its entry seam) and
@@ -1986,13 +1986,13 @@ class TrainPhysics:
         under a reservation already has that block through the reserved-ahead
         half; this reaches the one driving without one.
 
-        A ghost train commands no `track_voltage` at all, so its set is empty and
-        a block held only by a ghost is driven to `0` by the de-energize drain.
+        An unidentified train commands no `track_voltage` at all, so its set is empty and
+        a block held only by an unidentified train is driven to `0` by the de-energize drain.
         Putting voltage on the rail under a train the app cannot steer or stop is
-        the hazard the ghost rule exists to contain (design_new.md "Ghost
+        the hazard the unidentified train rule exists to contain (design_new.md "Unidentified train
         trains", Never energized).
         """
-        if getattr(train, "is_ghost", False):
+        if getattr(train, "is_unidentified", False):
             return set()
         energized = self._held_blocks_for_train(train)
         if self._pending_entry_block is not None:

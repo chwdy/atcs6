@@ -94,13 +94,13 @@ OCCUPANCY_OFF_THRESHOLD: int = 10
 # and the confirm/vacate loop between occupancy and drive cannot re-form.
 LIGHTING_CLEAR_HOLD_READS: int = 30
 
-# How long a ghost train that holds no blocks at all is held before it is
-# retired (design_new.md "Power -> Ghost trains", The gap). Switch tiles carry no
-# detection, so a ghost rolling through one holds nothing for a moment; within
+# How long an unidentified train that holds no blocks at all is held before it is
+# retired (design_new.md "Power -> Unidentified trains", The gap). Switch tiles carry no
+# detection, so an unidentified train rolling through one holds nothing for a moment; within
 # this window a confirmed entry no existing train accounts for, on a block
-# reachable through undetected track, is that same ghost continuing its run and
+# reachable through undetected track, is that same unidentified train continuing its run and
 # keeps its `train_id`.
-GHOST_GAP_HOLD_S: float = 5.0
+UNIDENTIFIED_GAP_HOLD_S: float = 5.0
 
 # Speed calibration (design_new.md "Speed calibration"). A calibration pass
 # commands a fixed sweep of CALIBRATION_VOLTAGE_STEPS track-voltage steps from

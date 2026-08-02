@@ -739,11 +739,25 @@ def build_real_interfaces(
         because its supply sagged probably took the chips down with it: a '595
         that lost power comes back with undefined register contents, which on a
         coil bit is a point motor burning with nobody watching. So this repeats
-        the build's own order — chains low first, then the slow I2C setup — and
-        ends on the same bindings check. Track voltage is deliberately not
-        restored: `configure()` leaves every PWM channel at zero, and the
-        control loop re-commands voltage on its next tick anyway, so the safe
-        state is both the correct landing point and a self-healing one.
+        the build's own order — chains low first, then the slow I2C setup, then
+        the bindings check — and ends on the same `activate()`.
+
+        Track voltage is deliberately not restored: `configure()` leaves every
+        PWM channel at zero and the control loop re-commands voltage on its
+        next tick. **That re-command only lands because `activate()` runs
+        here.** The `revoke()` above leaves the supervisor inactive, and
+        `PhysicalOutputSupervisor.renew()` tests `_active` before it reaches
+        the no-external-lease shortcut, so `TrackDriver.set_voltage` refuses
+        every write while the supervisor stays down. Without this call a single
+        reconnect would leave the rail dead for the rest of the session, with
+        each refused write latching a hardware failure — and `activate()` is
+        the only thing that puts the gate back up, because the build calls it
+        exactly once.
+
+        Raising out of here is deliberate. `Ch347Device._recover()` treats a
+        hook that raises as a failed reconnect: it closes the handle and waits
+        out the cooldown, which is the honest outcome when the outputs could
+        not be brought back up safely.
         """
         safety.revoke()
         for chip in track_chips.values():
@@ -751,6 +765,7 @@ def build_real_interfaces(
         for chip in current_chips.values():
             chip.configure()
         _assert_switch_ports_low(switch_chips, switch_output)
+        safety.activate()
 
     register_hook = getattr(device, "add_reconnect_hook", None)
     if register_hook is not None:      # the fake device has no link to lose

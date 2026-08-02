@@ -68,7 +68,8 @@ export type PersistedWindowKind =
   | 'diagnostics'
   | 'tab-group'
   | 'train-monitor'
-  | 'occupancy-monitor';
+  | 'occupancy-monitor'
+  | 'virtual-bench';
 
 export interface WindowRegistryEntry {
   id: string;
@@ -123,6 +124,12 @@ export interface WindowState {
   occupancyMonitor?: {
     refreshHz: number;
     filter: string;
+  };
+  /** Only for the 'virtual-bench' kind — its toolbar settings. */
+  virtualBench?: {
+    refreshHz: number;
+    filter: string;
+    showRaw: boolean;
   };
 }
 

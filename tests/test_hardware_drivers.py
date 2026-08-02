@@ -104,7 +104,7 @@ def test_virtual_device_can_inject_transport_and_stuck_output_faults():
 
 def test_virtual_transport_fault_enters_the_runtime_hardware_failure_path():
     from runtime_payloads import HardwareFailure
-    from tests.test_ghost_trains import build_sim
+    from tests.test_unidentified_trains import build_sim
 
     network, sim, _detector = build_sim()
     dev = FakeCh347Device(present_addresses={0x40})
@@ -970,7 +970,7 @@ def test_the_guard_still_fires_once_the_refreshes_stop():
 
 def test_port_test_unknown_chip():
     cfg = _cfg(ChipConfig("in1", "hc165", spi_select="cs1"))
-    result = self_test.run_port_test(cfg, "ghost", 0, "read_input",
+    result = self_test.run_port_test(cfg, "unidentified train", 0, "read_input",
                                      device=FakeCh347Device())
     assert result["ok"] is False
 

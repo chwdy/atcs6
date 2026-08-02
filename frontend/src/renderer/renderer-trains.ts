@@ -36,13 +36,13 @@ export function trainBodyFill(snap: {
   controlMode?: string | null;
   teardownPending?: boolean;
   ebActive?: boolean;
-  isGhost?: boolean;
+  isUnidentified?: boolean;
 }): string {
   const p = getCanvasPalette();
-  // A ghost train is not one of the operator's trains: it gets a desaturated
+  // An unidentified train is not one of the operator's trains: it gets a desaturated
   // steel body (plus the dashed outline drawn with it), never a mode hue, since
   // it has no cab, no mode and no brake to report.
-  if (snap.isGhost) return p.trainBodyGhost;
+  if (snap.isUnidentified) return p.trainBodyUnidentified;
   if (snap.ebActive) return p.trainBodyEb;
   if (snap.teardownPending) return p.trainBodyTeardown;
   if (snap.controlMode === 'manual') return p.trainBodyManual;
@@ -72,9 +72,9 @@ export interface TrainSnap {
   teardownPending?: boolean;
   /** True while the emergency brake is active. Drives the purple body tint. */
   ebActive?: boolean;
-  /** True for a runtime-detected ghost train (design_new.md "Ghost trains").
+  /** True for a runtime-detected unidentified train (design_new.md "Unidentified trains").
    *  Drives the steel body tint and the dashed body outline. */
-  isGhost?: boolean;
+  isUnidentified?: boolean;
   /** True while no wired block backs the calculated position — the train may
    *  physically be gone (design_new.md "Power", Presence unknown). Drives the
    *  question-mark badge at the head. */
@@ -86,7 +86,7 @@ export interface TrainSnap {
 export interface Train {
   id: string;
   num_cars?: number;
-  is_ghost?: boolean;
+  is_unidentified?: boolean;
 }
 
 interface TrainTrack {
@@ -206,7 +206,7 @@ export class RendererTrainHandler {
       controlMode: controller.control_mode ?? null,
       teardownPending: controller.route_teardown_pending === true,
       ebActive: controller.eb_active === true,
-      isGhost: train.is_ghost === true,
+      isUnidentified: train.is_unidentified === true,
       presenceUnknown: (controller as { presence_unknown?: unknown }).presence_unknown === true,
       span: {
         occupiedTiles: controller.span.occupied_tiles,
@@ -611,13 +611,13 @@ export class RendererTrainHandler {
 
     // Draw dark border then mode-tinted fill (white in ATO/auto, light yellow
     // while manually driven, light purple while the route is being torn down).
-    // A ghost train's outline is dashed and its fill steel: something is on the
-    // track that the app is only watching, not driving (design_new.md "Ghost
+    // An unidentified train's outline is dashed and its fill steel: something is on the
+    // track that the app is only watching, not driving (design_new.md "Unidentified train
     // trains", Shown as itself). The dash is the mark; the tint alone would read
     // as just another mode.
-    const ghostDash = trainSnap.isGhost ? [4 * s, 3 * s] : undefined;
-    drawBodySegments(p.ink, 5 * s, ghostDash);
-    drawBodySegments(trainBodyFill(trainSnap), 3 * s, ghostDash);
+    const unidentifiedDash = trainSnap.isUnidentified ? [4 * s, 3 * s] : undefined;
+    drawBodySegments(p.ink, 5 * s, unidentifiedDash);
+    drawBodySegments(trainBodyFill(trainSnap), 3 * s, unidentifiedDash);
 
     // === Draw end markers ===
     if (hasLeadingEnd) {

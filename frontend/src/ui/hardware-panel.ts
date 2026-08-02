@@ -8,6 +8,11 @@
  * (see hardware-binding.ts), so the config the panel writes carries only the
  * controller and the chip list and leaves the binding maps untouched.
  *
+ * The one binding that does live here is a track chip's output inhibit (/OE):
+ * it names a wire between two chips rather than a wire to a layout entity, so
+ * there is no per-entity editor it could belong to. It is written through the
+ * binding endpoint (saved on change) rather than the chip payload.
+ *
  * The flow, top to bottom:
  *   0. Wiring overview     — a collapsible diagram built from the configured
  *      chips (buildWiringDiagramSvg): one lane per chip showing its bus,
@@ -86,7 +91,13 @@ interface DevBindings {
 interface DevReadback {
   virtual_hardware_active?: boolean;
   develop_active?: boolean;
-  blocks?: Record<string, { occupancy_bit: boolean | null; current_ma: number | null; volts: number | null; occupied: boolean | null }>;
+  blocks?: Record<string, {
+    occupancy_bit: boolean | null;
+    /** The raw bit resolved through the chain's polarity — what the pipeline
+     *  reads. On an active-low chain it is the opposite of `occupancy_bit`. */
+    detector_present: boolean | null;
+    current_ma: number | null; volts: number | null; occupied: boolean | null;
+  }>;
   switches?: Record<string, any>;
   faults?: Record<string, boolean>;
 }
@@ -94,6 +105,9 @@ export interface DevRow {
   blockId: string;
   hasDigital: boolean;
   hasCurrent: boolean;
+  /** The digital detector's reading with the chain's polarity applied — what
+   *  "a train is on this block" means. Never the raw register bit. */
+  detectorPresent: boolean | null;
   occupancyBit: boolean | null;
   currentMa: number | null;
   volts: number | null;
@@ -162,6 +176,14 @@ let devPollTimer: any = null;
 // Layout coverage, refreshed with the config each time the modal opens.
 let coverage: Coverage | null = null;
 
+// The two maps the /OE row reads: the inhibit bindings it edits, and the switch
+// coil bindings whose bits it must not offer (a bit that is pulsed per throw
+// cannot also be held as an inhibit — the server refuses it either way, but the
+// row should not offer the mistake in the first place). Kept as the server
+// returned them, since only the /OE half is edited here.
+let oeBindings: Record<string, { chip_id: string; port: number }> = {};
+let switchBindings: Record<string, any> = {};
+
 // Commissioning — a held device for the live input view and the output sweep.
 // Only one activity runs at a time; it is stopped on modal close / refresh.
 let commissionActive = false;
@@ -193,6 +215,7 @@ export function devRows(bindings: DevBindings, readback: DevReadback | null): De
       blockId,
       hasDigital: blockId in digital,
       hasCurrent: blockId in current,
+      detectorPresent: rb.detector_present ?? null,
       occupancyBit: rb.occupancy_bit ?? null,
       currentMa: rb.current_ma ?? null,
       volts: rb.volts ?? null,
@@ -820,6 +843,8 @@ export async function refreshHardwarePanel(): Promise<void> {
   devReadback = null;
   coverage = null;
   devBindings = { block_occupancy: {}, block_occupancy_current: {} };
+  oeBindings = {};
+  switchBindings = {};
   try {
     const [cat, cfg, cov, env, ready] = await Promise.all([
       api.getHardwareCatalog(),
@@ -843,6 +868,8 @@ export async function refreshHardwarePanel(): Promise<void> {
       block_occupancy: raw.block_occupancy || {},
       block_occupancy_current: raw.block_occupancy_current || {},
     };
+    oeBindings = raw.output_enable || {};
+    switchBindings = raw.switch_output || {};
   } catch (e) {
     console.error('[App] Failed to load hardware setup:', e);
     showToast('Failed to load hardware setup.', 'error');
@@ -1002,14 +1029,18 @@ function devSectionHtml(): string {
       <p class="hw-dev-empty">No block has an occupancy detector or current-sense binding yet. Bind one in a block's editor to poke it here.</p>${rig}${faults}</section>`;
   }
   const rowHtml = rows.map((r) => {
+    // Labelled and toggled by the RESOLVED reading, not the raw register bit:
+    // an active-low chain reads 0 when a train is present, so a button keyed to
+    // the raw bit says "Clear" over an occupied block and puts a train on the
+    // ones that already have one.
     const occ = r.hasDigital
-      ? `<button type="button" class="btn hw-btn-sm ${r.occupancyBit ? 'btn-accent' : 'btn-secondary'}" data-hw="dev-occ" data-id="${esc(r.blockId)}">${r.occupancyBit ? 'Occupied' : 'Clear'}</button>`
+      ? `<button type="button" class="btn hw-btn-sm ${r.detectorPresent ? 'btn-accent' : 'btn-secondary'}" data-hw="dev-occ" data-id="${esc(r.blockId)}">${r.detectorPresent ? 'Occupied' : 'Clear'}</button>`
       : `<span class="hw-dev-na">—</span>`;
     const cur = r.hasCurrent
       ? `<span class="hw-dev-cur"><input type="number" class="setting-input-compact hw-dev-cur-in" data-hw="dev-current-in" data-id="${esc(r.blockId)}" value="${r.currentMa ?? 0}" step="1" /><span class="hw-dev-unit">mA</span>
           <button type="button" class="btn hw-btn-sm btn-secondary" data-hw="dev-current" data-id="${esc(r.blockId)}">Set</button></span>`
       : `<span class="hw-dev-na">—</span>`;
-    const bit = r.occupancyBit == null ? '—' : (r.occupancyBit ? '1' : '0');
+    const bit = r.detectorPresent == null ? '—' : (r.detectorPresent ? 'present' : 'clear');
     const ma = r.currentMa == null ? '—' : `${r.currentMa} mA`;
     const volts = r.volts == null ? '—' : `${r.volts} V`;
     const verdict = r.occupied == null ? '—' : (r.occupied ? 'occupied' : 'clear');
@@ -1017,7 +1048,7 @@ function devSectionHtml(): string {
       <span class="hw-dev-block">${esc(r.blockId)}</span>
       <span class="hw-dev-ctl">${occ}</span>
       <span class="hw-dev-ctl">${cur}</span>
-      <span class="hw-dev-read">bit ${bit} · ${ma} · ${volts} · <strong class="${r.occupied ? 'occ' : ''}">${verdict}</strong></span>
+      <span class="hw-dev-read">det ${bit} · ${ma} · ${volts} · <strong class="${r.occupied ? 'occ' : ''}">${verdict}</strong></span>
     </div>`;
   }).join('');
   return `<section class="hw-dev-section">${head}
@@ -1122,7 +1153,60 @@ function chipCardHtml(chip: ChipCfg): string {
     </div>
     ${chip.bus !== 'i2c' && ck?.cascadable ? portCountRowHtml(chip) : ''}
     ${ck?.port_kind === 'digital_in' ? polarityRowHtml(chip) : ''}
+    ${ck?.role === 'track_output' ? oeRowHtml(chip) : ''}
     ${portsHtml(chip)}
+  </div>`;
+}
+
+// The active-high inhibit gating this track chip's outputs: the shift-register
+// bit physically wired to its /OE pin. It is held high — outputs off — from
+// power-up through session build, and released low only once every PWM channel
+// reads zero; every safe-state path drives it high again before touching a
+// register. That hold is why the bit cannot be shared with a switch coil, which
+// is pulsed per throw.
+//
+// The wire is optional: it costs a spare switch-chip bit, and a rig may tie /OE
+// enabled instead. Unbound, safe state still zeroes every channel — the board
+// just turns off one channel at a time rather than in one write — so activation
+// reports it as a readiness note and runs anyway.
+function oeRowHtml(chip: ChipCfg): string {
+  const bound = oeBindings[chip.chip_id];
+  const switchChips = state.chips.filter((c) => catalogChip(c.kind)?.role === 'switch_output');
+
+  // Every bit already spoken for, and by what — a coil or standby bit of a
+  // switch, or another track chip's inhibit.
+  const taken = new Map<string, string>();
+  for (const [switchId, b] of Object.entries(switchBindings)) {
+    for (const p of [b?.port_main, b?.port_diverge, b?.port_standby]) {
+      if (p != null) taken.set(`${b.chip_id}:${p}`, `switch ${switchId}`);
+    }
+  }
+  for (const [trackId, b] of Object.entries(oeBindings)) {
+    if (trackId !== chip.chip_id && b) taken.set(`${b.chip_id}:${b.port}`, `${trackId} /OE`);
+  }
+
+  const opts = [`<option value=""${bound ? '' : ' selected'}>Not bound</option>`];
+  for (const sw of switchChips) {
+    for (let p = 0; p < chipLines(sw); p++) {
+      const key = `${sw.chip_id}:${p}`;
+      const sel = !!bound && bound.chip_id === sw.chip_id && bound.port === p;
+      const held = sel ? '' : taken.get(key) || '';
+      opts.push(`<option value="${esc(key)}"${sel ? ' selected' : ''}${held ? ' disabled' : ''}>`
+        + `${esc(sw.chip_id)} ${lineLabel(sw, p)}${held ? ` — ${esc(held)}` : ''}</option>`);
+    }
+  }
+
+  const hint = switchChips.length
+    ? (bound
+        ? 'held high to inhibit, released low at session build'
+        : 'optional — without it, safe state zeroes each channel instead')
+    : 'add a shift-register chip to wire one';
+  return `<div class="hw-polarity">
+    <span class="hw-lbl">Output inhibit</span>
+    <select class="hw-coord-select" data-hw="oe" data-id="${esc(chip.chip_id)}"
+      title="The '595 bit wired to this chip's /OE pin. High disables every output on the board; it is released only after each channel has been zeroed."
+      ${switchChips.length ? '' : 'disabled'}>${opts.join('')}</select>
+    <span class="hw-hint-inline">/OE · ${hint}</span>
   </div>`;
 }
 
@@ -1362,6 +1446,13 @@ function gateHtml(): string {
   const issues = (activationReadiness?.issues || []).map((issue: any) =>
     `<span class="hw-check warn"><i class="ti ti-alert-triangle" aria-hidden="true"></i> ${esc(issue.message || issue.code)}</span>`
   ).join('');
+  // Advisory readiness notes — setup the rig runs without, reported so the
+  // operator knows what they are giving up. Deliberately the neutral chip, not
+  // the amber one the blockers above use: these do not stop activation, and
+  // colouring them the same way would train the eye to ignore a real blocker.
+  const notes = (activationReadiness?.warnings || []).map((note: any) =>
+    `<span class="hw-check" title="This does not block activation."><i class="ti ti-info-circle" aria-hidden="true"></i> ${esc(note.message || note.code)}</span>`
+  ).join('');
   const deadband = `<label class="hw-deadband" title="A block commanded above this voltage is read by its current-sense channel; at or below it, by its '165 detector.">
       <span class="hw-deadband-text"><span class="hw-deadband-label">Idle threshold</span>
         <span class="hw-deadband-sub">below this, a block counts as parked</span></span>
@@ -1373,7 +1464,7 @@ function gateHtml(): string {
       </span>
     </label>`;
   return `<div class="hw-checklist"><strong>Run Environment</strong> ${choices}
-      <span class="hw-check ${selectedActive ? 'ok' : 'warn'}">${esc(status)}</span>${issues}</div>
+      <span class="hw-check ${selectedActive ? 'ok' : 'warn'}">${esc(status)}</span>${issues}${notes}</div>
     <div class="hw-gate-actions">
       ${deadband}
       <button type="button" class="btn btn-secondary" data-hw="save">Save Hardware Setup</button>
@@ -1423,6 +1514,29 @@ function onChange(e: Event): void {
   else if (t.dataset.hw === 'polarity') {
     setChip(id, (c) => { c.active_low = (t as HTMLInputElement).value === 'low'; });
   }
+  else if (t.dataset.hw === 'oe') { void setOutputEnable(id, (t as HTMLSelectElement).value); }
+}
+
+// Unlike the chip fields around it, this is a binding: it goes through the
+// binding endpoint and is validated and saved on change, not on "Save Hardware
+// Setup". Binding it can clear an activation blocker, so readiness is re-read
+// rather than left to the next time the modal opens.
+async function setOutputEnable(trackChipId: string, value: string): Promise<void> {
+  const [chipId, port] = value ? value.split(':') : ['', ''];
+  try {
+    const res = await api.updateHardwareBinding(
+      'output_enable', trackChipId, chipId || null, chipId ? Number(port) : null,
+    );
+    const cfg = res?.config || {};
+    oeBindings = cfg.output_enable || {};
+    switchBindings = cfg.switch_output || {};
+    activationReadiness = await api.getOperationReadiness().catch(() => activationReadiness);
+  } catch (e: any) {
+    // The server's message names the exact conflict (a coil bit, a wrong chip
+    // role, an out-of-range bit), which is more use than anything restated here.
+    showToast(e?.message || 'Could not set the output inhibit.', 'error');
+  }
+  render();
 }
 
 function onInput(e: Event): void {
@@ -1517,10 +1631,13 @@ async function activateEnvironment(): Promise<void> {
 }
 
 // --- develop-mode fake-input poking ----------------------------------------
+// Writes every source the block is bound to, not just the digital bit: which
+// source the runtime believes depends on how hard the block is being driven, so
+// a bit set on its own leaves a driven block still reading its current channel.
 async function toggleDevOccupancy(id: string): Promise<void> {
-  const cur = devReadback?.blocks?.[id]?.occupancy_bit ?? false;
+  const cur = devReadback?.blocks?.[id]?.detector_present ?? false;
   try {
-    await api.setHwDebugOccupancy(id, !cur);
+    await api.setHwDebugPresence(id, !cur);
     await pollDev();
   } catch (e: any) {
     showToast(e?.message || 'Failed to set occupancy.', 'error', 3000);

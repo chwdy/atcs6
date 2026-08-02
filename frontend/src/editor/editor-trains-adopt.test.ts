@@ -1,7 +1,7 @@
 /**
- * The ghost-adoption form (design_new.md "Ghost trains", Adoption).
+ * The unidentified-adoption form (design_new.md "Unidentified trains", Adoption).
  *
- * A ghost claims whole blocks because nobody knows where inside them it sits.
+ * An unidentified train claims whole blocks because nobody knows where inside them it sits.
  * The form's job is to not invent a position on top of that: it asks the
  * runtime to centre the consist unless the operator says otherwise, and it
  * offers only the facings the detected track can actually be left through.
@@ -10,20 +10,20 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { TrainEditorHandler } from './editor-trains';
 import { TRACK_EW } from '../lib/constants';
 
-/** A ghost standing on a straight west-to-east run of `length` tiles from x=3. */
+/** An unidentified train standing on a straight west-to-east run of `length` tiles from x=3. */
 function handlerOn(length: number): any {
   const tracks = [];
   for (let x = 0; x < 3 + length + 2; x++) tracks.push({ x, y: 0, track_bits: TRACK_EW });
   const handler: any = new TrainEditorHandler({ cachedNetwork: { tracks } } as any);
   const tiles: Array<[number, number]> = [];
   for (let i = 0; i < length; i++) tiles.push([3 + i, 0]);
-  handler.renderGhostTrainPanel('GHOST_1', {
+  handler.renderUnidentifiedTrainPanel('UNIDENT_1', {
     span: { occupied_blocks: ['BLK_1'], occupied_tiles: tiles },
   });
   return handler;
 }
 
-describe('ghost adoption form', () => {
+describe('unidentified train adoption form', () => {
   let handler: any;
 
   beforeEach(() => {
@@ -40,7 +40,7 @@ describe('ghost adoption form', () => {
   });
 
   it('offers the centred option first and every claimed tile after it', () => {
-    const html = handler.renderGhostTrainPanel('GHOST_1', {
+    const html = handler.renderUnidentifiedTrainPanel('UNIDENT_1', {
       span: { occupied_blocks: ['BLK_1'], occupied_tiles: [[3, 0], [4, 0], [5, 0]] },
     });
     expect(html).toContain('<option value="" selected>Centred in the blocks</option>');
@@ -60,9 +60,9 @@ describe('ghost adoption form', () => {
     expect(handler._adoptExits().sort()).toEqual(['E', 'W']);
   });
 
-  it('leaves nothing to face when the ghost is in the detector gap', () => {
+  it('leaves nothing to face when the unidentified train is in the detector gap', () => {
     const empty: any = new TrainEditorHandler({ cachedNetwork: { tracks: [] } } as any);
-    empty.renderGhostTrainPanel('GHOST_1', { span: { occupied_blocks: [], occupied_tiles: [] } });
+    empty.renderUnidentifiedTrainPanel('UNIDENT_1', { span: { occupied_blocks: [], occupied_tiles: [] } });
     expect(empty._adoptExits()).toEqual([]);
   });
 

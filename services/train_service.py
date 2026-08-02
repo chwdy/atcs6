@@ -53,20 +53,20 @@ def require_train(state: AppState, train_id: str) -> Train:
     return train
 
 
-def _ghost_refusal_message(train_id: str) -> str:
+def _unidentified_refusal_message(train_id: str) -> str:
     return (
-        f"Train {train_id} is a ghost train: the app cannot drive it. It has no "
+        f"Train {train_id} is an unidentified train: the app cannot drive it. It has no "
         f"cab, no route, and no operator controls."
     )
 
 
-def refuses_ghost_trains(refusal=None):
-    """Refuse every operator command aimed at a ghost train.
+def refuses_unidentified_trains(refusal=None):
+    """Refuse every operator command aimed at an unidentified train.
 
-    design_new.md "Ghost trains", Never driven: a ghost is never assigned a
+    design_new.md "Unidentified trains", Never driven: an unidentified train is never assigned a
     route, never given a `Path`, never given a cab, and never accepts an operator
     command — driving a train needs a cab, a speed profile and a route, and a
-    ghost was never set up with any of them. The decorated command returns its own
+    unidentified train was never set up with any of them. The decorated command returns its own
     failure shape, so the HTTP layer maps it to 400 like any other refused
     command; `refusal` builds that shape from the message (default: a failed
     `CommandResult`).
@@ -76,8 +76,8 @@ def refuses_ghost_trains(refusal=None):
     def decorate(func):
         @functools.wraps(func)
         def wrapper(state: AppState, train_id: str, *args, **kwargs):
-            if getattr(require_train(state, train_id), "is_ghost", False):
-                return build(_ghost_refusal_message(train_id))
+            if getattr(require_train(state, train_id), "is_unidentified", False):
+                return build(_unidentified_refusal_message(train_id))
             return func(state, train_id, *args, **kwargs)
 
         return wrapper
@@ -86,13 +86,13 @@ def refuses_ghost_trains(refusal=None):
 
 
 def require_drivable_train(state: AppState, train_id: str) -> Train:
-    """The train, rejecting a ghost train (design_new.md "Ghost trains").
+    """The train, rejecting an unidentified train (design_new.md "Unidentified trains").
 
     For the command paths that raise rather than return a failure shape.
     """
     train = require_train(state, train_id)
-    if getattr(train, "is_ghost", False):
-        raise ValidationError(_ghost_refusal_message(train_id))
+    if getattr(train, "is_unidentified", False):
+        raise ValidationError(_unidentified_refusal_message(train_id))
     return train
 
 
@@ -279,7 +279,7 @@ def update_train(
     return train
 
 
-def adopt_ghost_train(
+def adopt_unidentified_train(
     state: AppState,
     train_id: str,
     *,
@@ -296,16 +296,16 @@ def adopt_ghost_train(
     speed_profile_id: Optional[str] = None,
     roster_entry_id: Optional[str] = None,
 ) -> Train:
-    """Set a ghost train up as a real, driveable train.
+    """Set an unidentified train up as a real, driveable train.
 
     The operator tells the app what the detector found — which locomotive, how
     long, which way round — and from then on it is an ordinary train
-    (design_new.md "Ghost trains", Adoption). `SimulationController` owns the
+    (design_new.md "Unidentified trains", Adoption). `SimulationController` owns the
     conversion; this layer parses and validates the request shape.
 
     Raises:
         NotFoundError when no train has that id.
-        ValidationError when there is no runtime, the train is not a ghost, the
+        ValidationError when there is no runtime, the train is not an unidentified train, the
             session reads occupancy from the model, or any field is unusable.
     """
     with state.simulation_lock:
@@ -338,7 +338,7 @@ def adopt_ghost_train(
             raise ValidationError("max_speed_kmh must be greater than 0")
 
         try:
-            train = state.sim_controller.adopt_ghost_train(
+            train = state.sim_controller.adopt_unidentified_train(
                 train_id,
                 (new_train_id or train_id),
                 max_speed_kmh=max_speed_kmh,
@@ -412,11 +412,11 @@ def diagnose_stopped_train(state: AppState, train_id: str) -> dict:
          "the clock is paused" if not state.simulation_running else "clock is running",
          "Press Play.")
 
-    # 2. A ghost is not driveable, and an OFF train never plans a route:
+    # 2. An unidentified train is not driveable, and an OFF train never plans a route:
     #    `RouteExecutor.tick_train_phase1(...)` returns immediately for `OFF`.
-    gate("not_a_ghost", not getattr(train, "is_ghost", False),
-         "this is a ghost train — the app has never been told what it is"
-         if getattr(train, "is_ghost", False) else "a real train",
+    gate("not_unidentified", not getattr(train, "is_unidentified", False),
+         "this is an unidentified train — the app has never been told what it is"
+         if getattr(train, "is_unidentified", False) else "a real train",
          "Set it up as a real train from its panel.")
 
     powered = controller.ops.state is not TrainState.OFF
@@ -439,7 +439,7 @@ def diagnose_stopped_train(state: AppState, train_id: str) -> dict:
         gate("authority", False,
              f"route {route_id} is assigned but no path has been acquired",
              "Usually the track ahead is not free — check for an occupied or "
-             "reserved block on the way, including a ghost train.")
+             "reserved block on the way, including an unidentified train.")
     else:
         gate("authority", False, "no route assigned and no path",
              "Assign a route, or create a path to a destination.")
@@ -537,10 +537,10 @@ def reposition_train(
         train = state.network.trains.get(train_id)
         if not train:
             raise NotFoundError(f"Train '{train_id}' not found")
-        if getattr(train, "is_ghost", False):
-            # A ghost's position comes from detection only; the operator cannot
-            # place it (design_new.md "Ghost trains").
-            raise ValidationError(_ghost_refusal_message(train_id))
+        if getattr(train, "is_unidentified", False):
+            # An unidentified train's position comes from detection only; the operator cannot
+            # place it (design_new.md "Unidentified trains").
+            raise ValidationError(_unidentified_refusal_message(train_id))
 
         if not isinstance(position, dict):
             raise ValidationError("position is required")
@@ -624,8 +624,8 @@ def assign_route(
             invalid.
         ConflictError when the train is already on a route and ``force`` is
             False.
-        ValidationError when the train is a ghost: a ghost is never assigned a
-            route (design_new.md "Ghost trains").
+        ValidationError when the train is an unidentified train: an unidentified train is never assigned a
+            route (design_new.md "Unidentified trains").
     """
     train = require_drivable_train(state, train_id)
 
@@ -736,19 +736,19 @@ def assign_route(
 # tuple) unchanged. The caller maps a non-success result to HTTP 400.
 
 
-@refuses_ghost_trains()
+@refuses_unidentified_trains()
 def power_on(state: AppState, train_id: str) -> CommandResult:
     """Power on a train (OFF -> READY)."""
     return _controller(state, require_train(state, train_id)).commands.power_on_cmd()
 
 
-@refuses_ghost_trains()
+@refuses_unidentified_trains()
 def power_off(state: AppState, train_id: str) -> CommandResult:
     """Power off a train (any state -> OFF; must be stopped)."""
     return _controller(state, require_train(state, train_id)).commands.power_off_cmd()
 
 
-@refuses_ghost_trains()
+@refuses_unidentified_trains()
 def set_cab(state: AppState, train_id: str, *, cab: Any) -> CommandResult:
     """Set the active cab ('A', 'B', or off/None).
 
@@ -763,7 +763,7 @@ def set_cab(state: AppState, train_id: str, *, cab: Any) -> CommandResult:
     return _controller(state, require_train(state, train_id)).commands.set_cab(cab)
 
 
-@refuses_ghost_trains(lambda message: (False, message))
+@refuses_unidentified_trains(lambda message: (False, message))
 def depart(state: AppState, train_id: str) -> Tuple[bool, Optional[str]]:
     """Depart-acceptance (READY -> RUNNING_MOVING).
 
@@ -774,19 +774,19 @@ def depart(state: AppState, train_id: str) -> Tuple[bool, Optional[str]]:
     return _controller(state, require_train(state, train_id)).depart()
 
 
-@refuses_ghost_trains()
+@refuses_unidentified_trains()
 def ato_go(state: AppState, train_id: str) -> CommandResult:
     """Start ATO movement toward the destination."""
     return _controller(state, require_train(state, train_id)).ato.go()
 
 
-@refuses_ghost_trains()
+@refuses_unidentified_trains()
 def ato_stop(state: AppState, train_id: str) -> CommandResult:
     """Service stop via ATO (used by both /stop and /ato-stop)."""
     return _controller(state, require_train(state, train_id)).ato.stop()
 
 
-@refuses_ghost_trains()
+@refuses_unidentified_trains()
 def set_handle(state: AppState, train_id: str, *, position: Any) -> CommandResult:
     """Set the throttle/brake handle position.
 
@@ -805,7 +805,7 @@ def set_handle(state: AppState, train_id: str, *, position: Any) -> CommandResul
     )
 
 
-@refuses_ghost_trains()
+@refuses_unidentified_trains()
 def release_emergency(state: AppState, train_id: str) -> CommandResult:
     """Release the emergency brake via the canonical ``eb.release()`` command.
 
@@ -817,7 +817,7 @@ def release_emergency(state: AppState, train_id: str) -> CommandResult:
     return _controller(state, require_train(state, train_id)).eb.release()
 
 
-@refuses_ghost_trains()
+@refuses_unidentified_trains()
 def set_mode(state: AppState, train_id: str, *, mode: Any) -> CommandResult:
     """Set the control mode ('ato' or 'manual')."""
     if mode not in ("ato", "manual"):
@@ -825,7 +825,7 @@ def set_mode(state: AppState, train_id: str, *, mode: Any) -> CommandResult:
     return _controller(state, require_train(state, train_id)).commands.set_mode(mode)
 
 
-@refuses_ghost_trains()
+@refuses_unidentified_trains()
 def set_manual_mode_type(
     state: AppState, train_id: str, *, mode_type: Any
 ) -> CommandResult:
@@ -840,7 +840,7 @@ def set_manual_mode_type(
     ).commands.set_manual_mode_type(mode_type)
 
 
-@refuses_ghost_trains()
+@refuses_unidentified_trains()
 def set_manual_power_percent(
     state: AppState, train_id: str, *, percent: Any
 ) -> CommandResult:
@@ -854,9 +854,9 @@ def _calibration_profile(state: AppState, train_id: str):
     """Resolve (train, profile) for a calibration command, enforcing the gates.
 
     Gate (design_new.md "Speed calibration"): a train following an ATO route is
-    a controlled pass and must not be hijacked for calibration. A ghost train is
+    a controlled pass and must not be hijacked for calibration. An unidentified train is
     rejected outright — calibration drives the train, which the app cannot do
-    for a ghost (design_new.md "Ghost trains").
+    for an unidentified train (design_new.md "Unidentified trains").
     """
     train = require_drivable_train(state, train_id)
     sim = getattr(state, "sim_controller", None)

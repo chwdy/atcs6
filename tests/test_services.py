@@ -346,9 +346,9 @@ class TestSwitchService:
 
 class TestTrainService:
     def test_require_train_raises_not_found(self, state):
-        assert train_service.get_train(state, "GHOST") is None
+        assert train_service.get_train(state, "UNIDENTIFIED") is None
         with pytest.raises(NotFoundError):
-            train_service.require_train(state, "GHOST")
+            train_service.require_train(state, "UNIDENTIFIED")
 
     def test_create_train_editor_path(self, state):
         """No-position create builds + registers a train, no Flask required."""
@@ -376,7 +376,7 @@ class TestTrainService:
 
     def test_update_train_unknown_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
-            train_service.update_train(state, "GHOST", max_speed=10.0)
+            train_service.update_train(state, "UNIDENTIFIED", max_speed=10.0)
 
     def test_delete_train(self, state_with_train):
         assert train_service.delete_train(state_with_train, "TRAIN_A") is True
@@ -384,7 +384,7 @@ class TestTrainService:
 
     def test_delete_unknown_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
-            train_service.delete_train(state, "GHOST")
+            train_service.delete_train(state, "UNIDENTIFIED")
 
     def test_assign_speed_profile_missing_id_raises_validation(self, state_with_train):
         with pytest.raises(ValidationError):
@@ -409,11 +409,11 @@ class TestTrainService:
 
     def test_assign_route_unknown_train_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
-            train_service.assign_route(state, "GHOST", route_id=None)
+            train_service.assign_route(state, "UNIDENTIFIED", route_id=None)
 
     def test_assign_route_unknown_route_raises_not_found(self, state_with_train):
         with pytest.raises(NotFoundError):
-            train_service.assign_route(state_with_train, "TRAIN_A", route_id="GHOST")
+            train_service.assign_route(state_with_train, "TRAIN_A", route_id="UNIDENTIFIED")
 
     def test_assign_route_empty_route_raises_validation(self, state_with_train):
         train_route_service.create_route(
@@ -474,9 +474,9 @@ class TestBlockService:
     """Grouping + config surface. Geometry lives on segments (see below)."""
 
     def test_require_block_raises_not_found(self, state):
-        assert block_service.get_block(state, "GHOST") is None
+        assert block_service.get_block(state, "UNIDENTIFIED") is None
         with pytest.raises(NotFoundError):
-            block_service.require_block(state, "GHOST")
+            block_service.require_block(state, "UNIDENTIFIED")
 
     def test_create_block_groups_segments(self, state):
         _straight_ew(state, range(4))
@@ -506,7 +506,7 @@ class TestBlockService:
     def test_create_block_unknown_segment_raises(self, state):
         with pytest.raises(ValidationError):
             block_service.create_block(
-                state, block_id="BLK_U2", segment_ids=["GHOST"]
+                state, block_id="BLK_U2", segment_ids=["UNIDENTIFIED"]
             )
 
     def test_update_block_name(self, state):
@@ -516,7 +516,7 @@ class TestBlockService:
 
     def test_update_block_unknown_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
-            block_service.update_block(state, "GHOST", data={"name": "x"})
+            block_service.update_block(state, "UNIDENTIFIED", data={"name": "x"})
 
     def test_update_block_state_field_raises_gone(self, state):
         """The removed direct `state` mutation surfaces as GoneError (410)."""
@@ -583,7 +583,7 @@ class TestBlockService:
 
     def test_delete_block_unknown_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
-            block_service.delete_block(state, "GHOST")
+            block_service.delete_block(state, "UNIDENTIFIED")
 
     def test_add_and_remove_member_segment(self, state):
         _straight_ew(state, range(4))
@@ -602,7 +602,7 @@ class TestBlockService:
         _straight_ew(state, [0, 1])
         state.network.create_segment_with_tracks("SEG_A", [(0, 0), (1, 0)])
         with pytest.raises(NotFoundError):
-            block_service.add_segment_to_block(state, "GHOST", "SEG_A")
+            block_service.add_segment_to_block(state, "UNIDENTIFIED", "SEG_A")
 
 
 # ------------------------------------------------------- segment_service ----
@@ -635,7 +635,7 @@ class TestSegmentService:
 
     def test_update_segment_unknown_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
-            segment_service.update_segment(state, "GHOST", data={"length_cm": 1.0})
+            segment_service.update_segment(state, "UNIDENTIFIED", data={"length_cm": 1.0})
 
     def test_delete_segment_cascades_to_owning_platform(self, state):
         # A station/platform owning exactly one block: deleting the block's only
@@ -687,21 +687,21 @@ class TestSegmentService:
 
     def test_delete_segment_unknown_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
-            segment_service.delete_segment(state, "GHOST")
+            segment_service.delete_segment(state, "UNIDENTIFIED")
 
     def test_add_tracks_unknown_segment_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
-            segment_service.add_tracks_to_segment(state, "GHOST", positions=[[0, 0]])
+            segment_service.add_tracks_to_segment(state, "UNIDENTIFIED", positions=[[0, 0]])
 
     def test_remove_tracks_unknown_segment_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
             segment_service.remove_tracks_from_segment(
-                state, "GHOST", positions=[[0, 0]]
+                state, "UNIDENTIFIED", positions=[[0, 0]]
             )
 
     def test_can_extend_unknown_segment_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
-            segment_service.can_extend_segment(state, "GHOST", x=0, y=0)
+            segment_service.can_extend_segment(state, "UNIDENTIFIED", x=0, y=0)
 
 
 # --------------------------------------------------------- track_service ----
@@ -808,9 +808,9 @@ class TestTrackService:
 
 class TestPlatformService:
     def test_get_and_require_platform(self, state):
-        assert platform_service.get_platform(state, "GHOST") is None
+        assert platform_service.get_platform(state, "UNIDENTIFIED") is None
         with pytest.raises(NotFoundError):
-            platform_service.require_platform(state, "GHOST")
+            platform_service.require_platform(state, "UNIDENTIFIED")
 
     def test_create_platform(self, state):
         state.network.add_track(Tile(x=0, y=0, track_bits=2))
@@ -831,7 +831,7 @@ class TestPlatformService:
 
     def test_update_unknown_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
-            platform_service.update_platform(state, "GHOST", data={"name": "x"})
+            platform_service.update_platform(state, "UNIDENTIFIED", data={"name": "x"})
 
     def test_update_bad_platform_side_raises_validation_error(self, state):
         # Regression: an invalid platform_side must surface as ValidationError
@@ -852,7 +852,7 @@ class TestPlatformService:
 
     def test_delete_unknown_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
-            platform_service.delete_platform(state, "GHOST")
+            platform_service.delete_platform(state, "UNIDENTIFIED")
 
     def test_validate_placement(self, state):
         assert platform_service.validate_placement(state, 9, 9)["can_place"] is False
@@ -861,27 +861,27 @@ class TestPlatformService:
 
     def test_can_extend_unknown_platform_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
-            platform_service.can_extend(state, "GHOST", x=0, y=0)
+            platform_service.can_extend(state, "UNIDENTIFIED", x=0, y=0)
 
     def test_assign_tile_unknown_platform_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
-            platform_service.assign_tile(state, "GHOST", x=0, y=0, block_id="BLK")
+            platform_service.assign_tile(state, "UNIDENTIFIED", x=0, y=0, block_id="BLK")
 
     def test_assign_tile_unknown_block_raises_not_found(self, state):
         state.network.add_track(Tile(x=0, y=0, track_bits=2))
         platform_service.create_platform(state, x=0, y=0, platform_id="PLT_A")
         with pytest.raises(NotFoundError):
             platform_service.assign_tile(
-                state, "PLT_A", x=0, y=0, block_id="GHOST_BLK"
+                state, "PLT_A", x=0, y=0, block_id="UNIDENT_BLK"
             )
 
     def test_unassign_tile_unknown_platform_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
-            platform_service.unassign_tile(state, "GHOST", x=0, y=0)
+            platform_service.unassign_tile(state, "UNIDENTIFIED", x=0, y=0)
 
     def test_remove_tile_unknown_platform_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
-            platform_service.remove_tile(state, "GHOST", x=0, y=0)
+            platform_service.remove_tile(state, "UNIDENTIFIED", x=0, y=0)
 
 
 class TestRouteServiceLeadingDwell:

@@ -1,11 +1,11 @@
-"""HAL safe-state (M1) + ghost-train attribution (M2).
+"""HAL safe-state (M1) + unidentified-train attribution (M2).
 
 design_new.md "Power":
 - enter_safe_state() (2235): the runtime drives every block track voltage to 0
   and de-energizes every switch motor when it stops driving outputs (simulation
   stop or process shutdown).
-- Attribution + Ghost trains: a confirmed block entry that matches no existing
-  train belongs to a ghost train — a `Train` the Step-0 preamble creates, with
+- Attribution + Unidentified trains: a confirmed block entry that matches no existing
+  train belongs to an unidentified train — a `Train` the Step-0 preamble creates, with
   its own `train_id` and its own `TrainController` — so its entries and vacates
   commit through the ordinary per-train chain instead of a side channel into
   `Block.occupied_by`.
@@ -61,7 +61,7 @@ def test_simulation_controller_enter_safe_state_drives_all_outputs_safe():
     assert sim.switch_output_interface.get_last_throw("S1") is None
 
 
-# ------------------------------------------------------------- M2 ghost trains
+# ------------------------------------------------------------- M2 unidentified trains
 
 def _detector():
     network = RailwayNetwork()
@@ -78,22 +78,22 @@ def _detector():
 def test_unattributable_entry_is_unmatched_without_writing_block_state():
     network, detector = _detector()
     block = network.blocks["BLK_X"]
-    # No reserving train, no covering span -> the entry belongs to a ghost.
+    # No reserving train, no covering span -> the entry belongs to an unidentified train.
     # `attribute()` is pure: it reports the block as unmatched and writes
-    # nothing, leaving creation to GhostTrainTracker.
+    # nothing, leaving creation to UnidentifiedTrainTracker.
     entered_by_train, _, unmatched = detector.attribute({"BLK_X"}, set())
     assert entered_by_train == {}
     assert unmatched == {"BLK_X"}
     assert block.occupied_by is None
 
 
-def test_ghost_vacate_attributes_to_the_ghost_without_writing_block_state():
+def test_unidentified_train_vacate_attributes_to_the_unidentified_train_without_writing_block_state():
     network, detector = _detector()
     block = network.blocks["BLK_X"]
-    block.occupied_by = "GHOST_1"
+    block.occupied_by = "UNIDENT_1"
     _, vacated_by_train, unmatched = detector.attribute(set(), {"BLK_X"})
-    # A ghost is an ordinary train to attribution: its vacate resolves through
+    # An unidentified train is an ordinary train to attribution: its vacate resolves through
     # `Block.occupied_by` like any other train's.
-    assert vacated_by_train == {"GHOST_1": {"BLK_X"}}
+    assert vacated_by_train == {"UNIDENT_1": {"BLK_X"}}
     assert unmatched == set()
-    assert block.occupied_by == "GHOST_1"
+    assert block.occupied_by == "UNIDENT_1"

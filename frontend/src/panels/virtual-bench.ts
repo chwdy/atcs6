@@ -1,0 +1,1001 @@
+/**
+ * VirtualBench — the workbench for the Virtual Hardware environment.
+ *
+ * Virtual Hardware runs the real chip drivers, bindings, HAL, and occupancy
+ * pipeline against an in-memory device, so everything the app does to the rig
+ * and everything the rig tells the app is observable and controllable. This
+ * panel is both halves of that, one row per block:
+ *
+ *   OUTPUT  — what the app is driving onto the rails right now, read back off
+ *             the fake PWM chip rather than from the model, so a block the model
+ *             thinks is energized and a board that never got the write read
+ *             differently. Plus the sweep test, to drive a block deliberately.
+ *   INPUT   — what you are telling the app its detectors see. "Train here"
+ *             writes every source the block is bound to at once (see
+ *             `set_block_presence`), because which one the runtime believes
+ *             depends on how hard the block is being driven; the raw bit / mA
+ *             controls are behind the Raw toggle for deliberately making the two
+ *             disagree.
+ *   VERDICT — what the occupancy pipeline concluded from that input. This is the
+ *             column that answers "did the app react", and it is deliberately
+ *             the last one: input on the left, the app's answer on the right.
+ *
+ * Why a floating window and not a section in the Hardware Setup modal (where an
+ * earlier version of these controls lives): the point of poking a sensor is
+ * watching the layout react to it, and a modal covers the layout.
+ *
+ * Distinct from the Raw Occupancy monitor, which is read-only, environment-
+ * agnostic, and about how a reading was reached (raw vs confirmed, debounce,
+ * which source answered). This one is Virtual-Hardware-only and is the write
+ * side: it exists to cause readings, not to explain them.
+ *
+ * Window chrome (drag, resize, z-order, persistence) is owned by FloatingWindow
+ * (lib/window-manager.ts); this file builds and updates only its own content.
+ */
+
+import { api } from '../lib/api';
+import { showToast } from '../lib/toast';
+import { FloatingWindow, windowManager, type WindowGeometry } from '../lib/window-manager';
+import {
+    browserWindowPersistenceEnv,
+    loadWindowState,
+    saveWindowState,
+    ensureRegistered,
+} from '../lib/window-persistence';
+
+// ---------------------------------------------------------------------------
+// Snapshot shapes returned by GET /api/virtual-hardware. Read defensively: the
+// endpoint answers 409 outside Virtual Hardware, and a block carries null for
+// every reading it has no binding for.
+
+export interface BenchBlock {
+    has_digital?: boolean;
+    has_current?: boolean;
+    has_track?: boolean;
+    /** The raw '165 register bit. On an active-low chain this is the OPPOSITE
+     *  of "a train is here" — use `detector_present` for that. */
+    occupancy_bit?: boolean | null;
+    /** The raw bit resolved through the chain's polarity: what the occupancy
+     *  pipeline reads. */
+    detector_present?: boolean | null;
+    active_low?: boolean | null;
+    current_ma?: number | null;
+    volts?: number | null;
+    duty_forward?: number | null;
+    duty_reverse?: number | null;
+    track_reversed?: boolean | null;
+    threshold_ma?: number | null;
+    baseline_ma?: number | null;
+    /** The occupancy pipeline's verdict — what the app acts on. */
+    occupied?: boolean | null;
+}
+
+export interface BenchSwitch {
+    main?: boolean;
+    diverge?: boolean;
+    standby?: boolean | null;
+}
+
+export interface BenchSnapshot {
+    virtual_hardware_active?: boolean;
+    blocks?: Record<string, BenchBlock>;
+    switches?: Record<string, BenchSwitch>;
+    faults?: Record<string, boolean>;
+}
+
+export interface BenchRigStatus {
+    active?: boolean;
+    blocks?: string[];
+    index?: number | null;
+    block_id?: string | null;
+    stalled?: boolean;
+}
+
+export type BenchFilter = 'all' | 'active' | 'occupied';
+
+// ---------------------------------------------------------------------------
+// Row derivation (pure; unit-tested).
+
+export interface BenchRow {
+    blockId: string;
+    hasTrack: boolean;
+    hasDigital: boolean;
+    hasCurrent: boolean;
+    /** Signed rail voltage, polarity flag already applied. Null = no track binding. */
+    volts: number | null;
+    dutyForward: number | null;
+    dutyReverse: number | null;
+    trackReversed: boolean;
+    /** The raw register bit, for the Raw controls. Not "a train is here". */
+    occupancyBit: boolean | null;
+    /** The digital detector's reading with the chain's polarity applied. */
+    detectorPresent: boolean | null;
+    activeLow: boolean;
+    currentMa: number | null;
+    thresholdMa: number | null;
+    baselineMa: number | null;
+    occupied: boolean | null;
+    /** Any detector reads present — what the "Place" toggle reflects. */
+    present: boolean;
+    /** The rails are being driven hard enough to matter (either polarity). */
+    driven: boolean;
+}
+
+/** Below this the rails count as idle for the panel's arrow glyph. Cosmetic
+ *  only — the runtime's own idle deadband is configured in Hardware Setup and
+ *  is what actually decides which detector answers. */
+const IDLE_VOLTS = 0.05;
+
+export function benchRows(snapshot: BenchSnapshot | null, filter: BenchFilter = 'all'): BenchRow[] {
+    const blocks = snapshot?.blocks || {};
+    const rows: BenchRow[] = Object.keys(blocks).sort().map((blockId) => {
+        const b = blocks[blockId] || {};
+        const volts = typeof b.volts === 'number' ? b.volts : null;
+        // "Present" is what the detectors are being told, not the verdict: the
+        // current channel counts as present only above its own threshold, since
+        // a baseline reading is what an empty block looks like.
+        const currentPresent =
+            typeof b.current_ma === 'number' && typeof b.threshold_ma === 'number'
+                ? b.current_ma > (b.baseline_ma ?? 0) + b.threshold_ma
+                : false;
+        return {
+            blockId,
+            hasTrack: !!b.has_track,
+            hasDigital: !!b.has_digital,
+            hasCurrent: !!b.has_current,
+            volts,
+            dutyForward: typeof b.duty_forward === 'number' ? b.duty_forward : null,
+            dutyReverse: typeof b.duty_reverse === 'number' ? b.duty_reverse : null,
+            trackReversed: !!b.track_reversed,
+            occupancyBit: b.occupancy_bit ?? null,
+            detectorPresent: b.detector_present ?? null,
+            activeLow: !!b.active_low,
+            currentMa: typeof b.current_ma === 'number' ? b.current_ma : null,
+            thresholdMa: typeof b.threshold_ma === 'number' ? b.threshold_ma : null,
+            baselineMa: typeof b.baseline_ma === 'number' ? b.baseline_ma : null,
+            occupied: b.occupied ?? null,
+            // The RESOLVED reading, never the raw bit: on an active-low chain
+            // the raw bit is the opposite of presence, so a toggle keyed to it
+            // offers "Place" on the blocks that already have something on them.
+            present: !!b.detector_present || currentPresent,
+            driven: volts !== null && Math.abs(volts) > IDLE_VOLTS,
+        };
+    });
+    if (filter === 'occupied') return rows.filter((r) => r.occupied || r.present);
+    if (filter === 'active') return rows.filter((r) => r.driven || r.occupied || r.present);
+    return rows;
+}
+
+/** The output cell's text: a direction glyph and the signed voltage. Split out
+ *  because "which way is this block being driven" is the question the panel
+ *  gets opened for, and it is one derivation, not three sprinkled through the
+ *  markup. */
+export function describeDrive(row: BenchRow): { glyph: string; text: string; tone: 'idle' | 'fwd' | 'rev' } {
+    if (!row.hasTrack || row.volts === null) return { glyph: '', text: '—', tone: 'idle' };
+    if (!row.driven) return { glyph: '·', text: '0.0 V', tone: 'idle' };
+    const forward = row.volts > 0;
+    return {
+        glyph: forward ? '▶' : '◀',
+        text: `${row.volts > 0 ? '+' : ''}${row.volts.toFixed(1)} V`,
+        tone: forward ? 'fwd' : 'rev',
+    };
+}
+
+// ---------------------------------------------------------------------------
+
+const WINDOW_ID = 'virtual-bench';
+const DEFAULT_WIDTH = 660;
+// Tall enough that the virtual-train and fault strips under the block table are
+// on screen when the panel first opens — they are the two controls a user comes
+// here for and would not know to scroll to.
+const DEFAULT_HEIGHT = 620;
+const MIN_WIDTH = 460;
+const MAX_WIDTH = 1100;
+
+const REFRESH_OPTIONS = [
+    { label: '10 Hz', hz: 10 },
+    { label: '4 Hz', hz: 4 },
+    { label: '1 Hz', hz: 1 },
+    { label: 'On-demand', hz: 0 },
+];
+
+const FILTER_OPTIONS: Array<{ label: string; value: BenchFilter }> = [
+    { label: 'All blocks', value: 'all' },
+    { label: 'Driven or occupied', value: 'active' },
+    { label: 'Occupied only', value: 'occupied' },
+];
+
+/** The device faults the fake accepts, in the order they are worth reaching for:
+ *  losing the bridge, then a failing transaction, then an output that reports
+ *  success and does nothing. Mirrors FakeCh347Device.ALLOWED_FAULTS minus
+ *  `open_error`, which only bites at session build and cannot be exercised from
+ *  a panel that needs the session already up. */
+const FAULT_KINDS: Array<{ kind: string; label: string; title: string }> = [
+    { kind: 'disconnect', label: 'Disconnect', title: 'The controller drops off the bus — every transaction raises.' },
+    { kind: 'i2c_read_error', label: 'I²C read', title: 'Detector current reads fail (INA channels).' },
+    { kind: 'i2c_write_error', label: 'I²C write', title: 'Track PWM writes fail (PCA9685 channels).' },
+    { kind: 'shift_read_error', label: 'Shift read', title: "Detector bit reads fail ('165 chains)." },
+    { kind: 'shift_write_error', label: 'Shift write', title: "Switch coil writes fail ('595 chains)." },
+    { kind: 'stuck_i2c_output', label: 'Stuck PWM', title: 'PWM writes report success and change nothing — the silent failure.' },
+    { kind: 'stuck_shift_output', label: 'Stuck coil', title: 'Coil writes report success and change nothing — the silent failure.' },
+];
+
+function escapeHtml(value: unknown): string {
+    if (value === null || value === undefined) return '';
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+class VirtualBench {
+    // Assigned by _buildContentDom, which FloatingWindow calls synchronously from
+    // _buildFloatingWindow during init() — declared definite per the house idiom.
+    private _window!: FloatingWindow;
+    private _bodyEl!: HTMLElement;
+    private _bannerEl!: HTMLElement;
+    private _footerEl!: HTMLElement;
+    private _rateSelectEl!: HTMLSelectElement;
+    private _filterSelectEl!: HTMLSelectElement;
+    private _rawToggleEl!: HTMLInputElement;
+    private _placeBtnEl!: HTMLButtonElement;
+    private _refreshBtnEl!: HTMLElement;
+
+    private _persistenceEnv = browserWindowPersistenceEnv();
+    private _pollHandle: ReturnType<typeof setInterval> | null = null;
+    private _inflight = false;
+
+    private _snapshot: BenchSnapshot | null = null;
+    private _rig: BenchRigStatus | null = null;
+    private _rigDraft = '';
+    /** The saved Hardware Setup, needed as the payload for the test endpoints.
+     *  Fetched on open rather than polled — it changes only in the setup modal. */
+    private _config: any = null;
+    private _visible = false;
+    private _refreshHz = 4;
+    private _filter: BenchFilter = 'all';
+    private _showRaw = false;
+    private _placing = false;
+    /** Blocks with a test or a placement in flight, so their buttons can show it
+     *  and a double-click cannot start a second sweep on the same block. */
+    private _busy = new Set<string>();
+    /** Set when the endpoint answers 409 — the session is not Virtual Hardware. */
+    private _inactive = false;
+    private _error: string | null = null;
+
+    init(): void {
+        const saved = loadWindowState(this._persistenceEnv, WINDOW_ID);
+        this._visible = saved ? !saved.hidden : false;
+        const settings = saved?.virtualBench;
+        if (settings) {
+            if (Number.isFinite(Number(settings.refreshHz))) {
+                this._refreshHz = Number(settings.refreshHz);
+            }
+            if (FILTER_OPTIONS.some((o) => o.value === settings.filter)) {
+                this._filter = settings.filter as BenchFilter;
+            }
+            this._showRaw = !!settings.showRaw;
+        }
+
+        this._buildFloatingWindow(saved?.geometry);
+        ensureRegistered(this._persistenceEnv, WINDOW_ID, 'virtual-bench');
+        this._wireToggleButton();
+        this._wireControls();
+
+        this._rateSelectEl.value = String(this._refreshHz);
+        this._filterSelectEl.value = this._filter;
+        this._rawToggleEl.checked = this._showRaw;
+        this._render();
+        if (this._visible) {
+            void this._loadConfig();
+            this._pollOnce();
+            this._startPolling();
+        }
+    }
+
+    // ----- window chrome ---------------------------------------------------
+
+    private _buildFloatingWindow(saved?: WindowGeometry): void {
+        const geometry: Partial<WindowGeometry> = {};
+        if (saved && typeof saved.left === 'number' && typeof saved.top === 'number') {
+            geometry.left = saved.left;
+            geometry.top = saved.top;
+        } else {
+            geometry.left = Math.max(20, window.innerWidth - DEFAULT_WIDTH - 20);
+            geometry.top = 150;
+        }
+        geometry.width = saved?.width && saved.width > 0 ? saved.width : DEFAULT_WIDTH;
+        geometry.height = saved?.height && saved.height > 0 ? saved.height : DEFAULT_HEIGHT;
+
+        this._window = new FloatingWindow({
+            id: WINDOW_ID,
+            kind: 'virtual-bench',
+            manager: windowManager,
+            title: 'Virtual Bench',
+            minW: MIN_WIDTH,
+            maxW: MAX_WIDTH,
+            initialGeometry: geometry,
+            initialHidden: !this._visible,
+            content: { mount: (el) => this._buildContentDom(el) },
+            // A singleton toggled from the toolbar, so its × hides rather than
+            // destroys — the same contract as diagnostics and the occupancy monitor.
+            onCloseRequested: () => this.hide(),
+            onGeometryChange: () => this._persist(),
+        });
+    }
+
+    private _buildContentDom(contentEl: HTMLElement): void {
+        contentEl.innerHTML = `
+            <div class="vb-toolbar">
+                <label class="vb-field">
+                    Refresh
+                    <select data-role="rate"></select>
+                </label>
+                <label class="vb-field">
+                    Show
+                    <select data-role="filter"></select>
+                </label>
+                <label class="vb-check" title="Set the '165 bit and the current channel separately, to make the two detectors disagree on purpose.">
+                    <input type="checkbox" data-role="raw" /> Raw
+                </label>
+                <button class="vb-place-btn" type="button" data-role="place"
+                    title="Click a block on the layout to put a virtual train on its detectors, or lift one off.">
+                    <i class="ti ti-hand-finger" aria-hidden="true"></i> Place on canvas
+                </button>
+                <button class="vb-icon-btn" type="button" data-role="refresh" title="Read now">↻</button>
+            </div>
+            <div class="vb-banner" data-role="banner" hidden></div>
+            <div class="vb-body" data-role="body"></div>
+            <div class="vb-footer" data-role="footer"></div>
+        `;
+        this._bodyEl = contentEl.querySelector('[data-role="body"]') as HTMLElement;
+        this._bannerEl = contentEl.querySelector('[data-role="banner"]') as HTMLElement;
+        this._footerEl = contentEl.querySelector('[data-role="footer"]') as HTMLElement;
+        this._rateSelectEl = contentEl.querySelector('[data-role="rate"]') as HTMLSelectElement;
+        this._filterSelectEl = contentEl.querySelector('[data-role="filter"]') as HTMLSelectElement;
+        this._rawToggleEl = contentEl.querySelector('[data-role="raw"]') as HTMLInputElement;
+        this._placeBtnEl = contentEl.querySelector('[data-role="place"]') as HTMLButtonElement;
+        this._refreshBtnEl = contentEl.querySelector('[data-role="refresh"]') as HTMLElement;
+
+        this._rateSelectEl.innerHTML = REFRESH_OPTIONS.map(
+            (o) => `<option value="${o.hz}">${escapeHtml(o.label)}</option>`
+        ).join('');
+        this._filterSelectEl.innerHTML = FILTER_OPTIONS.map(
+            (o) => `<option value="${o.value}">${escapeHtml(o.label)}</option>`
+        ).join('');
+    }
+
+    private _wireToggleButton(): void {
+        const btn = document.getElementById('btn-virtual-bench-toggle');
+        if (btn) btn.addEventListener('click', () => this.toggle());
+    }
+
+    private _wireControls(): void {
+        this._rateSelectEl.addEventListener('change', () => {
+            const hz = Number(this._rateSelectEl.value);
+            this._refreshHz = Number.isFinite(hz) ? hz : 4;
+            this._persist();
+            this._stopPolling();
+            if (this._visible) {
+                this._pollOnce();
+                this._startPolling();
+            }
+        });
+        this._filterSelectEl.addEventListener('change', () => {
+            this._filter = this._filterSelectEl.value as BenchFilter;
+            this._persist();
+            this._render();
+        });
+        this._rawToggleEl.addEventListener('change', () => {
+            this._showRaw = this._rawToggleEl.checked;
+            this._persist();
+            this._render();
+        });
+        this._placeBtnEl.addEventListener('click', () => void this._togglePlacing());
+        this._refreshBtnEl.addEventListener('click', () => this._pollOnce());
+
+        // One delegated listener for every row control: the body is re-rendered
+        // wholesale on each poll, so per-button listeners would be re-bound
+        // several times a second.
+        this._bodyEl.addEventListener('click', (e) => void this._onBodyClick(e));
+        this._bodyEl.addEventListener('keydown', (e) => {
+            const t = e.target as HTMLElement;
+            if ((e as KeyboardEvent).key === 'Enter' && t?.dataset?.role === 'raw-ma') {
+                void this._setRawCurrent(t.dataset.id || '', (t as unknown as HTMLInputElement).value);
+            }
+        });
+    }
+
+    // ----- visibility ------------------------------------------------------
+
+    toggle(): void {
+        if (this._visible) this.hide();
+        else this.show();
+    }
+
+    show(): void {
+        this._visible = true;
+        this._window.setHidden(false);
+        this._window.focus();
+        this._persist();
+        void this._loadConfig();
+        this._pollOnce();
+        this._startPolling();
+    }
+
+    hide(): void {
+        this._visible = false;
+        this._window.setHidden(true);
+        this._persist();
+        this._stopPolling();
+        // Placement is a canvas mode the panel owns; leaving it armed after the
+        // panel is gone would make clicks on the layout do something invisible.
+        if (this._placing) void this._togglePlacing();
+    }
+
+    // ----- polling ---------------------------------------------------------
+
+    private _startPolling(): void {
+        this._stopPolling();
+        if (!this._refreshHz || this._refreshHz <= 0) return;
+        const period = Math.max(50, Math.round(1000 / this._refreshHz));
+        this._pollHandle = setInterval(() => this._pollOnce(), period);
+    }
+
+    /** Stop the timer. Deliberately does NOT cancel a request already in flight
+     *  — `_inflight` is what keeps requests from stacking, and aborting the read
+     *  `show()` fires just before starting the timer logged an API error on
+     *  every open. Same reasoning as the occupancy monitor. */
+    private _stopPolling(): void {
+        if (this._pollHandle !== null) {
+            clearInterval(this._pollHandle);
+            this._pollHandle = null;
+        }
+    }
+
+    private async _loadConfig(): Promise<void> {
+        try {
+            const res = await api.getHardwareConfig();
+            this._config = res?.config || null;
+        } catch {
+            this._config = null;   // the test buttons report it when pressed
+        }
+    }
+
+    private async _pollOnce(): Promise<void> {
+        if (this._inflight) return;
+        this._inflight = true;
+        try {
+            const [snapshot, rig] = await Promise.all([
+                api.getHwDebugState() as Promise<BenchSnapshot>,
+                api.getVirtualRigScenario().catch(() => null),
+            ]);
+            this._snapshot = snapshot;
+            this._rig = rig?.scenario || null;
+            this._inactive = false;
+            this._error = null;
+            this._render();
+        } catch (err: any) {
+            // 409 is the ordinary answer outside Virtual Hardware, not a fault:
+            // the panel says which environment it needs instead of an error.
+            if (err?.status === 409 || /not running in Virtual Hardware/i.test(err?.message || '')) {
+                this._inactive = true;
+                this._error = null;
+                this._snapshot = null;
+            } else {
+                this._error = err?.message || String(err);
+            }
+            this._render();
+        } finally {
+            this._inflight = false;
+        }
+    }
+
+    // ----- row actions -----------------------------------------------------
+
+    private async _onBodyClick(e: Event): Promise<void> {
+        const btn = (e.target as HTMLElement)?.closest?.('[data-role]') as HTMLElement | null;
+        if (!btn) return;
+        const role = btn.dataset.role;
+        const id = btn.dataset.id || '';
+        switch (role) {
+            case 'place-train': return this._setPresence(id, btn.dataset.present !== '1');
+            case 'sweep': return this._runTrackTest(id);
+            case 'throw-main': return this._runSwitchTest(id, 0);
+            case 'throw-diverge': return this._runSwitchTest(id, 1);
+            case 'raw-bit': return this._setRawBit(id, btn.dataset.bit !== '1');
+            case 'raw-ma-set': {
+                const input = this._bodyEl.querySelector<HTMLInputElement>(
+                    `input[data-role="raw-ma"][data-id="${CSS.escape(id)}"]`
+                );
+                return this._setRawCurrent(id, input?.value ?? '');
+            }
+            case 'rig-start': return this._rigCommand('start', { blocks: this._readRigDraft() });
+            case 'rig-advance': return this._rigCommand('advance');
+            case 'rig-stall': return this._rigCommand('stall', { stalled: !this._rig?.stalled });
+            case 'rig-remove': return this._rigCommand('remove');
+            case 'fault': return this._setFault(id, btn.dataset.on !== '1');
+            case 'fault-clear': return this._clearFaults();
+            default: return;
+        }
+    }
+
+    /** Put a virtual object on a block's detectors, or lift it off. */
+    private async _setPresence(blockId: string, present: boolean): Promise<void> {
+        if (!blockId || this._busy.has(blockId)) return;
+        this._busy.add(blockId);
+        this._render();
+        try {
+            await api.setHwDebugPresence(blockId, present);
+            await this._pollOnce();
+        } catch (err: any) {
+            showToast(err?.message || `Could not set ${blockId}.`, 'error');
+        } finally {
+            this._busy.delete(blockId);
+            this._render();
+        }
+    }
+
+    private async _setRawBit(blockId: string, occupied: boolean): Promise<void> {
+        try {
+            await api.setHwDebugOccupancy(blockId, occupied);
+            await this._pollOnce();
+        } catch (err: any) {
+            showToast(err?.message || `Could not set ${blockId}'s detector bit.`, 'error');
+        }
+    }
+
+    private async _setRawCurrent(blockId: string, raw: string): Promise<void> {
+        const ma = Number(raw);
+        if (!blockId || !Number.isFinite(ma)) {
+            showToast('Enter a current in mA.', 'warning');
+            return;
+        }
+        try {
+            await api.setHwDebugCurrent(blockId, ma);
+            await this._pollOnce();
+        } catch (err: any) {
+            showToast(err?.message || `Could not set ${blockId}'s current.`, 'error');
+        }
+    }
+
+    /** Sweep a block's rails forward / off / reverse. The server holds the
+     *  simulation lock for its ~3 s, so the row is marked busy for the duration
+     *  rather than left looking clickable. */
+    private async _runTrackTest(blockId: string): Promise<void> {
+        if (!blockId || this._busy.has(blockId)) return;
+        if (!this._config) {
+            showToast('Hardware Setup has not loaded — reopen the panel.', 'error');
+            return;
+        }
+        this._busy.add(blockId);
+        this._render();
+        try {
+            const res = await api.runHardwareTrackTest(this._config, blockId);
+            if (res?.ok === false || res?.status === 'error') {
+                showToast(res?.error || `Sweep failed on ${blockId}.`, 'error');
+            }
+        } catch (err: any) {
+            showToast(err?.message || `Sweep failed on ${blockId}.`, 'error');
+        } finally {
+            this._busy.delete(blockId);
+            await this._pollOnce();
+        }
+    }
+
+    private async _runSwitchTest(switchId: string, position: 0 | 1): Promise<void> {
+        if (!switchId || this._busy.has(switchId)) return;
+        if (!this._config) {
+            showToast('Hardware Setup has not loaded — reopen the panel.', 'error');
+            return;
+        }
+        this._busy.add(switchId);
+        this._render();
+        try {
+            const res = await api.switchThrowTest(this._config, switchId, position);
+            if (res?.ok === false || res?.status === 'error') {
+                showToast(res?.error || `Throw failed on ${switchId}.`, 'error');
+            }
+        } catch (err: any) {
+            showToast(err?.message || `Throw failed on ${switchId}.`, 'error');
+        } finally {
+            this._busy.delete(switchId);
+            await this._pollOnce();
+        }
+    }
+
+    private _readRigDraft(): string[] {
+        const input = this._bodyEl.querySelector<HTMLInputElement>('[data-role="rig-blocks"]');
+        this._rigDraft = input?.value ?? this._rigDraft;
+        return this._rigDraft.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+
+    private async _rigCommand(action: string, payload: any = {}): Promise<void> {
+        try {
+            const res = await api.commandVirtualRigScenario(action, payload);
+            this._rig = res?.scenario || null;
+            await this._pollOnce();
+        } catch (err: any) {
+            showToast(err?.message || `Virtual train ${action} failed.`, 'error');
+        }
+    }
+
+    private async _setFault(kind: string, enabled: boolean): Promise<void> {
+        try {
+            await api.setVirtualHardwareFault(kind, enabled);
+            await this._pollOnce();
+        } catch (err: any) {
+            showToast(err?.message || `Could not inject ${kind}.`, 'error');
+        }
+    }
+
+    private async _clearFaults(): Promise<void> {
+        try {
+            await api.clearVirtualHardwareFaults();
+            await this._pollOnce();
+        } catch (err: any) {
+            showToast(err?.message || 'Could not clear faults.', 'error');
+        }
+    }
+
+    // ----- canvas placement ------------------------------------------------
+
+    /** Arm / disarm the canvas mode that toggles a block's virtual train on
+     *  click. Entering a mode is the editor's job, so this hands it a mode
+     *  object exactly like a tool contribution would — the panel just owns the
+     *  button that arms it. */
+    private async _togglePlacing(): Promise<void> {
+        const editor = window.app?.editor;
+        if (!editor?.enterMode) {
+            showToast('The layout editor is not ready yet.', 'warning');
+            return;
+        }
+        if (this._placing) {
+            this._placing = false;
+            await editor.exitMode();
+            this._syncPlaceButton();
+            return;
+        }
+        this._placing = true;
+        this._syncPlaceButton();
+        await editor.enterMode({
+            name: 'Place virtual train',
+            toolName: 'inspect',
+            cancelMessage: 'Virtual-train placement exited',
+            onClick: async ({ gridPos }: { gridPos: any }) => {
+                await this._placeAt(gridPos);
+                return true;
+            },
+            onExit: () => {
+                this._placing = false;
+                this._syncPlaceButton();
+            },
+        });
+    }
+
+    private async _placeAt(gridPos: any): Promise<void> {
+        const editor = window.app?.editor;
+        const track = editor?.cachedNetwork?.tracks?.find(
+            (t: any) => t.x === gridPos?.x && t.y === gridPos?.y
+        );
+        const blockId = track?.block_section_id;
+        if (!blockId) {
+            showToast('No block at this position.', 'warning', 2500);
+            return;
+        }
+        const row = benchRows(this._snapshot).find((r) => r.blockId === blockId);
+        if (row && !row.hasDigital && !row.hasCurrent) {
+            showToast(`${blockId} has no detector binding to place a train on.`, 'warning', 3500);
+            return;
+        }
+        await this._setPresence(blockId, !row?.present);
+    }
+
+    private _syncPlaceButton(): void {
+        if (!this._placeBtnEl) return;
+        this._placeBtnEl.classList.toggle('is-armed', this._placing);
+        this._placeBtnEl.setAttribute('aria-pressed', String(this._placing));
+    }
+
+    // ----- render ----------------------------------------------------------
+
+    private _render(): void {
+        if (!this._bodyEl) return;
+        this._renderBanner();
+        this._renderBody();
+        this._renderFooter();
+        this._syncPlaceButton();
+    }
+
+    private _renderBanner(): void {
+        let text = '';
+        let tone = 'ok';
+        if (this._error) {
+            text = this._error;
+            tone = 'danger';
+        } else if (this._inactive) {
+            text = 'This session is not running Virtual Hardware. Select it in Hardware Setup and activate.';
+            tone = 'warn';
+        } else {
+            const faults = Object.entries(this._snapshot?.faults || {})
+                .filter(([, on]) => on)
+                .map(([kind]) => kind.split('_').join(' '));
+            if (faults.length) {
+                text = `Injected: ${faults.join(', ')} — the rig is failing on purpose.`;
+                tone = 'danger';
+            }
+        }
+        if (!text) {
+            this._bannerEl.hidden = true;
+            this._bannerEl.textContent = '';
+            return;
+        }
+        this._bannerEl.hidden = false;
+        this._bannerEl.className = `vb-banner vb-banner-${tone}`;
+        this._bannerEl.textContent = text;
+    }
+
+    private _renderBody(): void {
+        if (this._inactive || this._error) {
+            this._bodyEl.innerHTML = '';
+            return;
+        }
+        if (!this._snapshot) {
+            this._bodyEl.innerHTML = '<div class="empty-state">Reading…</div>';
+            return;
+        }
+        const rows = benchRows(this._snapshot, this._filter);
+        const total = Object.keys(this._snapshot.blocks || {}).length;
+        const blocksHtml = rows.length
+            ? `<div class="vb-head${this._showRaw ? ' vb-raw-on' : ''}">
+                    <span>Block</span>
+                    <span title="Read back off the fake PWM chip — what the board was actually told, not what the model believes.">Track output</span>
+                    <span></span>
+                    <span title="What you are telling the app its detectors see.">Detectors</span>
+                    <span title="What the occupancy pipeline concluded. This is the column that says whether the app reacted.">App sees</span>
+               </div>
+               ${rows.map((row) => this._rowHtml(row)).join('')}`
+            : `<div class="empty-state">${escapeHtml(
+                  total
+                      ? 'No block matches this filter.'
+                      : 'No block is bound to hardware yet. Bind track power and detectors in each block’s editor.'
+              )}</div>`;
+
+        this._bodyEl.innerHTML = `
+            <section class="vb-section">${blocksHtml}</section>
+            ${this._switchesHtml()}
+            ${this._rigHtml()}
+            ${this._faultsHtml()}
+        `;
+    }
+
+    private _rowHtml(row: BenchRow): string {
+        const busy = this._busy.has(row.blockId);
+        const drive = describeDrive(row);
+        const duty =
+            row.dutyForward === null
+                ? ''
+                : `<span class="vb-duty" title="Commanded duty on the block's two PWM channels, before the rail-polarity flag${
+                      row.trackReversed ? ' (this block is wired reversed)' : ''
+                  }.">${row.dutyForward.toFixed(2)} / ${(row.dutyReverse ?? 0).toFixed(2)}${
+                      row.trackReversed ? ' ⇄' : ''
+                  }</span>`;
+
+        const sweep = row.hasTrack
+            ? `<button type="button" class="vb-btn" data-role="sweep" data-id="${escapeHtml(row.blockId)}"
+                   ${busy ? 'disabled' : ''}
+                   title="Drive this block full forward, off, then full reverse — about three seconds.">${
+                       busy ? '…' : 'Sweep'
+                   }</button>`
+            : '<span class="vb-dash">—</span>';
+
+        const canPlace = row.hasDigital || row.hasCurrent;
+        const place = canPlace
+            ? `<button type="button" class="vb-btn vb-place${row.present ? ' is-on' : ''}"
+                   data-role="place-train" data-id="${escapeHtml(row.blockId)}" data-present="${row.present ? '1' : '0'}"
+                   ${busy ? 'disabled' : ''}
+                   title="${
+                       row.present
+                           ? 'Lift the virtual train off — clears every detector this block is bound to.'
+                           : 'Put a virtual train here — writes every detector this block is bound to.'
+                   }"><i class="ti ti-train" aria-hidden="true"></i> ${row.present ? 'On block' : 'Place'}</button>`
+            : '<span class="vb-dash" title="No detector binding — nothing to place a train on.">—</span>';
+
+        // What each detector reads, in the terms the pipeline reads them: the
+        // digital chain as present/clear (its raw bit is in the Raw line, where
+        // the polarity is explained), the current channel as its measurement.
+        const reads: string[] = [];
+        if (row.hasDigital) reads.push(row.detectorPresent ? 'det ●' : 'det ○');
+        if (row.hasCurrent) reads.push(`${(row.currentMa ?? 0).toFixed(0)} mA`);
+        const readsText = reads.length ? reads.join(' · ') : '';
+
+        const verdict =
+            row.occupied === null
+                ? '<span class="vb-dash">—</span>'
+                : `<span class="vb-verdict${row.occupied ? ' is-occupied' : ''}">${
+                      row.occupied ? 'occupied' : 'clear'
+                  }</span>`;
+
+        const raw = this._showRaw ? this._rawCellsHtml(row) : '';
+
+        return `
+            <div class="vb-row${this._showRaw ? ' vb-raw-on' : ''}${row.present ? ' vb-row-present' : ''}">
+                <span class="vb-block">${escapeHtml(row.blockId)}</span>
+                <span class="vb-drive vb-drive-${drive.tone}">
+                    <span class="vb-drive-glyph" aria-hidden="true">${drive.glyph}</span>${escapeHtml(drive.text)}
+                    ${duty}
+                </span>
+                <span class="vb-test">${sweep}</span>
+                <span class="vb-sensor">${place}${
+                    readsText ? `<span class="vb-reads">${escapeHtml(readsText)}</span>` : ''
+                }</span>
+                <span class="vb-app">${verdict}</span>
+                ${raw}
+            </div>
+        `;
+    }
+
+    /** The deliberately-disagree controls: set one source without the other.
+     *  Full-width under the row, so the ordinary row stays four readable cells. */
+    private _rawCellsHtml(row: BenchRow): string {
+        const bit = row.hasDigital
+            ? `<button type="button" class="vb-btn vb-btn-xs${row.occupancyBit ? ' is-on' : ''}"
+                   data-role="raw-bit" data-id="${escapeHtml(row.blockId)}" data-bit="${row.occupancyBit ? '1' : '0'}"
+                   title="The raw register bit. This chain is ${
+                       row.activeLow
+                           ? 'ACTIVE-LOW, so 0 is the reading the pipeline calls present'
+                           : 'active-high, so 1 is present'
+                   }."
+               >bit ${row.occupancyBit ? '1' : '0'}${row.activeLow ? ' (low=on)' : ''}</button>`
+            : '';
+        const current = row.hasCurrent
+            ? `<span class="vb-raw-ma">
+                   <input type="number" class="vb-input" data-role="raw-ma" data-id="${escapeHtml(row.blockId)}"
+                       value="${(row.currentMa ?? 0).toFixed(0)}" step="1" aria-label="${escapeHtml(row.blockId)} current in mA" />
+                   <span class="vb-unit">mA</span>
+                   <button type="button" class="vb-btn vb-btn-xs" data-role="raw-ma-set" data-id="${escapeHtml(row.blockId)}">Set</button>
+                   <span class="vb-raw-note">on ≥ ${((row.baselineMa ?? 0) + (row.thresholdMa ?? 0)).toFixed(0)} mA</span>
+               </span>`
+            : '';
+        if (!bit && !current) return '';
+        return `<div class="vb-raw">${bit}${current}</div>`;
+    }
+
+    private _switchesHtml(): string {
+        const switches = this._snapshot?.switches || {};
+        const ids = Object.keys(switches).sort();
+        if (!ids.length) return '';
+        const rows = ids.map((switchId) => {
+            const s = switches[switchId] || {};
+            const busy = this._busy.has(switchId);
+            const coil = (on: boolean | null | undefined, label: string) =>
+                `<span class="vb-coil${on ? ' is-on' : ''}"><i class="vb-coil-dot"></i>${escapeHtml(label)}</span>`;
+            const standby = s.standby === null || s.standby === undefined ? '' : coil(s.standby, 'standby');
+            return `
+                <div class="vb-row vb-row-switch">
+                    <span class="vb-block">${escapeHtml(switchId)}</span>
+                    <span class="vb-coils">${coil(s.main, 'main')}${coil(s.diverge, 'diverge')}${standby}</span>
+                    <span class="vb-test">
+                        <button type="button" class="vb-btn" data-role="throw-main" data-id="${escapeHtml(switchId)}" ${
+                            busy ? 'disabled' : ''
+                        } title="Command this switch to MAIN — the points and the app stay in agreement.">Main</button>
+                        <button type="button" class="vb-btn" data-role="throw-diverge" data-id="${escapeHtml(switchId)}" ${
+                            busy ? 'disabled' : ''
+                        } title="Command this switch to DIVERGE.">Diverge</button>
+                    </span>
+                </div>`;
+        }).join('');
+        return `<section class="vb-section">
+            <div class="vb-section-head">Switch coils
+                <span class="vb-section-note">the latched bits, read back off the fake shift register</span>
+            </div>
+            ${rows}
+        </section>`;
+    }
+
+    /** The multi-block scenario: a train that occupies one block at a time and
+     *  steps to the next, clearing the one behind it. Distinct from the per-row
+     *  Place button because a boundary crossing — new detector confirming while
+     *  the old one clears — is a sequence, not a state. */
+    private _rigHtml(): string {
+        const rig = this._rig;
+        const status = rig?.active
+            ? `in ${escapeHtml(rig.block_id || '?')}${rig.stalled ? ' · stalled' : ''} (${
+                  (rig.index ?? 0) + 1
+              } of ${(rig.blocks || []).length})`
+            : 'no virtual train';
+        const draft = rig?.active ? (rig.blocks || []).join(', ') : this._rigDraft;
+        return `<section class="vb-section">
+            <div class="vb-section-head">Virtual train
+                <span class="vb-section-note">steps block to block through the detectors, like a train crossing boundaries</span>
+            </div>
+            <div class="vb-strip">
+                <input type="text" class="vb-input vb-input-wide" data-role="rig-blocks"
+                    value="${escapeHtml(draft)}" placeholder="B1, B2, B3"
+                    aria-label="Block ids the virtual train runs through" />
+                <button type="button" class="vb-btn" data-role="rig-start" title="Place the train on the first block.">Place</button>
+                <button type="button" class="vb-btn" data-role="rig-advance" ${
+                    rig?.active ? '' : 'disabled'
+                } title="Cross into the next block: its detector confirms as the one behind clears.">Enter next</button>
+                <button type="button" class="vb-btn${rig?.stalled ? ' is-on' : ''}" data-role="rig-stall" ${
+                    rig?.active ? '' : 'disabled'
+                } title="Freeze the train where it is — 'Enter next' stops having any effect.">${
+                    rig?.stalled ? 'Resume' : 'Stall'
+                }</button>
+                <button type="button" class="vb-btn" data-role="rig-remove" ${
+                    rig?.active ? '' : 'disabled'
+                } title="Lift the train off every block it is on.">Remove</button>
+                <span class="vb-strip-status">${status}</span>
+            </div>
+        </section>`;
+    }
+
+    private _faultsHtml(): string {
+        const faults = this._snapshot?.faults || {};
+        const buttons = FAULT_KINDS.map(({ kind, label, title }) => {
+            const on = !!faults[kind];
+            return `<button type="button" class="vb-btn vb-fault${on ? ' is-on' : ''}"
+                data-role="fault" data-id="${escapeHtml(kind)}" data-on="${on ? '1' : '0'}"
+                title="${escapeHtml(title)}">${escapeHtml(label)}</button>`;
+        }).join('');
+        return `<section class="vb-section">
+            <div class="vb-section-head">Device faults
+                <span class="vb-section-note">injected below the HAL — the app meets them exactly as it would a real failure</span>
+            </div>
+            <div class="vb-strip">${buttons}
+                <button type="button" class="vb-btn" data-role="fault-clear">Clear all</button>
+            </div>
+        </section>`;
+    }
+
+    private _renderFooter(): void {
+        if (!this._snapshot) {
+            this._footerEl.textContent = '';
+            return;
+        }
+        const blocks = Object.keys(this._snapshot.blocks || {});
+        const rows = benchRows(this._snapshot);
+        const occupied = rows.filter((r) => r.occupied).length;
+        const driven = rows.filter((r) => r.driven).length;
+        this._footerEl.textContent = [
+            `${blocks.length} block${blocks.length === 1 ? '' : 's'} wired`,
+            `${driven} driven`,
+            `${occupied} occupied`,
+        ].join(' · ');
+    }
+
+    // ----- persistence -----------------------------------------------------
+
+    private _persist(): void {
+        saveWindowState(this._persistenceEnv, WINDOW_ID, {
+            geometry: this._window.getGeometry(),
+            floating: true,
+            hidden: !this._visible,
+            virtualBench: {
+                refreshHz: this._refreshHz,
+                filter: this._filter,
+                showRaw: this._showRaw,
+            },
+        });
+    }
+}
+
+function bootstrap(): void {
+    if (window.virtualBench) return; // idempotent
+    window.virtualBench = new VirtualBench();
+    window.virtualBench.init();
+}
+
+// Guarded on `document` so the pure derivations above can be imported by the
+// unit tests, which run in Node with no DOM.
+if (typeof document !== 'undefined') {
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', bootstrap);
+    } else {
+        bootstrap();
+    }
+}
+
+export { VirtualBench };
