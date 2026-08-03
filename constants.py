@@ -56,6 +56,13 @@ LOOKAHEAD_TICKS: int = 5
 IDLE_HOLD_RELEASE_TICKS: int = 30
 IDLE_HOLD_COOLDOWN_TICKS: int = 20
 
+# How many of the most recent events `NotificationCenter` keeps before dropping
+# the oldest (design_new.md "Core Runtime Loop", Runtime notifications ->
+# Retention). `notification_id` keeps counting past a drop, so a gap in the ids
+# means events aged out rather than that the stream lost order. Tunable, so an
+# operator running a long session may raise it.
+NOTIFICATION_RETENTION_ROWS: int = 10000
+
 # Delay-class on-time tolerance per design_new.md "RouteTaskRun schema"
 # (delay_class). A task's actual elapsed travel time is compared with its
 # expected `task_time`: elapsed below `task_time - tol` is "early", above

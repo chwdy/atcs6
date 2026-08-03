@@ -59,3 +59,27 @@ def test_as_dict_round_trips_and_unknown_keys_ignored():
     rc.apply_updates({"nonexistent_field": 5, "overspeed_eb_threshold_kmh": None})
     assert "nonexistent_field" not in rc.as_dict()
     assert rc.get_runtime_config().overspeed_eb_threshold_kmh == 10.0
+
+
+def test_notification_retention_is_tunable_and_bounds_the_archive():
+    """`NotificationCenter` keeps the most recent `notification_retention_rows`
+    events and drops the oldest (design_new.md "Runtime notifications",
+    Retention). `notification_id` keeps counting past a drop, so a gap in the
+    ids means events aged out rather than that the stream lost order."""
+    import notification_center
+    from notification_center import NotificationCenter, Severity
+
+    center = NotificationCenter()
+    rc.apply_updates({"notification_retention_rows": 5})
+    assert notification_center.NOTIFICATION_RETENTION_ROWS == 5
+
+    for _ in range(12):
+        center.emit(source="T", kind="k", severity=Severity.INFO)
+
+    kept = center.peek_recent(100)
+    assert len(kept) == 5
+    # The last five emitted, and their ids still run 8..12.
+    assert [n.notification_id for n in kept] == [8, 9, 10, 11, 12]
+
+    rc.reset_to_defaults()
+    assert notification_center.NOTIFICATION_RETENTION_ROWS == 10000

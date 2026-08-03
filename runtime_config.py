@@ -48,6 +48,8 @@ class RuntimeConfig:
     # --- Sim timing (audit Tier 5) ---
     idle_hold_release_ticks: int = C.IDLE_HOLD_RELEASE_TICKS
     idle_hold_cooldown_ticks: int = C.IDLE_HOLD_COOLDOWN_TICKS
+    # --- Event stream ---
+    notification_retention_rows: int = C.NOTIFICATION_RETENTION_ROWS
 
 
 # field name -> the module-global sites that hold that value. Reassigned on
@@ -107,6 +109,10 @@ _TARGETS: Dict[str, List[Tuple[str, str]]] = {
     "idle_hold_cooldown_ticks": [
         ("constants", "IDLE_HOLD_COOLDOWN_TICKS"),
         ("route_executor", "IDLE_HOLD_COOLDOWN_TICKS"),
+    ],
+    "notification_retention_rows": [
+        ("constants", "NOTIFICATION_RETENTION_ROWS"),
+        ("notification_center", "NOTIFICATION_RETENTION_ROWS"),
     ],
 }
 

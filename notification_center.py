@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
+from constants import NOTIFICATION_RETENTION_ROWS
+
 
 class Severity(Enum):
     """Severity levels for runtime notifications."""
@@ -165,8 +167,23 @@ class NotificationCenter:
         self._next_id += 1
         self._queue.append(n)
         self._archive.append(n)
+        self._trim_archive()
         self._persist(n)
         return n
+
+    def _trim_archive(self) -> None:
+        """Keep the most recent `NOTIFICATION_RETENTION_ROWS` events and drop
+        the oldest beyond that (design_new.md "Runtime notifications",
+        Retention).
+
+        `_next_id` is untouched, so ids keep counting past a drop: a gap in the
+        ids means events aged out, not that the stream lost order. The module
+        global is re-read on every call so a live settings change takes effect
+        on the next emit.
+        """
+        limit = NOTIFICATION_RETENTION_ROWS
+        if limit > 0 and len(self._archive) > limit:
+            del self._archive[: len(self._archive) - limit]
 
     def peek_recent(self, n: int = 50) -> List[Notification]:
         """Return up to the last `n` archived notifications."""
