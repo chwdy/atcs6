@@ -787,7 +787,7 @@ class TrainController:
         # this tick's effective command with service stopping while a Phase 1
         # run task's timed stop is armed (TrainController.begin_service_stop()).
         # EB and ATC, already applied above, always outrank this override.
-        # Persists across ticks until TrainController.complete_service_stop()
+        # Persists across ticks until TrainController.consume_service_stop()
         # clears it. Manual `power_percent` submode has no handle_position to
         # write here; produce_physics_command() applies the canonical
         # safety-cap ordering with a zero cap when service_stop_active is set.
@@ -2249,7 +2249,7 @@ class TrainController:
 
     def begin_service_stop(self) -> None:
         """Route-owned operational deceleration command (design_new.md
-        "TrainController.begin_service_stop() / complete_service_stop()").
+        "TrainController.begin_service_stop() / consume_service_stop()").
 
         Idempotent; valid while powered, in either control mode. Sets
         `ops.service_stop_active = True` and clears `ato.running`. Does not
@@ -2262,9 +2262,9 @@ class TrainController:
         self.ops.service_stop_active = True
         self.ato.running = False
 
-    def complete_service_stop(self, force: bool = False) -> bool:
+    def consume_service_stop(self, force: bool = False) -> bool:
         """Clear the service-stop override (design_new.md "TrainController.
-        begin_service_stop() / complete_service_stop()").
+        begin_service_stop() / consume_service_stop()").
 
         Normal acceptance (``force=False``) requires
         ``ops.service_stop_active == True``, ``is_stopped() == True``,
@@ -2310,7 +2310,7 @@ class TrainController:
         self.ato.running = False
         # Force-clear through the service-stop teardown path so an
         # interrupted run never leaves braking armed on a later route.
-        self.complete_service_stop(force=True)
+        self.consume_service_stop(force=True)
         self.route_hooks.phase_latches.consume_power_off()
 
     # -------------------------------------------------------------------------

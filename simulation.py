@@ -861,11 +861,16 @@ class SimulationController(SwitchOutputOwner):
                     reason="no occupancy backs this train's position",
                 )
 
-        for block_id, block in list(self.network.blocks.items()):
-            if getattr(block, "occupied_by", None) == train_id:
-                if self.block_manager:
-                    self.block_manager.clear_block(block_id)
-                else:
+        # The canonical teardown for a train with no detector observation left
+        # to wait for (design_new.md "BlockManager",
+        # `release_train_occupancy(train_id)`): it drops every block the train
+        # holds, leaves no CAUTION behind it, and re-evaluates the protected
+        # chain so nothing stays held on this train's behalf.
+        if self.block_manager:
+            self.block_manager.release_train_occupancy(train_id)
+        else:
+            for block in self.network.blocks.values():
+                if getattr(block, "occupied_by", None) == train_id:
                     block.release()
 
         self._freeze_lost_train_controller(controller)

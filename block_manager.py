@@ -898,6 +898,34 @@ class BlockManager:
             return
         self._reevaluate_caution_blocks()
 
+    def release_train_occupancy(self, train_id: str) -> List[str]:
+        """Drop every block `train_id` occupies, without leaving CAUTION behind.
+
+        `Block.occupied_by` is cleared by `on_block_tail_vacated()` on the
+        ordinary detector-confirmed path. This is the teardown path for the two
+        cases that have no detector observation to wait for: the ghosted-train
+        teardown and the unidentified-train adoption re-key (design_new.md
+        "BlockManager").
+
+        It writes no `caution` — there is no train travelling on to protect
+        behind — and then runs `_reevaluate_caution_blocks()`, so a chain that
+        was held in CAUTION protecting this train cannot stay there forever.
+
+        Returns the ids it released, most useful for a caller that wants to
+        report what it took back.
+        """
+        released: List[str] = []
+        for block_id, block in list(self.blocks.items()):
+            if block.occupied_by != train_id:
+                continue
+            block.occupied_by = None
+            block.caution = None
+            self._mark_for_deenergize(block_id)
+            released.append(block_id)
+        if released:
+            self._reevaluate_caution_blocks()
+        return released
+
     # ------------------------------------------------------------------
     # Private: caution reevaluation
     # ------------------------------------------------------------------

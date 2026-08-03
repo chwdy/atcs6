@@ -836,7 +836,7 @@ class RouteExecutor:
         `waiting_for_block_id` live recompute), or None."""
         if self.path_dispatcher is None:
             return None
-        return self.path_dispatcher.waiting_for_block_id(train_id)
+        return self.path_dispatcher.get_waiting_for_block_id(train_id)
 
     def _held_future_reservations(self, train_id: str) -> set:
         """Block ids this train holds as not-yet-entered future reservations
@@ -1836,7 +1836,7 @@ class RouteExecutor:
         # At rest with authority released: record finished_at + advance the
         # cursor so the next task (typically a dwell at this position) is
         # armed on the next tick.
-        controller.complete_service_stop()
+        controller.consume_service_stop()
         self.advance_walk_position(exec_state, route, walk_pos, now)
         self._advance_to_next_task(route, exec_state)
         return True
@@ -2715,7 +2715,7 @@ class RouteExecutor:
             self._advance_to_next_task(route, exec_state)
         # design_new.md "Event log": the train reached its stop target.
         self._emit_event(
-            "check_stop_arrival",
+            "handle_path_completion",
             f"{train_id} arrived at {authority_end_block_id}",
             train_id=train_id,
             path_id=path_id,
@@ -2802,7 +2802,7 @@ class RouteExecutor:
         `RouteRun` (no-op if none), then performs the canonical teardown:
 
           1. Force-clear any service-stop override through
-             `TrainController.complete_service_stop(force=True)` so a run
+             `TrainController.consume_service_stop(force=True)` so a run
              interrupted by this teardown never leaves braking armed on a
              later route.
           2. If the controller is in `RUNNING_AT_STATION`, call
@@ -2826,8 +2826,8 @@ class RouteExecutor:
             # Force-clear through the service-stop teardown path so a run
             # interrupted by this teardown never leaves braking armed on a
             # later route (design_new.md "TrainController.begin_service_stop()
-            # / complete_service_stop()").
-            controller.complete_service_stop(force=True)
+            # / consume_service_stop()").
+            controller.consume_service_stop(force=True)
         if (
             controller is not None
             and controller.ops.state == TrainState.RUNNING_AT_STATION

@@ -42,7 +42,7 @@ class OperationalStateMachine:
         # Diagnostic: reason for current handle position (set by ATO).
         self.handle_reason: str = ""
         # Route-owned timed-run stop override (design_new.md
-        # "TrainController.begin_service_stop() / complete_service_stop()").
-        # Writers: TrainController.begin_service_stop() / complete_service_stop()
+        # "TrainController.begin_service_stop() / consume_service_stop()").
+        # Writers: TrainController.begin_service_stop() / consume_service_stop()
         # only; no other component assigns this field directly.
         self.service_stop_active: bool = False

@@ -3276,7 +3276,7 @@ class PathDispatcher:
         path = self.get_active_path(train_id)
         return path.path_id if path else None
 
-    def waiting_for_block_id(self, train_id: str) -> Optional[str]:
+    def get_waiting_for_block_id(self, train_id: str) -> Optional[str]:
         """Public live recompute of this train's `waiting_for_block_id`.
 
         The block on which the train's active path is currently blocked from

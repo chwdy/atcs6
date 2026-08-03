@@ -1,5 +1,5 @@
 """Regression: a `run` task's timed stop drives to completion through
-`TrainController.begin_service_stop()` / `complete_service_stop()`, never
+`TrainController.begin_service_stop()` / `consume_service_stop()`, never
 through dispatcher-committed stop completion.
 
 design_new.md Planning Kernel step `6a0d` ("Run timer, service stop, and
@@ -13,7 +13,7 @@ route_progress_kind="run_complete")` — the classification that must NOT set
 `RouteRun.path_cancelled` (design_new.md "pending_path_cancel_request" /
 M-PAYLOAD). Only once the train is stopped, the release request has been
 consumed, and `received_path_plan is None` does the step call
-`TrainController.complete_service_stop()` and `RouteRun.
+`TrainController.consume_service_stop()` and `RouteRun.
 advance_walk_position(...)` to finish the task.
 
 This is also the regression guard for the H2/H-API-CHAIN fatal-freeze bug: a
@@ -199,7 +199,7 @@ def test_run_task_completes_only_after_stopped_with_authority_released():
     )
 
     assert finished is True
-    assert controller.ops.service_stop_active is False  # complete_service_stop() ran
+    assert controller.ops.service_stop_active is False  # consume_service_stop() ran
     assert row.finished_at == 26.0
     assert row.run_elapsed_seconds == 20.0  # unchanged by the final tick
 

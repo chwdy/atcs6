@@ -140,3 +140,61 @@ def test_forward_train_has_reversed_keeps_caution_without_back_reference():
     bm = BlockManager(net.blocks, network=net)
     bm.simulation_controller = None
     assert bm._forward_train_has_reversed(net.blocks["OCC"], "N") is False
+
+
+# ---------------------------------------------------------------------------
+# release_train_occupancy: the no-detector teardown path
+# ---------------------------------------------------------------------------
+
+
+def test_release_train_occupancy_drops_every_held_block_without_caution():
+    """The ghosted-train teardown and the adoption re-key have no detector
+    observation to wait for, so they take the blocks back directly
+    (design_new.md "BlockManager", `release_train_occupancy(train_id)`).
+
+    It leaves no CAUTION behind: there is no train travelling on to protect.
+    """
+    net, manager = _straight_chain_manager()
+    net.blocks["A"].occupied_by = "T1"
+    net.blocks["B"].occupied_by = "T1"
+
+    released = manager.release_train_occupancy("T1")
+
+    assert sorted(released) == ["A", "B"]
+    assert net.blocks["A"].occupied_by is None
+    assert net.blocks["B"].occupied_by is None
+    assert net.blocks["A"].caution is None
+    assert net.blocks["B"].caution is None
+
+
+def test_release_train_occupancy_leaves_other_trains_alone():
+    net, manager = _straight_chain_manager()
+    net.blocks["A"].occupied_by = "T1"
+    net.blocks["B"].occupied_by = "T2"
+
+    released = manager.release_train_occupancy("T1")
+
+    assert released == ["A"]
+    assert net.blocks["B"].occupied_by == "T2"
+
+
+def test_release_train_occupancy_clears_a_chain_held_on_its_behalf():
+    """A chain protecting the released train must not stay in CAUTION forever,
+    which is why the release re-evaluates."""
+    net, manager = _straight_chain_manager()
+    net.blocks["B"].occupied_by = "T1"
+    net.blocks["A"].caution = CautionState(exit_edge="E")
+
+    manager.release_train_occupancy("T1")
+
+    assert net.blocks["B"].occupied_by is None
+    # Nothing is left ahead for A to protect, so A comes back out of CAUTION.
+    assert net.blocks["A"].caution is None
+
+
+def test_release_train_occupancy_is_a_no_op_for_an_unknown_train():
+    net, manager = _straight_chain_manager()
+    net.blocks["A"].occupied_by = "T1"
+
+    assert manager.release_train_occupancy("GHOST") == []
+    assert net.blocks["A"].occupied_by == "T1"
