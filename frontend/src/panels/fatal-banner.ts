@@ -84,7 +84,9 @@ export function updateFatalBanner(network: any, renderer: ConflictFlashRenderer)
   const banner = document.getElementById('fatal-banner');
   if (!banner) return;
 
-  if (!network || !network.failed_runtime) {
+  // Two latches halt the runtime — a fatal track conflict and a hardware I/O
+  // failure — and the banner shows either. `failed_runtime_kind` says which.
+  if (!network || !(network.failed_runtime || network.hardware_failure)) {
     banner.hidden = true;
     return;
   }
@@ -96,6 +98,28 @@ export function updateFatalBanner(network: any, renderer: ConflictFlashRenderer)
   const noun = runtimeNoun(network);
   const tail =
     ' Every train is halted. Sort it out on the layout, then clear the conflict to carry on — every train comes back off.';
+
+  // A hardware failure revoked output permission, so it has no clear-in-place
+  // path: the only way out is repairing the device and activating again.
+  const hw = network.failed_runtime_hardware_failure;
+  if (network.hardware_failure) {
+    if (titleEl) {
+      titleEl.textContent = `${noun} halted — hardware failure`;
+    }
+    if (detailEl) {
+      detailEl.textContent =
+        (hw?.message || 'A hardware output or detector failed.') +
+        ' Every train is halted and the outputs are in their safe state.' +
+        ' Repair or replace the device, then activate the environment again.';
+    }
+    if (metaEl) {
+      metaEl.textContent = hw
+        ? [hw.component, hw.operation, hw.resource_id].filter(Boolean).join(' · ')
+        : '';
+    }
+    banner.hidden = false;
+    return;
+  }
 
   if (titleEl) {
     titleEl.textContent = `${noun} halted — fatal track conflict`;

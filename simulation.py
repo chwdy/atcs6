@@ -125,6 +125,16 @@ class SimulationController(SwitchOutputOwner):
         # simulation_time at which the halt was entered, for the UI banner.
         self.failed_runtime_at: Optional[float] = None
 
+        # The hardware I/O halt is its own latch, on the same gate as
+        # `failed_runtime` but with a different cause and a different way out
+        # (design_new.md "Power", Hardware I/O failure). A fatal conflict is
+        # something the operator sorts out on the layout and clears in place; a
+        # hardware failure revoked output permission, and only activation grants
+        # that again, so reactivation is the whole of its recovery surface.
+        self.hardware_failure: bool = False
+        self.hardware_failure_payload: Optional["HardwareFailure"] = None
+        self.hardware_failure_at: Optional[float] = None
+
         # TrainController + TrainPhysics instances (shared across components)
         self.controllers: Dict[str, TrainController] = {}
         self.physics_instances: Dict[str, TrainPhysics] = {}
@@ -265,7 +275,7 @@ class SimulationController(SwitchOutputOwner):
         # train ticks (Phase 1/2/3 skipped) for the rest of this session.
         # There is no release path in v1: the operator restarts the server
         # to begin a new session.
-        if not self.environment_active or self.failed_runtime:
+        if not self.environment_active or self.runtime_halted:
             return
 
         # The per-train lookahead memo is a tick-local optimization: it is only
@@ -333,7 +343,7 @@ class SimulationController(SwitchOutputOwner):
                 # signal refresh / maintenance-counter writes below — so all
                 # state is left exactly as it was for inspection until the
                 # operator manually cleans up and releases the runtime failure.
-                if self.failed_runtime:
+                if self.runtime_halted:
                     return
 
             # Unidentified train identity follows connectivity, and only the committed
@@ -519,7 +529,7 @@ class SimulationController(SwitchOutputOwner):
         """
         if not self.environment_active or self.operation_mode is OperationMode.SIMULATION:
             return
-        if self.failed_runtime:
+        if self.runtime_halted:
             return
 
         net = self.network
@@ -542,7 +552,7 @@ class SimulationController(SwitchOutputOwner):
                 controller.enqueue_detected_blocks_report(time.time())
                 self._commit_train_phase3(controller, train)
                 net.bump_lookahead_world_version()
-                if self.failed_runtime:
+                if self.runtime_halted:
                     return
 
             self.unidentified_trains.reconcile(self._unidentified_clock())
@@ -617,6 +627,9 @@ class SimulationController(SwitchOutputOwner):
         self.failed_runtime = False
         self.failed_runtime_payload = None
         self.failed_runtime_at = None
+        self.hardware_failure = False
+        self.hardware_failure_payload = None
+        self.hardware_failure_at = None
         self.activation_issues = []
         self.environment_active = True
 
@@ -1885,6 +1898,17 @@ class SimulationController(SwitchOutputOwner):
         """
         return not isinstance(self.input_interface, SimulatedOccupancyDriver)
 
+    @property
+    def runtime_halted(self) -> bool:
+        """True while either fatal latch is set.
+
+        `failed_runtime` and `hardware_failure` have different causes and
+        different ways out, but they sit on one gate: while either is set,
+        `update()` refuses all further advancement (design_new.md "Power",
+        Hardware I/O failure).
+        """
+        return self.failed_runtime or self.hardware_failure
+
     def enter_failed_runtime(self, payload: FatalPhysicalEntryConflict) -> None:
         """Halt further train ticks until manually released.
 
@@ -1921,11 +1945,17 @@ class SimulationController(SwitchOutputOwner):
     def enter_hardware_failure(self, payload: HardwareFailure) -> None:
         """Revoke output, latch the session, and reject in-place recovery.
 
+        This method, not the reporting entity, is the only writer of
+        ``hardware_failure = True`` (design_new.md "Power", Hardware I/O
+        failure), mirroring :meth:`enter_failed_runtime`. ``update()`` refuses
+        all further advancement while it is set, on the same gate as
+        ``failed_runtime``.
+
         This is idempotent because one bus failure can be observed by several
         output calls in the same tick. The first failure is the canonical cause.
         The flag is latched even if a best-effort safe-state write itself fails.
         """
-        if self.failed_runtime:
+        if self.runtime_halted:
             return
         safe_state_error: Optional[str] = None
         try:
@@ -1934,9 +1964,12 @@ class SimulationController(SwitchOutputOwner):
             safe_state_error = str(exc)
             logger.exception("hardware safe-state command failed")
         finally:
-            self.failed_runtime = True
-            self.failed_runtime_payload = payload
-            self.failed_runtime_at = self.simulation_time
+            self.hardware_failure = True
+            self.hardware_failure_payload = payload
+            self.hardware_failure_at = self.simulation_time
+            # Safe state revoked physical output permission. The environment is
+            # no longer driving anything, and only activation grants that back.
+            self.environment_active = False
 
         self.notification_center.emit(
             source="SimulationController",
@@ -1952,6 +1985,58 @@ class SimulationController(SwitchOutputOwner):
                 "requires_new_activation": True,
             },
         )
+
+    def clear_hardware_failure(self) -> "HardwareFailure":
+        """Release the hardware halt. The only writer of
+        ``hardware_failure = False`` (design_new.md "Power", Hardware I/O
+        failure).
+
+        Refused unless the environment has been reactivated. The safe state
+        revoked physical output permission and only activation grants it again,
+        so reactivation is the whole of the recovery surface: repair or replace
+        the device, activate a newly validated session, then clear. There is
+        nothing to clear in place, which is why
+        :meth:`clear_failed_runtime` does not clear this flag.
+
+        Returns:
+            The failure payload that caused the halt.
+
+        Raises:
+            ValueError: If there is no hardware halt, or the environment has
+                not been reactivated since it latched.
+        """
+        if not self.hardware_failure:
+            raise ValueError(
+                "There is no hardware failure; there is nothing to clear"
+            )
+        if not self.environment_active:
+            raise ValueError(
+                "A hardware failure cannot be cleared until the environment is "
+                "reactivated; repair the hardware and activate a newly "
+                "validated session"
+            )
+
+        payload = self.hardware_failure_payload
+        self.hardware_failure = False
+        self.hardware_failure_payload = None
+        self.hardware_failure_at = None
+
+        self.notification_center.emit(
+            source="SimulationController",
+            kind="hardware_failure_cleared",
+            severity=Severity.WARNING,
+            event_time=time.time(),
+            payload={
+                "message": (
+                    "hardware failure cleared after the environment was "
+                    "reactivated"
+                ),
+                "component": payload.component if payload else None,
+                "operation": payload.operation if payload else None,
+                "resource_id": payload.resource_id if payload else None,
+            },
+        )
+        return payload
 
     def clear_failed_runtime(self) -> FatalPhysicalEntryConflict:
         """Release the halt so the session can carry on, with every train off.
@@ -1984,11 +2069,6 @@ class SimulationController(SwitchOutputOwner):
             raise ValueError("The runtime is not halted; there is nothing to clear")
 
         payload = self.failed_runtime_payload
-        if isinstance(payload, HardwareFailure):
-            raise ValueError(
-                "A hardware failure cannot be cleared in place; repair the "
-                "hardware and activate a newly validated session"
-            )
         for controller in self.controllers.values():
             controller.ops.state = TrainState.OFF
             controller.ops.handle_position = HandlePosition.N
@@ -2111,6 +2191,8 @@ def build_network_payload(
         payload["simulation_time"] = 0.0
         payload["failed_runtime"] = False
         payload["failed_runtime_conflict"] = None
+        payload["hardware_failure"] = False
+        payload["runtime_halted"] = False
         payload["operation_mode"] = OperationMode.SIMULATION.value
         payload["operation_environment"] = OperationMode.SIMULATION.value
         payload["environment_active"] = False
@@ -2199,8 +2281,13 @@ def build_network_payload(
         if fatal is not None
         else None
     )
-    hardware_failure = (
-        failed_payload if isinstance(failed_payload, HardwareFailure) else None
+    # The hardware I/O halt is its own latch on the same gate, so the banner
+    # asks "is the runtime halted" as the OR of the two and reads
+    # `failed_runtime_kind` to say which one it is.
+    hardware_failure = sim_controller.hardware_failure_payload
+    payload["hardware_failure"] = bool(sim_controller.hardware_failure)
+    payload["runtime_halted"] = bool(
+        sim_controller.failed_runtime or sim_controller.hardware_failure
     )
     payload["failed_runtime_kind"] = (
         "hardware_failure"
@@ -2213,7 +2300,7 @@ def build_network_payload(
             "operation": hardware_failure.operation,
             "resource_id": hardware_failure.resource_id,
             "message": hardware_failure.message,
-            "halted_at_sim_time": sim_controller.failed_runtime_at,
+            "halted_at_sim_time": sim_controller.hardware_failure_at,
             "requires_new_activation": True,
         }
         if hardware_failure is not None

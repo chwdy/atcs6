@@ -403,10 +403,17 @@ def diagnose_stopped_train(state: AppState, train_id: str) -> dict:
     speed = float(controller.physics_sync.current_speed_kmh)
 
     # 1. The runtime has to be running at all.
-    gate("runtime_halted", not sim.failed_runtime,
-         "a fatal track conflict has every train halted" if sim.failed_runtime
-         else "runtime is live",
-         "Sort the conflict out on the layout, then Clear Conflict.")
+    # Both fatal latches sit on the same gate, but they are cleared different
+    # ways, so the advice has to name the right one.
+    if sim.hardware_failure:
+        gate("runtime_halted", False,
+             "a hardware failure has every train halted",
+             "Repair the hardware, then activate the environment again.")
+    else:
+        gate("runtime_halted", not sim.failed_runtime,
+             "a fatal track conflict has every train halted" if sim.failed_runtime
+             else "runtime is live",
+             "Sort the conflict out on the layout, then Clear Conflict.")
 
     gate("playing", bool(state.simulation_running),
          "the clock is paused" if not state.simulation_running else "clock is running",
@@ -509,6 +516,28 @@ def clear_failed_runtime(state: AppState) -> dict:
         "resource_id": payload.resource_id if payload else None,
         "incoming_train_id": payload.incoming_train_id if payload else None,
         "prior_owner_train_id": payload.prior_owner_train_id if payload else None,
+    }
+
+
+def clear_hardware_failure(state: AppState) -> dict:
+    """Release a hardware-failure halt after the environment was reactivated.
+
+    Raises:
+        ValidationError when there is no runtime, no hardware halt, or the
+        environment has not been reactivated since the failure latched.
+    """
+    with state.simulation_lock:
+        if state.sim_controller is None:
+            raise ValidationError("No simulation runtime is running")
+        try:
+            payload = state.sim_controller.clear_hardware_failure()
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+    return {
+        "component": payload.component if payload else None,
+        "operation": payload.operation if payload else None,
+        "resource_id": payload.resource_id if payload else None,
+        "message": payload.message if payload else None,
     }
 
 

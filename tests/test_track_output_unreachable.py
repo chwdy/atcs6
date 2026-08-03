@@ -54,19 +54,45 @@ def test_a_refused_write_never_claims_the_block_is_energized():
 
     assert pc.set_block_voltage("BLK_1", 10.0) is False
     assert network.blocks["BLK_1"].current_voltage == 0.0
-    assert sim.failed_runtime is True
-    assert isinstance(sim.failed_runtime_payload, HardwareFailure)
-    assert sim.failed_runtime_payload.resource_id == "BLK_1"
+    # A hardware failure latches its own flag, not the fatal-conflict one; both
+    # sit on the one halt gate (design_new.md "Power", Hardware I/O failure).
+    assert sim.hardware_failure is True
+    assert sim.failed_runtime is False
+    assert sim.runtime_halted is True
+    assert isinstance(sim.hardware_failure_payload, HardwareFailure)
+    assert sim.hardware_failure_payload.resource_id == "BLK_1"
 
 
 def test_a_hardware_failure_cannot_be_cleared_in_place():
+    """The safe state revoked output permission and only activation grants it
+    again, so the halt does not reopen until the environment is reactivated."""
     _network, sim, pc = power_controller({"BLK_1"})
     pc.set_block_voltage("BLK_1", 10.0)
 
     import pytest
 
-    with pytest.raises(ValueError, match="newly validated session"):
+    # The failure deactivated the environment, so clearing is refused.
+    assert sim.environment_active is False
+    with pytest.raises(ValueError, match="reactivated"):
+        sim.clear_hardware_failure()
+
+    # And the conflict clearer does not touch it.
+    with pytest.raises(ValueError, match="not halted"):
         sim.clear_failed_runtime()
+    assert sim.hardware_failure is True
+
+
+def test_a_hardware_failure_clears_once_the_environment_is_reactivated():
+    _network, sim, pc = power_controller({"BLK_1"})
+    pc.set_block_voltage("BLK_1", 10.0)
+
+    sim.environment_active = True          # what activation grants back
+    cleared = sim.clear_hardware_failure()
+
+    assert isinstance(cleared, HardwareFailure)
+    assert cleared.resource_id == "BLK_1"
+    assert sim.hardware_failure is False
+    assert sim.runtime_halted is False
 
 
 def test_a_landed_write_still_records_its_voltage():
@@ -91,6 +117,20 @@ def test_a_refused_write_is_reported_once_not_every_tick():
     assert len(notes) == 1
     assert notes[0].payload["block_id"] == "BLK_1"
     assert "no track binding" in notes[0].payload["message"]
+
+
+def test_the_halt_gate_refuses_ticks_while_a_hardware_failure_is_latched():
+    """`update()` refuses all further advancement while either fatal latch is
+    set, on the one gate (design_new.md "Power", Hardware I/O failure)."""
+    _network, sim, pc = power_controller({"BLK_1"})
+    pc.set_block_voltage("BLK_1", 10.0)
+    assert sim.runtime_halted is True
+
+    before = sim.simulation_time
+    sim.update(1.0)
+
+    # Only the clock moves; no train phase runs.
+    assert sim.simulation_time > before
 
 
 def test_each_unreachable_block_gets_its_own_report():

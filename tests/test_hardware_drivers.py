@@ -125,8 +125,8 @@ def test_virtual_transport_fault_enters_the_runtime_hardware_failure_path():
     dev.set_fault("i2c_write_error")
 
     assert sim.power_controller.set_block_voltage("BLK_0", 8.0) is False
-    assert sim.failed_runtime is True
-    assert isinstance(sim.failed_runtime_payload, HardwareFailure)
+    assert sim.hardware_failure is True
+    assert isinstance(sim.hardware_failure_payload, HardwareFailure)
     assert dev.latched_bit("cs0", 7) is True
 
 

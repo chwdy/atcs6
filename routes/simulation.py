@@ -132,6 +132,20 @@ def register(app, state: AppState) -> None:
             return jsonify({"status": "error", "message": str(exc)}), 400
         return jsonify({"status": "success", "cleared_conflict": cleared})
 
+    @app.route("/api/runtime/clear-hardware-failure", methods=["POST"])
+    def clear_hardware_failure():
+        """Release a hardware-failure halt.
+
+        Separate from clear-fatal because the way out is different: the safe
+        state revoked physical output permission, and only activation grants it
+        again, so this is refused until the environment has been reactivated.
+        """
+        try:
+            cleared = train_service.clear_hardware_failure(state)
+        except ValidationError as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 400
+        return jsonify({"status": "success", "cleared_failure": cleared})
+
     @app.route("/api/health", methods=["GET"])
     def health():
         """Liveness probe, plus enough identity for the client to tell a
