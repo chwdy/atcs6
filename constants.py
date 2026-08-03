@@ -63,6 +63,13 @@ IDLE_HOLD_COOLDOWN_TICKS: int = 20
 # operator running a long session may raise it.
 NOTIFICATION_RETENTION_ROWS: int = 10000
 
+# How few block resources may remain ahead of the train head before Phase 1
+# arms the next target while the current `waypoint` is still unserved
+# (design_new.md "Route And RouteExecutor", Waypoint lookahead). Raising it
+# makes trains hold more track ahead of themselves and brake less at
+# waypoints; lowering it frees track for other trains.
+WAYPOINT_LOOKAHEAD_BLOCKS: int = 3
+
 # Delay-class on-time tolerance per design_new.md "RouteTaskRun schema"
 # (delay_class). A task's actual elapsed travel time is compared with its
 # expected `task_time`: elapsed below `task_time - tol` is "early", above

@@ -48,6 +48,8 @@ class RuntimeConfig:
     # --- Sim timing (audit Tier 5) ---
     idle_hold_release_ticks: int = C.IDLE_HOLD_RELEASE_TICKS
     idle_hold_cooldown_ticks: int = C.IDLE_HOLD_COOLDOWN_TICKS
+    # --- Route planning ---
+    waypoint_lookahead_blocks: int = C.WAYPOINT_LOOKAHEAD_BLOCKS
     # --- Event stream ---
     notification_retention_rows: int = C.NOTIFICATION_RETENTION_ROWS
 
@@ -109,6 +111,10 @@ _TARGETS: Dict[str, List[Tuple[str, str]]] = {
     "idle_hold_cooldown_ticks": [
         ("constants", "IDLE_HOLD_COOLDOWN_TICKS"),
         ("route_executor", "IDLE_HOLD_COOLDOWN_TICKS"),
+    ],
+    "waypoint_lookahead_blocks": [
+        ("constants", "WAYPOINT_LOOKAHEAD_BLOCKS"),
+        ("route_executor", "WAYPOINT_LOOKAHEAD_BLOCKS"),
     ],
     "notification_retention_rows": [
         ("constants", "NOTIFICATION_RETENTION_ROWS"),
