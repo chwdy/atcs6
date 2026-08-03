@@ -290,19 +290,21 @@ class MeetCoordinator:
         if nc is None:
             return
         try:
-            from notification_center import Severity
+            from notification_center import Kind, train_ref
+            from runtime_payloads import ErrorRecord
 
             nc.emit(
                 source="RouteExecutor",
-                kind="diagnostic",
-                severity=Severity.WARNING,
-                train_id=train_id,
-                payload={
-                    "message": (
-                        "meet coordination: no holding point before the "
-                        "contested zone; falling back to best-effort truncation"
-                    )
-                },
+                operation="assign_meets",
+                kind=Kind.WARNING,
+                message=(
+                    "meet coordination: no holding point before the "
+                    "contested zone; falling back to best-effort truncation"
+                ),
+                entities=[train_ref(train_id)],
+                error=ErrorRecord(
+                    "no holding point before the contested zone", "meet_hold"
+                ),
             )
         except Exception:
             pass

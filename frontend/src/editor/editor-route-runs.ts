@@ -6,7 +6,10 @@
 // Shows the runtime state of every `RouteRun` (per design_new.md "Route And
 // RouteExecutor" → "Route-run state"): the per-train runtime instance of an
 // assigned route, owning task cursors, resolved targets, dwell timing, and
-// last_error. Visual language follows docs/DESIGN_LANGUAGE.md.
+// its current error. That error is not stored on the run: the backend derives
+// it from the one NotificationCenter stream (design_new.md "Error events"), so
+// the record carries `{text, origin}` and the event owns the time.
+// Visual language follows docs/DESIGN_LANGUAGE.md.
 //
 // RouteRun has no operator-facing field writers in v1 — the only mutation an
 // operator can trigger from this panel is unassigning a train (which goes
@@ -102,7 +105,9 @@ export class RouteRunEditorHandler {
     const progress = `${run.finished_task_count}/${run.task_count}`;
     const startedText = this._formatTime(run.started_at);
     const errorChip = run.last_error
-      ? `<span class="chip chip-danger" title="${this._esc(run.last_error.text)}">err</span>`
+      ? `<span class="chip chip-danger" title="${this._esc(run.last_error.text)}${
+          run.last_error.origin ? ` (${this._esc(run.last_error.origin)})` : ''
+        }">err</span>`
       : '';
 
     // Direction chip — no per-run geometry in the list payload, so the
@@ -267,9 +272,11 @@ export class RouteRunEditorHandler {
     const errorBanner = run.last_error
       ? `
             <div class="banner banner-danger">
-                <div class="banner-label">Last error</div>
+                <div class="banner-label">Current error</div>
                 <div class="banner-text">${this._esc(run.last_error.text)}</div>
-                <div class="rr-banner-time">at ${this._esc(this._formatTime(run.last_error.time))}</div>
+                ${run.last_error.origin
+                  ? `<div class="rr-banner-time">${this._esc(run.last_error.origin)}</div>`
+                  : ''}
             </div>`
       : '';
 

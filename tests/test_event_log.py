@@ -10,26 +10,26 @@ frontend panels are out of this doc's scope).
 
 import pytest
 
-from notification_center import EventKind, Notification, NotificationCenter, Severity
+from notification_center import Kind, Notification, NotificationCenter, path_ref, train_ref
 
 
 def test_notification_roundtrip():
     n = Notification(
         notification_id=7, event_time=12.5, source="PathDispatcher",
-        kind=EventKind.PATH_COMPLETED, severity=Severity.INFO,
-        train_id="T1", path_id="P1", payload={"x": 1},
+        operation="release_path", kind=Kind.INFO, message="path P1 completed",
+        entities=[train_ref("T1"), path_ref("P1")], payload={"x": 1},
     )
     assert Notification.from_dict(n.to_dict()) == n
 
 
 def test_event_kind_vocabulary():
     # design_new.md "Event log" operational kinds.
-    assert EventKind.TRAIN_PLACED == "train_placed"
-    assert EventKind.BLOCK_ENTERED == "block_entered"
-    assert EventKind.BLOCK_VACATED == "block_vacated"
-    assert EventKind.SWITCH_THROWN == "switch_thrown"
-    assert EventKind.PATH_COMPLETED == "path_completed"
-    assert EventKind.EB_ACTIVATED == "eb_activated"
+    # `kind` is the level, and the only field runtime code may branch on.
+    # What happened is `source` + `operation` (design_new.md "Event log").
+    assert Kind.DEBUG == "debug"
+    assert Kind.INFO == "info"
+    assert Kind.WARNING == "warning"
+    assert Kind.ERROR == "error"
 
 
 def test_disk_persistence_and_readback(tmp_path):
@@ -37,24 +37,25 @@ def test_disk_persistence_and_readback(tmp_path):
     nc = NotificationCenter()
     nc.enable_event_log(path)
     nc.emit(
-        source="PathDispatcher", kind=EventKind.PATH_COMPLETED,
-        severity=Severity.INFO, event_time=1.0, train_id="T1", path_id="P1",
+        source="PathDispatcher", operation="release_path", kind=Kind.INFO,
+        message="path P1 completed", event_time=1.0,
+        entities=[train_ref("T1"), path_ref("P1")],
         payload={"k": "v"},
     )
     nc.emit(
-        source="BlockManager", kind=EventKind.BLOCK_ENTERED,
-        severity=Severity.INFO, event_time=2.0, train_id="T1",
+        source="BlockManager", operation="occupy_blocks", kind=Kind.INFO,
+        message="T1 entered B1", event_time=2.0, entities=[train_ref("T1")],
     )
     events = NotificationCenter.read_event_log(path)
     assert [e.notification_id for e in events] == [1, 2]  # id order
-    assert events[0].kind == EventKind.PATH_COMPLETED
+    assert events[0].operation == "release_path"
     assert events[0].payload == {"k": "v"}
-    assert events[1].kind == EventKind.BLOCK_ENTERED
+    assert events[1].operation == "occupy_blocks"
 
 
 def test_in_memory_unaffected_when_no_disk_log(tmp_path):
     nc = NotificationCenter()
-    nc.emit(source="X", kind="diagnostic", severity=Severity.INFO, event_time=0.0)
+    nc.emit(source="X", operation="op", kind=Kind.INFO, message="m", event_time=0.0)
     # in-memory archive still works; nothing written to disk
     assert len(nc.peek_recent(10)) == 1
     assert NotificationCenter.read_event_log(str(tmp_path / "missing.jsonl")) == []
@@ -87,7 +88,7 @@ def test_bootstrap_persists_operational_events(tmp_path):
     assert sim.notification_center._log_path == path
     # Demo train placement emitted TRAIN_PLACED events, persisted to disk.
     events = NotificationCenter.read_event_log(path)
-    placed = [e for e in events if e.kind == EventKind.TRAIN_PLACED]
+    placed = [e for e in events if e.operation == "add_train"]
     assert placed, "expected TRAIN_PLACED events from demo train placement"
     assert all(e.kind != "train_added" for e in events), (
         "train placement must use the canonical 'train_placed' kind"
@@ -117,15 +118,17 @@ def test_block_manager_emits_block_entered_and_vacated():
 
     result = manager.occupy_blocks(["B1"], "T1")
     assert bool(result)
-    entered = [n for n in nc.peek_recent(20) if n.kind == EventKind.BLOCK_ENTERED]
-    assert entered, "occupy_blocks must emit BLOCK_ENTERED"
+    entered = [n for n in nc.peek_recent(20) if n.operation == "occupy_blocks"]
+    assert entered, "occupy_blocks must emit a block-entered event"
     assert entered[-1].payload.get("block_id") == "B1"
-    assert entered[-1].train_id == "T1"
+    # `entities` is the only entity routing key.
+    assert entered[-1].has_entity("train", "T1")
+    assert entered[-1].has_entity("block", "B1")
 
     ok = manager.on_block_tail_vacated("B1", "T1", "E")
     assert ok is True
-    vacated = [n for n in nc.peek_recent(20) if n.kind == EventKind.BLOCK_VACATED]
-    assert vacated, "on_block_tail_vacated must emit BLOCK_VACATED"
+    vacated = [n for n in nc.peek_recent(20) if n.operation == "on_block_tail_vacated"]
+    assert vacated, "on_block_tail_vacated must emit a block-vacated event"
     assert vacated[-1].payload.get("block_id") == "B1"
     assert vacated[-1].payload.get("exit_edge") == "E"
 
@@ -144,7 +147,7 @@ def test_block_reoccupy_does_not_re_emit_block_entered():
     manager.occupy_blocks(["B1"], "T1")
     manager.occupy_blocks(["B1"], "T1")  # idempotent re-occupy
 
-    entered = [n for n in nc.peek_recent(20) if n.kind == EventKind.BLOCK_ENTERED]
+    entered = [n for n in nc.peek_recent(20) if n.operation == "occupy_blocks"]
     assert len(entered) == 1
 
 
@@ -159,7 +162,7 @@ def test_emit_samples_wall_clock_when_no_event_time_is_passed():
 
     nc = NotificationCenter()
     before = time.time()
-    n = nc.emit(source="X", kind="diagnostic", severity=Severity.INFO)
+    n = nc.emit(source="X", operation="op", kind=Kind.INFO, message="m")
     after = time.time()
     assert before <= n.event_time <= after
 
@@ -168,7 +171,7 @@ def test_emit_still_accepts_one_local_sample_shared_with_an_entity_write():
     # The one case design_new.md allows: a single writer samples once locally
     # and uses that value for both its notification and its entity write.
     nc = NotificationCenter()
-    n = nc.emit(source="X", kind="diagnostic", severity=Severity.INFO, event_time=1234.5)
+    n = nc.emit(source="X", operation="op", kind=Kind.INFO, message="m", event_time=1234.5)
     assert n.event_time == 1234.5
 
 
@@ -291,13 +294,13 @@ def test_notification_ids_stay_monotonic_across_sessions(tmp_path):
 
     first = NotificationCenter()
     first.enable_event_log(path)
-    first.emit(source="A", kind="diagnostic", severity=Severity.INFO)
-    first.emit(source="A", kind="diagnostic", severity=Severity.INFO)
+    first.emit(source="A", operation="op", kind=Kind.INFO, message="m")
+    first.emit(source="A", operation="op", kind=Kind.INFO, message="m")
 
     # A restart builds a brand-new NotificationCenter against the same file.
     second = NotificationCenter()
     second.enable_event_log(path)
-    second.emit(source="B", kind="diagnostic", severity=Severity.INFO)
+    second.emit(source="B", operation="op", kind=Kind.INFO, message="m")
 
     ids = [e.notification_id for e in NotificationCenter.read_event_log(path)]
     assert ids == [1, 2, 3], ids
@@ -307,7 +310,7 @@ def test_notification_ids_stay_monotonic_across_sessions(tmp_path):
 def test_enable_event_log_on_a_fresh_path_numbers_from_one(tmp_path):
     nc = NotificationCenter()
     nc.enable_event_log(str(tmp_path / "fresh.jsonl"))
-    n = nc.emit(source="A", kind="diagnostic", severity=Severity.INFO)
+    n = nc.emit(source="A", operation="op", kind=Kind.INFO, message="m")
     assert n.notification_id == 1
 
 
@@ -316,4 +319,106 @@ def test_corrupt_event_log_line_does_not_block_boot(tmp_path):
     path.write_text('{"notification_id": 5}\nnot json at all\n{"no_id": true}\n')
     nc = NotificationCenter()
     nc.enable_event_log(str(path))
-    assert nc.emit(source="A", kind="diagnostic", severity=Severity.INFO).notification_id == 6
+    assert nc.emit(source="A", operation="op", kind=Kind.INFO, message="m").notification_id == 6
+
+
+# ---------------------------------------------------------------------------
+# Error events: suppression + the derived "current reason" read
+# ---------------------------------------------------------------------------
+
+
+def test_an_unchanged_repeat_error_is_suppressed():
+    """Emit on change, not per tick (design_new.md "Error events").
+
+    Phase 1 retries a blocked task every eligible tick, so the same entity
+    blocked for the same reason must not fill the stream.
+    """
+    from runtime_payloads import ErrorRecord
+
+    nc = NotificationCenter()
+    args = dict(
+        source="RouteExecutor", operation="tick_train_phase1", kind=Kind.WARNING,
+        message="blocked", entities=[train_ref("T1")],
+    )
+
+    first = nc.emit(error=ErrorRecord("no path", "planning_failed"), **args)
+    repeat = nc.emit(error=ErrorRecord("no path", "planning_failed"), **args)
+
+    assert first is not None
+    assert repeat is None, "an unchanged repeat must be dropped"
+    assert len(nc.peek_recent(50)) == 1
+
+
+def test_a_changed_reason_is_a_new_event():
+    from runtime_payloads import ErrorRecord
+
+    nc = NotificationCenter()
+    args = dict(
+        source="RouteExecutor", operation="tick_train_phase1", kind=Kind.WARNING,
+        message="blocked", entities=[train_ref("T1")],
+    )
+
+    nc.emit(error=ErrorRecord("no path", "planning_failed"), **args)
+    # A different origin is a different reason...
+    assert nc.emit(error=ErrorRecord("no path", "wedge"), **args) is not None
+    # ...and so is a changed payload, such as a meet ceiling moving.
+    assert nc.emit(
+        error=ErrorRecord("no path", "wedge"), payload={"ceiling": "B2"}, **args
+    ) is not None
+
+
+def test_ordinary_traffic_is_never_suppressed():
+    """Only diagnostic-carrying events are "the same reason" repeats; dropping
+    ordinary occurrences would lose real events."""
+    nc = NotificationCenter()
+    for _ in range(3):
+        nc.emit(
+            source="BlockManager", operation="occupy_blocks", kind=Kind.INFO,
+            message="T1 entered B1", entities=[train_ref("T1")],
+        )
+    assert len(nc.peek_recent(50)) == 3
+
+
+def test_latest_error_for_answers_the_current_reason():
+    from runtime_payloads import ErrorRecord
+
+    nc = NotificationCenter()
+    nc.emit(
+        source="RouteExecutor", operation="tick_train_phase1", kind=Kind.WARNING,
+        message="blocked", entities=[train_ref("T1")],
+        error=ErrorRecord("no path", "planning_failed"),
+    )
+    # Ordinary info traffic must not become the answer.
+    nc.emit(
+        source="BlockManager", operation="occupy_blocks", kind=Kind.INFO,
+        message="T1 entered B1", entities=[train_ref("T1")],
+    )
+
+    found = nc.latest_error_for("train", "T1")
+    assert found is not None
+    assert found.error.origin == "planning_failed"
+
+    # Narrowing by operation and origin.
+    assert nc.latest_error_for("train", "T1", operation="tick_train_phase1") is not None
+    assert nc.latest_error_for("train", "T1", origin="wedge") is None
+    # A different entity has no reason of its own.
+    assert nc.latest_error_for("train", "T2") is None
+
+
+def test_a_task_event_is_found_by_both_run_and_task_filters():
+    """An event about a task names both refs, so a run-level filter and a
+    task-level filter both find it."""
+    from notification_center import route_run_ref, walk_position_ref
+    from runtime_payloads import ErrorRecord
+
+    nc = NotificationCenter()
+    nc.emit(
+        source="RouteExecutor", operation="tick_train_phase1", kind=Kind.WARNING,
+        message="task blocked",
+        entities=[route_run_ref("R1"), walk_position_ref("R1", 2)],
+        error=ErrorRecord("target missing", "task_skipped"),
+    )
+
+    assert nc.latest_error_for("route_run", "R1") is not None
+    assert nc.latest_error_for("walk_position", "R1#2") is not None
+    assert nc.latest_error_for("walk_position", "R1#3") is None

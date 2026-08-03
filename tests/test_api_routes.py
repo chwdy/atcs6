@@ -1511,37 +1511,45 @@ class TestEventLogRoute:
     """`GET /api/event-log` — the read side of the persisted event log.
 
     design_new.md "Event log": the viewer reads the persisted stream and filters
-    by train / kind / severity / time. The default in-memory read serves a live
-    session; `?persisted=true` reads the on-disk stream so an earlier run can be
-    reviewed after a restart.
+    by entity / operation / level / time. The default in-memory read serves a
+    live session; `?persisted=true` reads the on-disk stream so an earlier run
+    can be reviewed after a restart.
     """
 
-    def _emit(self, nc, kind, event_time, train_id=None):
-        from notification_center import Severity
+    def _emit(self, nc, operation, event_time, train_id=None):
+        from notification_center import Kind, train_ref
 
         nc.emit(
-            source="Test", kind=kind, severity=Severity.INFO,
-            event_time=event_time, train_id=train_id,
+            source="Test", operation=operation, kind=Kind.INFO,
+            message=f"{operation} happened", event_time=event_time,
+            entities=[train_ref(train_id)] if train_id else [],
         )
 
     def test_in_memory_read_with_filters(self, client, app_state):
         nc = app_state.sim_controller.notification_center
-        self._emit(nc, "block_entered", 100.0, train_id="T1")
-        self._emit(nc, "block_vacated", 200.0, train_id="T2")
+        self._emit(nc, "occupy_blocks", 100.0, train_id="T1")
+        self._emit(nc, "on_block_tail_vacated", 200.0, train_id="T2")
 
         events = client.get("/api/event-log").get_json()["events"]
         assert len(events) >= 2
 
+        # A per-entity view is a membership filter over `entities`.
         by_train = client.get("/api/event-log?train_id=T1").get_json()["events"]
-        assert by_train and all(e["train_id"] == "T1" for e in by_train)
+        assert by_train and all(
+            any(r["entity_type"] == "train" and r["entity_id"] == "T1"
+                for r in e["entities"])
+            for e in by_train
+        )
 
-        by_kind = client.get("/api/event-log?kind=block_vacated").get_json()["events"]
-        assert by_kind and all(e["kind"] == "block_vacated" for e in by_kind)
+        by_op = client.get(
+            "/api/event-log?operation=on_block_tail_vacated"
+        ).get_json()["events"]
+        assert by_op and all(e["operation"] == "on_block_tail_vacated" for e in by_op)
 
     def test_time_range_filter(self, client, app_state):
         nc = app_state.sim_controller.notification_center
         for t in (10.0, 20.0, 30.0, 40.0):
-            self._emit(nc, "diagnostic", t)
+            self._emit(nc, "tick", t)
 
         windowed = client.get("/api/event-log?since=15&until=35").get_json()["events"]
         times = [e["event_time"] for e in windowed]
@@ -1551,28 +1559,29 @@ class TestEventLogRoute:
         # Write a run to disk, then swap in a brand-new NotificationCenter whose
         # in-memory archive is empty (as a restart would). The persisted read
         # must still return the earlier run's events; the in-memory read must not.
-        from notification_center import NotificationCenter, Severity
+        from notification_center import Kind, NotificationCenter, train_ref
 
         path = str(tmp_path / "event_log.jsonl")
         first = NotificationCenter()
         first.enable_event_log(path)
-        first.emit(source="Test", kind="path_completed", severity=Severity.INFO,
-                   event_time=1.0, train_id="T1")
+        first.emit(source="Test", operation="release_path", kind=Kind.INFO,
+                   message="path completed", event_time=1.0,
+                   entities=[train_ref("T1")])
 
         fresh = NotificationCenter()
         fresh.enable_event_log(path)  # same file, empty archive
         app_state.sim_controller.notification_center = fresh
 
         in_memory = client.get("/api/event-log").get_json()["events"]
-        assert not any(e["kind"] == "path_completed" for e in in_memory)
+        assert not any(e["operation"] == "release_path" for e in in_memory)
 
         persisted = client.get("/api/event-log?persisted=true").get_json()["events"]
-        assert any(e["kind"] == "path_completed" for e in persisted)
+        assert any(e["operation"] == "release_path" for e in persisted)
 
     def test_persisted_falls_back_to_memory_when_no_log_path(self, client, app_state):
         nc = app_state.sim_controller.notification_center
         assert nc.log_path is None
-        self._emit(nc, "diagnostic", 5.0)
+        self._emit(nc, "tick", 5.0)
         # persisted=true with no configured path must not error; it serves memory.
         resp = client.get("/api/event-log?persisted=true")
         assert resp.status_code == 200

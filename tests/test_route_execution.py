@@ -681,5 +681,6 @@ class TestBrokenDwellHandling:
         # The broken dwell row is finished (skipped), carries its diagnostic, and
         # the controller never entered a station dwell.
         assert exec_state.task_runs[0].finished_at is not None
-        assert exec_state.task_runs[0].last_error is not None
+        # The diagnostic rides an event, not the task row.
+        assert not hasattr(exec_state.task_runs[0], "last_error")
         assert controller.state != TrainState.RUNNING_AT_STATION

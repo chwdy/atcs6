@@ -23,8 +23,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, TYPE_CHECKING
 
-from notification_center import Severity
+from notification_center import Kind, switch_ref, train_ref
 from runtime_payloads import (
+    ErrorRecord,
     FatalPhysicalEntryConflict,
     FatalConflictKind,
     SwitchLockClaim,
@@ -522,12 +523,17 @@ class SwitchManager:
             sc = self.simulation_controller
             nc = getattr(sc, "notification_center", None) if sc is not None else None
             if nc is not None:
-                from notification_center import EventKind, Severity
+                from notification_center import Kind, switch_ref
 
                 nc.emit(
                     source="SwitchManager",
-                    kind=EventKind.SWITCH_THROWN,
-                    severity=Severity.INFO,
+                    operation="request_position_change",
+                    kind=Kind.INFO,
+                    message=(
+                        f"switch {switch_id} thrown to "
+                        f"{'DIVERGE' if int(new_position) else 'MAIN'}"
+                    ),
+                    entities=[switch_ref(switch_id)],
                     event_time=time.time(),
                     payload={
                         "switch_id": switch_id,
@@ -649,7 +655,8 @@ class SwitchManager:
         )
 
     def _emit_diagnostic(
-        self, message: str, switch_id: str, train_id: Optional[str] = None
+        self, message: str, switch_id: str, train_id: Optional[str] = None,
+        operation: str = "on_physical_entry",
     ) -> None:
         """Emit a switch-side runtime diagnostic through `NotificationCenter`.
 
@@ -665,10 +672,13 @@ class SwitchManager:
         try:
             nc.emit(
                 source="SwitchManager",
-                kind="diagnostic",
-                severity=Severity.WARNING,
-                train_id=train_id,
-                payload={"message": message, "switch_id": switch_id},
+                operation=operation,
+                kind=Kind.WARNING,
+                message=message,
+                entities=(
+                    ([train_ref(train_id)] if train_id else [])
+                    + ([switch_ref(switch_id)] if switch_id else [])
+                ),
             )
         except Exception:
             pass
@@ -689,12 +699,11 @@ class SwitchManager:
         try:
             nc.emit(
                 source="SwitchManager",
-                kind="diagnostic",
-                severity=Severity.WARNING,
-                payload={
-                    "message": f"switch {switch_id} throw not issued: {reason}",
-                    "switch_id": switch_id,
-                },
+                operation="_drive_throw",
+                kind=Kind.WARNING,
+                message=f"switch {switch_id} throw not issued: {reason}",
+                entities=[switch_ref(switch_id)],
+                error=ErrorRecord(reason, "throw_not_issued"),
             )
         except Exception:
             pass

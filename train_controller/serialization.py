@@ -38,7 +38,6 @@ def controller_to_dict(controller: "TrainController") -> Dict[str, Any]:
         "train_id": controller.train_id,
         "power_on": controller.power_on,
         "eb_active": controller.eb.active,
-        "pending_notifications": controller.notifications.pending.copy(),
         "cab": controller.commands.cab,
         "control_mode": controller.commands.control_mode,
         "manual_mode_type": controller.manual.manual_mode_type,
@@ -129,18 +128,17 @@ def controller_to_dict(controller: "TrainController") -> Dict[str, Any]:
         # the train with a question mark and offers removal (design_new.md
         # "Power", Presence unknown).
         "presence_unknown": bool(getattr(controller, "presence_unknown", False)),
-        # Live "current path error" projection for the train panel badge
-        # and the Quick Route no-path toast. Surfaces the active
-        # RouteRun.last_error ONLY while the train currently has no live
-        # authority (path_backed_run_active is False). A successful
-        # acquisition clears last_error (RouteExecutor), and a live path
-        # suppresses it here, so this reflects a CURRENT inability to route
-        # rather than a stale historical error.
+        # Live "current path error" projection for the train panel badge and
+        # the Quick Route no-path toast. Derived from the event stream through
+        # `latest_error_for` — no entity stores an error (design_new.md "Error
+        # events"). Nothing marks an event resolved, so this gates on live
+        # state instead: it is shown ONLY while the train currently has no live
+        # authority (path_backed_run_active is False), which is what keeps a
+        # reason from before the train acquired authority off the screen.
         "path_error": (
             (lambda es: (
-                es.last_error.to_dict()
+                controller.route_executor.latest_run_error(es)
                 if es is not None
-                and getattr(es, "last_error", None) is not None
                 and not controller.path_projection.path_backed_run_active
                 else None
             ))(

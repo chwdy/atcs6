@@ -1,49 +1,68 @@
 """
 Notification Emission sub-module of ``TrainController``.
 
-Per design_new.md "TrainController" sub-module decomposition: the
-Notification Emission sub-module owns the per-controller toast queue
-that the frontend drains via ``GET /api/trains/<id>``.
-
-This is the output-layer counterpart to the input-layer command
-surface. Compute-layer sub-modules (ATC overspeed escalation, command
-acceptance/rejection, etc.) push messages here through
-``controller.notifications.emit(msg)``; the frontend reads them via
-``controller.notifications.get_and_clear()``.
+Per design_new.md "Runtime notifications", `NotificationCenter` owns the one
+runtime event stream and no component keeps an event queue, a toast buffer, or
+a log of its own. This sub-module is the thin per-component adapter that rule
+explicitly allows: it fills in `source="TrainController"` and the controller's
+usual `entities` (its own train), and writes straight through to the one
+stream. It holds no queue and no state.
 
 External callers access this sub-module as:
 
-  - ``controller.notifications.pending`` — list[str], read-only by
-    convention; consumers should drain via ``get_and_clear()``.
-  - ``controller.notifications.emit(msg)`` — append one message.
-  - ``controller.notifications.get_and_clear()`` — return the current
-    queue and reset it.
+  - ``controller.notifications.emit(message, ...)`` — emit one event about
+    this train.
+
+Operator-facing "what happened to this train" reads are filters over the one
+stream (``GET /api/trains/<id>/notifications``), not a drain of a per-train
+buffer: that read acknowledges nothing and empties nothing.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 if TYPE_CHECKING:
+    from runtime_payloads import ErrorRecord
     from train_controller import TrainController
 
 
 class Notifications:
-    """Owns the per-controller toast queue."""
+    """Thin per-controller adapter onto the one `NotificationCenter` stream."""
 
     def __init__(self, controller: "TrainController") -> None:
         self._c = controller
-        self.pending: List[str] = []
 
-    def emit(self, message: str) -> None:
-        """Queue a toast message for the next frontend poll."""
-        self.pending.append(message)
+    def emit(
+        self,
+        message: str,
+        *,
+        operation: str = "tick",
+        kind: Optional[str] = None,
+        error: Optional["ErrorRecord"] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Emit one event about this train.
 
-    def get_and_clear(self) -> List[str]:
-        """Return the current queue and reset it.
-
-        Called by the frontend to drain pending toast messages.
+        Best-effort: resolves the sink defensively and no-ops when none is
+        wired (isolated unit-test controllers), and never raises into the
+        caller — a reporting failure must not change what the controller did.
         """
-        out = self.pending.copy()
-        self.pending.clear()
-        return out
+        sc = getattr(self._c, "simulation_controller", None)
+        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        if nc is None:
+            return
+        try:
+            from notification_center import Kind, train_ref
+
+            nc.emit(
+                source="TrainController",
+                operation=operation,
+                kind=kind if kind is not None else Kind.WARNING,
+                message=message,
+                entities=[train_ref(self._c.train_id)],
+                error=error,
+                payload=payload,
+            )
+        except Exception:
+            pass

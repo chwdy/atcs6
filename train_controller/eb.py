@@ -73,9 +73,12 @@ class EBWorkflow:
         ):
             c.route_hooks.phase_latches.set_path_cancel_request("eb", "operator EB")
 
-        from notification_center import EventKind, Severity
+        from notification_center import Kind
 
-        c._emit_event(EventKind.EB_ACTIVATED, severity=Severity.WARNING)
+        c._emit_event(
+            "activate", f"emergency stop activated for {c.train_id}",
+            kind=Kind.WARNING,
+        )
         return CommandResult(True, "Emergency stop activated")
 
     def release(self) -> CommandResult:
@@ -121,9 +124,12 @@ class EBWorkflow:
         # (RUNNING_AT_STATION) where the dwell is preserved.
         if c.ops.state != TrainState.RUNNING_AT_STATION:
             c.ops.state = TrainState.READY
-        from notification_center import EventKind, Severity
+        from notification_center import Kind
 
-        c._emit_event(EventKind.EB_RELEASED, severity=Severity.WARNING)
+        c._emit_event(
+            "release", f"emergency stop released for {c.train_id}",
+            kind=Kind.WARNING,
+        )
         return CommandResult(True, "Emergency stop released")
 
     def clear(self) -> None:

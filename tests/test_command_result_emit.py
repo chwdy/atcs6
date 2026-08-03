@@ -26,7 +26,7 @@ def _command_results(state):
     return [
         n
         for n in state.sim_controller.notification_center.peek_recent(20)
-        if n.kind == "command_result"
+        if n.payload.get("command_id")
     ]
 
 

@@ -112,11 +112,12 @@ def test_a_refused_write_is_reported_once_not_every_tick():
 
     notes = [
         n for n in sim.notification_center.peek_recent(200)
-        if n.kind == "block_track_output_unreachable"
+        if n.error is not None
+        and n.error.origin == "block_track_output_unreachable"
     ]
     assert len(notes) == 1
     assert notes[0].payload["block_id"] == "BLK_1"
-    assert "no track binding" in notes[0].payload["message"]
+    assert "no track binding" in notes[0].message
 
 
 def test_the_halt_gate_refuses_ticks_while_a_hardware_failure_is_latched():
@@ -142,6 +143,7 @@ def test_each_unreachable_block_gets_its_own_report():
 
     notes = [
         n for n in sim.notification_center.peek_recent(200)
-        if n.kind == "block_track_output_unreachable"
+        if n.error is not None
+        and n.error.origin == "block_track_output_unreachable"
     ]
     assert sorted(n.payload["block_id"] for n in notes) == ["BLK_0", "BLK_1"]

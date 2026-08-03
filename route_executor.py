@@ -82,7 +82,7 @@ class ResolvedNextTaskProjection:
     `resolved_target is None` for a non-dwell task because every candidate
     block / platform was filtered out (disabled, manual without override,
     every station platform unavailable). Phase 1 writes this string directly
-    into `task_runs[walk_position].last_error` (inlined in
+    as the `ErrorRecord` of one route-run error event (inlined in
     `tick_train_phase1`) so the operator sees why the task is stalled instead
     of an empty diagnostic. `None` for dwell projections and for the same-tick exclude
     sentinel (all candidates already attempted) — both of those non-None-
@@ -156,12 +156,6 @@ class RouteExecutionState:
     # (RUNNING / FINISHED / DEACTIVATED). Deviation is NOT a stored state;
     # consumers that need the diagnostic read `display_state` instead.
     current_route_status: RouteRunStatus = RouteRunStatus.RUNNING
-    # Per-run error tracking. Per design_new.md "Canonical ownership split"
-    # the active path is read live from `path_dispatcher.active_path_id_by_train`
-    # / `received_path_plan.path_id`; route runs do not store a correlation
-    # field of their own. `last_error` is the canonical ErrorRecord shape so
-    # message and timestamp are always either both present or both absent.
-    last_error: Optional["ErrorRecord"] = None
 
     # Sparse per-run overrides of allowlisted route-level operational fields.
     # Per design_new.md "RouteRun overrides" canonical home: keys are field
@@ -194,6 +188,19 @@ class RouteExecutionState:
     # step 66aa).
     idle_hold_ticks: int = 0
     release_cooldown_ticks: int = 0
+
+    @property
+    def run_id(self) -> str:
+        """This run's id as an event entity.
+
+        A run is identified by its train, its route and its run number — it has
+        no id column of its own — so the entity id joins the three. It is the
+        `entity_id` of a `"route_run"` ref, and the prefix of a
+        `"walk_position"` ref (`"<run_id>#<index>"`), so a run-level filter and
+        a task-level filter both find an event about a task (design_new.md
+        "Runtime notifications").
+        """
+        return f"{self.train_id}:{self.route_id}:{self.run_number}"
 
     # ------------------------------------------------------------------
     # Effective-value read helpers (per design_new.md "RouteRun overrides")
@@ -587,6 +594,9 @@ class RouteExecutor:
         Per design_new.md "Data Flow To UI" (~line 2309), the composite
         network/train snapshot exposes `route_runs_by_train_id` mapping
         `train_id -> {route_id, run_number, state, display_state, last_error}`
+        for the RUNNING run, where `last_error` is the derived
+        `NotificationCenter.latest_error_for(...)` read rather than stored
+        state (design_new.md "Error events", Reading the current reason).
         for the RUNNING run. The live run lives in `execution_states[train_id]`
         (the live RUNNING run; terminal runs are archived out of the slot); only a
         run whose stored `current_route_status` is `RUNNING` is reported here.
@@ -599,10 +609,28 @@ class RouteExecutor:
             "run_number": run.run_number,
             "state": run.current_route_status.value,
             "display_state": run.display_state,
-            "last_error": (
-                run.last_error.to_dict() if run.last_error is not None else None
-            ),
+            "last_error": self.latest_run_error(run),
         }
+
+    def latest_run_error(self, run: RouteExecutionState) -> Optional[Dict[str, Any]]:
+        """The most recent unresolved-looking error event for this run, as the
+        `{text, origin}` dict the UI renders, or `None`.
+
+        A derived read over the one event stream — no entity stores an error
+        (design_new.md "Error events"). Nothing marks an event resolved, so a
+        surface that must not show a stale reason gates on live state.
+        """
+        sc = getattr(self, "simulation_controller", None)
+        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        if nc is None:
+            return None
+        try:
+            found = nc.latest_error_for("route_run", run.run_id)
+        except Exception:
+            return None
+        if found is None or found.error is None:
+            return None
+        return found.error.to_dict()
 
     def history_for_train(self, train_id: str) -> List[RouteExecutionState]:
         """Return every `RouteRun` for `train_id`, sorted by `run_number`.
@@ -1349,19 +1377,19 @@ class RouteExecutor:
         for _attempt in range(_max_iterations):
             if projection is None or projection.task_kind == "dwell":
                 break
-            # Per design_new.md "RouteTaskRun.last_error canonical writer":
-            # a sentinel projection (resolved_target=None) means the resolver
+            # A sentinel projection (resolved_target=None) means the resolver
             # filtered out every candidate (missing target, or disabled /
-            # manual / all-platforms-unavailable). Write last_error from the
-            # resolver's failure_reason BEFORE breaking the loop so a
-            # broken-task skip does not advance the cursor past the task with
-            # an empty last_error.
+            # manual / all-platforms-unavailable). Emit the resolver's
+            # failure_reason BEFORE breaking the loop so a broken-task skip
+            # does not advance the cursor past the task with no diagnostic.
             if projection.resolved_target is None:
                 if projection.failure_reason and 0 <= projection.walk_position < len(exec_state.task_runs):
-                    now = self._now()
-                    err = ErrorRecord(text=projection.failure_reason, time=now)
-                    exec_state.task_runs[projection.walk_position].last_error = err
-                    exec_state.last_error = err
+                    self._emit_run_error(
+                        exec_state,
+                        projection.walk_position,
+                        "planning_failed",
+                        projection.failure_reason,
+                    )
                 break  # sentinel projection — no more candidates this tick
             # Phase 1 step `66aa`: dispatch via PathDispatcher.create_path or
             # extend_path (v1 signature). Both methods take train_id +
@@ -1415,7 +1443,7 @@ class RouteExecutor:
 
         if not initial_broken:
             # Unreachable task (target present but disabled / manual / blocked):
-            # WAIT — leave the task armed. last_error was already written by the
+            # WAIT — leave the task armed. The diagnostic was already emitted by the
             # resolver sentinel branch or the acquisition step. The current task
             # is itself a valid (present) task, so the walk is not all-broken.
             exec_state.no_reachable_task = False
@@ -1439,22 +1467,19 @@ class RouteExecutor:
         # walk never goes terminal, so do not keep skipping / appending. Stall:
         # hold idle, record the diagnostic, and warn on the False->True edge.
         if not exec_state.no_reachable_task:
-            now = self._now()
-            stall_err = ErrorRecord(
-                text=(
+            self._emit_run_error(
+                exec_state,
+                failed_walk_position,
+                "run_stalled",
+                (
                     "route run stalled: no reachable task "
                     "(every task target is missing)"
                 ),
-                time=now,
             )
-            failed_row = exec_state.task_runs[failed_walk_position]
-            if failed_row.last_error is None:
-                failed_row.last_error = stall_err
-            exec_state.last_error = stall_err
             exec_state.no_reachable_task = True
             self._emit_route_warning(
                 exec_state.train_id,
-                "no_reachable_task",
+                "run_stalled",
                 "every task target on the route is missing from the network",
             )
 
@@ -1491,18 +1516,18 @@ class RouteExecutor:
         route: "Route",
         walk_position: int,
     ) -> None:
-        """Skip a broken task (target ID missing from the network): record
-        last_error, set finished_at, and append the next walk task. Per
+        """Skip a broken task (target ID missing from the network): emit the
+        diagnostic, set finished_at, and append the next walk task. Per
         design_new.md "Unreachable and broken task handling".
         """
         now = self._now()
         failed_row = exec_state.task_runs[walk_position]
-        if failed_row.last_error is None:
-            err = ErrorRecord(
-                text="task skipped: target missing from network", time=now
-            )
-            failed_row.last_error = err
-            exec_state.last_error = err
+        self._emit_run_error(
+            exec_state,
+            walk_position,
+            "task_skipped",
+            "task skipped: target missing from network",
+        )
         failed_row.finished_at = now
         try:
             exec_state._append_next_walk_task(route)
@@ -1514,30 +1539,85 @@ class RouteExecutor:
             f"task {walk_position} skipped: target missing from network",
         )
 
-    def _emit_route_warning(self, train_id: str, kind: str, reason: str) -> None:
+    def _emit_run_error(
+        self, exec_state, walk_position, origin: str, text: str,
+        operation: str = "tick_train_phase1",
+    ) -> None:
+        """Emit a run/task error as an event (design_new.md "Error events").
+
+        No entity stores an error: the record rides in the event's `error`
+        field, and the run panel reads it back through
+        `NotificationCenter.latest_error_for(...)`. The event names both a
+        `"route_run"` ref and a `"walk_position"` ref, so a run-level filter
+        and a task-level filter both find it.
+
+        Repeats are suppressed by `NotificationCenter`, so Phase 1 may call
+        this on every eligible tick while a task stays blocked for the same
+        reason.
+        """
+        sc = getattr(self, "simulation_controller", None)
+        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        if nc is None:
+            return
+        try:
+            from notification_center import (
+                Kind as _Kind,
+                route_run_ref as _rref,
+                train_ref as _tref,
+                walk_position_ref as _wref,
+            )
+            from runtime_payloads import ErrorRecord as _ErrRec
+
+            entities = [_tref(exec_state.train_id), _rref(exec_state.run_id)]
+            if walk_position is not None:
+                entities.append(_wref(exec_state.run_id, walk_position))
+            nc.emit(
+                source="RouteExecutor",
+                operation=operation,
+                kind=_Kind.WARNING,
+                message=text,
+                entities=entities,
+                error=_ErrRec(text, origin),
+                event_time=self._now(),
+            )
+        except Exception:
+            pass
+
+    def _emit_route_warning(
+        self, train_id: str, origin: str, reason: str,
+        operation: str = "tick_train_phase1",
+    ) -> None:
         """Emit an operator-facing warning via NotificationCenter, falling back
         to a logger warning when the center is unavailable. Used by the
         broken-task skip and the no-reachable-task stall (design_new.md
         "Unreachable and broken task handling").
+
+        `origin` is the `ErrorRecord.origin` label naming why the train is
+        blocked — one of the v1 error origins (`"planning_failed"`,
+        `"task_skipped"`, `"run_stalled"`, `"wedge"`, `"meet_hold"`). Repeats
+        with the same entity, operation, origin and payload are suppressed by
+        `NotificationCenter`, so Phase 1 may call this on every eligible tick.
         """
         sc = getattr(self, "simulation_controller", None)
         nc = getattr(sc, "notification_center", None) if sc is not None else None
         if nc is not None:
             try:
-                from notification_center import Severity as _Severity
+                from notification_center import Kind as _Kind, train_ref as _train_ref
+                from runtime_payloads import ErrorRecord as _ErrorRecord
 
                 nc.emit(
                     source="RouteExecutor",
-                    kind=kind,
-                    severity=_Severity.WARNING,
+                    operation=operation,
+                    kind=_Kind.WARNING,
+                    message=reason,
+                    entities=[_train_ref(train_id)],
+                    error=_ErrorRecord(reason, origin),
                     event_time=time.time(),
-                    train_id=train_id,
-                    payload={"reason": reason},
                 )
                 return
             except Exception:
                 pass
-        logger.warning("route warning for %s (%s): %s", train_id, kind, reason)
+        logger.warning("route warning for %s (%s): %s", train_id, origin, reason)
 
     # ----- Phase 1 sub-steps ------------------------------------------------
     def _deviation_cleanup_eligible(self, controller: TrainController) -> bool:
@@ -2029,31 +2109,23 @@ class RouteExecutor:
                 )
                 return False
 
-            # Per design_new.md (fix #17): write last_error on failed
-            # create_path/extend_path so operators can inspect the reason.
-            now = self._now()
+            # Emit why acquisition failed so operators can inspect the reason.
             reason_text = (
                 getattr(result, "reason", None) or "create_path/extend_path failed"
             )
-            err = ErrorRecord(text=reason_text, time=now)
             row_idx = projection.walk_position
             self._sync_task_runs(route, exec_state)
-            if 0 <= row_idx < len(exec_state.task_runs):
-                exec_state.task_runs[row_idx].last_error = err
-            exec_state.last_error = err
+            self._emit_run_error(
+                exec_state, row_idx, "planning_failed", reason_text,
+            )
             return False
 
-        # Authority acquisition succeeded for this task. Clear any prior error
-        # on the run and on the just-acquired task row so the live "current
-        # path error" projection (train-panel badge / Quick Route no-path
-        # toast, derived from `RouteRun.last_error` in `TrainController.to_dict`)
-        # reflects only a CURRENT inability to route, not a stale earlier
-        # failure that has since been resolved.
-        if exec_state.last_error is not None:
-            exec_state.last_error = None
-        success_row_idx = projection.walk_position
-        if 0 <= success_row_idx < len(exec_state.task_runs):
-            exec_state.task_runs[success_row_idx].last_error = None
+        # Authority acquisition succeeded for this task. Nothing to clear:
+        # errors are events, not entity state, and the surfaces that show a
+        # reason gate on live state instead — the no-authority banner and the
+        # Quick Route toast are shown only while the controller payload carries
+        # no `received_path_plan`, so a reason from before the train acquired
+        # authority is never displayed (design_new.md "Error events").
 
         # Fix (deviation guard): insert any start-block tiles that lie between
         # the train's current head tile and the path segment's first tile into
@@ -2197,10 +2269,9 @@ class RouteExecutor:
         # design_new.md "Event log": a fresh create (no prior active path) is a
         # PATH_CREATED event; an extend grows an existing path and is not.
         if active_path_id is None:
-            from notification_center import EventKind
-
             self._emit_event(
-                EventKind.PATH_CREATED,
+                "create_path",
+                f"path created for {train.train_id} to {target_block}",
                 train_id=train.train_id,
                 path_id=getattr(result, "path_id", None),
                 payload={"requested_destination_block_id": target_block},
@@ -2234,15 +2305,18 @@ class RouteExecutor:
                 emitted = False
                 if nc is not None:
                     try:
-                        from notification_center import Severity as _Severity
+                        from notification_center import Kind as _Kind, train_ref as _tref
+                        from runtime_payloads import ErrorRecord as _ErrRec
 
                         nc.emit(
                             source="RouteExecutor",
-                            kind="depart_failed",
-                            severity=_Severity.WARNING,
+                            operation="depart",
+                            kind=_Kind.WARNING,
+                            message=f"depart() raised for {train_id}; will retry",
+                            entities=[_tref(train_id)],
+                            error=_ErrRec(str(exc), "depart_failed"),
                             event_time=time.time(),
-                            train_id=train_id,
-                            payload={"reason": str(exc), "will_retry": True},
+                            payload={"will_retry": True},
                         )
                         emitted = True
                     except Exception:
@@ -2457,7 +2531,7 @@ class RouteExecutor:
         was_deviation=False, was_run_completion=False)``. Every cancellation
         kind shares the same body; ``was_deviation`` and ``was_run_completion``
         are the two classification bits ``PathDispatcher.cancel_path(...)``
-        derives from ``deviation_kind`` / ``route_progress_kind`` and are the
+        derives from ``deviation`` / ``route_progress_kind`` and are the
         only cancellation-kind details that cross this callback boundary. The
         callback is bookkeeping only: it must not choose a fresh target or
         create fresh authority. The free-form diagnostic `initiator` stays on
@@ -2480,11 +2554,13 @@ class RouteExecutor:
         # `current_route_status` does not transition.
         exec_state.path_cancelled = True
         exec_state.path_cancel_was_deviation = was_deviation
-        # Per design_new.md (fix #17): record cancellation reason on last_error.
-        now = self._now()
-        exec_state.last_error = ErrorRecord(
-            text=f"cancelled: {reason}" if reason else "cancelled",
-            time=now,
+        # The cancellation reason is emitted, not stored.
+        self._emit_run_error(
+            exec_state,
+            exec_state.current_waypoint_index,
+            "deviation" if was_deviation else "operator_cancelled",
+            f"cancelled: {reason}" if reason else "cancelled",
+            operation="handle_path_cancellation",
         )
 
     def handle_path_completion(
@@ -2546,11 +2622,12 @@ class RouteExecutor:
                 # time is forbidden. Diagnose and skip this walk-position.
                 self._emit_route_warning(
                     train_id,
-                    "diagnostic",
+                    "planning_failed",
                     f"handle_path_completion: task_runs[{pos}] has "
                     f"resolved_target=None; skipping "
                     f"(authority_end={authority_end_block_id}). Phase 1 must "
                     f"write resolved_target before the path completes.",
+                    operation="handle_path_completion",
                 )
                 continue
             if (
@@ -2637,10 +2714,9 @@ class RouteExecutor:
         if matched_row_was_open:
             self._advance_to_next_task(route, exec_state)
         # design_new.md "Event log": the train reached its stop target.
-        from notification_center import EventKind
-
         self._emit_event(
-            EventKind.TRAIN_ARRIVED,
+            "check_stop_arrival",
+            f"{train_id} arrived at {authority_end_block_id}",
             train_id=train_id,
             path_id=path_id,
             payload={"block_id": authority_end_block_id},
@@ -2773,18 +2849,20 @@ class RouteExecutor:
                     emitted = False
                     if nc is not None:
                         try:
-                            from notification_center import Severity as _Severity
+                            from notification_center import Kind as _Kind, train_ref as _tref
+                            from runtime_payloads import ErrorRecord as _ErrRec
 
                             nc.emit(
                                 source="RouteExecutor",
-                                kind="finish_dwell_failed",
-                                severity=_Severity.WARNING,
+                                operation="remove_train_route_run",
+                                kind=_Kind.WARNING,
+                                message=(
+                                    f"finish_dwell() raised for {train_id} during "
+                                    "route-run removal"
+                                ),
+                                entities=[_tref(train_id)],
+                                error=_ErrRec(str(exc), "finish_dwell_failed"),
                                 event_time=time.time(),
-                                train_id=train_id,
-                                payload={
-                                    "reason": str(exc),
-                                    "context": "route_run_removal",
-                                },
                             )
                             emitted = True
                         except Exception:
@@ -2849,7 +2927,8 @@ class RouteExecutor:
         self._pending_reassign.pop(train_id, None)
 
     def _emit_event(
-        self, kind, train_id=None, payload=None, path_id=None, severity=None
+        self, operation, message, train_id=None, payload=None, path_id=None,
+        kind=None,
     ) -> None:
         """Emit an operational event-log notification through NotificationCenter
         (design_new.md "Event log"). Best-effort: resolves the sink defensively,
@@ -2859,15 +2938,24 @@ class RouteExecutor:
             nc = getattr(sc, "notification_center", None) if sc is not None else None
             if nc is None:
                 return
-            from notification_center import Severity as _Severity
+            from notification_center import (
+                Kind as _Kind,
+                path_ref as _path_ref,
+                train_ref as _train_ref,
+            )
 
+            entities = []
+            if train_id:
+                entities.append(_train_ref(train_id))
+            if path_id:
+                entities.append(_path_ref(path_id))
             nc.emit(
                 source="RouteExecutor",
-                kind=kind,
-                severity=severity if severity is not None else _Severity.INFO,
+                operation=operation,
+                kind=kind if kind is not None else _Kind.INFO,
+                message=message,
+                entities=entities,
                 event_time=self._now(),
-                train_id=train_id,
-                path_id=path_id,
                 payload=payload or {},
             )
         except Exception:

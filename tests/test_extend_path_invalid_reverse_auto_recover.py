@@ -3,7 +3,7 @@
 Per design_new.md **Planning Kernel**, a structural extend failure on a live
 path — `invalid_reverse`, `no_viable_path`, or any other non-temporary kind —
 latches `pending_path_cancel_request` rather than surfacing a hard
-`last_error`. Phase 3 cancels the stale path once the train stops, and the
+an error event. Phase 3 cancels the stale path once the train stops, and the
 next eligible Phase 1 acquires fresh authority via `create_path()` from the
 train's current span, which is free to pick a route the extend could not.
 
@@ -65,15 +65,35 @@ def _make_projection(target_block="BLK_DEST", direction="forward", walk_pos=1):
     )
 
 
+def _runtime_with_stream():
+    """A minimal runtime carrying the one event stream, so error events have
+    somewhere to land (errors are events, not entity state)."""
+    from notification_center import NotificationCenter
+
+    return SimpleNamespace(notification_center=NotificationCenter())
+
+
+def _emitted_errors(executor):
+    """Error-carrying events on the one stream (design_new.md "Error events")."""
+    nc = getattr(
+        getattr(executor, "simulation_controller", None), "notification_center", None
+    )
+    if nc is None:
+        return []
+    return [n for n in nc.peek_recent(200) if n.error is not None]
+
+
 def _make_exec_state():
     state = MagicMock(spec=RouteExecutionState)
     state.effective_acquisition_mode = MagicMock(return_value=AcquisitionMode.BEST_EFFORT)
     state.task_runs = []
-    state.last_error = None
+    state.train_id = "T3"
+    state.run_id = "T3:R1:1"
+    state.current_waypoint_index = 0
     return state
 
 
-def test_invalid_reverse_latches_cancel_and_skips_last_error():
+def test_invalid_reverse_latches_cancel_and_emits_no_hard_error():
     train_id = "T3"
     train = SimpleNamespace(train_id=train_id)
     route = MagicMock()
@@ -87,6 +107,7 @@ def test_invalid_reverse_latches_cancel_and_skips_last_error():
     dispatcher = _FakeDispatcher(train_id, active_path_id="P1", extend_result=extend_result)
 
     executor = RouteExecutor(network=MagicMock(), path_dispatcher=dispatcher)
+    executor.simulation_controller = _runtime_with_stream()
     controller, latches = _make_controller()
     exec_state = _make_exec_state()
     projection = _make_projection()
@@ -104,13 +125,13 @@ def test_invalid_reverse_latches_cancel_and_skips_last_error():
     assert dispatcher.create_calls == []
 
     # The recovery path latches a Phase-3 cancellation instead of bubbling
-    # the failure up as last_error.
+    # the failure up as an operator-facing error.
     assert latches.path_cancel_request is not None
     assert latches.path_cancel_request.initiator == "revoked"
     assert "reverse" in (latches.path_cancel_request.reason or "")
 
-    # No hard error should be recorded — the operator does not need to act.
-    assert exec_state.last_error is None
+    # No hard error event — the operator does not need to act.
+    assert _emitted_errors(executor) == []
 
 
 def test_no_viable_path_also_latches_cancellation():
@@ -137,6 +158,7 @@ def test_no_viable_path_also_latches_cancellation():
     dispatcher = _FakeDispatcher(train_id, active_path_id="P1", extend_result=extend_result)
 
     executor = RouteExecutor(network=MagicMock(), path_dispatcher=dispatcher)
+    executor.simulation_controller = _runtime_with_stream()
     executor._sync_task_runs = MagicMock()
     executor._now = MagicMock(return_value=12345.0)
 
@@ -156,11 +178,11 @@ def test_no_viable_path_also_latches_cancellation():
     assert latches.path_cancel_request is not None
     assert latches.path_cancel_request.initiator == "revoked"
     assert "still held" in (latches.path_cancel_request.reason or "")
-    assert exec_state.last_error is None
+    assert _emitted_errors(executor) == []
 
 
-def test_temporary_failure_kinds_still_record_last_error():
-    """A temporary failure keeps the live path and records a hard last_error.
+def test_temporary_failure_kinds_still_emit_a_hard_error():
+    """A temporary failure keeps the live path and emits a hard error event.
 
     BLOCKED_BEFORE_TARGET means a viable candidate exists but a current
     occupancy/reservation/lock conflict stopped acquisition. Per design_new.md
@@ -180,6 +202,7 @@ def test_temporary_failure_kinds_still_record_last_error():
     dispatcher = _FakeDispatcher(train_id, active_path_id="P1", extend_result=extend_result)
 
     executor = RouteExecutor(network=MagicMock(), path_dispatcher=dispatcher)
+    executor.simulation_controller = _runtime_with_stream()
     # _sync_task_runs is a real method that touches Route internals; stub it
     # since this test only cares about the error-recording branch.
     executor._sync_task_runs = MagicMock()
@@ -200,6 +223,8 @@ def test_temporary_failure_kinds_still_record_last_error():
     assert result is False
     # No recovery latch — the live path is still valid and worth retrying.
     assert latches.path_cancel_request is None
-    # Hard error recorded.
-    assert exec_state.last_error is not None
-    assert "No forward path" in exec_state.last_error.text
+    # The diagnostic is an event carrying an ErrorRecord, not entity state.
+    errors = _emitted_errors(executor)
+    assert errors, "a temporary acquisition failure must emit an error event"
+    assert errors[-1].error.origin == "planning_failed"
+    assert "No forward path" in errors[-1].error.text

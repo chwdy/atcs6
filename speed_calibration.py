@@ -193,13 +193,17 @@ class SpeedCalibration:
         if nc is None:
             return
         try:
-            from notification_center import Severity
+            from notification_center import Kind, train_ref
 
             nc.emit(
                 source="SpeedCalibration",
-                kind="command_result",
-                severity=Severity.INFO if success else Severity.WARNING,
-                train_id=run.train_id,
+                operation="speed_calibration",
+                kind=Kind.INFO if success else Kind.WARNING,
+                message=reason or (
+                    "speed calibration finished" if success
+                    else "speed calibration failed"
+                ),
+                entities=[train_ref(run.train_id)],
                 payload={
                     "command_id": f"calibrate:{run.train_id}",
                     "command_name": "speed_calibration",

@@ -1858,14 +1858,22 @@ class TrainPhysics:
             emitted = False
             if nc is not None:
                 try:
-                    from notification_center import Severity as _Severity
+                    from notification_center import Kind as _Kind, train_ref as _tref
+                    from runtime_payloads import ErrorRecord as _ErrRec
 
                     nc.emit(
                         source="TrainPhysics",
-                        kind="block_tracker_desync",
-                        severity=_Severity.WARNING,
+                        operation="_sync_block_tracker",
+                        kind=_Kind.WARNING,
+                        message=(
+                            f"block tracker desync for {train.train_id}"
+                        ),
+                        entities=[_tref(train.train_id)],
+                        error=_ErrRec(
+                            "tile-derived blocks disagree with the local tracker",
+                            "block_tracker_desync",
+                        ),
                         event_time=time.time(),
-                        train_id=train.train_id,
                         payload={
                             "tile_derived": sorted(expected_blocks),
                             "local_tracker": sorted(self._last_occupied_blocks),

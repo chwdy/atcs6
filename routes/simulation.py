@@ -29,8 +29,12 @@ def register(app, state: AppState) -> None:
 
         Returns the `NotificationCenter` stream as records the read-only viewer
         and replay layers consume. Optional filters:
-        ``?kind=&train_id=&severity=&since=&until=&limit=`` (filter by kind /
-        train / severity / time range / most-recent count).
+        ``?kind=&operation=&entity_type=&entity_id=&train_id=&since=&until=&limit=``
+        (level / emitting function / entity ref / time range / most-recent
+        count). ``train_id`` is shorthand for
+        ``entity_type=train&entity_id=<id>``: per-entity views are membership
+        filters over the event's `entities` list, which is the only entity
+        routing key (design_new.md "Runtime notifications").
 
         ``?persisted=true`` reads the on-disk stream instead of the in-memory
         archive, so an earlier run's incidents can be reviewed after a restart —
@@ -48,8 +52,12 @@ def register(app, state: AppState) -> None:
         except (TypeError, ValueError):
             limit = 500
         kind = request.args.get("kind")
+        operation = request.args.get("operation")
+        entity_type = request.args.get("entity_type")
+        entity_id = request.args.get("entity_id")
         train_id = request.args.get("train_id")
-        severity = request.args.get("severity")
+        if train_id and not entity_type:
+            entity_type, entity_id = "train", train_id
 
         def _time_arg(name):
             raw = request.args.get(name)
@@ -75,9 +83,9 @@ def register(app, state: AppState) -> None:
         for e in source:
             if kind and e.kind != kind:
                 continue
-            if train_id and e.train_id != train_id:
+            if operation and e.operation != operation:
                 continue
-            if severity and e.severity.value != severity:
+            if entity_type and entity_id and not e.has_entity(entity_type, entity_id):
                 continue
             if since is not None and e.event_time < since:
                 continue

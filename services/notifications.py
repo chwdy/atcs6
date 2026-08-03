@@ -33,16 +33,25 @@ def emit_command_result(
     """
     resolved_command_id = command_id or str(uuid.uuid4())
     try:
-        from notification_center import Severity
+        from notification_center import EntityRef, Kind
 
         sim_controller = getattr(state, "sim_controller", None)
         notification_center = getattr(sim_controller, "notification_center", None)
         if notification_center is None:
             return resolved_command_id
+        # `entity_id_key` is "<entity>_id"; the entity type is that prefix.
+        entity_type = entity_id_key[:-3] if entity_id_key.endswith("_id") else ""
         notification_center.emit(
             source=source,
-            kind="command_result",
-            severity=Severity.INFO if success else Severity.WARNING,
+            operation=command_name,
+            kind=Kind.INFO if success else Kind.WARNING,
+            message=reason or (
+                f"{command_name} accepted" if success
+                else f"{command_name} rejected"
+            ),
+            entities=(
+                [EntityRef(entity_type, entity_id)] if entity_type else []
+            ),
             payload={
                 "command_id": resolved_command_id,
                 "command_name": command_name,

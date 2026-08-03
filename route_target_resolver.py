@@ -287,7 +287,7 @@ class RouteTargetResolver:
 
         Thin wrapper over `resolve_task_target_block_detailed(...)` that
         drops the failure reason. Callers that need the reason (e.g. Phase 1
-        building a `task_runs[i].last_error` record per the canonical
+        building the route-run error event's `ErrorRecord` per the canonical
         error-record writer rule in design_new.md) call the detailed
         variant directly.
         """
@@ -356,8 +356,8 @@ class RouteTargetResolver:
         availability filter (every candidate block / platform / station is
         `disabled` or `manual` while RouteExecutor's auto-routing context
         cannot use manual_override). `reason` is a short human-readable
-        string suitable for `RouteTaskRun.last_error.text`; Phase 1 writes
-        it directly onto `task_runs[walk_position].last_error` (inlined in
+        string suitable for the error event's `ErrorRecord.text`; Phase 1
+        emits it as one route-run error event (inlined in
         `tick_train_phase1`) so the operator sees why the task stalled
         instead of an empty diagnostic.
 

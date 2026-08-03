@@ -53,6 +53,7 @@ from constants import (
     STOPPED_SPEED_THRESHOLD_KMH,
     TRACK_END_SAFETY_MARGIN_CM,
 )
+from runtime_payloads import ErrorRecord as _ErrorRecord
 from enums import AtcLimitReasonCode, BlockState, ControllerCondition, Direction, HandlePosition, SignalState, TrainState
 from model_scale import get_speed_conversion_factor
 from runtime_payloads import (
@@ -205,8 +206,7 @@ class TrainController:
     #
     # Toast queue lives on the `Notifications` sub-module attached as
     # `self.notifications` in `__post_init__`. External callers read via
-    # `controller.notifications.pending` or drain via
-    # `controller.notifications.get_and_clear()`.
+    # the one `NotificationCenter` stream, filtered by this train's entity ref.
 
     # -------------------------------------------------------------------------
     # Cab & Mode State
@@ -597,18 +597,18 @@ class TrainController:
             emitted = False
             if nc is not None:
                 try:
-                    from notification_center import Severity as _Severity
+                    from notification_center import Kind as _Kind, train_ref as _tref
+                    from runtime_payloads import ErrorRecord as _ErrRec
 
                     nc.emit(
                         source="TrainController",
-                        kind="command_drain_failed",
-                        severity=_Severity.ERROR,
+                        operation="_drain_command_inbox",
+                        kind=_Kind.ERROR,
+                        message=f"command drain raised for {self.train_id}",
+                        entities=[_tref(self.train_id)],
+                        error=_ErrRec(str(exc), "command_drain_failed"),
                         event_time=event_time,
-                        train_id=self.train_id,
-                        payload={
-                            "reason": str(exc),
-                            "traceback": _tb.format_exc(),
-                        },
+                        payload={"traceback": _tb.format_exc()},
                     )
                     emitted = True
                 except Exception:
@@ -710,7 +710,11 @@ class TrainController:
             self.notifications.emit(
                 "ATC triggered emergency brake: overspeed"
                 if overspeed > OVERSPEED_EB_THRESHOLD_KMH
-                else "No movement authority: emergency brake"
+                else "No movement authority: emergency brake",
+                operation="_run_atc",
+                error=_ErrorRecord(
+                    "ATC escalated to emergency brake", "eb"
+                ),
             )
             return
 
@@ -721,7 +725,8 @@ class TrainController:
             if not self._overspeed_warned:
                 self._overspeed_warned = True
                 self.notifications.emit(
-                    f"ATC overspeed warning: {overspeed:.1f} km/h over the limit"
+                    f"ATC overspeed warning: {overspeed:.1f} km/h over the limit",
+                    operation="_run_atc",
                 )
         else:
             self._overspeed_warned = False
@@ -2016,10 +2021,10 @@ class TrainController:
             path_end_reason_code=path_end_reason_code,
         )
 
-    # Toast emission and drain live on the `Notifications` sub-module
-    # attached as `self.notifications`. External callers use
-    # `controller.notifications.get_and_clear()`; controller-internal
-    # writers use `self.notifications.emit(msg)`.
+    # Event emission lives on the `Notifications` sub-module attached as
+    # `self.notifications` — the thin adapter onto the one `NotificationCenter`
+    # stream. It holds no queue: operator-facing per-train reads are filters
+    # over that stream (design_new.md "Runtime notifications").
 
     # Operator commands (power_on_cmd, power_off_cmd, set_cab, set_mode,
     # set_handle, set_manual_mode_type, set_manual_power_percent, enqueue_command)
@@ -2087,7 +2092,6 @@ class TrainController:
         # design_new.md "Event log": a TRAIN_DEPARTED event marks the
         # READY -> RUNNING_MOVING transition only, not the idempotent re-calls
         # depart() accepts while already moving.
-        from notification_center import EventKind as _EventKind
 
         _was_ready = self.ops.state == TrainState.READY
 
@@ -2098,7 +2102,9 @@ class TrainController:
             result = self.ato.go()
             if result.success:
                 if _was_ready:
-                    self._emit_event(_EventKind.TRAIN_DEPARTED)
+                    self._emit_event(
+                        "depart", f"{self.train_id} departed"
+                    )
                 return (True, None)
             return (False, result.reason if hasattr(result, "reason") else "ato_go rejected")
 
@@ -2112,10 +2118,12 @@ class TrainController:
             return (False, "facing direction not set")
         if self.ops.state == TrainState.READY:
             self.ops.state = TrainState.RUNNING_MOVING
-            self._emit_event(_EventKind.TRAIN_DEPARTED)
+            self._emit_event("depart", f"{self.train_id} departed")
         return (True, None)
 
-    def _emit_dwell_diagnostic(self, message: str) -> None:
+    def _emit_dwell_diagnostic(
+        self, message: str, operation: str = "enter_station_dwell"
+    ) -> None:
         """Emit a dwell-transition rejection diagnostic through
         NotificationCenter (design_new.md: rejected dwell transitions leave
         state unchanged and emit a diagnostic). Best-effort: resolves the sink
@@ -2126,20 +2134,22 @@ class TrainController:
             nc = getattr(sc, "notification_center", None) if sc is not None else None
             if nc is None:
                 return
-            from notification_center import Severity as _Severity
+            from notification_center import Kind as _Kind, train_ref as _tref
 
             nc.emit(
                 source="TrainController",
-                kind="diagnostic",
-                severity=_Severity.WARNING,
+                operation=operation,
+                kind=_Kind.WARNING,
+                message=message,
+                entities=[_tref(self.train_id)],
                 event_time=self.commands._estimate_event_time(),
-                train_id=self.train_id,
-                payload={"message": message},
             )
         except Exception:
             pass
 
-    def _emit_event(self, kind: str, payload=None, severity=None, path_id=None) -> None:
+    def _emit_event(
+        self, operation: str, message: str, payload=None, kind=None, path_id=None
+    ) -> None:
         """Emit an operational event-log notification through NotificationCenter
         (design_new.md "Event log"). Best-effort: resolves the sink defensively,
         no-ops when none is wired (isolated unit-test controllers), and never
@@ -2149,15 +2159,22 @@ class TrainController:
             nc = getattr(sc, "notification_center", None) if sc is not None else None
             if nc is None:
                 return
-            from notification_center import Severity as _Severity
+            from notification_center import (
+                Kind as _Kind,
+                path_ref as _pref,
+                train_ref as _tref,
+            )
 
+            entities = [_tref(self.train_id)]
+            if path_id:
+                entities.append(_pref(path_id))
             nc.emit(
                 source="TrainController",
-                kind=kind,
-                severity=severity if severity is not None else _Severity.INFO,
+                operation=operation,
+                kind=kind if kind is not None else _Kind.INFO,
+                message=message,
+                entities=entities,
                 event_time=self.commands._estimate_event_time(),
-                train_id=self.train_id,
-                path_id=path_id,
                 payload=payload or {},
             )
         except Exception:
@@ -2187,9 +2204,9 @@ class TrainController:
             return (False, reason)
         self.ops.state = TrainState.RUNNING_AT_STATION
         self.ato.running = False
-        from notification_center import EventKind
-
-        self._emit_event(EventKind.ENTERED_DWELL)
+        self._emit_event(
+            "enter_station_dwell", f"{self.train_id} entered station dwell"
+        )
         return (True, None)
 
     def finish_dwell(self) -> Tuple[bool, Optional[str]]:

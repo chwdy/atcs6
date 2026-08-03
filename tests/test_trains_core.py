@@ -160,11 +160,11 @@ class TestSimulationController:
         completion_notes = [
             n
             for n in simulation.notification_center.peek_recent()
-            if getattr(n, "kind", None) == "path_completion"
-            and getattr(n, "train_id", None) == "TRAIN_1"
+            if getattr(n, "operation", None) == "handle_path_completion"
+            and n.has_entity("train", "TRAIN_1")
         ]
         assert completion_notes, (
-            "expected a path_completion notification for TRAIN_1; the "
+            "expected a path-completion event for TRAIN_1; the "
             "dispatcher must deliver completion through "
             "SimulationController.handle_path_completion(...)."
         )

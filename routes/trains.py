@@ -437,14 +437,36 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/trains/<train_id>/notifications", methods=["GET"])
     def get_train_notifications(train_id):
-        """Get and clear pending notifications for a train (for toast messages)."""
+        """Events naming this train, most recent first.
+
+        A filter over the one `NotificationCenter` stream, not a drain of a
+        per-train queue: it acknowledges nothing and empties nothing
+        (design_new.md "Runtime notifications"). Optional `kind` and
+        `since_notification_id` filters let a poller ask only for what it has
+        not seen.
+        """
         train = train_service.get_train(state, train_id)
         if not train:
             return jsonify({"error": "Train not found"}), 404
 
-        controller = _get_train_controller(train)
-        notifications = controller.notifications.get_and_clear()
-        return jsonify({"notifications": notifications})
+        sim = getattr(state, "sim_controller", None)
+        nc = getattr(sim, "notification_center", None) if sim else None
+        if nc is None:
+            return jsonify({"notifications": []})
+
+        try:
+            since = request.args.get("since_notification_id")
+            since_id = int(since) if since is not None else None
+        except (TypeError, ValueError):
+            since_id = None
+
+        events = nc.events_for(
+            "train",
+            train_id,
+            kind=request.args.get("kind"),
+            since_notification_id=since_id,
+        )
+        return jsonify({"notifications": [e.to_dict() for e in events]})
 
     # ============================================================================
     # Train Handle and Control Mode

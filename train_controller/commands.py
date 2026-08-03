@@ -28,6 +28,8 @@ The setters orchestrate writes across multiple sub-modules
 
 from __future__ import annotations
 
+from runtime_payloads import ErrorRecord as _ErrorRecord
+
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -135,7 +137,8 @@ class OperatorCommands:
         for kind, cmds in buckets.items():
             for cmd in cmds:
                 self._c.notifications.emit(
-                    f"Unknown command kind: {kind}"
+                    f"Unknown command kind: {kind}",
+                    operation="_drain_command_inbox",
                 )
 
     def _execute_drained_command(self, cmd: Command, event_time: float) -> None:
@@ -176,7 +179,9 @@ class OperatorCommands:
             # by the "unknown kind" notification in _drain_command_inbox.
         except Exception as exc:
             c.notifications.emit(
-                f"Command {kind} raised: {exc}"
+                f"Command {kind} raised: {exc}",
+                operation=kind,
+                error=_ErrorRecord(str(exc), "command_raised"),
             )
             return
 
@@ -189,14 +194,21 @@ class OperatorCommands:
         nc = getattr(sc, "notification_center", None) if sc is not None else None
         if nc is not None:
             try:
-                from notification_center import Severity as _Severity
-                severity = _Severity.INFO if result.success else _Severity.WARNING
+                from notification_center import Kind as _Kind, train_ref as _tref
+
+                # A command result is an ordinary event: `operation` is the
+                # command's own function name, `kind` is `info` on acceptance
+                # and `warning` on rejection (design_new.md "Runtime
+                # notifications").
                 nc.emit(
                     source="TrainController",
-                    kind="command_result",
-                    severity=severity,
+                    operation=kind,
+                    kind=_Kind.INFO if result.success else _Kind.WARNING,
+                    message=result.message or (
+                        f"{kind} accepted" if result.success else f"{kind} rejected"
+                    ),
+                    entities=[_tref(c.train_id)],
                     event_time=event_time,
-                    train_id=c.train_id,
                     payload={
                         "command_id": cmd.command_id,
                         "command_name": kind,
@@ -214,7 +226,7 @@ class OperatorCommands:
                 )
 
         if not result.success:
-            c.notifications.emit(result.message)
+            c.notifications.emit(result.message, operation=kind)
 
     # Inline executors — these contain the actual command bodies. The public
     # methods below (`power_on_cmd` etc.) call them after enqueuing so the

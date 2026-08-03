@@ -185,7 +185,9 @@ class TestSkipBrokenTask:
         ex._skip_broken_task(exec_state, route, 1)
 
         assert exec_state.task_runs[1].finished_at is not None
-        assert exec_state.task_runs[1].last_error is not None
+        # The diagnostic is an event, not entity state (design_new.md
+        # "Error events"): no `RouteTaskRun` field holds an `ErrorRecord`.
+        assert not hasattr(exec_state.task_runs[1], "last_error")
         # CIRCULAR appends the next walk task per the canonical append rule.
         assert len(exec_state.task_runs) == before + 1
 

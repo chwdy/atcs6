@@ -134,8 +134,12 @@ class TestRaceConditionFix:
         assert (controller.speed_limit_reason or "").lower() == "emergency brake active", (
             f"Lookahead should report EB active, got: {controller.speed_limit_reason}"
         )
-        assert any("overspeed" in note.lower() for note in controller.notifications.pending), (
-            f"Should have an overspeed EB notification, got: {controller.notifications.pending}"
+        _notes = [
+            n.message
+            for n in controller.simulation_controller.notification_center.peek_recent(200)
+        ]
+        assert any("overspeed" in note.lower() for note in _notes), (
+            f"Should have an overspeed EB event, got: {_notes}"
         )
 
 
@@ -429,7 +433,13 @@ class TestATCOverspeedWarning:
 
     @staticmethod
     def _warnings(controller):
-        return [n for n in controller.notifications.pending if "overspeed warning" in n]
+        # There is no per-controller toast queue: the events go straight to the
+        # one stream (design_new.md "Runtime notifications").
+        nc = controller.simulation_controller.notification_center
+        return [
+            n for n in nc.peek_recent(200)
+            if "overspeed warning" in n.message
+        ]
 
     def _tick_at(self, sim, controller, speed_kmh):
         controller.physics_sync.current_speed_kmh = speed_kmh

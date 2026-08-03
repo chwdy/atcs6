@@ -627,20 +627,20 @@ class UnidentifiedTrainTracker:
 
     # ------------------------------------------------------------------
 
-    def _emit(self, kind: str, message: str, train_id: str) -> None:
+    def _emit(self, operation: str, message: str, train_id: str) -> None:
         center = getattr(self._sim, "notification_center", None)
         if center is None:
             return
-        from notification_center import Severity
+        from notification_center import Kind, train_ref
 
         try:
             center.emit(
                 source="UnidentifiedTrainTracker",
-                kind=kind,
-                severity=Severity.WARNING,
+                operation=operation,
+                kind=Kind.WARNING,
+                message=message,
+                entities=[train_ref(train_id)],
                 event_time=time.time(),
-                train_id=train_id,
-                payload={"message": message},
             )
         except Exception:
             pass

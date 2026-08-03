@@ -11,10 +11,40 @@ canonical home.
 from flask import jsonify, request
 
 from app_state import AppState
+from typing import Optional
+
 from train_route import RouteRunStatus
 
 
-def _route_run_summary(route, run) -> dict:
+def _run_error(executor, run) -> Optional[dict]:
+    """The run's current error, read from the event stream. No entity stores
+    one (design_new.md "Error events")."""
+    if executor is None:
+        return None
+    try:
+        return executor.latest_run_error(run)
+    except Exception:
+        return None
+
+
+def _task_error(executor, run, walk_position: int) -> Optional[dict]:
+    """The task's current error, read from the event stream. An event about a
+    task names both a `"route_run"` ref and a `"walk_position"` ref, so this
+    task-level filter finds it."""
+    nc = getattr(getattr(executor, "simulation_controller", None),
+                 "notification_center", None)
+    if nc is None:
+        return None
+    try:
+        found = nc.latest_error_for(
+            "walk_position", f"{run.run_id}#{int(walk_position)}"
+        )
+    except Exception:
+        return None
+    return found.error.to_dict() if found is not None and found.error else None
+
+
+def _route_run_summary(route, run, executor=None) -> dict:
     """Wire-shape for one ``RouteRun`` row used by both the list and
     single-run endpoints.
 
@@ -48,9 +78,7 @@ def _route_run_summary(route, run) -> dict:
         "finished_task_count": sum(
             1 for t in run.task_runs if t.finished_at is not None
         ),
-        "last_error": (
-            run.last_error.to_dict() if run.last_error is not None else None
-        ),
+        "last_error": _run_error(executor, run),
         # Per design_new.md "RouteRun overrides": expose the sparse override
         # dict plus the effective values for UI display. Effective values
         # fall back to the shared Route when no override is present.
@@ -83,7 +111,7 @@ def register(app, state: AppState) -> None:
         runs_out = []
         for route_id, route in route_executor.route_registry.items():
             for run in route_executor.history_for_route(route_id):
-                runs_out.append(_route_run_summary(route, run))
+                runs_out.append(_route_run_summary(route, run, route_executor))
         runs_out.sort(key=lambda r: r["run_number"])
         return jsonify({"route_runs": runs_out})
 
@@ -152,15 +180,11 @@ def register(app, state: AppState) -> None:
                     "finished_at": task_run.finished_at,
                     "delay_class": task_run.delay_class,
                     "resolved_target": resolved_payload,
-                    "last_error": (
-                        task_run.last_error.to_dict()
-                        if task_run.last_error is not None
-                        else None
-                    ),
+                    "last_error": _task_error(route_executor, target_run, i),
                 }
             )
 
-        payload = _route_run_summary(target_route, target_run)
+        payload = _route_run_summary(target_route, target_run, route_executor)
         payload["route_name"] = target_route.name if target_route else ""
         payload["route_mode"] = (
             target_route.mode.value if target_route else None
@@ -235,7 +259,7 @@ def register(app, state: AppState) -> None:
             # _resolve_running_run_train_id matched moments ago.
             run = route_executor.execution_state_for(train_id)
             route = route_executor.get_route(run.route_id) if run else None
-            return jsonify(_route_run_summary(route, run))
+            return jsonify(_route_run_summary(route, run, route_executor))
 
     @app.route(
         "/api/route-runs/<int:run_number>/overrides/<field>",
@@ -260,4 +284,4 @@ def register(app, state: AppState) -> None:
                 return jsonify({"error": msg}), 400
             run = route_executor.execution_state_for(train_id)
             route = route_executor.get_route(run.route_id) if run else None
-            return jsonify(_route_run_summary(route, run))
+            return jsonify(_route_run_summary(route, run, route_executor))

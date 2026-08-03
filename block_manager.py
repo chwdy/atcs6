@@ -25,7 +25,7 @@ from datetime import datetime
 from typing import Any, Optional, Dict, List, Mapping, Set, Tuple, TYPE_CHECKING
 
 from block import Block, BlockState, CautionState
-from notification_center import EventKind, Severity
+from notification_center import Kind, block_ref, train_ref
 from runtime_payloads import (
     FatalPhysicalEntryConflict,
     FatalConflictKind,
@@ -369,13 +369,16 @@ class BlockManager:
         train = getattr(self.network, "trains", {}).get(train_id)
         return bool(train is not None and getattr(train, "is_unidentified", False))
 
-    def _emit_diagnostic(self, message: str, *, block_id: str, train_id: Optional[str] = None) -> None:
+    def _emit_diagnostic(
+        self, message: str, *, operation: str, block_id: str,
+        train_id: Optional[str] = None,
+    ) -> None:
         """Emit a runtime diagnostic through `NotificationCenter`.
 
         Per design_new.md, `NotificationCenter` is the only runtime sink;
-        skipped no-op release paths surface their warnings as
-        `kind = "diagnostic"` notifications rather than component-local
-        logging. Skips the emit when no `simulation_controller` /
+        skipped no-op release paths surface their warnings as `warning`-level
+        events naming the function that produced them, rather than
+        component-local logging. Skips the emit when no `simulation_controller` /
         `notification_center` is wired (early bootstrap / isolated unit
         tests); a receiver error must not mask the underlying operation.
         """
@@ -386,17 +389,21 @@ class BlockManager:
         try:
             nc.emit(
                 source="BlockManager",
-                kind="diagnostic",
-                severity=Severity.WARNING,
+                operation=operation,
+                kind=Kind.WARNING,
+                message=message,
+                entities=(
+                    ([train_ref(train_id)] if train_id else [])
+                    + ([block_ref(block_id)] if block_id else [])
+                ),
                 event_time=time.time(),
-                train_id=train_id,
-                payload={"message": message, "block_id": block_id},
             )
         except Exception:
             pass
 
     def _emit_event(
-        self, kind, *, block_id: str, train_id: Optional[str] = None,
+        self, operation: str, *, message: str, block_id: str,
+        train_id: Optional[str] = None,
         payload: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Emit an operational event-log notification through
@@ -419,10 +426,14 @@ class BlockManager:
         try:
             nc.emit(
                 source="BlockManager",
-                kind=kind,
-                severity=Severity.INFO,
+                operation=operation,
+                kind=Kind.INFO,
+                message=message,
+                entities=(
+                    ([train_ref(train_id)] if train_id else [])
+                    + [block_ref(block_id)]
+                ),
                 event_time=time.time(),
-                train_id=train_id,
                 payload=body,
             )
         except Exception:
@@ -625,7 +636,10 @@ class BlockManager:
                 # transition, not on an idempotent re-occupy of a block the
                 # train already holds.
                 self._emit_event(
-                    EventKind.BLOCK_ENTERED, block_id=block_id, train_id=train_id
+                    "occupy_blocks",
+                    message=f"{train_id} entered {block_id}",
+                    block_id=block_id,
+                    train_id=train_id,
                 )
 
         if not any_transition:
@@ -785,6 +799,7 @@ class BlockManager:
                 self._emit_diagnostic(
                     f"release {block_id} but it's not reserved for {path_id} "
                     f"(current owner: {block.reserved_by_path!r})",
+                    operation="release_path_blocks",
                     block_id=block_id,
                 )
                 continue
@@ -843,6 +858,7 @@ class BlockManager:
             self._emit_diagnostic(
                 f"block {block_id} release for train {train_id} "
                 f"skipped: currently occupied by {other!r}",
+                operation="on_block_tail_vacated",
                 block_id=block_id,
                 train_id=train_id,
             )
@@ -855,7 +871,8 @@ class BlockManager:
         # design_new.md "Event log": the train vacated a block (tail cleared).
         # Carries the exit edge so the log / replay can render direction.
         self._emit_event(
-            EventKind.BLOCK_VACATED,
+            "on_block_tail_vacated",
+            message=f"{train_id} vacated {block_id}",
             block_id=block_id,
             train_id=train_id,
             payload={"exit_edge": direction},

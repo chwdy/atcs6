@@ -299,22 +299,28 @@ class BlockPowerController:
                 block_id,
             )
             return
-        from notification_center import Severity
+        from notification_center import Kind, block_ref
+        from runtime_payloads import ErrorRecord
 
         try:
             center.emit(
                 source="BlockPowerController",
-                kind="block_track_output_unreachable",
-                severity=Severity.ERROR,
+                operation="set_block_voltage",
+                kind=Kind.ERROR,
+                message=(
+                    f"block {block_id} was commanded {voltage:.2f}V but the "
+                    f"output driver refused it: it has no track binding, or "
+                    f"the chip that binding names is not configured. Nothing "
+                    f"will move on this block until that is fixed in "
+                    f"Hardware Setup."
+                ),
+                entities=[block_ref(block_id)],
+                error=ErrorRecord(
+                    "the output driver refused the write",
+                    "block_track_output_unreachable",
+                ),
                 event_time=time.time(),
                 payload={
-                    "message": (
-                        f"block {block_id} was commanded {voltage:.2f}V but the "
-                        f"output driver refused it: it has no track binding, or "
-                        f"the chip that binding names is not configured. Nothing "
-                        f"will move on this block until that is fixed in "
-                        f"Hardware Setup."
-                    ),
                     "block_id": block_id,
                     "commanded_voltage": round(float(voltage), 3),
                 },

@@ -58,21 +58,34 @@ MAX_PRIORITY = 10
 
 @dataclass
 class ErrorRecord:
-    """Paired error message + timestamp.
+    """The single diagnostic-error object (design_new.md "Design Direction",
+    Errors and diagnostic classification).
 
-    Used by `RouteRun.last_error` and `RouteTaskRun.last_error` so the
-    message and its timestamp are always either both present or both absent.
+    It carries exactly two fields, always written whole — both present, or the
+    whole record is `None`:
+
+    - ``text``: the human-readable failure detail.
+    - ``origin``: a free-form label naming what produced the error (``"eb"``,
+      ``"out_of_sequence"``, ``"switch_intrusion"``, ``"operator_cancelled"``,
+      ``"planning_failed"``, ``"no_viable_path"``). Diagnostic only: no runtime
+      branch reads it, and writers may use labels beyond the ones the document
+      names. It is the field a reader groups errors by when ``operation`` alone
+      is too coarse.
+
+    It carries no timestamp and no severity of its own: a record is never
+    stored on an entity, it rides in the ``error`` field of one runtime event,
+    and that event owns the time (``event_time``) and the level (``kind``).
     """
 
     text: str
-    time: float
+    origin: str
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"text": self.text, "time": self.time}
+        return {"text": self.text, "origin": self.origin}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ErrorRecord":
-        return cls(text=str(data["text"]), time=float(data["time"]))
+        return cls(text=str(data["text"]), origin=str(data.get("origin", "")))
 
 
 # =============================================================================
@@ -175,8 +188,11 @@ class ControllerProgressReport:
     tail_vacated_resources: List[ResourceEvent] = field(default_factory=list)
     current_head_sequence_index: Optional[int] = None
     deviation: bool = False
-    deviation_kind: Optional[Literal["out_of_sequence", "beyond_authorized_target"]] = None
-    deviation_reason: Optional[str] = None
+    # The diagnostic for a movement-derived deviation, carried whole. Deviation
+    # is one predicate — the head resource is not in `resource_sequence` — so
+    # there is no classification enum here; `origin` names why for a reader
+    # (design_new.md "Design Direction", Errors and diagnostic classification).
+    deviation_error: Optional[ErrorRecord] = None
 
 
 # =============================================================================
@@ -195,17 +211,19 @@ class PendingPathCancelRequest:
         ``"revoked"``. Functional behavior is identical regardless of value;
         consumers must not branch on it.
       * `reason: Optional[str]` — optional plain-text diagnostic.
-      * `deviation_kind: Optional["out_of_sequence" | "beyond_authorized_target"]`
-        — set only by the movement-derived deviation writer; it rides the latch
-        payload so the Phase-3 commit can forward it into `cancel_path(...)` and
-        onto the `path_cancellation` notification.
+      * `deviation: bool` — set only by the movement-derived deviation writer.
+        It rides the latch payload so the Phase-3 commit can forward the
+        classification into `cancel_path(...)`.
+      * `error: Optional[ErrorRecord]` — the whole diagnostic record the writer
+        hands forward. The Phase-3 commit puts it in the cancellation event's
+        `error` field, where `origin` names what ended the path.
       * `route_progress_kind: Optional["run_complete"]` — set only by Phase 1
         run step `6a0d` after its timer elapses and service stopping begins.
-        `deviation_kind` and `route_progress_kind`, never `initiator`, drive
-        the only cancellation-callback classifications: `deviation_kind is
-        not None` produces the deviation diagnostic latch, while
-        `route_progress_kind == "run_complete"` marks a normal route-progress
-        release that must not set `RouteRun.path_cancelled`.
+        `deviation` and `route_progress_kind`, never `initiator`, drive the
+        only cancellation-callback classifications: `deviation` produces the
+        deviation diagnostic latch, while `route_progress_kind ==
+        "run_complete"` marks a normal route-progress release that must not set
+        `RouteRun.path_cancelled`.
 
     Consumed by Phase 3 only when the train is fully stopped. While the train
     is still rolling, the latch survives across ticks and is reconsidered on
@@ -215,9 +233,8 @@ class PendingPathCancelRequest:
 
     initiator: str
     reason: Optional[str] = None
-    deviation_kind: Optional[
-        Literal["out_of_sequence", "beyond_authorized_target"]
-    ] = None
+    deviation: bool = False
+    error: Optional[ErrorRecord] = None
     route_progress_kind: Optional[Literal["run_complete"]] = None
 
 
@@ -264,23 +281,24 @@ class PhaseLatches:
         self,
         initiator: str,
         reason: Optional[str] = None,
-        deviation_kind: Optional[
-            Literal["out_of_sequence", "beyond_authorized_target"]
-        ] = None,
+        deviation: bool = False,
+        error: Optional[ErrorRecord] = None,
         route_progress_kind: Optional[Literal["run_complete"]] = None,
     ) -> None:
         """Leaf writer for `path_cancel_request`.
 
-        `deviation_kind` is set only by the movement-derived deviation writer
+        `deviation` is set only by the movement-derived deviation writer
         (`initiator="deviation"`); it rides the latch payload into the Phase-3
-        `cancel_path(...)` commit per design_new.md line 270. `route_progress_kind`
-        is set only by Phase 1 run step `6a0d`; this is the only writer permitted
-        to pass a non-`None` value for it.
+        `cancel_path(...)` commit. `error` is the whole `ErrorRecord` the writer
+        hands forward, which the commit puts on the cancellation event.
+        `route_progress_kind` is set only by Phase 1 run step `6a0d`; this is
+        the only writer permitted to pass a non-`None` value for it.
         """
         self.path_cancel_request = PendingPathCancelRequest(
             initiator=initiator,
             reason=reason,
-            deviation_kind=deviation_kind,
+            deviation=deviation,
+            error=error,
             route_progress_kind=route_progress_kind,
         )
 

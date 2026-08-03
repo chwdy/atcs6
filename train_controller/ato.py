@@ -49,6 +49,8 @@ External callers access ATO state and behavior as:
 
 from __future__ import annotations
 
+from notification_center import Kind as _Kind
+
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from constants import STOPPED_SPEED_THRESHOLD_KMH
@@ -252,7 +254,9 @@ class ATOComputer:
                         f"ATO cannot start: cab auto-{'selection' if old_cab is None else 'correction'} failed - {result.message}",
                     )
                 c.notifications.emit(
-                    f"ATO auto-{'selected' if old_cab is None else 'switched'} cab to {required_cab} for path direction"
+                    f"ATO auto-{'selected' if old_cab is None else 'switched'} cab to {required_cab} for path direction",
+                    operation="ato_go",
+                    kind=_Kind.INFO,
                 )
         elif c.commands.cab is None:
             return CommandResult(

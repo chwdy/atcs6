@@ -17,7 +17,7 @@ export type ValidationErrorType = "unblocked_tile" | "block_occupied" | "block_r
 
 export interface ErrorRecord {
   text: string;
-  time: number;
+  origin: string;
 }
 
 export interface TileTraversal {
@@ -54,14 +54,14 @@ export interface ControllerProgressReport {
   tail_vacated_resources: ResourceEvent[];
   current_head_sequence_index: number | null;
   deviation: boolean;
-  deviation_kind: "out_of_sequence" | "beyond_authorized_target" | null;
-  deviation_reason: string | null;
+  deviation_error: ErrorRecord | null;
 }
 
 export interface PendingPathCancelRequest {
   initiator: string;
   reason: string | null;
-  deviation_kind: "out_of_sequence" | "beyond_authorized_target" | null;
+  deviation: boolean;
+  error: ErrorRecord | null;
   route_progress_kind: "run_complete" | null;
 }
 

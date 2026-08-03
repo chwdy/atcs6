@@ -201,8 +201,8 @@ def test_release_fires_once_per_rising_edge():
     for _ in range(4):
         sim._detect_block_occupancy()
 
-    kinds = [n.kind for n in sim.notification_center.peek_recent(50)]
-    assert kinds.count("train_presence_unknown") == 1
+    ops = [n.operation for n in sim.notification_center.peek_recent(50)]
+    assert ops.count("_mark_presence_unknown") == 1
 
 
 def test_span_survives_the_release_for_the_question_mark():

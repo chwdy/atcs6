@@ -1598,26 +1598,29 @@ class PathDispatcher:
         )
 
     @staticmethod
-    def _severity_for_initiator(initiator: Optional[str]):
-        """Map cancel initiator to notification severity.
+    def _kind_for_initiator(initiator: Optional[str]) -> str:
+        """Map cancel initiator to the event level.
 
-        Per design_new.md: "eb" is ERROR (safety-critical); "deviation" is
-        WARNING (off-path); all other initiators ("operator_cancelled",
-        "power_off", "revoked", None) are INFO.
+        Per design_new.md: "eb" is `error` (safety-critical); "deviation" is
+        `warning` (off-path); all other initiators ("operator_cancelled",
+        "power_off", "revoked", None) are `info`. The level is independent of
+        whether the event carries an `ErrorRecord` — an operator-requested
+        cancellation is `info` and still carries the record naming what ended
+        the path.
         """
-        from notification_center import Severity as _Sev
+        from notification_center import Kind as _Kind
         if initiator == "eb":
-            return _Sev.ERROR
+            return _Kind.ERROR
         if initiator == "deviation":
-            return _Sev.WARNING
-        return _Sev.INFO
+            return _Kind.WARNING
+        return _Kind.INFO
 
     def cancel_path(
         self,
         path_id: str,
         initiator: Optional[str] = None,
         reason: Optional[str] = None,
-        deviation_kind: Optional[str] = None,
+        error: Optional["ErrorRecord"] = None,
         route_progress_kind: Optional[str] = None,
     ) -> CancellationResult:
         """v1 cancel_path: release reservations, mark path CANCELLED.
@@ -1701,19 +1704,23 @@ class PathDispatcher:
         nc = getattr(sc, "notification_center", None) if sc is not None else None
         if nc is not None:
             try:
-                # design_new.md fix #15: severity driven by initiator, not hardcoded WARNING.
-                # design_new.md fix #16: forward deviation_kind through to notification payload.
+                # The level is driven by the initiator, not hardcoded. The
+                # diagnostic rides in `error`, whose `origin` names what ended
+                # the path.
+                from notification_center import train_ref as _train_ref, path_ref as _path_ref
+                from runtime_payloads import ErrorRecord as _ErrorRecord
+
                 nc.emit(
                     source="PathDispatcher",
-                    kind="path_cancellation",
-                    severity=self._severity_for_initiator(initiator),
+                    operation="cancel_path",
+                    kind=self._kind_for_initiator(initiator),
+                    message=f"path {path_id} cancelled for {train_id}",
+                    entities=[_train_ref(train_id), _path_ref(path_id)],
+                    error=error or _ErrorRecord(reason or "", initiator or "revoked"),
                     event_time=now,
-                    train_id=train_id,
-                    path_id=path_id,
                     payload={
                         "initiator": initiator,
                         "reason": reason or "",
-                        "deviation_kind": deviation_kind,
                     },
                 )
             except Exception:
@@ -2888,13 +2895,18 @@ class PathDispatcher:
                 # ATC brakes the train and the overspeed branch escalates to EB;
                 # the gated Phase-3 explicit-cancel step (`7b40`) commits the
                 # latch through `cancel_path(...)` once `is_stopped()` is true,
-                # pulling `deviation_kind` from the latch payload.
+                # carrying the report's own `ErrorRecord` forward.
                 controller = self._get_controller(train_id)
                 if controller is not None:
                     controller.route_hooks.phase_latches.set_path_cancel_request(
                         initiator="deviation",
-                        reason=report.deviation_reason or "",
-                        deviation_kind=report.deviation_kind,
+                        reason=(
+                            report.deviation_error.text
+                            if report.deviation_error is not None
+                            else ""
+                        ),
+                        deviation=True,
+                        error=report.deviation_error,
                     )
             # design_new.md fix #2: do NOT return here — fall through so that
             # tail_vacated_resources for already-occupied resources still fire.
@@ -3180,15 +3192,15 @@ class PathDispatcher:
         _sc = self.simulation_controller
         _nc = getattr(_sc, "notification_center", None) if _sc else None
         if _nc is not None:
-            from notification_center import EventKind, Severity
+            from notification_center import Kind, path_ref, train_ref
 
             _nc.emit(
                 source="PathDispatcher",
-                kind=EventKind.PATH_COMPLETED,
-                severity=Severity.INFO,
+                operation="release_path",
+                kind=Kind.INFO,
+                message=f"path {path_id} completed for {train_id}",
+                entities=[train_ref(train_id), path_ref(path_id)],
                 event_time=event_time,
-                train_id=train_id,
-                path_id=path_id,
                 payload={
                     "authority_end_block_id": path.get_authority_end_block_id(),
                 },

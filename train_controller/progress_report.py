@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from enums import TrainState
 from runtime_payloads import (
+    ErrorRecord,
     ControllerProgressReport,
     PhysicsSpanUpdate,
     ResourceEvent,
@@ -207,10 +208,11 @@ class ProgressReportBuilder:
                 block_to_exit_edge,
             )
 
-        # Per design_new.md lines 448–450: compute deviation fields from the
-        # live path plan and head position.
+        # Deviation is one predicate: the head resource is not in
+        # `resource_sequence`. There is no second classification — a head tile
+        # that IS in the map cannot have an index past the map's own maximum.
         deviation = False
-        deviation_kind = None
+        deviation_error = None
         current_head_sequence_index: Optional[int] = None
 
         if plan is not None:
@@ -224,18 +226,13 @@ class ProgressReportBuilder:
                 if seq_idx is None:
                     # Head tile is not in the resource_sequence — out of sequence.
                     deviation = True
-                    deviation_kind = "out_of_sequence"
+                    deviation_error = ErrorRecord(
+                        "train head is not on its authorized path",
+                        "out_of_sequence",
+                    )
                     current_head_sequence_index = None
                 else:
                     current_head_sequence_index = seq_idx
-                    # Check if the head has crossed beyond the authorized target.
-                    max_seq = max(
-                        (e.sequence_index for e in plan.resource_sequence),
-                        default=0,
-                    )
-                    if seq_idx > max_seq:
-                        deviation = True
-                        deviation_kind = "beyond_authorized_target"
 
         report = ControllerProgressReport(
             train_id=self._c.train_id,
@@ -244,8 +241,7 @@ class ProgressReportBuilder:
             tail_vacated_resources=tail_vacated_resources,
             current_head_sequence_index=current_head_sequence_index,
             deviation=deviation,
-            deviation_kind=deviation_kind,
-            deviation_reason=None,
+            deviation_error=deviation_error,
         )
         self._c.physics_sync.queued_progress_reports.append(report)
 
@@ -290,8 +286,6 @@ class ProgressReportBuilder:
                 tail_vacated_resources=tail_vacated_resources,
                 current_head_sequence_index=None,
                 deviation=False,
-                deviation_kind=None,
-                deviation_reason=None,
             )
         )
 

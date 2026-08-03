@@ -49,12 +49,21 @@ from switch_power import (
     SwitchPowerController,
 )
 from block_occupancy import SimulatedOccupancyDriver, BlockOccupancyDetector
-from notification_center import EventKind, NotificationCenter, Severity
+from notification_center import (
+    EntityRef,
+    Kind,
+    NotificationCenter,
+    block_ref,
+    path_ref,
+    switch_ref,
+    train_ref,
+)
 from route_executor import RouteExecutor
 
 from train_controller import TrainController, create_controller_for_train
 from train_physics import TrainPhysics, create_physics_for_train
 from runtime_payloads import (
+    ErrorRecord,
     FatalConflictKind,
     FatalPhysicalEntryConflict,
     HardwareFailure,
@@ -64,6 +73,32 @@ if TYPE_CHECKING:
     from path_dispatcher import PathDispatcher
 
 logger = logging.getLogger(__name__)
+
+
+def _fatal_conflict_entities(
+    payload: FatalPhysicalEntryConflict,
+) -> List[EntityRef]:
+    """Everything a fatal physical-entry conflict is about: both trains and the
+    resource they both claim."""
+    refs: List[EntityRef] = []
+    if payload.incoming_train_id:
+        refs.append(train_ref(payload.incoming_train_id))
+    if payload.prior_owner_train_id:
+        refs.append(train_ref(payload.prior_owner_train_id))
+    if payload.resource_id:
+        maker = switch_ref if payload.resource_type == "switch" else block_ref
+        refs.append(maker(payload.resource_id))
+    return refs
+
+
+def _hardware_entity_ref(payload: HardwareFailure) -> Optional[EntityRef]:
+    """The block or switch a hardware failure names, when it names one. A lost
+    controller or a failed detector transaction names no single entity."""
+    if not payload.resource_id:
+        return None
+    if payload.component == "switch_output":
+        return switch_ref(payload.resource_id)
+    return block_ref(payload.resource_id)
 
 
 class SimulationController(SwitchOutputOwner):
@@ -187,11 +222,11 @@ class SimulationController(SwitchOutputOwner):
             network=network,
             input_interface=self.input_interface,
             controllers=self.controllers,
-            notify=lambda kind, message: self.notification_center.emit(
+            notify=lambda operation, message: self.notification_center.emit(
                 source="BlockOccupancyDetector",
-                kind=kind,
-                severity=Severity.WARNING,
-                payload={"message": message},
+                operation=operation,
+                kind=Kind.WARNING,
+                message=message,
             ),
         )
         # Unidentified trains (design_new.md "Power -> Unidentified trains"): the Step-0 owner of
@@ -617,11 +652,11 @@ class SimulationController(SwitchOutputOwner):
             network=self.network,
             input_interface=self.input_interface,
             controllers=self.controllers,
-            notify=lambda kind, message: self.notification_center.emit(
+            notify=lambda operation, message: self.notification_center.emit(
                 source="BlockOccupancyDetector",
-                kind=kind,
-                severity=Severity.WARNING,
-                payload={"message": message},
+                operation=operation,
+                kind=Kind.WARNING,
+                message=message,
             ),
         )
         self.failed_runtime = False
@@ -838,16 +873,14 @@ class SimulationController(SwitchOutputOwner):
         if notify:
             self.notification_center.emit(
                 source="SimulationController",
-                kind="train_presence_unknown",
-                severity=Severity.WARNING,
+                operation="_mark_presence_unknown",
+                kind=Kind.WARNING,
+                message=(
+                    f"no occupancy detected under {train_id}; it was stopped "
+                    "and its route, path, and blocks were released"
+                ),
+                entities=[train_ref(train_id)],
                 event_time=time.time(),
-                train_id=train_id,
-                payload={
-                    "message": (
-                        f"no occupancy detected under {train_id}; it was stopped "
-                        "and its route, path, and blocks were released"
-                    ),
-                },
             )
 
     @staticmethod
@@ -991,25 +1024,29 @@ class SimulationController(SwitchOutputOwner):
 
         active_path_id = self.path_dispatcher.active_path_id_by_train(train.train_id)
         if active_path_id is not None:
-            # design_new.md line 270 + step `389a`: a movement-derived deviation
-            # latch carries `deviation_kind`; forward it from the latch payload
-            # into the commit so it reaches the `path_cancellation` notification.
+            # Step `389a`: a movement-derived deviation latch carries the
+            # writer's whole `ErrorRecord`; forward it from the latch payload
+            # into the commit so it reaches the cancellation event's `error`.
             self.path_dispatcher.cancel_path(
                 active_path_id,
                 initiator=payload.initiator,
                 reason=payload.reason,
-                deviation_kind=payload.deviation_kind,
+                error=payload.error,
                 route_progress_kind=payload.route_progress_kind,
             )
         else:
             # design_new.md fix #18: emit INFO notification instead of logger.debug.
             self.notification_center.emit(
                 source="SimulationController",
-                kind="diagnostic",
-                severity=Severity.INFO,
-                event_time=time.time(),
-                train_id=train.train_id,
+                operation="_consume_pending_path_cancel_request",
+                kind=Kind.DEBUG,
+                message=(
+                    f"latched cancel for {train.train_id} found no active path; "
+                    "the latch was cleared without a dispatcher call"
+                ),
+                entities=[train_ref(train.train_id)],
                 payload={"initiator": payload.initiator},
+                event_time=time.time(),
             )
 
     def _consume_pending_route_abort(
@@ -1372,11 +1409,12 @@ class SimulationController(SwitchOutputOwner):
             try:
                 self.notification_center.emit(
                     source="SimulationController",
-                    kind="signal_refresh_failed",
-                    severity=Severity.WARNING,
+                    operation="add_train",
+                    kind=Kind.WARNING,
+                    message=f"could not refresh signals after placing {train_id}",
+                    entities=[train_ref(train_id)],
+                    error=ErrorRecord(str(exc), "signal_refresh_failed"),
                     event_time=time.time(),
-                    train_id=train_id,
-                    payload={"context": "add_train", "reason": str(exc)},
                 )
             except Exception:
                 logger.warning(
@@ -1404,14 +1442,15 @@ class SimulationController(SwitchOutputOwner):
         if initial_cab is not None:
             controller.commands.cab = initial_cab
 
-        # Emit the TRAIN_PLACED event-log event (design_new.md "Event log";
-        # the canonical kind is `train_placed`, the operational vocab name).
+        # An operational event (design_new.md "Event log"): `operation` names the
+        # function that produced it, and it carries `kind = "info"` and no error.
         self.notification_center.emit(
             source="SimulationController",
-            kind=EventKind.TRAIN_PLACED,
-            severity=Severity.INFO,
+            operation="add_train",
+            kind=Kind.INFO,
+            message=f"train {train_id} placed on {starting_block_id}",
+            entities=[train_ref(train_id)],
             event_time=time.time(),
-            train_id=train_id,
             payload={
                 "starting_block_id": starting_block_id,
                 "initial_direction": direction.name,
@@ -1683,19 +1722,24 @@ class SimulationController(SwitchOutputOwner):
         except Exception as exc:
             self.notification_center.emit(
                 source="SimulationController",
-                kind="signal_refresh_failed",
-                severity=Severity.WARNING,
+                operation="adopt_unidentified_train",
+                kind=Kind.WARNING,
+                message=f"could not refresh signals after adopting {new_train_id}",
+                entities=[train_ref(new_train_id)],
+                error=ErrorRecord(str(exc), "signal_refresh_failed"),
                 event_time=time.time(),
-                train_id=new_train_id,
-                payload={"context": "adopt_unidentified_train", "reason": str(exc)},
             )
 
         self.notification_center.emit(
             source="SimulationController",
-            kind=EventKind.TRAIN_PLACED,
-            severity=Severity.INFO,
+            operation="adopt_unidentified_train",
+            kind=Kind.INFO,
+            message=(
+                f"train {new_train_id} adopted from unidentified "
+                f"{unidentified_train_id}"
+            ),
+            entities=[train_ref(new_train_id)],
             event_time=time.time(),
-            train_id=new_train_id,
             payload={
                 "adopted_from_unidentified_id": unidentified_train_id,
                 "head_tile": [head_tile[0], head_tile[1]],
@@ -1804,17 +1848,17 @@ class SimulationController(SwitchOutputOwner):
         # the length they typed in.
         self.notification_center.emit(
             source="SimulationController",
-            kind="adoption_surplus_blocks",
-            severity=Severity.WARNING,
+            operation="_hand_surplus_blocks_to_unidentified",
+            kind=Kind.WARNING,
+            message=(
+                f"{', '.join(sorted(surplus))} still read current but "
+                f"{train_id} is not long enough to reach them; they are "
+                f"tracked as unidentified trains. If that is really {train_id}, "
+                f"adopt it again with the full consist length."
+            ),
+            entities=[train_ref(train_id)] + [block_ref(b) for b in sorted(surplus)],
             event_time=time.time(),
-            train_id=train_id,
             payload={
-                "message": (
-                    f"{', '.join(sorted(surplus))} still read current but "
-                    f"{train_id} is not long enough to reach them; they are "
-                    f"tracked as unidentified trains. If that is really {train_id}, "
-                    f"adopt it again with the full consist length."
-                ),
                 "blocks": sorted(surplus),
                 "unidentified_train_ids": sorted(attribution),
             },
@@ -1927,10 +1971,19 @@ class SimulationController(SwitchOutputOwner):
         self.failed_runtime_at = self.simulation_time
         self.notification_center.emit(
             source="SimulationController",
-            kind="fatal_runtime",
-            severity=Severity.FATAL,
+            operation="enter_failed_runtime",
+            kind=Kind.ERROR,
+            message=(
+                f"fatal conflict on {payload.resource_type} "
+                f"{payload.resource_id}: every train is halted"
+            ),
+            entities=_fatal_conflict_entities(payload),
+            error=ErrorRecord(
+                f"{payload.incoming_train_id} entered {payload.resource_id} "
+                f"held by {payload.prior_owner_train_id}",
+                payload.conflict_kind.value,
+            ),
             event_time=time.time(),
-            train_id=payload.incoming_train_id,
             payload={
                 "resource_type": payload.resource_type,
                 "resource_id": payload.resource_id,
@@ -1973,8 +2026,18 @@ class SimulationController(SwitchOutputOwner):
 
         self.notification_center.emit(
             source="SimulationController",
-            kind="hardware_failure",
-            severity=Severity.FATAL,
+            operation="enter_hardware_failure",
+            kind=Kind.ERROR,
+            message=(
+                f"hardware failure in {payload.component}: every train is "
+                "halted and the outputs are in their safe state"
+            ),
+            entities=(
+                [_hardware_entity_ref(payload)]
+                if _hardware_entity_ref(payload) is not None
+                else []
+            ),
+            error=ErrorRecord(payload.message, payload.component),
             event_time=time.time(),
             payload={
                 "component": payload.component,
@@ -2023,14 +2086,18 @@ class SimulationController(SwitchOutputOwner):
 
         self.notification_center.emit(
             source="SimulationController",
-            kind="hardware_failure_cleared",
-            severity=Severity.WARNING,
+            operation="clear_hardware_failure",
+            kind=Kind.INFO,
+            message=(
+                "hardware failure cleared after the environment was reactivated"
+            ),
+            entities=(
+                [_hardware_entity_ref(payload)]
+                if payload is not None and _hardware_entity_ref(payload) is not None
+                else []
+            ),
             event_time=time.time(),
             payload={
-                "message": (
-                    "hardware failure cleared after the environment was "
-                    "reactivated"
-                ),
                 "component": payload.component if payload else None,
                 "operation": payload.operation if payload else None,
                 "resource_id": payload.resource_id if payload else None,
@@ -2082,15 +2149,19 @@ class SimulationController(SwitchOutputOwner):
 
         self.notification_center.emit(
             source="SimulationController",
-            kind="fatal_runtime_cleared",
-            severity=Severity.WARNING,
+            operation="clear_failed_runtime",
+            kind=Kind.INFO,
+            message=(
+                "fatal conflict cleared by the operator; every train is off "
+                "and the runtime is running again"
+            ),
+            entities=(
+                [train_ref(payload.incoming_train_id)]
+                if payload is not None and payload.incoming_train_id
+                else []
+            ),
             event_time=time.time(),
-            train_id=payload.incoming_train_id if payload is not None else None,
             payload={
-                "message": (
-                    "fatal conflict cleared by the operator; every train is off "
-                    "and the runtime is running again"
-                ),
                 "resource_type": payload.resource_type if payload else None,
                 "resource_id": payload.resource_id if payload else None,
             },
@@ -2123,10 +2194,10 @@ class SimulationController(SwitchOutputOwner):
         )
         self.notification_center.emit(
             source="SimulationController",
-            kind="path_completion",
-            severity=Severity.INFO,
-            train_id=train_id,
-            path_id=path_id,
+            operation="handle_path_completion",
+            kind=Kind.INFO,
+            message=f"path {path_id} completed for {train_id}",
+            entities=[train_ref(train_id), path_ref(path_id)],
             payload={
                 "authority_end_block_id": authority_end_block_id,
                 "requested_destination_direction": requested_destination_direction,
@@ -2153,13 +2224,17 @@ class SimulationController(SwitchOutputOwner):
         # the route callback boundary; it is carried only on the notification
         # emitted below.
         self.route_executor.handle_path_cancellation(train_id, path_id, reason)
+        # `kind` is the level the writer declared; `error` is independent of it.
+        # An operator-requested cancellation is ordinary `info` traffic and
+        # still carries the record naming what ended the path.
         self.notification_center.emit(
             source="SimulationController",
-            kind="path_cancellation",
-            severity=Severity.WARNING,
+            operation="handle_path_cancellation",
+            kind=Kind.INFO if initiator == "operator" else Kind.WARNING,
+            message=f"path {path_id} cancelled for {train_id}",
+            entities=[train_ref(train_id), path_ref(path_id)],
+            error=ErrorRecord(reason, initiator),
             event_time=event_time,
-            train_id=train_id,
-            path_id=path_id,
             payload={"initiator": initiator, "reason": reason},
         )
 

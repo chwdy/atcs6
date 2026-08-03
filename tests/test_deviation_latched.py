@@ -227,7 +227,9 @@ def test_deviation_while_rolling_latches_and_holds_resources():
     assert latch.initiator == "deviation", (
         f"expected initiator 'deviation', got {latch.initiator!r}"
     )
-    assert latch.deviation_kind == "out_of_sequence"
+    assert latch.deviation is True
+    assert latch.error is not None
+    assert latch.error.origin == "out_of_sequence"
 
     # The train is genuinely still rolling at this point.
     assert not controller.is_stopped()

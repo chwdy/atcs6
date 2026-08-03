@@ -79,16 +79,16 @@ _CONTROLLER_DERIVED_FIELDS: List[str] = [
 
 # Direct controller fields (queued_progress_reports) remain attached to
 # TrainController. The four Phase-3 latches live nested under
-# `controller.route_hooks.phase_latches`; the toast queue lives on the
-# `Notifications` sub-module at `controller.notifications.pending`. Each
-# resolver path is set in `_LATCH_META`'s `path` key.
+# `controller.route_hooks.phase_latches`. Each resolver path is set in
+# `_LATCH_META`'s `path` key. There is no toast queue to inspect: the
+# `Notifications` sub-module writes straight through to the one
+# `NotificationCenter` stream and holds no state.
 _CONTROLLER_LATCH_FIELDS: List[str] = [
     "queued_progress_reports",
     "pending_path_cancel_request",
     "pending_route_abort",
     "pending_power_off",
     "pending_route_deactivate",
-    "pending_notifications",
 ]
 
 
@@ -207,11 +207,6 @@ _LATCH_META: Dict[str, Dict[str, str]] = {
         "writer": "API / route executor",
         "consumer": "Phase 3 — route-deactivate step",
     },
-    "pending_notifications": {
-        "path": "notifications.pending",
-        "writer": "Any phase — controller helpers append diagnostic strings",
-        "consumer": "Phase 3 — SimulationController collects + clears",
-    },
 }
 
 
@@ -220,9 +215,8 @@ def _resolve_latch(controller: Any, name: str, meta: Dict[str, Any]) -> Any:
 
     Latches that live directly on TrainController (e.g. `queued_progress_reports`)
     have no `path` and are read by attribute name. Latches that live nested
-    under `controller.route_hooks.phase_latches` or `controller.notifications` carry a
-    `path` like `phase_latches.path_cancel_request` or
-    `notifications.pending`.
+    under `controller.route_hooks.phase_latches` carry a `path` like
+    `phase_latches.path_cancel_request`.
     """
     path = meta.get("path", name)
     obj: Any = controller

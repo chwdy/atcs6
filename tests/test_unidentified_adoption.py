@@ -163,9 +163,11 @@ def test_the_operator_is_told_which_blocks_were_handed_back():
     adopt(sim, unidentified_id, length_cm=50.0, head_tile=(0, 0))
 
     recent = sim.notification_center.peek_recent(50)
-    note = next(n for n in recent if n.kind == "adoption_surplus_blocks")
+    note = next(
+        n for n in recent if n.operation == "_hand_surplus_blocks_to_unidentified"
+    )
     assert note.payload["blocks"] == ["BLK_1"]
-    assert "T1" in note.payload["message"]
+    assert "T1" in note.message
 
 
 def test_a_consist_that_reaches_both_blocks_keeps_both():

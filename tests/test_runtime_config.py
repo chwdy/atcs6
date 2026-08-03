@@ -67,14 +67,14 @@ def test_notification_retention_is_tunable_and_bounds_the_archive():
     Retention). `notification_id` keeps counting past a drop, so a gap in the
     ids means events aged out rather than that the stream lost order."""
     import notification_center
-    from notification_center import NotificationCenter, Severity
+    from notification_center import Kind, NotificationCenter
 
     center = NotificationCenter()
     rc.apply_updates({"notification_retention_rows": 5})
     assert notification_center.NOTIFICATION_RETENTION_ROWS == 5
 
     for _ in range(12):
-        center.emit(source="T", kind="k", severity=Severity.INFO)
+        center.emit(source="T", operation="op", kind=Kind.INFO, message="m")
 
     kept = center.peek_recent(100)
     assert len(kept) == 5
