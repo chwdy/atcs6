@@ -10,7 +10,7 @@ When a train's head leaves its authorized ``resource_sequence`` while ROLLING
    releasing future authority ahead of a moving train is unsafe.
 2. The cancel is LATCHED:
    ``controller.route_hooks.phase_latches.path_cancel_request`` is written with
-   ``initiator == "deviation"`` (carrying ``deviation_kind``) by
+   ``initiator == "deviation"`` (carrying its ``ErrorRecord``) by
    ``PathDispatcher.on_controller_progress``. It is NOT committed inline.
 3. The canonical lookahead reports ``atc_limit == 0`` at distance 0 with
    ``atc_limit_reason_code == AtcLimitReasonCode.DEVIATION`` (NOT
@@ -73,7 +73,7 @@ FIXED_EVENT_TIME = 1000.0
 
 # Off-sequence tile the deviated head lands on. (5, 0) lives in BLK_D, which is
 # not part of the A -> SW_X -> C authority the train was granted, so the head's
-# tile is absent from the path's resource_sequence -> deviation_kind
+# tile is absent from the path's resource_sequence -> deviation
 # "out_of_sequence".
 OFF_SEQUENCE_TILE: Tuple[int, int] = (5, 0)
 
@@ -221,7 +221,7 @@ def test_deviation_while_rolling_latches_and_holds_resources():
     _apply_span_update(controller, OFF_SEQUENCE_TILE, speed_kmh=20.0)
     _drain_progress_reports(dispatcher, controller)
 
-    # (2) The cancel is LATCHED with initiator "deviation" + a deviation_kind.
+    # (2) The cancel is LATCHED with initiator "deviation" + its ErrorRecord.
     latch = controller.route_hooks.phase_latches.path_cancel_request
     assert latch is not None, "deviation must LATCH a cancel request"
     assert latch.initiator == "deviation", (
