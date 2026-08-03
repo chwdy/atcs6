@@ -489,6 +489,24 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
+  /** Set (or clear, when blockId is null) the block whose feed powers one
+   * switch's rails. A switch has no track channel of its own — its rails are
+   * wired to the block at its main entrance and carry that block's voltage. */
+  async updateSwitchTrackSource(switchId: string, blockId: string | null): Promise<any> {
+    return this._request(
+      '/hardware/binding',
+      {
+        method: 'PUT',
+        body: {
+          map: 'switch_track_source',
+          logical_id: switchId,
+          block_id: blockId,
+        },
+      },
+      'updateSwitchTrackSource'
+    );
+  }
+
   /** Open a held commissioning session on the controller (for live input / sweep). */
   async commissionOpen(config: any): Promise<any> {
     await this._request(

@@ -35,6 +35,7 @@ from segment import Segment
 from train_roster import TrainRoster
 from railway_platform import Platform
 from speed_profile import SpeedProfileRegistry
+from switch_power import SwitchOutputOwner
 
 if TYPE_CHECKING:
     from path_utils import GraphLocator, DirectedBlockFrame
@@ -77,7 +78,7 @@ def _bits_form_switch(bits: int) -> bool:
     return any(c >= 2 for c in edge_exits.values())
 
 
-class RailwayNetwork:
+class RailwayNetwork(SwitchOutputOwner):
     """
     Central railway network management system.
 
@@ -138,6 +139,10 @@ class RailwayNetwork:
         self.resource_coordinator: Optional[ResourceCoordinator] = None
         self.power_controller: Optional["BlockPowerController"] = None
         self.switch_output_interface: Optional["SwitchOutput"] = None
+        # Owns the throw output above and the switch's rail feed; the only
+        # caller of `SwitchOutput` (design_new.md "Power", Switch
+        # power-controller role).
+        self.switch_power_controller: Optional["SwitchPowerController"] = None
 
         # Reverse indices from tile -> owning segment / platform.
         # A tile belongs to a `Segment`; the segment is grouped into a `Block`.

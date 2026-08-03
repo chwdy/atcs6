@@ -17,7 +17,7 @@ import pytest
 from track import Tile, TRACK_EW, TRACK_NW, TRACK_NS
 from switch import Switch
 from switch_manager import SwitchManager
-from switch_power import SimulatedSwitchDriver
+from switch_power import SimulatedSwitchDriver, SwitchPowerController
 from runtime_payloads import HardwareFailure
 
 
@@ -26,7 +26,29 @@ from runtime_payloads import HardwareFailure
 # ---------------------------------------------------------------------------
 
 
-class FakeNetwork:
+class SwitchOutputHolder:
+    """Wires a `SwitchPowerController` over whatever `SwitchOutput` is assigned.
+
+    `SwitchManager` reaches the controller, never the interface — the controller
+    is `SwitchOutput`'s only caller (design_new.md "Power", Switch
+    power-controller role). These fakes are still written in terms of the
+    interface, because that is what a test wants to assert against, so assigning
+    one builds the controller that owns it.
+    """
+
+    @property
+    def switch_output_interface(self):
+        return self._switch_output_interface
+
+    @switch_output_interface.setter
+    def switch_output_interface(self, iface):
+        self._switch_output_interface = iface
+        self.switch_power_controller = (
+            SwitchPowerController(output_interface=iface) if iface is not None else None
+        )
+
+
+class FakeNetwork(SwitchOutputHolder):
     """Just enough of RailwayNetwork for SwitchManager."""
 
     def __init__(self):
@@ -141,7 +163,7 @@ def test_an_unissued_throw_latches_a_hardware_failure():
         def set_throw(self, switch_id, target_state):
             return False
 
-    class Runtime:
+    class Runtime(SwitchOutputHolder):
         def __init__(self, iface):
             self.switch_output_interface = iface
             self.failure = None
@@ -237,6 +259,74 @@ def test_a_throw_the_output_just_made_is_not_repeated():
     mgr.request_position_change("SW_1_0", 1)
 
     assert throws == [("SW_1_0", 1)]
+
+
+# ---------------------------------------------------------------------------
+# SwitchPowerController: the rail feed
+# ---------------------------------------------------------------------------
+
+
+def test_switch_voltage_reads_the_feed_block(monkeypatch):
+    """A switch has no channel of its own: its rails carry the voltage of the
+    block named by `switch_track_source` (design_new.md "Power", Switch
+    power-controller role)."""
+    import hardware_config
+
+    class Power:
+        def get_block_voltage(self, block_id):
+            return 7.5 if block_id == "BLK_ENTRY" else 0.0
+
+    cfg = hardware_config.get_hardware_config()
+    monkeypatch.setitem(cfg.switch_track_source, "SW_1_0", "BLK_ENTRY")
+
+    net, _sw = _standard_switch_network()
+    net.power_controller = Power()
+    controller = SwitchPowerController(net, output_interface=SimulatedSwitchDriver())
+
+    assert controller.feed_block_id("SW_1_0") == "BLK_ENTRY"
+    assert controller.get_switch_voltage("SW_1_0") == 7.5
+
+
+def test_switch_voltage_is_none_without_a_feed_binding():
+    """While an incomplete setup is being edited the bond is unset. That is an
+    activation blocker, so it cannot occur during hardware operation."""
+    net, _sw = _standard_switch_network()
+    controller = SwitchPowerController(net, output_interface=SimulatedSwitchDriver())
+
+    assert controller.feed_block_id("SW_1_0") is None
+    assert controller.get_switch_voltage("SW_1_0") is None
+
+
+def test_controller_safe_state_de_energizes_the_motors():
+    iface = SimulatedSwitchDriver()
+    controller = SwitchPowerController(output_interface=iface)
+    controller.set_throw("SW_1_0", 1)
+
+    controller.enter_safe_state()
+
+    assert iface.get_last_throw("SW_1_0") is None
+
+
+def test_reassigning_the_interface_retargets_the_controller():
+    """The holder's two views of one wiring must not drift: swapping the driver
+    must not leave the manager driving the interface it replaced. This is the
+    real `SwitchOutputOwner` that `SimulationController` and `RailwayNetwork`
+    both mix in, not the test fake above."""
+    from switch_power import SwitchOutputOwner
+
+    class Holder(SwitchOutputOwner):
+        pass
+
+    holder = Holder()
+    original = SimulatedSwitchDriver()
+    holder.switch_output_interface = original
+    holder.switch_power_controller = SwitchPowerController(output_interface=original)
+
+    replacement = SimulatedSwitchDriver()
+    holder.switch_output_interface = replacement
+
+    assert holder.switch_output_interface is replacement
+    assert holder.switch_power_controller.output_interface is replacement
 
 
 if __name__ == "__main__":

@@ -67,6 +67,9 @@ def _real_payload(**overrides):
         "switch_output": {
             "SW_A": {"chip_id": "sw1", "port_main": 5, "port_diverge": 6},
         },
+        # A switch's rails carry the feed of the block at its main entrance, so
+        # a completely-wired rig names one (design_new.md "Power", Bindings).
+        "switch_track_source": {"SW_A": "B1"},
         "block_occupancy": {"B1": {"chip_id": "in1", "port": 2}},
         "output_enable": {"pwm1": {"chip_id": "sw1", "port": 7}},
     }
@@ -87,7 +90,7 @@ def test_as_dict_shape():
     assert keys == {
         "enabled", "develop", "controller", "chips",
         "block_track", "block_occupancy", "block_occupancy_current",
-        "switch_output", "output_enable", "idle_deadband_v",
+        "switch_output", "switch_track_source", "output_enable", "idle_deadband_v",
         "current_sense_min_drive_v",
     }
 
@@ -825,6 +828,59 @@ def test_binding_endpoint_sets_output_enable(client):
     assert "pwm1" not in hardware_config.get_hardware_config().output_enable
 
 
+def test_missing_switch_track_source_blocks_activation(client):
+    """Every switch must name the block feeding its rails before a hardware
+    environment may activate (design_new.md "Power", Bindings). Unlike the /OE
+    inhibit this is not optional wiring a rig may lack — a switch with no feed
+    is a switch whose rails no block drives."""
+    client.put("/api/hardware/config", json=_real_payload(switch_track_source={}))
+
+    report = hardware_config.activation_report(
+        hardware_config.get_hardware_config(),
+        OperationMode.VIRTUAL_HARDWARE, ["B1"], ["SW_A"],
+    )
+
+    assert report["ready"] is False
+    assert "missing_switch_track_source" in [i["code"] for i in report["issues"]]
+    assert [
+        i["ids"] for i in report["issues"] if i["code"] == "missing_switch_track_source"
+    ] == [["SW_A"]]
+
+
+def test_switch_track_source_naming_an_absent_block_blocks_activation(client):
+    """The feed must name a block the layout actually has: a rename that left
+    the binding behind bonds the switch to nothing."""
+    client.put(
+        "/api/hardware/config",
+        json=_real_payload(switch_track_source={"SW_A": "B_GONE"}),
+    )
+
+    report = hardware_config.activation_report(
+        hardware_config.get_hardware_config(),
+        OperationMode.VIRTUAL_HARDWARE, ["B1"], ["SW_A"],
+    )
+
+    assert report["ready"] is False
+    assert "unknown_switch_track_source" in [i["code"] for i in report["issues"]]
+
+
+def test_binding_endpoint_sets_switch_track_source(client):
+    """The per-entity switch editor writes the feed through the same endpoint as
+    the rest, naming a block rather than a chip port."""
+    client.put("/api/hardware/config", json=_real_payload(switch_track_source={}))
+
+    r = client.put("/api/hardware/binding", json={
+        "map": "switch_track_source", "logical_id": "SW_A", "block_id": "B1",
+    })
+    assert r.status_code == 200
+    assert hardware_config.get_hardware_config().switch_track_source["SW_A"] == "B1"
+
+    r2 = client.put("/api/hardware/binding",
+                    json={"map": "switch_track_source", "logical_id": "SW_A"})
+    assert r2.status_code == 200
+    assert "SW_A" not in hardware_config.get_hardware_config().switch_track_source
+
+
 def test_missing_output_enable_warns_but_does_not_block_activation(client):
     """An /OE inhibit is wiring a rig may not have — a spare '595 bit routed to
     the PCA's /OE pin. Without it safe state still zeroes every channel, so the
@@ -949,7 +1005,7 @@ def test_bootstrap_keeps_real_environment_inactive_when_device_unavailable(monke
         lambda cfg, device: object()
     )
     hardware_config.apply_updates(_real_payload(
-        block_track={}, switch_output={}, block_occupancy={}
+        block_track={}, switch_output={}, switch_track_source={}, block_occupancy={}
     ))
     _network, _dispatcher, sim, _persistence = bootstrap.bootstrap_runtime(
         demo=False, setup_train=False
@@ -979,7 +1035,7 @@ def test_bootstrap_real_mode_wires_ch347_interfaces(monkeypatch):
         lambda cfg, device: Lease()
     )
     hardware_config.apply_updates(_real_payload(
-        block_track={}, switch_output={}, block_occupancy={}
+        block_track={}, switch_output={}, switch_track_source={}, block_occupancy={}
     ))
     _network, _dispatcher, sim, _persistence = bootstrap.bootstrap_runtime(
         demo=False, setup_train=False

@@ -337,6 +337,41 @@ describe('switch hardware section', () => {
     expect(html).not.toMatch(/hw-sw-test" disabled/);
   });
 
+  it('offers a rail feed picked from the layout blocks, unset by default', () => {
+    // A switch has no track channel of its own: its rails carry the voltage of
+    // the block at its main entrance, so the feed names a block, not a port.
+    const html = switchHardwareSectionHtml(
+      swCfg({ block_track: { B1: { chip_id: 'track0', forward: 0, reverse: 1 } } }),
+      SWITCH
+    );
+    expect(html).toContain('hw-sw-feed');
+    expect(html).toContain('<option value="B1">B1</option>');
+    expect(selectedValues(html)).toEqual([]);
+  });
+
+  it('preselects the stored rail feed', () => {
+    const html = switchHardwareSectionHtml(
+      swCfg({
+        block_track: {
+          B1: { chip_id: 'track0', forward: 0, reverse: 1 },
+          B2: { chip_id: 'track0', forward: 2, reverse: 3 },
+        },
+        switch_track_source: { [SWITCH]: 'B2' },
+      }),
+      SWITCH
+    );
+    expect(selectedValues(html)).toEqual(['B2']);
+  });
+
+  it('keeps a stored feed selectable after its block loses its track binding', () => {
+    // Otherwise opening the panel would silently drop the wiring on next save.
+    const html = switchHardwareSectionHtml(
+      swCfg({ switch_track_source: { [SWITCH]: 'B_ORPHAN' } }),
+      SWITCH
+    );
+    expect(selectedValues(html)).toEqual(['B_ORPHAN']);
+  });
+
   it('hides the standby row when the driver needs no standby pin', () => {
     const html = switchHardwareSectionHtml(swCfg({ switch_output: bound() }), SWITCH);
     expect(html).toContain('class="hw-sw-standby-row" hidden');

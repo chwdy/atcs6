@@ -225,6 +225,13 @@ class HardwareConfig:
     block_occupancy: Dict[str, PortBinding] = field(default_factory=dict)
     block_occupancy_current: Dict[str, CurrentBinding] = field(default_factory=dict)
     switch_output: Dict[str, SwitchBinding] = field(default_factory=dict)
+    # switch_id -> block_id whose feed powers that switch's rails. The one
+    # binding whose value is another logical id rather than a chip port: a
+    # switch has no track channel of its own, so its rails are wired to the
+    # block at its main entrance and carry that block's `track voltage`
+    # (design_new.md "Power", Switch power-controller role).
+    # `SwitchPowerController` is its only reader.
+    switch_track_source: Dict[str, str] = field(default_factory=dict)
     # Optional per-PCA output-enable line: key = track (pca9685) chip_id, value =
     # the '595 bit wired to that PCA's /OE. Driven to enable once at session
     # build and held; there is no per-tick coast window. An entry is absent when
@@ -395,6 +402,7 @@ def _persist_dict(cfg: HardwareConfig) -> Dict[str, Any]:
         "block_occupancy": _binding_dict(cfg.block_occupancy),
         "block_occupancy_current": _current_binding_dict(cfg.block_occupancy_current),
         "switch_output": _switch_binding_dict(cfg.switch_output),
+        "switch_track_source": dict(cfg.switch_track_source),
         "output_enable": _binding_dict(cfg.output_enable),
         "idle_deadband_v": cfg.idle_deadband_v,
         "current_sense_min_drive_v": cfg.current_sense_min_drive_v,
@@ -526,6 +534,23 @@ def _parse_switch_bindings(data: Any) -> Dict[str, SwitchBinding]:
     return out
 
 
+def _parse_switch_track_source(data: Any) -> Dict[str, str]:
+    """switch_id -> block_id. Unlike every other binding map the value is a
+    logical id, not a chip port, so there is nothing here to range-check; the
+    block's existence is a layout question and is checked by
+    `activation_report`."""
+    data = data if isinstance(data, dict) else {}
+    out: Dict[str, str] = {}
+    for switch_id, raw in data.items():
+        block_id = str(raw).strip()
+        if not block_id:
+            raise HardwareConfigError(
+                f"switch_track_source[{str(switch_id)!r}] needs a block id"
+            )
+        out[str(switch_id)] = block_id
+    return out
+
+
 def _opt_float(value: Any) -> Optional[float]:
     if value is None or value == "":
         return None
@@ -566,6 +591,7 @@ def _merged_from_updates(updates: Dict[str, Any]) -> HardwareConfig:
         block_occupancy=dict(_config.block_occupancy),
         block_occupancy_current=dict(_config.block_occupancy_current),
         switch_output=dict(_config.switch_output),
+        switch_track_source=dict(_config.switch_track_source),
         output_enable=dict(_config.output_enable),
         idle_deadband_v=_config.idle_deadband_v,
         current_sense_min_drive_v=_config.current_sense_min_drive_v,
@@ -588,6 +614,10 @@ def _merged_from_updates(updates: Dict[str, Any]) -> HardwareConfig:
         merged.block_occupancy_current = _parse_current_bindings(updates["block_occupancy_current"])
     if "switch_output" in updates:
         merged.switch_output = _parse_switch_bindings(updates["switch_output"])
+    if "switch_track_source" in updates:
+        merged.switch_track_source = _parse_switch_track_source(
+            updates["switch_track_source"]
+        )
     if "output_enable" in updates:
         merged.output_enable = _parse_bindings(updates["output_enable"])
     return merged
@@ -937,6 +967,9 @@ def _prune_dangling_bindings(cfg: HardwareConfig) -> None:
         m = getattr(cfg, map_name)
         for lid in [k for k, b in m.items() if b.chip_id not in ids]:
             del m[lid]
+    # switch_track_source names no chip at all — it bonds a switch to a block —
+    # so removing a chip cannot dangle it. Its entries are pruned against the
+    # layout by `activation_report`, not against the chip list.
     # output_enable is keyed by the track chip and points at the switch chip that
     # drives its /OE; drop the entry if either chip is gone.
     oe = cfg.output_enable
@@ -1091,18 +1124,42 @@ def activation_report(
     detected = set(cfg.block_occupancy) | set(cfg.block_occupancy_current)
     missing_occupancy = [block_id for block_id in blocks if block_id not in detected]
     missing_switch = [switch_id for switch_id in switches if switch_id not in cfg.switch_output]
+    # Every switch must name the block feeding its rails, and that block must be
+    # one the layout actually has (design_new.md "Power", Bindings).
+    missing_feed = [
+        switch_id for switch_id in switches if switch_id not in cfg.switch_track_source
+    ]
+    unknown_feed = sorted(
+        switch_id
+        for switch_id, block_id in cfg.switch_track_source.items()
+        if switch_id in set(switches) and block_id not in set(blocks)
+    )
     known_blocks, known_switches = set(blocks), set(switches)
     stale = sorted(
         (set(cfg.block_track) | set(cfg.block_occupancy) | set(cfg.block_occupancy_current))
         - known_blocks
     )
-    stale_switches = sorted(set(cfg.switch_output) - known_switches)
+    stale_switches = sorted(
+        (set(cfg.switch_output) | set(cfg.switch_track_source)) - known_switches
+    )
     if missing_track:
         issue("missing_track_binding", "Blocks are missing track-output bindings", missing_track)
     if missing_occupancy:
         issue("missing_occupancy_binding", "Blocks are missing occupancy bindings", missing_occupancy)
     if missing_switch:
         issue("missing_switch_binding", "Switches are missing throw bindings", missing_switch)
+    if missing_feed:
+        issue(
+            "missing_switch_track_source",
+            "Switches are missing the block that feeds their rails",
+            missing_feed,
+        )
+    if unknown_feed:
+        issue(
+            "unknown_switch_track_source",
+            "Switches name a feed block not in the loaded layout",
+            unknown_feed,
+        )
     if stale:
         issue("stale_block_binding", "Bindings name blocks not in the loaded layout", stale)
     if stale_switches:
@@ -1155,6 +1212,7 @@ def _copy_config() -> HardwareConfig:
         block_occupancy=dict(_config.block_occupancy),
         block_occupancy_current=dict(_config.block_occupancy_current),
         switch_output=dict(_config.switch_output),
+        switch_track_source=dict(_config.switch_track_source),
         output_enable=dict(_config.output_enable),
     )
 
@@ -1274,6 +1332,31 @@ def set_switch_binding(
             port_diverge=int(port_diverge),
             port_standby=_opt_int(port_standby),
         )
+    _validate(candidate)
+    _apply(candidate)
+    if persist:
+        save_to_disk()
+    return _config
+
+
+def set_switch_track_source(
+    switch_id: str,
+    block_id: Optional[str] = None,
+    *,
+    persist: bool = True,
+) -> HardwareConfig:
+    """Set or clear the block whose feed powers one switch's rails (the
+    per-entity switch editor's Hardware section). `block_id` None/empty clears
+    it.
+
+    Unlike every other binding this names a logical id rather than a chip port,
+    so there is nothing to range-check here; whether the block exists in the
+    loaded layout is a layout question and `activation_report` answers it."""
+    candidate = _copy_config()
+    if block_id in (None, ""):
+        candidate.switch_track_source.pop(switch_id, None)
+    else:
+        candidate.switch_track_source[switch_id] = str(block_id).strip()
     _validate(candidate)
     _apply(candidate)
     if persist:

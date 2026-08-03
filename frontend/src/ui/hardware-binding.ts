@@ -53,6 +53,8 @@ export interface HwConfig {
   block_occupancy: Record<string, Binding>;
   block_occupancy_current: Record<string, CurrentBinding>;
   switch_output: Record<string, SwitchBinding>;
+  /** switch_id -> block_id whose feed powers that switch's rails. */
+  switch_track_source?: Record<string, string>;
   [k: string]: any;
 }
 export interface HwSlot {
@@ -361,6 +363,32 @@ function coilRowHtml(side: CoilSide, chips: HwChip[], current: Binding | undefin
     </div>`;
 }
 
+/** The feed-block row: which block's voltage this switch's rails carry.
+ *
+ * A switch has no track channel of its own, so this names a block rather than a
+ * chip port. The options come from `block_track` because every layout block
+ * must appear there before a hardware environment may activate — so those keys
+ * are the layout's blocks in any setup complete enough to go live. */
+function feedRowHtml(cfg: HwConfig, switchId: string): string {
+  const current = cfg.switch_track_source?.[switchId] ?? '';
+  const blockIds = Object.keys(cfg.block_track).sort();
+  // Keep a stored value selectable even if its block lost its track binding,
+  // so opening the panel cannot silently drop the wiring on the next save.
+  if (current && !blockIds.includes(current)) blockIds.push(current);
+  const opts = [`<option value="">—</option>`]
+    .concat(
+      blockIds.map(
+        (id) =>
+          `<option value="${esc(id)}"${id === current ? ' selected' : ''}>${esc(id)}</option>`
+      )
+    )
+    .join('');
+  return `<div class="input-small-row mb-8">
+      <label class="input-small-label input-small-label-inline">Rail feed</label>
+      <select class="input-small-field hw-sw-feed">${opts}</select>
+    </div>`;
+}
+
 /** Switch Hardware section, or '' when no switch chip exists.
  *
  * Gated on a switch-output chip existing, not on the selected Run Environment
@@ -387,11 +415,14 @@ export function switchHardwareSectionHtml(cfg: HwConfig | null, switchId: string
       <div class="hw-sw-standby-row"${standbyOn ? '' : ' hidden'}>
         ${coilRowHtml('standby', chips, port(b?.port_standby))}
       </div>
+      ${feedRowHtml(cfg, switchId)}
       <div class="input-small-row mb-8">
         <button type="button" class="btn btn-secondary btn-sm hw-sw-test"${bound ? '' : ' disabled'}>Test throw</button>
         <span class="text-muted text-xs hw-sw-test-status"></span>
       </div>
-      <p class="text-muted text-xs">Pick a coil bit per side — a switch is wired once both are set.
+      <p class="text-muted text-xs">Rail feed is the block at this switch's main entrance —
+        its rails carry that block's track voltage, so it needs no channel of its own.
+        Pick a coil bit per side — a switch is wired once both are set.
         Test throws it main / diverge once a second and lights the coil it just fired,
         moving this switch's position with it so the points and the app stay in step.
         Each throw energizes the coil for 10&nbsp;ms only, so the motor cannot burn out.</p>
@@ -425,6 +456,7 @@ export function bindSwitchHardwareSection(cfg: HwConfig | null, switchId: string
   });
   const standbyToggle = section.querySelector<HTMLInputElement>('.hw-sw-standby-on');
   const standbyRow = section.querySelector<HTMLElement>('.hw-sw-standby-row');
+  const feedSelect = section.querySelector<HTMLSelectElement>('.hw-sw-feed');
   const testBtn = section.querySelector<HTMLButtonElement>('.hw-sw-test');
   const testStatus = section.querySelector<HTMLElement>('.hw-sw-test-status');
 
@@ -482,6 +514,23 @@ export function bindSwitchHardwareSection(cfg: HwConfig | null, switchId: string
   standbyToggle?.addEventListener('change', () => {
     if (standbyRow) standbyRow.hidden = !standbyToggle.checked;
     save(standbyToggle);
+  });
+
+  /** The rail feed saves on its own — it names a block, not a coil port, so it
+   * shares none of the both-coils-or-nothing rules above. */
+  feedSelect?.addEventListener('change', async () => {
+    const blockId = feedSelect.value || null;
+    try {
+      await api.updateSwitchTrackSource(switchId, blockId);
+      if (!cfg.switch_track_source) cfg.switch_track_source = {};
+      if (blockId) cfg.switch_track_source[switchId] = blockId;
+      else delete cfg.switch_track_source[switchId];
+      flashField(feedSelect, 'ok');
+      noteBindingSaved(cfg, 'Switch rail feed');
+    } catch (e: any) {
+      flashField(feedSelect, 'err');
+      showToast(e?.message || 'Could not save the rail feed.', 'error', 4000);
+    }
   });
 
   // --- the alternating bench test ---------------------------------------

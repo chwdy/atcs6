@@ -22,10 +22,14 @@ moved.
 The module includes:
 - SwitchOutput: Abstract base for hardware throw output
 - SimulatedSwitchDriver: In-memory implementation for simulation
+- SwitchPowerController: Owns the throw output and the switch's rail feed
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from network import RailwayNetwork
 
 
 class SwitchOutput(ABC):
@@ -88,3 +92,125 @@ class SimulatedSwitchDriver(SwitchOutput):
         this only stops asserting drive (design_new.md "Power", Safe state /
         fail-safe)."""
         self._throws.clear()
+
+
+class SwitchPowerController:
+    """The switch-side counterpart of `BlockPowerController`.
+
+    It covers a switch's two separate electricals (design_new.md "Power",
+    Switch power-controller role):
+
+    - the `throw voltage` driven onto the point motor, through the
+      `SwitchOutput` it holds. It is the only caller of that interface —
+      including the safe-state call — so `SwitchManager` requests a throw
+      through this controller and never touches the interface itself.
+    - the block feed its rails run on. A switch has no track channel of its
+      own: its rails are wired to the block at its main entrance and carry that
+      block's `track voltage`. That wiring is the `switch_track_source` binding
+      in Hardware Setup, and this controller is that map's only reader.
+
+    Why the switch has its own controller: `BlockPowerController` takes a
+    voltage number and applies it; a switch is the other shape. Its one output
+    is an alignment, not a voltage, and its one voltage is sourced from a block
+    rather than commanded. Holding both facts here gives every switch-side
+    electrical question a single answer site, and leaves `BlockPowerController`
+    owning exactly one thing: the voltage on a block.
+    """
+
+    def __init__(
+        self,
+        network: Optional["RailwayNetwork"] = None,
+        output_interface: Optional[SwitchOutput] = None,
+        *,
+        sim_controller: Optional[Any] = None,
+    ) -> None:
+        self.network = network
+        self.output_interface: SwitchOutput = (
+            output_interface if output_interface is not None else SimulatedSwitchDriver()
+        )
+        self._sim_controller = sim_controller
+
+
+    # ------------------------------------------------------------------
+    # Throw output
+    # ------------------------------------------------------------------
+
+    def set_throw(self, switch_id: str, target_state: int) -> bool:
+        """Command the point motor toward ``target_state`` (0=MAIN, 1=DIVERGE).
+
+        Returns True when the command reached the device and False when it did
+        not. True is not a claim that the points seated — a solenoid point
+        motor reports nothing back.
+        """
+        return bool(self.output_interface.set_throw(switch_id, int(target_state)))
+
+    def get_last_throw(self, switch_id: str) -> Optional[int]:
+        """The last target alignment this controller commanded, or None."""
+        return self.output_interface.get_last_throw(switch_id)
+
+    # ------------------------------------------------------------------
+    # Rail feed
+    # ------------------------------------------------------------------
+
+    def feed_block_id(self, switch_id: str) -> Optional[str]:
+        """The block whose feed powers this switch's rails, per the
+        `switch_track_source` binding. None while an incomplete setup is being
+        edited or commissioned; that state is an activation blocker and cannot
+        occur during Virtual Hardware or Real Hardware operation."""
+        try:
+            import hardware_config
+        except ImportError:  # pragma: no cover - defensive import guard
+            return None
+        cfg = hardware_config.get_hardware_config()
+        return cfg.switch_track_source.get(switch_id)
+
+    def get_switch_voltage(self, switch_id: str) -> Optional[float]:
+        """The voltage on a switch's rails, read from its feed block.
+
+        A UI/diagnostic read: the per-switch hardware view shows which block
+        feeds the switch and whether those rails are live. No control, routing,
+        or physics decision reads it. This controller drives nothing onto the
+        rails — the bond is physical, so there is no output to write.
+        """
+        source_block_id = self.feed_block_id(switch_id)
+        if source_block_id is None:
+            return None
+        power_controller = getattr(self._sim_controller, "power_controller", None)
+        if power_controller is None and self.network is not None:
+            power_controller = getattr(self.network, "power_controller", None)
+        if power_controller is None:
+            return None
+        return power_controller.get_block_voltage(source_block_id)
+
+    # ------------------------------------------------------------------
+    # Safe state
+    # ------------------------------------------------------------------
+
+    def enter_safe_state(self) -> None:
+        """De-energize every point motor (design_new.md "Power", Safe state /
+        fail-safe). As the only caller of the output interface, the controller
+        delegates the de-energizing to it."""
+        self.output_interface.enter_safe_state()
+
+
+class SwitchOutputOwner:
+    """Mixin for the two holders of the switch throw output — the runtime
+    session and the network.
+
+    `switch_output_interface` and `switch_power_controller` name one wiring from
+    two sides, and code assigns the interface (a session rebuild, a bench test
+    swapping a driver in). Routing the assignment through here retargets the
+    controller with it, so the pair cannot drift into a state where the manager
+    drives a stale interface the holder has already replaced.
+    """
+
+    @property
+    def switch_output_interface(self) -> Optional[SwitchOutput]:
+        return getattr(self, "_switch_output_interface", None)
+
+    @switch_output_interface.setter
+    def switch_output_interface(self, iface: Optional[SwitchOutput]) -> None:
+        self._switch_output_interface = iface
+        controller = getattr(self, "switch_power_controller", None)
+        if controller is not None and iface is not None:
+            controller.output_interface = iface

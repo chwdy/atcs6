@@ -549,18 +549,23 @@ class SwitchManager:
             return getattr(self.network, "block_manager", None)
         return None
 
-    def _resolve_switch_output(self):
-        """Locate the `SwitchOutput` — preferred via
-        SimulationController, with a network fallback. Returns None in
-        editor/unit setups that never wired one (the throw is then a no-op)."""
+    def _resolve_switch_power_controller(self):
+        """Locate the `SwitchPowerController` — preferred via
+        SimulationController, with a network fallback, the same way this manager
+        reaches `BlockManager`. Returns None in editor/unit setups that never
+        wired one (the throw is then a no-op).
+
+        `SwitchManager` never reaches `SwitchOutput` itself: the controller is
+        that interface's only caller (design_new.md "Power", Switch
+        power-controller role)."""
         if self.simulation_controller is not None:
-            iface = getattr(
-                self.simulation_controller, "switch_output_interface", None
+            controller = getattr(
+                self.simulation_controller, "switch_power_controller", None
             )
-            if iface is not None:
-                return iface
+            if controller is not None:
+                return controller
         if self.network is not None:
-            return getattr(self.network, "switch_output_interface", None)
+            return getattr(self.network, "switch_power_controller", None)
         return None
 
     def _drive_throw(
@@ -599,18 +604,19 @@ class SwitchManager:
         there is no confirmation step and `None` is not a claim that the points
         moved. The one failure this can report is a command that never left the
         software — no hardware binding for this switch, or its chip is missing —
-        which `SwitchOutput.set_throw` signals by returning False. When no output
-        interface is wired at all the throw is a no-op and this returns `None`.
+        which `SwitchPowerController.set_throw` signals by returning False. When
+        no controller is wired at all the throw is a no-op and this returns
+        `None`.
         """
-        iface = self._resolve_switch_output()
-        if iface is None:
+        controller = self._resolve_switch_power_controller()
+        if controller is None:
             return None
         if not force:
-            last = iface.get_last_throw(switch.switch_id)
+            last = controller.get_last_throw(switch.switch_id)
             if last is not None and int(last) == int(target_state):
                 return None                # the motor was last driven there
         try:
-            issued = iface.set_throw(switch.switch_id, int(target_state))
+            issued = controller.set_throw(switch.switch_id, int(target_state))
             failure = "output driver refused the throw" if not issued else None
         except Exception as exc:  # noqa: BLE001 - device errors enter one fatal path
             issued = False

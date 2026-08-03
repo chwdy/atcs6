@@ -499,6 +499,13 @@ def register(app, state: AppState) -> None:
                         data.get("port_diverge"),
                         port_standby=data.get("port_standby"),
                     )
+                elif map_name == "switch_track_source":
+                    # The one binding whose value is another logical id: the
+                    # block whose feed powers this switch's rails (design_new.md
+                    # Power, Switch power-controller role).
+                    hardware_config.set_switch_track_source(
+                        str(logical_id), data.get("block_id")
+                    )
                 elif map_name == "block_occupancy_current":
                     # The current map carries per-channel calibration, so it has
                     # its own setter (design_new.md Power, Block occupancy detection).

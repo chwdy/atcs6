@@ -43,7 +43,11 @@ from train import Train, TrainCar
 from enums import TrainState, Direction, HandlePosition, OperationMode
 import operation_environment
 from block_power import BlockPowerController
-from switch_power import SimulatedSwitchDriver
+from switch_power import (
+    SimulatedSwitchDriver,
+    SwitchOutputOwner,
+    SwitchPowerController,
+)
 from block_occupancy import SimulatedOccupancyDriver, BlockOccupancyDetector
 from notification_center import EventKind, NotificationCenter, Severity
 from route_executor import RouteExecutor
@@ -62,7 +66,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class SimulationController:
+class SimulationController(SwitchOutputOwner):
     """
     Controls train simulation and movement using the DC analog control model.
 
@@ -148,6 +152,15 @@ class SimulationController:
             else SimulatedSwitchDriver()
         )
         network.switch_output_interface = self.switch_output_interface
+        # The switch-side counterpart of `power_controller`: it owns the throw
+        # output and the switch's rail feed, and is the only caller of
+        # `SwitchOutput` (design_new.md "Power", Switch power-controller role).
+        self.switch_power_controller = SwitchPowerController(
+            network,
+            output_interface=self.switch_output_interface,
+            sim_controller=self,
+        )
+        network.switch_power_controller = self.switch_power_controller
 
         # Block occupancy detection: the global per-block current sensor plus the
         # debounce/attribution detector (design_new.md "Power -> Block occupancy
@@ -544,14 +557,14 @@ class SimulationController:
         Hardware interface boundary).
 
         The runtime issues this when it stops driving outputs (simulation stop
-        or process shutdown). Track voltage routes through `BlockPowerController`;
-        switch throw goes straight to its output interface, which has no
-        controller above it.
+        or process shutdown). Track voltage routes through `BlockPowerController`
+        and switch throw through `SwitchPowerController`; each controller is the
+        only caller of its own output interface.
         """
         if self.power_controller is not None:
             self.power_controller.enter_safe_state()
-        if self.switch_output_interface is not None:
-            self.switch_output_interface.enter_safe_state()
+        if self.switch_power_controller is not None:
+            self.switch_power_controller.enter_safe_state()
 
     def activate_interfaces(
         self,
@@ -578,6 +591,12 @@ class SimulationController:
             else SimulatedSwitchDriver()
         )
         self.network.switch_output_interface = self.switch_output_interface
+        self.switch_power_controller = SwitchPowerController(
+            self.network,
+            output_interface=self.switch_output_interface,
+            sim_controller=self,
+        )
+        self.network.switch_power_controller = self.switch_power_controller
         self.input_interface = (
             input_interface
             if input_interface is not None
