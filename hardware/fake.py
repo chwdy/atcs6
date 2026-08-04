@@ -7,7 +7,7 @@ dicts, plus test helpers to declare which I2C addresses are present and to set
 this unchanged, so the whole real-mode stack is exercised without USB hardware.
 """
 
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 
 class FakeCh347Device:
@@ -31,6 +31,7 @@ class FakeCh347Device:
         # 16-bit register file per I2C address (INA3221 shunt/bus/config/id).
         self.registers: Dict[int, Dict[int, int]] = {}
         self.faults: set[str] = set()
+        self._on_reconnect: List[Callable[[], None]] = []
 
     # -- lifecycle -------------------------------------------------------
     def open(self) -> None:
@@ -39,6 +40,23 @@ class FakeCh347Device:
 
     def close(self) -> None:
         self.closed = True
+
+    def add_reconnect_hook(self, hook: Callable[[], None]) -> None:
+        """Register a post-reconnect resync, same as `Ch347Device`.
+
+        This fake never drops a link, so nothing here ever calls the hook on its
+        own. It is part of the device surface anyway because `build_real_
+        interfaces` registers against it, and what that hook does to the outputs
+        is worth testing without a USB bridge — `simulate_reconnect()` is how a
+        test fires it.
+        """
+        self._on_reconnect.append(hook)
+
+    def simulate_reconnect(self) -> None:
+        """Run the registered resync hooks, as `Ch347Device._recover()` does
+        once it has a fresh handle. Test helper; no link state changes."""
+        for hook in list(self._on_reconnect):
+            hook()
 
     # -- I2C -------------------------------------------------------------
     def i2c_write(self, addr: int, data: bytes) -> bool:

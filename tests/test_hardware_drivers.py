@@ -740,6 +740,43 @@ def test_safe_state_disables_output_enable_before_leaving_the_session():
     assert blk.set_voltage("B1", 8.0) is False
 
 
+def test_track_output_works_again_after_a_reconnect_resync():
+    """A reconnect must not leave the rail dead for the rest of the session.
+
+    `_resync_hardware` opens with `safety.revoke()`, which drops the supervisor
+    to inactive — and `TrackDriver.set_voltage` refuses every write while it
+    stays there, because `renew()` tests `_active` before the no-lease
+    shortcut. The build calls `activate()` exactly once, so unless the resync
+    ends on its own `activate()` the first dropped USB link kills track output
+    permanently: every later tick's re-command is refused and latches a
+    hardware failure.
+    """
+    dev = FakeCh347Device(present_addresses={0x40})
+    specs = [
+        ChipConfig("pwm1", "pca9685", i2c_address=0x40),
+        ChipConfig("sw1", "hc595", spi_select="cs0"),
+    ]
+    _inp, blk, _sw = build_real_interfaces(
+        dev,
+        specs,
+        block_track={"B1": ("pwm1", 0, 1)},
+        block_occupancy={},
+        switch_output={},
+        output_enable={"pwm1": ("sw1", 2)},
+    )
+    assert blk.set_voltage("B1", 8.0) is True
+
+    dev.simulate_reconnect()
+
+    # The resync deliberately does not restore voltage: a reopened bridge is a
+    # blank bridge, so it lands on zero and the control loop re-commands.
+    assert dev.duty_cycle(0x40, 0) == 0.0
+    assert dev.latched_bit("cs0", 2) is False   # /OE back low = PCA re-enabled
+    # ...and that re-command has to actually land.
+    assert blk.set_voltage("B1", 8.0) is True
+    assert dev.duty_cycle(0x40, 0) > 0.0
+
+
 def test_safety_inhibit_is_not_cleared_by_the_solenoid_hold_guard():
     dev = FakeCh347Device()
     released = []
