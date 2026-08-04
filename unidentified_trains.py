@@ -434,9 +434,7 @@ class UnidentifiedTrainTracker:
             return previous is not None
 
         ordered_blocks = self._chain_order(held)
-        entries: List[Tuple[int, int, Optional[str]]] = []
-        for block_id in ordered_blocks:
-            entries.extend(self._block_tile_entries(block_id))
+        entries = self._oriented_tile_entries(ordered_blocks)
         if not entries:
             controller.physics_sync.current_span = None
             return previous is not None
@@ -445,9 +443,10 @@ class UnidentifiedTrainTracker:
         last_length = self._network._get_tile_length_cm(int(last[0]), int(last[1]))
         controller.physics_sync.current_span = TrainSpan(
             # end_a sits at the entry edge of the first tile and end_b at the far
-            # end of the last one: the outer boundaries of the end blocks. Each
-            # block contributes its own canonical tile order, since an unidentified train's
-            # real orientation is unknown.
+            # end of the last one: the outer boundaries of the end blocks. Which
+            # of the two is which is arbitrary — an unidentified train's real
+            # orientation is unknown — but they must be the two OUTER ends, which
+            # is what `_oriented_tile_entries` guarantees.
             end_a=SpanEndLocator(
                 tile=(int(first[0]), int(first[1])),
                 distance_cm=0.0,
@@ -462,6 +461,84 @@ class UnidentifiedTrainTracker:
             occupied_blocks=list(ordered_blocks),
         )
         return list(ordered_blocks) != previous_blocks
+
+    def _oriented_tile_entries(
+        self, ordered_blocks: List[str]
+    ) -> List[Tuple[int, int, Optional[str]]]:
+        """Every block's tiles, each block turned to join the one before it.
+
+        `_chain_order` already puts the blocks in connectivity order, but each
+        block carries its OWN canonical tile order, pointing whichever way it
+        was drawn. Concatenating those raw makes the list double back at a
+        junction: two blocks that physically meet can be joined start-to-start,
+        which puts the seam at opposite ends of the list and leaves `entries[0]`
+        on an interior tile instead of the end of the span. Everything reading
+        the span then sees a body that teleports mid-list and end locators that
+        are not its ends.
+
+        So flip each block to whichever orientation starts nearest the running
+        end. This does not close every gap, and is not meant to: blocks meet
+        across undetected track, so a bare switch tile between two of them is a
+        real hole in what the detectors confirm. It makes every REMAINING gap a
+        genuine one.
+        """
+        chunks = [self._block_tile_entries(b) for b in ordered_blocks]
+        chunks = [c for c in chunks if c]
+        if not chunks:
+            return []
+
+        # The first block has no predecessor to align to, so aim it at its
+        # successor instead: the end that meets block two has to come last.
+        if len(chunks) > 1:
+            head, nxt = chunks[0], chunks[1]
+
+            def reach(entry):
+                return min(self._tile_gap(entry, nxt[0]), self._tile_gap(entry, nxt[-1]))
+
+            if reach(head[0]) < reach(head[-1]):
+                chunks[0] = self._reversed_entries(head)
+
+        out = list(chunks[0])
+        for chunk in chunks[1:]:
+            if self._tile_gap(chunk[-1], out[-1]) < self._tile_gap(chunk[0], out[-1]):
+                chunk = self._reversed_entries(chunk)
+            out.extend(chunk)
+        return out
+
+    @staticmethod
+    def _tile_gap(
+        a: Tuple[int, int, Optional[str]], b: Tuple[int, int, Optional[str]]
+    ) -> int:
+        """Manhattan distance between two tile entries."""
+        return abs(int(a[0]) - int(b[0])) + abs(int(a[1]) - int(b[1]))
+
+    def _reversed_entries(
+        self, entries: List[Tuple[int, int, Optional[str]]]
+    ) -> List[Tuple[int, int, Optional[str]]]:
+        """`entries` walked the other way, with each entry edge turned around.
+
+        A recorded entry edge is the edge the tile is ENTERED by travelling the
+        block's canonical direction; travelled the other way, the tile is
+        entered by the edge it was previously left by. That is the tile's exit,
+        not the compass opposite — an N-E diagonal entered at N leaves at E, and
+        `_OPPOSITE_EDGE` would answer S, an edge the tile does not even have.
+        Switch state is ignored here: this is geometry, not a route, and the
+        points may well have moved since the train was detected.
+
+        An exit that is missing or ambiguous (a crossing offers two) drops the
+        edge to None, which `_entry_edge_for` then answers with any edge the
+        tile really has — the same honest fallback it uses for a block with no
+        recorded geometry at all.
+        """
+        flipped: List[Tuple[int, int, Optional[str]]] = []
+        for x, y, edge in reversed(entries):
+            exits: List[str] = []
+            if edge:
+                track = self._network.get_track(int(x), int(y))
+                if track is not None:
+                    exits = list(track.get_exits(str(edge), use_switch_state=False) or ())
+            flipped.append((int(x), int(y), exits[0] if len(exits) == 1 else None))
+        return flipped
 
     def _block_tile_entries(
         self, block_id: str

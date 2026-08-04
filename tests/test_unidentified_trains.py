@@ -27,6 +27,8 @@ from runtime_payloads import PathAcquisitionFailureKind
 from services import ValidationError, train_service
 from simulation import SimulationController
 from track import Tile, TRACK_EW
+from entity_ids import segment_id_for_block
+from tests.segment_test_helpers import make_segment_block_with_tracks
 
 
 class FakeDetector(OccupancyInput):
@@ -44,7 +46,7 @@ def build_sim(num_blocks: int = 3):
     network = RailwayNetwork()
     for x in range(num_blocks):
         track = Tile(x=x, y=0, track_bits=TRACK_EW)
-        track.segment_id = f"BLK_{x}"
+        track.segment_id = segment_id_for_block(f"BLK_{x}")
         network.add_track(track)
         block = Block(block_id=f"BLK_{x}", length_cm=100.0)
         # Eastbound canonical order, as an editor-built block carries.
@@ -57,6 +59,40 @@ def build_sim(num_blocks: int = 3):
     # The unidentified train tracker's hold windows run on wall-clock time (see
     # SimulationController._unidentified_clock), so `tick` drives them off a fake clock
     # rather than sleeping through UNIDENTIFIED_GAP_HOLD_S for real.
+    sim.unidentified_clock = lambda: sim._fake_clock
+    sim._fake_clock = 0.0
+    return network, sim, detector
+
+
+def build_sim_facing_blocks():
+    """Two 3-tile blocks meeting at (2,0)-(3,0), each drawn AWAY from the join.
+
+    BLK_W's canonical tile order runs west from the junction and BLK_E's runs
+    east from it, so both list the junction tile FIRST. That is the shape that
+    makes a naive concatenation double back on itself, and it is ordinary — a
+    block's tile order just records the direction it happened to be drawn in.
+    """
+    network = RailwayNetwork()
+    for x in range(6):
+        network.add_track(Tile(x=x, y=0, track_bits=TRACK_EW))
+    # Geometry through the production builder so each tile's segment — and the
+    # block that owns it — is really registered. Hand-assigning `segment_id` and
+    # dropping a Block into the registry leaves `Tile.block_id` None, and every
+    # block-topology query over those tiles then comes back empty.
+    make_segment_block_with_tracks(
+        network, "BLK_W", [(0, 0), (1, 0), (2, 0)], length_cm=300.0
+    )
+    make_segment_block_with_tracks(
+        network, "BLK_E", [(3, 0), (4, 0), (5, 0)], length_cm=300.0
+    )
+    # Point each block's canonical tile order outward from the shared junction.
+    network.blocks["BLK_W"].ordered_tiles = [(2, 0, "E"), (1, 0, "E"), (0, 0, "E")]
+    network.blocks["BLK_E"].ordered_tiles = [(3, 0, "W"), (4, 0, "W"), (5, 0, "W")]
+
+    detector = FakeDetector()
+    sim = SimulationController(
+        network, PathDispatcher(network), input_interface=detector
+    )
     sim.unidentified_clock = lambda: sim._fake_clock
     sim._fake_clock = 0.0
     return network, sim, detector
@@ -126,6 +162,89 @@ def test_unidentified_span_is_exactly_the_blocks_it_holds():
     # End locators at the outer boundaries of the end blocks.
     assert span.end_a.distance_cm == 0.0
     assert span.end_b.distance_cm == pytest.approx(100.0)
+
+
+def test_span_tiles_walk_end_to_end_across_blocks_drawn_facing_each_other():
+    """Each block is turned to join the one before it, not emitted as drawn.
+
+    Two blocks that meet in the layout can each list the junction tile first
+    (they were drawn outward from it). Concatenated as drawn, the span jumps
+    from one block's far end to the other's, and the first and last entries —
+    which become `end_a` and `end_b` — land on interior tiles instead of the
+    ends of the train.
+
+    Which END is `end_a` is not asserted: an unidentified train's orientation is
+    unknown, so the span may be walked either way round. What must hold is that
+    the walk is unbroken and that its two ends are the two ends of the train.
+    """
+    _network, sim, _detector = build_sim_facing_blocks()
+    tracker = sim.unidentified_trains
+
+    # As drawn, in either block order: both blocks lead with the junction tile,
+    # so the concatenation doubles back and starts on an interior tile.
+    as_drawn = [
+        (e[0], e[1])
+        for b in ["BLK_W", "BLK_E"]
+        for e in tracker._block_tile_entries(b)
+    ]
+    assert as_drawn == [(2, 0), (1, 0), (0, 0), (3, 0), (4, 0), (5, 0)]
+
+    entries = tracker._oriented_tile_entries(tracker._chain_order({"BLK_W", "BLK_E"}))
+    tiles = [(e[0], e[1]) for e in entries]
+
+    # Same tiles either way — orientation decides their order, not membership.
+    assert sorted(tiles) == [(x, 0) for x in range(6)]
+    # One unbroken walk: every step moves to a grid neighbour.
+    steps = {
+        abs(b[0] - a[0]) + abs(b[1] - a[1]) for a, b in zip(tiles, tiles[1:])
+    }
+    assert steps == {1}, f"span doubles back: {tiles}"
+    # ...and it ends at the two extremities, not at the junction.
+    assert {tiles[0], tiles[-1]} == {(0, 0), (5, 0)}
+
+
+def test_a_two_block_unidentified_span_is_one_unbroken_walk():
+    """The same rule, through a real tick rather than the assembly helper."""
+    network, sim, detector = build_sim_facing_blocks()
+    detector.current = {"BLK_W": True, "BLK_E": True}
+    tick(sim)
+
+    span = sim.controllers[only_unidentified(network)].physics_sync.current_span
+    tiles = list(span.occupied_tiles)
+    assert sorted(tiles) == [(x, 0) for x in range(6)]
+    assert {abs(b[0] - a[0]) + abs(b[1] - a[1]) for a, b in zip(tiles, tiles[1:])} == {1}
+    assert {span.end_a.tile, span.end_b.tile} == {(0, 0), (5, 0)}
+
+
+def test_orienting_a_single_block_leaves_it_as_drawn():
+    """Nothing to join to, so the block keeps its own order and its edges."""
+    _network, sim, _detector = build_sim_facing_blocks()
+    tracker = sim.unidentified_trains
+    assert tracker._oriented_tile_entries(["BLK_W"]) == [
+        (2, 0, "E"),
+        (1, 0, "E"),
+        (0, 0, "E"),
+    ]
+
+
+def test_reversing_a_block_turns_its_entry_edges_around():
+    """A flipped block is entered by the edge it used to be left by.
+
+    The recorded edge is the entry travelling the block's canonical direction;
+    walked the other way the tile is entered from its exit. On this E-W line
+    that is the compass opposite, but the code derives it from track geometry
+    rather than assuming so — a diagonal's exit is not its opposite edge.
+    """
+    network, sim, detector = build_sim_facing_blocks()
+    tracker = sim.unidentified_trains
+
+    forward = tracker._block_tile_entries("BLK_E")
+    assert forward == [(3, 0, "W"), (4, 0, "W"), (5, 0, "W")]
+    assert tracker._reversed_entries(forward) == [
+        (5, 0, "E"),
+        (4, 0, "E"),
+        (3, 0, "E"),
+    ]
 
 
 # -------------------------------------------------------------------- movement
