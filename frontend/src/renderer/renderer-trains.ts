@@ -130,6 +130,46 @@ interface LabelBound {
   tier: string;
 }
 
+/**
+ * End-marker square, in px at scale 1. The unidentified-body inset is measured
+ * against this same constant, so the square lands exactly in the gap the body
+ * gives up — keep the two reading from here rather than re-deriving either.
+ */
+const END_MARKER_SIZE = 10;
+
+/**
+ * Shorten a body polyline by `inset` screen px at one end, walking inward
+ * through as many segments as the inset consumes (a half-tile segment is
+ * usually longer than the inset, but a span ending mid-switch can be shorter).
+ * Pure — returns a new array.
+ *
+ * A polyline shorter than the inset comes back untouched: a body that would
+ * have to fold through itself is worse than one drawn at full length.
+ */
+export function trimPolylineEnd(points: Point[], inset: number, fromStart: boolean): Point[] {
+  if (points.length < 2 || inset <= 0) return points;
+  const pts = fromStart ? [...points] : [...points].reverse();
+  let remaining = inset;
+  while (pts.length >= 2) {
+    const dx = pts[1].x - pts[0].x;
+    const dy = pts[1].y - pts[0].y;
+    const len = Math.hypot(dx, dy);
+    if (len > remaining) {
+      pts[0] = {
+        x: pts[0].x + (dx / len) * remaining,
+        y: pts[0].y + (dy / len) * remaining,
+      };
+      return fromStart ? pts : pts.reverse();
+    }
+    // The inset swallows this whole segment: drop its start point and carry
+    // the leftover into the next one. len === 0 (duplicate points) still
+    // shifts, so the loop always makes progress.
+    remaining -= len;
+    pts.shift();
+  }
+  return points;
+}
+
 /** The slice of the Renderer the train handler reads through its back-reference. */
 export interface TrainHandlerRenderer {
   ctx: CanvasRenderingContext2D;
@@ -560,9 +600,31 @@ export class RendererTrainHandler {
     }
     bodyChunks.push(currentChunk);
 
-    // Stroke each chunk independently. Butt caps at the chunk endpoints
-    // (so tunnel-cut ends look clean); round joins between intermediate
-    // points so the body bends smoothly through zigzag track.
+    // An unidentified train has no measured length. Its extent is inferred from
+    // whichever blocks the detectors report it in, so drawn literally it fills
+    // those blocks seam to seam and butts straight into the next one. Pull the
+    // drawn body back by one end-marker at each end: the inferred extent then
+    // visibly stops short of the seam instead of claiming it, and the retreat
+    // clears exactly the space the end squares are placed into below.
+    const bodyInset = trainSnap.isUnidentified ? END_MARKER_SIZE * s : 0;
+    if (bodyInset > 0) {
+      const last = bodyChunks.length - 1;
+      bodyChunks[0] = trimPolylineEnd(bodyChunks[0], bodyInset, true);
+      bodyChunks[last] = trimPolylineEnd(bodyChunks[last], bodyInset, false);
+    }
+
+    // Stroke each chunk as ONE path. Butt caps land at the chunk endpoints
+    // (so tunnel-cut ends look clean); round joins bend the body smoothly
+    // through zigzag track. Both properties matter to the dashed body of an
+    // unidentified train, and both are easy to lose:
+    //   - One path, not a stroke per segment. Canvas restarts the dash phase
+    //     at every beginPath(), and a chunk carries a vertex at EVERY tile
+    //     edge — stroking segment by segment relocks the dash to the tile
+    //     grid instead of letting it march along the body.
+    //   - Butt caps, not round. A round cap adds lineWidth/2 of ink past both
+    //     ends of every dash. The body line is wider than the dash gap, so
+    //     round caps close the gaps and the dashed outline fuses back into a
+    //     solid, lumpy line — the mark that says "unidentified" disappears.
     const strokeChunk = (
       chunk: Point[],
       strokeStyle: string,
@@ -574,31 +636,15 @@ export class RendererTrainHandler {
       this.ctx.strokeStyle = strokeStyle;
       this.ctx.lineWidth = lineWidth;
       if (dash) this.ctx.setLineDash(dash);
-
-      // First segment - butt cap at chunk start
       this.ctx.lineCap = 'butt';
       this.ctx.lineJoin = 'round';
+
       this.ctx.beginPath();
       this.ctx.moveTo(chunk[0].x, chunk[0].y);
-      this.ctx.lineTo(chunk[1].x, chunk[1].y);
-      this.ctx.stroke();
-
-      // Middle segments - round caps for smooth joins
-      if (chunk.length > 2) {
-        this.ctx.lineCap = 'round';
-        for (let i = 1; i < chunk.length - 1; i++) {
-          this.ctx.beginPath();
-          this.ctx.moveTo(chunk[i].x, chunk[i].y);
-          this.ctx.lineTo(chunk[i + 1].x, chunk[i + 1].y);
-          this.ctx.stroke();
-        }
-        // Last segment - butt cap at chunk end
-        this.ctx.lineCap = 'butt';
-        this.ctx.beginPath();
-        this.ctx.moveTo(chunk[chunk.length - 2].x, chunk[chunk.length - 2].y);
-        this.ctx.lineTo(chunk[chunk.length - 1].x, chunk[chunk.length - 1].y);
-        this.ctx.stroke();
+      for (let i = 1; i < chunk.length; i++) {
+        this.ctx.lineTo(chunk[i].x, chunk[i].y);
       }
+      this.ctx.stroke();
 
       this.ctx.restore();
     };
@@ -631,8 +677,15 @@ export class RendererTrainHandler {
       const dy = headPos.y - tailPos.y;
       const rotationToHead = Math.atan2(dy, dx);
       const rotationToTail = rotationToHead + Math.PI;
-      this.drawEndMarker(tailPos.x, tailPos.y, rotationToTail, train, 'B');
-      this.drawEndMarker(headPos.x, headPos.y, rotationToHead, train, 'A');
+      // drawEndMarker offsets its square forward along whatever rotation it is
+      // handed. An unidentified body has just given up one square at each end,
+      // so aim each marker INWARD to drop it into that cleared gap; every other
+      // train keeps its square just outside the span, where the body still runs
+      // to the very end. A square reads identically at r and r+PI, so aiming it
+      // the other way moves the marker without turning it.
+      const inward = bodyInset > 0;
+      this.drawEndMarker(tailPos.x, tailPos.y, inward ? rotationToHead : rotationToTail, train, 'B');
+      this.drawEndMarker(headPos.x, headPos.y, inward ? rotationToTail : rotationToHead, train, 'A');
     }
 
     // === Draw "stuck waiting" indicator (debug overlay) ===
@@ -842,13 +895,17 @@ export class RendererTrainHandler {
   }
 
   /**
-   * Draw end marker (white square with dark border and train ID + end identifier).
+   * Draw end marker (white square with dark border and car count + end identifier).
    * Used when no cab is active to label both ends (e.g., "2A", "3B").
+   *
+   * The square deliberately does NOT name the train: drawTrainLabel already
+   * puts the id beside the body on a leader line, so repeating it here only
+   * crowds the rail with a second, longer copy of the same fact.
    */
   drawEndMarker(x: number, y: number, rotation = 0, train: Train | null = null, endId = 'A'): void {
     const p = getCanvasPalette();
     const s = this.scale;
-    const squareSize = 10 * s;
+    const squareSize = END_MARKER_SIZE * s;
 
     // Offset forward so the back edge aligns with the position
     const offsetDistance = squareSize / 2;

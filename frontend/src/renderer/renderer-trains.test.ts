@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { TRACK_EW, TRACK_NS, TRACK_NW } from '../lib/constants';
-import { RendererTrainHandler, trainBodyFill, type TrainHandlerRenderer, type TrainSnap } from './renderer-trains';
+import {
+  RendererTrainHandler,
+  trainBodyFill,
+  trimPolylineEnd,
+  type TrainHandlerRenderer,
+  type TrainSnap,
+} from './renderer-trains';
 
 // renderer-trains.js had no test before the migration; this is fresh coverage
 // for its pure geometry helpers (the canvas-drawing entry composes these).
@@ -155,6 +161,97 @@ describe('RendererTrainHandler pure helpers', () => {
     // A straight endpoint-to-endpoint shortcut never visits this point.
     expect(lineTo).toHaveBeenCalledWith(10, 10);
     expect(renderer.ctx.setLineDash).toHaveBeenCalledWith([4, 3]);
+  });
+
+  // The dashed body of an unidentified train reads as dashed ONLY if the whole
+  // chunk is one path with butt caps. Stroking segment-by-segment restarts the
+  // dash phase at every tile edge, and a round cap adds lineWidth/2 of ink past
+  // both ends of every dash — wider than the 3px gap, so the dashes fuse and
+  // the body renders as a solid lumpy line that no longer reads "unidentified".
+  it('strokes an unidentified body as one butt-capped path per chunk, not per segment', () => {
+    const renderer = makeRenderer();
+    const ctx = {
+      save: vi.fn(),
+      restore: vi.fn(),
+      beginPath: vi.fn(),
+      moveTo: vi.fn(),
+      lineTo: vi.fn(),
+      stroke: vi.fn(),
+      setLineDash: vi.fn(),
+      lineCap: 'round',
+      lineJoin: 'miter',
+    };
+    // Record the cap in force at each stroke() — the property is mutable, so
+    // only its value AT stroke time proves anything.
+    const capsAtStroke: string[] = [];
+    ctx.stroke = vi.fn(() => { capsAtStroke.push(ctx.lineCap); });
+    renderer.ctx = ctx as unknown as CanvasRenderingContext2D;
+    renderer.currentNetwork = {
+      tracks: [
+        { x: 0, y: 0, track_bits: TRACK_EW },
+        { x: 1, y: 0, track_bits: TRACK_NW },
+        { x: 1, y: 1, track_bits: TRACK_NS },
+      ],
+    };
+    const handler = new RendererTrainHandler(renderer);
+    vi.spyOn(handler, 'drawEndMarker').mockImplementation(() => {});
+    vi.spyOn(handler, 'drawTrainLabel').mockImplementation(() => {});
+
+    handler.drawTrainFromSnapshot(
+      { id: 'UNIDENT_1', is_unidentified: true },
+      {
+        id: 'UNIDENT_1',
+        cab: null,
+        facing: null,
+        isUnidentified: true,
+        span: {
+          occupiedTiles: [[0, 0], [1, 0], [1, 1]],
+          leadingEnd: '',
+          endA: { tile: [0, 0], distance_cm: 25, entry_edge: 'W' },
+          endB: { tile: [1, 1], distance_cm: 25, entry_edge: 'S' },
+        },
+      },
+    );
+
+    // One chunk, two passes (dark border then tinted fill) => exactly two
+    // strokes. Per-segment stroking would emit one per polyline segment.
+    expect(ctx.stroke).toHaveBeenCalledTimes(2);
+    expect(ctx.beginPath).toHaveBeenCalledTimes(2);
+    expect(capsAtStroke).toEqual(['butt', 'butt']);
+  });
+
+  // An unidentified body is pulled back by one end-marker at each end so its
+  // inferred extent stops short of the block seam and the end squares have
+  // somewhere to sit.
+  describe('trimPolylineEnd', () => {
+    it('shortens the leading end along the first segment', () => {
+      const line = [{ x: 0, y: 0 }, { x: 100, y: 0 }];
+      expect(trimPolylineEnd(line, 10, true)).toEqual([{ x: 10, y: 0 }, { x: 100, y: 0 }]);
+    });
+
+    it('shortens the trailing end along the last segment', () => {
+      const line = [{ x: 0, y: 0 }, { x: 100, y: 0 }];
+      expect(trimPolylineEnd(line, 10, false)).toEqual([{ x: 0, y: 0 }, { x: 90, y: 0 }]);
+    });
+
+    it('walks through segments the inset fully swallows', () => {
+      // First segment is 4 long, so a 10 inset eats it whole and takes 6 more
+      // off the second — the consumed vertex must be dropped, not left behind.
+      const line = [{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 100, y: 0 }];
+      expect(trimPolylineEnd(line, 10, true)).toEqual([{ x: 10, y: 0 }, { x: 100, y: 0 }]);
+    });
+
+    it('leaves a polyline shorter than the inset alone rather than folding it', () => {
+      const line = [{ x: 0, y: 0 }, { x: 6, y: 0 }];
+      expect(trimPolylineEnd(line, 10, true)).toEqual(line);
+    });
+
+    it('is a no-op for a degenerate polyline or a zero inset', () => {
+      const single = [{ x: 1, y: 2 }];
+      expect(trimPolylineEnd(single, 10, true)).toEqual(single);
+      const line = [{ x: 0, y: 0 }, { x: 100, y: 0 }];
+      expect(trimPolylineEnd(line, 0, true)).toEqual(line);
+    });
   });
 
   describe('trainBodyFill', () => {
