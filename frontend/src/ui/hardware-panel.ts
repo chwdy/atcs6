@@ -8,11 +8,6 @@
  * (see hardware-binding.ts), so the config the panel writes carries only the
  * controller and the chip list and leaves the binding maps untouched.
  *
- * The one binding that does live here is a track chip's output inhibit (/OE):
- * it names a wire between two chips rather than a wire to a layout entity, so
- * there is no per-entity editor it could belong to. It is written through the
- * binding endpoint (saved on change) rather than the chip payload.
- *
  * The flow, top to bottom:
  *   0. Wiring overview     — a collapsible diagram built from the configured
  *      chips (buildWiringDiagramSvg): one lane per chip showing its bus,
@@ -176,13 +171,6 @@ let devPollTimer: any = null;
 // Layout coverage, refreshed with the config each time the modal opens.
 let coverage: Coverage | null = null;
 
-// The two maps the /OE row reads: the inhibit bindings it edits, and the switch
-// coil bindings whose bits it must not offer (a bit that is pulsed per throw
-// cannot also be held as an inhibit — the server refuses it either way, but the
-// row should not offer the mistake in the first place). Kept as the server
-// returned them, since only the /OE half is edited here.
-let oeBindings: Record<string, { chip_id: string; port: number }> = {};
-let switchBindings: Record<string, any> = {};
 
 // Commissioning — a held device for the live input view and the output sweep.
 // Only one activity runs at a time; it is stopped on modal close / refresh.
@@ -843,8 +831,6 @@ export async function refreshHardwarePanel(): Promise<void> {
   devReadback = null;
   coverage = null;
   devBindings = { block_occupancy: {}, block_occupancy_current: {} };
-  oeBindings = {};
-  switchBindings = {};
   try {
     const [cat, cfg, cov, env, ready] = await Promise.all([
       api.getHardwareCatalog(),
@@ -868,8 +854,6 @@ export async function refreshHardwarePanel(): Promise<void> {
       block_occupancy: raw.block_occupancy || {},
       block_occupancy_current: raw.block_occupancy_current || {},
     };
-    oeBindings = raw.output_enable || {};
-    switchBindings = raw.switch_output || {};
   } catch (e) {
     console.error('[App] Failed to load hardware setup:', e);
     showToast('Failed to load hardware setup.', 'error');
@@ -1153,60 +1137,7 @@ function chipCardHtml(chip: ChipCfg): string {
     </div>
     ${chip.bus !== 'i2c' && ck?.cascadable ? portCountRowHtml(chip) : ''}
     ${ck?.port_kind === 'digital_in' ? polarityRowHtml(chip) : ''}
-    ${ck?.role === 'track_output' ? oeRowHtml(chip) : ''}
     ${portsHtml(chip)}
-  </div>`;
-}
-
-// The active-high inhibit gating this track chip's outputs: the shift-register
-// bit physically wired to its /OE pin. It is held high — outputs off — from
-// power-up through session build, and released low only once every PWM channel
-// reads zero; every safe-state path drives it high again before touching a
-// register. That hold is why the bit cannot be shared with a switch coil, which
-// is pulsed per throw.
-//
-// The wire is optional: it costs a spare switch-chip bit, and a rig may tie /OE
-// enabled instead. Unbound, safe state still zeroes every channel — the board
-// just turns off one channel at a time rather than in one write — so activation
-// reports it as a readiness note and runs anyway.
-function oeRowHtml(chip: ChipCfg): string {
-  const bound = oeBindings[chip.chip_id];
-  const switchChips = state.chips.filter((c) => catalogChip(c.kind)?.role === 'switch_output');
-
-  // Every bit already spoken for, and by what — a coil or standby bit of a
-  // switch, or another track chip's inhibit.
-  const taken = new Map<string, string>();
-  for (const [switchId, b] of Object.entries(switchBindings)) {
-    for (const p of [b?.port_main, b?.port_diverge, b?.port_standby]) {
-      if (p != null) taken.set(`${b.chip_id}:${p}`, `switch ${switchId}`);
-    }
-  }
-  for (const [trackId, b] of Object.entries(oeBindings)) {
-    if (trackId !== chip.chip_id && b) taken.set(`${b.chip_id}:${b.port}`, `${trackId} /OE`);
-  }
-
-  const opts = [`<option value=""${bound ? '' : ' selected'}>Not bound</option>`];
-  for (const sw of switchChips) {
-    for (let p = 0; p < chipLines(sw); p++) {
-      const key = `${sw.chip_id}:${p}`;
-      const sel = !!bound && bound.chip_id === sw.chip_id && bound.port === p;
-      const held = sel ? '' : taken.get(key) || '';
-      opts.push(`<option value="${esc(key)}"${sel ? ' selected' : ''}${held ? ' disabled' : ''}>`
-        + `${esc(sw.chip_id)} ${lineLabel(sw, p)}${held ? ` — ${esc(held)}` : ''}</option>`);
-    }
-  }
-
-  const hint = switchChips.length
-    ? (bound
-        ? 'held high to inhibit, released low at session build'
-        : 'optional — without it, safe state zeroes each channel instead')
-    : 'add a shift-register chip to wire one';
-  return `<div class="hw-polarity">
-    <span class="hw-lbl">Output inhibit</span>
-    <select class="hw-coord-select" data-hw="oe" data-id="${esc(chip.chip_id)}"
-      title="The '595 bit wired to this chip's /OE pin. High disables every output on the board; it is released only after each channel has been zeroed."
-      ${switchChips.length ? '' : 'disabled'}>${opts.join('')}</select>
-    <span class="hw-hint-inline">/OE · ${hint}</span>
   </div>`;
 }
 
@@ -1514,30 +1445,8 @@ function onChange(e: Event): void {
   else if (t.dataset.hw === 'polarity') {
     setChip(id, (c) => { c.active_low = (t as HTMLInputElement).value === 'low'; });
   }
-  else if (t.dataset.hw === 'oe') { void setOutputEnable(id, (t as HTMLSelectElement).value); }
 }
 
-// Unlike the chip fields around it, this is a binding: it goes through the
-// binding endpoint and is validated and saved on change, not on "Save Hardware
-// Setup". Binding it can clear an activation blocker, so readiness is re-read
-// rather than left to the next time the modal opens.
-async function setOutputEnable(trackChipId: string, value: string): Promise<void> {
-  const [chipId, port] = value ? value.split(':') : ['', ''];
-  try {
-    const res = await api.updateHardwareBinding(
-      'output_enable', trackChipId, chipId || null, chipId ? Number(port) : null,
-    );
-    const cfg = res?.config || {};
-    oeBindings = cfg.output_enable || {};
-    switchBindings = cfg.switch_output || {};
-    activationReadiness = await api.getOperationReadiness().catch(() => activationReadiness);
-  } catch (e: any) {
-    // The server's message names the exact conflict (a coil bit, a wrong chip
-    // role, an out-of-range bit), which is more use than anything restated here.
-    showToast(e?.message || 'Could not set the output inhibit.', 'error');
-  }
-  render();
-}
 
 function onInput(e: Event): void {
   const t = (e.target as HTMLElement).closest<HTMLElement>('[data-hw="device-port"]');

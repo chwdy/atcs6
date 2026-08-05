@@ -38,7 +38,7 @@ from hardware.chips.hc595 import HC595Chain
 from hardware.chips.ina219 import INA219
 from hardware.chips.ina3221 import INA3221
 from hardware.chips.pca9685 import PCA9685
-from hardware.safety import OutputSafetyLease, PhysicalOutputSupervisor
+from hardware.safety import OutputSafety
 from hardware.watchdog import OutputWatchdog
 
 # A binding map: logical id -> (chip_id, port).
@@ -165,7 +165,7 @@ class TrackDriver(TrackOutput):
         bindings: "TrackBindingMap",
         watchdog: Optional[OutputWatchdog] = None,
         polarity_of: Optional[Callable[[str], bool]] = None,
-        safety: Optional[PhysicalOutputSupervisor] = None,
+        safety: Optional[OutputSafety] = None,
     ) -> None:
         self._chips = chips_by_id
         self._bindings = bindings
@@ -175,8 +175,6 @@ class TrackDriver(TrackOutput):
         self._safety = safety
 
     def set_voltage(self, block_id: str, voltage: float) -> bool:
-        if self._safety is not None and not self._safety.renew():
-            return False
         binding = self._bindings.get(block_id)
         if binding is None:
             return False
@@ -213,7 +211,7 @@ class TrackDriver(TrackOutput):
         if self._watchdog is not None:
             self._watchdog.disarm()
         if self._safety is not None:
-            self._safety.revoke()
+            self._safety.enter_safe_state()
         else:
             for chip in self._chips.values():
                 chip.all_off()
@@ -258,7 +256,7 @@ class SwitchDriver(SwitchOutput):
         bindings: SwitchBindingMap,
         watchdog: Optional[OutputWatchdog] = None,
         pulse_s: float = SWITCH_THROW_PULSE_S,
-        safety: Optional[PhysicalOutputSupervisor] = None,
+        safety: Optional[OutputSafety] = None,
     ) -> None:
         self._chips = chips_by_id
         self._bindings = bindings
@@ -268,8 +266,6 @@ class SwitchDriver(SwitchOutput):
         self._safety = safety
 
     def set_throw(self, switch_id: str, target_state: int) -> bool:
-        if self._safety is not None and not self._safety.renew():
-            return False
         binding = self._bindings.get(switch_id)
         if binding is None:
             return False
@@ -302,7 +298,7 @@ class SwitchDriver(SwitchOutput):
         if self._watchdog is not None:
             self._watchdog.disarm()
         if self._safety is not None:
-            self._safety.revoke()
+            self._safety.enter_safe_state()
         else:
             for chip in self._chips.values():
                 chip.all_off()
@@ -608,13 +604,11 @@ def build_real_interfaces(
     block_occupancy: BindingMap,
     switch_output: SwitchBindingMap,
     block_occupancy_current: Optional[CurrentBindingMap] = None,
-    output_enable: Optional[BindingMap] = None,
     idle_deadband_v: float = _IDLE_DEADBAND_V,
     track_polarity_of: Optional[Callable[[str], bool]] = None,
     watchdog_timeout_s: Optional[float] = None,
     current_sense_min_drive_v: float = _CURRENT_SENSE_MIN_DRIVE_V,
     lighting_clear_hold_reads: int = LIGHTING_CLEAR_HOLD_READS,
-    output_safety_lease: Optional[OutputSafetyLease] = None,
 ) -> Tuple[Optional[OccupancyInput], Optional[TrackOutput], Optional[SwitchOutput]]:
     """Instantiate + initialize chips grouped by role and wire the three
     interfaces. A role with no chip returns `None` (its simulated default is
@@ -628,15 +622,11 @@ def build_real_interfaces(
 
     `watchdog_timeout_s` arms the loss-of-control watchdog on both output
     interfaces (design_new.md "Hardware interface boundary"); `None` leaves it
-    unarmed, which is what a test harness driving a fake device wants.
-    `output_safety_lease`, when supplied, is the independent renewable gate:
-    activation must prove it and every output command renews it before writing.
-    Real Hardware readiness will require it; hardware-free tests may omit it."""
+    unarmed, which is what a test harness driving a fake device wants."""
     track_chips: Dict[str, PCA9685] = {}
     switch_chips: Dict[str, HC595Chain] = {}
     digital_chips: Dict[str, HC165Chain] = {}
     current_chips: Dict[str, Any] = {}
-    output_enable = output_enable or {}
 
     # A GPIO-latched chip borrows a chip-select pad for its SPI transfer. Choose a
     # safe one before any chip is built, because the first `all_off()` latches.
@@ -653,15 +643,7 @@ def build_real_interfaces(
     for spec in chip_specs:
         if CHIP_CATALOG[spec.kind].role == ROLE_SWITCH:
             chip = build_chip(device, spec)
-            inhibit_ports = [
-                port
-                for _track_id, (drive_chip_id, port) in output_enable.items()
-                if drive_chip_id == spec.chip_id
-            ]
-            chip.set_guard_ignored_high(inhibit_ports)
-            # One latch: coils low, active-high /OE inhibits high. Never pass
-            # through the old all-low pattern that enables track output.
-            chip.set_high_outputs(inhibit_ports)
+            chip.set_high_outputs(())      # one latch: every bit low
             switch_chips[spec.chip_id] = chip
 
     for spec in chip_specs:
@@ -679,12 +661,7 @@ def build_real_interfaces(
             else:
                 digital_chips[spec.chip_id] = chip
 
-    safety = PhysicalOutputSupervisor(
-        track_chips,
-        switch_chips,
-        output_enable,
-        lease=output_safety_lease,
-    )
+    safety = OutputSafety(track_chips, switch_chips)
 
     # One watchdog covers both output interfaces: loss of control must drop the
     # track AND the point motors. The targets list is filled just below, before
@@ -693,9 +670,16 @@ def build_real_interfaces(
     watchdog: Optional[OutputWatchdog] = None
     if watchdog_timeout_s is not None and (track_chips or switch_chips):
         def _drop_to_safe_state() -> None:
-            # The shared supervisor revokes the physical gate; each interface
-            # also clears its own observable command state.
-            safety.revoke()
+            # A stalled control loop is the case this exists for, so say so:
+            # the rig went dead under a train and the operator is owed the
+            # reason. The chips are safed through the shared object; each
+            # interface then clears its own observable command state.
+            logging.getLogger(__name__).error(
+                "output watchdog: no output write landed for %.1fs — every "
+                "track voltage and point motor driven to its safe state",
+                watchdog_timeout_s,
+            )
+            safety.enter_safe_state()
             for target in watchdog_targets:
                 target.enter_safe_state()
 
@@ -723,14 +707,10 @@ def build_real_interfaces(
 
     # Last word on the outputs before the session goes live: no bit a coil sits
     # on may be high. The clear above already guarantees it — this re-checks it
-    # against the bindings so that a write added between the two (the /OE hold
-    # is one, and it will not be the last) cannot quietly energize a point motor
-    # for the whole session. Failing the build is right: an unusable session
-    # beats a burning solenoid nobody is watching.
+    # against the bindings so that a write added between the two cannot quietly
+    # energize a point motor for the whole session. Failing the build is right:
+    # an unusable session beats a burning solenoid nobody is watching.
     _assert_switch_ports_low(switch_chips, switch_output)
-    # Release /OE only after every PWM and coil output has been initialized to
-    # its safe value. The supervisor owns this transition for the session.
-    safety.activate()
 
     def _resync_hardware() -> None:
         """Redo the live init above against the chips already built.
@@ -740,32 +720,23 @@ def build_real_interfaces(
         that lost power comes back with undefined register contents, which on a
         coil bit is a point motor burning with nobody watching. So this repeats
         the build's own order — chains low first, then the slow I2C setup, then
-        the bindings check — and ends on the same `activate()`.
+        the bindings check.
 
         Track voltage is deliberately not restored: `configure()` leaves every
-        PWM channel at zero and the control loop re-commands voltage on its
-        next tick. **That re-command only lands because `activate()` runs
-        here.** The `revoke()` above leaves the supervisor inactive, and
-        `PhysicalOutputSupervisor.renew()` tests `_active` before it reaches
-        the no-external-lease shortcut, so `TrackDriver.set_voltage` refuses
-        every write while the supervisor stays down. Without this call a single
-        reconnect would leave the rail dead for the rest of the session, with
-        each refused write latching a hardware failure — and `activate()` is
-        the only thing that puts the gate back up, because the build calls it
-        exactly once.
+        PWM channel at zero, and the control loop re-commands voltage on its
+        next tick.
 
         Raising out of here is deliberate. `Ch347Device._recover()` treats a
         hook that raises as a failed reconnect: it closes the handle and waits
         out the cooldown, which is the honest outcome when the outputs could
         not be brought back up safely.
         """
-        safety.revoke()
+        safety.enter_safe_state()
         for chip in track_chips.values():
             chip.configure()
         for chip in current_chips.values():
             chip.configure()
         _assert_switch_ports_low(switch_chips, switch_output)
-        safety.activate()
 
     register_hook = getattr(device, "add_reconnect_hook", None)
     if register_hook is not None:      # the fake device has no link to lose

@@ -82,7 +82,7 @@ def test_environment_api_reports_selected_separately_from_active(
         }
 
 
-def test_hardware_environment_readiness_is_complete_or_blocked():
+def test_complete_setup_is_ready_in_both_hardware_environments():
     cfg = hardware_config.config_from_payload({
         "chips": [
             {"chip_id": "pwm", "kind": "pca9685", "i2c_address": "0x40"},
@@ -91,7 +91,6 @@ def test_hardware_environment_readiness_is_complete_or_blocked():
         ],
         "block_track": {"B1": {"chip_id": "pwm", "forward": 0, "reverse": 1}},
         "block_occupancy": {"B1": {"chip_id": "in", "port": 0}},
-        "output_enable": {"pwm": {"chip_id": "out", "port": 7}},
     })
     virtual = hardware_config.activation_report(
         cfg, OperationMode.VIRTUAL_HARDWARE, ["B1"], []
@@ -101,9 +100,13 @@ def test_hardware_environment_readiness_is_complete_or_blocked():
     )
 
     assert virtual["ready"] is True
-    assert real["ready"] is False
-    assert [issue["code"] for issue in real["issues"]] == [
-        "missing_external_safety_lease"
+    assert virtual["warnings"] == []
+    # Safe state is a write, so nothing reaches the boards once this process is
+    # gone. Real Hardware reports that as advisory and still activates.
+    assert real["ready"] is True
+    assert real["issues"] == []
+    assert [note["code"] for note in real["warnings"]] == [
+        "outputs_latch_on_host_death"
     ]
 
 

@@ -232,7 +232,6 @@ def bootstrap_runtime(
         selected_environment,
         network.blocks.keys(),
         network.switches.keys(),
-        external_safety_available=hardware_config.external_safety_available(),
     )
     environment_active = bool(readiness["ready"])
     activation_issues = list(readiness["issues"])

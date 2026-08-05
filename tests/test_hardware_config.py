@@ -2,7 +2,7 @@
 
 design_new.md "Power -> Hardware configuration": a chip inventory (controller +
 chips) plus the port-binding maps (block_track, block_occupancy,
-block_occupancy_current, switch_output, output_enable), persisted to an
+block_occupancy_current, switch_output), persisted to an
 app-managed JSON file and applied at the next
 session build. These tests cover the config store + validation, disk persistence
 (round-trip + fail-safe), the operation-mode derivation, the interface factory
@@ -71,7 +71,6 @@ def _real_payload(**overrides):
         # a completely-wired rig names one (design_new.md "Power", Bindings).
         "switch_track_source": {"SW_A": "B1"},
         "block_occupancy": {"B1": {"chip_id": "in1", "port": 2}},
-        "output_enable": {"pwm1": {"chip_id": "sw1", "port": 7}},
     }
     payload.update(overrides)
     return payload
@@ -90,7 +89,7 @@ def test_as_dict_shape():
     assert keys == {
         "enabled", "develop", "controller", "chips",
         "block_track", "block_occupancy", "block_occupancy_current",
-        "switch_output", "switch_track_source", "output_enable", "idle_deadband_v",
+        "switch_output", "switch_track_source", "idle_deadband_v",
         "current_sense_min_drive_v",
     }
 
@@ -321,54 +320,6 @@ def test_occupancy_maps_split_by_port_kind():
         })
 
 
-def test_output_enable_binding_validates_track_key_and_switch_bit():
-    cfg = hardware_config.config_from_payload({
-        "chips": [
-            {"chip_id": "pwm1", "kind": "pca9685", "i2c_address": "0x40"},
-            {"chip_id": "sw1", "kind": "hc595", "spi_select": "cs0"},
-        ],
-        "output_enable": {"pwm1": {"chip_id": "sw1", "port": 2}},
-    })
-    assert cfg.output_enable["pwm1"].port == 2
-    # key must be a track chip
-    with pytest.raises(hardware_config.HardwareConfigError):
-        hardware_config.config_from_payload({
-            "chips": [{"chip_id": "sw1", "kind": "hc595", "spi_select": "cs0"}],
-            "output_enable": {"sw1": {"chip_id": "sw1", "port": 2}},
-        })
-    # /OE driver bit must be a switch ('595) output, not the PWM chip
-    with pytest.raises(hardware_config.HardwareConfigError):
-        hardware_config.config_from_payload({
-            "chips": [{"chip_id": "pwm1", "kind": "pca9685", "i2c_address": "0x40"}],
-            "output_enable": {"pwm1": {"chip_id": "pwm1", "port": 0}},
-        })
-
-
-def test_output_enable_cannot_share_a_bit_with_a_switch_coil():
-    """A /OE line is driven low and held for the session; a coil bit is pulsed
-    high per throw. Sharing one bit means every throw of that switch cuts track
-    power to the whole PCA — and neither map can see the clash on its own."""
-    chips = [
-        {"chip_id": "pwm1", "kind": "pca9685", "i2c_address": "0x40"},
-        {"chip_id": "sw1", "kind": "hc595", "spi_select": "cs0"},
-    ]
-    for shared in ("port_main", "port_diverge", "port_standby"):
-        binding = {"chip_id": "sw1", "port_main": 0, "port_diverge": 1, "port_standby": 2}
-        with pytest.raises(hardware_config.HardwareConfigError, match="switch coil bit"):
-            hardware_config.config_from_payload({
-                "chips": chips,
-                "switch_output": {"SW_A": binding},
-                "output_enable": {"pwm1": {"chip_id": "sw1", "port": binding[shared]}},
-            })
-    # A bit no switch claims is fine.
-    cfg = hardware_config.config_from_payload({
-        "chips": chips,
-        "switch_output": {"SW_A": {"chip_id": "sw1", "port_main": 0, "port_diverge": 1}},
-        "output_enable": {"pwm1": {"chip_id": "sw1", "port": 7}},
-    })
-    assert cfg.output_enable["pwm1"].port == 7
-
-
 def test_set_current_binding_sets_and_clears():
     hardware_config.apply_updates(
         {"chips": [{"chip_id": "cur1", "kind": "ina3221", "i2c_address": "0x40"}]},
@@ -525,7 +476,7 @@ def test_apply_updates_persists_and_round_trips():
     assert len(hardware_config.get_hardware_config().chips) == 3
 
 
-def test_current_and_output_enable_maps_round_trip_on_disk():
+def test_current_map_round_trips_on_disk():
     hardware_config.apply_updates(_real_payload(
         chips=[
             {"chip_id": "pwm1", "kind": "pca9685", "i2c_address": "0x40"},
@@ -536,14 +487,12 @@ def test_current_and_output_enable_maps_round_trip_on_disk():
         block_occupancy_current={
             "B1": {"chip_id": "cur1", "port": 0, "baseline_ma": 2.0, "threshold_ma": 18},
         },
-        output_enable={"pwm1": {"chip_id": "sw1", "port": 7}},
     ))
     hardware_config.reset_to_defaults()
     hardware_config.load_from_disk()
     cfg = hardware_config.get_hardware_config()
     assert cfg.block_occupancy_current["B1"].threshold_ma == 18.0
     assert cfg.block_occupancy_current["B1"].baseline_ma == 2.0
-    assert cfg.output_enable["pwm1"].port == 7
 
 
 def test_apply_updates_persist_false_does_not_write():
@@ -802,32 +751,6 @@ def test_binding_endpoint_sets_current_binding(client):
     assert "B1" not in hardware_config.get_hardware_config().block_occupancy_current
 
 
-def test_binding_endpoint_sets_output_enable(client):
-    """The /OE inhibit is bindable through the same endpoint as the rest.
-
-    It is the only binding with no per-entity editor — it names a wire between
-    two chips — so Hardware Setup writes it here."""
-    client.put("/api/hardware/config", json=_real_payload(output_enable={}))
-
-    r = client.put("/api/hardware/binding", json={
-        "map": "output_enable", "logical_id": "pwm1", "chip_id": "sw1", "port": 7,
-    })
-    assert r.status_code == 200
-    bound = hardware_config.get_hardware_config().output_enable["pwm1"]
-    assert (bound.chip_id, bound.port) == ("sw1", 7)
-    report = hardware_config.activation_report(
-        hardware_config.get_hardware_config(),
-        OperationMode.VIRTUAL_HARDWARE, ["B1"], ["SW_A"],
-    )
-    assert report["ready"] is True
-    assert report["warnings"] == []
-
-    r2 = client.put("/api/hardware/binding",
-                    json={"map": "output_enable", "logical_id": "pwm1"})
-    assert r2.status_code == 200
-    assert "pwm1" not in hardware_config.get_hardware_config().output_enable
-
-
 def test_missing_switch_track_source_blocks_activation(client):
     """Every switch must name the block feeding its rails before a hardware
     environment may activate (design_new.md "Power", Bindings). Unlike the /OE
@@ -881,52 +804,25 @@ def test_binding_endpoint_sets_switch_track_source(client):
     assert "SW_A" not in hardware_config.get_hardware_config().switch_track_source
 
 
-def test_missing_output_enable_warns_but_does_not_block_activation(client):
-    """An /OE inhibit is wiring a rig may not have — a spare '595 bit routed to
-    the PCA's /OE pin. Without it safe state still zeroes every channel, so the
-    board can be turned off; it just loses the one-write board-wide off. That is
-    reported as a warning and must not refuse either hardware environment,
-    otherwise a rig that ties /OE enabled can never run."""
-    client.put("/api/hardware/config", json=_real_payload(output_enable={}))
+def test_real_hardware_warns_that_outputs_latch_if_the_host_dies(client):
+    """Safe state is a write, so a dead process writes nothing and the boards
+    hold their last commanded value. Advisory, not a blocker: it is a property
+    of every rig without an independent gate, which is every rig here."""
+    client.put("/api/hardware/config", json=_real_payload())
     cfg = hardware_config.get_hardware_config()
 
-    report = hardware_config.activation_report(
+    virtual = hardware_config.activation_report(
         cfg, OperationMode.VIRTUAL_HARDWARE, ["B1"], ["SW_A"]
     )
-    assert report["ready"] is True
-    assert report["issues"] == []
-    assert [w["code"] for w in report["warnings"]] == ["missing_output_inhibit"]
-    assert report["warnings"][0]["ids"] == ["pwm1"]
+    assert virtual["ready"] is True
+    assert virtual["issues"] == []
+    assert virtual["warnings"] == []      # no real track to leave energized
 
-    # Real Hardware carries the same warning; the only thing still blocking it
-    # is the independent renewable lease, which is a separate mechanism.
     real = hardware_config.activation_report(
         cfg, OperationMode.REAL_HARDWARE, ["B1"], ["SW_A"]
     )
-    assert [w["code"] for w in real["warnings"]] == ["missing_output_inhibit"]
-    assert [i["code"] for i in real["issues"]] == ["missing_external_safety_lease"]
-
-
-def test_binding_endpoint_output_enable_rejects_coil_bit(client):
-    """A held inhibit and a pulsed coil cannot share a bit; the cross-map check
-    runs on this path too, so the UI cannot write the contradiction."""
-    client.put("/api/hardware/config", json=_real_payload(output_enable={}))
-    r = client.put("/api/hardware/binding", json={
-        "map": "output_enable", "logical_id": "pwm1", "chip_id": "sw1", "port": 5,
-    })
-    assert r.status_code == 400
-    assert "coil" in r.get_json()["error"]
-    assert "pwm1" not in hardware_config.get_hardware_config().output_enable
-
-
-def test_binding_endpoint_output_enable_rejects_non_track_key(client):
-    """The key is the track chip being inhibited, not the chip driving the bit."""
-    client.put("/api/hardware/config", json=_real_payload(output_enable={}))
-    r = client.put("/api/hardware/binding", json={
-        "map": "output_enable", "logical_id": "sw1", "chip_id": "sw1", "port": 4,
-    })
-    assert r.status_code == 400
-    assert not hardware_config.get_hardware_config().output_enable
+    assert [w["code"] for w in real["warnings"]] == ["outputs_latch_on_host_death"]
+    assert real["issues"] == []
 
 
 def test_commission_currents_endpoint_with_fake(client, monkeypatch):
@@ -1001,9 +897,6 @@ def test_bootstrap_keeps_real_environment_inactive_when_device_unavailable(monke
     import hardware.ch347_device as chdev
     monkeypatch.setattr(chdev, "open_ch347_device",
                         lambda port=None: (_ for _ in ()).throw(RuntimeError("no device")))
-    hardware_config.set_output_safety_lease_factory(
-        lambda cfg, device: object()
-    )
     hardware_config.apply_updates(_real_payload(
         block_track={}, switch_output={}, switch_track_source={}, block_occupancy={}
     ))
@@ -1027,13 +920,6 @@ def test_bootstrap_real_mode_wires_ch347_interfaces(monkeypatch):
         TrackDriver,
     )
     _patch_fake_device(monkeypatch)
-    class Lease:
-        def acquire(self): return True
-        def renew(self): return True
-        def revoke(self): return None
-    hardware_config.set_output_safety_lease_factory(
-        lambda cfg, device: Lease()
-    )
     hardware_config.apply_updates(_real_payload(
         block_track={}, switch_output={}, switch_track_source={}, block_occupancy={}
     ))

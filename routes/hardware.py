@@ -968,6 +968,12 @@ def register(app, state: AppState) -> None:
                 environment=selected,
             )
             hardware_config.close_live_device()
+            # The session's chips were built on the handle just closed, so they
+            # can no longer reach the rig. Hand the runtime back the simulated
+            # boundary: the outputs are already safe, and leaving the dead chips
+            # bound would make the next safe state — this route on a second
+            # enter, or `activate` on the way back out — raise instead.
+            state.sim_controller.release_interfaces()
             state.commissioning_active = True
         return jsonify({"status": "success", "commissioning": True})
 
@@ -990,8 +996,7 @@ def register(app, state: AppState) -> None:
             operation_environment.get_selected(),
             state.network.blocks.keys(),
             state.network.switches.keys(),
-            external_safety_available=hardware_config.external_safety_available(),
-        )
+            )
 
     @app.route("/api/operation/readiness", methods=["GET"])
     def get_operation_readiness():
@@ -1020,6 +1025,10 @@ def register(app, state: AppState) -> None:
             try:
                 state.sim_controller.enter_safe_state()
                 hardware_config.close_live_device()
+                # Unbind the previous session's chips before building the next
+                # ones: they hold the handle just closed, and both the failure
+                # path below and `activate_interfaces` safe the outputs again.
+                state.sim_controller.release_interfaces()
                 interfaces = hardware_config.build_session_interfaces(
                     hardware_config.get_hardware_config(),
                     environment=selected,

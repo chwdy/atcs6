@@ -624,6 +624,50 @@ class SimulationController(SwitchOutputOwner):
         self.environment_active = False
         self.operation_mode = operation_environment.parse(environment)
 
+        self._bind_interfaces(
+            input_interface, block_output_interface, switch_output_interface
+        )
+        self.failed_runtime = False
+        self.failed_runtime_payload = None
+        self.failed_runtime_at = None
+        self.hardware_failure = False
+        self.hardware_failure_payload = None
+        self.hardware_failure_at = None
+        self.activation_issues = []
+        self.environment_active = True
+
+    def release_interfaces(self) -> None:
+        """Drop the hardware boundary once its controller handle is released.
+
+        Every chip of a hardware-backed session is built on one open device, so
+        closing that device leaves each driver holding a handle it can no longer
+        write through. The next safe state — the one the following commissioning
+        `enter` issues, or the one `activate_interfaces` issues on its way in —
+        would then raise from `OutputSafety` rather than safe anything, and the
+        session would stay stuck there until the process restarted. Rebinding to
+        the simulated drivers is what keeps a released device out of that path.
+
+        Does no I/O of its own: the caller drives the outputs safe while the
+        device is still open and closes it, and this only replaces the boundary
+        afterwards. The lifecycle flags stay the caller's, so whatever reason it
+        recorded for the environment being inactive survives the swap.
+        """
+        self.environment_active = False
+        self._bind_interfaces(None, None, None)
+
+    def _bind_interfaces(
+        self,
+        input_interface: Optional[Any],
+        block_output_interface: Optional[Any],
+        switch_output_interface: Optional[Any],
+    ) -> None:
+        """Wire the three interfaces and the objects that read them, falling back
+        to the simulated driver for each one passed `None`.
+
+        Pure rebinding: no device I/O and no lifecycle flags — `activate_
+        interfaces` and `release_interfaces` own those, and they disagree about
+        every one of them.
+        """
         self.power_controller = (
             BlockPowerController(self.network, output_interface=block_output_interface)
             if block_output_interface is not None
@@ -661,14 +705,6 @@ class SimulationController(SwitchOutputOwner):
                 message=message,
             ),
         )
-        self.failed_runtime = False
-        self.failed_runtime_payload = None
-        self.failed_runtime_at = None
-        self.hardware_failure = False
-        self.hardware_failure_payload = None
-        self.hardware_failure_at = None
-        self.activation_issues = []
-        self.environment_active = True
 
     def deactivate_environment(
         self, issues: List[Dict[str, Any]], environment: Optional[OperationMode] = None

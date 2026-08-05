@@ -11,8 +11,7 @@ This store answers three questions for the next operation session:
   an optional standby port), and two occupancy sources for
   the hybrid detector — `block_occupancy` (block_id -> '165 digital-detector port) and
   `block_occupancy_current` (block_id -> INA3221 current channel, with its
-  per-channel baseline/threshold). `output_enable` optionally names the '595 bit
-  wired to each PCA's /OE. This is the logical id -> physical channel map; the
+  per-channel baseline/threshold). This is the logical id -> physical channel map; the
   concrete driver in `hardware/` is the only consumer of it (design_new.md
   "Power", Hardware interface boundary).
 - **What it does not decide:** the selected operating environment. That lives in
@@ -233,11 +232,6 @@ class HardwareConfig:
     # `SwitchPowerController` is its only reader.
     switch_track_source: Dict[str, str] = field(default_factory=dict)
     # Optional per-PCA output-enable line: key = track (pca9685) chip_id, value =
-    # the '595 bit wired to that PCA's /OE. Driven to enable once at session
-    # build and held; there is no per-tick coast window. An entry is absent when
-    # the rig ties /OE enabled in hardware; that costs the board-wide off state,
-    # so `activation_report` warns, but it does not block activation.
-    output_enable: Dict[str, PortBinding] = field(default_factory=dict)
     # Lower edge of the hybrid occupancy detector's drive zones: at or below this
     # magnitude a block is idle and its '165 detector answers. Tunable because
     # how small a commanded voltage still counts as parked is a property of the
@@ -270,7 +264,6 @@ _session_device: Optional[Any] = None
 # holds it fails, and it used to fail with "is it plugged in?" on a bridge that
 # was plugged in and working. A borrowed device is never closed by the borrower.
 _live_device: Optional[Any] = None
-_output_safety_lease_factory: Optional[Callable[[HardwareConfig, Any], Any]] = None
 
 
 def get_hardware_config() -> HardwareConfig:
@@ -298,18 +291,6 @@ def get_live_device() -> Optional[Any]:
     interleave with a tick on the same bus.
     """
     return _live_device
-
-
-def set_output_safety_lease_factory(
-    factory: Optional[Callable[[HardwareConfig, Any], Any]],
-) -> None:
-    """Install the board-specific independent safety-gate factory."""
-    global _output_safety_lease_factory
-    _output_safety_lease_factory = factory
-
-
-def external_safety_available() -> bool:
-    return _output_safety_lease_factory is not None
 
 
 def close_live_device() -> None:
@@ -403,7 +384,6 @@ def _persist_dict(cfg: HardwareConfig) -> Dict[str, Any]:
         "block_occupancy_current": _current_binding_dict(cfg.block_occupancy_current),
         "switch_output": _switch_binding_dict(cfg.switch_output),
         "switch_track_source": dict(cfg.switch_track_source),
-        "output_enable": _binding_dict(cfg.output_enable),
         "idle_deadband_v": cfg.idle_deadband_v,
         "current_sense_min_drive_v": cfg.current_sense_min_drive_v,
     }
@@ -592,7 +572,6 @@ def _merged_from_updates(updates: Dict[str, Any]) -> HardwareConfig:
         block_occupancy_current=dict(_config.block_occupancy_current),
         switch_output=dict(_config.switch_output),
         switch_track_source=dict(_config.switch_track_source),
-        output_enable=dict(_config.output_enable),
         idle_deadband_v=_config.idle_deadband_v,
         current_sense_min_drive_v=_config.current_sense_min_drive_v,
     )
@@ -618,8 +597,6 @@ def _merged_from_updates(updates: Dict[str, Any]) -> HardwareConfig:
         merged.switch_track_source = _parse_switch_track_source(
             updates["switch_track_source"]
         )
-    if "output_enable" in updates:
-        merged.output_enable = _parse_bindings(updates["output_enable"])
     return merged
 
 
@@ -721,8 +698,6 @@ def _validate(cfg: HardwareConfig) -> None:
             raise HardwareConfigError(
                 f"block_occupancy_current[{logical_id!r}] threshold_ma must be >= 0"
             )
-    _validate_output_enable(cfg.output_enable, chips_by_id)
-    _validate_no_coil_port_reuse(cfg.switch_output, cfg.output_enable)
 
 
 def _validate_bindings(
@@ -877,75 +852,6 @@ def _validate_switch_bindings(
             )
 
 
-def _validate_no_coil_port_reuse(
-    switch_output: Dict[str, SwitchBinding],
-    output_enable: Dict[str, PortBinding],
-) -> None:
-    """A '595 bit cannot be both a switch coil and a PCA9685 /OE line.
-
-    The two uses are contradictory in a way neither map can see alone: /OE is
-    driven low once and *held* there for the session, while a coil bit is pulsed
-    high per throw. Sharing a bit means every throw of that switch pulses the
-    PCA's /OE high, cutting track power to a whole board mid-movement, and the
-    /OE hold at session build leaves the coil's driver input asserted low
-    forever. Each map validates its own ports for reuse; only this cross-check
-    catches a bit claimed by both."""
-    coil_ports: Dict[Tuple[str, int], str] = {}
-    for switch_id, b in switch_output.items():
-        for port in b.ports:
-            coil_ports[(b.chip_id, port)] = switch_id
-    for track_chip_id, b in output_enable.items():
-        switch_id = coil_ports.get((b.chip_id, b.port))
-        if switch_id is not None:
-            raise HardwareConfigError(
-                f"output_enable[{track_chip_id!r}] port {b.port} on chip "
-                f"{b.chip_id!r} is already a switch coil bit (switch "
-                f"{switch_id!r}); a /OE line is held, a coil is pulsed"
-            )
-
-
-def _validate_output_enable(
-    m: Dict[str, PortBinding],
-    chips_by_id: Dict[str, ChipConfig],
-) -> None:
-    """Each /OE binding keys on a track (pca9685) chip_id and points at the '595
-    output bit wired to that PCA's /OE pin."""
-    used: set = set()
-    for track_chip_id, b in m.items():
-        target = chips_by_id.get(track_chip_id)
-        if target is None:
-            raise HardwareConfigError(
-                f"output_enable key {track_chip_id!r} is not a configured chip"
-            )
-        if CHIP_CATALOG[target.kind].role != ROLE_TRACK:
-            raise HardwareConfigError(
-                f"output_enable key {track_chip_id!r} must be a track chip, "
-                f"is {CHIP_CATALOG[target.kind].role}"
-            )
-        drive = chips_by_id.get(b.chip_id)
-        if drive is None:
-            raise HardwareConfigError(
-                f"output_enable[{track_chip_id!r}] references unknown chip {b.chip_id!r}"
-            )
-        if CHIP_CATALOG[drive.kind].role != ROLE_SWITCH:
-            raise HardwareConfigError(
-                f"output_enable[{track_chip_id!r}] chip {b.chip_id!r} is "
-                f"{CHIP_CATALOG[drive.kind].role}, needs an {ROLE_SWITCH} bit for /OE"
-            )
-        count = ports_for_chip(drive.kind, drive.chain_length)
-        if not (0 <= b.port < count):
-            raise HardwareConfigError(
-                f"output_enable[{track_chip_id!r}] port {b.port} out of range "
-                f"0..{count - 1} on chip {b.chip_id!r}"
-            )
-        key = (b.chip_id, b.port)
-        if key in used:
-            raise HardwareConfigError(
-                f"output_enable: port {b.port} on chip {b.chip_id!r} is bound more than once"
-            )
-        used.add(key)
-
-
 # ---------------------------------------------------------------------------
 # Commit / persistence
 # ---------------------------------------------------------------------------
@@ -970,11 +876,6 @@ def _prune_dangling_bindings(cfg: HardwareConfig) -> None:
     # switch_track_source names no chip at all — it bonds a switch to a block —
     # so removing a chip cannot dangle it. Its entries are pruned against the
     # layout by `activation_report`, not against the chip list.
-    # output_enable is keyed by the track chip and points at the switch chip that
-    # drives its /OE; drop the entry if either chip is gone.
-    oe = cfg.output_enable
-    for track_id in [k for k, b in oe.items() if k not in ids or b.chip_id not in ids]:
-        del oe[track_id]
 
 
 def apply_updates(updates: Dict[str, Any], *, persist: bool = True) -> HardwareConfig:
@@ -1083,8 +984,6 @@ def activation_report(
     environment: OperationMode,
     block_ids: Iterable[str],
     switch_ids: Iterable[str],
-    *,
-    external_safety_available: bool = False,
 ) -> Dict[str, Any]:
     """Return the fail-closed readiness verdict for one whole environment.
 
@@ -1165,25 +1064,15 @@ def activation_report(
     if stale_switches:
         issue("stale_switch_binding", "Bindings name switches not in the loaded layout", stale_switches)
 
-    # An /OE inhibit is wiring a rig may or may not have: it needs a spare '595
-    # bit routed to the PCA's /OE pin. Where it exists the driver holds it and
-    # safe state drops it first, which is strictly better; where it does not,
-    # safe state still zeroes every channel, so the board can be turned off —
-    # just one channel at a time rather than as a board. That is a weaker
-    # guarantee worth reporting, not a reason to refuse the environment.
-    bound_track_chips = {binding.chip_id for binding in cfg.block_track.values()}
-    missing_inhibit = sorted(bound_track_chips - set(cfg.output_enable))
-    if missing_inhibit:
+    # A rig that loses its host mid-run keeps whatever the PCA9685 and '595
+    # were last told to hold: safe state is a write, and a dead process
+    # writes nothing. Reported once here so activation is an informed act.
+    if environment is OperationMode.REAL_HARDWARE:
         warn(
-            "missing_output_inhibit",
-            "Track chips have no /OE inhibit binding; safe state zeroes their "
-            "channels individually instead of disabling the board",
-            missing_inhibit,
-        )
-    if environment is OperationMode.REAL_HARDWARE and not external_safety_available:
-        issue(
-            "missing_external_safety_lease",
-            "Real Hardware requires a proven independent renewable output-safety lease",
+            "outputs_latch_on_host_death",
+            "Track output and point motors hold their last commanded value "
+            "if this process or the host dies: safe state needs a working "
+            "process to write it",
         )
 
     return {
@@ -1196,10 +1085,8 @@ def activation_report(
 
 # The maps a plain (chip_id, port) binding covers. `block_track`, `switch_output`,
 # and `block_occupancy_current` carry more than one field per entry, so each has
-# its own setter below. `output_enable` keys on a track chip_id rather than a
-# layout entity, but its value is the same (chip_id, port) pair, so it shares the
-# generic setter; `_validate_output_enable` enforces the key's role.
-BINDING_MAPS = ("block_occupancy", "output_enable")
+# its own setter below.
+BINDING_MAPS = ("block_occupancy",)
 
 
 def _copy_config() -> HardwareConfig:
@@ -1213,7 +1100,6 @@ def _copy_config() -> HardwareConfig:
         block_occupancy_current=dict(_config.block_occupancy_current),
         switch_output=dict(_config.switch_output),
         switch_track_source=dict(_config.switch_track_source),
-        output_enable=dict(_config.output_enable),
     )
 
 
@@ -1226,11 +1112,9 @@ def set_binding(
     persist: bool = True,
 ) -> HardwareConfig:
     """Set or clear a single port binding (used by the per-entity block/switch
-    editors and by the Hardware Setup /OE row). `logical_id` is the block for
-    `block_occupancy` and the track chip_id for `output_enable`. `chip_id`
+    editors). `logical_id` is the block for `block_occupancy`. `chip_id`
     None/empty clears the binding. The whole configuration is re-validated, so an
-    out-of-range / role-mismatched / already-used port — including a bit already
-    claimed by a switch coil — is rejected and nothing is committed."""
+    out-of-range / role-mismatched / already-used port is rejected and nothing is committed."""
     if map_name not in BINDING_MAPS:
         raise HardwareConfigError(f"binding map must be one of {list(BINDING_MAPS)}, got {map_name!r}")
     candidate = _copy_config()
@@ -1437,7 +1321,6 @@ def _config_from_dict(payload: Any) -> HardwareConfig:
         block_occupancy=_parse_bindings(payload.get("block_occupancy", {})),
         block_occupancy_current=_parse_current_bindings(payload.get("block_occupancy_current", {})),
         switch_output=_parse_switch_bindings(payload.get("switch_output", {})),
-        output_enable=_parse_bindings(payload.get("output_enable", {})),
         idle_deadband_v=_parse_deadband(payload.get("idle_deadband_v")),
         current_sense_min_drive_v=_parse_min_drive(
             payload.get("current_sense_min_drive_v")
@@ -1525,11 +1408,10 @@ def reset_to_defaults() -> HardwareConfig:
     Production never couples these stores; this helper resets the separate
     environment singleton as well so an isolated test starts in Simulation.
     """
-    global _config, _session_device, _live_device, _output_safety_lease_factory
+    global _config, _session_device, _live_device
     _config = HardwareConfig()
     _session_device = None
     _live_device = None
-    _output_safety_lease_factory = None
     operation_environment.reset_to_defaults()
     return _config
 
@@ -1625,12 +1507,10 @@ def build_session_interfaces(
                 _binding_tuples(cfg.block_occupancy),
                 _switch_binding_tuples(cfg.switch_output),
                 block_occupancy_current=_current_binding_tuples(cfg.block_occupancy_current),
-                output_enable=_binding_tuples(cfg.output_enable),
                 idle_deadband_v=cfg.idle_deadband_v,
                 current_sense_min_drive_v=cfg.current_sense_min_drive_v,
                 track_polarity_of=track_polarity_of,
                 watchdog_timeout_s=None,
-                output_safety_lease=None,
             )
         except Exception as exc:
             raise HardwareBackendUnavailable(
@@ -1659,11 +1539,6 @@ def build_session_interfaces(
         ) from exc
 
     try:
-        safety_lease = (
-            _output_safety_lease_factory(cfg, device)
-            if _output_safety_lease_factory is not None
-            else None
-        )
         interfaces = build_real_interfaces(
             device,
             cfg.chips,
@@ -1671,14 +1546,12 @@ def build_session_interfaces(
             _binding_tuples(cfg.block_occupancy),
             _switch_binding_tuples(cfg.switch_output),
             block_occupancy_current=_current_binding_tuples(cfg.block_occupancy_current),
-            output_enable=_binding_tuples(cfg.output_enable),
             idle_deadband_v=cfg.idle_deadband_v,
             current_sense_min_drive_v=cfg.current_sense_min_drive_v,
             track_polarity_of=track_polarity_of,
             # A real session drives real track; arm the loss-of-control watchdog
             # (design_new.md "Power -> Hardware interface boundary").
             watchdog_timeout_s=DEFAULT_WATCHDOG_TIMEOUT_S,
-            output_safety_lease=safety_lease,
         )
     except Exception as exc:
         try:

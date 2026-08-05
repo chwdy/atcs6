@@ -1,0 +1,194 @@
+"""Safe state is a de-energize, not a lock.
+
+design_new.md "Power", Safe state / fail-safe: `OutputSafety.enter_safe_state()`
+latches every '595 coil bit low and zeroes every PWM channel. That is the whole
+of the physical safety mechanism — there is no output gate to raise, no
+permission to grant, and nothing to reactivate afterwards.
+
+It matters that it is only a de-energize. When safe state also revoked a
+permission the drivers checked before every write, a stopped Real Hardware
+session halted itself: `stop` revoked, the stopped session's de-energize drain
+wrote 0V, the driver refused a write nobody had any physical reason to refuse,
+and the runtime reported that refusal as a failed device. The rig was fine. The
+tests below pin the behavior that replaces it — a refusal now means exactly one
+thing, a block the driver cannot reach.
+"""
+
+import time
+
+from block_power import BlockPowerController
+from hardware.fake import FakeCh347Device
+from hardware.interfaces import build_real_interfaces
+from hardware_config import ChipConfig
+from network import RailwayNetwork
+from operation_environment import OperationMode
+from simulation import SimulationController
+
+
+def drivers(watchdog_timeout_s=None):
+    """The real driver stack over a fake device."""
+    dev = FakeCh347Device(present_addresses={0x40})
+    specs = [
+        ChipConfig("pwm1", "pca9685", i2c_address=0x40),
+        ChipConfig("sw1", "hc595", spi_select="cs0", chain_length=1),
+    ]
+    _inp, block_out, switch_out = build_real_interfaces(
+        dev,
+        specs,
+        {"BLK_A": ("pwm1", 0, 1)},
+        {},
+        {"SW_A": ("sw1", 1, 2, None)},
+        watchdog_timeout_s=watchdog_timeout_s,
+    )
+    return dev, block_out, switch_out
+
+
+def hardware_session(watchdog_timeout_s=None):
+    """A Real Hardware runtime over that stack."""
+    dev, block_out, switch_out = drivers(watchdog_timeout_s)
+    sim = SimulationController(
+        RailwayNetwork(),
+        None,
+        operation_mode=OperationMode.REAL_HARDWARE,
+        block_output_interface=block_out,
+        switch_output_interface=switch_out,
+        environment_active=True,
+    )
+    sim.power_controller._sim_controller = sim
+    return dev, sim
+
+
+# --- what safe state does ---------------------------------------------------
+
+
+def test_safe_state_drops_the_coils_and_the_track():
+    dev, block_out, switch_out = drivers()
+    block_out.set_voltage("BLK_A", 9.0)
+    switch_out.set_throw("SW_A", 1)
+
+    block_out.enter_safe_state()
+
+    assert dev.duty_cycle(0x40, 0) == 0.0
+    assert dev.latched_bit("cs0", 1) is False
+    assert dev.latched_bit("cs0", 2) is False
+    assert block_out.get_actual_voltage("BLK_A") == 0.0
+
+
+def test_either_driver_safes_both_outputs():
+    """One object owns the sequence, so track and points can never disagree
+    about whether the rig is driving."""
+    dev, block_out, switch_out = drivers()
+    block_out.set_voltage("BLK_A", 9.0)
+
+    switch_out.enter_safe_state()          # the switch side, not the track side
+
+    assert dev.duty_cycle(0x40, 0) == 0.0
+
+
+# --- stop, then start -------------------------------------------------------
+
+
+def test_the_rail_drives_again_after_a_safe_state():
+    """The regression this design removes: a stop must not cost a reactivation."""
+    dev, sim = hardware_session()
+    sim.power_controller.set_block_voltage("BLK_A", 9.0)
+
+    sim.enter_safe_state()                 # what POST control {"action": "stop"} does
+
+    assert sim.power_controller.set_block_voltage("BLK_A", 9.0) is True
+    assert dev.duty_cycle(0x40, 0) > 0.0
+    assert sim.hardware_failure is False
+    assert sim.environment_active is True
+
+
+def test_a_stopped_sessions_de_energize_drain_is_not_a_failure():
+    """The exact write that halted the rig: 0V to a block, outputs already safed."""
+    dev, sim = hardware_session()
+    sim.power_controller.set_block_voltage("BLK_A", 9.0)
+    sim.enter_safe_state()
+
+    assert sim.power_controller.set_block_voltage("BLK_A", 0.0) is True
+
+    assert sim.hardware_failure is False
+    assert sim.runtime_halted is False
+
+
+def test_stop_start_survives_repeatedly():
+    _dev, sim = hardware_session()
+
+    for _ in range(5):
+        sim.enter_safe_state()
+        assert sim.power_controller.set_block_voltage("BLK_A", 9.0) is True
+
+    assert sim.hardware_failure is False
+
+
+# --- what a refusal still means --------------------------------------------
+
+
+def test_an_unreachable_block_is_still_fatal():
+    """A refusal has one cause left: the driver cannot reach that block
+    (design_new.md "Power", Hardware I/O failure)."""
+    _dev, sim = hardware_session()
+
+    assert sim.power_controller.set_block_voltage("BLK_NOT_BOUND", 6.0) is False
+
+    assert sim.hardware_failure is True
+    assert sim.hardware_failure_payload.resource_id == "BLK_NOT_BOUND"
+
+
+def test_a_device_error_is_still_fatal():
+    dev, sim = hardware_session()
+    dev.set_fault("i2c_write_error")
+
+    assert sim.power_controller.set_block_voltage("BLK_A", 9.0) is False
+
+    assert sim.hardware_failure is True
+
+
+# --- loss of control --------------------------------------------------------
+
+
+def test_a_stalled_control_loop_drops_the_outputs():
+    """The in-process watchdog is what covers a control loop that stops
+    refreshing: it cannot survive the process dying, but it does cover a tick
+    that wedges while a train is under power."""
+    dev, block_out, _switch_out = drivers(watchdog_timeout_s=0.3)
+    block_out.set_voltage("BLK_A", 9.0)
+    assert dev.duty_cycle(0x40, 0) > 0.0
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and dev.duty_cycle(0x40, 0) != 0.0:
+        time.sleep(0.01)
+
+    assert dev.duty_cycle(0x40, 0) == 0.0
+
+
+def test_the_control_loop_recovers_after_a_watchdog_drop():
+    """Dropping the outputs is the whole response. A loop that comes back
+    drives the rail again on its next write rather than needing a new session:
+    the watchdog protects the layout, it does not end the session."""
+    dev, block_out, _switch_out = drivers(watchdog_timeout_s=0.3)
+    block_out.set_voltage("BLK_A", 9.0)
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and dev.duty_cycle(0x40, 0) != 0.0:
+        time.sleep(0.01)
+
+    assert block_out.set_voltage("BLK_A", 9.0) is True
+    assert dev.duty_cycle(0x40, 0) > 0.0
+
+
+# --- the simulated side is untouched ---------------------------------------
+
+
+def test_a_simulated_session_stops_and_starts_the_same_way():
+    network = RailwayNetwork()
+    sim = SimulationController(network, None)
+    pc: BlockPowerController = sim.power_controller
+
+    pc.set_block_voltage("BLK_A", 9.0)
+    sim.enter_safe_state()
+    assert pc.get_block_voltage("BLK_A") == 0.0
+
+    assert pc.set_block_voltage("BLK_A", 9.0) is True
+    assert sim.hardware_failure is False

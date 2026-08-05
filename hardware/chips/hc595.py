@@ -52,10 +52,6 @@ class HC595Chain:
         # Re-entrant: the guard writes through the same locked path a caller does.
         self._lock = threading.RLock()
         self._guard: Optional[threading.Timer] = None
-        # Active-high safety/inhibit lines intentionally remain high in the
-        # safe state. They are excluded from the coil hold guard; clearing one
-        # on timeout could re-enable a power chip.
-        self._guard_ignored_high: Set[int] = set()
 
     @property
     def num_outputs(self) -> int:
@@ -94,12 +90,6 @@ class HC595Chain:
                 state[byte_idx] |= 1 << bit_idx
             self._state = state
             self.write_all()
-
-    def set_guard_ignored_high(self, indices: Iterable[int]) -> None:
-        """Exclude active-high safety lines from the solenoid hold guard."""
-        with self._lock:
-            self._guard_ignored_high = {int(index) for index in indices}
-            self._rearm_guard()
 
     def probe(self) -> bool:
         """Write-only part: success == the SPI transaction issued without error."""
@@ -145,12 +135,7 @@ class HC595Chain:
             released = self._unsafe_high_pattern()
             if not released:
                 return
-            safe = bytearray(self.chain_length)
-            for index in self._guard_ignored_high:
-                byte_idx, bit_idx = divmod(index, 8)
-                if 0 <= byte_idx < self.chain_length:
-                    safe[byte_idx] |= 1 << bit_idx
-            self._state = safe
+            self._state = bytearray(self.chain_length)
             try:
                 self.device.latch_out(bytes(reversed(self._state)), self.select)
             except Exception:
@@ -167,8 +152,6 @@ class HC595Chain:
     def _unsafe_high_pattern(self) -> int:
         pattern = 0
         for index in range(self.num_outputs):
-            if index in self._guard_ignored_high:
-                continue
             byte_idx, bit_idx = divmod(index, 8)
             if self._state[byte_idx] & (1 << bit_idx):
                 pattern |= 1 << index

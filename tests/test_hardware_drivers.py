@@ -118,7 +118,6 @@ def test_virtual_transport_fault_enters_the_runtime_hardware_failure_path():
         block_track={"BLK_0": ("pwm", 0, 1)},
         block_occupancy={},
         switch_output={},
-        output_enable={"pwm": ("out", 7)},
     )
     sim.power_controller.output_interface = track
     sim.power_controller._sim_controller = sim
@@ -127,7 +126,7 @@ def test_virtual_transport_fault_enters_the_runtime_hardware_failure_path():
     assert sim.power_controller.set_block_voltage("BLK_0", 8.0) is False
     assert sim.hardware_failure is True
     assert isinstance(sim.hardware_failure_payload, HardwareFailure)
-    assert dev.latched_bit("cs0", 7) is True
+    assert dev.duty_cycle(0x40, 0) == 0.0
 
 
 def test_hc595_bit_packing_across_cascade():
@@ -704,20 +703,10 @@ def test_current_only_block_reads_ina_regardless_of_drive():
     assert inp.read_block_currents()["B1"] is True
 
 
-def test_output_enable_bit_driven_low_at_build():
-    dev = FakeCh347Device(present_addresses={0x40})
-    specs = [
-        ChipConfig("pwm1", "pca9685", i2c_address=0x40),
-        ChipConfig("sw1", "hc595", spi_select="cs0"),
-    ]
-    build_real_interfaces(
-        dev, specs, block_track={}, block_occupancy={}, switch_output={},
-        output_enable={"pwm1": ("sw1", 2)},
-    )
-    assert dev.latched_bit("cs0", 2) is False   # /OE low = PCA enabled, held
-
-
-def test_safe_state_disables_output_enable_before_leaving_the_session():
+def test_safe_state_zeroes_the_channels_and_leaves_them_drivable():
+    """Safe state is a de-energize, not a lock: the operator stops, the rig
+    goes dead, and starting again drives it. Nothing has to be reactivated,
+    because nothing was taken away but the voltage."""
     dev = FakeCh347Device(present_addresses={0x40})
     specs = [
         ChipConfig("pwm1", "pca9685", i2c_address=0x40),
@@ -729,28 +718,20 @@ def test_safe_state_disables_output_enable_before_leaving_the_session():
         block_track={"B1": ("pwm1", 0, 1)},
         block_occupancy={},
         switch_output={},
-        output_enable={"pwm1": ("sw1", 2)},
     )
     assert blk.set_voltage("B1", 8.0) is True
 
     blk.enter_safe_state()
 
-    assert dev.latched_bit("cs0", 2) is True  # /OE high = PCA disabled
     assert dev.duty_cycle(0x40, 0) == 0.0
-    assert blk.set_voltage("B1", 8.0) is False
+    assert blk.get_actual_voltage("B1") == 0.0
+    assert blk.set_voltage("B1", 8.0) is True
+    assert dev.duty_cycle(0x40, 0) > 0.0
 
 
 def test_track_output_works_again_after_a_reconnect_resync():
     """A reconnect must not leave the rail dead for the rest of the session.
-
-    `_resync_hardware` opens with `safety.revoke()`, which drops the supervisor
-    to inactive — and `TrackDriver.set_voltage` refuses every write while it
-    stays there, because `renew()` tests `_active` before the no-lease
-    shortcut. The build calls `activate()` exactly once, so unless the resync
-    ends on its own `activate()` the first dropped USB link kills track output
-    permanently: every later tick's re-command is refused and latches a
-    hardware failure.
-    """
+"""
     dev = FakeCh347Device(present_addresses={0x40})
     specs = [
         ChipConfig("pwm1", "pca9685", i2c_address=0x40),
@@ -762,7 +743,6 @@ def test_track_output_works_again_after_a_reconnect_resync():
         block_track={"B1": ("pwm1", 0, 1)},
         block_occupancy={},
         switch_output={},
-        output_enable={"pwm1": ("sw1", 2)},
     )
     assert blk.set_voltage("B1", 8.0) is True
 
@@ -771,65 +751,9 @@ def test_track_output_works_again_after_a_reconnect_resync():
     # The resync deliberately does not restore voltage: a reopened bridge is a
     # blank bridge, so it lands on zero and the control loop re-commands.
     assert dev.duty_cycle(0x40, 0) == 0.0
-    assert dev.latched_bit("cs0", 2) is False   # /OE back low = PCA re-enabled
     # ...and that re-command has to actually land.
     assert blk.set_voltage("B1", 8.0) is True
     assert dev.duty_cycle(0x40, 0) > 0.0
-
-
-def test_safety_inhibit_is_not_cleared_by_the_solenoid_hold_guard():
-    dev = FakeCh347Device()
-    released = []
-    chip = HC595Chain(
-        dev, select="cs0", max_high_s=0.03, on_auto_release=released.append
-    )
-    chip.set_guard_ignored_high({2})
-    chip.set_high_outputs({2, 5})  # /OE inhibit plus an accidentally hot coil
-
-    time.sleep(0.12)
-
-    assert dev.latched_bit("cs0", 2) is True
-    assert dev.latched_bit("cs0", 5) is False
-    assert released == [1 << 5]
-
-
-def test_failed_external_lease_renewal_revokes_output_before_write():
-    class Lease:
-        def __init__(self):
-            self.renew_ok = True
-            self.revoked = False
-
-        def acquire(self):
-            return True
-
-        def renew(self):
-            return self.renew_ok
-
-        def revoke(self):
-            self.revoked = True
-
-    lease = Lease()
-    dev = FakeCh347Device(present_addresses={0x40})
-    specs = [
-        ChipConfig("pwm1", "pca9685", i2c_address=0x40),
-        ChipConfig("sw1", "hc595", spi_select="cs0"),
-    ]
-    _inp, blk, _sw = build_real_interfaces(
-        dev,
-        specs,
-        block_track={"B1": ("pwm1", 0, 1)},
-        block_occupancy={},
-        switch_output={},
-        output_enable={"pwm1": ("sw1", 2)},
-        output_safety_lease=lease,
-    )
-    assert blk.set_voltage("B1", 8.0) is True
-    lease.renew_ok = False
-
-    assert blk.set_voltage("B1", 9.0) is False
-    assert lease.revoked is True
-    assert dev.latched_bit("cs0", 2) is True
-    assert dev.duty_cycle(0x40, 0) == 0.0
 
 
 def test_safe_state_zeros_outputs(wired):
