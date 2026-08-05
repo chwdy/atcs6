@@ -5,7 +5,9 @@
     position: fixed;
     z-index: 1000;
     min-width: 184px;
-    max-width: 280px;
+    /* Wide enough that entity names read in full rather than ellipsizing; a
+       name longer than this wraps onto a second line instead of being cut. */
+    max-width: 340px;
     padding: 4px;
     background-color: var(--bg-panel);
     border: 1px solid var(--border-color);
@@ -54,15 +56,32 @@
     color: var(--text-secondary);
 }
 
-.tile-context-menu-label {
+/* Identity column: display name over stable id. `min-width: 0` lets it shrink
+   inside the flex row so long text wraps instead of pushing the detail out. */
+.tile-context-menu-text {
+    display: flex;
     flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    min-width: 0;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.tile-context-menu-label {
+    /* Names show in full — wrapped, never ellipsized. */
+    overflow-wrap: anywhere;
+    line-height: 1.25;
+}
+
+.tile-context-menu-sub {
+    font-size: 0.62rem;
+    line-height: 1.2;
+    color: var(--text-muted);
+    overflow-wrap: anywhere;
 }
 
 .tile-context-menu-detail {
     flex-shrink: 0;
+    align-self: center;
     font-size: 0.66rem;
     color: var(--text-muted);
 }

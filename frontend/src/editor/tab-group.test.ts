@@ -128,6 +128,39 @@ describe('TabGroup.show — preview-reuse invariant', () => {
     expect(group.tabs[1].editorId).toBe('BLK_2');
   });
 
+  it('opens an explicitly requested panel as its own kept tab beside the preview', () => {
+    const { group, editor } = makeGroup({ _currentEditorType: 'block', _currentEditorId: 'BLK_1' });
+    group.show('Block A', 'a');
+
+    // The tile right-click menu's pick — EditorUIHandler.openAsOwnTab sets this
+    // for the duration of the open.
+    editor._openNextPanelAsOwnTab = true;
+    editor._currentEditorId = 'BLK_2';
+    group.show('Block B', 'b');
+
+    expect(group.tabs).toHaveLength(2);
+    expect(group.tabs[0]).toMatchObject({ editorId: 'BLK_1', pinned: false });
+    expect(group.tabs[1]).toMatchObject({ editorId: 'BLK_2', pinned: true });
+    // One-shot: the next casual inspect is a preview again, and reuses the
+    // preview slot rather than the tab just requested by name.
+    expect(editor._openNextPanelAsOwnTab).toBe(false);
+
+    editor._currentEditorId = 'BLK_3';
+    group.show('Block C', 'c');
+    expect(group.tabs.map((t) => t.editorId)).toEqual(['BLK_3', 'BLK_2']);
+  });
+
+  it('keeps a preview tab the user then asks for by name instead of duplicating it', () => {
+    const { group, editor } = makeGroup({ _currentEditorType: 'block', _currentEditorId: 'BLK_1' });
+    group.show('Block A', 'a');
+
+    editor._openNextPanelAsOwnTab = true;
+    group.show('Block A', 'a');
+
+    expect(group.tabs).toHaveLength(1);
+    expect(group.tabs[0]).toMatchObject({ editorId: 'BLK_1', pinned: true });
+  });
+
   it('persists after every change that mutates tab state', () => {
     const { group, onPersist } = makeGroup({ _currentEditorType: 'block', _currentEditorId: 'BLK_1' });
     group.show('Block A', 'a');

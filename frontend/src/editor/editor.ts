@@ -80,13 +80,18 @@ export interface HostApp {
 }
 
 /**
- * Human label for an entity: its name when it has one, else its id. Ids are
- * generated (`SEG_4F4CF0`, `BLK_C37589A5`) and an un-grouped segment shares its
- * id with the block that owns it, so an id-only label cannot tell the two apart.
+ * Identity text for one entity row: its display name, with its stable id on the
+ * second line.
+ *
+ * A name alone does not identify a row, because names repeat across kinds by
+ * construction — creating a segment builds its owning block with that same name
+ * (segment_geometry_manager.create_segment), so a tile's Segment and Block rows
+ * would otherwise read as one label twice. The id line is what separates them.
+ * An unnamed entity has no second line: its label is already the id.
  */
-function entityLabel(name: unknown, id: string): string {
+function entityIdentity(name: unknown, id: string): { label: string; sublabel?: string } {
   const trimmed = typeof name === 'string' ? name.trim() : '';
-  return trimmed || id;
+  return trimmed ? { label: trimmed, sublabel: id } : { label: id };
 }
 
 export class Editor {
@@ -168,6 +173,10 @@ export class Editor {
   root: ParentNode = document;
   _currentEditorType: string | null;
   _currentEditorId: string | null;
+  // One-shot: set while an explicit open is rendering (the tile right-click
+  // menu — EditorUIHandler.openAsOwnTab), read and cleared by the tab group
+  // that ends up hosting the panel so it opens as its own kept tab.
+  _openNextPanelAsOwnTab = false;
   // Assigned lazily by event handlers.
   hasPanned = false;
   signalValidationTimeout: any = null;
@@ -2150,6 +2159,11 @@ export class Editor {
    * tile (train / switch / signal / block / platform), each opening that
    * entity's editor, plus a Throw action for switches and an "Inspect tile"
    * fallback. Entity resolution mirrors the properties panel.
+   *
+   * Every open here goes through uiHandler.openAsOwnTab: naming a record in
+   * this menu is explicit, so it gets its own kept tab in the active window
+   * rather than reusing that window's shared preview slot (which a left-click
+   * inspect, the casual gesture, keeps recycling).
    */
   showTileContextMenu(gridPos: any, track: any, clientX: number, clientY: number): void {
     const entityItems: ContextMenuItem[] = [];
@@ -2163,58 +2177,69 @@ export class Editor {
         label: train.id,
         detail: 'Train',
         icon: 'ti ti-train',
-        onSelect: () => {
-          void this.showTrainControlPanel(train.id);
-        },
+        onSelect: () => this.uiHandler.openAsOwnTab(() => this.showTrainControlPanel(train.id)),
       });
     }
     if (track.is_switch && track.switch_id) {
+      const sw = this.cachedNetwork?.switches?.[track.switch_id];
       entityItems.push({
-        label: track.switch_id,
+        ...entityIdentity(sw?.name, track.switch_id),
         detail: 'Switch',
         icon: 'ti ti-arrows-split-2',
-        onSelect: () => this.switchHandler.showEditor(track.switch_id),
+        onSelect: () => this.uiHandler.openAsOwnTab(() => this.switchHandler.showEditor(track.switch_id)),
       });
     }
-    for (const signal of track.signals || []) {
+    // GET /api/track carries `signal_ids` only — the enriched `signals` array
+    // is built on the network payload's tiles (RailwayNetwork.to_dict). Take
+    // whichever the caller handed us, and resolve names through the network's
+    // signal map so an id with no record still gets its row.
+    const signalsById = this.cachedNetwork?.signals || {};
+    const tileSignals: any[] = track.signals?.length
+      ? track.signals
+      : (track.signal_ids || []).map((sid: string) => signalsById[sid] || { signal_id: sid });
+    for (const signal of tileSignals) {
       entityItems.push({
-        label: signal.signal_id,
+        ...entityIdentity(signal.name, signal.signal_id),
         detail: 'Signal',
         icon: 'ti ti-traffic-lights',
-        onSelect: () => this.signalHandler.showSignalEditor(signal.signal_id),
+        onSelect: () =>
+          this.uiHandler.openAsOwnTab(() => this.signalHandler.showSignalEditor(signal.signal_id)),
       });
     }
     // A tile belongs to a segment (geometry) and to the block that owns it
-    // (power / occupancy). Offer both, each opening its own editor. An
-    // un-grouped segment is its own single-segment block sharing its id, so
-    // labelling by raw id makes the Block row read as the segment — name the
-    // rows instead, and fall back to the id only when a name is unset.
+    // (power / occupancy). Offer both, each opening its own editor. The two
+    // carry the same name whenever the block is the segment's own — so each row
+    // reads its own record's name and shows its own id underneath.
     const block = track.block_section_id
       ? this.cachedNetwork?.blocks?.[track.block_section_id]
       : null;
     if (track.segment_id) {
       const segment = (block?.segments || []).find((s: any) => s.segment_id === track.segment_id);
       entityItems.push({
-        label: entityLabel(segment?.name, track.segment_id),
+        ...entityIdentity(segment?.name, track.segment_id),
         detail: 'Segment',
         icon: 'ti ti-square-dashed',
-        onSelect: () => this.segmentHandler.showEditor(track.segment_id),
+        onSelect: () => this.uiHandler.openAsOwnTab(() => this.segmentHandler.showEditor(track.segment_id)),
       });
     }
     if (track.block_section_id) {
       entityItems.push({
-        label: entityLabel(block?.name, track.block_section_id),
+        ...entityIdentity(block?.name, track.block_section_id),
         detail: 'Block',
         icon: 'ti ti-bolt',
-        onSelect: () => this.blockGroupingHandler.showDetail(track.block_section_id),
+        onSelect: () =>
+          this.uiHandler.openAsOwnTab(() => this.blockGroupingHandler.showDetail(track.block_section_id)),
       });
     }
     if (track.station_id) {
+      const platform = (this.cachedNetwork?.platforms || []).find(
+        (p: any) => p.platform_id === track.station_id,
+      );
       entityItems.push({
-        label: track.station_id,
+        ...entityIdentity(platform?.name, track.station_id),
         detail: 'Platform',
         icon: 'ti ti-building',
-        onSelect: () => this.platformHandler.showEditor(track.station_id),
+        onSelect: () => this.uiHandler.openAsOwnTab(() => this.platformHandler.showEditor(track.station_id)),
       });
     }
 
@@ -2234,10 +2259,8 @@ export class Editor {
     actionItems.push({
       label: 'Inspect tile',
       icon: 'ti ti-info-circle',
-      onSelect: () => {
-        // Explicitly asked for, so it shows even when the inspector is pinned.
-        void this.selectElement(gridPos, { force: true });
-      },
+      // Explicitly asked for, so it shows even when the inspector is pinned.
+      onSelect: () => this.uiHandler.openAsOwnTab(() => this.selectElement(gridPos, { force: true })),
     });
 
     showContextMenu(clientX, clientY, [

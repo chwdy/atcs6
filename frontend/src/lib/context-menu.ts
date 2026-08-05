@@ -12,6 +12,13 @@
 
 export interface ContextMenuItem {
   label: string;
+  /**
+   * Second line under the label, mono and muted — the entity's stable id when
+   * the label is its display name. Two rows can share a name (a block and its
+   * own segment do), so this is what tells them apart. Omit it when the label
+   * is already the id.
+   */
+  sublabel?: string;
   /** Tabler icon class, e.g. 'ti ti-train'. Defaults to a neutral dot. */
   icon?: string;
   /** Right-aligned muted text, e.g. the entity type ("Switch"). */
@@ -82,7 +89,10 @@ export function showContextMenu(
       row.setAttribute('role', 'menuitem');
       row.innerHTML = `
         <i class="${item.icon || 'ti ti-point'} tile-context-menu-icon" aria-hidden="true"></i>
-        <span class="tile-context-menu-label">${escapeHtml(item.label)}</span>
+        <span class="tile-context-menu-text">
+          <span class="tile-context-menu-label">${escapeHtml(item.label)}</span>
+          ${item.sublabel ? `<span class="tile-context-menu-sub font-mono">${escapeHtml(item.sublabel)}</span>` : ''}
+        </span>
         ${item.detail ? `<span class="tile-context-menu-detail">${escapeHtml(item.detail)}</span>` : ''}
       `;
       row.addEventListener('click', (e) => {

@@ -687,6 +687,28 @@ export class EditorUIHandler {
     this.openInNewGroup(render);
   }
 
+  /** Run an explicit open — a pick from the tile right-click menu — so the
+   *  panel it renders lands as its own kept tab in the active group instead of
+   *  reusing that group's single preview slot. Right-click names the record the
+   *  user wants held; a left-click inspect stays the casual gesture that keeps
+   *  recycling one preview tab.
+   *
+   *  The flag stays set for the whole (async) render because a handler fetches
+   *  its entity before it ever calls show(); TabGroup consumes it on the first
+   *  tab it creates (see syncTabsWithCurrentPanel), so a panel that renders
+   *  twice still leaves one tab behind. Restoring the previous value rather
+   *  than clearing keeps a nested open from cancelling an outer one — same
+   *  shape as openInNewGroup's handling of _activeTabGroupForRestore. */
+  async openAsOwnTab(render: () => void | Promise<void>): Promise<void> {
+    const previous = this.editor._openNextPanelAsOwnTab;
+    this.editor._openNextPanelAsOwnTab = true;
+    try {
+      await render();
+    } finally {
+      this.editor._openNextPanelAsOwnTab = previous === true;
+    }
+  }
+
   showSecondarySidebar(title: string, content: string): void {
     const target = this.resolveTargetGroup();
     if (!target) {

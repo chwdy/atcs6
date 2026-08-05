@@ -681,13 +681,17 @@ scrolled into view horizontally after the strip changes.
 
 Two kinds of tab live in the strip:
 
-- **Preview tab** — opening an entity by inspecting it on the canvas (a tile,
+- **Preview tab** — opening an entity by left-clicking it on the canvas (a tile,
   block, switch, signal, platform, train, tunnel, station, or speed profile)
   opens a *preview* that reuses one shared slot: the next inspect replaces it, so
   casual looking never piles up tabs. A preview shows a pin affordance
   (`ti-pin`); see **Pinning** below for what pinning does.
 - **Kept tab** — list panels, route / path editors, and setups open as their own
-  kept tab from the start.
+  kept tab from the start. So does every pick from a tile's **right-click
+  menu**: naming a record there is deliberate, not casual looking, so it opens
+  beside the preview in the active group instead of consuming that slot. Asking
+  by name for the record already sitting in the preview slot keeps that tab
+  where it is rather than opening a second copy.
 
 **Group states: active, inactive, pinned.** Every open group is in exactly one
 of three states, and together they decide where a newly opened panel lands.
@@ -1948,21 +1952,30 @@ disambiguates a *left*-click that landed on overlapping targets, while the
 context menu is the *right*-click action menu. Same panel-language shell —
 `--bg-panel` bg, hairline border, drop shadow — with three inner parts: an
 optional small uppercase section heading, a hairline separator between sections,
-and flat-ghost item rows (icon · label · right-aligned muted detail). An item
+and flat-ghost item rows (icon · identity · right-aligned muted detail). An item
 may carry an `accent` or `danger` emphasis for a primary or destructive action;
 otherwise it reads as a plain flat ghost.
+
+**Row identity.** A row that names a record shows its display name, with the
+record's stable id on a quiet mono second line beneath. The id line is not
+decoration: names repeat across kinds — a block and its own member segment carry
+one name by construction — so name-only rows form the indistinguishable run the
+§3 tab strip also forbids. A record with no name is labelled by its id alone and
+takes no second line. Names show **in full**: the label wraps rather than
+ellipsizing, and the menu is wide enough (340px) that wrapping is the exception.
 
 One menu exists at a time — opening another closes it — and it closes on outside
 pointer-down, Escape, window blur, or after an item is chosen. It opens at the
 cursor and nudges back inside the viewport when it would overflow an edge.
 
-The mechanism is generic: callers pass sections of `{ label, icon, detail,
-onSelect, emphasis }` items and nothing in the menu knows about tiles. The
-editor's per-tile menu — every train / switch / block / signal / platform on the
-clicked tile, plus inline actions like throwing a switch — is one caller.
-Reference: `showContextMenu` in
+The mechanism is generic: callers pass sections of `{ label, sublabel, icon,
+detail, onSelect, emphasis }` items and nothing in the menu knows about tiles.
+The editor's per-tile menu — every train / switch / block / segment / signal /
+platform on the clicked tile, plus inline actions like throwing a switch — is
+one caller. Reference: `showContextMenu` in
 [lib/context-menu.ts](../frontend/src/lib/context-menu.ts); `.tile-context-menu`
-(+ `-heading`, `-sep`, `-item`, `-item--accent`, `-item--danger`) in
+(+ `-heading`, `-sep`, `-item`, `-text`, `-sub`, `-item--accent`,
+`-item--danger`) in
 [components/context-menu.css](../static/css/components/context-menu.css).
 
 ### Header-anchored menu

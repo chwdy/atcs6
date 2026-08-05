@@ -171,7 +171,7 @@ export class TabGroup {
     return `${type}:${id}`;
   }
 
-  private createTabSnapshot(panelSnapshot: any): SecondaryTab {
+  private createTabSnapshot(panelSnapshot: any, keptByRequest = false): SecondaryTab {
     const type = panelSnapshot?.editorType || null;
     const id = panelSnapshot?.editorId || null;
     const key = this.makeKey(panelSnapshot);
@@ -183,14 +183,25 @@ export class TabGroup {
       editorId: id,
       content: panelSnapshot?.content || '',
       // A casual single-entity inspect opens as a preview (reuses one slot);
-      // lists and editors open as their own kept tab. See pinTab to promote.
-      pinned: !PREVIEW_ELIGIBLE_EDITOR_TYPES.has(type || ''),
+      // lists and editors open as their own kept tab. An explicit open (the
+      // tile right-click menu — see EditorUIHandler.openAsOwnTab) is kept too:
+      // the user named this record, so it gets its own slot. See pinTab.
+      pinned: keptByRequest || !PREVIEW_ELIGIBLE_EDITOR_TYPES.has(type || ''),
     };
   }
 
   private syncTabsWithCurrentPanel(): void {
     if (!this.currentPanel || this.isTabNavigation) {
       return;
+    }
+
+    // One-shot flag, set for the duration of an explicit open by
+    // EditorUIHandler.openAsOwnTab. Consumed here rather than by the caller so
+    // a panel that renders more than once during one open still yields a
+    // single kept tab — every later show() finds it by key below.
+    const keptByRequest = this.editor._openNextPanelAsOwnTab === true;
+    if (keptByRequest) {
+      this.editor._openNextPanelAsOwnTab = false;
     }
 
     const key = this.makeKey(this.currentPanel);
@@ -201,11 +212,17 @@ export class TabGroup {
       existingTab.editorType = this.currentPanel.editorType;
       existingTab.editorId = this.currentPanel.editorId;
       existingTab.content = this.currentPanel.content;
+      // Naming a record that happens to be sitting in the preview slot keeps
+      // it: the tab the user just asked for by name shouldn't be the one the
+      // next casual inspect overwrites.
+      if (keptByRequest) {
+        existingTab.pinned = true;
+      }
       this.activeTabId = existingTab.tabId;
       return;
     }
 
-    const nextTab = this.createTabSnapshot(this.currentPanel);
+    const nextTab = this.createTabSnapshot(this.currentPanel, keptByRequest);
 
     // Preview reuse: a casual inspect (unpinned) replaces the existing preview
     // slot instead of stacking a new tab, so clicking around the layout never
