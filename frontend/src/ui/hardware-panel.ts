@@ -136,6 +136,11 @@ export interface CoverageRow {
 const DEFAULT_IDLE_DEADBAND_V = 0.25;
 const MAX_IDLE_DEADBAND_V = 5.0;
 
+// A blocked activation can name every block in the layout. The toast is one
+// 400px line, so it names a few and counts the rest; the checklist row behind
+// it carries the full list.
+const MAX_TOAST_IDS = 4;
+
 const DEFAULT_STATE: HwState = {
   controller: { kind: 'ch347', device_port: null },
   chips: [],
@@ -1513,6 +1518,27 @@ async function selectEnvironment(selected: string): Promise<void> {
   render();
 }
 
+/** One actionable line from a blocked-activation body, or null if it is not one.
+ *
+ * `/api/operation/activate` refuses with `{status: "blocked", issues: [...]}`
+ * and no `error` key — the only field the API client lifts into the thrown
+ * message — so without this the toast reads "HTTP 409: CONFLICT" and the reason
+ * lives only in the checklist row the operator just looked away from. The other
+ * 409s on that route (commissioning owns the device, operation still running)
+ * do carry `error`, and fall through to `e.message` untouched. */
+export function activationBlockMessage(err: any): string | null {
+  const issues = Array.isArray(err?.issues) ? err.issues : [];
+  if (!issues.length) return null;
+  return issues.map((issue: any) => {
+    const text = esc(issue?.message || issue?.code || 'Setup is incomplete');
+    const ids: string[] = Array.isArray(issue?.ids) ? issue.ids : [];
+    if (!ids.length) return text;
+    const rest = ids.length - MAX_TOAST_IDS;
+    const named = esc(ids.slice(0, MAX_TOAST_IDS).join(', '));
+    return `${text}: ${named}${rest > 0 ? ` +${rest} more` : ''}`;
+  }).join('; ');
+}
+
 async function activateEnvironment(): Promise<void> {
   try {
     await stopCommissioning();
@@ -1535,7 +1561,14 @@ async function activateEnvironment(): Promise<void> {
     environmentInfo = await api.getOperationEnvironment().catch(() => environmentInfo) as EnvironmentInfo;
     activationReadiness = await api.getOperationReadiness().catch(() => activationReadiness);
     render();
-    showToast(e?.message || 'Environment activation was blocked.', 'error', 5000);
+    const blocked = activationBlockMessage(e);
+    // A blocker list is longer than a one-line error and names ids worth
+    // reading off, so it holds the screen longer.
+    showToast(
+      blocked || e?.message || 'Environment activation was blocked.',
+      'error',
+      blocked ? 8000 : 5000,
+    );
   }
 }
 

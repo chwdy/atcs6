@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  activationBlockMessage,
   addressGroups,
   coverageRows,
   devRows,
@@ -245,5 +246,65 @@ describe('staleBindings', () => {
         stale: { block_occupancy: ['B_GONE'], block_track: ['B_GONE', 'B_OLD'] },
       })
     ).toEqual(['B_GONE', 'B_OLD']);
+  });
+});
+
+// The blocked-activation body carries `issues` and no `error`, so the API
+// client's thrown message degrades to "HTTP 409: CONFLICT". This turns the
+// body into the line the toast shows instead.
+
+describe('activationBlockMessage', () => {
+  it('is null for an error that is not a blocked activation', () => {
+    expect(activationBlockMessage(null)).toBeNull();
+    expect(activationBlockMessage({ message: 'HTTP 409: CONFLICT' })).toBeNull();
+    expect(activationBlockMessage({ issues: [] })).toBeNull();
+    // The commissioning / already-running 409s carry `error`, not `issues`;
+    // they must fall through to the message the client already built.
+    expect(
+      activationBlockMessage({ error: 'stop operation before activating an environment' })
+    ).toBeNull();
+  });
+
+  it('names the entities the operator has to go wire', () => {
+    expect(
+      activationBlockMessage({
+        issues: [{
+          code: 'missing_switch_track_source',
+          message: 'Switches are missing the block that feeds their rails',
+          ids: ['SW_11_9', 'SW_7_5'],
+        }],
+      })
+    ).toBe('Switches are missing the block that feeds their rails: SW_11_9, SW_7_5');
+  });
+
+  it('joins several blockers into the one line the toast has room for', () => {
+    expect(
+      activationBlockMessage({
+        issues: [
+          { code: 'no_chips', message: 'Hardware Setup has no chips' },
+          { code: 'missing_switch_binding', message: 'Switches are missing throw bindings', ids: ['SW_A'] },
+        ],
+      })
+    ).toBe('Hardware Setup has no chips; Switches are missing throw bindings: SW_A');
+  });
+
+  it('counts the tail rather than letting one issue fill the toast', () => {
+    expect(
+      activationBlockMessage({
+        issues: [{ message: 'Blocks are missing occupancy bindings', ids: ['B1', 'B2', 'B3', 'B4', 'B5', 'B6'] }],
+      })
+    ).toBe('Blocks are missing occupancy bindings: B1, B2, B3, B4 +2 more');
+  });
+
+  it('falls back to the code when the server sends no message', () => {
+    expect(activationBlockMessage({ issues: [{ code: 'backend_unavailable' }] }))
+      .toBe('backend_unavailable');
+    expect(activationBlockMessage({ issues: [{}] })).toBe('Setup is incomplete');
+  });
+
+  it('escapes ids, since the toast renders its message as HTML', () => {
+    expect(
+      activationBlockMessage({ issues: [{ message: 'Bindings name blocks not in the loaded layout', ids: ['<img src=x>'] }] })
+    ).toBe('Bindings name blocks not in the loaded layout: &lt;img src=x&gt;');
   });
 });
