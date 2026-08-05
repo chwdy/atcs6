@@ -17,6 +17,7 @@ import pytest
 from network import RailwayNetwork
 from track import Tile, TRACK_NS, TRACK_EW
 from enums import BlockState, PlatformSide
+from tests.segment_test_helpers import make_segment_block_with_tracks
 
 
 class TestStationBlockNaming:
@@ -81,8 +82,7 @@ class TestStationBlockLengthCalculation:
             network.add_track(Tile(0, y, TRACK_NS))
 
         # Create a block with 500cm length covering all 5 tiles
-        block = network.create_segment_with_tracks(
-            "BLK_001", [(0, y) for y in range(5)], length_cm=500.0
+        block = make_segment_block_with_tracks(network, "BLK_001", [(0, y) for y in range(5)], length_cm=500.0
         )
 
         # Place station on middle tile (0, 2)
@@ -141,8 +141,7 @@ class TestBlockSplittingWithLengthCalculation:
             network.add_track(Tile(0, y, TRACK_NS))
 
         # Create block with 700cm length
-        block = network.create_segment_with_tracks(
-            "BLK_001", [(0, y) for y in range(7)], length_cm=700.0
+        block = make_segment_block_with_tracks(network, "BLK_001", [(0, y) for y in range(7)], length_cm=700.0
         )
 
         # Place station at tile (0,3), splitting block into:
@@ -183,8 +182,7 @@ class TestBlockSplittingWithLengthCalculation:
             network.add_track(Tile(0, y, TRACK_NS))
 
         # Create block with 1000cm length
-        block = network.create_segment_with_tracks(
-            "BLK_001", [(0, y) for y in range(10)], length_cm=1000.0
+        block = make_segment_block_with_tracks(network, "BLK_001", [(0, y) for y in range(10)], length_cm=1000.0
         )
 
         # Place station at tile (0,2), splitting into:
@@ -219,8 +217,7 @@ class TestBlockSplittingWithLengthCalculation:
 
         # Create block with 600cm length
         original_length = 600.0
-        block = network.create_segment_with_tracks(
-            "BLK_001", [(0, y) for y in range(6)], length_cm=original_length
+        block = make_segment_block_with_tracks(network, "BLK_001", [(0, y) for y in range(6)], length_cm=original_length
         )
 
         # Place station at tile (0,3)
@@ -240,19 +237,23 @@ class TestBlockSplittingWithLengthCalculation:
 
 
 class TestChildBlockNaming:
-    """Test that child blocks inherit proper naming from parent"""
+    """Test that child segments inherit proper naming from parent"""
 
-    def test_child_blocks_inherit_parent_name_with_suffix(self):
-        """Child blocks should be named '{parent_name}_1', '{parent_name}_2'"""
+    def test_child_segments_inherit_parent_name_with_suffix(self):
+        """Child segments should be named '{parent_name}_1', '{parent_name}_2'.
+
+        The name is the geometry's, so the split carries it onto the child
+        segments; the child blocks it also creates stay unnamed (a block never
+        takes a segment's name — see `Block.__init__`).
+        """
         network = RailwayNetwork()
 
         # Create a 5-tile track
         for y in range(5):
             network.add_track(Tile(0, y, TRACK_NS))
 
-        # Create block with custom name
-        block = network.create_segment_with_tracks(
-            "BLK_MAIN",
+        # Create segment with custom name
+        block = make_segment_block_with_tracks(network, "BLK_MAIN",
             [(0, y) for y in range(5)],
             name="Main Line Block",
             length_cm=500.0,
@@ -263,12 +264,14 @@ class TestChildBlockNaming:
             0, 2, station_id="STA_001", name="Central", length_cm=150.0
         )
 
-        # Check child block names
+        # Check child segment names
         child_1 = network.blocks["BLK_MAIN_1"]
         child_2 = network.blocks["BLK_MAIN_2"]
 
-        assert child_1.name == "Main Line Block_1"
-        assert child_2.name == "Main Line Block_2"
+        assert child_1.segments[0].name == "Main Line Block_1"
+        assert child_2.segments[0].name == "Main Line Block_2"
+        assert child_1.name == ""
+        assert child_2.name == ""
 
     def test_station_block_name_preserved_through_split(self):
         """Station block should maintain its name with station name"""
@@ -279,8 +282,7 @@ class TestChildBlockNaming:
             network.add_track(Tile(0, y, TRACK_NS))
 
         # Create block
-        block = network.create_segment_with_tracks(
-            "BLK_001", [(0, y) for y in range(4)], length_cm=400.0
+        block = make_segment_block_with_tracks(network, "BLK_001", [(0, y) for y in range(4)], length_cm=400.0
         )
 
         # Place station
@@ -301,7 +303,7 @@ class TestEdgeCases:
         network.add_track(Tile(0, 0, TRACK_NS))
 
         # Create single-tile block with 100cm
-        block = network.create_segment_with_tracks("BLK_001", [(0, 0)], length_cm=100.0)
+        block = make_segment_block_with_tracks(network, "BLK_001", [(0, 0)], length_cm=100.0)
 
         # Place station on it
         station = network.add_station(
@@ -326,8 +328,7 @@ class TestEdgeCases:
             network.add_track(Tile(0, y, TRACK_NS))
 
         # Create block with zero length
-        block = network.create_segment_with_tracks(
-            "BLK_001", [(0, y) for y in range(3)], length_cm=0.0
+        block = make_segment_block_with_tracks(network, "BLK_001", [(0, y) for y in range(3)], length_cm=0.0
         )
 
         # Place station with platform length
@@ -366,8 +367,7 @@ class TestRealWorldScenarios:
             network.add_track(Tile(0, y, TRACK_NS))
 
         # Create mainline block: 10 tiles, 100000cm (1km)
-        block = network.create_segment_with_tracks(
-            "BLK_MAINLINE",
+        block = make_segment_block_with_tracks(network, "BLK_MAINLINE",
             [(0, y) for y in range(10)],
             name="Main Line",
             length_cm=100000.0,
@@ -417,8 +417,7 @@ class TestRealWorldScenarios:
             network.add_track(Tile(0, y, TRACK_NS))
 
         # Create block with 900cm
-        block = network.create_segment_with_tracks(
-            "BLK_001", [(0, y) for y in range(9)], length_cm=900.0
+        block = make_segment_block_with_tracks(network, "BLK_001", [(0, y) for y in range(9)], length_cm=900.0
         )
 
         # Place first station at tile 2

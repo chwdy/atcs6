@@ -222,12 +222,17 @@ class StepRecorder:
             # Sort positions for consistent ordering
             positions.sort()
 
+            # `name` is the segment's — the replay op creates the geometry and
+            # names it. The block's own name rides in `block_name`, recorded
+            # only when it carries one, since the two are separate records.
             op = {
                 "op": "create_block_with_tracks",
                 "block_id": block_id,
                 "positions": positions,
-                "name": block.name,
+                "name": block.segments[0].name if block.segments else "",
             }
+            if block.name:
+                op["block_name"] = block.name
 
             if block.length_cm > 0:
                 op["length_cm"] = block.length_cm

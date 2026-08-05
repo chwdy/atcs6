@@ -112,9 +112,10 @@ def _mutate_remove_switch(network):
 
 def _mutate_rebuild_ordered_tiles(network):
     # ordered_tiles feeds the cached per-step block_direction, so recomputing it
-    # must drop the cache.
-    bid = next(iter(network.blocks))
-    network._get_segment_geometry_manager().rebuild_segment_ordered_tiles(bid)
+    # must drop the cache. The rebuild is on the geometry axis, so it takes a
+    # segment id — a block's own id names no segment.
+    segment_id = next(iter(network.blocks.values())).segment_ids[0]
+    network._get_segment_geometry_manager().rebuild_segment_ordered_tiles(segment_id)
 
 
 @pytest.mark.parametrize(

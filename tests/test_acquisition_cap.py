@@ -25,6 +25,7 @@ from runtime_payloads import PathAcquisitionResultKind
 from simulation import SimulationController
 from enums import Direction
 from tests.train_test_helpers import set_train_span
+from tests.segment_test_helpers import make_segment_block_with_tracks
 
 
 def _linear_network():
@@ -39,8 +40,7 @@ def _linear_network():
         ("BLOCK_D", (6, 7)),
         ("BLOCK_E", (8, 9)),
     ]:
-        network.create_segment_with_tracks(
-            segment_id=blk, positions=[(x0, 0), (x1, 0)], name=blk, length_cm=100.0,
+        make_segment_block_with_tracks(network, blk, positions=[(x0, 0), (x1, 0)], name=blk, length_cm=100.0,
         )
     return network
 

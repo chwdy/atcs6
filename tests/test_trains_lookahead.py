@@ -20,6 +20,7 @@ from path_dispatcher import PathDispatcher
 from train_route import Route, RouteMode
 from switch import Switch
 from runtime_payloads import SwitchLockClaim
+from entity_ids import segment_id_for_block
 
 
 @pytest.fixture
@@ -51,7 +52,7 @@ class TestTrainControllerMonitorLookahead:
         """When switching cabs, head tile should reflect the new cab position."""
         for x in range(3):
             track = Tile(x=x, y=0, track_bits=TRACK_EW)
-            track.segment_id = "BLOCK_MAIN"
+            track.segment_id = segment_id_for_block("BLOCK_MAIN")
             network.add_track(track)
 
         train = Train(train_id="TRAIN_LOOKAHEAD_CAB")
@@ -80,7 +81,7 @@ class TestTrainControllerMonitorLookahead:
         """Lookahead should be unavailable when no cab is selected."""
         for x in range(3):
             track = Tile(x=x, y=0, track_bits=TRACK_EW)
-            track.segment_id = f"BLOCK_{x}"
+            track.segment_id = segment_id_for_block(f"BLOCK_{x}")
             network.add_track(track)
 
         train = Train(train_id="TRAIN_LOOKAHEAD_NO_CAB")
@@ -127,16 +128,16 @@ class TestLookaheadNoPathRegardlessOfNetworkState:
     def _build_three_tile_with_switch(self, network: RailwayNetwork) -> Train:
         """Create 0-1-2 path where tile 1 is an EW/NW switch."""
         track_0 = Tile(x=0, y=0, track_bits=TRACK_EW)
-        track_0.segment_id = "BLOCK_0"
+        track_0.segment_id = segment_id_for_block("BLOCK_0")
         network.add_track(track_0)
 
         track_1 = Tile(x=1, y=0, track_bits=TRACK_EW | TRACK_NW)
-        track_1.segment_id = "BLOCK_1"
+        track_1.segment_id = segment_id_for_block("BLOCK_1")
         track_1.switch_state = 0
         network.add_track(track_1)
 
         track_2 = Tile(x=2, y=0, track_bits=TRACK_EW)
-        track_2.segment_id = "BLOCK_2"
+        track_2.segment_id = segment_id_for_block("BLOCK_2")
         network.add_track(track_2)
 
         for block_id in ("BLOCK_0", "BLOCK_1", "BLOCK_2"):
@@ -344,7 +345,7 @@ class TestNoPathProducesNoAuthorityPayload:
         for x in range(3):
             track = Tile(x=x, y=0, track_bits=TRACK_EW)
             network.add_track(track)
-            track.segment_id = "TERMINAL"
+            track.segment_id = segment_id_for_block("TERMINAL")
 
         return network
 

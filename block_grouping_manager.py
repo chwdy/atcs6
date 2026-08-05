@@ -21,6 +21,10 @@ Rules this module enforces (all from design_new.md **Block grouping**):
   parent rule); `remove_segment_from_block` returns the segment to its own
   single-segment block; `delete_block` re-homes every member segment the same
   way.
+- A block id and a segment id are never equal. A default single-segment block
+  takes its member segment's id derived onto the block axis — the matched
+  `BLK_`/`SEG_` pair spelled by `entity_ids` — so the pairing stays legible and
+  stable without one string naming two entities.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ import logging
 from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from block import Block
+from entity_ids import block_id_for_segment
 from segment import Segment
 
 if TYPE_CHECKING:
@@ -53,18 +58,20 @@ class BlockGroupingManager:
         Derived from `Block.segment_ids` on every read, so it can never drift
         from the blocks themselves.
 
-        An un-grouped segment is its own single-segment block sharing its id
-        (see module docstring), so that block is looked up directly first —
-        this resolves the overwhelmingly common case in O(1) instead of
-        scanning every block. Only a segment that was moved into a grouped
-        block, or rehomed under a suffixed id after a collision, falls
-        through to the full scan.
+        An un-grouped segment is its own single-segment block whose id is this
+        segment's derived onto the block axis (see module docstring), so that
+        block is looked up directly first — this resolves the overwhelmingly
+        common case in O(1) instead of scanning every block. Only a segment
+        that was moved into a grouped block, rehomed under a suffixed id after
+        a collision, or built by hand under an id the derivation does not
+        produce, falls through to the full scan.
         """
-        same_id_block = self._n.blocks.get(segment_id)
-        if same_id_block is not None and any(
-            s.segment_id == segment_id for s in same_id_block.segments
+        derived_id = block_id_for_segment(segment_id)
+        derived_block = self._n.blocks.get(derived_id)
+        if derived_block is not None and any(
+            s.segment_id == segment_id for s in derived_block.segments
         ):
-            return segment_id
+            return derived_id
         for block_id, block in self._n.blocks.items():
             if segment_id in block.segment_ids:
                 return block_id
@@ -422,10 +429,13 @@ class BlockGroupingManager:
 
     def _rehome_segment(self, seg: Segment) -> None:
         """Give a freed segment its own single-segment block — the default
-        one-feed-per-segment grouping. The new block takes the segment's id, so
-        a segment freed from a grouping lands back on the block id it had
-        before it was grouped."""
-        block_id = seg.segment_id
+        one-feed-per-segment grouping. The new block's id is the segment's
+        derived onto the block axis (`entity_ids`), which is the id that
+        segment's default block held before it was grouped, so a segment freed
+        from a grouping lands back where it started. It does not take the
+        segment's name: the block it was freed from owned that name, and this
+        block is a new record."""
+        block_id = block_id_for_segment(seg.segment_id)
         if block_id in self._n.blocks:
             # An id collision would silently merge two feeds; keep the segment
             # in its own distinctly-named block instead.
@@ -433,7 +443,7 @@ class BlockGroupingManager:
             while f"{block_id}_{suffix}" in self._n.blocks:
                 suffix += 1
             block_id = f"{block_id}_{suffix}"
-        block = Block(block_id=block_id, name=seg.name, segments=[seg])
+        block = Block(block_id=block_id, segments=[seg])
         self._n.blocks[block_id] = block
         self._reindex_block_tiles(block)
 

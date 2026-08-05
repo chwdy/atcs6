@@ -8,6 +8,7 @@ providing a way to verify that API changes don't break existing layouts.
 
 from typing import Any, Dict, List
 
+from entity_ids import segment_id_for_block
 from track import Tile
 
 
@@ -203,10 +204,20 @@ class StepPlayer:
         return switch.switch_id
 
     def _op_create_block(self, op: dict, network: "RailwayNetwork") -> str:
-        """Execute create_segment_with_tracks operation."""
+        """Execute create_segment_with_tracks operation.
+
+        The op names a BLOCK — `block_id` is the id a recording's later steps
+        and its checkpoint assertions read back — so the block id is pinned and
+        the member segment takes the matching geometry-axis id (`entity_ids`).
+
+        `name` names the segment the call creates; the optional `block_name`
+        names the block that owns it. They are separate records with separate
+        names, so a recording carries both (see `Block.__init__`).
+        """
         block_id = op["block_id"]
         positions = [tuple(p) for p in op["positions"]]
         name = op.get("name", "")
+        block_name = op.get("block_name", "")
         length_cm = op.get("length_cm", 0.0)
         speed_limit_kmh = op.get("speed_limit_kmh", op.get("max_speed_kmh"))
 
@@ -217,14 +228,17 @@ class StepPlayer:
                 # This can happen if tracks were grouped separately
                 pass
 
-        network.create_segment_with_tracks(
-            segment_id=block_id,
+        block = network.create_segment_with_tracks(
+            segment_id=segment_id_for_block(block_id),
+            block_id=block_id,
             positions=positions,
             name=name,
             length_cm=length_cm,
             speed_limit_kmh=speed_limit_kmh,
             validate=False,  # Skip validation during replay
         )
+        if block_name:
+            block.name = block_name
 
         return block_id
 

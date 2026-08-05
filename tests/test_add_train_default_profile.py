@@ -16,17 +16,16 @@ from path_dispatcher import PathDispatcher
 from simulation import SimulationController
 from train import Train
 from train_physics import TrainPhysics
+from tests.segment_test_helpers import make_segment_block_with_tracks
 
 
 def _two_block_line():
     net = RailwayNetwork()
     for x in range(0, 4):
         net.add_track(Tile(x, 0, track_bits=TRACK_EW))
-    net.create_segment_with_tracks(
-        segment_id="BLK_A", positions=[(0, 0), (1, 0)], name="Block A", length_cm=100.0
+    make_segment_block_with_tracks(net, "BLK_A", positions=[(0, 0), (1, 0)], name="Block A", length_cm=100.0
     )
-    net.create_segment_with_tracks(
-        segment_id="BLK_B", positions=[(2, 0), (3, 0)], name="Block B", length_cm=100.0
+    make_segment_block_with_tracks(net, "BLK_B", positions=[(2, 0), (3, 0)], name="Block B", length_cm=100.0
     )
     return net
 

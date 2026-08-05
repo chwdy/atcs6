@@ -24,6 +24,7 @@ import uuid
 from track import Tile, EDGE_MASKS, BIT_TO_EDGES
 from train import Train
 from block import Block
+from entity_ids import block_id_for_segment
 from block_manager import BlockManager
 from switch_manager import SwitchManager
 from resource_coordinator import ResourceCoordinator
@@ -819,9 +820,13 @@ class RailwayNetwork(SwitchOutputOwner):
 
     # === Centralized Block Management ===
 
-    def create_segment(self, segment_id: str, name: str = "") -> Block:
-        """Forward to `SegmentGeometryManager.create_segment(segment_id, name)`."""
-        return self._get_segment_geometry_manager().create_segment(segment_id, name)
+    def create_segment(
+        self, segment_id: str, name: str = "", block_id: Optional[str] = None
+    ) -> Block:
+        """Forward to `SegmentGeometryManager.create_segment(...)`."""
+        return self._get_segment_geometry_manager().create_segment(
+            segment_id, name, block_id=block_id
+        )
 
     def create_segment_with_tracks(self, *args, **kwargs):
         """Forward to `SegmentGeometryManager.create_segment_with_tracks(...)`."""
@@ -1517,7 +1522,35 @@ class RailwayNetwork(SwitchOutputOwner):
         Only an unowned tile is claimed, so a tile already belonging to another
         segment is never stolen, and a save that already carries tile ownership
         is left untouched.
+
+        A tile naming a segment that does not exist is repaired first. That is
+        how a save written when a block and its member segment shared one id
+        migrates: its tiles stored the shared id, which now names only the
+        block, whose one member segment is the geometry that tile actually
+        belongs to — so the reference is re-pointed there rather than dropped.
+        Dropping it would lose the membership outright for a save that recorded
+        it on the tile and nowhere else (an older save carries no
+        `ordered_tiles` to re-claim from). A reference that resolves to neither
+        a segment nor a single-segment block is released, leaving the tile for
+        the claim below.
         """
+        live_segment_ids = {
+            segment.segment_id
+            for block in self.blocks.values()
+            for segment in block.segments
+        }
+        for track in self.tracks.values():
+            stored = track.segment_id
+            if stored is None or stored in live_segment_ids:
+                continue
+            block = self.blocks.get(stored)
+            # Runs before `_fold_grouped_blocks`, so every legacy member is
+            # still its own one-segment block and the mapping is unambiguous.
+            if block is not None and len(block.segments) == 1:
+                track.segment_id = block.segments[0].segment_id
+            else:
+                track.segment_id = None
+
         for block in self.blocks.values():
             for segment in block.segments:
                 for entry in segment.ordered_tiles:
@@ -1547,7 +1580,20 @@ class RailwayNetwork(SwitchOutputOwner):
         for record in groups:
             group_id = str(record.get("district_id") or "")
             member_ids = [str(b) for b in record.get("block_ids", [])]
-            members = [b for b in member_ids if b in self.blocks]
+            # A record written when a block and its segment shared one id names
+            # its members by that shared string. It still names the block on a
+            # save whose blocks carried their own ids, and names the segment on
+            # one where the id has since moved to the geometry axis — so try
+            # the id as stored first, then as a segment whose block is derived
+            # (`entity_ids`).
+            members = []
+            for member_id in member_ids:
+                if member_id in self.blocks:
+                    members.append(member_id)
+                    continue
+                derived = block_id_for_segment(member_id)
+                if derived in self.blocks:
+                    members.append(derived)
             if not group_id or not members:
                 continue
 

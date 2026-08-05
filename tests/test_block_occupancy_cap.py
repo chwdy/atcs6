@@ -23,6 +23,7 @@ from path_dispatcher import PathDispatcher
 from simulation import SimulationController
 from track import Tile, TRACK_EW
 from train import Train, TrainCar
+from entity_ids import segment_id_for_block
 
 
 class FakeDetectorInput(OccupancyInput):
@@ -44,7 +45,7 @@ def build_line(num_tiles: int = 6) -> RailwayNetwork:
     network = RailwayNetwork()
     for x in range(num_tiles):
         track = Tile(x=x, y=0, track_bits=TRACK_EW)
-        track.segment_id = f"BLK_{x}"
+        track.segment_id = segment_id_for_block(f"BLK_{x}")
         network.add_track(track)
         network.blocks[f"BLK_{x}"] = Block(
             block_id=f"BLK_{x}", length_cm=100.0, speed_limit_kmh=80.0
@@ -220,7 +221,7 @@ def build_line_with_a_gap(gap_x: int = 2, num_tiles: int = 5) -> RailwayNetwork:
     for x in range(num_tiles):
         track = Tile(x=x, y=0, track_bits=TRACK_EW)
         if x != gap_x:
-            track.segment_id = f"BLK_{x}"
+            track.segment_id = segment_id_for_block(f"BLK_{x}")
         network.add_track(track)
         if x != gap_x:
             network.blocks[f"BLK_{x}"] = Block(

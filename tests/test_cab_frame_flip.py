@@ -14,13 +14,14 @@ from network import RailwayNetwork
 from simulation import SimulationController
 from track import Tile, TRACK_EW
 from train import Train, TrainCar
+from entity_ids import segment_id_for_block
 
 
 def _train_on_line():
     network = RailwayNetwork()
     for x in range(6):
         t = Tile(x=x, y=0, track_bits=TRACK_EW)
-        t.segment_id = f"BLK_{x}"
+        t.segment_id = segment_id_for_block(f"BLK_{x}")
         network.add_track(t)
         network.blocks[f"BLK_{x}"] = Block(
             block_id=f"BLK_{x}", length_cm=100.0, speed_limit_kmh=80.0

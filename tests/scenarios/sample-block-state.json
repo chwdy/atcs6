@@ -23,7 +23,8 @@
                 {
                     "op": "create_block_with_tracks",
                     "block_id": "B1",
-                    "name": "Block 1",
+                    "name": "Segment 1",
+                    "block_name": "Block 1",
                     "positions": [[0, 0], [1, 0], [2, 0]]
                 }
             ]
@@ -35,7 +36,8 @@
             "action": "checkpoint",
             "assertions": [
                 {"path": "blocks.B1.state", "op": "==", "expected": "free"},
-                {"path": "blocks.B1.name", "op": "==", "expected": "Block 1"}
+                {"path": "blocks.B1.name", "op": "==", "expected": "Block 1"},
+                {"path": "blocks.B1.segments.0.name", "op": "==", "expected": "Segment 1"}
             ]
         }
     ]

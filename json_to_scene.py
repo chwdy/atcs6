@@ -34,6 +34,7 @@ import argparse
 import json
 import sys
 
+from entity_ids import segment_id_for_block
 from network import RailwayNetwork
 
 
@@ -165,22 +166,41 @@ def gen_platforms(net, grouped: set) -> str:
 
 
 def _is_grouped(block, bid: str) -> bool:
-    """True when `block`'s identity differs from its geometry, so it needs a fold.
+    """True when `block` groups several segments, so it needs a fold.
 
-    A block is baked directly only when it IS its one same-named segment. Any
-    other shape — several segments on one feed, or a single segment under a
-    different id (an operator-named ``BLK_*`` owning a ``SEG_*``) — is baked as
-    its member segments plus a ``BLOCK_GROUPS`` entry that folds them back.
+    A block owning exactly one segment is the default one-feed-per-segment
+    grouping and is baked directly: the row carries both ids, so the replay
+    reproduces the pair without a fold. Only a real operator grouping — several
+    segments on one feed — is baked as its member segments plus a
+    ``BLOCK_GROUPS`` entry that folds them back.
+
+    A block id never equals its segment's id (see `entity_ids`), so identity is
+    read from the membership count, not from comparing the two ids.
 
     Every site that emits, counts, or verifies a grouping asks this one
     question, so the emitted lists and the reported counts cannot disagree.
     """
     if not block.segments:
         return False
-    return len(block.segments) > 1 or block.segments[0].segment_id != bid
+    return len(block.segments) > 1
 
 
 def gen_blocks(net) -> str:
+    """Emit one row per segment: ``(block_id, segment_id, segment_name,
+    positions, length_cm, speed_limit_kmh, block_name)``.
+
+    Both ids, because a block and its member segment are separate records that
+    never share an id (see `entity_ids`). Stating the block id rather than
+    deriving it at replay pins the id that outside records already reference —
+    saved routes, and the `hardware_config.json` bindings keyed by block id.
+
+    Two names for the same reason (see `SegmentGeometryManager.create_segment`).
+    The replay call names the segment, so an un-grouped block's own name rides
+    along in the trailing field. Rows for a grouped block's members carry
+    ``None`` for the block id and an empty block name — their temporary
+    one-segment blocks are derived at replay and then dissolved by the
+    ``BLOCK_GROUPS`` fold, which carries the real block's id and name.
+    """
     platform_block_ids = {f"{pid}_BLOCK" for pid in net.platforms}
     lines = ["BLOCKS = ["]
     for bid in sorted(net.blocks.keys()):
@@ -188,16 +208,16 @@ def gen_blocks(net) -> str:
             continue  # auto-created by add_station
         b = net.blocks[bid]
         if _is_grouped(b, bid):
-            # A block whose identity differs from its geometry segment(s) is
-            # baked as the member segments first, then folded back to the
-            # original block by BLOCK_GROUPS. This includes a one-segment
-            # operator-named block such as BLK_* owning a SEG_* geometry.
+            # A block grouping several segments is baked as those member
+            # segments first, then folded back to the original block by
+            # BLOCK_GROUPS. Their interim blocks never outlive the fold, so
+            # each row leaves the block id to the default derivation.
             for seg in b.segments:
                 positions = [(e.x, e.y) for e in seg.ordered_tiles]
                 lines.append(
-                    f"    ({seg.segment_id!r}, {seg.name!r}, "
+                    f"    (None, {seg.segment_id!r}, {seg.name!r}, "
                     f"{_xy_list(positions)}, {seg.length_cm}, "
-                    f"{seg.speed_limit_kmh}),"
+                    f"{seg.speed_limit_kmh}, ''),"
                 )
             continue
         # Editor-authored blocks serialize with empty ``ordered_tiles`` and
@@ -205,9 +225,13 @@ def gen_blocks(net) -> str:
         # ``get_block_positions`` reads that track-derived membership, so it is
         # the correct source for every block regardless of how it was authored.
         positions = net.get_block_positions(bid)
+        segment = b.segments[0] if b.segments else None
+        segment_id = segment.segment_id if segment else segment_id_for_block(bid)
+        segment_name = segment.name if segment else ""
         lines.append(
-            f"    ({bid!r}, {b.name!r}, {_xy_list(positions)}, "
-            f"{b.length_cm}, {b.speed_limit_kmh}),"
+            f"    ({bid!r}, {segment_id!r}, {segment_name!r}, "
+            f"{_xy_list(positions)}, "
+            f"{b.length_cm}, {b.speed_limit_kmh}, {b.name!r}),"
         )
     lines.append("]")
     return "\n".join(lines)
@@ -331,15 +355,28 @@ def _add_platforms(network: RailwayNetwork) -> None:
 
 
 def _add_blocks(network: RailwayNetwork) -> None:
-    """Create the non-platform blocks from their baked tile lists."""
-    for (block_id, name, positions, length_cm, speed_limit_kmh) in BLOCKS:
-        network.create_segment_with_tracks(
-            segment_id=block_id,
+    """Create the non-platform blocks from their baked tile lists.
+
+    Each row states both ids: a block and its member segment are separate
+    records that never share one (see ``entity_ids``). ``block_id`` is ``None``
+    for a row whose block is an interim one dissolved by the ``BLOCK_GROUPS``
+    fold below, and the default derivation supplies it.
+
+    ``name`` names the segment the call creates; ``block_name`` names the block
+    that owns it, and is empty unless the operator named that block separately.
+    """
+    for (block_id, segment_id, name, positions, length_cm, speed_limit_kmh,
+         block_name) in BLOCKS:
+        block = network.create_segment_with_tracks(
+            block_id=block_id,
+            segment_id=segment_id,
             positions=positions,
             name=name,
             length_cm=length_cm,
             speed_limit_kmh=speed_limit_kmh,
         )
+        if block_name:
+            block.name = block_name
 
 
 def _add_tunnels(network: RailwayNetwork) -> None:

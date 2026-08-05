@@ -25,6 +25,7 @@ from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from simulation import SimulationController
 from track import Tile, TRACK_EW
+from entity_ids import segment_id_for_block
 
 
 class FakeDetector(OccupancyInput):
@@ -44,7 +45,7 @@ def build_sim(mode=OperationMode.REAL, num_blocks: int = 3):
     network = RailwayNetwork()
     for x in range(num_blocks):
         track = Tile(x=x, y=0, track_bits=TRACK_EW)
-        track.segment_id = f"BLK_{x}"
+        track.segment_id = segment_id_for_block(f"BLK_{x}")
         network.add_track(track)
         block = Block(block_id=f"BLK_{x}", length_cm=100.0)
         block.ordered_tiles = [(x, 0, "W")]

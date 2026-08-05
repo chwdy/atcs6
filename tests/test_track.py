@@ -18,6 +18,7 @@ from track import (
     TRACK_SW,
     FORBIDDEN_TRACK_BITS,
 )
+from entity_ids import segment_id_for_block
 from network import RailwayNetwork
 from block import Block
 from railway_signal import Signal, SignalType, SignalState
@@ -314,8 +315,8 @@ class TestRailwayNetwork:
 
         block = Block(block_id="BLK_REMOVAL_TEST")
         network.blocks["BLK_REMOVAL_TEST"] = block
-        network.assign_track_to_segment(0, 0, "BLK_REMOVAL_TEST")
-        network.assign_track_to_segment(0, 1, "BLK_REMOVAL_TEST")
+        network.assign_track_to_segment(0, 0, segment_id_for_block("BLK_REMOVAL_TEST"))
+        network.assign_track_to_segment(0, 1, segment_id_for_block("BLK_REMOVAL_TEST"))
 
         assert track1.block_id == "BLK_REMOVAL_TEST"
 

@@ -102,6 +102,7 @@ from track import (
 )
 from path_dispatcher import PathDispatcher
 from switch import Switch
+from entity_ids import segment_id_for_block
 
 
 # Identifier read by bootstrap.py and by scene-gated tests to recognise this
@@ -427,7 +428,11 @@ def _add_blocks(network: RailwayNetwork) -> None:
     """Register every block in BLOCKS via create_segment_with_tracks."""
     for (block_id, positions, name, length_cm, speed) in BLOCKS:
         kwargs = {
-            "segment_id": block_id,
+            # The tuple's id is this scene's BLOCK id: saved routes, tests and
+            # hardware bindings already name it, so it is pinned and the
+            # segment takes the matching geometry-axis id (see entity_ids).
+            "block_id": block_id,
+            "segment_id": segment_id_for_block(block_id),
             "positions": positions,
             "name": name,
             "length_cm": length_cm,

@@ -26,6 +26,7 @@ from enums import Direction
 from enums import BlockState
 from path_utils import assign_complete_path_to_train, convert_tiles_to_train_path
 from tests.train_test_helpers import set_train_span
+from tests.segment_test_helpers import make_segment_block_with_tracks
 
 
 def _attach_path(dispatcher, result):
@@ -74,32 +75,27 @@ class TestExtendPathBug:
             network.add_track(track)
 
         # Create 5 blocks
-        network.create_segment_with_tracks(
-            segment_id="BLOCK_A",
+        make_segment_block_with_tracks(network, "BLOCK_A",
             positions=[(0, 0), (1, 0)],
             name="Block A",
             length_cm=100.0,
         )
-        network.create_segment_with_tracks(
-            segment_id="BLOCK_B",
+        make_segment_block_with_tracks(network, "BLOCK_B",
             positions=[(2, 0), (3, 0)],
             name="Block B",
             length_cm=100.0,
         )
-        network.create_segment_with_tracks(
-            segment_id="BLOCK_C",
+        make_segment_block_with_tracks(network, "BLOCK_C",
             positions=[(4, 0), (5, 0)],
             name="Block C",
             length_cm=100.0,
         )
-        network.create_segment_with_tracks(
-            segment_id="BLOCK_D",
+        make_segment_block_with_tracks(network, "BLOCK_D",
             positions=[(6, 0), (7, 0)],
             name="Block D",
             length_cm=100.0,
         )
-        network.create_segment_with_tracks(
-            segment_id="BLOCK_E",
+        make_segment_block_with_tracks(network, "BLOCK_E",
             positions=[(8, 0), (9, 0)],
             name="Block E",
             length_cm=100.0,
@@ -400,20 +396,17 @@ class TestExtendPathAtoSync:
             track = Tile(x, 0, track_bits=TRACK_EW)
             network.add_track(track)
 
-        network.create_segment_with_tracks(
-            segment_id="BLK_A",
+        make_segment_block_with_tracks(network, "BLK_A",
             positions=[(0, 0), (1, 0)],
             name="Block A",
             length_cm=100.0,
         )
-        network.create_segment_with_tracks(
-            segment_id="BLK_B",
+        make_segment_block_with_tracks(network, "BLK_B",
             positions=[(2, 0), (3, 0)],
             name="Block B",
             length_cm=100.0,
         )
-        network.create_segment_with_tracks(
-            segment_id="BLK_C",
+        make_segment_block_with_tracks(network, "BLK_C",
             positions=[(4, 0), (5, 0)],
             name="Block C",
             length_cm=100.0,
@@ -536,32 +529,27 @@ class TestEffectivePathTiles:
             track = Tile(x, 0, track_bits=TRACK_EW)
             network.add_track(track)
 
-        network.create_segment_with_tracks(
-            segment_id="BLOCK_A",
+        make_segment_block_with_tracks(network, "BLOCK_A",
             positions=[(0, 0), (1, 0)],
             name="Block A",
             length_cm=100.0,
         )
-        network.create_segment_with_tracks(
-            segment_id="BLOCK_B",
+        make_segment_block_with_tracks(network, "BLOCK_B",
             positions=[(2, 0), (3, 0)],
             name="Block B",
             length_cm=100.0,
         )
-        network.create_segment_with_tracks(
-            segment_id="BLOCK_C",
+        make_segment_block_with_tracks(network, "BLOCK_C",
             positions=[(4, 0), (5, 0)],
             name="Block C",
             length_cm=100.0,
         )
-        network.create_segment_with_tracks(
-            segment_id="BLOCK_D",
+        make_segment_block_with_tracks(network, "BLOCK_D",
             positions=[(6, 0), (7, 0)],
             name="Block D",
             length_cm=100.0,
         )
-        network.create_segment_with_tracks(
-            segment_id="BLOCK_E",
+        make_segment_block_with_tracks(network, "BLOCK_E",
             positions=[(8, 0), (9, 0)],
             name="Block E",
             length_cm=100.0,
@@ -700,20 +688,17 @@ class TestAtoDestinationCleanup:
             track = Tile(x, 0, track_bits=TRACK_EW)
             network.add_track(track)
 
-        network.create_segment_with_tracks(
-            segment_id="BLOCK_A",
+        make_segment_block_with_tracks(network, "BLOCK_A",
             positions=[(0, 0), (1, 0)],
             name="Block A",
             length_cm=100.0,
         )
-        network.create_segment_with_tracks(
-            segment_id="BLOCK_B",
+        make_segment_block_with_tracks(network, "BLOCK_B",
             positions=[(2, 0), (3, 0)],
             name="Block B",
             length_cm=100.0,
         )
-        network.create_segment_with_tracks(
-            segment_id="BLOCK_C",
+        make_segment_block_with_tracks(network, "BLOCK_C",
             positions=[(4, 0), (5, 0)],
             name="Block C",
             length_cm=100.0,

@@ -13,9 +13,22 @@ This used to be copy-pasted into every scene module as
 now and the gate calls it directly.
 """
 
+from entity_ids import segment_id_for_block
 from network import RailwayNetwork
 from switch import Switch
 from track import Tile, TRACK_EW, TRACK_NE
+
+
+def _make_block(network, block_id: str, **kwargs):
+    """Build a block with this exact id, plus its default member segment.
+
+    These checks name BLOCKS: they assert on `Tile.block_id` and re-use an id to
+    prove a duplicate is rejected. So the block id is pinned and the segment
+    takes the matching geometry-axis id (`entity_ids`).
+    """
+    return network.create_segment_with_tracks(
+        segment_id_for_block(block_id), block_id=block_id, **kwargs
+    )
 
 
 def validate_block_rules():
@@ -37,8 +50,9 @@ def validate_block_rules():
     # Test 1: Cannot create block with disconnected tracks
     print("\n[TEST 1] Verifying disconnected tracks are rejected...")
     try:
-        test_network.create_segment_with_tracks(
-            segment_id="TEST_DISCONNECTED",
+        _make_block(
+            test_network,
+            block_id="TEST_DISCONNECTED",
             positions=[(0, 0), (4, 0)],  # Not adjacent - gap in between
             name="Test",
         )
@@ -56,8 +70,9 @@ def validate_block_rules():
     test_network.add_switch(switch)
     switch_track.switch_id = switch.switch_id
     try:
-        test_network.create_segment_with_tracks(
-            segment_id="TEST_WITH_SWITCH",
+        _make_block(
+            test_network,
+            block_id="TEST_WITH_SWITCH",
             positions=[(3, 0), (4, 0), (5, 0)],  # Includes switch at (5,0)
             name="Test",
         )
@@ -72,13 +87,15 @@ def validate_block_rules():
     )
 
     # First create TEST_BLOCK_1 at (0,0), (1,0) which is also used by Test 4 and Test 5
-    test_network.create_segment_with_tracks(
-        segment_id="TEST_BLOCK_1", positions=[(0, 0), (1, 0)], name="Test Block 1"
+    _make_block(
+        test_network,
+        block_id="TEST_BLOCK_1", positions=[(0, 0), (1, 0)], name="Test Block 1"
     )
 
     # Create a 3-tile block for testing
-    test_network.create_segment_with_tracks(
-        segment_id="TEST_BLOCK_SIGNAL",
+    _make_block(
+        test_network,
+        block_id="TEST_BLOCK_SIGNAL",
         positions=[(2, 0), (3, 0), (4, 0)],
         name="Test Block for Signal",
     )
@@ -128,8 +145,9 @@ def validate_block_rules():
     # Test 4: Cannot assign track already in another block
     print("\n[TEST 4] Verifying tracks cannot be in multiple blocks...")
     try:
-        test_network.create_segment_with_tracks(
-            segment_id="TEST_DUPLICATE",
+        _make_block(
+            test_network,
+            block_id="TEST_DUPLICATE",
             positions=[(0, 0), (1, 0)],  # These are already in TEST_BLOCK_1
             name="Test",
         )
@@ -141,8 +159,9 @@ def validate_block_rules():
     # Test 5: Cannot create block with duplicate ID
     print("\n[TEST 5] Verifying duplicate block IDs are rejected...")
     try:
-        test_network.create_segment_with_tracks(
-            segment_id="TEST_BLOCK_1",  # Already exists
+        _make_block(
+            test_network,
+            block_id="TEST_BLOCK_1",  # Already exists
             positions=[(6, 0)],  # Use position not in any block
             name="Test",
         )
@@ -154,8 +173,9 @@ def validate_block_rules():
     # Test 6: Cannot create block with invalid properties
     print("\n[TEST 6] Verifying invalid block properties are rejected...")
     try:
-        test_network.create_segment_with_tracks(
-            segment_id="TEST_INVALID_PROPS",
+        _make_block(
+            test_network,
+            block_id="TEST_INVALID_PROPS",
             positions=[(7, 0)],  # Use position not in any block
             name="Test",
             length_cm=-100.0,  # Negative length!

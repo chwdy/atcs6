@@ -18,6 +18,7 @@ import pytest
 
 from network import RailwayNetwork
 from track import Tile
+from tests.segment_test_helpers import make_segment_block_with_tracks
 
 
 WEST_TILES = [(0, 0), (1, 0)]
@@ -35,12 +36,11 @@ def _grouped_network() -> RailwayNetwork:
     net = RailwayNetwork()
     for x in range(4):
         net.add_track(Tile(x=x, y=0, track_bits=2))  # EW straight, all joined
-    net.create_segment_with_tracks(
-        "SEG_WEST", WEST_TILES, name="West", length_cm=100.0
-    )
-    net.create_segment_with_tracks(
-        "SEG_EAST", EAST_TILES, name="East", length_cm=60.0
-    )
+    # These are SEGMENT ids — the fixture groups them by name — so the geometry
+    # entry point is called directly; the interim single-segment blocks it
+    # derives are dissolved by the grouping below.
+    net.create_segment_with_tracks("SEG_WEST", WEST_TILES, name="West", length_cm=100.0)
+    net.create_segment_with_tracks("SEG_EAST", EAST_TILES, name="East", length_cm=60.0)
     net._get_block_grouping_manager().group_into_block(
         "BLK_YARD", ["SEG_WEST", "SEG_EAST"], name="Yard"
     )

@@ -8,12 +8,30 @@ sensor (current is derived from the span), so these tests drive the detector
 slice directly to exercise the geometry as a real/early sensor would.
 """
 
+from typing import Dict, Set
+
 from block import Block
+from block_occupancy import OccupancyInput
 from enums import Direction
 from network import RailwayNetwork
 from simulation import SimulationController
 from track import Tile, TRACK_EW
 from train import Train, TrainCar
+from entity_ids import segment_id_for_block
+
+
+class FakeDetectorInput(OccupancyInput):
+    """A detector that answers for `detected` and reports current on `live`."""
+
+    def __init__(self, detected: Set[str], live: Set[str]) -> None:
+        self.detected = set(detected)
+        self.live = set(live)
+
+    def detected_block_ids(self) -> Set[str]:
+        return set(self.detected)
+
+    def read_block_currents(self) -> Dict[str, bool]:
+        return {bid: bid in self.live for bid in self.detected}
 
 
 def build_line(num_tiles: int = 6) -> RailwayNetwork:
@@ -21,7 +39,7 @@ def build_line(num_tiles: int = 6) -> RailwayNetwork:
     network = RailwayNetwork()
     for x in range(num_tiles):
         track = Tile(x=x, y=0, track_bits=TRACK_EW)
-        track.segment_id = f"BLK_{x}"
+        track.segment_id = segment_id_for_block(f"BLK_{x}")
         network.add_track(track)
         network.blocks[f"BLK_{x}"] = Block(block_id=f"BLK_{x}", length_cm=100.0)
     return network
@@ -86,6 +104,48 @@ def test_snap_exit_slides_tail_out_of_block():
 
     assert moved is True
     assert "BLK_0" not in controller.physics_sync.current_span.occupied_blocks
+
+
+def test_snap_stops_at_a_detected_block_that_reads_clear():
+    """The correction never crosses a boundary the cap would not let the train
+    cross under power.
+
+    BLK_2 is confirmed and handed to the train, but BLK_1 between them reads
+    clear. Reaching BLK_2 would mean having crossed track whose detector says
+    nothing is on it, so the span stays where the detector can vouch for it.
+    """
+    network = build_line(6)
+    sim, train, controller, physics = place(network, "T", head_x=0, length_cm=40.0)
+    sim.block_occupancy_detector.input_interface = FakeDetectorInput(
+        detected={f"BLK_{i}" for i in range(6)}, live={"BLK_0", "BLK_2"}
+    )
+    sim.block_occupancy_detector.seed_occupied({"BLK_0", "BLK_2"})
+    before = controller.physics_sync.current_span
+
+    controller.physics_sync.pending_detected_entered_blocks = {"BLK_2"}
+    moved = physics.reconcile_to_detected_occupancy(train, controller)
+
+    assert moved is False
+    assert controller.physics_sync.current_span is before
+    assert controller.physics_sync.current_span.occupied_blocks == ["BLK_0"]
+
+
+def test_snap_crosses_a_detected_block_that_reads_occupied():
+    """The contrast: with BLK_1 confirmed too, the run of confirmed blocks is
+    unbroken and the span follows the detector all the way into BLK_2."""
+    network = build_line(6)
+    sim, train, controller, physics = place(network, "T", head_x=0, length_cm=40.0)
+    sim.block_occupancy_detector.input_interface = FakeDetectorInput(
+        detected={f"BLK_{i}" for i in range(6)},
+        live={"BLK_0", "BLK_1", "BLK_2"},
+    )
+    sim.block_occupancy_detector.seed_occupied({"BLK_0", "BLK_1", "BLK_2"})
+
+    controller.physics_sync.pending_detected_entered_blocks = {"BLK_1", "BLK_2"}
+    moved = physics.reconcile_to_detected_occupancy(train, controller)
+
+    assert moved is True
+    assert "BLK_2" in controller.physics_sync.current_span.occupied_blocks
 
 
 def test_snap_no_op_with_empty_slices():

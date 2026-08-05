@@ -18,6 +18,8 @@ from train_controller import TrainController, create_controller_for_train
 from path_dispatcher import PathDispatcher
 from train_route import Route, RouteMode
 from switch import Switch
+from tests.segment_test_helpers import make_segment_block, make_segment_block_with_tracks
+from entity_ids import segment_id_for_block
 
 
 @pytest.fixture
@@ -86,8 +88,7 @@ class TestTrainPhysicsTailPositionBugFix:
     def test_tail_distance_within_tile_after_advance(self, network):
         for x in range(3):
             network.add_track(Tile(x, 0, track_bits=TRACK_EW))
-        network.create_segment_with_tracks(
-            "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
+        make_segment_block_with_tracks(network, "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
         )
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="T1", consist=[car])
@@ -179,13 +180,13 @@ class TestTrainPhysicsTransitions:
         network = RailwayNetwork()
         track_a = Tile(x=0, y=0, track_bits=TRACK_EW)
         track_b = Tile(x=1, y=0, track_bits=TRACK_EW)
-        track_a.segment_id = "B1"
-        track_b.segment_id = "B2"
+        track_a.segment_id = segment_id_for_block("B1")
+        track_b.segment_id = segment_id_for_block("B2")
         network.add_track(track_a)
         network.add_track(track_b)
 
-        network.create_segment("B1", "Block 1")
-        network.create_segment("B2", "Block 2")
+        make_segment_block(network, "B1", "Block 1")
+        make_segment_block(network, "B2", "Block 2")
 
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_1", consist=[car], max_speed=60.0)

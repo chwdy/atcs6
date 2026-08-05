@@ -26,6 +26,7 @@ Layout:
 
 from train_route import BlockTarget, Route, RouteMode, RouteTask
 from bootstrap import bootstrap_runtime
+from tests.segment_test_helpers import make_segment_block_with_tracks
 from track import TRACK_EW, TRACK_NS, Tile
 
 from .base import SceneFixture
@@ -47,15 +48,17 @@ class TunnelWNScene:
         for y in (10, 9, 8):
             network.add_track(Tile(11, y, track_bits=TRACK_NS))
 
-        network.create_segment_with_tracks(
-            segment_id=self.west_block_id,
+        make_segment_block_with_tracks(
+            network,
+            block_id=self.west_block_id,
             positions=[(1, 0), (2, 0), (3, 0)],
             name="west",
             length_cm=150.0,
             speed_limit_kmh=30.0,
         )
-        network.create_segment_with_tracks(
-            segment_id=self.north_block_id,
+        make_segment_block_with_tracks(
+            network,
+            block_id=self.north_block_id,
             positions=[(11, 10), (11, 9), (11, 8)],
             name="north",
             length_cm=150.0,

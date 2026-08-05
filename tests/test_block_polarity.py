@@ -27,6 +27,7 @@ from persistence import PersistenceManager
 from services import block_service
 from services.exceptions import ValidationError
 from simulation import SimulationController
+from tests.segment_test_helpers import make_segment_block
 
 
 @pytest.fixture(autouse=True)
@@ -119,14 +120,14 @@ def state():
 
 
 def test_block_patch_rejects_polarity_with_a_pointer(state):
-    state.network.create_segment("BLK_P")
+    make_segment_block(state.network, "BLK_P")
     with pytest.raises(ValidationError, match="rail binding"):
         block_service.update_block(state, "BLK_P", data={"polarity_reversed": True})
 
 
 def test_travel_direction_still_edits_normally(state):
     """The routing-policy neighbour is untouched by the move."""
-    state.network.create_segment("BLK_P")
+    make_segment_block(state.network, "BLK_P")
     block_service.update_block(
         state, "BLK_P", data={"allowed_travel_directions": ["forward"]}
     )

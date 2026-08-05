@@ -4,7 +4,7 @@ Auto-generated — do not hand-edit; re-run json_to_scene.py against the source
 layout instead. Layout only: 43 tracks, 2 switches,
 0 platforms (0 station groups),
 5 blocks (0 auto-created platform blocks),
-1 block groups, 0 tunnels,
+0 block groups, 0 tunnels,
 0 signals. Trains/routes are not
 part of the layout JSON, so setup_demo_train() is a stub.
 """
@@ -88,28 +88,16 @@ PLATFORMS = [
 ]
 
 
-# The oval's three plain legs plus the two parallel routes of the passing loop.
-# Names are compass-true for the layout grid (NORTH is +y, EAST is +x, per
-# `Direction` in enums.py). The passing loop runs between the two switches on
-# the south-east side: SW_7_5 and SW_11_9 each hold the straight route through
-# SEG_4F6CD7 (the inner one) and divert onto SEG_4F7A2F (the outer one), hence
-# "Main" vs "Siding". Every entry here is a one-segment block, so the name lands
-# on both the segment and its owning block — except SEG_4F110A, whose block is
-# named by its BLOCK_GROUPS entry below.
-#
-# NOTE: this comment is hand-added to a generated file and json_to_scene.py
-# drops it on the next re-bake. Paste it back if you re-run the baker.
 BLOCKS = [
-    ('SEG_4F110A', 'SW Leg', [(3, 7), (3, 6), (3, 5), (4, 5), (4, 4), (5, 4), (6, 4), (7, 4)], 50.0, None),
-    ('SEG_4F4CF0', 'NE Leg', [(9, 13), (10, 13), (11, 12), (11, 13), (12, 9), (12, 10), (12, 11), (12, 12)], 50.0, None),
-    ('SEG_4F5CE3', 'NW Leg', [(3, 8), (4, 8), (4, 9), (5, 9), (5, 10), (6, 10), (6, 11), (7, 11), (7, 12), (8, 12), (8, 13)], 50.0, None),
-    ('SEG_4F6CD7', 'Passing Loop Main', [(7, 6), (7, 7), (8, 7), (8, 8), (9, 8), (9, 9), (10, 9)], 50.0, None),
-    ('SEG_4F7A2F', 'Passing Loop Siding', [(8, 5), (8, 6), (9, 6), (9, 7), (10, 7), (10, 8), (11, 8)], 50.0, None),
+    ('BLK_4F4CF0', 'SEG_4F4CF0', '', [(9, 13), (10, 13), (11, 12), (11, 13), (12, 9), (12, 10), (12, 11), (12, 12)], 50.0, None, 'Right'),
+    ('BLK_4F5CE3', 'SEG_4F5CE3', '', [(3, 8), (4, 8), (4, 9), (5, 9), (5, 10), (6, 10), (6, 11), (7, 11), (7, 12), (8, 12), (8, 13)], 50.0, None, 'Up'),
+    ('BLK_4F6CD7', 'SEG_4F6CD7', '', [(7, 6), (7, 7), (8, 7), (8, 8), (9, 8), (9, 9), (10, 9)], 50.0, None, 'Main'),
+    ('BLK_4F7A2F', 'SEG_4F7A2F', '', [(8, 5), (8, 6), (9, 6), (9, 7), (10, 7), (10, 8), (11, 8)], 50.0, None, 'Sideline'),
+    ('BLK_C37589A5', 'SEG_4F110A', '', [(3, 5), (3, 6), (3, 7), (4, 4), (4, 5), (5, 4), (6, 4), (7, 4)], 50.0, None, 'Left'),
 ]
 
 
 BLOCK_GROUPS = [
-    ('BLK_C37589A5', 'SW Leg', ['SEG_4F110A']),
 ]
 
 
@@ -195,15 +183,28 @@ def _add_platforms(network: RailwayNetwork) -> None:
 
 
 def _add_blocks(network: RailwayNetwork) -> None:
-    """Create the non-platform blocks from their baked tile lists."""
-    for (block_id, name, positions, length_cm, speed_limit_kmh) in BLOCKS:
-        network.create_segment_with_tracks(
-            segment_id=block_id,
+    """Create the non-platform blocks from their baked tile lists.
+
+    Each row states both ids: a block and its member segment are separate
+    records that never share one (see ``entity_ids``). ``block_id`` is ``None``
+    for a row whose block is an interim one dissolved by the ``BLOCK_GROUPS``
+    fold below, and the default derivation supplies it.
+
+    ``name`` names the segment the call creates; ``block_name`` names the block
+    that owns it, and is empty unless the operator named that block separately.
+    """
+    for (block_id, segment_id, name, positions, length_cm, speed_limit_kmh,
+         block_name) in BLOCKS:
+        block = network.create_segment_with_tracks(
+            block_id=block_id,
+            segment_id=segment_id,
             positions=positions,
             name=name,
             length_cm=length_cm,
             speed_limit_kmh=speed_limit_kmh,
         )
+        if block_name:
+            block.name = block_name
 
 
 def _add_tunnels(network: RailwayNetwork) -> None:

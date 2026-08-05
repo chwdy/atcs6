@@ -14,6 +14,7 @@ from enums import BlockState, Direction
 from train import Train, TrainCar
 from tests.train_test_helpers import set_train_span
 from train_controller import create_controller_for_train
+from entity_ids import segment_id_for_block
 from path_utils import (
     prepare_path_for_train,
     append_destination_block_tiles,
@@ -208,7 +209,7 @@ class TestPathPrepending:
         network = RailwayNetwork()
         for x in range(4):
             track = Tile(x, 0, track_bits=TRACK_EW)
-            track.segment_id = "BLK_1"
+            track.segment_id = segment_id_for_block("BLK_1")
             network.add_track(track)
         network.blocks["BLK_1"] = Block(block_id="BLK_1")
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
@@ -230,7 +231,7 @@ class TestPathPrepending:
         network = RailwayNetwork()
         for x in range(4):
             track = Tile(x, 0, track_bits=TRACK_EW)
-            track.segment_id = "BLK_1"
+            track.segment_id = segment_id_for_block("BLK_1")
             network.add_track(track)
         network.blocks["BLK_1"] = Block(block_id="BLK_1")
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
@@ -251,11 +252,11 @@ class TestPathPrepending:
         network = RailwayNetwork()
         for x in range(2):
             track = Tile(x, 0, track_bits=TRACK_EW)
-            track.segment_id = "BLK_A"
+            track.segment_id = segment_id_for_block("BLK_A")
             network.add_track(track)
         for x in range(3, 5):
             track = Tile(x, 0, track_bits=TRACK_EW)
-            track.segment_id = "BLK_B"
+            track.segment_id = segment_id_for_block("BLK_B")
             network.add_track(track)
         network.blocks["BLK_A"] = Block(block_id="BLK_A")
         network.blocks["BLK_B"] = Block(block_id="BLK_B")
@@ -276,7 +277,7 @@ class TestPathPrepending:
         """Test rejection of empty path."""
         network = RailwayNetwork()
         track = Tile(0, 0, track_bits=TRACK_EW)
-        track.segment_id = "BLK_1"
+        track.segment_id = segment_id_for_block("BLK_1")
         network.add_track(track)
         network.blocks["BLK_1"] = Block(block_id="BLK_1")
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
@@ -299,12 +300,12 @@ class TestPathAppending:
         network = RailwayNetwork()
         for x in range(2):
             track = Tile(x, 0, track_bits=TRACK_EW)
-            track.segment_id = "BLK_SOURCE"
+            track.segment_id = segment_id_for_block("BLK_SOURCE")
             network.add_track(track)
         network.blocks["BLK_SOURCE"] = Block(block_id="BLK_SOURCE")
         for x in range(2, 5):
             track = Tile(x, 0, track_bits=TRACK_EW)
-            track.segment_id = "BLK_DEST"
+            track.segment_id = segment_id_for_block("BLK_DEST")
             network.add_track(track)
         network.blocks["BLK_DEST"] = Block(block_id="BLK_DEST")
         path_tiles = [
@@ -325,7 +326,7 @@ class TestPathAppending:
         network = RailwayNetwork()
         for x in range(3):
             track = Tile(x, 0, track_bits=TRACK_EW)
-            track.segment_id = "BLK_DEST"
+            track.segment_id = segment_id_for_block("BLK_DEST")
             network.add_track(track)
         network.blocks["BLK_DEST"] = Block(block_id="BLK_DEST")
         path_tiles = [

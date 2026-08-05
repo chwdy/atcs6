@@ -15,6 +15,7 @@ from track import Tile
 from block_power import BlockPowerController, SimulatedTrackDriver
 from speed_profile import SpeedProfile
 from enums import Direction, TrainState
+from entity_ids import segment_id_for_block
 
 
 class TestMultiBlockOccupancy:
@@ -36,15 +37,15 @@ class TestMultiBlockOccupancy:
 
         # Create tracks for each block
         track_a = Tile(x=0, y=0)
-        track_a.segment_id = "BLK_A"
+        track_a.segment_id = segment_id_for_block("BLK_A")
         track_a.length = 1.0  # 1 meter
 
         track_b = Tile(x=1, y=0)
-        track_b.segment_id = "BLK_B"
+        track_b.segment_id = segment_id_for_block("BLK_B")
         track_b.length = 1.0
 
         track_c = Tile(x=2, y=0)
-        track_c.segment_id = "BLK_C"
+        track_c.segment_id = segment_id_for_block("BLK_C")
         track_c.length = 1.0
 
         network.tracks[(0, 0)] = track_a

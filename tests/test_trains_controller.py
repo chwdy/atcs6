@@ -18,6 +18,8 @@ from train_controller import TrainController, create_controller_for_train
 from path_dispatcher import PathDispatcher
 from train_route import Route, RouteMode, RouteTask
 from switch import Switch
+from tests.segment_test_helpers import make_segment_block, make_segment_block_with_tracks
+from entity_ids import segment_id_for_block
 
 
 @pytest.fixture
@@ -71,7 +73,7 @@ class TestRaceConditionFix:
     """Tests for race condition fixes."""
 
     def test_block_manager_prevents_premature_release(self, network):
-        block = network.create_segment("B1", "Block 1")
+        block = make_segment_block(network, "B1", "Block 1")
         network.block_manager.occupy_block("B1", "TRAIN_1")
         assert block.state == BlockState.OCCUPIED
         network.block_manager.set_block_to_caution("B1")
@@ -101,10 +103,10 @@ class TestRaceConditionFix:
 
         # Create track and block with speed limit
         track = Tile(x=0, y=0, track_bits=TRACK_EW)
-        track.segment_id = "B1"
+        track.segment_id = segment_id_for_block("B1")
         network.add_track(track)
 
-        block = network.create_segment("B1", "Block 1")
+        block = make_segment_block(network, "B1", "Block 1")
         block.length_cm = 1000.0
         block.speed_limit_kmh = 30.0  # 30 km/h limit
 
@@ -239,7 +241,7 @@ class TestTrainControllerBrakingNotches:
         next_track = Tile(x=1, y=0, track_bits=TRACK_EW)
         network.add_track(track)
         network.add_track(next_track)
-        network.create_segment_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
+        make_segment_block_with_tracks(network, "BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
 
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="TRAIN_MANUAL", consist=[car], max_speed=60.0)
@@ -357,12 +359,12 @@ class TestTrainClearancePrecisionBugFix:
 
         track_a = Tile(x=0, y=0, track_bits=TRACK_EW)
         track_b = Tile(x=1, y=0, track_bits=TRACK_EW)
-        track_a.segment_id = "B1"
-        track_b.segment_id = "B1"
+        track_a.segment_id = segment_id_for_block("B1")
+        track_b.segment_id = segment_id_for_block("B1")
         network.add_track(track_a)
         network.add_track(track_b)
 
-        block = network.create_segment("B1", "Block 1")
+        block = make_segment_block(network, "B1", "Block 1")
         block.length_cm = 40.0
 
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=10.0)
@@ -406,8 +408,7 @@ class TestATCOverspeedWarning:
         for x in range(6):
             network.add_track(Tile(x, 0, track_bits=TRACK_EW))
         for blk, (a, b) in [("B1", (0, 1)), ("B2", (2, 3)), ("B3", (4, 5))]:
-            network.create_segment_with_tracks(
-                segment_id=blk, positions=[(a, 0), (b, 0)], name=blk, length_cm=200.0
+            make_segment_block_with_tracks(network, blk, positions=[(a, 0), (b, 0)], name=blk, length_cm=200.0
             )
             network.blocks[blk].speed_limit_kmh = 30.0
 

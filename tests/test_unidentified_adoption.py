@@ -32,6 +32,7 @@ from tests.test_unidentified_trains import (
     tick,
 )
 from track import Tile, TRACK_EW
+from entity_ids import segment_id_for_block
 
 
 def adopt(sim, unidentified_id, new_id="T1", **kwargs):
@@ -199,7 +200,7 @@ def build_wide_sim(tiles_per_block: int = 3, block_len: float = 300.0):
         for i in range(tiles_per_block):
             x = b * tiles_per_block + i
             track = Tile(x=x, y=0, track_bits=TRACK_EW)
-            track.segment_id = f"BLK_{b}"
+            track.segment_id = segment_id_for_block(f"BLK_{b}")
             network.add_track(track)
             entries.append((x, 0, "W"))
         # `ordered_tiles` reads through to the block's segments, so it is

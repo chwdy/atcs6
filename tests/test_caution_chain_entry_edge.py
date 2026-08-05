@@ -32,6 +32,7 @@ from track import Tile, TRACK_NS, TRACK_EW
 from network import RailwayNetwork
 from block import Block, CautionState
 from block_manager import BlockManager
+from entity_ids import segment_id_for_block
 
 
 class _FakeController:
@@ -56,10 +57,10 @@ def _straight_chain_manager():
     """
     net = RailwayNetwork()
     a = Tile(x=0, y=0, track_bits=TRACK_EW)
-    a.segment_id = "A"
+    a.segment_id = segment_id_for_block("A")
     net.add_track(a)
     b = Tile(x=1, y=0, track_bits=TRACK_EW)
-    b.segment_id = "B"
+    b.segment_id = segment_id_for_block("B")
     net.add_track(b)
     net.blocks["A"] = Block(block_id="A")
     net.blocks["A"].ordered_tiles = [(0, 0, "E")]
@@ -112,7 +113,7 @@ def test_forward_train_has_reversed_keys_on_chain_entry_edge(
     the CAUTION block's exit edge."""
     net = RailwayNetwork()
     occ_tile = Tile(x=1, y=1, track_bits=TRACK_NS)
-    occ_tile.segment_id = "OCC"
+    occ_tile.segment_id = segment_id_for_block("OCC")
     net.add_track(occ_tile)
     net.blocks["OCC"] = Block(block_id="OCC")
     net.blocks["OCC"].ordered_tiles = [(1, 1, "S")]
@@ -132,7 +133,7 @@ def test_forward_train_has_reversed_keeps_caution_without_back_reference():
     (positive evidence of reversal is required)."""
     net = RailwayNetwork()
     occ_tile = Tile(x=1, y=1, track_bits=TRACK_NS)
-    occ_tile.segment_id = "OCC"
+    occ_tile.segment_id = segment_id_for_block("OCC")
     net.add_track(occ_tile)
     net.blocks["OCC"] = Block(block_id="OCC")
     net.blocks["OCC"].ordered_tiles = [(1, 1, "S")]

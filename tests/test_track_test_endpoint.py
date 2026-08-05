@@ -29,6 +29,7 @@ from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from simulation import SimulationController
+from tests.segment_test_helpers import make_segment_block
 
 
 @pytest.fixture(autouse=True)
@@ -64,7 +65,7 @@ CONFIG = {
 def client():
     """A one-block layout behind the Flask test client."""
     network = RailwayNetwork()
-    block = network.create_segment("BLK_A")
+    block = make_segment_block(network, "BLK_A")
 
     path_dispatcher = PathDispatcher(network)
     sim_controller = SimulationController(network, path_dispatcher)

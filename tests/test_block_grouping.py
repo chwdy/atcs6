@@ -22,6 +22,7 @@ against the manager here.
 
 import pytest
 
+from entity_ids import block_id_for_segment
 from network import RailwayNetwork
 from track import Tile
 
@@ -60,7 +61,7 @@ def test_create_groups_segments_into_one_block(net, grouping):
     assert block.name == "Yard"
     assert set(block.segment_ids) == {"A", "B"}
     # The grouped members are gone as blocks; C is untouched.
-    assert set(net.blocks) == {"G", "C"}
+    assert set(net.blocks) == {"G", "BLK_C"}
 
 
 def test_create_rejects_an_empty_member_list(grouping):
@@ -75,7 +76,7 @@ def test_create_rejects_an_unknown_segment(grouping):
 
 def test_create_rejects_a_duplicate_block_id(net, grouping):
     with pytest.raises(ValueError):
-        grouping.create_block("A", ["B"])
+        grouping.create_block("BLK_A", ["B"])
 
 
 # --- connected switch-free run ---------------------------------------------
@@ -170,8 +171,8 @@ def test_remove_end_segment_rehomes_it(net, grouping):
     assert grouping.remove_segment_from_block("G", "A") is True
     assert net.blocks["G"].segment_ids == ["B", "C"]
     # A is back to being its own single-segment block.
-    assert net.blocks["A"].segment_ids == ["A"]
-    assert net.segment_to_block_id("A") == "A"
+    assert net.blocks["BLK_A"].segment_ids == ["A"]
+    assert net.segment_to_block_id("A") == "BLK_A"
 
 
 def test_remove_middle_segment_is_rejected(net, grouping):
@@ -198,7 +199,7 @@ def test_remove_last_segment_deletes_the_block(net, grouping):
     grouping.create_block("G", ["A"])
     assert grouping.remove_segment_from_block("G", "A") is True
     assert "G" not in net.blocks
-    assert net.blocks["A"].segment_ids == ["A"]
+    assert net.blocks["BLK_A"].segment_ids == ["A"]
 
 
 # --- delete_block -----------------------------------------------------------
@@ -209,10 +210,10 @@ def test_delete_block_rehomes_every_segment(net, grouping):
     assert grouping.delete_block("G") is True
     assert "G" not in net.blocks
     # Deleting a grouping never deletes its segments; each gets its own block.
-    assert set(net.blocks) == {"A", "B", "C"}
+    assert set(net.blocks) == {"BLK_A", "BLK_B", "BLK_C"}
     for segment_id in ("A", "B", "C"):
-        assert net.blocks[segment_id].segment_ids == [segment_id]
-        assert net.tile_to_block_id(*_first_tile(net, segment_id)) == segment_id
+        assert net.blocks[block_id_for_segment(segment_id)].segment_ids == [segment_id]
+        assert net.tile_to_block_id(*_first_tile(net, segment_id)) == block_id_for_segment(segment_id)
 
 
 def test_delete_unknown_block_is_false(grouping):
@@ -231,7 +232,7 @@ def test_segment_registry_and_reverse_lookup(net, grouping):
     grouping.group_into_block("G", ["A", "B"])
     assert set(net.segments) == {"A", "B", "C"}
     assert net.segment_to_block_id("A") == "G"
-    assert net.segment_to_block_id("C") == "C"
+    assert net.segment_to_block_id("C") == "BLK_C"
     assert net.segment_to_block_id("NOPE") is None
     assert net.get_segment("B").segment_id == "B"
     assert net.get_segment("NOPE") is None

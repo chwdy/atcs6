@@ -16,6 +16,7 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
+from entity_ids import segment_id_for_block
 from railway_platform import Platform
 from station import Station
 
@@ -175,10 +176,18 @@ class StationRegistry:
         )
 
         # A station tile becomes its own segment, and that segment gets its own
-        # block (nothing is grouped with it), so both take `station_block_id`.
+        # block (nothing is grouped with it). The block keeps `station_block_id`
+        # — the id platforms, saved routes, and hardware bindings already name —
+        # and the segment takes the matching id on the geometry axis
+        # (`{platform}_SEG`), because the two are separate records.
+        # `block_name` names the block ("Station Block - ..."), so it is set on
+        # the block after creation rather than passed as the segment's name;
+        # the segment stays unnamed and reads as its id.
         station_block = self._n.create_segment(
-            segment_id=station_block_id, name=block_name
+            segment_id=segment_id_for_block(station_block_id),
+            block_id=station_block_id,
         )
+        station_block.name = block_name
 
         # Set the calculated length on the block
         station_block.length_cm = station_block_length_cm
@@ -188,14 +197,15 @@ class StationRegistry:
         if top_speed_kmh is not None:
             station_block.speed_limit_kmh = top_speed_kmh
 
-        # Assign station tile to the station segment
-        track.segment_id = station_block_id
+        # Assign station tile to the station segment (tile ownership is a
+        # segment reference; the block is reached through it)
+        track.segment_id = station_block.segments[0].segment_id
 
         # Refresh ordered_tiles for both the new station segment and the
         # parent segment we split from (its membership just changed).
         geom = self._n._get_segment_geometry_manager()
         if geom is not None:
-            geom.rebuild_segment_ordered_tiles(station_block_id)
+            geom.rebuild_segment_ordered_tiles(station_block.segments[0].segment_id)
             if original_segment_id and self._n.get_segment(original_segment_id):
                 geom.rebuild_segment_ordered_tiles(original_segment_id)
 
@@ -432,8 +442,11 @@ class StationRegistry:
         if not is_continuous:
             raise ValueError(f"Station would not be continuous: {', '.join(errors)}")
 
-        # Add positions to station
+        # Add positions to station. Tile ownership is a SEGMENT reference and
+        # `block_assignments` is a BLOCK reference, so the two axes are named
+        # by their own ids (`entity_ids`) rather than one shared string.
         station_block_id = f"{station_id}_BLOCK"
+        station_segment_id = segment_id_for_block(station_block_id)
 
         affected_segments: set = set()
         for x, y in new_positions:
@@ -443,7 +456,7 @@ class StationRegistry:
                 if track:
                     # Handle segment splitting if needed - use lifecycle method
                     if track.segment_id:
-                        if track.segment_id != station_block_id:
+                        if track.segment_id != station_segment_id:
                             affected_segments.add(track.segment_id)
                         self._n.remove_tile_from_segment(x, y)
                     # Assign to the station's segment, mirroring the owning
@@ -451,7 +464,7 @@ class StationRegistry:
                     # ordered_blocks / get_all_assigned_blocks see this tile's
                     # block without any tile scan.
                     if station_block_id in self._n.blocks:
-                        track.segment_id = station_block_id
+                        track.segment_id = station_segment_id
                         station.block_assignments[(x, y)] = station_block_id
                     track.station_id = station_id
 
@@ -459,7 +472,7 @@ class StationRegistry:
         # split tiles away from, so the geometry view stays in sync.
         geom = self._n._get_segment_geometry_manager()
         if geom is not None:
-            geom.rebuild_segment_ordered_tiles(station_block_id)
+            geom.rebuild_segment_ordered_tiles(station_segment_id)
             for sid in affected_segments:
                 if self._n.get_segment(sid) is not None:
                     geom.rebuild_segment_ordered_tiles(sid)

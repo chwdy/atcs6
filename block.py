@@ -27,6 +27,7 @@ Key concepts:
 from dataclasses import dataclass
 from typing import List, NamedTuple, Optional, Dict, Any, Set
 from enums import BlockState
+from entity_ids import segment_id_for_block
 from track_resource import TrackResource
 from segment import Segment, TileEntry
 
@@ -118,6 +119,7 @@ class Block(TrackResource):
         allowed_travel_directions: Optional[Set[str]] = None,
         ordered_tiles: Optional[List[TileEntry]] = None,
         segments: Optional[List[Segment]] = None,
+        segment_id: Optional[str] = None,
     ) -> None:
         self.block_id = block_id  # Unique ID (e.g., "BLK_001")
         self.name = name  # Human-readable name
@@ -165,13 +167,24 @@ class Block(TrackResource):
         # geometry keywords (length_cm / ordered_tiles / ...) gets one auto
         # segment carrying them; the geometry reads below aggregate across all
         # members so a multi-segment block just works.
+        #
+        # `name` names the block and only the block: the auto segment starts
+        # unnamed. A display name belongs to one record, and copying it here
+        # made every un-grouped segment and its block read as the same entity
+        # wherever both are listed. A caller that means to name the geometry
+        # names the member segment (see SegmentGeometryManager.create_segment).
+        #
+        # The auto segment's id is derived from the block's, never equal to it
+        # (see entity_ids): the two axes are separate entities and an id that
+        # names both is ambiguous everywhere it is displayed or bound. A caller
+        # that already knows the segment id — geometry creation, which mints the
+        # segment first — passes `segment_id` to pin it.
         if segments is not None:
             self.segments: List[Segment] = list(segments)
         else:
             self.segments = [
                 Segment(
-                    segment_id=block_id,
-                    name=name,
+                    segment_id=segment_id or segment_id_for_block(block_id),
                     length_cm=length_cm,
                     min_radius_cm=min_radius_cm,
                     grade_percent=grade_percent,
@@ -415,6 +428,25 @@ class Block(TrackResource):
             "segments": [s.to_layout_dict() for s in self.segments],
         }
 
+    @staticmethod
+    def _loaded_name(stored_name: str, segments: List[Segment]) -> str:
+        """The block's name as loaded, with a copied-down name dropped.
+
+        A name belongs to one record (see design_new.md **Block grouping**, one
+        name per record). A save written before that rule holds one string in
+        both places: the block and its only member segment read identically
+        everywhere both are listed, most visibly in a tile's right-click menu.
+
+        A single-segment block whose stored name IS its member's name therefore
+        loads unnamed and reads as its id — the segment keeps the name, since
+        naming the geometry is what the operator did. This looks only at an
+        exact match on a one-segment block, so a block the operator named in
+        its own right, and every grouped block, load with their names intact.
+        """
+        if len(segments) == 1 and stored_name and stored_name == segments[0].name:
+            return ""
+        return stored_name
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Block":
         """Reconstruct block from a layout snapshot.
@@ -441,11 +473,22 @@ class Block(TrackResource):
                     "required 'length_cm'. Length must be supplied explicitly (0 "
                     "is allowed); there is no silent default."
                 )
+            block_id = str(data["block_id"])
             segments = [Segment.from_dict(s) for s in raw_segments]
+            # A save written when the two axes shared one id carries its member
+            # segment under the block's own id. The block id is the one outside
+            # records name — hardware bindings, saved routes, stored paths — so
+            # it survives, and the segment takes the derived geometry-axis id
+            # (`entity_ids`). Tiles still pointing at the shared id are
+            # re-pointed by `RailwayNetwork._reconcile_segment_tile_membership`,
+            # which runs once the tracks are in place.
+            for segment in segments:
+                if segment.segment_id == block_id:
+                    segment.segment_id = segment_id_for_block(block_id)
             atd_nested = data.get("allowed_travel_directions")
             return cls(
-                block_id=data["block_id"],
-                name=data.get("name", ""),
+                block_id=block_id,
+                name=cls._loaded_name(data.get("name", ""), segments),
                 is_holding_point=bool(data.get("is_holding_point", False)),
                 disabled=bool(data.get("disabled", False)),
                 manual=bool(data.get("manual", False)),

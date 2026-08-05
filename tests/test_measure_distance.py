@@ -6,6 +6,7 @@ from network import RailwayNetwork
 from railway_pathfinder import RailwayPathfinder
 from railway_signal import SignalType
 from track import Tile, TRACK_EW
+from tests.segment_test_helpers import make_segment_block_with_tracks
 
 
 def _seven_tile_ew_line() -> RailwayNetwork:
@@ -42,8 +43,7 @@ def test_measure_distance_unreachable_is_none():
 
 def test_measure_distance_resolves_block_id():
     network = _seven_tile_ew_line()
-    network.create_segment_with_tracks(
-        segment_id="BLK_LEFT", positions=[(0, 0), (1, 0), (2, 0)]
+    make_segment_block_with_tracks(network, "BLK_LEFT", positions=[(0, 0), (1, 0), (2, 0)]
     )
     pf = RailwayPathfinder(network)
     # From tile (5,0) the closest block tile is (2,0) — 3 hops away.
@@ -78,8 +78,7 @@ def test_block_split_reassigns_signals_to_closer_side():
     """Two signals on opposite ends of one block; remove a middle tile so
     the block splits; each signal should land on the closer new block."""
     network = _seven_tile_ew_line()
-    network.create_segment_with_tracks(
-        segment_id="BLK_TEST",
+    make_segment_block_with_tracks(network, "BLK_TEST",
         positions=[(x, 0) for x in range(7)],
     )
 
@@ -112,8 +111,7 @@ def test_block_split_picks_closest_when_both_reachable():
     """A signal on a tile that has BFS access to both new blocks should
     pick the one with smaller hop count, not just the first listed."""
     network = _seven_tile_ew_line()
-    network.create_segment_with_tracks(
-        segment_id="BLK_TEST",
+    make_segment_block_with_tracks(network, "BLK_TEST",
         positions=[(x, 0) for x in range(7)],
     )
     # Signal at (5,0) — once we remove (3,0), it sits inside the right block.

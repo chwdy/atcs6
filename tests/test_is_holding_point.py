@@ -24,6 +24,7 @@ from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from simulation import SimulationController
 from services import block_service
+from tests.segment_test_helpers import make_segment_block
 
 
 # --- persistence ----------------------------------------------------------
@@ -76,12 +77,12 @@ def state():
 def test_service_created_block_defaults_holding_point_false(state):
     # A fresh single-segment block starts with the flag off; it is set through
     # the block config PATCH surface, not at create time.
-    block = state.network.create_segment("BLK_HP")
+    block = make_segment_block(state.network, "BLK_HP")
     assert block.is_holding_point is False
 
 
 def test_update_block_toggles_holding_point(state):
-    state.network.create_segment("BLK_HP")
+    make_segment_block(state.network, "BLK_HP")
     assert state.network.get_block("BLK_HP").is_holding_point is False
     block_service.update_block(state, "BLK_HP", data={"is_holding_point": True})
     assert state.network.get_block("BLK_HP").is_holding_point is True

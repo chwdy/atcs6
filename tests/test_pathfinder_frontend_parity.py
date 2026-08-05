@@ -34,6 +34,7 @@ from typing import Optional, Set, Tuple
 from network import RailwayNetwork
 from railway_pathfinder import RailwayPathfinder
 from track import Tile
+from tests.segment_test_helpers import make_segment_block_with_tracks
 
 
 # ---------------------------------------------------------------- conversion
@@ -206,10 +207,10 @@ def test_bfs_reachability_respects_crossing_segment_isolation():
     network.add_track(Tile(x=2, y=1, track_bits=2))
     network.add_track(Tile(x=0, y=1, track_bits=2))
 
-    network.create_segment_with_tracks(segment_id="A", positions=[(1, 2)])
-    network.create_segment_with_tracks(segment_id="D", positions=[(1, 0)])
-    network.create_segment_with_tracks(segment_id="B", positions=[(2, 1)])
-    network.create_segment_with_tracks(segment_id="C", positions=[(0, 1)])
+    make_segment_block_with_tracks(network, "A", positions=[(1, 2)])
+    make_segment_block_with_tracks(network, "D", positions=[(1, 0)])
+    make_segment_block_with_tracks(network, "B", positions=[(2, 1)])
+    make_segment_block_with_tracks(network, "C", positions=[(0, 1)])
 
     pf = RailwayPathfinder(network)
 

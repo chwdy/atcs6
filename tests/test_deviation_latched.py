@@ -65,6 +65,7 @@ from track import TRACK_EW, TRACK_NW, Tile
 from train import Train, TrainCar
 
 from tests.train_test_helpers import make_train_span
+from tests.segment_test_helpers import make_segment_block_with_tracks
 
 
 # Fixed event time: the contract is independent of wall-clock, so pin it so the
@@ -93,8 +94,7 @@ def _build_switch_network() -> Tuple[RailwayNetwork, Switch]:
 
     network.add_track(Tile(0, 0, track_bits=TRACK_EW))
     network.add_track(Tile(1, 0, track_bits=TRACK_EW))
-    network.create_segment_with_tracks(
-        segment_id="BLK_A", positions=[(0, 0), (1, 0)], name="A", length_cm=200.0
+    make_segment_block_with_tracks(network, "BLK_A", positions=[(0, 0), (1, 0)], name="A", length_cm=200.0
     )
 
     # Switch tile at (2, 0): EW (straight, main) + NW (diverge). Must be a real
@@ -107,11 +107,9 @@ def _build_switch_network() -> Tuple[RailwayNetwork, Switch]:
 
     for x in (3, 4, 5, 6):
         network.add_track(Tile(x, 0, track_bits=TRACK_EW))
-    network.create_segment_with_tracks(
-        segment_id="BLK_C", positions=[(3, 0), (4, 0)], name="C", length_cm=200.0
+    make_segment_block_with_tracks(network, "BLK_C", positions=[(3, 0), (4, 0)], name="C", length_cm=200.0
     )
-    network.create_segment_with_tracks(
-        segment_id="BLK_D", positions=[(5, 0), (6, 0)], name="D", length_cm=200.0
+    make_segment_block_with_tracks(network, "BLK_D", positions=[(5, 0), (6, 0)], name="D", length_cm=200.0
     )
 
     return network, switch
@@ -240,8 +238,8 @@ def test_deviation_while_rolling_latches_and_holds_resources():
         "(inline cancel would have set this to None)"
     )
     assert switch.is_locked(), "switch lock must be HELD while rolling"
-    assert ("PATH_T1_TO_C_001", None) in switch.locks
-    assert switch.locks[("PATH_T1_TO_C_001", None)] == ("T1", 0)
+    assert (path_id, None) in switch.locks
+    assert switch.locks[(path_id, None)] == ("T1", 0)
     assert network.blocks["BLK_C"].reserved_for_train == "T1", (
         "block reservation must be HELD while rolling"
     )

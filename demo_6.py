@@ -59,6 +59,7 @@ from track import (
 )
 from path_dispatcher import PathDispatcher
 from switch import Switch
+from entity_ids import segment_id_for_block
 
 
 # Identifier read by bootstrap.py and by scene-gated tests to recognise this
@@ -963,7 +964,11 @@ def _add_blocks(network: RailwayNetwork) -> None:
     """Create the approach and running-line blocks from their baked tile lists."""
     for (block_id, name, positions, length_cm, speed_limit_kmh) in BLOCKS:
         network.create_segment_with_tracks(
-            segment_id=block_id,
+            # The tuple's id is this scene's BLOCK id: saved routes, tests and
+            # hardware bindings already name it, so it is pinned and the
+            # segment takes the matching geometry-axis id (see entity_ids).
+            block_id=block_id,
+            segment_id=segment_id_for_block(block_id),
             positions=positions,
             name=name,
             length_cm=length_cm,

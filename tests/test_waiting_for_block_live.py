@@ -21,6 +21,7 @@ from enums import Direction
 from path_dispatcher import PathDispatcher
 from simulation import SimulationController
 from tests.train_test_helpers import set_train_span
+from tests.segment_test_helpers import make_segment_block_with_tracks
 
 
 def _linear_network():
@@ -35,8 +36,7 @@ def _linear_network():
         ("BLOCK_D", (6, 7)),
         ("BLOCK_E", (8, 9)),
     ]:
-        net.create_segment_with_tracks(
-            segment_id=bid, positions=[(a, 0), (b, 0)], name=bid, length_cm=100.0
+        make_segment_block_with_tracks(net, bid, positions=[(a, 0), (b, 0)], name=bid, length_cm=100.0
         )
     return net
 

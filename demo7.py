@@ -19,6 +19,7 @@ from track import (
     TRACK_SW,
 )
 from switch import Switch
+from entity_ids import segment_id_for_block
 
 
 SCENE_ID = 'demo7'
@@ -171,7 +172,11 @@ def _add_blocks(network: RailwayNetwork) -> None:
     """Create the non-platform blocks from their baked tile lists."""
     for (block_id, name, positions, length_cm, speed_limit_kmh) in BLOCKS:
         network.create_segment_with_tracks(
-            segment_id=block_id,
+            # The tuple's id is this scene's BLOCK id: saved routes, tests and
+            # hardware bindings already name it, so it is pinned and the
+            # segment takes the matching geometry-axis id (see entity_ids).
+            block_id=block_id,
+            segment_id=segment_id_for_block(block_id),
             positions=positions,
             name=name,
             length_cm=length_cm,
@@ -280,9 +285,11 @@ def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
     # the perimeter is spread evenly across the four segments — total lap length
     # (and therefore lap time) matches the real loop. Length lives on the
     # segment; the block's `length_cm` is the sum across its members.
+    # `LOOP_ORDER` names the four BLOCKS; length is written on each one's member
+    # segment, reached by the derivation that pairs the two ids (entity_ids).
     per_segment_cm = (2.0 * math.pi * 31.5 + 2.0 * 56.0) / 4.0
-    for segment_id in LOOP_ORDER:
-        network.get_segment(segment_id).length_cm = per_segment_cm
+    for block_id in LOOP_ORDER:
+        network.get_segment(segment_id_for_block(block_id)).length_cm = per_segment_cm
 
     # One shared, slow profile so a lap over the ~3.1 m loop is watchable.
     profile = SpeedProfile(

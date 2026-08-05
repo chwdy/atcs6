@@ -17,6 +17,7 @@ Track Building using 6-bit track_bits system:
 """
 
 from datetime import datetime
+from entity_ids import segment_id_for_block
 from network import RailwayNetwork
 from track import (
     Tile,
@@ -64,7 +65,11 @@ def create_comprehensive_demo():
 
     # Create block with validated track assignment
     network.create_segment_with_tracks(
-        segment_id="BLOCK_MAIN_WEST",
+        # The scene names this BLOCK: saved routes, tests and hardware
+        # bindings already reference it, so it is pinned and the segment
+        # takes the matching geometry-axis id (see entity_ids).
+        block_id="BLOCK_MAIN_WEST",
+        segment_id=segment_id_for_block("BLOCK_MAIN_WEST"),
         positions=[(x, 0) for x in range(0, 3)],
         name="Main Line West",
         length_cm=150.0,  # 3 tiles * 50cm each
@@ -89,7 +94,11 @@ def create_comprehensive_demo():
 
     # Create block with validated track assignment
     network.create_segment_with_tracks(
-        segment_id="BLOCK_MAIN_EAST",
+        # The scene names this BLOCK: saved routes, tests and hardware
+        # bindings already reference it, so it is pinned and the segment
+        # takes the matching geometry-axis id (see entity_ids).
+        block_id="BLOCK_MAIN_EAST",
+        segment_id=segment_id_for_block("BLOCK_MAIN_EAST"),
         positions=[(x, 0) for x in range(4, 11)],
         name="Main Line East",
         length_cm=350.0,  # 7 tiles * 50cm each
@@ -118,7 +127,11 @@ def create_comprehensive_demo():
 
     # Create block with validated track assignment
     network.create_segment_with_tracks(
-        segment_id="BLOCK_BRANCH",
+        # The scene names this BLOCK: saved routes, tests and hardware
+        # bindings already reference it, so it is pinned and the segment
+        # takes the matching geometry-axis id (see entity_ids).
+        block_id="BLOCK_BRANCH",
+        segment_id=segment_id_for_block("BLOCK_BRANCH"),
         positions=[(3, y) for y in range(1, 4)],
         name="North Branch",
         length_cm=150.0,  # 3 tiles * 50cm each
@@ -168,7 +181,11 @@ def create_comprehensive_demo():
     network.add_track(Tile(12, 8, track_bits=TRACK_NW))
 
     network.create_segment_with_tracks(
-        segment_id="BLOCK_EAST_BRANCH",
+        # The scene names this BLOCK: saved routes, tests and hardware
+        # bindings already reference it, so it is pinned and the segment
+        # takes the matching geometry-axis id (see entity_ids).
+        block_id="BLOCK_EAST_BRANCH",
+        segment_id=segment_id_for_block("BLOCK_EAST_BRANCH"),
         positions=[(9, y) for y in range(1, 6)] + [(9, 6)],
         name="East Vertical Branch",
         length_cm=260.0,
@@ -176,7 +193,11 @@ def create_comprehensive_demo():
     )
 
     network.create_segment_with_tracks(
-        segment_id="BLOCK_EAST_DIAGONAL",
+        # The scene names this BLOCK: saved routes, tests and hardware
+        # bindings already reference it, so it is pinned and the segment
+        # takes the matching geometry-axis id (see entity_ids).
+        block_id="BLOCK_EAST_DIAGONAL",
+        segment_id=segment_id_for_block("BLOCK_EAST_DIAGONAL"),
         positions=[(11, 8), (12, 8)],
         name="East Diagonal Approach",
         length_cm=80.0,

@@ -14,6 +14,8 @@ from train import Train, TrainCar
 from train_span import SpanEndLocator, TrainSpan
 from train_controller import TrainController
 from path_dispatcher import PathDispatcher
+from tests.segment_test_helpers import make_segment_block_with_tracks
+from entity_ids import segment_id_for_block
 
 
 @pytest.fixture
@@ -50,7 +52,7 @@ class TestBlockTileSyncValidation:
 
         for x in range(6):
             track = Tile(x=x, y=0, track_bits=TRACK_EW)
-            track.segment_id = "B1"
+            track.segment_id = segment_id_for_block("B1")
             network.add_track(track)
 
         train = Train(train_id="T1", max_speed=60.0)
@@ -129,22 +131,19 @@ class TestMultiTilePlatformStopping:
             network.add_track(track)
 
         # Create blocks
-        network.create_segment_with_tracks(
-            segment_id="BLOCK_START",
+        make_segment_block_with_tracks(network, "BLOCK_START",
             positions=[(9, 0)],
             name="Start Block",
             length_cm=50.0,
         )
-        network.create_segment_with_tracks(
-            segment_id="BLOCK_MID",
+        make_segment_block_with_tracks(network, "BLOCK_MID",
             positions=[(9, 1), (9, 2)],
             name="Middle Block",
             length_cm=100.0,
         )
         # Multi-tile station block spanning (9,3) and (9,4)
         # Add tracks in reverse order to test insertion order issue
-        network.create_segment_with_tracks(
-            segment_id="STATION_BLOCK",
+        make_segment_block_with_tracks(network, "STATION_BLOCK",
             positions=[(9, 4), (9, 3)],  # Note: reversed order!
             name="East Terminal",
             length_cm=100.0,

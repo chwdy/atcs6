@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, List, Optional, Set, Tuple
 
 from block import Block
+from entity_ids import block_id_for_segment, segment_id_for_block
 from railway_signal import SignalState, SignalType
 from segment import Segment, TileEntry
 
@@ -204,18 +205,34 @@ class SegmentGeometryManager:
             return "W"
         return None
 
-    def create_segment(self, segment_id: str, name: str = "") -> Block:
+    def create_segment(
+        self, segment_id: str, name: str = "", block_id: Optional[str] = None
+    ) -> Block:
         """
         Create a new empty segment and the block that owns it.
 
         A fresh segment is not part of any grouping, so it gets its own block
-        under the default one-feed-per-segment rule, and that block takes the
-        segment's id. Grouping several segments under one block is a separate
-        operation on `BlockGroupingManager`.
+        under the default one-feed-per-segment rule. That block's id is the
+        segment's id derived onto the block axis (`entity_ids`), never the same
+        string: the two are separate entities and one id naming both is
+        ambiguous wherever either is displayed or bound. Grouping several
+        segments under one block is a separate operation on
+        `BlockGroupingManager`.
+
+        `name` names the SEGMENT — this is the geometry-creating call, and its
+        name is what the segment editor edits. The owning block is created
+        unnamed and is named separately (the Blocks panel, `create_block`), so
+        the two records never carry one name between them.
 
         Args:
             segment_id: Unique identifier for the segment
-            name: Optional human-readable name
+            name: Optional human-readable name for the new segment
+            block_id: Pin the owning block's id instead of deriving it. For
+                callers replaying ids that outside records already reference —
+                a baked scene whose block ids appear in saved routes and in
+                `hardware_config.json` bindings. Derivation is not reversible
+                for a legacy id that predates the two-axis split, so those
+                callers state the block id rather than round-tripping it.
 
         Returns:
             The owning Block. Callers configure geometry (length, speed limit)
@@ -223,14 +240,16 @@ class SegmentGeometryManager:
             properties delegate to the single member segment.
 
         Raises:
-            ValueError: If segment_id already exists
+            ValueError: If segment_id or the owning block's id already exists
         """
-        if segment_id in self._n.blocks:
-            raise ValueError(f"Block {segment_id} already exists")
+        resolved_block_id = block_id or block_id_for_segment(segment_id)
+        if resolved_block_id in self._n.blocks:
+            raise ValueError(f"Block {resolved_block_id} already exists")
         if self._n.get_segment(segment_id) is not None:
             raise ValueError(f"Segment {segment_id} already exists")
-        block = Block(block_id=segment_id, name=name)
-        self._n.blocks[segment_id] = block
+        block = Block(block_id=resolved_block_id, segment_id=segment_id)
+        block.segments[0].name = name
+        self._n.blocks[resolved_block_id] = block
         self._n._ensure_resource_managers()
         return block
 
@@ -242,6 +261,7 @@ class SegmentGeometryManager:
         length_cm: float = 0.0,
         speed_limit_kmh: Optional[float] = None,
         validate: bool = True,
+        block_id: Optional[str] = None,
     ) -> Block:
         """
         Create a segment holding `positions`, with full validation.
@@ -261,11 +281,14 @@ class SegmentGeometryManager:
             length_cm: Physical track length
             speed_limit_kmh: Optional speed limit
             validate: If True, perform full validation (recommended)
+            block_id: Pin the owning block's id instead of deriving it; see
+                `create_segment` for when a caller states it.
 
         Returns:
             The Block that owns the new segment. A fresh segment gets its own
-            block under the default one-feed-per-segment rule, so that block
-            takes the segment's id.
+            block under the default one-feed-per-segment rule, and that block's
+            id is the segment's derived onto the block axis (`entity_ids`) —
+            never the same string.
 
         Raises:
             ValueError: If validation fails
@@ -273,7 +296,7 @@ class SegmentGeometryManager:
         Example:
             # Create a segment with validated tracks
             block = network.create_segment_with_tracks(
-                segment_id="BLOCK_MAIN_1",
+                segment_id="SEG_MAIN_1",
                 positions=[(0,0), (1,0), (2,0)],
                 name="Main Line Section 1",
                 length_cm=150.0,
@@ -300,9 +323,12 @@ class SegmentGeometryManager:
             if not valid:
                 raise ValueError(f"Station boundary violation: {error}")
 
-        # Check segment doesn't already exist
-        if segment_id in self._n.blocks:
-            raise ValueError(f"Block {segment_id} already exists")
+        # Check the owning block's id doesn't already exist (the segment's own
+        # id is checked in create_segment below)
+        if (block_id or block_id_for_segment(segment_id)) in self._n.blocks:
+            raise ValueError(
+                f"Block {block_id or block_id_for_segment(segment_id)} already exists"
+            )
 
         # Validate all tracks
         if validate:
@@ -326,7 +352,7 @@ class SegmentGeometryManager:
                 raise ValueError(f"Block tracks not continuous: {', '.join(errors)}")
 
         # Create the segment and its owning block
-        block = self.create_segment(segment_id, name)
+        block = self.create_segment(segment_id, name, block_id=block_id)
         block.length_cm = length_cm
         if speed_limit_kmh:
             block.speed_limit_kmh = speed_limit_kmh
@@ -781,9 +807,18 @@ class SegmentGeometryManager:
             if signal.monitored_block_id == block_id
         ]
 
-        new_block_ids = self._create_child_segments(
+        new_segment_ids = self._create_child_segments(
             segment, block, components, install_in_parent_block=False
         )
+        # The children are geometry ids; a signal monitors a BLOCK, so resolve
+        # each child to the block that now owns it before remapping.
+        new_block_ids = [
+            owner
+            for owner in (
+                self._n.segment_to_block_id(child) for child in new_segment_ids
+            )
+            if owner is not None
+        ]
 
         # Delete original block (but don't disconnect signals yet - we'll remap them)
         if block_id in self._n.blocks:
@@ -792,7 +827,7 @@ class SegmentGeometryManager:
         # Remap orphaned signals to nearest reachable child block
         self._remap_orphaned_signals(orphaned_signals, new_block_ids)
 
-        return [segment_id] + new_block_ids
+        return [segment_id] + new_segment_ids
 
     def _disconnect_signals_for_block_of_segment(self, block_id: str) -> None:
         """
@@ -834,8 +869,16 @@ class SegmentGeometryManager:
                 so occupancy resets to FREE — the parent's occupancy does not
                 transfer cleanly across a split.
 
+        Child ids are minted on the axis the children live on. Children that
+        join `parent_block` are new geometry inside an existing block, so they
+        suffix the parent SEGMENT's id. Children that each get their own block
+        suffix the parent BLOCK's id — that is the id saved routes, tests, and
+        hardware bindings name, so keeping the split's output on that axis keeps
+        `PARENT_1` / `PARENT_2` readable — and each child segment then takes the
+        matching geometry-axis id (`entity_ids`).
+
         Returns:
-            List of new child IDs
+            List of new child SEGMENT ids
         """
         new_ids = []
         base_name = (
@@ -862,8 +905,13 @@ class SegmentGeometryManager:
                     length_per_tile_cm = 0.0
 
         for i, component_positions in enumerate(components, start=1):
-            # Generate child segment ID and name
-            child_id = f"{parent_segment.segment_id}_{i}"
+            # Generate child segment ID and name (see the id-axis rule above).
+            if install_in_parent_block:
+                child_id = f"{parent_segment.segment_id}_{i}"
+                child_block_id = None
+            else:
+                child_block_id = f"{parent_block.block_id}_{i}"
+                child_id = segment_id_for_block(child_block_id)
             child_name = f"{base_name}_{i}"
 
             # Calculate child length based on tile count
@@ -887,9 +935,10 @@ class SegmentGeometryManager:
             else:
                 # v1: Block.state is a derived @property; do not pass it to the
                 # constructor. occupied_by defaults to None which yields FREE.
-                self._n.blocks[child_id] = Block(
-                    block_id=child_id,
-                    name=child_name,
+                # `child_name` is derived from the parent SEGMENT's name, so it
+                # names the child segment above; the child block stays unnamed.
+                self._n.blocks[child_block_id] = Block(
+                    block_id=child_block_id,
                     occupied_by=None,
                     segments=[child_segment],
                 )

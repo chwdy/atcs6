@@ -88,12 +88,12 @@ def test_second_train_in_same_segment_is_fatal_occupied_by_other_train():
     sim = _CapturingSim()
     bm.simulation_controller = sim
 
-    assert bm.occupy_block("A", "T1") is True
-    assert bm.occupy_block("A", "T2") is False
+    assert bm.occupy_block("BLK_A", "T1") is True
+    assert bm.occupy_block("BLK_A", "T2") is False
     assert len(sim.failed) == 1
     assert sim.failed[0].conflict_kind == FatalConflictKind.OCCUPIED_BY_OTHER_TRAIN
     assert sim.failed[0].prior_owner_train_id == "T1"
-    assert sim.failed[0].resource_id == "A"
+    assert sim.failed[0].resource_id == "BLK_A"
 
 
 def test_second_train_in_a_different_segment_of_the_same_block_is_fatal():
@@ -137,8 +137,8 @@ def test_separate_blocks_never_conflict():
     bm = net.block_manager
     sim = _CapturingSim()
     bm.simulation_controller = sim
-    assert bm.occupy_block("A", "T1") is True
-    assert bm.occupy_block("C", "T2") is True
+    assert bm.occupy_block("BLK_A", "T1") is True
+    assert bm.occupy_block("BLK_C", "T2") is True
     assert sim.failed == []
 
 
@@ -209,8 +209,8 @@ def test_deenergize_zeroes_a_block_once_unheld():
 def test_deenergize_ungrouped_block_unchanged():
     net = _line_network()
     bm = net.block_manager
-    bm._mark_for_deenergize("A")
-    assert bm.take_blocks_to_deenergize() == ["A"]
+    bm._mark_for_deenergize("BLK_A")
+    assert bm.take_blocks_to_deenergize() == ["BLK_A"]
 
 
 # --- persistence ------------------------------------------------------------
@@ -260,7 +260,7 @@ def test_ungrouped_save_still_loads_as_one_block_per_segment():
     net = _line_network()
     net2 = RailwayNetwork()
     net2.from_dict(net.to_layout_dict())
-    assert set(net2.blocks) == {"A", "B", "C"}
+    assert set(net2.blocks) == {"BLK_A", "BLK_B", "BLK_C"}
     for block in net2.blocks.values():
         assert len(block.segments) == 1
 
@@ -290,7 +290,7 @@ def test_block_geometry_write_is_rejected_on_a_grouped_block():
 
 def test_block_geometry_write_still_works_on_a_one_segment_block():
     net = _line_network()
-    block = net.blocks["A"]
+    block = net.blocks["BLK_A"]
     block.length_cm = 12.5
     block.speed_limit_kmh = 40.0
     assert block.length_cm == 12.5

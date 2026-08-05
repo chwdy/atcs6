@@ -7,6 +7,7 @@ file just covers the construction path and lazy-init contract.
 
 from network import RailwayNetwork
 from segment_geometry_manager import SegmentGeometryManager
+from tests.segment_test_helpers import make_segment_block
 
 
 def test_segment_geometry_manager_constructs_with_network():
@@ -27,7 +28,7 @@ def test_network_lazy_inits_segment_geometry_manager():
 def test_create_block_through_forwarder_lazy_inits():
     """`network.create_segment(...)` triggers SGM lazy-init and returns the block."""
     network = RailwayNetwork()
-    block = network.create_segment(segment_id="BLK_TEST_1", name="Test Block")
+    block = make_segment_block(network, "BLK_TEST_1", name="Test Block")
     assert block is not None
     assert block.block_id == "BLK_TEST_1"
     assert "BLK_TEST_1" in network.blocks

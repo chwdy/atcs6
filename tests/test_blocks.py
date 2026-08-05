@@ -36,6 +36,8 @@ from signal_validation import (
     FORBIDDEN_SIGNAL_BITS,
     VALID_DETECTION_DIRECTIONS,
 )
+from entity_ids import segment_id_for_block
+from tests.segment_test_helpers import make_segment_block, make_segment_block_with_tracks
 
 
 @pytest.fixture
@@ -210,6 +212,33 @@ class TestBlock:
         assert restored.block_id == block.block_id
         assert restored.name == block.name
 
+    def test_load_drops_a_name_copied_onto_a_one_segment_block(self):
+        """A save from before one-name-per-record loads with the copy gone.
+
+        The block and its only member held one string; the segment keeps it and
+        the block loads unnamed (design_new.md **Block grouping**, one name per
+        record).
+        """
+        block = Block(block_id="BLK_LEFT", length_cm=100)
+        block.segments[0].name = "Left"
+        stored = block.to_layout_dict()
+        stored["name"] = "Left"  # what a pre-rule save carried
+
+        restored = Block.from_dict(stored)
+        assert restored.name == ""
+        assert restored.segments[0].name == "Left"
+
+    def test_load_keeps_a_block_name_of_its_own(self):
+        """Only an exact copy is dropped; a distinct block name survives."""
+        block = Block(block_id="BLK_YARD", length_cm=100)
+        block.segments[0].name = "Left"
+        stored = block.to_layout_dict()
+        stored["name"] = "Yard Feed"
+
+        restored = Block.from_dict(stored)
+        assert restored.name == "Yard Feed"
+        assert restored.segments[0].name == "Left"
+
 
 class TestDisabledBlock:
     """Tests for disabled block behavior."""
@@ -250,13 +279,13 @@ class TestBlockExtension:
         network = RailwayNetwork()
         for i in range(4):
             network.add_track(Tile(0, i, TRACK_NS))
-        network.create_segment("BLOCK_A")
-        network.assign_track_to_segment(0, 0, "BLOCK_A")
-        network.assign_track_to_segment(0, 1, "BLOCK_A")
+        make_segment_block(network, "BLOCK_A")
+        network.assign_track_to_segment(0, 0, segment_id_for_block("BLOCK_A"))
+        network.assign_track_to_segment(0, 1, segment_id_for_block("BLOCK_A"))
         signal = network.add_signal(0, 2, "N")
         signal.monitored_block_id = "BLOCK_A"
 
-        block = network.extend_segment("BLOCK_A", [(0, 2)], force=True)
+        block = network.extend_segment(segment_id_for_block("BLOCK_A"), [(0, 2)], force=True)
         positions = network.get_block_positions("BLOCK_A")
         assert (0, 2) in positions
         assert len(positions) == 3
@@ -269,8 +298,8 @@ class TestBlockExtension:
             network.add_track(Tile(x, 0, TRACK_EW))
         network.add_station(0, 0, station_id="STA_TEST", name="Test Station")
         network.extend_station("STA_TEST", [(1, 0), (2, 0), (3, 0)])
-        network.create_segment("PLATFORM_1")
-        network.extend_segment("PLATFORM_1", [(0, 0), (1, 0)], force_overwrite=True)
+        make_segment_block(network, "PLATFORM_1")
+        network.extend_segment(segment_id_for_block("PLATFORM_1"), [(0, 0), (1, 0)], force_overwrite=True)
         block = network.get_block("PLATFORM_1")
         assert block is not None
         assert len(network.get_block_positions("PLATFORM_1")) == 2
@@ -365,7 +394,7 @@ class TestMultiBlockOccupancy:
     def test_short_train_single_block(self):
         network = RailwayNetwork()
         track1 = Tile(0, 0, track_bits=TRACK_EW, length=1.0)
-        track1.segment_id = "BLOCK_1"
+        track1.segment_id = segment_id_for_block("BLOCK_1")
         network.add_track(track1)
         block1 = Block(block_id="BLOCK_1", length_cm=1000.0)
         network.blocks["BLOCK_1"] = block1
@@ -395,10 +424,10 @@ class TestMultiBlockOccupancy:
     def test_long_train_two_blocks(self):
         network = RailwayNetwork()
         track1 = Tile(0, 0, track_bits=TRACK_EW, length=1.0)
-        track1.segment_id = "BLOCK_1"
+        track1.segment_id = segment_id_for_block("BLOCK_1")
         network.add_track(track1)
         track2 = Tile(1, 0, track_bits=TRACK_EW, length=1.0)
-        track2.segment_id = "BLOCK_2"
+        track2.segment_id = segment_id_for_block("BLOCK_2")
         network.add_track(track2)
         block1 = Block(block_id="BLOCK_1", length_cm=10000.0)
         block2 = Block(block_id="BLOCK_2", length_cm=10000.0)
@@ -506,7 +535,7 @@ class TestBlockManager:
     def test_block_manager_integration_with_network(self):
         network = RailwayNetwork()
         assert network.block_manager is None
-        block = network.create_segment("B1", "Block 1")
+        block = make_segment_block(network, "B1", "Block 1")
         assert network.block_manager is not None
         assert network.block_manager.get_block_state("B1") == BlockState.FREE
         network.block_manager.occupy_block("B1", "TRAIN_1")
@@ -693,12 +722,12 @@ class TestDirectionalCaution:
         for x in range(3):
             network.add_track(Tile(x=x, y=0, track_bits=TRACK_EW))
         # Assign each tile to its own block.
-        a = network.create_segment("A", "A")
-        b = network.create_segment("B", "B")
-        c = network.create_segment("C", "C")
-        network.assign_track_to_segment(0, 0, "A")
-        network.assign_track_to_segment(1, 0, "B")
-        network.assign_track_to_segment(2, 0, "C")
+        a = make_segment_block(network, "A", "A")
+        b = make_segment_block(network, "B", "B")
+        c = make_segment_block(network, "C", "C")
+        network.assign_track_to_segment(0, 0, segment_id_for_block("A"))
+        network.assign_track_to_segment(1, 0, segment_id_for_block("B"))
+        network.assign_track_to_segment(2, 0, segment_id_for_block("C"))
         # ordered_tiles records (x, y, entry_edge) for forward traversal.
         a.ordered_tiles = [(0, 0, "W")]
         b.ordered_tiles = [(1, 0, "W")]
