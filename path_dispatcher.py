@@ -1745,6 +1745,100 @@ class PathDispatcher:
             reason=reason,
         )
 
+    def truncate_path_before_block(
+        self,
+        path_id: str,
+        block_id: str,
+        reason: str,
+    ) -> bool:
+        """Pull a live path's authority back to end before `block_id`.
+
+        Per design_new.md "Path And PathDispatcher", Authority truncation: a
+        block a path reserved may become physically occupied by another train
+        before this one reaches it, and authority that runs through an occupied
+        block is not authority. This cuts `resource_sequence` back to the last
+        block entry before `block_id`, releases the dropped entries' block
+        reservations and switch locks, and leaves the path ACTIVE. The
+        authority end is derived from `resource_sequence`, and the controller
+        reads its plan live from this dispatcher, so the shortened authority
+        reaches the lookahead on the next read and ATC brakes the train to a
+        stop at the new end. The train keeps everything it has already entered.
+
+        Returns True when the path survives with a valid remainder. Returns
+        False when it cannot — the block is not on this path, it is not still
+        reserved by it, or nothing valid is left in front of the train — and the
+        caller cancels the path instead. A path must end on a block (see "Path
+        invariants"), so the cut lands on the last block entry before
+        `block_id`; any switches between that block and the stolen one go with
+        the dropped tail, because a lock on a switch the train may no longer
+        reach is a lock held against every other train for nothing.
+        """
+        path = self.paths.get(path_id)
+        if path is None or path.status != PathStatus.ACTIVE:
+            return False
+
+        cut_index: Optional[int] = None
+        for index, entry in enumerate(path.resource_sequence):
+            if entry.resource_type == "block" and entry.resource_id == block_id:
+                cut_index = index
+                break
+        if cut_index is None:
+            return False
+
+        # The last block in front of the train and behind the stolen one becomes
+        # the new authority end. Everything from there on is dropped.
+        keep_through: Optional[int] = None
+        for index in range(cut_index - 1, path.current_resource_index - 1, -1):
+            if path.resource_sequence[index].resource_type == "block":
+                keep_through = index
+                break
+        if keep_through is None:
+            return False
+
+        dropped = path.resource_sequence[keep_through + 1 :]
+        dropped_blocks = self._blocks_still_reserved_by(
+            [e.resource_id for e in dropped if e.resource_type == "block"], path_id
+        )
+        dropped_switches = [
+            e.resource_id for e in dropped if e.resource_type == "switch"
+        ]
+        coordinator = getattr(self.network, "resource_coordinator", None)
+        if coordinator is not None:
+            coordinator.rollback_segment(
+                dropped_blocks, dropped_switches, path_id
+            )
+        path.resource_sequence = path.resource_sequence[: keep_through + 1]
+
+        sc = self.simulation_controller
+        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        if nc is not None:
+            from notification_center import (
+                Kind as _Kind,
+                train_ref as _train_ref,
+                path_ref as _path_ref,
+            )
+            from runtime_payloads import ErrorRecord as _ErrorRecord
+
+            nc.emit(
+                source="PathDispatcher",
+                operation="truncate_path_before_block",
+                kind=_Kind.WARNING,
+                message=(
+                    f"path {path_id} truncated to end at "
+                    f"{path.get_authority_end_block_id()}: {reason}"
+                ),
+                entities=[_train_ref(path.train_id), _path_ref(path_id)],
+                error=_ErrorRecord(reason, "authority_truncated"),
+                event_time=self._now(),
+                payload={
+                    "blocked_block_id": block_id,
+                    "authority_end_block_id": path.get_authority_end_block_id(),
+                    "released_block_ids": list(dropped_blocks),
+                    "released_switch_ids": list(dropped_switches),
+                },
+            )
+        return True
+
     # ========================================================================
     # Resource acquisition helpers (v1)
     # ========================================================================

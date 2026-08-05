@@ -34,8 +34,14 @@ class FakeBlock:
 
 
 @dataclass
+class FakeTrain:
+    is_unidentified: bool = False
+
+
+@dataclass
 class FakeNetwork:
     blocks: Dict[str, FakeBlock] = field(default_factory=dict)
+    trains: Dict[str, FakeTrain] = field(default_factory=dict)
 
 
 @dataclass
@@ -53,14 +59,26 @@ class FakeController:
     physics_sync: FakePhysicsSync = field(default_factory=FakePhysicsSync)
 
 
-def make_detector(block_ids, frames, on=1, off=3, controllers=None):
+def make_detector(
+    block_ids, frames, on=1, off=3, controllers=None, neighbours=None
+):
+    """A detector over `block_ids`.
+
+    `neighbours` is the undetected-track adjacency the real
+    `UnidentifiedTrainTracker.reachable_blocks` walk supplies: block_id -> the
+    blocks reachable from it with nothing in between. Attribution needs it to
+    decide whether a train could physically be standing on a block it reserved,
+    so a test that exercises the reservation match must declare it.
+    """
     network = FakeNetwork(blocks={bid: FakeBlock() for bid in block_ids})
+    adjacency = {bid: set(vals) for bid, vals in (neighbours or {}).items()}
     detector = BlockOccupancyDetector(
         network=network,
         input_interface=ScriptedInput(frames),
         controllers=controllers or {},
         on_threshold=on,
         off_threshold=off,
+        reachable_blocks=lambda block_id: adjacency.get(block_id, set()),
     )
     return network, detector
 
@@ -153,13 +171,70 @@ def test_multiple_blocks_vacate_in_one_tick():
 # --------------------------------------------------------------------------
 
 def test_attribute_entered_uses_reserved_for_train():
-    net, det = make_detector(["A"], [{"A": True}], on=1)
+    """The train reserved A and is standing on B right next to it — this is the
+    locomotive arriving on the block it reserved."""
+    net, det = make_detector(
+        ["A", "B"], [{"A": True, "B": True}], on=1, neighbours={"A": {"B"}}
+    )
     net.blocks["A"].reserved_for_train = "T1"
+    net.blocks["B"].occupied_by = "T1"
+    det.seed_occupied({"B"})  # the block the train is already standing on
     entered, _ = det.step()
+    assert entered == {"A"}
     entered_by_train, vacated_by_train, unmatched = det.attribute(entered, set())
     assert entered_by_train == {"T1": {"A"}}
     assert vacated_by_train == {}
     assert unmatched == set()
+
+
+def test_reserved_block_the_train_cannot_reach_is_not_that_train():
+    """The reported bug: a foreign occupant on a reserved block far ahead.
+
+    T1 stands on C and has reserved A and B. Current appears on A with B still
+    reading clear, so the only way A could be T1 is if T1 skipped B — track no
+    detector confirmed. The reservation does not claim it; it is unmatched, and
+    the Step-0 preamble mints an unidentified train for it.
+    """
+    net, det = make_detector(
+        ["A", "B", "C"],
+        [{"A": True, "B": False, "C": True}],
+        on=1,
+        neighbours={"A": {"B"}, "B": {"A", "C"}, "C": {"B"}},
+    )
+    net.blocks["A"].reserved_for_train = "T1"
+    net.blocks["B"].reserved_for_train = "T1"
+    net.blocks["C"].occupied_by = "T1"
+    det.seed_occupied({"C"})
+    entered, _ = det.step()
+    assert entered == {"A"}
+
+    entered_by_train, _, unmatched = det.attribute(entered, set())
+
+    assert unmatched == {"A"}
+    assert entered_by_train == {}
+
+
+def test_a_train_crossing_several_blocks_in_one_read_stays_one_train():
+    """Both blocks confirm in the same diff. B is next to the train's own block,
+    and A is next to B — which the batch has just resolved — so the chain holds
+    and neither becomes an unidentified train."""
+    net, det = make_detector(
+        ["A", "B", "C"],
+        [{"A": True, "B": True, "C": True}],
+        on=1,
+        neighbours={"A": {"B"}, "B": {"A", "C"}, "C": {"B"}},
+    )
+    net.blocks["A"].reserved_for_train = "T1"
+    net.blocks["B"].reserved_for_train = "T1"
+    net.blocks["C"].occupied_by = "T1"
+    det.seed_occupied({"C"})
+    entered, _ = det.step()
+    assert entered == {"A", "B"}
+
+    entered_by_train, _, unmatched = det.attribute(entered, set())
+
+    assert unmatched == set()
+    assert entered_by_train["T1"] == {"A", "B"}
 
 
 def test_attribute_entered_falls_back_to_span_owner():

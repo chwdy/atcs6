@@ -234,6 +234,13 @@ class SimulationController(SwitchOutputOwner):
         # retires the unidentified train `Train` records; their block commits then run through
         # the ordinary per-train chain like any other train's.
         self.unidentified_trains = UnidentifiedTrainTracker(network, self)
+        # Attribution needs the tracker's undetected-track walk to decide whether
+        # a train could physically be standing on a block it reserved, so the
+        # detector gets it as soon as the tracker exists (design_new.md "Power",
+        # Attribution).
+        self.block_occupancy_detector.reachable_blocks = (
+            self.unidentified_trains.reachable_blocks
+        )
         # The clock the unidentified train tracker's hold windows are measured against — see
         # `_unidentified_clock` for why it is wall-clock and not `simulation_time`.
         # Replaceable so a test can age a window out without sleeping.
@@ -463,7 +470,9 @@ class SimulationController(SwitchOutputOwner):
 
         self.network.update_signals_from_blocks()
 
-    def _entries_for_adjacent_trains(self, unmatched: Set[str]) -> Dict[str, Set[str]]:
+    def _entries_for_adjacent_trains(
+        self, unmatched: Set[str], claimed: Dict[str, Set[str]]
+    ) -> Dict[str, Set[str]]:
         """Give each unmatched confirmed entry to an ordinary train already
         holding a block next to it (design_new.md "Power", Attribution).
 
@@ -472,40 +481,32 @@ class SimulationController(SwitchOutputOwner):
         it would be read as a second object and handed an unidentified train — which then
         de-energizes it, because an unidentified train is never energized, stranding the very
         locomotive the app is driving. Adjacency is the same connectivity walk
-        unidentified train identity uses: only the first block across undetected track counts,
-        so a block with empty blocks between it and every train is still an unidentified train.
+        unidentified train identity uses, and `BlockOccupancyDetector` owns it:
+        only the first block across undetected track counts, so a block with
+        empty blocks between it and every train is still an unidentified train.
+
+        `claimed` is what attribution has already matched this tick. It is
+        passed in, and grown as this step resolves blocks of its own, so a train
+        that crossed several blocks between two detector reads is still read as
+        one train: each block it just gained is evidence for the next.
         """
         out: Dict[str, Set[str]] = {}
-        for block_id in sorted(unmatched):
-            train_id = self._adjacent_train_for_block(block_id)
-            if train_id is not None:
-                out.setdefault(train_id, set()).add(block_id)
-        return out
-
-    def _adjacent_train_for_block(self, block_id: str) -> Optional[str]:
-        """The ordinary train holding a block next to `block_id`, or None.
-
-        The calculated span is tried before `Block.occupied_by` because the span
-        is where the app is driving the train and it leads confirmed occupancy on
-        entry — the block a train has just been given may not have confirmed yet.
-        """
-        for neighbour_id in sorted(self.unidentified_trains.reachable_blocks(block_id)):
-            for train_id in sorted(self.controllers):
-                train = self.network.trains.get(train_id)
-                if train is None or getattr(train, "is_unidentified", False):
-                    continue
-                span = getattr(
-                    getattr(self.controllers[train_id], "physics_sync", None),
-                    "current_span",
-                    None,
+        evidence = {train_id: set(blocks) for train_id, blocks in claimed.items()}
+        pending = set(unmatched)
+        resolved = True
+        while pending and resolved:
+            resolved = False
+            for block_id in sorted(pending):
+                train_id = self.block_occupancy_detector.adjacent_train_for_block(
+                    block_id, evidence
                 )
-                if span is not None and neighbour_id in (span.occupied_blocks or []):
-                    return train_id
-            block = self.network.blocks.get(neighbour_id)
-            owner = getattr(block, "occupied_by", None) if block else None
-            if owner is not None and not self.unidentified_trains.is_unidentified(owner):
-                return owner
-        return None
+                if train_id is None:
+                    continue
+                out.setdefault(train_id, set()).add(block_id)
+                evidence.setdefault(train_id, set()).add(block_id)
+                pending.discard(block_id)
+                resolved = True
+        return out
 
     def _calculated_hold_blocks(self) -> Set[str]:
         """Every block some controllable train holds this tick, by calculation.
@@ -652,6 +653,7 @@ class SimulationController(SwitchOutputOwner):
             network=self.network,
             input_interface=self.input_interface,
             controllers=self.controllers,
+            reachable_blocks=self.unidentified_trains.reachable_blocks,
             notify=lambda operation, message: self.notification_center.emit(
                 source="BlockOccupancyDetector",
                 operation=operation,
@@ -715,7 +717,7 @@ class SimulationController(SwitchOutputOwner):
         # disconnected from every train.
         if unmatched:
             for train_id, block_ids in self._entries_for_adjacent_trains(
-                unmatched
+                unmatched, entered_by_train
             ).items():
                 entered_by_train.setdefault(train_id, set()).update(block_ids)
                 unmatched -= block_ids
@@ -731,6 +733,13 @@ class SimulationController(SwitchOutputOwner):
                 unmatched, self._unidentified_clock()
             ).items():
                 entered_by_train.setdefault(unidentified_id, set()).update(block_ids)
+
+        # A block one train has just physically entered may still be reserved
+        # ahead for a different train. That train's authority runs through an
+        # occupied block, so it is cut back before it can be acted on — and
+        # before Phase 3 commits the entry, which would otherwise hit the
+        # `reserved_for_other_train` fatal conflict.
+        self._truncate_authority_at_occupied_reservations(entered_by_train)
 
         self._detected_change_train_ids = set(entered_by_train) | set(vacated_by_train)
 
@@ -772,6 +781,68 @@ class SimulationController(SwitchOutputOwner):
             )
 
         self._update_presence_unknown(detector)
+
+    def _truncate_authority_at_occupied_reservations(
+        self, entered_by_train: Dict[str, Set[str]]
+    ) -> None:
+        """Cut a path's authority back when another train physically takes one
+        of its reserved blocks (design_new.md "Path And PathDispatcher",
+        Authority truncation).
+
+        A reservation is a claim on track the train has not reached yet, so the
+        world can take it in between: an unidentified train appears on it, or a
+        train running under its own authority reaches it first. Authority that
+        runs through a block another train is standing on is not authority, and
+        acting on it drives one train at another. The path is therefore pulled
+        back to end at the last block before the taken one, which leaves the
+        train its whole route up to that point and lets ATC brake it to a stop
+        at the new end. The route layer extends the path again by the ordinary
+        acquisition step once the block clears; nothing here retries.
+
+        When no valid remainder is left — the taken block is the first thing in
+        front of the train — there is no shorter authority to hold, so the path
+        is cancelled instead. Either way the reservation is gone before Phase 3
+        commits the entry, which is what keeps a legitimate arrival from being
+        reported as a `reserved_for_other_train` fatal conflict.
+        """
+        dispatcher = self.path_dispatcher
+        for train_id, block_ids in sorted(entered_by_train.items()):
+            for block_id in sorted(block_ids):
+                block = self.network.blocks.get(block_id)
+                if block is None:
+                    continue
+                reserved_for = getattr(block, "reserved_for_train", None)
+                if reserved_for is None or reserved_for == train_id:
+                    continue
+
+                reason = (
+                    f"block {block_id} is physically occupied by {train_id}"
+                )
+                path_id = (
+                    dispatcher.active_path_id_by_train(reserved_for)
+                    if dispatcher is not None
+                    else None
+                )
+                if path_id and dispatcher.truncate_path_before_block(
+                    path_id, block_id, reason
+                ):
+                    continue
+
+                # No shorter authority to hold. Drop this one reservation so the
+                # entry commits cleanly, then tear the rest down through the
+                # ordinary cancel latch, which Phase 3 commits for a train that
+                # may still be rolling.
+                reserved_by_path = getattr(block, "reserved_by_path", None)
+                if reserved_by_path and self.block_manager is not None:
+                    self.block_manager.release_path_block_reservations(
+                        [block_id], reserved_by_path, completed=False
+                    )
+                controller = self.controllers.get(reserved_for)
+                if controller is not None and path_id:
+                    controller.route_hooks.phase_latches.set_path_cancel_request(
+                        initiator="revoked",
+                        reason=reason,
+                    )
 
     def _update_presence_unknown(self, detector) -> None:
         """Flag each train whose calculated position no physical reading backs

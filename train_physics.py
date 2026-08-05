@@ -1488,10 +1488,22 @@ class TrainPhysics:
         same tile budget the seam cap uses, which is what keeps a block that is
         behind the span (or on track the points do not lead to) out of the
         result.
+
+        The walk also stops at the first `detected block` the detector has not
+        confirmed occupied, which is the same line `_head_entry_cap` holds the
+        head at. A block on the far side of one is not somewhere this train can
+        be: reaching it means having crossed track whose detector says it is
+        clear, and a correction that drags the span over that track claims a
+        position no detector supports. So the correction never crosses a
+        boundary the cap would not let the train cross under power.
         """
         work = self._work
         if work is None or not entered:
             return set()
+
+        detector = self._block_occupancy_detector()
+        detected = detector.detected_block_ids() if detector is not None else set()
+        confirmed = detector.confirmed_occupied if detector is not None else set()
         if work.head_is_a:
             tile, distance, entry = (
                 work.end_a_tile,
@@ -1515,6 +1527,10 @@ class TrainPhysics:
                 found.add(block_id)
                 wanted.discard(block_id)
                 if not wanted:
+                    break
+                continue
+            if block_id is not None and block_id in detected:
+                if block_id not in confirmed:
                     break
         return found
 

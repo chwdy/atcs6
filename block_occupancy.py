@@ -139,6 +139,13 @@ class BlockOccupancyDetector:
     on_threshold: int = OCCUPANCY_ON_THRESHOLD
     off_threshold: int = OCCUPANCY_OFF_THRESHOLD
     notify: Optional[Callable[[str, str], None]] = None
+    # Blocks reachable from a given block through undetected track only, the
+    # walk `UnidentifiedTrainTracker.reachable_blocks` owns. `attribute()` and
+    # `adjacent_train_for_block()` both need it to decide whether a train could
+    # physically be standing on a block, so `SimulationController` wires it at
+    # construction. Without it no entry is ever credited to a train it is not
+    # standing next to, which is the fail-safe reading.
+    reachable_blocks: Optional[Callable[[str], Set[str]]] = None
     _on_counts: Dict[str, int] = field(default_factory=dict)
     _off_counts: Dict[str, int] = field(default_factory=dict)
     _confirmed: Set[str] = field(default_factory=set)
@@ -239,13 +246,33 @@ class BlockOccupancyDetector:
         entered blocks that match no existing train.
 
         Entered blocks attribute to `Block.reserved_for_train` (the train that
-        reserved the block it is entering), falling back to the train whose live
-        span covers the block. Vacated blocks attribute to `Block.occupied_by`; a
-        vacate whose block is already clear is a benign double-clear and is
-        skipped.
+        reserved the block it is entering) **only when that train is standing
+        next to the block**, falling back to the train whose live span covers
+        the block. Vacated blocks attribute to `Block.occupied_by`; a vacate
+        whose block is already clear is a benign double-clear and is skipped.
 
-        A confirmed entry that matches no existing train belongs to a **unidentified train
-        train** (design_new.md "Attribution"), but creating one is not this pure
+        The adjacency condition on the reservation match is what keeps a
+        reserved-ahead corridor from swallowing a foreign occupant. A train
+        reserves the corridor in front of it before it gets there, so a
+        reservation on its own says nothing about where the locomotive is. When
+        current appears on a reserved block with a clear detected block still
+        between it and the train, the reservation is the one thing that would
+        claim it, and claiming it means the app believes its own train skipped
+        the block in between — track no detector ever confirmed. Such current is
+        a different object and belongs to an unidentified train, exactly as the
+        span and reachability matches already read it (`reachable_blocks`
+        stops at the first block, so a block with a clear block between it and
+        every train matches nobody).
+
+        Matching runs to a fixed point rather than in one pass, because a train
+        fast enough to cross several blocks between two reads has them all
+        confirmed in the same diff. The second block is adjacent to the first
+        rather than to anything the train held when the tick began, so each
+        block this batch resolves joins the evidence the next one is tested
+        against.
+
+        A confirmed entry that matches no existing train belongs to an
+        **unidentified train** (design_new.md "Attribution"), but creating one is not this pure
         attribution step's job: it writes no block state and registers no train.
         The Step-0 preamble hands `unmatched_entries` to `UnidentifiedTrainTracker`,
         which resolves each block to an unidentified train `train_id` — new or continuing — and
@@ -255,24 +282,28 @@ class BlockOccupancyDetector:
         `Block.occupied_by`.
         """
         entered_by_train: Dict[str, Set[str]] = {}
-        unmatched_entries: Set[str] = set()
-        for block_id in entered:
-            block = self.network.blocks.get(block_id)
-            train_id = getattr(block, "reserved_for_train", None) if block else None
-            if train_id is None:
-                train_id = self._span_owner(block_id)
-            if train_id is None:
-                # design_new.md "Attribution": a confirmed entry that matches no
-                # existing train is an unidentified train. Unreachable under the
-                # simulated detector, which builds current from live spans.
-                unmatched_entries.add(block_id)
-                self._emit(
-                    "block_attribution_unknown",
-                    f"confirmed entry on block {block_id} matches no existing "
-                    f"train; attributing to an unidentified train",
-                )
-                continue
-            entered_by_train.setdefault(train_id, set()).add(block_id)
+        pending: Set[str] = set(entered)
+        resolved = True
+        while pending and resolved:
+            resolved = False
+            for block_id in sorted(pending):
+                train_id = self._match_entry(block_id, entered_by_train)
+                if train_id is None:
+                    continue
+                entered_by_train.setdefault(train_id, set()).add(block_id)
+                pending.discard(block_id)
+                resolved = True
+
+        unmatched_entries: Set[str] = pending
+        for block_id in sorted(unmatched_entries):
+            # design_new.md "Attribution": a confirmed entry that matches no
+            # existing train is an unidentified train. Unreachable under the
+            # simulated detector, which builds current from live spans.
+            self._emit(
+                "block_attribution_unknown",
+                f"confirmed entry on block {block_id} matches no existing "
+                f"train; attributing to an unidentified train",
+            )
 
         vacated_by_train: Dict[str, Set[str]] = {}
         for block_id in vacated:
@@ -283,6 +314,90 @@ class BlockOccupancyDetector:
             vacated_by_train.setdefault(train_id, set()).add(block_id)
 
         return entered_by_train, vacated_by_train, unmatched_entries
+
+    def _match_entry(
+        self, block_id: str, claimed: Dict[str, Set[str]]
+    ) -> Optional[str]:
+        """The train a confirmed entry on `block_id` belongs to, or None.
+
+        `claimed` is what this batch has attributed so far, so a block resolved
+        earlier in the same pass counts as evidence for the next one.
+        """
+        block = self.network.blocks.get(block_id)
+        reserved_for = getattr(block, "reserved_for_train", None) if block else None
+        if reserved_for is not None and self._train_is_adjacent(
+            reserved_for, block_id, claimed
+        ):
+            return reserved_for
+        return self._span_owner(block_id)
+
+    def adjacent_train_for_block(
+        self, block_id: str, claimed: Optional[Dict[str, Set[str]]] = None
+    ) -> Optional[str]:
+        """The ordinary train standing next to `block_id`, or None.
+
+        Next to means reachable through undetected track — bare switch tiles and
+        any tile no block owns — with no other block in between, which is what
+        `reachable_blocks` walks. A locomotive standing across a block boundary
+        draws current on both blocks, and the far one matches no reservation and
+        no span; this is what keeps that second reading one train rather than
+        two objects.
+
+        The calculated span is tried before `Block.occupied_by` because the span
+        is where the app is driving the train and it leads confirmed occupancy on
+        entry — the block a train has just been given may not have confirmed yet.
+        `claimed` adds this tick's already-attributed entries to the same
+        evidence, so a train crossing several blocks between two reads stays one
+        train.
+        """
+        if self.reachable_blocks is None:
+            return None
+        for neighbour_id in sorted(self.reachable_blocks(block_id)):
+            for train_id in sorted(self.controllers):
+                if self._is_unidentified(train_id):
+                    continue
+                span = getattr(
+                    getattr(self.controllers[train_id], "physics_sync", None),
+                    "current_span",
+                    None,
+                )
+                covered = set(span.occupied_blocks or []) if span is not None else set()
+                if claimed:
+                    covered |= claimed.get(train_id, set())
+                if neighbour_id in covered:
+                    return train_id
+            block = self.network.blocks.get(neighbour_id)
+            owner = getattr(block, "occupied_by", None) if block else None
+            if owner is not None and not self._is_unidentified(owner):
+                return owner
+        return None
+
+    def _train_is_adjacent(
+        self, train_id: str, block_id: str, claimed: Dict[str, Set[str]]
+    ) -> bool:
+        """Whether `train_id` in particular is standing next to `block_id`.
+
+        `adjacent_train_for_block` answers with one train, picked by its own
+        preference order; the reservation gate needs the answer for the
+        reserving train specifically, because a block may sit next to a
+        different train than the one that reserved it.
+        """
+        if self.reachable_blocks is None:
+            return False
+        controller = self.controllers.get(train_id)
+        span = getattr(getattr(controller, "physics_sync", None), "current_span", None)
+        standing_on = set(span.occupied_blocks or []) if span is not None else set()
+        standing_on |= claimed.get(train_id, set())
+        standing_on |= {
+            bid
+            for bid, block in self.network.blocks.items()
+            if getattr(block, "occupied_by", None) == train_id
+        }
+        return bool(standing_on & self.reachable_blocks(block_id))
+
+    def _is_unidentified(self, train_id: str) -> bool:
+        train = self.network.trains.get(train_id)
+        return bool(getattr(train, "is_unidentified", False))
 
     def _span_owner(self, block_id: str) -> Optional[str]:
         """The train whose live span currently covers `block_id`, if any."""
