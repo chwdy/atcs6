@@ -197,8 +197,41 @@ def _boot_develop_session(state):
     running SimulationController, so the debug endpoints see the live fake."""
     hardware_config.apply_updates(_develop_payload(), persist=False)
     inp, blk, sw = hardware_config.build_session_interfaces()
-    state.sim_controller.input_interface = inp
+    _wire_session(state, inp)
     return inp, blk, sw
+
+
+def _wire_session(state, inp):
+    """Point the whole read path at `inp`, the way bootstrap does by passing it
+    to the SimulationController constructor.
+
+    The detector holds its own reference, so setting `sim_controller`'s alone
+    would leave Step 0 still reading the simulated driver — and the verdict the
+    read-back reports comes from the detector.
+    """
+    state.sim_controller.input_interface = inp
+    state.sim_controller.block_occupancy_detector.input_interface = inp
+    state.network.input_interface = inp
+    # The bound blocks have to exist in the layout: Step 0 walks
+    # `network.blocks`, so a binding for a block the network never heard of is
+    # never read and never confirmed.
+    from block import Block
+
+    for block_id in hardware_config.get_hardware_config().block_occupancy:
+        state.network.blocks.setdefault(block_id, Block(block_id))
+    for block_id in hardware_config.get_hardware_config().block_occupancy_current:
+        state.network.blocks.setdefault(block_id, Block(block_id))
+
+
+def _run_step_zero(state):
+    """Run the tick's Step 0 once: read the detectors and debounce.
+
+    What turns a poked register into the verdict the bench's "App sees" column
+    reports. The runtime does this at 10 Hz — from `update()` while running and
+    from `poll_hardware_occupancy()` while stopped — but nothing ticks under the
+    test client, so a test that wants a verdict has to ask for the read.
+    """
+    state.sim_controller.block_occupancy_detector.step()
 
 
 def test_debug_endpoints_409_when_not_develop(client):
@@ -220,10 +253,15 @@ def test_debug_occupancy_poke_and_readback(client):
     assert resp.status_code == 200 and resp.get_json()["ok"] is True
     # The runtime pipeline reads the injected bit...
     assert inp.read_block_currents()["B1"] is True
-    # ...and the GET read-back reports it, with the verdict.
+    # ...the register read-back reports it immediately...
     data = test_client.get("/api/debug/hw").get_json()
     assert data["develop_active"] is True
     assert data["blocks"]["B1"]["occupancy_bit"] is True
+    # ...but `occupied` is the pipeline's verdict, not the register, so it
+    # appears only once Step 0 has read and debounced.
+    assert data["blocks"]["B1"]["occupied"] is False
+    _run_step_zero(state)
+    data = test_client.get("/api/debug/hw").get_json()
     assert data["blocks"]["B1"]["occupied"] is True
 
 
@@ -234,6 +272,7 @@ def test_debug_current_poke_and_readback(client):
     resp = test_client.post("/api/debug/hw/current",
                             json={"block_id": "B1", "current_ma": 25.0})
     assert resp.status_code == 200
+    _run_step_zero(state)
     data = test_client.get("/api/debug/hw").get_json()
     assert data["blocks"]["B1"]["current_ma"] == pytest.approx(25.0, abs=1.0)
     assert data["blocks"]["B1"]["volts"] == pytest.approx(8.0, abs=0.1)
@@ -335,7 +374,7 @@ def test_readback_volts_follow_the_rail_polarity_flag(client):
     _inp, blk, _sw = hardware_config.build_session_interfaces(
         track_polarity_of=hardware_config.track_polarity_reversed
     )
-    state.sim_controller.input_interface = _inp
+    _wire_session(state, _inp)
     blk.set_voltage("B1", 6.0)
 
     entry = test_client.get("/api/virtual-hardware").get_json()["blocks"]["B1"]
@@ -358,7 +397,7 @@ def test_readback_resolves_the_detector_bit_through_the_chain_polarity(client):
     ]
     hardware_config.apply_updates(payload, persist=False)
     inp, _blk, _sw = hardware_config.build_session_interfaces()
-    state.sim_controller.input_interface = inp
+    _wire_session(state, inp)
 
     # An untouched fake reads all-zero, which on this chain means PRESENT.
     entry = test_client.get("/api/virtual-hardware").get_json()["blocks"]["B1"]
@@ -384,12 +423,69 @@ def test_readback_lists_a_track_only_block(client):
     payload["block_track"]["B_OUT_ONLY"] = {"chip_id": "pwm1", "forward": 2, "reverse": 3}
     hardware_config.apply_updates(payload, persist=False)
     _inp, _blk, _sw = hardware_config.build_session_interfaces()
-    state.sim_controller.input_interface = _inp
+    _wire_session(state, _inp)
 
     entry = test_client.get("/api/virtual-hardware").get_json()["blocks"]["B_OUT_ONLY"]
     assert entry["has_track"] is True
     assert (entry["has_digital"], entry["has_current"]) == (False, False)
     assert entry["occupancy_bit"] is None and entry["current_ma"] is None
+    # No detector, so there is no verdict to report — null, not "clear".
+    assert entry["occupied"] is None
+
+
+def test_readback_never_re_reads_the_detectors(client):
+    """The GET must not call `read_block_currents()`.
+
+    That call MUTATES the driver: it advances the lighting-zone clear window and
+    rewrites `_last_reported`. The bench polls several times a second, so a
+    read-back that went through it would add its reads to a window sized for the
+    10 Hz tick — the panel would change the release timing of the block it is
+    watching. The verdict comes off the detector's confirmed set instead, and the
+    per-detector values are direct chip-register reads, which have no such
+    effect.
+    """
+    test_client, state = client
+    inp, _blk, _sw = _boot_develop_session(state)
+    reads = []
+    original = inp.read_block_currents
+
+    def _counted():
+        reads.append(1)
+        return original()
+
+    inp.read_block_currents = _counted
+
+    entry = test_client.get("/api/virtual-hardware").get_json()["blocks"]["B1"]
+    assert reads == []
+    # And it still reports the register values, which come from the chips.
+    assert entry["occupancy_bit"] is False and entry["current_ma"] is not None
+
+
+def test_readback_verdict_follows_the_debounce_not_the_register(client):
+    """`occupied` is what the app acts on, so it clears on the pipeline's
+    schedule — after OCCUPANCY_OFF_THRESHOLD clear reads — not the instant the
+    register drops. A panel keyed to the raw read would say "clear" while the
+    layout still showed the block held."""
+    from constants import OCCUPANCY_OFF_THRESHOLD
+
+    test_client, state = client
+    _inp, _blk, _sw = _boot_develop_session(state)
+
+    test_client.put("/api/virtual-hardware/input/presence",
+                    json={"block_id": "B1", "present": True})
+    _run_step_zero(state)
+    assert test_client.get("/api/virtual-hardware").get_json()["blocks"]["B1"]["occupied"] is True
+
+    test_client.put("/api/virtual-hardware/input/presence",
+                    json={"block_id": "B1", "present": False})
+    for _ in range(OCCUPANCY_OFF_THRESHOLD - 1):
+        _run_step_zero(state)
+        assert (
+            test_client.get("/api/virtual-hardware").get_json()["blocks"]["B1"]["occupied"]
+            is True
+        )
+    _run_step_zero(state)
+    assert test_client.get("/api/virtual-hardware").get_json()["blocks"]["B1"]["occupied"] is False
 
 
 def test_config_get_reports_session_info(client):
@@ -494,6 +590,66 @@ def test_commission_session_opens_on_fake(client):
     data = resp.get_json()
     assert data["ok"] is True
     assert len(data["ports"]) == 8
+
+
+def test_commissioning_enter_releases_the_boundary_with_its_device(client, monkeypatch):
+    """`enter` must leave nothing bound to the handle it closes.
+
+    A hardware-backed session builds every chip on one open device, and entering
+    commissioning closes that device. While the session's drivers stayed bound to
+    it, the next safe state wrote through a dead handle and `OutputSafety` raised
+    "the CH347 is not open" — which 500'd a second `enter` and `activate` alike,
+    leaving no way back to operation short of restarting the server.
+    """
+    test_client, state = client
+
+    class StrictFake(FakeCh347Device):
+        """`Ch347Device` refuses bus ops once closed; the plain fake does not,
+        so a stale binding would go unnoticed here."""
+
+        def i2c_write(self, addr, data):
+            if self.closed:
+                raise RuntimeError("i2c_write: the CH347 is not open")
+            return super().i2c_write(addr, data)
+
+        def latch_out(self, data, select):
+            if self.closed:
+                raise RuntimeError("latch_out: the CH347 is not open")
+            return super().latch_out(data, select)
+
+    monkeypatch.setattr("hardware.fake.FakeCh347Device", StrictFake)
+    hardware_config.apply_updates(_develop_payload(), persist=False)
+    state.sim_controller.activate_interfaces(
+        OperationMode.VIRTUAL_HARDWARE,
+        *hardware_config.build_session_interfaces(
+            hardware_config.get_hardware_config(),
+            environment=OperationMode.VIRTUAL_HARDWARE,
+            track_polarity_of=hardware_config.track_polarity_reversed,
+        ),
+    )
+    device = hardware_config.get_live_device()
+    assert isinstance(device, StrictFake)
+
+    assert test_client.post("/api/operation/commissioning/enter").status_code == 200
+    assert device.closed is True
+    assert hardware_config.get_live_device() is None
+    # The boundary follows the device out — the outputs were safed on the way.
+    from block_occupancy import SimulatedOccupancyDriver
+    from block_power import SimulatedTrackDriver
+
+    assert isinstance(
+        state.sim_controller.power_controller.output_interface, SimulatedTrackDriver
+    )
+    assert isinstance(state.sim_controller.input_interface, SimulatedOccupancyDriver)
+    assert state.sim_controller.environment_active is False
+    # Releasing the boundary must not erase why the environment is inactive.
+    assert state.sim_controller.activation_issues == [
+        {"code": "commissioning", "message": "commissioning owns the device"}
+    ]
+
+    assert test_client.post("/api/operation/commissioning/exit").status_code == 200
+    # The re-entry that used to 500 on the closed handle.
+    assert test_client.post("/api/operation/commissioning/enter").status_code == 200
 
 
 def test_virtual_hardware_fault_api_controls_the_live_fake(client):

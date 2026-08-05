@@ -181,6 +181,61 @@ export function describeDrive(row: BenchRow): { glyph: string; text: string; ton
     };
 }
 
+/** The commanded duty pair, as the output cell prints it. */
+function dutyText(row: BenchRow): string {
+    if (row.dutyForward === null) return '';
+    return `${row.dutyForward.toFixed(2)} / ${(row.dutyReverse ?? 0).toFixed(2)}${
+        row.trackReversed ? ' ⇄' : ''
+    }`;
+}
+
+/** What each detector reads, in the terms the pipeline reads them: the digital
+ *  chain as present/clear (its raw bit is in the Raw line, where the polarity is
+ *  explained), the current channel as its measurement. */
+function readsOf(row: BenchRow): string {
+    const reads: string[] = [];
+    if (row.hasDigital) reads.push(row.detectorPresent ? 'det ●' : 'det ○');
+    if (row.hasCurrent) reads.push(`${(row.currentMa ?? 0).toFixed(0)} mA`);
+    return reads.join(' · ');
+}
+
+function verdictOf(row: BenchRow): { cls: string; text: string } {
+    if (row.occupied === null) return { cls: 'vb-dash', text: '—' };
+    return {
+        cls: row.occupied ? 'vb-verdict is-occupied' : 'vb-verdict',
+        text: row.occupied ? 'occupied' : 'clear',
+    };
+}
+
+function bitLabel(row: BenchRow): string {
+    return `bit ${row.occupancyBit ? '1' : '0'}${row.activeLow ? ' (low=on)' : ''}`;
+}
+
+/** The virtual train's one-line status, as the strip prints it. */
+function rigStatus(rig: BenchRigStatus | null): string {
+    if (!rig?.active) return 'no virtual train';
+    return `in ${rig.block_id || '?'}${rig.stalled ? ' · stalled' : ''} (${(rig.index ?? 0) + 1} of ${
+        (rig.blocks || []).length
+    })`;
+}
+
+/** Set an element's text only when it differs. Writing the same string back is
+ *  harmless but it is also a mutation, and this runs on every node several times
+ *  a second. */
+function setText(el: Element | null | undefined, text: string): void {
+    if (el && el.textContent !== text) el.textContent = text;
+}
+
+function rawNote(row: BenchRow): string {
+    return `on ≥ ${((row.baselineMa ?? 0) + (row.thresholdMa ?? 0)).toFixed(0)} mA`;
+}
+
+function placeTitle(present: boolean): string {
+    return present
+        ? 'Lift the virtual train off — clears every detector this block is bound to.'
+        : 'Put a virtual train here — writes every detector this block is bound to.';
+}
+
 // ---------------------------------------------------------------------------
 
 const WINDOW_ID = 'virtual-bench';
@@ -245,7 +300,9 @@ class VirtualBench {
 
     private _persistenceEnv = browserWindowPersistenceEnv();
     private _pollHandle: ReturnType<typeof setInterval> | null = null;
-    private _inflight = false;
+    /** The read currently out, so an interval tick can skip it and a post-write
+     *  read can queue behind it. Null when nothing is in flight. */
+    private _inflight: Promise<void> | null = null;
 
     private _snapshot: BenchSnapshot | null = null;
     private _rig: BenchRigStatus | null = null;
@@ -258,9 +315,26 @@ class VirtualBench {
     private _filter: BenchFilter = 'all';
     private _showRaw = false;
     private _placing = false;
-    /** Blocks with a test or a placement in flight, so their buttons can show it
-     *  and a double-click cannot start a second sweep on the same block. */
+    /** Blocks with a SWEEP or a switch throw in flight, so their buttons can show
+     *  it and a double-click cannot start a second sweep on the same block. A
+     *  placement is deliberately not in here: it is one fast write, and
+     *  disabling the button it was clicked with is how a press gets eaten. */
     private _busy = new Set<string>();
+    /** The presence the user last asked for, per block, until the read that
+     *  follows the write lands. A toggle clicked again before the previous write
+     *  settles has to flip the INTENT — flipping the last drawn state re-sends
+     *  the command that is already in flight, which reads as a dropped press. */
+    private _presenceIntent = new Map<string, boolean>();
+    /** Per-block write chain, so two fast clicks reach the rig in the order they
+     *  were made rather than racing. */
+    private _presenceChain = new Map<string, Promise<void>>();
+    /** What the body's DOM SHAPE was built from. While this is unchanged, a read
+     *  updates the existing nodes in place instead of replacing them: at 4 Hz a
+     *  wholesale `innerHTML` rewrite destroys whatever button the pointer is on
+     *  between its mousedown and its mouseup, and the browser then has no
+     *  element left to fire `click` at — the press is simply lost. It also wiped
+     *  anything being typed into the raw-current field. */
+    private _bodyShape: string | null = null;
     /** Set when the endpoint answers 409 — the session is not Virtual Hardware. */
     private _inactive = false;
     private _error: string | null = null;
@@ -290,7 +364,7 @@ class VirtualBench {
         this._render();
         if (this._visible) {
             void this._loadConfig();
-            this._pollOnce();
+            void this._pollOnce();
             this._startPolling();
         }
     }
@@ -379,7 +453,7 @@ class VirtualBench {
             this._persist();
             this._stopPolling();
             if (this._visible) {
-                this._pollOnce();
+                void this._pollOnce();
                 this._startPolling();
             }
         });
@@ -394,7 +468,9 @@ class VirtualBench {
             this._render();
         });
         this._placeBtnEl.addEventListener('click', () => void this._togglePlacing());
-        this._refreshBtnEl.addEventListener('click', () => this._pollOnce());
+        // "Read now" means now: it jumps the queue rather than riding along with
+        // a read that may already be stale.
+        this._refreshBtnEl.addEventListener('click', () => void this._pollOnce(true));
 
         // One delegated listener for every row control: the body is re-rendered
         // wholesale on each poll, so per-button listeners would be re-bound
@@ -421,7 +497,7 @@ class VirtualBench {
         this._window.focus();
         this._persist();
         void this._loadConfig();
-        this._pollOnce();
+        void this._pollOnce();
         this._startPolling();
     }
 
@@ -441,7 +517,7 @@ class VirtualBench {
         this._stopPolling();
         if (!this._refreshHz || this._refreshHz <= 0) return;
         const period = Math.max(50, Math.round(1000 / this._refreshHz));
-        this._pollHandle = setInterval(() => this._pollOnce(), period);
+        this._pollHandle = setInterval(() => void this._pollOnce(), period);
     }
 
     /** Stop the timer. Deliberately does NOT cancel a request already in flight
@@ -455,6 +531,28 @@ class VirtualBench {
         }
     }
 
+    /** Read the rig now, resolving once the panel is showing that read.
+     *
+     *  An interval tick passes `force = false` and rides along with whatever is
+     *  already out — that is what keeps requests from stacking. A read that
+     *  FOLLOWS A WRITE must pass `force = true`, because the in-flight response
+     *  was issued *before* the write and would land as the newest answer on
+     *  screen: the row goes on offering "Place" for a block that now has a train
+     *  on it, and the next click re-sends the same command instead of toggling
+     *  — the "I had to click it twice" symptom. A forced read queues behind the
+     *  stale one rather than being dropped, so the panel always settles on a
+     *  post-write answer. */
+    private _pollOnce(force = false): Promise<void> {
+        const current = this._inflight;
+        if (current && !force) return current;
+        const next = (current ?? Promise.resolve()).then(() => this._read());
+        this._inflight = next;
+        void next.finally(() => {
+            if (this._inflight === next) this._inflight = null;
+        });
+        return next;
+    }
+
     private async _loadConfig(): Promise<void> {
         try {
             const res = await api.getHardwareConfig();
@@ -464,9 +562,10 @@ class VirtualBench {
         }
     }
 
-    private async _pollOnce(): Promise<void> {
-        if (this._inflight) return;
-        this._inflight = true;
+    /** One read and the render it feeds. Never rejects: every outcome, including
+     *  a dead server, is a state this panel draws. `_pollOnce` owns the
+     *  scheduling around it. */
+    private async _read(): Promise<void> {
         try {
             const [snapshot, rig] = await Promise.all([
                 api.getHwDebugState() as Promise<BenchSnapshot>,
@@ -488,8 +587,6 @@ class VirtualBench {
                 this._error = err?.message || String(err);
             }
             this._render();
-        } finally {
-            this._inflight = false;
         }
     }
 
@@ -522,18 +619,33 @@ class VirtualBench {
         }
     }
 
-    /** Put a virtual object on a block's detectors, or lift it off. */
+    /** Put a virtual object on a block's detectors, or lift it off.
+     *
+     *  Deliberately not gated on `_busy` and deliberately not disabling its own
+     *  button: a placement is one fast write, and a toggle that ignores presses
+     *  while the last one settles loses every second click of a quick double.
+     *  Presses land on the intent, which the row draws immediately; the writes
+     *  themselves are chained per block so they reach the rig in order. */
     private async _setPresence(blockId: string, present: boolean): Promise<void> {
-        if (!blockId || this._busy.has(blockId)) return;
-        this._busy.add(blockId);
+        if (!blockId) return;
+        this._presenceIntent.set(blockId, present);
         this._render();
-        try {
-            await api.setHwDebugPresence(blockId, present);
-            await this._pollOnce();
-        } catch (err: any) {
-            showToast(err?.message || `Could not set ${blockId}.`, 'error');
-        } finally {
-            this._busy.delete(blockId);
+        const send = (this._presenceChain.get(blockId) ?? Promise.resolve()).then(async () => {
+            try {
+                await api.setHwDebugPresence(blockId, present);
+                await this._pollOnce(true);
+            } catch (err: any) {
+                showToast(err?.message || `Could not set ${blockId}.`, 'error');
+            }
+        });
+        this._presenceChain.set(blockId, send);
+        await send;
+        // Only the LAST press of a burst hands the row back to the rig's own
+        // answer — an earlier one settling would redraw the state the user has
+        // already clicked past.
+        if (this._presenceChain.get(blockId) === send) {
+            this._presenceChain.delete(blockId);
+            this._presenceIntent.delete(blockId);
             this._render();
         }
     }
@@ -541,7 +653,7 @@ class VirtualBench {
     private async _setRawBit(blockId: string, occupied: boolean): Promise<void> {
         try {
             await api.setHwDebugOccupancy(blockId, occupied);
-            await this._pollOnce();
+            await this._pollOnce(true);
         } catch (err: any) {
             showToast(err?.message || `Could not set ${blockId}'s detector bit.`, 'error');
         }
@@ -555,7 +667,7 @@ class VirtualBench {
         }
         try {
             await api.setHwDebugCurrent(blockId, ma);
-            await this._pollOnce();
+            await this._pollOnce(true);
         } catch (err: any) {
             showToast(err?.message || `Could not set ${blockId}'s current.`, 'error');
         }
@@ -581,7 +693,7 @@ class VirtualBench {
             showToast(err?.message || `Sweep failed on ${blockId}.`, 'error');
         } finally {
             this._busy.delete(blockId);
-            await this._pollOnce();
+            await this._pollOnce(true);
         }
     }
 
@@ -602,7 +714,7 @@ class VirtualBench {
             showToast(err?.message || `Throw failed on ${switchId}.`, 'error');
         } finally {
             this._busy.delete(switchId);
-            await this._pollOnce();
+            await this._pollOnce(true);
         }
     }
 
@@ -616,7 +728,7 @@ class VirtualBench {
         try {
             const res = await api.commandVirtualRigScenario(action, payload);
             this._rig = res?.scenario || null;
-            await this._pollOnce();
+            await this._pollOnce(true);
         } catch (err: any) {
             showToast(err?.message || `Virtual train ${action} failed.`, 'error');
         }
@@ -625,7 +737,7 @@ class VirtualBench {
     private async _setFault(kind: string, enabled: boolean): Promise<void> {
         try {
             await api.setVirtualHardwareFault(kind, enabled);
-            await this._pollOnce();
+            await this._pollOnce(true);
         } catch (err: any) {
             showToast(err?.message || `Could not inject ${kind}.`, 'error');
         }
@@ -634,7 +746,7 @@ class VirtualBench {
     private async _clearFaults(): Promise<void> {
         try {
             await api.clearVirtualHardwareFaults();
-            await this._pollOnce();
+            await this._pollOnce(true);
         } catch (err: any) {
             showToast(err?.message || 'Could not clear faults.', 'error');
         }
@@ -690,7 +802,7 @@ class VirtualBench {
             showToast(`${blockId} has no detector binding to place a train on.`, 'warning', 3500);
             return;
         }
-        await this._setPresence(blockId, !row?.present);
+        await this._setPresence(blockId, !(row ? this._shownPresence(row) : false));
     }
 
     private _syncPlaceButton(): void {
@@ -739,14 +851,25 @@ class VirtualBench {
 
     private _renderBody(): void {
         if (this._inactive || this._error) {
+            this._bodyShape = 'empty';
             this._bodyEl.innerHTML = '';
             return;
         }
         if (!this._snapshot) {
+            this._bodyShape = 'reading';
             this._bodyEl.innerHTML = '<div class="empty-state">Reading…</div>';
             return;
         }
         const rows = benchRows(this._snapshot, this._filter);
+        const shape = this._shapeOf(rows);
+        // Same shape as last read: touch up the nodes already on screen and
+        // leave every button the pointer might be resting on exactly where it
+        // is. See `_bodyShape`.
+        if (this._bodyShape === shape) {
+            this._updateBody(rows);
+            return;
+        }
+        this._bodyShape = shape;
         const total = Object.keys(this._snapshot.blocks || {}).length;
         const blocksHtml = rows.length
             ? `<div class="vb-head${this._showRaw ? ' vb-raw-on' : ''}">
@@ -771,17 +894,20 @@ class VirtualBench {
         `;
     }
 
+    /** The row's markup. Everything a read can change lives in an element with a
+     *  class `_updateRow` knows, and nothing a read can change decides whether an
+     *  element EXISTS — a cell that is empty this read is drawn hidden rather
+     *  than left out, so the shape stays put and the update stays a text edit. */
     private _rowHtml(row: BenchRow): string {
         const busy = this._busy.has(row.blockId);
         const drive = describeDrive(row);
-        const duty =
-            row.dutyForward === null
-                ? ''
-                : `<span class="vb-duty" title="Commanded duty on the block's two PWM channels, before the rail-polarity flag${
-                      row.trackReversed ? ' (this block is wired reversed)' : ''
-                  }.">${row.dutyForward.toFixed(2)} / ${(row.dutyReverse ?? 0).toFixed(2)}${
-                      row.trackReversed ? ' ⇄' : ''
-                  }</span>`;
+        const duty = row.hasTrack
+            ? `<span class="vb-duty"${
+                  row.dutyForward === null ? ' hidden' : ''
+              } title="Commanded duty on the block's two PWM channels, before the rail-polarity flag${
+                  row.trackReversed ? ' (this block is wired reversed)' : ''
+              }.">${escapeHtml(dutyText(row))}</span>`
+            : '';
 
         const sweep = row.hasTrack
             ? `<button type="button" class="vb-btn" data-role="sweep" data-id="${escapeHtml(row.blockId)}"
@@ -792,49 +918,189 @@ class VirtualBench {
             : '<span class="vb-dash">—</span>';
 
         const canPlace = row.hasDigital || row.hasCurrent;
+        const present = this._shownPresence(row);
         const place = canPlace
-            ? `<button type="button" class="vb-btn vb-place${row.present ? ' is-on' : ''}"
-                   data-role="place-train" data-id="${escapeHtml(row.blockId)}" data-present="${row.present ? '1' : '0'}"
+            ? `<button type="button" class="vb-btn vb-place${present ? ' is-on' : ''}"
+                   data-role="place-train" data-id="${escapeHtml(row.blockId)}" data-present="${present ? '1' : '0'}"
                    ${busy ? 'disabled' : ''}
-                   title="${
-                       row.present
-                           ? 'Lift the virtual train off — clears every detector this block is bound to.'
-                           : 'Put a virtual train here — writes every detector this block is bound to.'
-                   }"><i class="ti ti-train" aria-hidden="true"></i> ${row.present ? 'On block' : 'Place'}</button>`
+                   title="${placeTitle(present)}"><i class="ti ti-train" aria-hidden="true"></i> <span
+                   class="vb-place-label">${present ? 'On block' : 'Place'}</span></button>`
             : '<span class="vb-dash" title="No detector binding — nothing to place a train on.">—</span>';
 
-        // What each detector reads, in the terms the pipeline reads them: the
-        // digital chain as present/clear (its raw bit is in the Raw line, where
-        // the polarity is explained), the current channel as its measurement.
-        const reads: string[] = [];
-        if (row.hasDigital) reads.push(row.detectorPresent ? 'det ●' : 'det ○');
-        if (row.hasCurrent) reads.push(`${(row.currentMa ?? 0).toFixed(0)} mA`);
-        const readsText = reads.length ? reads.join(' · ') : '';
-
-        const verdict =
-            row.occupied === null
-                ? '<span class="vb-dash">—</span>'
-                : `<span class="vb-verdict${row.occupied ? ' is-occupied' : ''}">${
-                      row.occupied ? 'occupied' : 'clear'
-                  }</span>`;
-
+        const readsText = readsOf(row);
+        const verdict = verdictOf(row);
         const raw = this._showRaw ? this._rawCellsHtml(row) : '';
 
         return `
-            <div class="vb-row${this._showRaw ? ' vb-raw-on' : ''}${row.present ? ' vb-row-present' : ''}">
+            <div class="vb-row${this._showRaw ? ' vb-raw-on' : ''}${
+                present ? ' vb-row-present' : ''
+            }" data-block="${escapeHtml(row.blockId)}">
                 <span class="vb-block">${escapeHtml(row.blockId)}</span>
                 <span class="vb-drive vb-drive-${drive.tone}">
-                    <span class="vb-drive-glyph" aria-hidden="true">${drive.glyph}</span>${escapeHtml(drive.text)}
+                    <span class="vb-drive-glyph" aria-hidden="true">${drive.glyph}</span><span
+                        class="vb-drive-text">${escapeHtml(drive.text)}</span>
                     ${duty}
                 </span>
                 <span class="vb-test">${sweep}</span>
-                <span class="vb-sensor">${place}${
-                    readsText ? `<span class="vb-reads">${escapeHtml(readsText)}</span>` : ''
-                }</span>
-                <span class="vb-app">${verdict}</span>
+                <span class="vb-sensor">${place}<span class="vb-reads"${
+                    readsText ? '' : ' hidden'
+                }>${escapeHtml(readsText)}</span></span>
+                <span class="vb-app"><span class="${verdict.cls}">${escapeHtml(verdict.text)}</span></span>
                 ${raw}
             </div>
         `;
+    }
+
+    /** The presence the row should DRAW: the one the user last asked for while
+     *  that write is still settling, otherwise what the rig reports. */
+    private _shownPresence(row: BenchRow): boolean {
+        const intent = this._presenceIntent.get(row.blockId);
+        return intent === undefined ? row.present : intent;
+    }
+
+    // ----- in-place update -------------------------------------------------
+
+    /** Everything the body's markup decides STRUCTURALLY — which rows and cells
+     *  exist at all. Readings are deliberately absent: they are what the update
+     *  path writes. A change here (a filter, the Raw toggle, a block gaining a
+     *  binding) is what earns a rebuild. */
+    private _shapeOf(rows: BenchRow[]): string {
+        const blocks = rows
+            .map((r) => `${r.blockId}:${+r.hasTrack}${+r.hasDigital}${+r.hasCurrent}${+r.trackReversed}`)
+            .join(',');
+        const switches = Object.entries(this._snapshot?.switches || {})
+            .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+            .map(([id, s]) => `${id}:${s?.standby === null || s?.standby === undefined ? 0 : 1}`)
+            .join(',');
+        const total = Object.keys(this._snapshot?.blocks || {}).length;
+        return `${this._filter}|${+this._showRaw}|${total}|${blocks}|${switches}`;
+    }
+
+    /** Write this read's numbers into the nodes already on screen. Touches only
+     *  text, classes and attributes — never `innerHTML` on anything that holds a
+     *  control, because replacing a node the pointer is over is exactly what
+     *  swallows the press. */
+    private _updateBody(rows: BenchRow[]): void {
+        for (const row of rows) {
+            const el = this._bodyEl.querySelector<HTMLElement>(
+                `.vb-row[data-block="${CSS.escape(row.blockId)}"]`
+            );
+            if (el) this._updateRow(el, row);
+        }
+        this._updateSwitches();
+        this._updateRig();
+        this._updateFaults();
+    }
+
+    private _updateRow(el: HTMLElement, row: BenchRow): void {
+        const present = this._shownPresence(row);
+        el.classList.toggle('vb-row-present', present);
+
+        const drive = describeDrive(row);
+        const driveEl = el.querySelector<HTMLElement>('.vb-drive');
+        if (driveEl) {
+            driveEl.className = `vb-drive vb-drive-${drive.tone}`;
+            setText(driveEl.querySelector('.vb-drive-glyph'), drive.glyph);
+            setText(driveEl.querySelector('.vb-drive-text'), drive.text);
+            const duty = driveEl.querySelector<HTMLElement>('.vb-duty');
+            if (duty) {
+                duty.hidden = row.dutyForward === null;
+                setText(duty, dutyText(row));
+            }
+        }
+
+        const busy = this._busy.has(row.blockId);
+        const sweep = el.querySelector<HTMLButtonElement>('[data-role="sweep"]');
+        if (sweep) {
+            sweep.disabled = busy;
+            setText(sweep, busy ? '…' : 'Sweep');
+        }
+
+        const place = el.querySelector<HTMLButtonElement>('[data-role="place-train"]');
+        if (place) {
+            // Only a SWEEP locks this out — a sweep owns the block's rails for
+            // its three seconds. A placement never disables its own button.
+            place.disabled = busy;
+            place.classList.toggle('is-on', present);
+            place.dataset.present = present ? '1' : '0';
+            place.title = placeTitle(present);
+            setText(place.querySelector('.vb-place-label'), present ? 'On block' : 'Place');
+        }
+
+        const reads = el.querySelector<HTMLElement>('.vb-reads');
+        if (reads) {
+            const text = readsOf(row);
+            reads.hidden = !text;
+            setText(reads, text);
+        }
+
+        const verdict = verdictOf(row);
+        const verdictEl = el.querySelector<HTMLElement>('.vb-app > span');
+        if (verdictEl) {
+            verdictEl.className = verdict.cls;
+            setText(verdictEl, verdict.text);
+        }
+
+        const bit = el.querySelector<HTMLButtonElement>('[data-role="raw-bit"]');
+        if (bit) {
+            bit.classList.toggle('is-on', !!row.occupancyBit);
+            bit.dataset.bit = row.occupancyBit ? '1' : '0';
+            setText(bit, bitLabel(row));
+        }
+        const ma = el.querySelector<HTMLInputElement>('[data-role="raw-ma"]');
+        // Never overwrite a field being typed into: the read that lands between
+        // a keystroke and Set would otherwise put the rig's own number back.
+        if (ma && document.activeElement !== ma) ma.value = (row.currentMa ?? 0).toFixed(0);
+        setText(el.querySelector('.vb-raw-note'), rawNote(row));
+    }
+
+    private _updateSwitches(): void {
+        const switches = this._snapshot?.switches || {};
+        for (const [switchId, s] of Object.entries(switches)) {
+            const el = this._bodyEl.querySelector<HTMLElement>(
+                `.vb-row-switch[data-switch="${CSS.escape(switchId)}"]`
+            );
+            if (!el) continue;
+            const coil = (name: 'main' | 'diverge' | 'standby', on: boolean | null | undefined) =>
+                el.querySelector(`[data-coil="${name}"]`)?.classList.toggle('is-on', !!on);
+            coil('main', s?.main);
+            coil('diverge', s?.diverge);
+            coil('standby', s?.standby);
+            const busy = this._busy.has(switchId);
+            el.querySelectorAll<HTMLButtonElement>('[data-role^="throw-"]').forEach((btn) => {
+                btn.disabled = busy;
+            });
+        }
+    }
+
+    private _updateRig(): void {
+        const rig = this._rig;
+        const active = !!rig?.active;
+        const input = this._bodyEl.querySelector<HTMLInputElement>('[data-role="rig-blocks"]');
+        if (input && document.activeElement !== input) {
+            input.value = active ? (rig?.blocks || []).join(', ') : this._rigDraft;
+        }
+        const button = (role: string) =>
+            this._bodyEl.querySelector<HTMLButtonElement>(`[data-role="${role}"]`);
+        for (const role of ['rig-advance', 'rig-stall', 'rig-remove']) {
+            const btn = button(role);
+            if (btn) btn.disabled = !active;
+        }
+        const stall = button('rig-stall');
+        if (stall) {
+            stall.classList.toggle('is-on', !!rig?.stalled);
+            setText(stall, rig?.stalled ? 'Resume' : 'Stall');
+        }
+        setText(this._bodyEl.querySelector('.vb-strip-status'), rigStatus(rig));
+    }
+
+    private _updateFaults(): void {
+        const faults = this._snapshot?.faults || {};
+        this._bodyEl.querySelectorAll<HTMLButtonElement>('[data-role="fault"]').forEach((btn) => {
+            const on = !!faults[btn.dataset.id || ''];
+            btn.classList.toggle('is-on', on);
+            btn.dataset.on = on ? '1' : '0';
+        });
     }
 
     /** The deliberately-disagree controls: set one source without the other.
@@ -848,7 +1114,7 @@ class VirtualBench {
                            ? 'ACTIVE-LOW, so 0 is the reading the pipeline calls present'
                            : 'active-high, so 1 is present'
                    }."
-               >bit ${row.occupancyBit ? '1' : '0'}${row.activeLow ? ' (low=on)' : ''}</button>`
+               >${escapeHtml(bitLabel(row))}</button>`
             : '';
         const current = row.hasCurrent
             ? `<span class="vb-raw-ma">
@@ -856,7 +1122,7 @@ class VirtualBench {
                        value="${(row.currentMa ?? 0).toFixed(0)}" step="1" aria-label="${escapeHtml(row.blockId)} current in mA" />
                    <span class="vb-unit">mA</span>
                    <button type="button" class="vb-btn vb-btn-xs" data-role="raw-ma-set" data-id="${escapeHtml(row.blockId)}">Set</button>
-                   <span class="vb-raw-note">on ≥ ${((row.baselineMa ?? 0) + (row.thresholdMa ?? 0)).toFixed(0)} mA</span>
+                   <span class="vb-raw-note">${escapeHtml(rawNote(row))}</span>
                </span>`
             : '';
         if (!bit && !current) return '';
@@ -871,10 +1137,12 @@ class VirtualBench {
             const s = switches[switchId] || {};
             const busy = this._busy.has(switchId);
             const coil = (on: boolean | null | undefined, label: string) =>
-                `<span class="vb-coil${on ? ' is-on' : ''}"><i class="vb-coil-dot"></i>${escapeHtml(label)}</span>`;
+                `<span class="vb-coil${on ? ' is-on' : ''}" data-coil="${label}"><i class="vb-coil-dot"></i>${escapeHtml(
+                    label
+                )}</span>`;
             const standby = s.standby === null || s.standby === undefined ? '' : coil(s.standby, 'standby');
             return `
-                <div class="vb-row vb-row-switch">
+                <div class="vb-row vb-row-switch" data-switch="${escapeHtml(switchId)}">
                     <span class="vb-block">${escapeHtml(switchId)}</span>
                     <span class="vb-coils">${coil(s.main, 'main')}${coil(s.diverge, 'diverge')}${standby}</span>
                     <span class="vb-test">
@@ -901,11 +1169,7 @@ class VirtualBench {
      *  the old one clears — is a sequence, not a state. */
     private _rigHtml(): string {
         const rig = this._rig;
-        const status = rig?.active
-            ? `in ${escapeHtml(rig.block_id || '?')}${rig.stalled ? ' · stalled' : ''} (${
-                  (rig.index ?? 0) + 1
-              } of ${(rig.blocks || []).length})`
-            : 'no virtual train';
+        const status = escapeHtml(rigStatus(rig));
         const draft = rig?.active ? (rig.blocks || []).join(', ') : this._rigDraft;
         return `<section class="vb-section">
             <div class="vb-section-head">Virtual train

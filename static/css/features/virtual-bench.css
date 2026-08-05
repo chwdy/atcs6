@@ -235,6 +235,13 @@
     color: var(--success-color);
 }
 
+/* A block with no commanded duty draws the span hidden rather than dropping it,
+   so the row keeps its shape between reads — `display: block` above would
+   otherwise beat the UA's [hidden] and leave an empty line. */
+.vb-duty[hidden] {
+    display: none;
+}
+
 .vb-duty {
     display: block;
     font-size: 9px;
@@ -284,6 +291,12 @@
 .vb-btn.is-on {
     background-color: color-mix(in srgb, var(--accent-color) 22%, transparent);
     border-color: var(--accent-color);
+}
+
+/* Wide enough for "On block", so toggling back to the shorter "Place" does not
+   shrink the button out from under the pointer that just clicked it. */
+.vb-place {
+    min-width: 78px;
 }
 
 /* The object is on the detectors — the same danger the layout paints occupancy

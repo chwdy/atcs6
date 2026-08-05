@@ -672,10 +672,26 @@ def register(app, state: AppState) -> None:
                         chips[chip_id] = None
                 return chips[chip_id]
 
-            try:
-                occupied = state.sim_controller.input_interface.read_block_currents()
-            except Exception:
-                occupied = {}
+            # The pipeline's VERDICT, taken off the detector rather than by
+            # reading the device again here. Two reasons, and both bit:
+            #
+            #   - This is the column that answers "did the app react", so it has
+            #     to be the debounced confirmed set `Block.occupied_by` follows.
+            #     A raw read reports a clear OCCUPANCY_OFF_THRESHOLD ticks before
+            #     the app acts on one, so the panel would say clear while the
+            #     layout still showed the block held — which reads as the app
+            #     being slow when it is the panel running ahead.
+            #   - `read_block_currents()` MUTATES the driver: it advances the
+            #     lighting-zone clear window and rewrites `_last_reported`
+            #     (OccupancyDriver). A panel polling at 4 Hz would add its reads
+            #     to a window sized for the 10 Hz tick, so opening the bench
+            #     changed the release timing of the very block it was watching.
+            #
+            # The per-detector values below are direct chip-register reads, which
+            # carry no such side effect and stay live at the poll rate.
+            detector = getattr(state.sim_controller, "block_occupancy_detector", None)
+            confirmed = detector.confirmed_occupied if detector is not None else set()
+            in_layout = set(state.network.blocks)
 
             blocks = {}
             for block_id in (
@@ -708,7 +724,18 @@ def register(app, state: AppState) -> None:
                     "track_reversed": bool(tbind.reversed) if tbind is not None else None,
                     "threshold_ma": float(cbind.threshold_ma) if cbind is not None else None,
                     "baseline_ma": float(cbind.baseline_ma or 0.0) if cbind is not None else None,
-                    "occupied": occupied.get(block_id),
+                    # Null where there is no verdict to report: a block with no
+                    # detector has nothing to conclude from, and one bound to a
+                    # block id the layout does not have is never read at all
+                    # (Step 0 walks `network.blocks`). Reporting either as
+                    # "clear" would hide a mis-wired binding behind a normal
+                    # answer.
+                    "occupied": (
+                        (block_id in confirmed)
+                        if (binding is not None or cbind is not None)
+                        and block_id in in_layout
+                        else None
+                    ),
                 }
                 if binding is not None:
                     spec = _chip_spec(cfg, binding.chip_id)
