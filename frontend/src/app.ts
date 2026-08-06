@@ -887,7 +887,15 @@ class App {
     }
   }
 
-  selectTrain(trainId: string): void {
+  /** Make `trainId` the selected train: its controls open in the inspector and
+   *  the live subscription follows it.
+   *
+   *  The Train Monitor (the lookahead chart) is deliberately NOT part of that.
+   *  It is a large panel that covers the canvas, so it stays opt-in: it opens
+   *  only when asked for by name — `showMonitor`, which the control panel's
+   *  "Monitor →" button passes — and otherwise merely retargets if it is
+   *  already on screen. */
+  selectTrain(trainId: string, options: { showMonitor?: boolean } = {}): void {
     if (!this.currentNetwork || !this.currentNetwork.trains) {
       return;
     }
@@ -904,7 +912,9 @@ class App {
         this._maybeFollowSelectedTrain();
       }
       this.editor.showTrainControlPanel(trainId);
-      this.trainMonitor.show(trainId, train.name || trainId);
+      if (options.showMonitor || this.trainMonitor.isVisible()) {
+        this.trainMonitor.show(trainId, train.name || trainId);
+      }
       this._subscribeTrainMonitor(trainId);
       this.fetchTrainLookahead(trainId, train);
       this.updateTrainDebugPanel(train);

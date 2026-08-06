@@ -33,6 +33,12 @@ const MIN_MONITOR_WIDTH = 420;
 const MIN_MONITOR_HEIGHT = 200;
 /** The in-flow bar's old fixed height, kept as the default window height. */
 const DEFAULT_MONITOR_HEIGHT = 305;
+/** Opening width. Wide enough for the chart to be readable, narrow enough to
+ *  leave most of the canvas visible behind it — the panel used to open spanning
+ *  the whole canvas region, which buried the layout it is meant to annotate.
+ *  Only the first open uses this; a dragged/resized window persists its own
+ *  geometry and never comes back through resolveGeometry. */
+const DEFAULT_MONITOR_WIDTH = 760;
 /** Breathing room between the monitor's bottom edge and the canvas view
  *  controls it hovers above. */
 const MONITOR_CONTROLS_GAP = 10;
@@ -391,14 +397,15 @@ class TrainMonitor {
         ensureRegistered(this.persistenceEnv, TRAIN_MONITOR_WINDOW_ID, 'train-monitor');
     }
 
-    /** The monitor's home position: spanning the canvas region — from the
-     *  floating tool rail's right edge to the docked inspector's left edge (or
-     *  the viewport edge when nothing is docked there) — and sitting just above
-     *  the canvas view controls. That clears every piece of chrome it would
-     *  otherwise cover while giving the chart the full width it wants. */
+    /** The monitor's home position: anchored to the left of the canvas region —
+     *  the floating tool rail's right edge — and sitting just above the canvas
+     *  view controls, so it clears every piece of chrome it would otherwise
+     *  cover. It opens at DEFAULT_MONITOR_WIDTH rather than filling the region,
+     *  shrinking only when the region itself is narrower than that. */
     resolveGeometry(): Partial<WindowGeometry> {
         const bounds = placementBounds();
-        const width = Math.max(MIN_MONITOR_WIDTH, bounds.right - bounds.left);
+        const available = bounds.right - bounds.left;
+        const width = Math.max(MIN_MONITOR_WIDTH, Math.min(DEFAULT_MONITOR_WIDTH, available));
         const height = DEFAULT_MONITOR_HEIGHT;
 
         // Bottom edge rides just above the zoom/fit controls in the canvas

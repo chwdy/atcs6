@@ -1850,8 +1850,10 @@ export class TrainEditorHandler {
 
     const monitorBtn = document.getElementById('train-monitor-btn') as HTMLButtonElement | null;
     if (monitorBtn) {
+      // The one place that opens the lookahead panel: selecting a train no
+      // longer drags it on screen, so this button has to ask for it by name.
       monitorBtn.onclick = () => {
-        window.app?.selectTrain(trainId);
+        window.app?.selectTrain(trainId, { showMonitor: true });
       };
     }
 
