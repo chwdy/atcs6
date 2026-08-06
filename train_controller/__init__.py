@@ -181,6 +181,12 @@ class TrainController:
     # one warning instead of one per tick. A plain transient flag, not a latch.
     _overspeed_warned: bool = False
 
+    # The distance-0 ATC reason code this controller last reported, so a change
+    # is reported once and a steady code is silent. Compared against what was
+    # emitted rather than against last tick, so a code flickering between two
+    # values still reports each real change. A plain transient flag, not a latch.
+    _last_emitted_atc_reason_code: Optional[str] = None
+
     # True while every wired block this train could show up on — its span
     # blocks and its held blocks — reads confirmed clear, so no physical
     # detection backs the calculated position and the train may be gone
@@ -548,6 +554,52 @@ class TrainController:
             return str(code)
         return None
 
+    def _report_atc_reason_change(self) -> None:
+        """Report a change in the distance-0 ATC reason code.
+
+        The reason code is recomputed every tick and stored nowhere, so a train
+        that held at zero for a minute leaves no trace of why unless the change
+        itself is an event (design_new.md "canonical lookahead payload", A
+        changed reason code is an event).
+
+        Compared against the last code *emitted*, not the last tick's: a code
+        that flickers between two values emits on each real change, and a steady
+        code emits nothing — the **Emit on change, not per tick** rule. `warning`
+        for the two codes that hold the train at zero, `debug` for the rest,
+        which are ordinary driving restrictions a developer reads back rather
+        than faults.
+        """
+        code = self.atc._last_limit_reason_code
+        code_str = code.value if hasattr(code, "value") else (str(code) if code else None)
+        if code_str == self._last_emitted_atc_reason_code:
+            return
+        previous = self._last_emitted_atc_reason_code
+        self._last_emitted_atc_reason_code = code_str
+        if code_str is None:
+            return
+
+        from notification_center import Kind as _Kind
+
+        # The canonical distance-0 detail, read through the same property every
+        # other consumer uses. It falls back to the code when there is no prose,
+        # so drop it in that case rather than repeating the code twice. Computed
+        # only on a change, which is why the recompute is affordable here.
+        detail = self.speed_limit_reason
+        if detail == code_str:
+            detail = None
+        holding = code_str in ("deviation", "no_authority")
+        self.notifications.emit(
+            f"ATC limit reason {previous or 'none'} -> {code_str}",
+            operation="tick",
+            kind=_Kind.WARNING if holding else _Kind.DEBUG,
+            payload={
+                "previous_reason_code": previous,
+                "reason_code": code_str,
+                "atc_limit_kmh": self.atc.speed_limit,
+                "atc_limit_reason_detail": detail,
+            },
+        )
+
     # -------------------------------------------------------------------------
     # Tick Method (Called Each Simulation Tick)
     # -------------------------------------------------------------------------
@@ -628,13 +680,23 @@ class TrainController:
         # ===== 0. POWER CHECK =====
         if not self.power_on:
             self.ops.state = TrainState.OFF
+            # An OFF train computes no limit, so it has no reason code to
+            # report. Forget the last one reported instead of holding it: the
+            # code the train comes back on with is news whether or not it
+            # matches what it went down with.
+            self._last_emitted_atc_reason_code = None
             return
 
         # ===== 1. EMERGENCY BRAKE CHECK =====
         if self.eb.active:
             self.ops.handle_position = HandlePosition.EB
             self.atc.speed_limit = 0.0
-
+            # Reported before the early return, because a latched EB is exactly
+            # when an operator asks why the limit is zero. The branches below
+            # are never reached while EB holds, so this is the only place the
+            # `eb` code can be published.
+            self.atc._last_limit_reason_code = AtcLimitReasonCode.EB
+            self._report_atc_reason_change()
 
             # While EB is latched, controller does not run post-EB restart
             # logic. Explicit release_emergency_cmd() is required to clear
@@ -680,6 +742,11 @@ class TrainController:
             self.atc.speed_limit, self.atc._last_limit_reason_code = (
                 self._distance_zero_atc_anchor()
             )
+
+        # Placed after every branch above has settled the code, so no branch is
+        # missed: the reason code answers "why is this train limited right now",
+        # and this is where that answer is finished for the tick.
+        self._report_atc_reason_change()
 
         # ===== 4. ATC ACTION =====
         overspeed = self.physics_sync.current_speed_kmh - self.atc.speed_limit
@@ -2259,8 +2326,20 @@ class TrainController:
         """
         if not self.power_on:
             return
+        already = self.ops.service_stop_active
         self.ops.service_stop_active = True
         self.ato.running = False
+        # Idempotent, so report only the transition — Phase 1 step `6a0d` calls
+        # this on every eligible tick while the run timer is elapsed.
+        if not already:
+            from notification_center import Kind as _Kind
+
+            self.notifications.emit(
+                "service stop armed",
+                operation="begin_service_stop",
+                kind=_Kind.INFO,
+                payload={"latch": "service_stop_active"},
+            )
 
     def consume_service_stop(self, force: bool = False) -> bool:
         """Clear the service-stop override (design_new.md "TrainController.
@@ -2277,7 +2356,10 @@ class TrainController:
         ``ops.service_stop_active`` directly.
         """
         if force:
+            was_armed = self.ops.service_stop_active
             self.ops.service_stop_active = False
+            if was_armed:
+                self._emit_service_stop_cleared("interrupted")
             return True
         if not self.ops.service_stop_active:
             return False
@@ -2288,7 +2370,21 @@ class TrainController:
         if self.route_hooks.phase_latches.path_cancel_request is not None:
             return False
         self.ops.service_stop_active = False
+        self._emit_service_stop_cleared("run complete")
         return True
+
+    def _emit_service_stop_cleared(self, why: str) -> None:
+        """Report the service-stop commit. Only the arm→clear transition is
+        reported: the gated branch returns early on every tick the gate has not
+        opened, and `force=True` from an already-clear latch changes nothing."""
+        from notification_center import Kind as _Kind
+
+        self.notifications.emit(
+            f"service stop cleared: {why}",
+            operation="consume_service_stop",
+            kind=_Kind.INFO,
+            payload={"latch": "service_stop_active", "reason": why},
+        )
 
     def complete_power_off(self) -> None:
         """Controller-owned OFF-cleanup entry point (design_new.md:282, :1808).

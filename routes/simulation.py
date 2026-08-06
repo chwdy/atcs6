@@ -23,18 +23,40 @@ def register(app, state: AppState) -> None:
         payload["simulation_speed"] = state.simulation_speed
         return jsonify(payload)
 
+    def _matches_query(event, needle: str) -> bool:
+        """Free-text match over the two human-readable fields plus the origin
+        label — `message` says what was attempted, `error.text` says what went
+        wrong, and `origin` is how a reader groups errors when `operation`
+        alone is too coarse. Display-only: this narrows a view, and no runtime
+        branch reads any of the three (design_new.md "Error events")."""
+        if needle in event.message.lower() or needle in event.operation.lower():
+            return True
+        if needle in event.source.lower():
+            return True
+        if event.error is not None:
+            if needle in event.error.text.lower() or needle in event.error.origin.lower():
+                return True
+        return any(needle in e.entity_id.lower() for e in event.entities)
+
     @app.route("/api/event-log", methods=["GET"])
     def get_event_log():
         """Read the operator-facing event log (design_new.md "Event log").
 
         Returns the `NotificationCenter` stream as records the read-only viewer
         and replay layers consume. Optional filters:
-        ``?kind=&operation=&entity_type=&entity_id=&train_id=&since=&until=&limit=``
-        (level / emitting function / entity ref / time range / most-recent
-        count). ``train_id`` is shorthand for
+        ``?kind=&operation=&source=&origin=&q=&entity_type=&entity_id=&train_id=``
+        ``&since=&until=&since_notification_id=&limit=``
+        (level / emitting function / emitting class / `ErrorRecord.origin` /
+        free text over message+error / entity ref / time range / id watermark /
+        most-recent count). ``train_id`` is shorthand for
         ``entity_type=train&entity_id=<id>``: per-entity views are membership
         filters over the event's `entities` list, which is the only entity
         routing key (design_new.md "Runtime notifications").
+
+        ``since_notification_id`` lets a poller ask only for what it has not
+        seen, the same watermark the per-train endpoint takes. Ids increase in
+        emit order and keep counting past a retention drop, so a watermark is
+        never re-served an event it already saw.
 
         ``?persisted=true`` reads the on-disk stream instead of the in-memory
         archive, so an earlier run's incidents can be reviewed after a restart —
@@ -53,11 +75,19 @@ def register(app, state: AppState) -> None:
             limit = 500
         kind = request.args.get("kind")
         operation = request.args.get("operation")
+        source_name = request.args.get("source")
+        origin = request.args.get("origin")
+        query = (request.args.get("q") or "").strip().lower()
         entity_type = request.args.get("entity_type")
         entity_id = request.args.get("entity_id")
         train_id = request.args.get("train_id")
         if train_id and not entity_type:
             entity_type, entity_id = "train", train_id
+
+        try:
+            since_id = int(request.args["since_notification_id"])
+        except (KeyError, TypeError, ValueError):
+            since_id = None
 
         def _time_arg(name):
             raw = request.args.get(name)
@@ -85,11 +115,19 @@ def register(app, state: AppState) -> None:
                 continue
             if operation and e.operation != operation:
                 continue
+            if source_name and e.source != source_name:
+                continue
+            if origin and (e.error is None or e.error.origin != origin):
+                continue
             if entity_type and entity_id and not e.has_entity(entity_type, entity_id):
                 continue
             if since is not None and e.event_time < since:
                 continue
             if until is not None and e.event_time > until:
+                continue
+            if since_id is not None and e.notification_id <= since_id:
+                continue
+            if query and not _matches_query(e, query):
                 continue
             records.append(e.to_dict())
 

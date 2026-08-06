@@ -48,4 +48,9 @@ class RouteHooks:
 
     def __init__(self, controller: "TrainController") -> None:
         self._c = controller
+        # Inject the emit hook rather than letting the aggregate reach for a
+        # controller: every latch write and every Phase-3 commit reports itself
+        # on the one stream (design_new.md "Error events", Deferred actions are
+        # events too), while `PhaseLatches` stays a plain data class.
         self.phase_latches: PhaseLatches = PhaseLatches()
+        self.phase_latches.notify = controller.notifications.emit

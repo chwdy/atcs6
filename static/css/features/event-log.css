@@ -1,0 +1,402 @@
+/* Event Log — the read-only viewer over the one runtime event stream
+   (panels/event-log.ts). The outer window chrome is built by FloatingWindow
+   (layout/floating-window.css); this file styles only what is mounted inside it.
+
+   Row grammar: one column per field on a shared grid template, so a value lines
+   up down the whole list and can be compared between rows by eye rather than
+   hunted for inside a paragraph. Every row is exactly one line tall — cells clip
+   with an ellipsis and carry the full value as a title — so the list scrolls at
+   a steady rhythm and the coloured level rail is findable without reading. The
+   expanded payload is the one thing that breaks the grid: it spans every column
+   beneath its row, because it is the whole event's detail and not one field's.
+
+   The template lives in a custom property so the header and the rows cannot
+   drift apart. */
+
+.floating-window[data-window-id="event-log"] .floating-window-content {
+    font-family: var(--font-main);
+    font-size: 12px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    /* time · level · source · operation · message · error · entities.
+       `message` and `error` take the slack because they are the two that
+       actually vary in length; the rest are bounded by their vocabulary. */
+    /* The two fixed columns are sized to their widest possible value —
+       `HH:MM:SS.mmm` and the word `warning` — because a column that truncates
+       the only thing it ever shows is worse than no column. */
+    --evl-columns: 92px 72px 116px 150px minmax(160px, 1.4fr) minmax(150px, 1fr) minmax(110px, 0.7fr);
+    /* Below this the columns would crush rather than truncate, so the table
+       scrolls sideways instead — the same rule any wide content follows. */
+    --evl-min-table-width: 892px;
+}
+
+/* ---- Toolbars ---- */
+.evl-toolbar {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-color);
+    flex: 0 0 auto;
+}
+
+.evl-toolbar-secondary {
+    align-items: center;
+    padding-top: 6px;
+    padding-bottom: 6px;
+}
+
+.evl-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 0 1 auto;
+    min-width: 0;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+}
+
+.evl-field-grow {
+    flex: 1 1 0;
+}
+
+.evl-field select,
+.evl-field input {
+    height: var(--control-height-xs);
+    background-color: var(--bg-dark);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    padding: 0 6px;
+    font-family: var(--font-main);
+    font-size: 12px;
+    text-transform: none;
+    letter-spacing: 0;
+    min-width: 0;
+}
+
+.evl-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.evl-icon-btn {
+    height: var(--control-height-xs);
+    width: var(--control-height-xs);
+    background-color: var(--bg-dark);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+}
+
+.evl-icon-btn:hover {
+    background-color: var(--bg-hover);
+}
+
+/* ---- Active entity filter ---- */
+.evl-entity-slot {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+}
+
+.evl-entity-empty {
+    font-size: 11px;
+    color: var(--text-tertiary, var(--text-secondary));
+}
+
+.evl-active-entity {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
+    padding: 2px 4px 2px 6px;
+    border: 1px solid var(--accent-color);
+    border-radius: var(--control-radius-sm);
+    background-color: color-mix(in srgb, var(--accent-color) 14%, transparent);
+    font-size: 11px;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.evl-active-entity button {
+    border: none;
+    background: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    padding: 0 2px;
+}
+
+.evl-active-entity button:hover {
+    color: var(--text-primary);
+}
+
+.evl-entity-kind {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+}
+
+/* ---- Body ----
+   The header and the rows share one scroll box so their `fr` tracks resolve
+   against the same width. With the header outside it, the body's scrollbar
+   narrowed the rows by a few pixels and every column sat slightly left of its
+   heading. The header sticks to the top of that box instead. */
+.evl-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: auto;
+}
+
+.evl-empty {
+    padding: 24px 16px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.evl-empty-error {
+    color: var(--danger-color);
+}
+
+/* ---- Row ---- */
+
+/* Column header — same template as the rows, so the two cannot drift apart. */
+.evl-head {
+    display: grid;
+    grid-template-columns: var(--evl-columns);
+    min-width: var(--evl-min-table-width);
+    gap: 8px;
+    padding: 4px 10px;
+    border-bottom: 1px solid var(--border-color);
+    background-color: var(--bg-dark);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    /* Matches the rows' level rail, so the header text sits over its column. */
+    border-left: 3px solid transparent;
+}
+
+.evl-row {
+    display: grid;
+    grid-template-columns: var(--evl-columns);
+    min-width: var(--evl-min-table-width);
+    gap: 8px;
+    align-items: baseline;
+    padding: 3px 10px;
+    border-bottom: 1px solid var(--border-subtle, var(--border-color));
+    cursor: pointer;
+    /* The level rail: a colour before it is a word, so a burst of info traffic
+       with one error in it reads at a glance. */
+    border-left: 3px solid transparent;
+}
+
+/* One line per row: a cell that would wrap clips instead, and its full value
+   stays reachable as the element's title. A log whose row heights vary with
+   content cannot be scanned at speed. */
+.evl-cell {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.evl-row:hover {
+    background-color: var(--bg-hover);
+}
+
+.evl-row-error {
+    border-left-color: var(--danger-color);
+}
+
+.evl-row-warning {
+    border-left-color: var(--warning-color);
+}
+
+.evl-row-debug {
+    opacity: 0.72;
+}
+
+.evl-row-expanded {
+    background-color: var(--bg-hover);
+}
+
+.evl-time {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.evl-level {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    padding: 1px 5px;
+    border-radius: var(--control-radius-sm);
+    text-align: center;
+    background-color: var(--bg-dark);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    white-space: nowrap;
+}
+
+.evl-level[data-level="error"] {
+    color: var(--danger-color);
+    border-color: var(--danger-color);
+    background-color: color-mix(in srgb, var(--danger-color) 12%, transparent);
+}
+
+.evl-level[data-level="warning"] {
+    color: var(--warning-color);
+    border-color: var(--warning-color);
+    background-color: color-mix(in srgb, var(--warning-color) 12%, transparent);
+}
+
+.evl-source {
+    color: var(--text-secondary);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.evl-op {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--accent-color);
+}
+
+.evl-message {
+    color: var(--text-primary);
+}
+
+.evl-error {
+    font-size: 11px;
+    color: var(--danger-color);
+}
+
+/* Origin leads its cell the way the level leads the row: it is the label a
+   reader groups errors by when `operation` alone is too coarse. */
+.evl-origin {
+    margin-right: 5px;
+    padding: 0 4px;
+    border-radius: var(--control-radius-sm);
+    background-color: color-mix(in srgb, var(--danger-color) 16%, transparent);
+    font-family: var(--font-mono);
+    font-size: 10px;
+}
+
+/* ---- Entity chips (the drill-down) ---- */
+.evl-entities {
+    display: flex;
+    gap: 4px;
+}
+
+.evl-chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    padding: 1px 5px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    background-color: var(--bg-dark);
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.evl-chip:hover {
+    border-color: var(--accent-color);
+    color: var(--text-primary);
+}
+
+.evl-chip-kind {
+    font-family: var(--font-main);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    opacity: 0.7;
+}
+
+/* ---- Expanded payload ---- */
+.evl-payload {
+    /* Spans every column beneath its row: it is the whole event's detail, not
+       one field's. */
+    grid-column: 1 / -1;
+    margin: 5px 0 2px;
+    padding: 6px 8px;
+    background-color: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+    /* Wide payloads scroll inside their own box; the panel body must never
+       scroll sideways. */
+    overflow-x: auto;
+    white-space: pre;
+    max-height: 220px;
+    overflow-y: auto;
+}
+
+.evl-payload-empty {
+    font-style: italic;
+    opacity: 0.7;
+}
+
+/* ---- Footer ---- */
+.evl-footer {
+    flex: 0 0 auto;
+    padding: 5px 10px;
+    border-top: 1px solid var(--border-color);
+    font-size: 10px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.evl-count-error {
+    color: var(--danger-color);
+}
+
+.evl-count-warning {
+    color: var(--warning-color);
+}
+
+.evl-live {
+    color: var(--success-color, var(--accent-color));
+}
+
+.evl-paused {
+    opacity: 0.75;
+}

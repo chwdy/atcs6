@@ -454,6 +454,17 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
+  /** Read the operator-facing event log — the one NotificationCenter stream
+   * (design_new.md "Event log"). `query` is the already-encoded filter string
+   * built by the viewer (level / source / operation / entity / free text /
+   * id watermark); see GET /api/event-log for the full parameter set.
+   *
+   * A read only: it acknowledges nothing and empties nothing. */
+  async getEventLog(query = '', options?: RequestOptions): Promise<any> {
+    const suffix = query ? `?${query}` : '';
+    return this._request(`/event-log${suffix}`, options ?? {}, 'getEventLog');
+  }
+
   /** Set (or clear, when chipId is null) one port binding, keyed by logical id.
    * `extra` carries the current map's per-channel calibration (baseline/threshold mA). */
   async updateHardwareBinding(

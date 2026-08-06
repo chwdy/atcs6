@@ -25,6 +25,8 @@ from enum import Enum
 from typing import (
     TYPE_CHECKING,
     Any,
+    Callable,
+    ClassVar,
     Dict,
     FrozenSet,
     List,
@@ -273,6 +275,58 @@ class PhaseLatches:
     power_off: bool = False
     route_deactivate: bool = False
 
+    #: Emit hook onto the one `NotificationCenter` stream, attached by
+    #: `RouteHooks` to `controller.notifications.emit`. Injected rather than
+    #: reached for, so this data class keeps no controller dependency of its own
+    #: — the same reason `has_active_path` is passed in rather than read here.
+    #: `None` on an isolated unit-test aggregate, where every write is silent.
+    #:
+    #: Deliberately a `ClassVar` and not a field: it is wiring, not latch state.
+    #: A field would join equality and repr (two aggregates holding the same
+    #: latches are the same latches, whichever sink they report to) and would be
+    #: mirrored into the generated TypeScript payload types, where a callable
+    #: has no meaning. Attach it per instance: `latches.notify = fn`.
+    notify: ClassVar[Optional[Callable[..., None]]] = None
+
+    # ------------------------------------------------------------------
+    # Event emission
+    # ------------------------------------------------------------------
+
+    def _emit(
+        self,
+        operation: str,
+        message: str,
+        error: Optional[ErrorRecord] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Report one latch write or one latch commit.
+
+        A latch records an action the runtime means to take and cannot commit
+        yet, so setting one and committing one are both worth seeing
+        (design_new.md "Error events", Deferred actions are events too). Without
+        the set event the intent is invisible whenever a second writer overwrites
+        the payload before Phase 3 reaches it — most-recent-payload-wins means
+        the first writer's `ErrorRecord` would otherwise never be seen at all.
+
+        `kind` follows the record: `warning` when the write carries an
+        `ErrorRecord`, `info` when it does not. Best-effort — a reporting failure
+        must never change what the latch did.
+        """
+        if self.notify is None:
+            return
+        try:
+            from notification_center import Kind
+
+            self.notify(
+                message,
+                operation=operation,
+                kind=Kind.WARNING if error is not None else Kind.INFO,
+                error=error,
+                payload=payload,
+            )
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------
     # Writers (canonical setters)
     # ------------------------------------------------------------------
@@ -301,6 +355,19 @@ class PhaseLatches:
             error=error,
             route_progress_kind=route_progress_kind,
         )
+        self._emit(
+            "set_path_cancel_request",
+            f"path cancel requested by {initiator}"
+            + (f": {reason}" if reason else ""),
+            error=error,
+            payload={
+                "latch": "path_cancel_request",
+                "initiator": initiator,
+                "reason": reason,
+                "deviation": deviation,
+                "run_complete": route_progress_kind == "run_complete",
+            },
+        )
 
     def set_route_abort(
         self,
@@ -310,6 +377,14 @@ class PhaseLatches:
         """Set `route_abort`; when a live path exists, also set the inclusive
         `path_cancel_request` with `initiator="operator_cancelled"`."""
         self.route_abort = True
+        # The fan-out emits its own event from `set_path_cancel_request`, so an
+        # inclusive teardown reads back as two events — the intent and the
+        # cancellation it implies — rather than one that hides the other.
+        self._emit(
+            "set_route_abort",
+            "route abort requested" + (f": {reason}" if reason else ""),
+            payload={"latch": "route_abort", "reason": reason},
+        )
         if has_active_path:
             self.set_path_cancel_request("operator_cancelled", reason)
 
@@ -321,6 +396,14 @@ class PhaseLatches:
         """Set `power_off`; when a live path exists, also set the inclusive
         `path_cancel_request` with `initiator="power_off"`."""
         self.power_off = True
+        # The fan-out emits its own event from `set_path_cancel_request`, so an
+        # inclusive teardown reads back as two events — the intent and the
+        # cancellation it implies — rather than one that hides the other.
+        self._emit(
+            "set_power_off",
+            "power off requested" + (f": {reason}" if reason else ""),
+            payload={"latch": "power_off", "reason": reason},
+        )
         if has_active_path:
             self.set_path_cancel_request("power_off", reason)
 
@@ -332,6 +415,14 @@ class PhaseLatches:
         """Set `route_deactivate`; when a live path exists, also set the
         inclusive `path_cancel_request` with `initiator="revoked"`."""
         self.route_deactivate = True
+        # The fan-out emits its own event from `set_path_cancel_request`, so an
+        # inclusive teardown reads back as two events — the intent and the
+        # cancellation it implies — rather than one that hides the other.
+        self._emit(
+            "set_route_deactivate",
+            "route deactivate requested" + (f": {reason}" if reason else ""),
+            payload={"latch": "route_deactivate", "reason": reason},
+        )
         if has_active_path:
             self.set_path_cancel_request("revoked", reason)
 
@@ -363,24 +454,58 @@ class PhaseLatches:
     # Consumers (read-and-clear)
     # ------------------------------------------------------------------
 
+    # Each consumer reports only when it actually commits. Phase 3 reaches all
+    # four every tick for every train, so emitting on the empty pass would bury
+    # the stream in events that say nothing happened.
+
     def consume_path_cancel_request(self) -> Optional[PendingPathCancelRequest]:
         v = self.path_cancel_request
         self.path_cancel_request = None
+        if v is not None:
+            self._emit(
+                "consume_path_cancel_request",
+                f"path cancel committed for {v.initiator}",
+                payload={
+                    "latch": "path_cancel_request",
+                    "initiator": v.initiator,
+                    "reason": v.reason,
+                    "deviation": v.deviation,
+                    "run_complete": v.route_progress_kind == "run_complete",
+                },
+            )
         return v
 
     def consume_route_abort(self) -> bool:
         v = self.route_abort
         self.route_abort = False
+        if v:
+            self._emit(
+                "consume_route_abort",
+                "route abort committed",
+                payload={"latch": "route_abort"},
+            )
         return v
 
     def consume_power_off(self) -> bool:
         v = self.power_off
         self.power_off = False
+        if v:
+            self._emit(
+                "consume_power_off",
+                "power off committed",
+                payload={"latch": "power_off"},
+            )
         return v
 
     def consume_route_deactivate(self) -> bool:
         v = self.route_deactivate
         self.route_deactivate = False
+        if v:
+            self._emit(
+                "consume_route_deactivate",
+                "route deactivate committed",
+                payload={"latch": "route_deactivate"},
+            )
         return v
 
 

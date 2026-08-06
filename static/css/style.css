@@ -21,6 +21,7 @@
 @import url('./features/occupancy-monitor.css');
 @import url('./features/occupancy-bench.css');
 @import url('./features/virtual-bench.css');
+@import url('./features/event-log.css');
 @import url('./features/speed-profiles.css');
 @import url('./features/hardware.css');
 @import url('./base/motion.css');

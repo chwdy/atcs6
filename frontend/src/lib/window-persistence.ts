@@ -70,7 +70,8 @@ export type PersistedWindowKind =
   | 'train-monitor'
   | 'occupancy-monitor'
   | 'occupancy-bench'
-  | 'virtual-bench';
+  | 'virtual-bench'
+  | 'event-log';
 
 export interface WindowRegistryEntry {
   id: string;
@@ -131,6 +132,15 @@ export interface WindowState {
     refreshHz: number;
     filter: string;
     showRaw: boolean;
+  };
+  /** Only for the 'event-log' kind — its toolbar settings. The entity and
+   *  free-text filters are deliberately not persisted: they are a drill-down
+   *  into one investigation, and restoring one silently would show a filtered
+   *  stream that looks like an empty one. */
+  eventLog?: {
+    refreshHz: number;
+    level: string;
+    persisted: boolean;
   };
 }
 
