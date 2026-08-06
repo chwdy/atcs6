@@ -300,7 +300,15 @@ def close_live_device() -> None:
     _session_device = None
     _live_device = None
     if device is not None:
-        device.close()
+        try:
+            device.close()
+        except Exception:
+            # Letting go is the point, and the globals above are already clear:
+            # a handle whose bridge has been unplugged may fail to close, and
+            # that must not become the exception the caller sees instead of the
+            # one that actually matters (`CommissionSession._close_locked`
+            # swallows its close for the same reason).
+            pass
 
 
 def is_real(cfg: Optional[HardwareConfig] = None) -> bool:

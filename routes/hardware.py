@@ -48,6 +48,7 @@ from app_state import AppState
 import hardware_config
 import operation_environment
 from enums import OperationMode
+from runtime_payloads import HardwareFailure
 
 
 def _develop_opener(cfg):
@@ -990,19 +991,41 @@ def register(app, state: AppState) -> None:
                 "error": "Simulation has no hardware to commission",
             }), 409
         with state.simulation_lock:
-            state.sim_controller.deactivate_environment(
+            safe_state_failures = state.sim_controller.deactivate_environment(
                 [{"code": "commissioning", "message": "commissioning owns the device"}],
                 environment=selected,
             )
+            if safe_state_failures:
+                # A bridge that has left the bus cannot be de-energized by
+                # refusing this request either, and refusing it takes away the
+                # one tool that reaches the rig: opening a commissioning session
+                # clears every shift-out chain on the way in, so entering is how
+                # those coils actually drop once the link is back. Hand the
+                # device over, and latch the fault so the halt, the event, and
+                # the banner all say the outputs were never proven safe.
+                state.sim_controller.enter_hardware_failure(
+                    HardwareFailure(
+                        component="OutputSafety",
+                        operation="enter_commissioning",
+                        message="; ".join(safe_state_failures),
+                    )
+                )
             hardware_config.close_live_device()
             # The session's chips were built on the handle just closed, so they
             # can no longer reach the rig. Hand the runtime back the simulated
-            # boundary: the outputs are already safe, and leaving the dead chips
-            # bound would make the next safe state — this route on a second
-            # enter, or `activate` on the way back out — raise instead.
+            # boundary: leaving the dead chips bound would make the next safe
+            # state — this route on a second enter, or `activate` on the way
+            # back out — raise instead.
             state.sim_controller.release_interfaces()
             state.commissioning_active = True
-        return jsonify({"status": "success", "commissioning": True})
+        return jsonify({
+            "status": "success",
+            "commissioning": True,
+            "safe_state": {
+                "ok": not safe_state_failures,
+                "failures": safe_state_failures or [],
+            },
+        })
 
     @app.route("/api/operation/commissioning/exit", methods=["POST"])
     def exit_commissioning():
@@ -1025,6 +1048,67 @@ def register(app, state: AppState) -> None:
             state.network.switches.keys(),
             )
 
+    def _activate_locked(selected):
+        """Build the session's hardware boundary for `selected` and make it live.
+
+        Returns None once the environment is active, or the blocked response body
+        explaining why it is not — in which case the controller has already been
+        told, so a caller that only wants to know whether it worked can test the
+        return for None and drop the rest.
+
+        Its own function rather than the body of `/api/operation/activate`
+        because activation is also how a diagnostic session gives the runtime
+        back. The bench takes the device by deactivating the environment, and
+        undoing that is exactly this sequence — a second copy of it would be one
+        more place for the safe-state ordering below to drift.
+
+        Caller holds `simulation_lock` and has already released whatever else was
+        holding the device.
+        """
+        report = _readiness()
+        if not report["ready"]:
+            state.sim_controller.deactivate_environment(
+                report["issues"], environment=selected
+            )
+            return {"status": "blocked", **report}
+        # A rig that cannot be safed must not stop the rebuild: the outgoing
+        # chips are about to be dropped, and building the new ones re-inits
+        # every chip — clearing each shift-out chain before anything else on
+        # the bus — which is the de-energize this call could not land. What
+        # it must not do is disappear, so a failure is carried down to the
+        # blocked report for the case where no new session arrives.
+        safe_state_failures = state.sim_controller.try_enter_safe_state()
+        try:
+            hardware_config.close_live_device()
+            # Unbind the previous session's chips before building the next
+            # ones: they hold the handle just closed, and both the failure
+            # path below and `activate_interfaces` safe the outputs again.
+            state.sim_controller.release_interfaces()
+            interfaces = hardware_config.build_session_interfaces(
+                hardware_config.get_hardware_config(),
+                environment=selected,
+                track_polarity_of=hardware_config.track_polarity_reversed,
+            )
+            state.sim_controller.activate_interfaces(selected, *interfaces)
+        except hardware_config.HardwareBackendUnavailable as exc:
+            issues = [{"code": "backend_unavailable", "message": str(exc)}]
+            if safe_state_failures:
+                issues.append({
+                    "code": "safe_state_failed",
+                    "message": (
+                        "outputs could not be driven to their safe state: "
+                        + "; ".join(safe_state_failures)
+                    ),
+                })
+            state.sim_controller.deactivate_environment(issues, environment=selected)
+            return {
+                "status": "blocked",
+                "ready": False,
+                "environment": selected.value,
+                "issues": issues,
+            }
+        return None
+
     @app.route("/api/operation/readiness", methods=["GET"])
     def get_operation_readiness():
         return jsonify(_readiness())
@@ -1042,35 +1126,10 @@ def register(app, state: AppState) -> None:
                 "error": "stop operation before activating an environment",
             }), 409
         selected = operation_environment.get_selected()
-        report = _readiness()
         with state.simulation_lock:
-            if not report["ready"]:
-                state.sim_controller.deactivate_environment(
-                    report["issues"], environment=selected
-                )
-                return jsonify({"status": "blocked", **report}), 409
-            try:
-                state.sim_controller.enter_safe_state()
-                hardware_config.close_live_device()
-                # Unbind the previous session's chips before building the next
-                # ones: they hold the handle just closed, and both the failure
-                # path below and `activate_interfaces` safe the outputs again.
-                state.sim_controller.release_interfaces()
-                interfaces = hardware_config.build_session_interfaces(
-                    hardware_config.get_hardware_config(),
-                    environment=selected,
-                    track_polarity_of=hardware_config.track_polarity_reversed,
-                )
-                state.sim_controller.activate_interfaces(selected, *interfaces)
-            except hardware_config.HardwareBackendUnavailable as exc:
-                issue = {"code": "backend_unavailable", "message": str(exc)}
-                state.sim_controller.deactivate_environment([issue], environment=selected)
-                return jsonify({
-                    "status": "blocked",
-                    "ready": False,
-                    "environment": selected.value,
-                    "issues": [issue],
-                }), 409
+            blocked = _activate_locked(selected)
+        if blocked is not None:
+            return jsonify(blocked), 409
         return jsonify({
             "status": "success",
             "environment": selected.value,

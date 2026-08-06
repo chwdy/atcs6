@@ -21,7 +21,23 @@ have.
 from __future__ import annotations
 
 import threading
-from typing import Mapping
+from typing import List, Mapping, Sequence
+
+
+class SafeStateError(RuntimeError):
+    """One or more outputs did not reach their safe state.
+
+    Carries the per-chip failures as data as well as in the sentence. Whoever
+    reports this to an operator has to name the chips that did not answer, and
+    re-parsing the message to recover them is not a contract worth having.
+    """
+
+    def __init__(self, failures: Sequence[str]) -> None:
+        self.failures: List[str] = list(failures)
+        super().__init__(
+            "one or more physical outputs could not be safed: "
+            + "; ".join(self.failures)
+        )
 
 
 class OutputSafety:
@@ -58,7 +74,4 @@ class OutputSafety:
                 except Exception as exc:  # noqa: BLE001 - clear remaining chips
                     errors.append(f"{chip_id}: {exc}")
             if errors:
-                raise RuntimeError(
-                    "one or more physical outputs could not be safed: "
-                    + "; ".join(errors)
-                )
+                raise SafeStateError(errors)

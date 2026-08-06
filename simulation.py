@@ -49,6 +49,7 @@ from switch_power import (
     SwitchPowerController,
 )
 from block_occupancy import SimulatedOccupancyDriver, BlockOccupancyDetector
+from hardware.safety import SafeStateError
 from notification_center import (
     EntityRef,
     Kind,
@@ -612,6 +613,29 @@ class SimulationController(SwitchOutputOwner):
         if self.switch_power_controller is not None:
             self.switch_power_controller.enter_safe_state()
 
+    def try_enter_safe_state(self) -> Optional[List[str]]:
+        """`enter_safe_state()` for callers that must keep going when the rig
+        cannot be commanded at all.
+
+        Returns `None` when every output was safed, or the per-chip failures —
+        `OutputSafety` attempts every chip before it raises, so the list is what
+        did not answer rather than where it gave up. A transport that is gone
+        cannot be de-energized by the caller giving up either, so the ones that
+        take the rig somewhere better (revoking the session, handing the device
+        to commissioning, rebuilding the chips) report the failure and carry on.
+        Callers that own the outputs and can stop instead should keep using
+        `enter_safe_state()` and let it raise.
+        """
+        try:
+            self.enter_safe_state()
+        except SafeStateError as exc:
+            logger.exception("safe-state command failed")
+            return list(exc.failures)
+        except Exception as exc:  # noqa: BLE001 - the caller decides what it means
+            logger.exception("safe-state command failed")
+            return [str(exc)]
+        return None
+
     def activate_interfaces(
         self,
         environment: OperationMode,
@@ -708,13 +732,22 @@ class SimulationController(SwitchOutputOwner):
 
     def deactivate_environment(
         self, issues: List[Dict[str, Any]], environment: Optional[OperationMode] = None
-    ) -> None:
-        """Leave outputs safe and expose why the selected environment is inactive."""
-        self.enter_safe_state()
+    ) -> Optional[List[str]]:
+        """Leave outputs safe and expose why the selected environment is inactive.
+
+        Returns whatever `try_enter_safe_state` reported: `None` when the outputs
+        are safe, else the chips that did not answer. The bookkeeping below runs
+        either way, because it matters most exactly when the transport is gone —
+        an operator left with a session that refuses to operate and says nothing
+        about why has been given the worst of both. What the failure means is the
+        caller's call; this one only makes sure it is not lost.
+        """
+        failures = self.try_enter_safe_state()
         if environment is not None:
             self.operation_mode = operation_environment.parse(environment)
         self.environment_active = False
         self.activation_issues = list(issues)
+        return failures
 
     def _detect_block_occupancy(self) -> None:
         """Step 0 of the tick: read every block's current detector, debounce,
