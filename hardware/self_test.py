@@ -270,14 +270,17 @@ def run_track_test(
     for those rails — so a caller can mirror the sweep onto the model and the
     operator sees the block energize while it happens.
 
-    That nominal sign is what `polarity_reversed` (the block's rail-binding
-    `TrackBinding.reversed` flag) is for. The sweep drives the binding's two
-    channels raw, deliberately: driving the rails the binding names is what makes
-    a block wired the wrong way round show itself, by running the loco backwards
-    on the first leg. But the driver resolves a nominal positive command to the
-    *other* channel on such a block, so mirroring the first leg as positive would
-    have the model and the driver disagreeing about the same two rails. Reversed,
-    the first leg is nominally negative.
+    `polarity_reversed` is the block's rail-binding `TrackBinding.reversed` flag,
+    and the sweep resolves it exactly as `TrackDriver.set_voltage` does: the two
+    channels trade places, so the first leg drives the channel the binding calls
+    `reverse`. The sweep sits directly under the block panel's Track direction
+    control, and it is the only way to check that control: an operator watches a
+    loco run the wrong way, flips the block to Reversed, and sweeps again to see
+    it run the right way. A sweep that drove the binding raw would run backwards
+    both times and never confirm the correction — discovery still works because a
+    fresh binding is Normal. Resolving the flag here also keeps the mirrored sign
+    honest for free: the first leg is nominally positive on every block, because
+    it drives whichever rail a nominal positive command drives.
     """
     binding = cfg.block_track.get(block_id)
     if binding is None:
@@ -295,19 +298,15 @@ def run_track_test(
             return {"ok": False, "error": str(exc)}
         close_after = True
 
-    nominal: Optional[Callable[[float], None]] = None
-    if on_voltage is not None:
-        sign = -1.0 if polarity_reversed else 1.0
-
-        def nominal(driven: float, _sign: float = sign) -> None:
-            # `driven or 0.0` keeps the off legs at a plain 0.0: flipping the
-            # sign of zero gives -0.0, which is equal to zero but reads as a
-            # negative rail everywhere it is shown.
-            on_voltage(_sign * driven if driven else 0.0)
+    # Resolve the binding the way the driver does, so the sweep and the runtime
+    # agree about which physical rail "forward" names on this block.
+    forward, reverse = binding.forward, binding.reverse
+    if polarity_reversed:
+        forward, reverse = reverse, forward
 
     try:
         chip = build_chip(device, spec)
-        _drive_sequence(chip, binding.forward, binding.reverse, on_voltage=nominal)
+        _drive_sequence(chip, forward, reverse, on_voltage=on_voltage)
         return {"ok": True, "volts": MAX_TRACK_VOLTAGE, "hold_s": TRACK_TEST_HOLD_S}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}

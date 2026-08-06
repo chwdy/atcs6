@@ -1294,12 +1294,12 @@ def test_track_test_mirrors_the_sweep_as_nominal_voltage(monkeypatch):
     assert seen == [12.0, 0.0, -12.0, 0.0]
 
 
-def test_track_test_mirror_follows_block_polarity(monkeypatch):
-    # The sweep always drives the binding's channels raw — that is what makes a
-    # backwards-wired block reveal itself. But the driver resolves a nominal
-    # positive command to the other channel on a reversed block, so the mirrored
-    # sign flips to match, and the model never disagrees with the driver about
-    # which way the rails it just drove are pointing.
+def test_track_test_resolves_block_polarity_like_the_driver(monkeypatch):
+    # The sweep sits under the block panel's Track direction control and is the
+    # only way to check it: flip a backwards block to Reversed, sweep again, and
+    # the loco must now run the right way. So the sweep trades the two channels
+    # exactly as `TrackDriver.set_voltage` does — the first leg drives the
+    # channel the binding calls `reverse`, and stays nominally positive.
     monkeypatch.setattr(self_test, "TRACK_TEST_HOLD_S", 0.0)
     dev = FakeCh347Device(present_addresses={0x40})
     cfg = HardwareConfig(
@@ -1307,13 +1307,49 @@ def test_track_test_mirror_follows_block_polarity(monkeypatch):
         chips=[ChipConfig("pwm1", "pca9685", i2c_address=0x40)],
         block_track={"B1": TrackBinding("pwm1", 4, 9)},
     )
+    driven = []
+    original = PCA9685.set_duty_cycle
+
+    def spy(self, channel, duty):
+        if duty > 0:
+            driven.append(channel)
+        original(self, channel, duty)
+
+    monkeypatch.setattr(PCA9685, "set_duty_cycle", spy)
+
     seen = []
     res = self_test.run_track_test(
         cfg, "B1", device=dev, on_voltage=seen.append, polarity_reversed=True
     )
     assert res["ok"] is True
-    assert seen == [-12.0, 0.0, 12.0, 0.0]
+    assert driven == [9, 4]                  # reverse rail first, not forward
+    assert seen == [12.0, 0.0, -12.0, 0.0]   # nominal sign, same as the runtime
     assert dev.duty_cycle(0x40, 4) == 0.0 and dev.duty_cycle(0x40, 9) == 0.0
+
+
+def test_track_test_drives_the_forward_rail_first_on_a_normal_block(monkeypatch):
+    # The Normal counterpart of the test above, and the discovery case: a fresh
+    # binding is Normal, so a block wired the wrong way round still reveals
+    # itself by running the loco backwards on the first leg.
+    monkeypatch.setattr(self_test, "TRACK_TEST_HOLD_S", 0.0)
+    dev = FakeCh347Device(present_addresses={0x40})
+    cfg = HardwareConfig(
+        controller=ControllerConfig(kind="ch347"),
+        chips=[ChipConfig("pwm1", "pca9685", i2c_address=0x40)],
+        block_track={"B1": TrackBinding("pwm1", 4, 9)},
+    )
+    driven = []
+    original = PCA9685.set_duty_cycle
+
+    def spy(self, channel, duty):
+        if duty > 0:
+            driven.append(channel)
+        original(self, channel, duty)
+
+    monkeypatch.setattr(PCA9685, "set_duty_cycle", spy)
+
+    assert self_test.run_track_test(cfg, "B1", device=dev)["ok"] is True
+    assert driven == [4, 9]
 
 
 def test_track_test_reports_a_block_with_no_track_binding():

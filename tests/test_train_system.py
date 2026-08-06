@@ -561,10 +561,14 @@ class TestBlockPowerController:
         assert controller.get_block_voltage("BLK_001") == MAX_TRACK_VOLTAGE
 
     def test_voltage_clamping_min(self, controller: BlockPowerController):
-        """Test voltage is clamped to minimum."""
-        # Phase 6: min_voltage is now -MAX_TRACK_VOLTAGE to support opposite polarity
+        """A block voltage is a magnitude, so the floor is 0.
+
+        The rails are two 0-100% PWM channels into an H-bridge: direction is
+        which channel the driver drives, resolved from the rail binding below
+        this layer, never a sign on the commanded voltage.
+        """
         controller.set_block_voltage("BLK_001", -15.0)
-        assert controller.get_block_voltage("BLK_001") == -MAX_TRACK_VOLTAGE
+        assert controller.get_block_voltage("BLK_001") == 0.0
 
     def test_calculate_voltage_for_off_train(
         self, controller: BlockPowerController, train_off: Train
@@ -633,21 +637,19 @@ class TestBlockPowerController:
         assert restored.get_block_voltage("BLK_001") == 5.0
         assert restored.get_block_voltage("BLK_002") == 8.0
 
-    def test_from_dict_without_min_voltage_keeps_reverse_polarity(self):
-        """A dict that omits ``min_voltage`` must keep the bipolar floor.
+    def test_from_dict_without_min_voltage_uses_the_zero_floor(self):
+        """A dict that omits ``min_voltage`` gets the same floor a fresh
+        controller has.
 
-        ``to_dict`` always writes ``min_voltage``, so round-trips are fine,
-        but a hand-written or legacy dict may omit it. The fallback must
-        match the dataclass default (``-MAX_TRACK_VOLTAGE``) so negative
-        (reverse-polarity) block voltages stay drivable rather than being
-        silently clamped up to 0.
+        ``to_dict`` always writes ``min_voltage``, so round-trips are fine, but
+        a hand-written dict may omit it. The fallback must match the dataclass
+        default rather than opening a range the constructor does not give.
         """
         restored = BlockPowerController.from_dict({"voltages": {}})
 
-        assert restored.min_voltage == -MAX_TRACK_VOLTAGE
-        # Negative drive survives: -8V is not clamped to 0.
+        assert restored.min_voltage == 0.0
         restored.set_block_voltage("BLK_001", -8.0)
-        assert restored.get_block_voltage("BLK_001") == -8.0
+        assert restored.get_block_voltage("BLK_001") == 0.0
 
 
 class TestBlockCurrentVoltage:

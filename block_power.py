@@ -141,7 +141,7 @@ class BlockPowerController:
         network: Reference to the railway network
         output_interface: Interface for actual voltage output
         max_voltage: Maximum allowable voltage (default 12V)
-        min_voltage: Minimum voltage (default -12V, negative for opposite polarity)
+        min_voltage: Minimum voltage (default 0V)
     """
 
     network: Optional["RailwayNetwork"] = None
@@ -149,7 +149,13 @@ class BlockPowerController:
 
     # Voltage limits
     max_voltage: float = MAX_TRACK_VOLTAGE
-    min_voltage: float = -MAX_TRACK_VOLTAGE  # Allow negative for opposite polarity
+    # A block's rails are two 0-100% PWM channels into an H-bridge, so there is
+    # no negative rail to command: direction is which of the two channels is
+    # driven, and the driver resolves that from the binding below this layer
+    # (design_new.md "Power", Rail polarity lives on the rail binding). Every
+    # producer of a block voltage emits a magnitude — `compute_track_voltage`
+    # is the only non-zero one — so the floor is 0.
+    min_voltage: float = 0.0
 
     # SimulationController back-reference, set by bootstrap so this
     # controller can fetch the live `TrainController` (for the operational
@@ -423,11 +429,10 @@ class BlockPowerController:
 
         Voltage limits are only overridden when present in ``data``;
         absent keys fall back to the dataclass field defaults
-        (``max_voltage`` = ``MAX_TRACK_VOLTAGE``, ``min_voltage`` =
-        ``-MAX_TRACK_VOLTAGE``). Keeping the defaults in one place — the
-        fields themselves — means a hand-written or legacy dict that omits
-        ``min_voltage`` still retains the full bipolar range and can drive
-        reverse-polarity (negative) block voltages.
+        (``max_voltage`` = ``MAX_TRACK_VOLTAGE``, ``min_voltage`` = 0).
+        Keeping the defaults in one place — the fields themselves — means a
+        hand-written dict that omits either limit gets the same range a
+        freshly constructed controller has.
         """
         kwargs: Dict[str, Any] = {}
         if "max_voltage" in data:

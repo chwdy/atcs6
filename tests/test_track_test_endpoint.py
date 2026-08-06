@@ -8,8 +8,10 @@ the whole test — the same disagreement `POST /api/hardware/switch-test` was fi
 for when a test throw moved the points and left `Switch.position` behind.
 
 So the sweep mirrors each leg onto `Block.current_voltage` as it starts, in the
-nominal sign the runtime commands (per the rail binding's `reversed` flag), and
-drops it back to zero when the rails go dead.
+nominal sign the runtime commands for those rails, and drops it back to zero when
+the rails go dead. The sweep resolves the rail binding's `reversed` flag the way
+the driver does, so the first leg is nominally positive on every block and the
+mirror never contradicts the rails it just drove.
 
 Run with:
     /opt/homebrew/anaconda3/envs/general/bin/python -m pytest \
@@ -25,6 +27,7 @@ import hardware_config
 from app_factory import create_app
 from app_state import AppState
 from hardware import self_test
+from hardware.chips.pca9685 import PCA9685
 from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
@@ -114,6 +117,24 @@ def _legs(monkeypatch, block):
     return seen
 
 
+def _driven_channels(monkeypatch):
+    """The PWM channels the sweep energizes, in the order it energizes them.
+
+    Which physical rail goes hot first is the whole subject of the polarity
+    flag, and the mirror alone cannot show it — a mirrored +12 V says the same
+    thing whichever channel carries it."""
+    driven = []
+    original = PCA9685.set_duty_cycle
+
+    def spy(self, channel, duty):
+        if duty > 0:
+            driven.append(channel)
+        original(self, channel, duty)
+
+    monkeypatch.setattr(PCA9685, "set_duty_cycle", spy)
+    return driven
+
+
 def test_sweep_energizes_the_block_on_the_layout(client, monkeypatch):
     test_client, block = client
     seen = _legs(monkeypatch, block)
@@ -130,12 +151,13 @@ def test_sweep_leaves_the_block_de_energized(client):
     assert block.current_voltage == 0.0
 
 
-def test_sweep_mirrors_a_reversed_block_the_way_the_driver_would(client, monkeypatch):
-    """A backwards-wired block still gets its rails driven in binding order — the
-    loco running the wrong way first is the whole point of the sweep — but the
-    driver resolves a nominal positive to the other rail on such a block, so the
-    model has to read the sweep negative-first or it contradicts the driver. The
-    flag rides in on the rail binding of the config payload the sweep drives
+def test_sweep_drives_a_reversed_block_the_way_the_driver_would(client, monkeypatch):
+    """A block flipped to Reversed gets its two rails traded, exactly as the
+    driver trades them resolving the same binding, so the operator who just
+    flipped the block sweeps again and watches the loco run the right way — the
+    sweep is the only check that control has. The mirror follows: the first leg
+    drives whichever rail a nominal positive drives, so it reads +12 V here too.
+    The flag rides in on the rail binding of the config payload the sweep drives
     (design_new.md "Power", Rail polarity lives on the rail binding)."""
     test_client, block = client
     reversed_config = {
@@ -144,11 +166,25 @@ def test_sweep_mirrors_a_reversed_block_the_way_the_driver_would(client, monkeyp
             "BLK_A": {"chip_id": "pwm1", "forward": 4, "reverse": 9, "reversed": True}
         },
     }
+    driven = _driven_channels(monkeypatch)
     seen = _legs(monkeypatch, block)
 
     assert _sweep(test_client, config=reversed_config).get_json()["ok"] is True
 
-    assert seen.legs == [-12.0, 0.0, 12.0]
+    assert driven == [9, 4]                  # reverse rail first, not forward
+    assert seen.legs == [12.0, 0.0, -12.0]
+
+
+def test_sweep_drives_the_forward_rail_first_on_a_normal_block(client, monkeypatch):
+    """The Normal counterpart, and the discovery case: a fresh binding is Normal,
+    so a block wired the wrong way round names itself by running the loco
+    backwards on the first leg."""
+    test_client, _block = client
+    driven = _driven_channels(monkeypatch)
+
+    assert _sweep(test_client).get_json()["ok"] is True
+
+    assert driven == [4, 9]
 
 
 def test_unbound_block_is_reported_and_touches_no_voltage(client):
