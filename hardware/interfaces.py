@@ -418,6 +418,10 @@ class OccupancyDriver(OccupancyInput):
         # answered, what it measured, and the commanded drive state at the time.
         # Diagnostic read-back for the raw-occupancy debug endpoint only.
         self._last_read_detail: Dict[str, Dict[str, Any]] = {}
+        # One threshold to judge every current channel against, in place of the
+        # per-block configured ones. Only the occupancy bench sets this — see
+        # `set_current_threshold_override`.
+        self._current_threshold_override_a: Optional[float] = None
 
     def detected_block_ids(self) -> Set[str]:
         """Every block wired to a detector — the union of the two occupancy
@@ -500,6 +504,72 @@ class OccupancyDriver(OccupancyInput):
         measured mA or raw bit, and the commanded drive state. Diagnostic only."""
         return self._last_read_detail
 
+    def read_all_sources(self) -> Dict[str, Dict[str, Any]]:
+        """Read BOTH detectors for every bound block and report each separately,
+        alongside the verdict the zone rule takes from them.
+
+        `read_block_currents` reads only the source its zone trusts — that is the
+        whole point of the hybrid, and it is what the runtime wants. It is the
+        wrong shape for diagnosing the hybrid itself: at 40% drive the zone is
+        `driven`, so the '165 bit is never sampled, and "the current channel says
+        clear" cannot be told apart from "the current channel is miswired" without
+        the other detector's opinion beside it.
+
+        So this reads both unconditionally and reports `digital` / `current` /
+        `overall` per block. It is a diagnostic path: nothing in the runtime calls
+        it, no debounce counter moves, `_last_reported` and the lighting-zone
+        clear window are left exactly as `read_block_currents` left them. A block
+        with no binding on one side reports `None` there rather than False —
+        "unwired" and "reads clear" are different answers.
+
+        The lighting zone has no single-read verdict to give (a clear there is
+        earned over a window this call does not touch), so `overall` reports what
+        either source can confirm on one read, and `held_zone` marks it — the same
+        contract `self_test.run_occupancy_test` reports for one block.
+        """
+        digital_cache: Dict[str, bytes] = {}
+        out: Dict[str, Dict[str, Any]] = {}
+        for block_id in set(self._digital) | set(self._current):
+            entry: Dict[str, Any] = {
+                "zone": self._drive_zone(block_id),
+                "commanded_volts": (
+                    round(self._voltage_of(block_id), 2)
+                    if self._voltage_of is not None
+                    else None
+                ),
+            }
+            digital = (
+                self._read_digital(block_id, digital_cache, entry)
+                if block_id in self._digital
+                else None
+            )
+            current = (
+                self._read_current(block_id, entry)
+                if block_id in self._current
+                else None
+            )
+            entry["digital"] = digital
+            entry["current"] = current
+            entry["driven"] = entry["zone"] == "driven"
+            if entry["zone"] == "lighting":
+                entry["source"] = "held"
+                entry["held_zone"] = True
+                entry["overall"] = bool(digital or current)
+            elif entry["zone"] == "driven" and current is not None:
+                entry["source"] = "current"
+                entry["overall"] = bool(current)
+            elif digital is not None:
+                entry["source"] = "digital"
+                entry["overall"] = bool(digital)
+            elif current is not None:
+                entry["source"] = "current"
+                entry["overall"] = bool(current)
+            else:
+                entry["source"] = "none"
+                entry["overall"] = False
+            out[block_id] = entry
+        return out
+
     def _drive_zone(self, block_id: str) -> str:
         """Which detector regime this block's COMMANDED voltage puts it in:
         "idle", "lighting", or "driven" (see the class docstring).
@@ -544,10 +614,33 @@ class OccupancyDriver(OccupancyInput):
             bit, active_low=self._digital_active_low.get(chip_id, False)
         )
 
+    def set_current_threshold_override(self, threshold_ma: Optional[float]) -> None:
+        """Judge every current channel against `threshold_ma` instead of its own
+        configured threshold; `None` restores the per-block values.
+
+        Diagnostic seam for the occupancy bench, which exists so an operator can
+        sweep one threshold across the whole layout and watch where each block
+        crosses over — the calibration `hardware_config` then wants per channel.
+        Nothing in the runtime sets this, and it defaults to unset.
+
+        Deliberately an override rather than an edit of `_current`: the bindings
+        keep their configured baselines and thresholds, so clearing the override
+        restores them exactly, and a bench session cannot leave a driver quietly
+        judging against a number nobody configured.
+        """
+        self._current_threshold_override_a = (
+            None if threshold_ma is None else max(0.0, float(threshold_ma)) / 1000.0
+        )
+
     def _read_current(
         self, block_id: str, detail: Optional[Dict[str, Any]] = None
     ) -> bool:
-        chip_id, port, baseline_a, threshold_a = self._current[block_id]
+        chip_id, port, baseline_a, configured_a = self._current[block_id]
+        threshold_a = (
+            configured_a
+            if self._current_threshold_override_a is None
+            else self._current_threshold_override_a
+        )
         chip = self._current_chips.get(chip_id)
         if chip is None:
             return False
@@ -559,7 +652,11 @@ class OccupancyDriver(OccupancyInput):
             return False
         if detail is not None:
             detail["current_ma"] = round(current * 1000.0, 3)
+            # The EFFECTIVE threshold — the number the verdict beside it was
+            # actually judged against. Reporting the configured one under an
+            # override would make the reading and the verdict look inconsistent.
             detail["threshold_ma"] = round(threshold_a * 1000.0, 3)
+            detail["configured_threshold_ma"] = round(configured_a * 1000.0, 3)
             detail["baseline_ma"] = round(baseline_a * 1000.0, 3)
         return abs(current - baseline_a) >= threshold_a
 

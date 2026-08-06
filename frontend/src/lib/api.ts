@@ -407,6 +407,53 @@ export class API implements LayoutDataClient, SimClient {
     return this._request('/hardware/occupancy/raw', options ?? {}, 'getRawOccupancy');
   }
 
+  /** Take the controller for the occupancy bench: deactivate the environment,
+   * hand the device over, and build the bench's own track + detector interfaces
+   * on it. `closeOccupancyBench` puts both back. */
+  async openOccupancyBench(): Promise<any> {
+    return this._request('/hardware/bench/open', { method: 'POST' }, 'openOccupancyBench');
+  }
+
+  /** De-energize, release the controller, and reactivate the environment the
+   * bench took. Answers `{reactivated, issues}`: false with a populated `issues`
+   * is a rebuild that was blocked, and the only place the operator can hear it —
+   * the panel is closing and the header will simply read inactive. */
+  async closeOccupancyBench(): Promise<any> {
+    return this._request('/hardware/bench/close', { method: 'POST' }, 'closeOccupancyBench');
+  }
+
+  /** Both occupancy detectors for every bound block, plus what the bench is
+   * driving. Answers `{open: false}` rather than erroring when no bench holds
+   * the device, so the panel can poll one endpoint either way. */
+  async getOccupancyBenchState(options?: RequestOptions): Promise<any> {
+    return this._request('/hardware/bench/state', options ?? {}, 'getOccupancyBenchState');
+  }
+
+  /** Start / stop the bench drive. `flipped` REPLACES the stored set — send the
+   * whole set every time, never a delta. */
+  async setOccupancyBenchDrive(
+    running: boolean,
+    percent: number,
+    flipped: string[]
+  ): Promise<any> {
+    return this._request(
+      '/hardware/bench/drive',
+      { method: 'POST', body: { running, percent, flipped } as any },
+      'setOccupancyBenchDrive'
+    );
+  }
+
+  /** Judge every bench current channel against one threshold in mA, or null to
+   * put each block back on its own configured value. Reads only — the rails are
+   * not re-commanded, and the hardware configuration is not written. */
+  async setOccupancyBenchThreshold(thresholdMa: number | null): Promise<any> {
+    return this._request(
+      '/hardware/bench/threshold',
+      { method: 'POST', body: { threshold_ma: thresholdMa } as any },
+      'setOccupancyBenchThreshold'
+    );
+  }
+
   /** Set (or clear, when chipId is null) one port binding, keyed by logical id.
    * `extra` carries the current map's per-channel calibration (baseline/threshold mA). */
   async updateHardwareBinding(

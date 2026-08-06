@@ -1,0 +1,418 @@
+/* Occupancy Bench — the layout drawn as a schematic in which every block is a
+   direction button, over one Play / Stop (panels/occupancy-bench.ts). The outer
+   window chrome is built by FloatingWindow (layout/floating-window.css); this
+   file styles only what is mounted inside it.
+
+   Layout grammar: a status line, a stage that takes all the remaining height,
+   and a fixed transport strip. The stage holds one SVG scaled to the layout's
+   own aspect ratio with an HTML label per block positioned over it in percent,
+   so the schematic and its readouts stay registered through any resize.
+
+   Colour grammar follows DESIGN_LANGUAGE §17: danger is reserved for faults and
+   occupancy, so `occupied` — the one state the operator is hunting — is the only
+   thing here that goes red. An energized-but-clear rail reads accent, and a
+   de-energized one reads as plain border colour. */
+
+.floating-window[data-window-id="occupancy-bench"] .floating-window-content {
+    font-family: var(--font-main);
+    font-size: var(--font-size-body);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+/* ---- Status line ---- */
+.bench-status {
+    padding: var(--space-8) var(--space-10);
+    border-bottom: 1px solid var(--border-color);
+    font-size: var(--font-size-label);
+    line-height: 1.45;
+    color: var(--text-secondary);
+}
+
+.bench-status-info {
+    background-color: rgba(var(--info-rgb), 0.08);
+}
+
+.bench-status-danger {
+    background-color: rgba(var(--danger-rgb), 0.12);
+    color: var(--danger-color);
+}
+
+/* ---- Stage ---- */
+.bench-stage {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-12);
+}
+
+/* The positioning context the block labels are placed in. `aspect-ratio` is set
+   inline from the layout's own bounding box, so the box is exactly the shape of
+   the track and a percentage offset inside it lands on the right rail. */
+.bench-canvas {
+    position: relative;
+    width: 100%;
+    max-height: 100%;
+}
+
+.bench-svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+}
+
+/* ---- Rails ----
+   A block at rest still has to read as a block. The de-energized colour is the
+   secondary text tone rather than the border tone so that owned track stays a
+   step above the switches and unassigned tiles drawn beneath it — otherwise, on
+   a closed bench, every rail on the layout looks alike and the schematic stops
+   telling the operator which runs the panel can even speak for. */
+.bench-rail {
+    stroke: var(--text-secondary);
+    stroke-width: 9;
+    stroke-linecap: round;
+    transition: stroke 120ms ease;
+}
+
+/* A switch or an unassigned tile: real track the bench can neither drive nor
+   detect. Drawn thinner as well as dimmer so it reads as scenery, not as a
+   block whose readout has gone missing. */
+.bench-rail-unowned {
+    stroke: var(--text-tertiary);
+    stroke-width: 6;
+    opacity: 0.5;
+}
+
+/* Energized and reading clear. */
+.bench-rail-live {
+    stroke: var(--accent-color);
+}
+
+/* The state the panel exists to find. Wins over `live` by source order. */
+.bench-rail-occupied {
+    stroke: var(--danger-color);
+}
+
+.bench-rail-flipped {
+    stroke-dasharray: 10 6;
+}
+
+/* ---- Block button + readout ---- */
+.bench-block {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    white-space: nowrap;
+    /* The label sits ON the rail it names; the wrapper must not swallow clicks
+       aimed at neighbouring track, so only the controls inside it take pointers. */
+    pointer-events: none;
+}
+
+/* Which way the label grows from its block's centroid — see `anchorClass`. A
+   label centred on a block near the edge of the layout runs off the panel, and
+   the readout is the half that goes. */
+.bench-block-centre {
+    transform: translate(-50%, -50%);
+}
+
+.bench-block-left {
+    transform: translate(0, -50%);
+}
+
+/* Hangs to the left of the centroid, and reverses so the button — not the
+   readout — stays against the rail it names. */
+.bench-block-right {
+    transform: translate(-100%, -50%);
+    flex-direction: row-reverse;
+}
+
+.bench-block-btn,
+.bench-block-readout {
+    pointer-events: auto;
+}
+
+.bench-block-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-4);
+    height: var(--control-height-xs);
+    padding: 0 var(--space-8);
+    background-color: var(--bg-panel);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    font-family: var(--font-main);
+    font-size: var(--font-size-label);
+    cursor: pointer;
+    /* Lifts the chip off the rail it is sitting on, so the label reads as a
+       control over the track rather than as part of it. */
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.bench-block-btn:hover {
+    background-color: var(--bg-hover);
+    border-color: var(--accent-color);
+}
+
+.bench-block-btn:focus-visible {
+    outline: 2px solid var(--accent-color);
+    outline-offset: 1px;
+}
+
+/* Which way this block is being driven. A plain direction arrow, deliberately
+   NOT the ▶ / ◀ pair it started as: that is the play glyph, so the chip read as
+   a per-block transport, made the one Play/Stop below look duplicated, and left
+   the direction control looking like a status icon nobody would press. */
+.bench-block-arrow {
+    font-size: 14px;
+    line-height: 1;
+    color: var(--accent-color);
+}
+
+/* The affordance the arrow alone does not carry: this chip is a toggle. Sits
+   quietly at the trailing edge until hover, where it is the thing being
+   promised. */
+.bench-block-flip {
+    font-size: 12px;
+    line-height: 1;
+    color: var(--text-tertiary);
+    opacity: 0.7;
+}
+
+.bench-block-btn:hover .bench-block-flip {
+    color: var(--accent-color);
+    opacity: 1;
+}
+
+.bench-block-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.bench-block-btn:disabled:hover {
+    background-color: var(--bg-panel);
+    border-color: var(--border-color);
+}
+
+.bench-block-name {
+    font-family: var(--font-mono);
+    letter-spacing: 0.02em;
+}
+
+.bench-block-volts {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-micro);
+    color: var(--text-secondary);
+}
+
+/* Occupied: the button itself goes red, per the panel's contract that the
+   button reads the overall verdict at a glance.
+
+   The tint is a gradient layered over the opaque panel background, not an rgba
+   background-color. A label sits ON the rail it names, so a translucent tint
+   composites against a red rail instead of against the panel, and the block id
+   inside it drops to almost no contrast on exactly the blocks the operator most
+   needs to read. */
+.bench-block-occupied .bench-block-btn {
+    background-color: var(--bg-panel);
+    background-image: linear-gradient(
+        rgba(var(--danger-rgb), 0.18),
+        rgba(var(--danger-rgb), 0.18)
+    );
+    border-color: var(--danger-color);
+    color: var(--danger-color);
+}
+
+.bench-block-occupied .bench-block-arrow,
+.bench-block-occupied .bench-block-volts {
+    color: var(--danger-color);
+}
+
+.bench-block-flipped .bench-block-btn {
+    border-style: dashed;
+}
+
+/* No rail binding — the button is still live (the flip is remembered for when
+   one is added) but nothing it commands can reach the track. */
+.bench-block-unpowered .bench-block-btn {
+    opacity: 0.6;
+}
+
+.bench-block-readout {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-micro);
+    padding: 2px var(--space-6);
+    border-radius: var(--radius-pill);
+    background-color: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+}
+
+.bench-block-occupied .bench-block-readout {
+    color: var(--danger-color);
+    border-color: rgba(var(--danger-rgb), 0.5);
+}
+
+/* What the current channel actually measured. Deliberately outside the
+   `idle-current overall` readout rather than folded into it: that readout is
+   three booleans in a fixed shape and stays scannable across five blocks at
+   once, while this is the analogue number you go to when one of them looks
+   wrong. Hover carries the margin against the threshold deciding it.
+
+   Always rendered, `— mA` when there is no reading — it used to be dropped
+   whenever the number was missing, which meant the current reading was absent
+   from every block on a bench that had not taken the controller yet, i.e.
+   exactly when someone goes looking for it.
+
+   Carries the accent tint rather than the neutral one the boolean readout uses,
+   so among three same-shaped pills the eye lands on the measurement. */
+.bench-block-ma {
+    pointer-events: auto;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-label);
+    font-weight: 600;
+    padding: 2px var(--space-6);
+    border-radius: var(--radius-pill);
+    background-color: var(--bg-dark);
+    background-image: linear-gradient(
+        rgba(var(--accent-rgb), 0.14),
+        rgba(var(--accent-rgb), 0.14)
+    );
+    border: 1px solid rgba(var(--accent-rgb), 0.45);
+    color: var(--text-primary);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+}
+
+/* Above threshold — the reading that carried the verdict. */
+.bench-block-occupied .bench-block-ma {
+    background-image: linear-gradient(
+        rgba(var(--danger-rgb), 0.18),
+        rgba(var(--danger-rgb), 0.18)
+    );
+    border-color: var(--danger-color);
+    color: var(--danger-color);
+}
+
+/* ---- Transport ---- */
+.bench-transport {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: var(--space-10);
+    padding: var(--space-10) var(--space-12);
+    border-top: 1px solid var(--border-color);
+    background-color: var(--bg-dark);
+}
+
+.bench-play {
+    height: var(--control-height-sm);
+    min-width: 96px;
+    padding: 0 var(--space-16);
+    background-color: var(--accent-color);
+    color: #fff;
+    border: 1px solid transparent;
+    border-radius: var(--control-radius-sm);
+    font-family: var(--font-main);
+    font-size: var(--font-size-value);
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 120ms ease;
+}
+
+.bench-play:hover:not(:disabled) {
+    background-color: var(--accent-hover);
+}
+
+/* Running: the button offers Stop, and stopping a rig driving real track is the
+   safety action — it carries danger for the same reason the EB control does. */
+.bench-play-running {
+    background-color: var(--danger-color);
+}
+
+.bench-play-running:hover:not(:disabled) {
+    background-color: var(--danger-color);
+    filter: brightness(1.12);
+}
+
+.bench-play:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* ---- Threshold field ----
+   Sits in the transport beside Play because it is the other thing the operator
+   sweeps: Play decides what the rails do, this decides what the readings are
+   judged against. Empty means "each block on its own configured threshold",
+   which the placeholder says outright — an empty numeric box otherwise reads as
+   unset rather than as a setting. */
+.bench-threshold {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+
+.bench-threshold-label {
+    font-size: var(--font-size-micro);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+}
+
+.bench-threshold-input {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-4);
+    height: var(--control-height-xs);
+    padding: 0 var(--space-8);
+    background-color: var(--bg-panel);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+}
+
+.bench-threshold-input:focus-within {
+    border-color: var(--accent-color);
+}
+
+.bench-threshold-input input {
+    /* Wide enough for the "per block" placeholder, which is the field's whole
+       explanation of what an empty box means — clipped to "per bloc" it just
+       looks broken. */
+    width: 84px;
+    background: none;
+    border: none;
+    outline: none;
+    padding: 0;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-body);
+}
+
+.bench-threshold-input input:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.bench-threshold-unit {
+    font-size: var(--font-size-micro);
+    color: var(--text-secondary);
+}
+
+.bench-footer {
+    font-size: var(--font-size-label);
+    color: var(--text-secondary);
+    line-height: 1.4;
+    /* The one elastic item in the strip: the controls keep their size and this
+       takes what is left, so a narrow window shrinks the sentence, not the box
+       being typed into. */
+    flex: 1 1 auto;
+    min-width: 0;
+}

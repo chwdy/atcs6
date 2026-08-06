@@ -69,6 +69,7 @@ export type PersistedWindowKind =
   | 'tab-group'
   | 'train-monitor'
   | 'occupancy-monitor'
+  | 'occupancy-bench'
   | 'virtual-bench';
 
 export interface WindowRegistryEntry {

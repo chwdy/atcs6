@@ -31,6 +31,15 @@
   switch-coil pulse width on the held commissioning session (the Hardware Setup
   port grid's output sweep), for exactly as long as the runtime does — unless
   the request widens it with `pulse_s`, to measure rather than watch.
+- `POST /api/hardware/bench/{open,close,drive,threshold}` + `GET /api/hardware/bench/state`
+  run the occupancy bench: hold every block at one voltage and read BOTH
+  detectors, with the runtime's occupancy loop out of the way entirely. Unlike
+  the tools above it does not borrow the session's device — it takes it, the same
+  handover commissioning does, because the thing being diagnosed is the loop the
+  runtime would otherwise be closing twenty times a second on top of it. It is
+  also the one handover that undoes itself: `close` reactivates the environment
+  `open` deactivated, because a diagnostic window is something an operator looks
+  through, not a mode they switch into. See hardware/occupancy_bench.py.
 
 Every one of these tools needs the controller, and the controller is a single
 USB endpoint. With no session holding it they open a transient device of their
@@ -90,6 +99,12 @@ def register(app, state: AppState) -> None:
     """Register the hardware-configuration routes."""
     if not hasattr(state, "commissioning_active"):
         state.commissioning_active = False
+    # What the occupancy bench took from the runtime, so its close can put back
+    # exactly that and no more. Both are only meaningful while a bench is open.
+    if not hasattr(state, "bench_owns_commissioning"):
+        state.bench_owns_commissioning = False
+    if not hasattr(state, "bench_restore_environment"):
+        state.bench_restore_environment = False
     from hardware.virtual_rig import VirtualRig
     virtual_rig = VirtualRig()
     virtual_rig_device = {"value": None}
@@ -524,6 +539,211 @@ def register(app, state: AppState) -> None:
         except hardware_config.HardwareConfigError as exc:
             return jsonify({"status": "error", "error": str(exc)}), 400
         return jsonify({"status": "success", "config": hardware_config.as_dict()})
+
+    # -- Occupancy bench ---------------------------------------------------
+    # A device-owning diagnostic session: hold every block at one voltage and
+    # read both detectors, with the runtime out of the loop entirely. See
+    # hardware/occupancy_bench.py for why it takes the controller rather than
+    # sharing the running session's.
+
+    def _bench_session():
+        from hardware import occupancy_bench
+
+        return occupancy_bench.get_session()
+
+    def _bench_opener(cfg, environment):
+        """How the bench opens its controller, or None for "open the real CH347".
+
+        Deliberately not `_develop_opener`: that one gates on the environment
+        *requested by the payload under test*, because commissioning always tests
+        the edit in progress. The bench has no edit in progress — it operates the
+        persisted configuration under the environment that was selected — so it
+        gates on the selection, the same input `build_session_interfaces` uses to
+        choose between the fake device and the physical bridge. Gating it the
+        commissioning way sent Virtual Hardware looking for a USB bridge.
+        """
+        if environment is not OperationMode.VIRTUAL_HARDWARE:
+            return None
+        from hardware.fake import FakeCh347Device
+
+        def _open():
+            device = FakeCh347Device(
+                present_addresses={
+                    c.i2c_address for c in cfg.chips if c.i2c_address is not None
+                }
+            )
+            device.open()
+            return device
+
+        return _open
+
+    @app.route("/api/hardware/bench/open", methods=["POST"])
+    def hardware_bench_open():
+        """Take the controller for the bench.
+
+        Does the same handover `enter_commissioning` does, for the same reason:
+        the rig is one USB endpoint, so the bench cannot have it while a session
+        is driving through it. The environment is deactivated, the session device
+        closed, and the runtime handed back the simulated boundary — leaving the
+        dead chips bound would make the next safe state raise.
+
+        `commissioning_active` is the flag that keeps the two bench-style screens
+        (this and Hardware Setup's port grid) off the controller at the same time,
+        and blocks activation until one of them gives it back.
+
+        What this route takes, `close` gives back — including a live environment.
+        Which of the two took it is recorded here, because opening a bench while
+        Hardware Setup already holds the device takes nothing: closing must then
+        leave the ownership it found exactly as it found it rather than handing
+        the runtime a device another screen is still driving.
+        """
+        if state.simulation_running:
+            return jsonify({"status": "error", "error": "stop operation first"}), 409
+        selected = operation_environment.get_selected()
+        if selected is OperationMode.SIMULATION:
+            return jsonify({
+                "status": "error",
+                "error": "Simulation has no hardware to bench",
+            }), 409
+        try:
+            cfg = hardware_config.get_hardware_config()
+        except hardware_config.HardwareConfigError as exc:
+            return jsonify({"status": "error", "error": str(exc)}), 400
+
+        with state.simulation_lock:
+            if not state.commissioning_active:
+                # Only a session this bench actually takes something from is
+                # worth restoring on the way out — otherwise closing a diagnostic
+                # window would energize a rig on nobody's request. Both halves
+                # are needed: a controller that never activated still reports the
+                # environment it was constructed with as active, and a device
+                # handle without an active environment belongs to a session that
+                # is already blocked. Together they mean one thing, which is the
+                # thing being taken away: a live, hardware-backed runtime.
+                state.bench_restore_environment = bool(
+                    state.sim_controller.environment_active
+                    and hardware_config.get_live_device() is not None
+                )
+                state.sim_controller.deactivate_environment(
+                    [{"code": "commissioning", "message": "the occupancy bench owns the device"}],
+                    environment=selected,
+                )
+                hardware_config.close_live_device()
+                state.sim_controller.release_interfaces()
+                state.commissioning_active = True
+                state.bench_owns_commissioning = True
+            try:
+                status = _bench_session().open(
+                    cfg,
+                    open_device=_bench_opener(cfg, selected),
+                    track_polarity_of=hardware_config.track_polarity_reversed,
+                )
+            except Exception as exc:  # noqa: BLE001 - reported to the panel
+                return jsonify({"ok": False, "error": str(exc)}), 200
+        return jsonify({"ok": True, **status})
+
+    @app.route("/api/hardware/bench/close", methods=["POST"])
+    def hardware_bench_close():
+        """De-energize, release the controller, and put back what `open` took.
+
+        Restoring the environment is this route's job rather than the panel's.
+        The bench is a diagnostic window, not a mode: an operator opens it to see
+        why a block reads wrong and closes it to carry on operating, and the
+        device handover in between is a means, not something they asked for. It
+        was the route that deactivated the environment to get the device, so it
+        is the route that reactivates it — leaving that to the caller left a
+        railway silently unpowered behind a window that had already gone away.
+
+        Restores only what this bench took (see `open`), and reports the restore:
+        a rebuild can still be blocked — by a layout edited while the bench was
+        up, or a bridge that left the bus — and a close that swallowed that would
+        be the same silence in a new place.
+        """
+        with state.simulation_lock:
+            _bench_session().close()
+            if not state.bench_owns_commissioning:
+                # Hardware Setup was holding the device before this bench opened
+                # and is holding it still. Nothing of ours to give back.
+                return jsonify({"ok": True, "commissioning": True, "reactivated": False})
+            state.commissioning_active = False
+            state.bench_owns_commissioning = False
+            restore = state.bench_restore_environment
+            state.bench_restore_environment = False
+            blocked = _activate_locked(operation_environment.get_selected()) if restore else None
+        return jsonify({
+            "ok": True,
+            "commissioning": False,
+            "reactivated": bool(restore and blocked is None),
+            "issues": (blocked or {}).get("issues", []),
+        })
+
+    @app.route("/api/hardware/bench/state", methods=["GET"])
+    def hardware_bench_state():
+        """Both detectors for every bound block, plus what the bench is driving.
+
+        Answers with `open: false` rather than an error when no bench is running,
+        so the panel can poll one endpoint whether or not it holds the device.
+        """
+        session = _bench_session()
+        if not session.is_open():
+            return jsonify({"ok": True, "open": False, "blocks": {}})
+        with state.simulation_lock:
+            try:
+                payload = session.read()
+            except Exception as exc:  # noqa: BLE001 - reported to the panel
+                return jsonify({"ok": False, "open": True, "error": str(exc)}), 200
+            payload["link"] = session.link_status()
+        return jsonify({"ok": True, **payload})
+
+    @app.route("/api/hardware/bench/drive", methods=["POST"])
+    def hardware_bench_drive():
+        """Start / stop the bench drive and set which blocks run reversed.
+
+        Body: ``{running, percent, flipped: [block_id, ...]}``. `flipped`
+        replaces the stored set outright — see `OccupancyBenchSession.drive`.
+        """
+        data = request.get_json(silent=True) or {}
+        session = _bench_session()
+        if not session.is_open():
+            return jsonify({"ok": False, "error": "the occupancy bench is not open"}), 409
+        with state.simulation_lock:
+            try:
+                status = session.drive(
+                    bool(data.get("running")),
+                    percent=data.get("percent"),
+                    flipped=data.get("flipped"),
+                )
+            except Exception as exc:  # noqa: BLE001 - reported to the panel
+                return jsonify({"ok": False, "error": str(exc)}), 200
+        return jsonify({"ok": True, **status})
+
+    @app.route("/api/hardware/bench/threshold", methods=["POST"])
+    def hardware_bench_threshold():
+        """Judge every current channel against one threshold.
+
+        Body: ``{threshold_ma}`` — a number, or null to put each block back on
+        its own configured threshold. Reads only: the rails are not re-commanded,
+        so an operator can sweep the number and watch where each block crosses
+        over without disturbing the drive it is crossing over under.
+
+        Bench-local. The calibration this finds is saved per channel in Hardware
+        Setup; nothing here writes the configuration.
+        """
+        data = request.get_json(silent=True) or {}
+        session = _bench_session()
+        if not session.is_open():
+            return jsonify({"ok": False, "error": "the occupancy bench is not open"}), 409
+        raw = data.get("threshold_ma")
+        try:
+            threshold = None if raw is None or raw == "" else float(raw)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": f"threshold_ma must be a number, got {raw!r}"}), 400
+        with state.simulation_lock:
+            try:
+                status = session.set_current_threshold(threshold)
+            except Exception as exc:  # noqa: BLE001 - reported to the panel
+                return jsonify({"ok": False, "error": str(exc)}), 200
+        return jsonify({"ok": True, **status})
 
     @app.route("/api/hardware/commission/open", methods=["POST"])
     def hardware_commission_open():

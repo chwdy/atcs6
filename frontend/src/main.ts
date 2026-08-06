@@ -18,6 +18,7 @@ import './renderer';
 import './panels/train-monitor';
 import './panels/diagnostics';
 import './panels/occupancy-monitor';
+import './panels/occupancy-bench';
 import './panels/virtual-bench';
 // The Editor facade (item #7, Wave 3) imports the 11 handler classes directly.
 import './editor/editor';

@@ -26,4 +26,13 @@ interface Window {
   // The singleton Virtual Bench (virtual-bench.ts) — the Virtual Hardware
   // workbench. Same reason: its toolbar toggle is plain markup in index.html.
   virtualBench?: { init(): void; toggle(): void; show(): void; hide(): void };
+
+  // The singleton Occupancy Bench (occupancy-bench.ts). Same reason again. Its
+  // show/hide take and release the controller, so both are async.
+  occupancyBench?: {
+    init(): void;
+    toggle(): void | Promise<void>;
+    show(): Promise<void>;
+    hide(): Promise<void>;
+  };
 }
