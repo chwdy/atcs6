@@ -596,7 +596,7 @@ export class SpeedProfileEditorHandler {
       max_voltage: typeof d.max_voltage === 'number' ? d.max_voltage : maxVoltage(vp, 12),
       // lighting_voltage mirrors the 0%-power point of the curve.
       lighting_voltage:
-        typeof d.lighting_voltage === 'number' ? d.lighting_voltage : lightingVoltage(vp, 2),
+        typeof d.lighting_voltage === 'number' ? d.lighting_voltage : lightingVoltage(vp, 1.5),
       acceleration_rate: d.acceleration_rate ?? 10,
       deceleration_rate: d.deceleration_rate ?? 15,
       emergency_brake_rate: d.emergency_brake_rate ?? 30,

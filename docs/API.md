@@ -1872,8 +1872,8 @@ List all registered speed profiles.
       "profile_id": "default",
       "name": "Default Profile",
       "power_speed_curve": [[0, 0], [100, 100]],
-      "voltage_power_curve": [[2, 0], [12, 100]],
-      "lighting_voltage": 2.0,
+      "voltage_power_curve": [[1.5, 0], [12, 100]],
+      "lighting_voltage": 1.5,
       "max_voltage": 12.0,
       "acceleration_rate": 10.0,
       "deceleration_rate": 15.0,
@@ -1909,8 +1909,8 @@ Create a new speed profile.
 | profile_id | string | Yes | - | Unique identifier |
 | name | string | Yes | - | Human-readable name |
 | power_speed_curve | array | No | [[0,0],[100,100]] | (power_percent, speed_kmh) second-stage mapping |
-| voltage_power_curve | array | No | [[2,0],[12,100]] | (track_voltage, power_percent) first-stage mapping |
-| lighting_voltage | float | No | 2.0 | Lit-but-stationary voltage; also the 0%-power point of voltage_power_curve and the minimum voltage that moves the train |
+| voltage_power_curve | array | No | [[1.5,0],[12,100]] | (track_voltage, power_percent) first-stage mapping |
+| lighting_voltage | float | No | 1.5 | Lit-but-stationary voltage; also the 0%-power point of voltage_power_curve and the minimum voltage that moves the train |
 | max_voltage | float | No | 12.0 | Top of the usable track_voltage range (100%-power point) |
 | acceleration_rate | float | No | 10.0 | Acceleration in km/h/s |
 | deceleration_rate | float | No | 15.0 | Normal deceleration in km/h/s |

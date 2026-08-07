@@ -67,7 +67,7 @@ DEFAULT_IDLE_DEADBAND_V = 0.25
 # there (see `hardware.interfaces.OccupancyDriver`). Tunable because where a
 # locomotive starts drawing a readable current depends on the locomotive.
 #
-# It must stay ABOVE the profile's `lighting_voltage` (default 3.0 V): a
+# It must stay ABOVE the profile's `lighting_voltage` (default 1.5 V): a
 # stopped-but-lit train is by definition not being driven, and putting its
 # standby level at or above this bound would hand its block to the current
 # channel alone — the one source a lit, motionless locomotive is least likely

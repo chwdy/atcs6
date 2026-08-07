@@ -41,7 +41,7 @@ The dangerous class is **silent substitution**: a value that replaces missing / 
 **Done (Phase 1):** the notch tables (`power_multipliers` / `brake_multipliers`) are now per-train fields on `SpeedProfile` (default to the standard table), serialized in `to_dict`/`from_dict`, and read by `TrainPhysics` + `ATOComputer`. They flow through the existing speed-profile CRUD API automatically, and are editable in the speed-profile editor's **Notch response** section (`editor-speed-profiles.ts`). Verified end-to-end in the browser: editing a notch persists per-train via the existing API.
 
 [speed_profile.py:58-71](speed_profile.py:58) (and the `from_dict` mirror at :283-292):
-`lighting_voltage 2.0` · `acceleration_rate 10.0 km/h/s` · `deceleration_rate 15.0` · `emergency_brake_rate 30.0` · `friction_rate 0.5` · `operational_decel_ratio 0.8` · `drag_coefficient 0.001` · `reference_speed_kmh 100.0` · `max_voltage 12.0` · `air_resistance_enabled True`
+`lighting_voltage 1.5` · `acceleration_rate 10.0 km/h/s` · `deceleration_rate 15.0` · `emergency_brake_rate 30.0` · `friction_rate 0.5` · `operational_decel_ratio 0.8` · `drag_coefficient 0.001` · `reference_speed_kmh 100.0` · `max_voltage 12.0` · `air_resistance_enabled True`
 
 Brake/power notch multipliers [enums.py:295-323](enums.py:295): `P1 0.2 / P2 0.4 / P3 0.6 / P4 0.8 / P5 1.0`; `B1 0.20 / B2 0.40 / B3 0.55 / B4 0.70 / B5 0.85 / B6 1.00 / B7 1.30 / B8 1.70` (× operational decel).
 
