@@ -51,6 +51,7 @@ class RouteTargetResolver:
         self,
         train_id: str,
         exclude: Optional[Iterable["ResolvedRouteTarget"]] = None,
+        after_walk_position: Optional[int] = None,
     ) -> Optional["ResolvedNextTaskProjection"]:
         """Read-only projection of the next non-finished task.
 
@@ -61,6 +62,14 @@ class RouteTargetResolver:
         Dispatches on `task_kind` from `Route.tasks[i]`:
           * `"waypoint"` / `"stop"`: resolve a concrete target block + direction.
           * `"dwell"`: no dispatcher target; `resolved_target` is `None`.
+
+        `after_walk_position` returns the first non-finished walk-position
+        strictly after that index on the directed walk, appending the next
+        walk-position when the walk has not grown that far yet. It is how the
+        **Waypoint lookahead** in Planning Kernel step `66aa` reaches past the
+        task the train is physically working on (design_new.md "Canonical
+        Next-Target Selection"). `None` (the default) returns the next
+        non-finished walk-position.
         """
         from route_executor import ResolvedNextTaskProjection, ResolvedRouteTarget
 
@@ -85,9 +94,16 @@ class RouteTargetResolver:
         if task_count == 0:
             return None
 
-        next_task_index = self.compute_next_task_index(
-            route, exec_state, task_count
-        )
+        if after_walk_position is None:
+            next_task_index = self.compute_next_task_index(
+                route, exec_state, task_count
+            )
+            walk_position_override = None
+        else:
+            found = self._walk_position_after(exec_state, route, after_walk_position)
+            if found is None:
+                return None
+            walk_position_override, next_task_index = found
         if next_task_index is None:
             return None
 
@@ -101,7 +117,11 @@ class RouteTargetResolver:
         # line 1104 + line 1267). The two values match only for the first
         # walk and for ONE_OFF routes. Canonical helper lives on
         # `RouteExecutionState.next_planning_walk_position`.
-        walk_position = exec_state.next_planning_walk_position
+        walk_position = (
+            exec_state.next_planning_walk_position
+            if walk_position_override is None
+            else walk_position_override
+        )
 
         # Canonical direction store on RouteRun is the literal string;
         # compute a local signed-int form for callers that still need it.
@@ -272,6 +292,82 @@ class RouteTargetResolver:
                 task, train=train
             )
             return block
+        return None
+
+    def _walk_position_after(
+        self,
+        exec_state: "RouteExecutionState",
+        route: "Route",
+        after_walk_position: int,
+    ) -> Optional[tuple]:
+        """First non-finished `(walk_position, task_index)` strictly after
+        `after_walk_position` on the directed walk.
+
+        Grows `task_runs` when the walk has not reached that far yet, because
+        the lookahead legitimately asks about a position the run has not
+        appended: the served waypoint is still unfinished, so nothing has
+        appended past it. Returns `None` when the walk is terminal there —
+        a `ONE_OFF` route past its last task.
+        """
+        pos = after_walk_position + 1
+        # One full route-length scan is the budget, the same bound every other
+        # walk scan in Phase 1 uses.
+        for _ in range(max(1, route.get_task_count())):
+            if pos >= len(exec_state.task_runs):
+                before = len(exec_state.task_runs)
+                exec_state._append_next_walk_task(route)
+                if len(exec_state.task_runs) == before:
+                    return None      # terminal walk; nothing to look ahead to
+            row = exec_state.task_runs[pos]
+            if row.finished_at is None:
+                return (pos, row.task_index)
+            pos += 1
+        return None
+
+    def find_next_move_target_from(
+        self, walk_position: int, train_id: str
+    ) -> Optional[str]:
+        """The block of the next non-`dwell` move at or after `walk_position`.
+
+        The seed-position variant of `find_next_move_target(...)`: both share
+        one forward task-walk kernel — the walk order, `CIRCULAR` wrap, and
+        `dwell` skip are defined once — and differ only in resolve-and-return
+        policy. This one walks on past a move task it cannot resolve rather
+        than stopping, because **Run start-mode seeding** asks the question
+        from a hypothetical seed position where an unresolvable task says
+        nothing about the ones after it (design_new.md, item 11 under
+        "Path And PathDispatcher").
+        """
+        e = self._e
+        train = (
+            e.network.trains.get(train_id)
+            if hasattr(e.network, "trains")
+            else None
+        )
+        if train is None:
+            return None
+        route_id = e.assigned_route_id_for(train_id)
+        if not route_id:
+            return None
+        route = e.route_registry.get(route_id)
+        if route is None:
+            return None
+        exec_state = e.execution_states.get(train_id)
+        if exec_state is None:
+            return None
+        task_count = route.get_task_count() if hasattr(route, "get_task_count") else 0
+        if task_count == 0:
+            return None
+        if not (0 <= walk_position < len(exec_state.task_runs)):
+            return None
+        start = exec_state.task_runs[walk_position].task_index
+
+        for _idx, task in self._forward_move_tasks(route, start, skip_start=False):
+            block, _reason = self.resolve_task_target_block_detailed(
+                task, train=train
+            )
+            if block is not None:
+                return block
         return None
 
     # ------------------------------------------------------------------

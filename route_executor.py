@@ -28,6 +28,7 @@ from constants import (
     DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS,
     IDLE_HOLD_COOLDOWN_TICKS,
     IDLE_HOLD_RELEASE_TICKS,
+    WAYPOINT_LOOKAHEAD_BLOCKS,
 )
 from enums import ControllerCondition, Direction, TrainState
 from train_controller import TrainController, create_controller_for_train
@@ -2064,6 +2065,69 @@ class RouteExecutor:
         # Unpack (success, reason) tuple per train_controller agent signature.
         _esd_success, _esd_reason = controller.enter_station_dwell()
 
+    def _apply_waypoint_lookahead(
+        self,
+        train: "Train",
+        projection: ResolvedNextTaskProjection,
+    ) -> ResolvedNextTaskProjection:
+        """Arm the task after the served waypoint when the train is running out
+        of cleared track ahead of it.
+
+        design_new.md Planning Kernel step `66aa`, **Waypoint lookahead**. A
+        waypoint is track the train passes through, not a place it stops, so
+        re-arming one the authority already reaches would leave the train
+        braking toward a terminal it is meant to run straight past. This step
+        arms the *next* task's target instead, which grows the authority
+        forward before the brake is needed.
+
+        It applies only when both hold:
+
+        - the armed task is a `waypoint` and the live authority already reaches
+          it — nothing is owed on the current target;
+        - fewer than `WAYPOINT_LOOKAHEAD_BLOCKS` block resources remain ahead
+          of the train head — the train is close enough to the end of its
+          cleared track to need more.
+
+        Returns the projection to arm this tick: the lookahead one when both
+        hold and a next task exists, otherwise the one passed in. Everything
+        downstream — the `resolved_target` write, the `direction` write, the
+        extend retries, the idle-hold predicate — then uses the returned
+        projection's `walk_position`, which is what the doc means by the
+        lookahead index applying at all four use sites.
+        """
+        if projection.task_kind != "waypoint":
+            return projection
+        path = (
+            self.path_dispatcher.get_active_path(train.train_id)
+            if self.path_dispatcher is not None
+            else None
+        )
+        if path is None:
+            return projection
+        target_block = (
+            projection.resolved_target.requested_destination_block_id
+            if projection.resolved_target
+            else None
+        )
+        if not target_block or not path.reaches_target(target_block):
+            return projection
+        blocks_ahead = sum(
+            1
+            for entry in path.resource_sequence
+            if entry.resource_type == "block"
+            and entry.sequence_index > path.current_resource_index
+        )
+        if blocks_ahead >= WAYPOINT_LOOKAHEAD_BLOCKS:
+            return projection
+        ahead = self._find_next_task_target(
+            train.train_id, after_walk_position=projection.walk_position
+        )
+        if ahead is None or ahead.resolved_target is None:
+            # Terminal walk, a dwell, or a target that will not resolve — keep
+            # the served waypoint armed and let the ordinary flow handle it.
+            return projection
+        return ahead
+
     def _authority_acquisition_step(
         self,
         train: "Train",
@@ -2087,6 +2151,10 @@ class RouteExecutor:
         """
         if self.path_dispatcher is None:
             return False
+        if projection.resolved_target is None:
+            return False
+
+        projection = self._apply_waypoint_lookahead(train, projection)
         if projection.resolved_target is None:
             return False
 
@@ -3054,10 +3122,24 @@ class RouteExecutor:
         self,
         train_id: str,
         exclude: Optional[Iterable[ResolvedRouteTarget]] = None,
+        after_walk_position: Optional[int] = None,
     ) -> Optional[ResolvedNextTaskProjection]:
         """Forward to `RouteTargetResolver.find_next_task_target(...)`."""
         return self._get_route_target_resolver().find_next_task_target(
-            train_id, exclude=exclude
+            train_id, exclude=exclude, after_walk_position=after_walk_position
+        )
+
+    def find_next_move_target_from(
+        self, walk_position: int, train_id: str
+    ) -> Optional[str]:
+        """Forward to `RouteTargetResolver.find_next_move_target_from(...)`.
+
+        The seed-position variant of `find_next_move_target(...)`, used by
+        **Run start-mode seeding**'s "No reversal first" ranking rule
+        (design_new.md, item 11 under "Path And PathDispatcher").
+        """
+        return self._get_route_target_resolver().find_next_move_target_from(
+            walk_position, train_id
         )
 
     def find_next_move_target(self, train_id: str) -> Optional[str]:

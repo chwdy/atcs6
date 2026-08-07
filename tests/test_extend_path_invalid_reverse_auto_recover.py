@@ -54,7 +54,9 @@ def _make_controller():
     return controller, latches
 
 
-def _make_projection(target_block="BLK_DEST", direction="forward", walk_pos=1):
+def _make_projection(
+    target_block="BLK_DEST", direction="forward", walk_pos=1, task_kind="stop"
+):
     resolved_target = SimpleNamespace(
         requested_destination_block_id=target_block,
         requested_destination_direction=direction,
@@ -62,6 +64,11 @@ def _make_projection(target_block="BLK_DEST", direction="forward", walk_pos=1):
     return SimpleNamespace(
         resolved_target=resolved_target,
         walk_position=walk_pos,
+        # A `stop` by default: the Waypoint lookahead in step `66aa` applies
+        # only to a served `waypoint`, so these extend-failure cases exercise
+        # the ordinary path.
+        task_kind=task_kind,
+        direction=direction,
     )
 
 
