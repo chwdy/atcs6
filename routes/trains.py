@@ -14,6 +14,7 @@ from typing import Dict
 from flask import jsonify, request
 
 from app_state import AppState
+from constants import LIGHTING_VOLTAGE_STEP_V
 from services import ConflictError, NotFoundError, ValidationError
 from services import train_service
 
@@ -370,6 +371,74 @@ def register(app, state: AppState) -> None:
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
         return jsonify({"status": "success", "committed_step": sample is not None})
+
+    # ---------------------------------------------------------------- #
+    # Lighting-voltage calibration
+    # (design_new.md "Lighting-voltage calibration")
+    # ---------------------------------------------------------------- #
+
+    def _lighting_payload(run) -> dict:
+        return {
+            "status": "success",
+            "candidate_voltage": run.candidate_voltage,
+            "ceiling_voltage": run.ceiling_voltage,
+            "step_v": LIGHTING_VOLTAGE_STEP_V,
+        }
+
+    @app.route("/api/trains/<train_id>/calibrate/lighting", methods=["POST"])
+    def calibrate_lighting_start(train_id):
+        """Open a lighting-voltage run: the candidate goes onto the rails.
+
+        The operator steps it up until the locomotive creeps, steps back down
+        one, and saves. There is no measurement step — the operator watching
+        the locomotive is the instrument.
+        """
+        try:
+            run = train_service.start_lighting_calibration(state, train_id)
+        except NotFoundError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except ConflictError as exc:
+            return jsonify({"error": str(exc)}), 409
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify(_lighting_payload(run))
+
+    @app.route("/api/trains/<train_id>/calibrate/lighting/step", methods=["POST"])
+    def calibrate_lighting_step(train_id):
+        """Move the candidate one step. Body: ``{ "direction": 1 | -1 }``."""
+        data = request.get_json(silent=True) or {}
+        try:
+            direction = int(data.get("direction", 1))
+        except (TypeError, ValueError):
+            return jsonify({"error": "direction must be 1 or -1"}), 400
+        try:
+            run = train_service.step_lighting_calibration(state, train_id, direction)
+        except NotFoundError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except ConflictError as exc:
+            return jsonify({"error": str(exc)}), 409
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify(_lighting_payload(run))
+
+    @app.route("/api/trains/<train_id>/calibrate/lighting/save", methods=["POST"])
+    def calibrate_lighting_save(train_id):
+        """Write the candidate to the profile's `lighting_voltage` and close."""
+        try:
+            value = train_service.save_lighting_calibration(state, train_id)
+        except NotFoundError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except ConflictError as exc:
+            return jsonify({"error": str(exc)}), 409
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"status": "success", "lighting_voltage": value})
+
+    @app.route("/api/trains/<train_id>/calibrate/lighting", methods=["DELETE"])
+    def calibrate_lighting_cancel(train_id):
+        """Close the run without writing; the candidate is discarded."""
+        train_service.cancel_lighting_calibration(state, train_id)
+        return jsonify({"status": "success"})
 
     # ============================================================================
     # TrainController State and Monitoring

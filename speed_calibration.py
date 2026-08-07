@@ -24,12 +24,24 @@ feed the same commit. In simulation the measured speed comes from the model, so
 a pass reproduces the model's own curve; on real hardware the same pass captures
 the physical locomotive's true response. The measurement source is the only
 difference — `measured_speed_fn` supplies it, defaulting to the model.
+
+This class also owns the second, smaller procedure (design_new.md
+"Lighting-voltage calibration"): finding the one voltage at which a locomotive
+is lit and still holds, and writing it to `lighting_voltage`. It comes first for
+a newly added locomotive, because a speed pass takes its bottom step from that
+anchor. It has no measurement step at all — the operator watching the
+locomotive is the instrument — so `LightingCalibrationRun` carries a candidate
+voltage the operator steps up and down and nothing else.
 """
 
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
-from constants import CALIBRATION_MANUAL_LAPS, CALIBRATION_VOLTAGE_STEPS
+from constants import (
+    CALIBRATION_MANUAL_LAPS,
+    CALIBRATION_VOLTAGE_STEPS,
+    LIGHTING_VOLTAGE_STEP_V,
+)
 
 
 @dataclass(frozen=True)
@@ -59,6 +71,22 @@ class CalibrationRun:
         return self.step_index >= len(self.commanded_voltages)
 
 
+@dataclass
+class LightingCalibrationRun:
+    """Transient working record of one lighting-voltage run (in-memory only).
+
+    Holds the candidate voltage the operator is stepping through and the
+    ceiling it may not pass. `TrainPhysics` reads the candidate while the run
+    is open and drives it onto the rails in place of the stopped-but-lit
+    voltage, so each step is answered by the locomotive itself.
+    """
+
+    train_id: str
+    profile_id: str
+    candidate_voltage: float
+    ceiling_voltage: float
+
+
 # Real hardware supplies the measured speed for a commanded (voltage, power);
 # in simulation it defaults to the model's own response.
 MeasuredSpeedFn = Callable[[float, float], float]
@@ -75,6 +103,7 @@ class SpeedCalibration:
     def __init__(self, simulation_controller=None) -> None:
         self._sc = simulation_controller
         self.runs: Dict[str, CalibrationRun] = {}
+        self.lighting_runs: Dict[str, LightingCalibrationRun] = {}
 
     # -- lifecycle --------------------------------------------------------
 
@@ -167,6 +196,122 @@ class SpeedCalibration:
             return float(measured_speed_fn(voltage, power))
         return float(profile.power_percent_to_speed(power))
 
+    # -- lighting voltage -------------------------------------------------
+    # design_new.md "Lighting-voltage calibration". No measurement step: the
+    # pass puts a candidate voltage on the rails and the operator says whether
+    # the locomotive moved. Nothing on the rig can answer that — at this level
+    # the drive is too weak to load a current channel (that is what the
+    # lighting zone is) and first movement is a creep of a few millimetres.
+
+    def start_lighting(self, train, profile) -> LightingCalibrationRun:
+        """Open a lighting-voltage run for this train, seeded from the profile.
+
+        The caller (the service layer) enforces the state gates first.
+        """
+        ceiling = self.lighting_ceiling(profile)
+        run = LightingCalibrationRun(
+            train_id=train.train_id,
+            profile_id=profile.profile_id,
+            candidate_voltage=_clamp(
+                float(getattr(profile, "lighting_voltage", 0.0)), 0.0, ceiling
+            ),
+            ceiling_voltage=ceiling,
+        )
+        self.lighting_runs[train.train_id] = run
+        return run
+
+    def step_lighting(self, train_id: str, direction: int) -> Optional[LightingCalibrationRun]:
+        """Move the candidate one `LIGHTING_VOLTAGE_STEP_V` up or down.
+
+        The step control stops at the ceiling and at `0`, so the panel can
+        never show a value `commit_lighting` would refuse.
+        """
+        run = self.lighting_runs.get(train_id)
+        if run is None:
+            return None
+        sign = 1.0 if int(direction) >= 0 else -1.0
+        run.candidate_voltage = _clamp(
+            run.candidate_voltage + sign * LIGHTING_VOLTAGE_STEP_V,
+            0.0,
+            run.ceiling_voltage,
+        )
+        return run
+
+    def commit_lighting(self, train_id: str, profile) -> Optional[float]:
+        """Write the candidate to `lighting_voltage` and close the run.
+
+        `lighting_voltage` is also the 0%-power point of `voltage_power_curve`,
+        so the commit moves that curve's bottom anchor with it. A stored point
+        at or below the new anchor is dropped: it names a voltage that does not
+        move this locomotive.
+        """
+        run = self.lighting_runs.get(train_id)
+        if run is None:
+            return None
+        value = _clamp(run.candidate_voltage, 0.0, self.lighting_ceiling(profile))
+        profile.lighting_voltage = value
+        profile.voltage_power_curve = self._reanchored_curve(profile, value)
+        self.lighting_runs.pop(train_id, None)
+        self._emit_command_result(
+            train_id,
+            operation="lighting_calibration",
+            success=True,
+            reason=f"lighting voltage set to {value:.2f} V",
+        )
+        return value
+
+    def cancel_lighting(self, train_id: str) -> None:
+        """Close the run without writing. The candidate is discarded and the
+        train's `track_voltage` goes back to what its state ordinarily outputs."""
+        self.lighting_runs.pop(train_id, None)
+
+    def lighting_candidate(self, train_id: str) -> Optional[float]:
+        """The open run's candidate voltage, or None when no run is open.
+
+        This is the read `TrainPhysics.compute_track_voltage(...)` makes.
+        """
+        run = self.lighting_runs.get(train_id)
+        return None if run is None else run.candidate_voltage
+
+    @staticmethod
+    def lighting_ceiling(profile) -> float:
+        """The highest candidate a run may reach.
+
+        A candidate stays below the profile's `max_voltage` and below the
+        Hardware Setup's `current_sense_min_drive_v` — the second because
+        design_new.md "Power" requires that level to sit above the profile's
+        `lighting_voltage`, so a lit but motionless train lands in the lighting
+        zone instead of reading as driven. This pass is the one thing that
+        moves `lighting_voltage`, so it is where that bound is kept.
+        """
+        hi = float(getattr(profile, "max_voltage", 12.0))
+        try:
+            from hardware_config import get_hardware_config
+
+            hi = min(hi, float(get_hardware_config().current_sense_min_drive_v))
+        except Exception:
+            pass
+        return max(0.0, round(hi - LIGHTING_VOLTAGE_STEP_V, 3))
+
+    @staticmethod
+    def _reanchored_curve(profile, anchor: float) -> List[Tuple[float, float]]:
+        """`voltage_power_curve` with its 0%-power point moved to `anchor`.
+
+        A point is dropped when it sits at or below the new anchor (it names a
+        voltage that does not move this locomotive) and when it carries 0%
+        power (it is the old anchor). The second test is what keeps the curve
+        to exactly one 0% point when the anchor moves *down*: the old anchor is
+        above the new one, so the first test alone would leave it in place.
+        """
+        kept = [
+            (float(v), float(p))
+            for v, p in getattr(profile, "voltage_power_curve", []) or []
+            if float(v) > anchor and float(p) > 0.0
+        ]
+        if not kept:
+            kept = [(float(getattr(profile, "max_voltage", 12.0)), 100.0)]
+        return [(anchor, 0.0)] + sorted(kept)
+
     # -- commit -----------------------------------------------------------
 
     def _commit(self, run: CalibrationRun, profile) -> None:
@@ -188,6 +333,19 @@ class SpeedCalibration:
     def _emit_result(self, run: CalibrationRun, *, success: bool, reason: str) -> None:
         """Report progress/result through the existing `command_result` stream
         (no new event sink), per design_new.md "Speed calibration"."""
+        self._emit_command_result(
+            run.train_id, operation="speed_calibration", success=success, reason=reason
+        )
+
+    def _emit_command_result(
+        self, train_id: str, *, operation: str, success: bool, reason: str
+    ) -> None:
+        """One command-result event on the stream `NotificationCenter` owns.
+
+        Both calibration procedures report here; neither opens an event sink of
+        its own (design_new.md "Speed calibration" / "Lighting-voltage
+        calibration").
+        """
         sc = self._sc
         nc = getattr(sc, "notification_center", None) if sc is not None else None
         if nc is None:
@@ -197,20 +355,24 @@ class SpeedCalibration:
 
             nc.emit(
                 source="SpeedCalibration",
-                operation="speed_calibration",
+                operation=operation,
                 kind=Kind.INFO if success else Kind.WARNING,
                 message=reason or (
-                    "speed calibration finished" if success
-                    else "speed calibration failed"
+                    f"{operation} finished" if success else f"{operation} failed"
                 ),
-                entities=[train_ref(run.train_id)],
+                entities=[train_ref(train_id)],
                 payload={
-                    "command_id": f"calibrate:{run.train_id}",
-                    "command_name": "speed_calibration",
-                    "train_id": run.train_id,
+                    "command_id": f"calibrate:{train_id}",
+                    "command_name": operation,
+                    "train_id": train_id,
                     "success": success,
                     "reason": reason,
                 },
             )
         except Exception:
             pass
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    """Hold a candidate voltage inside `[low, high]`, on a clean step grid."""
+    return round(min(max(float(value), low), high), 3)

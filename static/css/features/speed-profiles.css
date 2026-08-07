@@ -112,3 +112,39 @@
 .sp-editor .tc-disclosure-body {
     gap: 0;
 }
+
+/* ---- lighting-voltage calibration panel ----
+   design_new.md "Lighting-voltage calibration". Three controls and nothing
+   else: the candidate voltage, a step up, a step down. The readout is the
+   thing the operator reads off while looking away at the locomotive, so it is
+   sized to be legible from the layout rather than from the screen. */
+.sp-lighting-modal {
+    max-width: 340px;
+}
+.sp-lighting-stepper {
+    display: grid;
+    grid-template-columns: 48px 1fr 48px;
+    gap: 12px;
+    align-items: center;
+    margin-top: 14px;
+}
+.sp-lighting-stepper .sp-lighting-step {
+    height: 44px;
+    font-size: 20px;
+    line-height: 1;
+    padding: 0;
+}
+.sp-lighting-readout {
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 4px;
+    font-family: var(--font-mono);
+    font-size: 30px;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+}
+.sp-lighting-readout small {
+    font-size: 13px;
+    color: var(--text-secondary);
+}

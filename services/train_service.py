@@ -923,3 +923,84 @@ def calibrate_record(state: AppState, train_id: str):
     """Manual-mode lap marker: record one lap for the active calibration run."""
     train, profile, sim = _calibration_profile(state, train_id)
     return sim.speed_calibration.record(train_id, profile)
+
+
+# ------------------------------------------- lighting-voltage calibration ----
+
+
+def _lighting_calibration_target(state: AppState, train_id: str):
+    """Resolve (train, profile, sim) for a lighting-voltage command.
+
+    Gates (design_new.md "Lighting-voltage calibration", What the run drives):
+    the train must be placed, in manual mode, READY and stopped, with a cab
+    selected, following no ATO route, and with no speed-calibration pass open.
+    A cab is required because the sign put on each block is the direction that
+    cab picked — the operator must know which way the locomotive will creep
+    before it does.
+    """
+    train, profile, sim = _calibration_profile(state, train_id)
+    controller = _controller(state, train)
+    if controller.commands.control_mode != "manual":
+        raise ConflictError(
+            "Lighting calibration is a manual-mode pass — switch the train to manual"
+        )
+    if controller.ops.state is not TrainState.READY:
+        raise ConflictError(
+            f"Train must be READY to calibrate lighting voltage "
+            f"(state {controller.ops.state.name})"
+        )
+    if not controller.is_stopped():
+        raise ConflictError("Train must be stopped to calibrate lighting voltage")
+    if controller.commands.cab is None:
+        raise ConflictError(
+            "Select a cab first — it decides which way the locomotive will creep"
+        )
+    if sim.speed_calibration.runs.get(train_id) is not None:
+        raise ConflictError("A speed-calibration pass is already open for this train")
+    return train, profile, sim
+
+
+def start_lighting_calibration(state: AppState, train_id: str):
+    """Open a lighting-voltage run (design_new.md "Lighting-voltage calibration").
+
+    From here the candidate voltage is on the rails: the operator steps it up
+    until the locomotive creeps, steps back down one, and saves.
+    """
+    train, profile, sim = _lighting_calibration_target(state, train_id)
+    return sim.speed_calibration.start_lighting(train, profile)
+
+
+def step_lighting_calibration(state: AppState, train_id: str, direction: int):
+    """Move the open run's candidate one step up (`direction >= 0`) or down."""
+    sim = _require_open_lighting_run(state, train_id)
+    return sim.speed_calibration.step_lighting(train_id, direction)
+
+
+def save_lighting_calibration(state: AppState, train_id: str) -> float:
+    """Write the candidate to the profile's `lighting_voltage` and close the run."""
+    sim = _require_open_lighting_run(state, train_id)
+    _train, profile, _sim = _calibration_profile(state, train_id)
+    return sim.speed_calibration.commit_lighting(train_id, profile)
+
+
+def cancel_lighting_calibration(state: AppState, train_id: str) -> None:
+    """Close the run without writing; the candidate is discarded."""
+    sim = getattr(state, "sim_controller", None)
+    if sim is not None:
+        sim.speed_calibration.cancel_lighting(train_id)
+
+
+def _require_open_lighting_run(state: AppState, train_id: str):
+    """Return the runtime holding an open lighting run for this train.
+
+    Step and save act on a run the operator already opened, so they check that
+    the run exists rather than re-running the opening gates: a state change
+    mid-run is reported by the missing run, not by a second gate message.
+    """
+    require_train(state, train_id)
+    sim = getattr(state, "sim_controller", None)
+    if sim is None:
+        raise ValidationError("Calibration requires a runtime")
+    if sim.speed_calibration.lighting_runs.get(train_id) is None:
+        raise ConflictError("No lighting-voltage run is open for this train")
+    return sim

@@ -684,6 +684,7 @@ export class SpeedProfileEditorHandler {
                     <div class="input-small-row mb-8">
                         <label class="input-small-label input-small-label-inline" for="sp-lighting">Lighting voltage (0% power)</label>
                         <input type="number" id="sp-lighting" class="input-small-field input-small-field-compact" value="${fmt(p.lighting_voltage)}" min="0" step="0.1">
+                        <button id="sp-lighting-calibrate" class="btn btn-secondary btn-sm" title="Find this locomotive's lighting voltage on the track">Calibrate</button>
                     </div>
                     <div class="input-small-row mb-8">
                         <label class="input-small-label input-small-label-inline" for="sp-maxv">Max voltage (100% power)</label>
@@ -778,6 +779,170 @@ export class SpeedProfileEditorHandler {
 
     const del = document.getElementById('sp-delete-btn');
     if (del) del.onclick = () => this._deleteProfile(this._profile!.profile_id);
+
+    const calibrate = document.getElementById('sp-lighting-calibrate');
+    if (calibrate) calibrate.onclick = () => this._openLightingCalibration();
+  }
+
+  // === Lighting-voltage calibration ===
+  //
+  // design_new.md "Lighting-voltage calibration". The panel is deliberately
+  // three controls: the candidate voltage, a step up and a step down, and
+  // Save. Everything else about the pass is the locomotive in front of the
+  // operator — nothing on the rig can tell whether it moved, so the operator's
+  // eye is the measurement. The value to save is the highest step at which it
+  // still held still, so the operator steps up until it creeps, steps back
+  // down one, and saves.
+
+  /** Find a placed train running this profile, or explain why there is none. */
+  private async _lightingCalibrationTrain(): Promise<any | null> {
+    let trains: any[] = [];
+    try {
+      trains = await this.api.getTrains();
+    } catch (err: any) {
+      showToast('Failed to load trains: ' + (err.message || err), 'error', 5000);
+      return null;
+    }
+    const profileId = this._profile!.profile_id;
+    // `/api/trains` returns flat `Train.to_dict()` payloads in `trains`.
+    const matches = (trains || []).filter(
+      (t: any) => t?.speed_profile_id === profileId
+    );
+    if (!matches.length) {
+      showToast(
+        'Place a train that uses this profile first — calibration drives the locomotive',
+        'warning',
+        5000
+      );
+      return null;
+    }
+    return matches[0];
+  }
+
+  private async _openLightingCalibration(): Promise<void> {
+    const train = await this._lightingCalibrationTrain();
+    if (!train) return;
+
+    let run: any;
+    try {
+      run = await this.api.startLightingCalibration(train.id);
+    } catch (err: any) {
+      showToast(err.message || 'Cannot start lighting calibration', 'error', 6000);
+      return;
+    }
+    this._showLightingPanel(train, run);
+  }
+
+  private _showLightingPanel(train: any, run: any): void {
+    document.querySelector('.app-modal-overlay')?.remove();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'app-modal-overlay';
+    overlay.innerHTML = `
+      <div class="app-modal sp-lighting-modal">
+        <div class="app-modal-header">Lighting voltage — ${train.car_number || train.id}</div>
+        <div class="app-modal-body">
+          <div class="app-modal-message">Step up until the locomotive just starts to
+          creep, then step back down one and save.</div>
+          <div class="sp-lighting-stepper">
+            <button class="btn btn-secondary sp-lighting-step" data-dir="-1" aria-label="Lower">−</button>
+            <div class="sp-lighting-readout"><span id="sp-lighting-value">—</span><small>V</small></div>
+            <button class="btn btn-secondary sp-lighting-step" data-dir="1" aria-label="Raise">+</button>
+          </div>
+        </div>
+        <div class="app-modal-footer">
+          <button class="btn btn-secondary btn-sm" id="sp-lighting-cancel">Cancel</button>
+          <button class="btn btn-primary btn-sm" id="sp-lighting-save">Save</button>
+        </div>
+      </div>`;
+
+    const valueEl = overlay.querySelector('#sp-lighting-value') as HTMLElement;
+    const stepBtns = Array.from(
+      overlay.querySelectorAll('.sp-lighting-step')
+    ) as HTMLButtonElement[];
+    let candidate = Number(run.candidate_voltage) || 0;
+    let ceiling = Number(run.ceiling_voltage) || 0;
+
+    const paint = () => {
+      valueEl.textContent = candidate.toFixed(2);
+      // The step control stops at the ceiling and at 0, so the panel can never
+      // show a value Save would refuse.
+      stepBtns[0].disabled = candidate <= 0;
+      stepBtns[1].disabled = candidate >= ceiling;
+    };
+    paint();
+
+    let busy = false;
+    const step = async (dir: number) => {
+      if (busy) return;
+      busy = true;
+      try {
+        const next = await this.api.stepLightingCalibration(train.id, dir);
+        candidate = Number(next.candidate_voltage);
+        ceiling = Number(next.ceiling_voltage);
+        paint();
+      } catch (err: any) {
+        showToast(err.message || 'Step failed', 'error', 5000);
+      } finally {
+        busy = false;
+      }
+    };
+
+    const close = () => {
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+    };
+
+    const cancel = async () => {
+      close();
+      try {
+        await this.api.cancelLightingCalibration(train.id);
+      } catch {
+        /* the run is transient; a failed cancel leaves nothing to clean up */
+      }
+    };
+
+    const save = async () => {
+      try {
+        const result = await this.api.saveLightingCalibration(train.id);
+        close();
+        showToast(
+          `Lighting voltage saved at ${Number(result.lighting_voltage).toFixed(2)} V`,
+          'success',
+          3000
+        );
+        // The commit moved the profile's 0%-power anchor, so reload rather
+        // than patching the field: the voltage/power curve changed with it.
+        await this.showProfileEditor(this._profile!.profile_id);
+      } catch (err: any) {
+        showToast(err.message || 'Failed to save lighting voltage', 'error', 5000);
+      }
+    };
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        void cancel();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        void step(1);
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        void step(-1);
+      }
+    };
+
+    stepBtns.forEach((btn) => {
+      btn.onclick = () => void step(Number(btn.dataset.dir));
+    });
+    (overlay.querySelector('#sp-lighting-cancel') as HTMLElement).onclick = () =>
+      void cancel();
+    (overlay.querySelector('#sp-lighting-save') as HTMLElement).onclick = () => void save();
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) void cancel();
+    });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(overlay);
   }
 
   // --- plot edits → working profile ---

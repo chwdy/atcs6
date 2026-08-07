@@ -133,3 +133,10 @@ UNIDENTIFIED_GAP_HOLD_S: float = 5.0
 # per step so one noisy lap does not set a point.
 CALIBRATION_VOLTAGE_STEPS: int = 8
 CALIBRATION_MANUAL_LAPS: int = 3
+
+# Lighting-voltage calibration (design_new.md "Lighting-voltage calibration").
+# One press of the panel's step control moves the candidate voltage by this
+# much and puts the new value on the rails at once, so the operator sees the
+# locomotive answer every press. It is small because the whole point of the
+# pass is finding the last step before a creep starts.
+LIGHTING_VOLTAGE_STEP_V: float = 0.1
