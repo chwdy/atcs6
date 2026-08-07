@@ -160,12 +160,11 @@ export function formatReading(entry: RawOccupancyBlock): { reading: string; deta
     return { reading: '', detail: '' };
 }
 
-/** The chip tone for the source that answered. `held` is the lighting zone,
- *  where NEITHER detector may clear a block — worth calling out, because a block
- *  held there is occupied on the strength of the previous read, not this one. */
-export function sourceTone(source: string | undefined): ChipTone {
-    if (source === 'held') return 'warn';
-    if (source === 'current' || source === 'digital') return 'muted';
+/** The chip tone for the source that answered. A block held from its previous
+ *  read is worth calling out: it is occupied on the strength of that read rather
+ *  than this one, because in the lighting zone a clear takes a run of reads. */
+export function sourceTone(source: string | undefined, heldFromPrevious = false): ChipTone {
+    if (heldFromPrevious) return 'warn';
     return 'muted';
 }
 
@@ -197,7 +196,7 @@ export function buildRows(
         const { reading, detail } = formatReading(entry);
         const notes: string[] = [];
         if (entry.held_from_previous) {
-            notes.push('held from the previous read — neither detector can clear this block');
+            notes.push('held from the previous read — a clear here takes a run of reads');
         }
         if (entry.source === 'none') {
             notes.push('no detector answered for this block');
@@ -208,7 +207,7 @@ export function buildRows(
             confirmed,
             settling: raw !== confirmed,
             source: entry.source || '',
-            sourceTone: sourceTone(entry.source),
+            sourceTone: sourceTone(entry.source, !!entry.held_from_previous),
             reading,
             readingDetail: detail,
             drive:

@@ -356,44 +356,50 @@ class OccupancyDriver(OccupancyInput):
       - **driven** (|V| >= `current_sense_min_drive_v`): the rail voltage swamps
         the '165's comparator, but a motor under real drive draws a current the
         sense channel reads cleanly, so the current channel decides.
-      - **lighting** (between the two): a stopped-but-lit locomotive. **No
-        single read may clear a block here.** The drive is strong enough to
-        disturb the '165 (a low-duty PWM makes its bit flicker with sampling
-        phase) yet far too weak to put a readable load on the current channel,
-        which just reads ~0 mA. Either source may CONFIRM on one read, but a
-        clear has to be earned: the block is let go only after BOTH sources
-        have read clear for `LIGHTING_CLEAR_HOLD_READS` consecutive reads, and
-        until then the last reported value holds.
+      - **lighting** (between the two): a stopped-but-lit locomotive. The
+        current channel decides, exactly as in the driven zone, but **no single
+        read may clear a block here**: a clear is reported only after the
+        current channel has read clear for `LIGHTING_CLEAR_HOLD_READS`
+        consecutive reads, and until then the last reported value holds.
 
-    That release rule is not merely a debounce, and neither was the indefinite
-    hold it replaced. Occupancy and drive are a closed loop — a block that reads
-    clear is released, which cuts its voltage, which changes which detector
-    answers — so a false clear in the lighting zone used to send the block
-    around a confirm/vacate limit cycle at a few hertz, with the track voltage
-    pulsing in step. The sustained-agreement window breaks that loop at its one
-    open link: a detector flickering under PWM asserts occupied somewhere inside
-    the window and resets the count, so it delays the release rather than racing
-    it, and the cycle cannot re-form.
+    The '165 is not read at all in the lighting zone when the block has a
+    current channel, because the rail its comparator watches is the rail being
+    pulsed. `TrackDriver` drives lighting voltage as duty = |V| / 12 V, so a
+    1.5 V standby is 12.5% duty of full 12 V at 1 kHz, and the '165 samples that
+    at an unrelated phase. Measured on the rig, an EMPTY block commanded to
+    1.5 V had its '165 assert "occupied" on 21% of reads (11 of 53) — the duty
+    cycle, read back as a train. Its current channel over the same 53 reads
+    averaged 4.3 mA against a 10 mA trip, while a block with a locomotive
+    actually parked on it averaged 34.5 mA (22.8 - 52.0). The current channel
+    separates occupied from empty at lighting voltage by roughly eight to one;
+    the '165 does not separate them at all. So it gets no vote here — neither to
+    confirm nor to veto a release.
 
-    Holding forever broke the loop too, but it made the hold a latch: a block
-    both sources called clear stayed OCCUPIED for as long as software kept
-    driving it, and software kept driving it *because* it was occupied. Nothing
-    physical could ever release it. Requiring sustained agreement keeps the
-    stability and gives the latch an exit.
+    Letting it vote is what made this a latch. `OCCUPANCY_ON_THRESHOLD` is 1, so
+    the first flicker confirmed the block; being confirmed kept it energized,
+    which kept it in this zone; and every later flicker reset the release
+    window. At a 21% assert rate a run of 30 clean reads has a ~0.1% chance of
+    ever completing (the longest observed was 12), so an empty block a train was
+    merely approaching stayed OCCUPIED for as long as the train stayed powered.
+    Occupancy and drive are a closed loop — a block that reads clear is
+    released, which cuts its voltage, which changes which detector answers — and
+    a source that reads the drive itself closes that loop instead of breaking
+    it.
 
-    The trade is deliberate and fail-safe in the direction that matters: a
-    single blind read never clears a block, and a locomotive that keeps its
-    detector alive holds its block indefinitely. The exposure it accepts is a
-    locomotive that goes invisible to BOTH sources for the whole window — one
-    drawing under `threshold_ma` whose '165 also reads clear. Raising the
-    profile's `lighting_voltage` is what keeps a real lit loco above that floor;
-    the window only decides how long a genuinely silent block waits.
+    The window survives because the current channel can still go quiet on a real
+    locomotive: one drawing under `threshold_ma` at standby reads the same as an
+    empty block. Holding the last value for a run of reads keeps the release
+    slow and fail-safe, and keeps a marginal loco from cycling the block at a
+    few hertz. Raising the profile's `lighting_voltage`, or lowering
+    `threshold_ma`, is what keeps a real lit loco above the floor; the window
+    only decides how long a genuinely silent block waits.
 
     A block may have both sources, only one, or neither:
 
       - driven + has current    -> current channel
-      - lighting                -> either source confirms; clears only on
-                                   sustained agreement from both
+      - lighting + has current  -> current channel; clears only after sustained
+                                   agreement from it ('165 not read)
+      - lighting, digital only  -> '165 bit, under that same clear window
       - otherwise + has digital -> '165 bit
       - idle + only current     -> current channel (reads ~0 with no drive; best effort)
       - no binding              -> not detected (False)
@@ -435,10 +441,10 @@ class OccupancyDriver(OccupancyInput):
         # What this driver last reported per block. Read only in the lighting
         # zone, where it is what stops a blind read from clearing a block.
         self._last_reported: Dict[str, bool] = {}
-        # Consecutive lighting-zone reads on which BOTH sources called a block
-        # clear. Reset by any occupied read and by leaving the zone, so it only
-        # ever counts unbroken agreement; at the threshold the block is released
-        # and the count starts over.
+        # Consecutive lighting-zone reads on which the zone's deciding source
+        # called a block clear. Reset by any occupied read and by leaving the
+        # zone, so it only ever counts an unbroken run; at the threshold the
+        # block is released and the count starts over.
         self._lighting_clear_counts: Dict[str, int] = {}
         # Per-block detail of the last read_block_currents() call — which source
         # answered, what it measured, and the commanded drive state at the time.
@@ -476,23 +482,23 @@ class OccupancyDriver(OccupancyInput):
                 ),
             }
             if zone == "lighting":
-                # No single read can clear a block here — see the class
-                # docstring. Both sources are read (either may CONFIRM), and the
-                # last reported value holds through a both-clear read until they
-                # have agreed for `_lighting_clear_hold_reads` reads running.
-                entry["source"] = "held"
-                digital = (
-                    self._read_digital(block_id, digital_cache, entry)
-                    if block_id in self._digital
-                    else False
-                )
-                current = (
-                    self._read_current(block_id, entry)
-                    if block_id in self._current
-                    else False
-                )
+                # The current channel decides here; the '165 is not read at all,
+                # because the rail its comparator watches is the rail being
+                # pulsed and its bit reports the duty cycle rather than the
+                # train (see the class docstring). A digital-only block has
+                # nothing else to ask, so it falls back to the '165.
+                # No single read can CLEAR a block in either case: the last
+                # reported value holds through a clear read until the deciding
+                # source has read clear for `_lighting_clear_hold_reads` running.
+                entry["held_zone"] = True
+                if block_id in self._current:
+                    entry["source"] = "current"
+                    present = self._read_current(block_id, entry)
+                else:
+                    entry["source"] = "digital"
+                    present = self._read_digital(block_id, digital_cache, entry)
                 held = self._last_reported.get(block_id, False)
-                if digital or current:
+                if present:
                     self._lighting_clear_counts[block_id] = 0
                     entry["clear_count"] = 0
                     entry["held_from_previous"] = False
@@ -548,10 +554,12 @@ class OccupancyDriver(OccupancyInput):
         with no binding on one side reports `None` there rather than False —
         "unwired" and "reads clear" are different answers.
 
-        The lighting zone has no single-read verdict to give (a clear there is
-        earned over a window this call does not touch), so `overall` reports what
-        either source can confirm on one read, and `held_zone` marks it — the same
-        contract `self_test.run_occupancy_test` reports for one block.
+        The lighting zone has the same deciding source as the driven zone — the
+        current channel — so `overall` reports that channel's single read. What
+        it cannot report is the clear window: a clear there is earned over a run
+        of reads this call does not touch, so `held_zone` marks the verdict as
+        one the runtime would not have acted on by itself — the same contract
+        `self_test.run_occupancy_test` reports for one block.
         """
         digital_cache: Dict[str, bytes] = {}
         out: Dict[str, Dict[str, Any]] = {}
@@ -578,9 +586,16 @@ class OccupancyDriver(OccupancyInput):
             entry["current"] = current
             entry["driven"] = entry["zone"] == "driven"
             if entry["zone"] == "lighting":
-                entry["source"] = "held"
                 entry["held_zone"] = True
-                entry["overall"] = bool(digital or current)
+                if current is not None:
+                    entry["source"] = "current"
+                    entry["overall"] = bool(current)
+                elif digital is not None:
+                    entry["source"] = "digital"
+                    entry["overall"] = bool(digital)
+                else:
+                    entry["source"] = "none"
+                    entry["overall"] = False
             elif entry["zone"] == "driven" and current is not None:
                 entry["source"] = "current"
                 entry["overall"] = bool(current)

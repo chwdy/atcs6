@@ -328,12 +328,13 @@ def run_occupancy_test(
     decides, plus the verdict it gives.
 
     A block's occupancy comes from one of two sources depending on whether the
-    block is being driven (see `OccupancyDriver`): the digital
-    detector ('165 bit) while the block is idle, the current-sense channel
-    (INA3221 / INA219) while it is powered. This reads both regardless, reads the
-    drive state back off the PWM chip's own registers, and applies that same rule
-    — so the user sees each detector's raw state side by side and the one answer
-    the runtime would take from them.
+    block is being driven (see `OccupancyDriver`): the digital detector ('165
+    bit) while the block is idle, the current-sense channel (INA3221 / INA219)
+    once anything is driving the rails — lighting voltage included, because a
+    driven rail is exactly what the '165 cannot be read through. This reads both
+    regardless, reads the drive state back off the PWM chip's own registers, and
+    applies that same rule — so the user sees each detector's raw state side by
+    side and the one answer the runtime would take from them.
 
     Nothing is driven: the block is left in whatever state it was already in.
     """
@@ -358,10 +359,13 @@ def run_occupancy_test(
             "driven" if volts >= min_drive else "lighting"
         )
         driven = zone == "driven"
-        # The same precedence the runtime interface uses.
-        if zone == "lighting":
-            source = "held"
-        elif driven and current["bound"]:
+        # The same precedence the runtime interface uses. The lighting zone
+        # decides on the current channel exactly as the driven zone does — the
+        # '165's rail is the one being pulsed there, so its bit reports the duty
+        # cycle rather than the train — and differs only in that a clear takes a
+        # sustained run of reads.
+        held_zone = zone == "lighting"
+        if (driven or held_zone) and current["bound"]:
             source = "current"
         elif digital["bound"]:
             source = "digital"
@@ -370,23 +374,19 @@ def run_occupancy_test(
         else:
             source = "none"
 
-        if source == "held":
-            # The lighting zone: either detector may confirm on one read, but a
-            # clear takes sustained agreement from both. A test is a one-shot
-            # read with no previous value to hold and no window to count, so it
-            # reports what the two detectors see between them — and `held_zone`
-            # tells the UI that this single clear would not have vacated the
-            # block on its own.
-            occupied = bool(digital.get("occupied") or current.get("occupied"))
-        else:
-            decided = {"digital": digital, "current": current}.get(source)
-            occupied = bool(decided and decided.get("occupied"))
+        decided = {"digital": digital, "current": current}.get(source)
+        occupied = bool(decided and decided.get("occupied"))
         return {
             "ok": True,
             "block_id": block_id,
             "track": track,
             "driven": driven,
             "zone": zone,
+            # A test is a one-shot read with no previous value to hold and no
+            # window to count, so in the lighting zone it reports what the
+            # deciding source sees right now. `held_zone` tells the UI that a
+            # clear here would not have vacated the block on its own.
+            "held_zone": held_zone,
             "deadband_v": deadband,
             "min_drive_v": min_drive,
             "digital": digital,

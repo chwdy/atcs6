@@ -117,9 +117,16 @@ describe('buildRows', () => {
 
     it('explains a lighting-zone hold rather than showing a bare occupied dot', () => {
         const rows = buildRows({
-            blocks: { BLK_L: { raw: true, confirmed: true, source: 'held', held_from_previous: true } },
+            blocks: {
+                BLK_L: {
+                    raw: true,
+                    confirmed: true,
+                    source: 'current',
+                    held_from_previous: true,
+                },
+            },
         });
-        expect(rows[0].source).toBe('held');
+        expect(rows[0].source).toBe('current');
         expect(rows[0].sourceTone).toBe('warn');
         expect(rows[0].note).toContain('held from the previous read');
     });

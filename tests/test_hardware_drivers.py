@@ -627,66 +627,89 @@ def _lighting_zone_block(hold_reads=3):
     return dev, inp, blk
 
 
-def test_lighting_zone_confirms_on_either_source():
-    # Between the deadband and the current-sense floor neither source can be
-    # trusted to clear, but either one seeing current confirms on one read.
+def test_lighting_zone_confirms_on_the_current_channel():
+    # Between the deadband and the current-sense floor the current channel is
+    # still the source that decides, and it confirms on one read.
     dev, inp, _blk = _lighting_zone_block()
-    dev.set_ina3221_current(0x41, 1, 0.030)      # current sees it, '165 does not
-    assert inp.read_block_currents()["B1"] is True
-
-    dev, inp, _blk = _lighting_zone_block()
-    dev.set_input_bit("cs1", 3, True, width=1)   # '165 sees it, current does not
+    dev.set_ina3221_current(0x41, 1, 0.030)      # 30 mA > 15 mA
     assert inp.read_block_currents()["B1"] is True
 
 
-def test_lighting_zone_holds_through_a_both_clear_read():
-    # One blind read must not vacate the block — that is the confirm/vacate loop
+def test_lighting_zone_ignores_the_digital_detector():
+    # THE bug this rule exists for. Lighting voltage is a duty cycle of the full
+    # supply, so the '165's comparator asserts on a fraction of reads with
+    # nothing on the block at all. It gets no vote here: it must neither confirm
+    # an empty block nor keep a clear one held.
+    dev, inp, _blk = _lighting_zone_block(hold_reads=3)
+    dev.set_input_bit("cs1", 3, True, width=1)   # '165 asserts, current clear
+    for _ in range(10):
+        assert inp.read_block_currents()["B1"] is False
+
+
+def test_lighting_zone_holds_through_a_clear_read():
+    # A locomotive drawing under threshold at standby reads like an empty block,
+    # so one clear read must not vacate it — that is the confirm/vacate loop
     # between occupancy and drive.
     dev, inp, _blk = _lighting_zone_block(hold_reads=3)
-    dev.set_input_bit("cs1", 3, True, width=1)
+    dev.set_ina3221_current(0x41, 1, 0.030)
     assert inp.read_block_currents()["B1"] is True
-    dev.set_input_bit("cs1", 3, False, width=1)  # both sources now clear
+    dev.set_ina3221_current(0x41, 1, 0.0)              # goes quiet
     assert inp.read_block_currents()["B1"] is True
     assert inp.read_block_currents()["B1"] is True
 
 
-def test_lighting_zone_releases_after_sustained_both_clear():
-    # ...but the hold is not a latch: sustained agreement releases the block.
+def test_lighting_zone_releases_after_sustained_clear():
+    # ...but the hold is not a latch: a sustained clear releases the block.
     dev, inp, _blk = _lighting_zone_block(hold_reads=3)
-    dev.set_input_bit("cs1", 3, True, width=1)
+    dev.set_ina3221_current(0x41, 1, 0.030)
     assert inp.read_block_currents()["B1"] is True
-    dev.set_input_bit("cs1", 3, False, width=1)
+    dev.set_ina3221_current(0x41, 1, 0.0)
     assert inp.read_block_currents()["B1"] is True     # 1st clear
     assert inp.read_block_currents()["B1"] is True     # 2nd
     assert inp.read_block_currents()["B1"] is False    # 3rd -> released
     assert inp.read_block_currents()["B1"] is False    # and stays released
 
 
-def test_lighting_zone_flicker_resets_the_clear_window():
-    # A '165 flickering under the rail drive asserts occupied inside the window;
-    # that must restart the count, so flicker delays a release instead of
-    # racing one.
+def test_lighting_zone_digital_flicker_cannot_hold_a_block():
+    # The regression: a '165 asserting on the rail drive used to reset the clear
+    # window on every flicker, so a held block never ran a window to completion
+    # and stayed occupied for as long as software kept driving it.
     dev, inp, _blk = _lighting_zone_block(hold_reads=3)
-    dev.set_input_bit("cs1", 3, True, width=1)
+    dev.set_ina3221_current(0x41, 1, 0.030)
+    assert inp.read_block_currents()["B1"] is True
+    dev.set_ina3221_current(0x41, 1, 0.0)              # current says clear
+    dev.set_input_bit("cs1", 3, True, width=1)         # '165 flickers on
+    assert inp.read_block_currents()["B1"] is True     # 1st clear
+    dev.set_input_bit("cs1", 3, False, width=1)
+    assert inp.read_block_currents()["B1"] is True     # 2nd clear
+    dev.set_input_bit("cs1", 3, True, width=1)         # flicker again
+    assert inp.read_block_currents()["B1"] is False    # 3rd -> released anyway
+
+
+def test_lighting_zone_current_flicker_resets_the_clear_window():
+    # The deciding source does reset the window: a channel that dips under
+    # threshold and back delays a release instead of racing one.
+    dev, inp, _blk = _lighting_zone_block(hold_reads=3)
+    dev.set_ina3221_current(0x41, 1, 0.030)
     assert inp.read_block_currents()["B1"] is True
     for _ in range(20):
-        dev.set_input_bit("cs1", 3, False, width=1)
+        dev.set_ina3221_current(0x41, 1, 0.0)
         assert inp.read_block_currents()["B1"] is True     # 1st clear
         assert inp.read_block_currents()["B1"] is True     # 2nd clear
-        dev.set_input_bit("cs1", 3, True, width=1)         # flicker back on
+        dev.set_ina3221_current(0x41, 1, 0.030)            # back over threshold
         assert inp.read_block_currents()["B1"] is True
     # Still occupied after 60 reads, because no window ever ran to completion.
     assert inp.read_block_currents()["B1"] is True
 
 
 def test_lighting_zone_clear_window_resets_on_leaving_the_zone():
-    # The window counts unbroken agreement inside the zone only. A block driven
-    # up out of it was answered by a source trusted to clear alone, so its
+    # The window counts an unbroken run inside the zone only. A block driven up
+    # out of it was answered by a source trusted to clear on one read, so its
     # part-finished count must not carry back in.
     dev, inp, blk = _lighting_zone_block(hold_reads=3)
-    dev.set_input_bit("cs1", 3, True, width=1)
+    dev.set_ina3221_current(0x41, 1, 0.030)
     assert inp.read_block_currents()["B1"] is True
-    dev.set_input_bit("cs1", 3, False, width=1)
+    dev.set_ina3221_current(0x41, 1, 0.0)
     assert inp.read_block_currents()["B1"] is True     # 1st clear
     assert inp.read_block_currents()["B1"] is True     # 2nd clear
     blk.set_voltage("B1", 8.0)                         # driven: current decides
@@ -704,18 +727,45 @@ def test_lighting_zone_release_window_restarts_after_a_reconfirm():
     # goes quiet again waits the full window instead of dropping out on its
     # next silent read.
     dev, inp, _blk = _lighting_zone_block(hold_reads=3)
-    dev.set_input_bit("cs1", 3, True, width=1)
+    dev.set_ina3221_current(0x41, 1, 0.030)
     assert inp.read_block_currents()["B1"] is True
-    dev.set_input_bit("cs1", 3, False, width=1)
+    dev.set_ina3221_current(0x41, 1, 0.0)
     for _ in range(2):
         assert inp.read_block_currents()["B1"] is True
     assert inp.read_block_currents()["B1"] is False    # released
-    dev.set_input_bit("cs1", 3, True, width=1)
+    dev.set_ina3221_current(0x41, 1, 0.030)
     assert inp.read_block_currents()["B1"] is True     # re-confirmed
-    dev.set_input_bit("cs1", 3, False, width=1)
+    dev.set_ina3221_current(0x41, 1, 0.0)
     assert inp.read_block_currents()["B1"] is True     # full window again
     assert inp.read_block_currents()["B1"] is True
     assert inp.read_block_currents()["B1"] is False
+
+
+def test_lighting_zone_without_a_current_channel_falls_back_to_the_digital_bit():
+    # A block bound to no current channel has nothing else to ask, so the '165
+    # decides there — under the same clear window.
+    dev = FakeCh347Device(present_addresses={0x40})
+    specs = [
+        ChipConfig("pwm1", "pca9685", i2c_address=0x40),
+        ChipConfig("in1", "hc165", spi_select="cs1"),
+    ]
+    inp, blk, _sw = build_real_interfaces(
+        dev, specs,
+        block_track={"B1": ("pwm1", 0, 1)},
+        block_occupancy={"B1": ("in1", 3)},
+        switch_output={},
+        block_occupancy_current={},
+        idle_deadband_v=0.25,
+        current_sense_min_drive_v=4.0,
+        lighting_clear_hold_reads=3,
+    )
+    blk.set_voltage("B1", 2.0)
+    dev.set_input_bit("cs1", 3, True, width=1)
+    assert inp.read_block_currents()["B1"] is True
+    dev.set_input_bit("cs1", 3, False, width=1)
+    assert inp.read_block_currents()["B1"] is True     # 1st clear
+    assert inp.read_block_currents()["B1"] is True     # 2nd
+    assert inp.read_block_currents()["B1"] is False    # 3rd -> released
 
 
 def test_lighting_voltage_default_stays_below_the_current_sense_floor():
@@ -1516,7 +1566,10 @@ def test_occupancy_test_uses_the_configured_current_sense_floor():
     res = self_test.run_occupancy_test(cfg, "B1", device=dev)
     assert res["min_drive_v"] == 8.0
     # Same rails, same reads: the raised floor puts them in the lighting zone.
-    assert res["zone"] == "lighting" and res["source"] == "held"
+    # The current channel still decides there — what changes is that a clear
+    # takes a run of reads, which `held_zone` is what tells the operator.
+    assert res["zone"] == "lighting" and res["source"] == "current"
+    assert res["held_zone"] is True and res["occupied"] is False
 
 
 def test_occupancy_test_uses_the_configured_idle_deadband():

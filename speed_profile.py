@@ -80,9 +80,10 @@ class SpeedProfile:
 
     # Lit-but-stationary voltage; also the 0%-power anchor of
     # voltage_power_curve. Set high enough that a lit, motionless locomotive
-    # draws a current its block's sense channel can actually read — below that
-    # the channel reports ~0 mA and the block's occupancy rests on the '165
-    # alone (see `hardware.interfaces.OccupancyDriver`, lighting zone). It must
+    # draws a current its block's sense channel can actually read: that channel
+    # is the only source that decides a lit block, and below the readable floor
+    # it reports ~0 mA and the block rests on its clear window until it times
+    # out (see `hardware.interfaces.OccupancyDriver`, lighting zone). It must
     # stay below `DEFAULT_CURRENT_SENSE_MIN_DRIVE_V`, or a standby block reads
     # as driven.
     lighting_voltage: float = 1.5

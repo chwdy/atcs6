@@ -60,12 +60,13 @@ _I2C_MIN, _I2C_MAX = 0x03, 0x77
 DEFAULT_CURRENT_THRESHOLD_MA = 3.0
 DEFAULT_CURRENT_BASELINE_MA = 0.0
 DEFAULT_IDLE_DEADBAND_V = 0.25
-# The drive level at or above which the current channel is trusted to DECIDE
-# occupancy. Between this and the idle deadband sits the lighting zone, where a
-# stopped-but-lit train drives the rails too weakly to load the current sensor
-# yet strongly enough to disturb the '165 — so no single read may clear a block
-# there (see `hardware.interfaces.OccupancyDriver`). Tunable because where a
-# locomotive starts drawing a readable current depends on the locomotive.
+# The drive level at or above which the current channel decides occupancy on a
+# single read. Between this and the idle deadband sits the lighting zone, where
+# the current channel still decides — the '165 watches a rail the drive is
+# pulsing — but a stopped-but-lit train may draw too little for it to read, so
+# no single read may CLEAR a block there (see
+# `hardware.interfaces.OccupancyDriver`). Tunable because where a locomotive
+# starts drawing a readable current depends on the locomotive.
 #
 # It must stay ABOVE the profile's `lighting_voltage` (default 1.5 V): a
 # stopped-but-lit train is by definition not being driven, and putting its
@@ -239,8 +240,9 @@ class HardwareConfig:
     # default.
     idle_deadband_v: float = DEFAULT_IDLE_DEADBAND_V
     # Upper edge of the same scale: at or above this magnitude the current
-    # channel decides. Between the two is the lighting zone, where no read may
-    # clear a block (see `hardware.interfaces.OccupancyDriver`).
+    # channel decides on one read. Between the two is the lighting zone, where
+    # it still decides but no single read may CLEAR a block (see
+    # `hardware.interfaces.OccupancyDriver`).
     current_sense_min_drive_v: float = DEFAULT_CURRENT_SENSE_MIN_DRIVE_V
 
 

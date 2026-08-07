@@ -338,25 +338,27 @@ export function occupancyResultHtml(res: any): string {
         + `(baseline ${fmt(current.baseline_ma)}, trips at ±${fmt(current.threshold_ma)}) · `
         + `${current.occupied ? 'occupied' : 'clear'}`;
 
-  // The lighting zone ("held") is the stopped-but-lit band between the idle
-  // deadband and the current-sense floor. No single read can be trusted to CLEAR
-  // a block there — a clear takes both detectors agreeing for a run of reads —
-  // so the verdict has to say so. A "Clear" the runtime would not have acted on
-  // would otherwise read as a wiring fault.
+  // The lighting zone is the stopped-but-lit band between the idle deadband and
+  // the current-sense floor. The same detector decides there as when driving —
+  // the '165's rail is the one being pulsed, so its bit reports the duty cycle
+  // rather than the train — but a CLEAR takes a run of reads rather than one, so
+  // the verdict has to say so. A "Clear" the runtime would not have acted on
+  // yet would otherwise read as a wiring fault.
+  const decider = res.source === 'current' ? 'driving' : 'idle';
   const verdict =
     res.source === 'none'
       ? 'No detector bound to this block'
-      : res.source === 'held'
-        ? `${res.occupied ? 'Occupied' : 'No detector sees a train'} — the block is `
-          + `lit but not driving (under ${fmt(res.min_drive_v)} V), so both detectors `
-          + `are read and one reading alone cannot clear it`
+      : res.held_zone
+        ? `${res.occupied ? 'Occupied' : 'Clear'} — the block is `
+          + `lit but not driving (under ${fmt(res.min_drive_v)} V), so the `
+          + `${decider} detector decides, and a clear only releases the block `
+          + `after it reads clear for a run of reads`
         : `${res.occupied ? 'Occupied' : 'Clear'} — the block is `
-          + `${res.driven ? 'driving' : 'idle'}, so the `
-          + `${res.source === 'current' ? 'driving' : 'idle'} detector decides`;
+          + `${res.driven ? 'driving' : 'idle'}, so the ${decider} detector decides`;
 
   return `${occRow('Track power', trackText, false)}
-    ${occRow("Idle detector ('165)", digitalText, res.source === 'digital' || res.source === 'held')}
-    ${occRow('Driving detector (current)', currentText, res.source === 'current' || res.source === 'held')}
+    ${occRow("Idle detector ('165)", digitalText, res.source === 'digital')}
+    ${occRow('Driving detector (current)', currentText, res.source === 'current')}
     <div class="hw-occ-verdict ${res.source === 'none' ? 'is-unbound' : res.occupied ? 'is-occupied' : 'is-clear'}">
       ${esc(verdict)}
     </div>`;

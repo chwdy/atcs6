@@ -103,18 +103,23 @@ OCCUPANCY_OFF_THRESHOLD: int = 10
 # which the model cannot explain by latency and the operator needs to see.
 OVERRUN_REPORT_MIN_BLOCKS: int = 2
 
-# How many consecutive reads BOTH occupancy sources must agree a lighting-zone
-# block is clear before the driver stops holding it occupied (design_new.md
+# How many consecutive reads the lighting zone's deciding source — the current
+# channel, or the '165 on a block that has no current channel — must call a
+# block clear before the driver stops holding it occupied (design_new.md
 # "Power -> Occupancy source follows drive state"). Counted in the same 10 Hz
 # detection reads as the thresholds above, so this is ~3 s.
 #
 # This is the stopped-and-lit case the note above says no debounce can protect,
-# and it is a different problem from a dropout. A lit train parked in the
-# lighting zone reads clear on both sources indefinitely, so the window is not
-# sized to ride anything out — it is sized against the detector flicker that the
-# rail drive itself causes. Any single occupied read from either source resets
-# the count, so a flickering detector delays the release instead of racing it,
-# and the confirm/vacate loop between occupancy and drive cannot re-form.
+# and it is a different problem from a dropout. A locomotive drawing under its
+# channel's `threshold_ma` at standby reads exactly like an empty block, so the
+# window is not sized to ride anything out — it keeps the release slow enough
+# that such a loco cannot cycle its block through the confirm/vacate loop
+# between occupancy and drive.
+#
+# The window counts ONE source, not agreement between two. A '165 whose rail is
+# being pulsed asserts on roughly the duty cycle (21% of reads measured at 1.5 V
+# on a block with nothing on it), so letting it reset the count made the hold a
+# latch no empty block ever escaped — see `OccupancyDriver`'s class docstring.
 LIGHTING_CLEAR_HOLD_READS: int = 30
 
 # How long an unidentified train that holds no blocks at all is held before it is
