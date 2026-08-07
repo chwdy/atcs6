@@ -158,6 +158,79 @@ def test_without_a_live_output_the_commissioning_session_pulses_the_coils(client
     assert int(switch.position) == 1
 
 
+# ----------------------------------------- the state the bench actually runs in
+
+
+def test_the_bench_throw_works_while_no_environment_is_active(client):
+    """The state every bench throw happens in.
+
+    Commissioning takes the device by deactivating the environment, so
+    `environment_active` is False for the whole time the switch editor's Test is
+    usable. Recording where the points went is not a throw command — the coil is
+    already pulsed — so it must not be refused for running with no environment
+    to command."""
+    test_client, state, switch = client
+    state.sim_controller.environment_active = False
+
+    body = _throw(test_client, 1).get_json()
+
+    assert body["ok"] is True, body["error"]
+    assert body["driver"] == "commission"
+    assert int(switch.position) == 1
+
+
+def test_the_alternating_bench_test_runs_past_its_first_throw(client):
+    """What the panel's Test button does: throw a side every second until the
+    operator stops it. A single non-ok answer stops that loop, so a refusal on
+    throw #1 leaves a "test" that fires one coil and quits — which is a test that
+    can never show the operator both sides of their wiring."""
+    test_client, state, switch = client
+    state.sim_controller.environment_active = False
+
+    for position in (0, 1, 0, 1):
+        body = _throw(test_client, position).get_json()
+        assert body["ok"] is True, body["error"]
+
+    assert int(switch.position) == 1
+
+
+def test_the_bench_throw_pulses_the_port_the_binding_names(client, monkeypatch):
+    """Each side fires the port bound to it, so re-picking a port is how an
+    operator maps a coil to a direction."""
+    test_client, state, _switch = client
+    state.sim_controller.environment_active = False
+    from hardware import commission
+
+    pulses = []
+    session = commission.get_session()
+    monkeypatch.setattr(
+        session,
+        "pulse_output",
+        lambda chip_id, port, **kw: pulses.append((chip_id, port, kw.get("off_port"))),
+    )
+    monkeypatch.setattr(session, "open", lambda *a, **kw: None)
+
+    _throw(test_client, 0)
+    _throw(test_client, 1)
+
+    assert pulses == [("sw1", 5, 6), ("sw1", 6, 5)]
+
+
+def test_a_bench_throw_does_not_drive_the_coil_a_second_time(client):
+    """The bench pulsed the coil itself, on chips commissioning has taken. The
+    model write that follows must not reach an output as well."""
+    test_client, state, _switch = client
+    state.sim_controller.environment_active = False
+    thrown = []
+    state.sim_controller.switch_power_controller.set_throw = (
+        lambda switch_id, target: thrown.append((switch_id, target)) or True
+    )
+
+    assert _throw(test_client, 1).get_json()["ok"] is True
+
+    assert thrown == []
+
+
 # ------------------------------------------------------------------ refusals
 
 

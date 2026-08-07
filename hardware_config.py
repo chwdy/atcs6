@@ -265,6 +265,11 @@ _session_device: Optional[Any] = None
 # was plugged in and working. A borrowed device is never closed by the borrower.
 _live_device: Optional[Any] = None
 
+# The setup the running session was BUILT from, in persisted form, or None when
+# no hardware-backed session is up. Compared against the saved setup to answer
+# `setup_awaits_activation()` — see there for what the comparison covers.
+_activated_setup: Optional[Dict[str, Any]] = None
+
 
 def get_hardware_config() -> HardwareConfig:
     """Return the live hardware-configuration singleton."""
@@ -293,12 +298,60 @@ def get_live_device() -> Optional[Any]:
     return _live_device
 
 
+def setup_awaits_activation() -> bool:
+    """Whether the saved setup holds changes the running session is not using.
+
+    A hardware-backed session is built from the setup as it stood when the
+    environment was activated: the chips, their transport, and the maps the
+    drivers are constructed and checked against. Editing any of that afterwards
+    saves and persists, but the running session keeps what it was built with —
+    so the operator is looking at a screen that no longer describes the rig that
+    is running, with nothing on it saying so. This is that missing signal
+    (design_new.md "Hardware setup", the `GET /api/operation/environment` row).
+
+    The comparison covers only what activation captures. The values a driver
+    reads per write — a switch's coil ports, a block's rail-polarity flag, a
+    switch's rail feed — are already live, so counting them here would report a
+    pending change for an edit that has taken effect, which is worse than
+    silence. See `A binding is read per write` in design_new.md for that split.
+
+    False whenever no hardware-backed session is up: with nothing running,
+    nothing is out of date.
+    """
+    if _activated_setup is None:
+        return False
+    return _activation_captured(_persist_dict(_config)) != _activated_setup
+
+
+def _activation_captured(persisted: Dict[str, Any]) -> Dict[str, Any]:
+    """`persisted` reduced to the parts activation captures — the parts a later
+    edit cannot reach without rebuilding the session. Drops the per-write reads
+    named in `setup_awaits_activation`."""
+    captured = dict(persisted)
+    captured.pop("switch_output", None)
+    captured.pop("switch_track_source", None)
+    captured["block_track"] = {
+        block_id: {k: v for k, v in binding.items() if k != "reversed"}
+        for block_id, binding in persisted.get("block_track", {}).items()
+    }
+    return captured
+
+
+def note_activated_setup(cfg: Optional[HardwareConfig]) -> None:
+    """Record the setup a session was just built from, or clear it with None."""
+    global _activated_setup
+    _activated_setup = None if cfg is None else _activation_captured(_persist_dict(cfg))
+
+
 def close_live_device() -> None:
     """Release the current hardware-backed session device after outputs are safe."""
-    global _session_device, _live_device
+    global _session_device, _live_device, _activated_setup
     device = _live_device
     _session_device = None
     _live_device = None
+    # The session those interfaces belonged to is over, so there is no longer a
+    # captured setup for an edit to be pending against.
+    _activated_setup = None
     if device is not None:
         try:
             device.close()
@@ -1195,6 +1248,30 @@ def track_polarity_reversed(block_id: str) -> bool:
     return bool(binding.reversed) if binding is not None else False
 
 
+def switch_coil_ports(
+    switch_id: str,
+) -> Optional[Tuple[str, int, int, Optional[int]]]:
+    """This switch's `(chip_id, port_main, port_diverge, port_standby)`, per the
+    live configuration.
+
+    The switch driver's `binding_of` read (design_new.md "Hardware setup", A
+    binding is read per write), and the coil-side counterpart of
+    `track_polarity_reversed` above. Reads the module-level `_config` on every
+    call — not a snapshot — so re-picking a coil port aims the next throw at the
+    new bit without a session rebuild, which is what makes the panel's port
+    dropdowns mean something on a rig being wired up. A switch with no binding
+    has no coil to drive: None."""
+    binding = _config.switch_output.get(switch_id)
+    if binding is None:
+        return None
+    return (
+        binding.chip_id,
+        binding.port_main,
+        binding.port_diverge,
+        binding.port_standby,
+    )
+
+
 def set_switch_binding(
     switch_id: str,
     chip_id: Optional[str] = None,
@@ -1329,6 +1406,9 @@ def _config_from_dict(payload: Any) -> HardwareConfig:
         block_occupancy=_parse_bindings(payload.get("block_occupancy", {})),
         block_occupancy_current=_parse_current_bindings(payload.get("block_occupancy_current", {})),
         switch_output=_parse_switch_bindings(payload.get("switch_output", {})),
+        switch_track_source=_parse_switch_track_source(
+            payload.get("switch_track_source", {})
+        ),
         idle_deadband_v=_parse_deadband(payload.get("idle_deadband_v")),
         current_sense_min_drive_v=_parse_min_drive(
             payload.get("current_sense_min_drive_v")
@@ -1416,10 +1496,14 @@ def reset_to_defaults() -> HardwareConfig:
     Production never couples these stores; this helper resets the separate
     environment singleton as well so an isolated test starts in Simulation.
     """
-    global _config, _session_device, _live_device
+    global _config, _session_device, _live_device, _activated_setup
     _config = HardwareConfig()
     _session_device = None
     _live_device = None
+    # The device handles above are what a session was; dropping them without
+    # dropping what it captured would leave an edit pending against a session
+    # that no longer exists.
+    _activated_setup = None
     operation_environment.reset_to_defaults()
     return _config
 
@@ -1481,7 +1565,13 @@ def build_session_interfaces(
     `track_polarity_of` answers a block's rail-binding `reversed` flag for the
     track driver — `track_polarity_reversed` above is the canonical lookup, and
     a caller passes it (rather than a snapshot) so an operator can flip a
-    block's rails without rebuilding the session.
+    block's rails without rebuilding the session. `switch_coil_ports` answers
+    the same way for the switch driver's coil ports; it is passed directly
+    rather than injected, because it reads this module's own configuration and
+    a caller has nothing to say about it.
+
+    Records what it built from, so `setup_awaits_activation` can tell an edit
+    the session is not using from one it is.
     """
     cfg = cfg if cfg is not None else _config
     environment = (
@@ -1490,6 +1580,9 @@ def build_session_interfaces(
         else operation_environment.parse(environment)
     )
     if environment is OperationMode.SIMULATION:
+        # Simulation builds no chips from the setup, so no part of it is captured
+        # and no edit to it can be pending.
+        note_activated_setup(None)
         return None, None, None
 
     global _session_device, _live_device
@@ -1519,6 +1612,7 @@ def build_session_interfaces(
                 idle_deadband_v=cfg.idle_deadband_v,
                 current_sense_min_drive_v=cfg.current_sense_min_drive_v,
                 track_polarity_of=track_polarity_of,
+                switch_binding_of=switch_coil_ports,
                 watchdog_timeout_s=None,
             )
             # A rig at rest is an empty layout with one train parked on it, not
@@ -1532,6 +1626,7 @@ def build_session_interfaces(
             ) from exc
         _session_device = device
         _live_device = device
+        note_activated_setup(cfg)
         atexit.register(device.close)
         return interfaces
 
@@ -1563,6 +1658,7 @@ def build_session_interfaces(
             idle_deadband_v=cfg.idle_deadband_v,
             current_sense_min_drive_v=cfg.current_sense_min_drive_v,
             track_polarity_of=track_polarity_of,
+            switch_binding_of=switch_coil_ports,
             # A real session drives real track; arm the loss-of-control watchdog
             # (design_new.md "Power -> Hardware interface boundary").
             watchdog_timeout_s=DEFAULT_WATCHDOG_TIMEOUT_S,
@@ -1582,5 +1678,6 @@ def build_session_interfaces(
     # Publishing it as the live device is what lets the commissioning tests run
     # against the rig instead of failing to open a second handle for it.
     _live_device = device
+    note_activated_setup(cfg)
     atexit.register(device.close)
     return interfaces

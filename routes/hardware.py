@@ -134,6 +134,10 @@ def register(app, state: AppState) -> None:
                 "environment_active": state.sim_controller.environment_active,
                 "virtual_hardware_active": hardware_config.get_session_device() is not None,
                 "develop_active": hardware_config.get_session_device() is not None,
+                # Carried here as well as on `/api/operation/environment` so the
+                # per-entity binding panels can say "saved, but not running"
+                # without a second request on every render.
+                "awaits_activation": hardware_config.setup_awaits_activation(),
             },
         })
 
@@ -394,6 +398,11 @@ def register(app, state: AppState) -> None:
           the model position is written after the pulse lands. That order
           matters: a pulse that never reached a coil must not leave the model
           claiming an alignment nothing moved to.
+
+        The two halves write the model through different `SwitchManager` entry
+        points, because the second one runs while no operating environment is
+        active — the ordinary throw is refused in that state, and the coil has
+        been driven already. See `record_bench_alignment`.
         """
         data = request.get_json(silent=True) or {}
         try:
@@ -430,9 +439,18 @@ def register(app, state: AppState) -> None:
             and not isinstance(iface, SimulatedSwitchDriver)
         )
 
-        if not drives_coils:
+        if drives_coils:
+            # The session's own switch output owns these coils, so the ordinary
+            # operating throw IS the test. The operator explicitly asked for
+            # this alignment, so a `manual` switch participates — the same
+            # override the manual throw controls send.
+            with state.simulation_lock:
+                ok, message = switch_manager.request_position_change(
+                    switch_id, position, manual_override=True
+                )
+        else:
             # Commissioning: pulse the coils ourselves so there is something to
-            # watch, then let the throw below record it on the model.
+            # watch, then record that alignment on the model.
             binding = cfg.switch_output.get(switch_id)
             if binding is None:
                 return jsonify({
@@ -465,12 +483,17 @@ def register(app, state: AppState) -> None:
             except Exception as exc:
                 return jsonify({"ok": False, "error": str(exc)})
 
-        # The operator explicitly asked for this alignment, so a `manual` switch
-        # participates — the same override the manual throw controls send.
-        with state.simulation_lock:
-            ok, message = switch_manager.request_position_change(
-                switch_id, position, manual_override=True
-            )
+            # The coil is already pulsed, on chips commissioning has taken, so
+            # this only records where the points now are. The operating throw
+            # cannot do it: it would drive the coil again, and it refuses while
+            # no environment is active — which is the state a bench throw runs
+            # in, so routing this through it made every test fail on the throw
+            # the operator had just watched land.
+            with state.simulation_lock:
+                ok, message = switch_manager.record_bench_alignment(
+                    switch_id, position
+                )
+
         return jsonify({
             "ok": bool(ok),
             "error": None if ok else message,
@@ -1184,6 +1207,10 @@ def register(app, state: AppState) -> None:
             "is_active": bool(state.sim_controller.environment_active),
             "activation_issues": list(state.sim_controller.activation_issues),
             "commissioning": bool(state.commissioning_active),
+            # Saved setup changes the running session is not using. Without it
+            # an operator re-picks a chip or a channel, sees it save, and has
+            # nothing telling them the rig is still running the old wiring.
+            "awaits_activation": hardware_config.setup_awaits_activation(),
         })
 
     @app.route("/api/operation/environment", methods=["PUT"])

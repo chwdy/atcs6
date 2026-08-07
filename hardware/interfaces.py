@@ -248,6 +248,11 @@ class SwitchDriver(SwitchOutput):
     Steps 5-6 run in a `finally`, so a failure part-way through still leaves no
     coil driven. A driver with no standby bit de-energizes at step 6 instead,
     which is why that write is unconditional.
+
+    Which bits those are is read per throw through `binding_of`, not captured
+    when the session was built (design_new.md "Hardware setup", A binding is
+    read per write): re-picking a coil port aims the next throw at the new bit.
+    The chips are the session's; the port numbers are the setup's.
     """
 
     def __init__(
@@ -257,16 +262,37 @@ class SwitchDriver(SwitchOutput):
         watchdog: Optional[OutputWatchdog] = None,
         pulse_s: float = SWITCH_THROW_PULSE_S,
         safety: Optional[OutputSafety] = None,
+        binding_of: Optional[
+            Callable[[str], Optional[Tuple[str, int, int, Optional[int]]]]
+        ] = None,
     ) -> None:
         self._chips = chips_by_id
         self._bindings = bindings
+        self._binding_of = binding_of
         self._last: Dict[str, int] = {}
         self._watchdog = watchdog
         self._pulse_s = pulse_s
         self._safety = safety
 
+    def _binding_for(
+        self, switch_id: str
+    ) -> Optional[Tuple[str, int, int, Optional[int]]]:
+        """This switch's `(chip_id, port_main, port_diverge, port_standby)`.
+
+        `binding_of` reads the live setup — the coil-side counterpart of the
+        track driver's `polarity_of` — so an operator re-picking a coil port
+        sees the next throw land on the new bit. It answers for every switch,
+        including one whose binding has been cleared: a switch the setup no
+        longer wires must stop driving, not fall back to the ports this session
+        happened to start with. The construction-time map answers only when no
+        resolver was passed, which is how a test builds a driver from a literal.
+        """
+        if self._binding_of is not None:
+            return self._binding_of(switch_id)
+        return self._bindings.get(switch_id)
+
     def set_throw(self, switch_id: str, target_state: int) -> bool:
-        binding = self._bindings.get(switch_id)
+        binding = self._binding_for(switch_id)
         if binding is None:
             return False
         chip_id, port_main, port_diverge, port_standby = binding
@@ -703,6 +729,9 @@ def build_real_interfaces(
     block_occupancy_current: Optional[CurrentBindingMap] = None,
     idle_deadband_v: float = _IDLE_DEADBAND_V,
     track_polarity_of: Optional[Callable[[str], bool]] = None,
+    switch_binding_of: Optional[
+        Callable[[str], Optional[Tuple[str, int, int, Optional[int]]]]
+    ] = None,
     watchdog_timeout_s: Optional[float] = None,
     current_sense_min_drive_v: float = _CURRENT_SENSE_MIN_DRIVE_V,
     lighting_clear_hold_reads: int = LIGHTING_CLEAR_HOLD_READS,
@@ -716,6 +745,10 @@ def build_real_interfaces(
 
     `track_polarity_of` reports a block's rail-binding `reversed` flag to the
     track driver, which swaps that block's two rails when resolving its binding.
+    `switch_binding_of` reports a switch's coil ports to the switch driver the
+    same way. Both are read per write rather than captured here, so an operator
+    correcting the wiring does not have to rebuild the session to see it; the
+    maps passed positionally are what the chips are built and checked against.
 
     `watchdog_timeout_s` arms the loss-of-control watchdog on both output
     interfaces (design_new.md "Hardware interface boundary"); `None` leaves it
@@ -794,7 +827,13 @@ def build_real_interfaces(
         else None
     )
     switch_out = (
-        SwitchDriver(switch_chips, switch_output, watchdog=watchdog, safety=safety)
+        SwitchDriver(
+            switch_chips,
+            switch_output,
+            watchdog=watchdog,
+            safety=safety,
+            binding_of=switch_binding_of,
+        )
         if switch_chips
         else None
     )

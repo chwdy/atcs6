@@ -79,6 +79,10 @@ def test_environment_api_reports_selected_separately_from_active(
             "is_active": True,
             "activation_issues": [],
             "commissioning": False,
+            # No hardware-backed session has been built, so no saved edit can be
+            # pending against one (design_new.md "Hardware setup", A binding is
+            # read per write).
+            "awaits_activation": False,
         }
 
 

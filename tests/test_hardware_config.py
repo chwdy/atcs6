@@ -251,6 +251,25 @@ def test_idle_deadband_survives_the_layout_snapshot_round_trip():
     assert hardware_config.get_hardware_config().idle_deadband_v == 1.25
 
 
+def test_switch_track_source_survives_the_layout_snapshot_round_trip():
+    """The switch feed map is a required binding, so losing it on a layout load
+    leaves the rig un-activatable with `missing_switch_track_source` — and the
+    operator has to re-enter every switch's feed by hand.
+
+    Same shape as the deadband round-trip above: the persist path and the
+    whole-config parse path are two separate code paths and both have to carry
+    every key.
+    """
+    hardware_config.apply_updates(_real_payload(), persist=False)
+    snapshot = hardware_config.persisted_dict()
+    assert snapshot["switch_track_source"] == {"SW_A": "B1"}
+
+    hardware_config.reset_to_defaults()
+    hardware_config.apply_snapshot(snapshot, persist=False)
+
+    assert hardware_config.get_hardware_config().switch_track_source == {"SW_A": "B1"}
+
+
 def test_rejects_negative_idle_deadband():
     with pytest.raises(hardware_config.HardwareConfigError):
         hardware_config.config_from_payload({"idle_deadband_v": -0.1})
@@ -587,6 +606,79 @@ def test_factory_device_open_failure_raises_backend_unavailable(monkeypatch):
     hardware_config.apply_updates(_real_payload(), persist=False)
     with pytest.raises(hardware_config.HardwareBackendUnavailable):
         hardware_config.build_session_interfaces()
+
+
+# --- what activation captures ----------------------------------------------
+# design_new.md "Hardware setup", A binding is read per write: a session is
+# built from chips, so those are captured; the port a chip drives for a logical
+# entity is looked up per write. `setup_awaits_activation` is what tells an
+# operator which kind of edit they just made.
+
+
+def test_nothing_awaits_activation_without_a_session(monkeypatch):
+    """With no hardware-backed session up, nothing is out of date."""
+    hardware_config.apply_updates(_real_payload(), persist=False)
+    assert hardware_config.setup_awaits_activation() is False
+
+
+def test_a_captured_edit_awaits_activation(monkeypatch):
+    _patch_fake_device(monkeypatch)
+    hardware_config.apply_updates(_real_payload(), persist=False)
+    hardware_config.build_session_interfaces()
+    assert hardware_config.setup_awaits_activation() is False
+
+    # A chip's own parameters decide what gets constructed, so this one only
+    # reaches the rig through a rebuild.
+    hardware_config.apply_updates(
+        _real_payload(chips=[
+            {"chip_id": "pwm1", "kind": "pca9685", "i2c_address": "0x40"},
+            {"chip_id": "sw1", "kind": "hc595", "spi_select": "cs0", "chain_length": 4},
+            {"chip_id": "in1", "kind": "hc165", "spi_select": "cs1"},
+        ]),
+        persist=False,
+    )
+    assert hardware_config.setup_awaits_activation() is True
+
+
+def test_a_per_write_edit_does_not_await_activation(monkeypatch):
+    """Re-picking a coil port, flipping a rail-polarity flag, or moving a rail
+    feed takes effect on the next write. Reporting them as pending would tell
+    the operator to re-activate for a change that has already landed."""
+    _patch_fake_device(monkeypatch)
+    hardware_config.apply_updates(_real_payload(), persist=False)
+    hardware_config.build_session_interfaces()
+
+    hardware_config.set_switch_binding("SW_A", "sw1", 7, 8, persist=False)
+    hardware_config.set_track_binding(
+        "B1", "pwm1", 0, 1, polarity_reversed=True, persist=False
+    )
+    hardware_config.set_switch_track_source("SW_A", None, persist=False)
+
+    assert hardware_config.setup_awaits_activation() is False
+
+
+def test_releasing_the_device_clears_what_was_captured(monkeypatch):
+    _patch_fake_device(monkeypatch)
+    hardware_config.apply_updates(_real_payload(), persist=False)
+    hardware_config.build_session_interfaces()
+    hardware_config.apply_updates(_real_payload(chips=[]), persist=False)
+    assert hardware_config.setup_awaits_activation() is True
+
+    hardware_config.close_live_device()
+
+    assert hardware_config.setup_awaits_activation() is False
+
+
+def test_the_live_coil_lookup_answers_from_the_current_setup():
+    """`switch_coil_ports` is the switch driver's per-write read."""
+    hardware_config.apply_updates(_real_payload(), persist=False)
+    assert hardware_config.switch_coil_ports("SW_A") == ("sw1", 5, 6, None)
+
+    hardware_config.set_switch_binding("SW_A", "sw1", 7, 8, port_standby=4, persist=False)
+    assert hardware_config.switch_coil_ports("SW_A") == ("sw1", 7, 8, 4)
+
+    hardware_config.set_switch_binding("SW_A", None, persist=False)
+    assert hardware_config.switch_coil_ports("SW_A") is None
 
 
 # --- REST surface ----------------------------------------------------------

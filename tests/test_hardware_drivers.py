@@ -470,6 +470,48 @@ def test_switch_throw_write_order_matches_the_bench_proven_sequence(wired, monke
     ]
 
 
+def test_a_re_picked_coil_port_lands_on_the_next_throw(wired, monkeypatch):
+    """design_new.md "Hardware setup", A binding is read per write: the coil
+    ports are looked up per throw, not captured when the session was built.
+
+    An operator wiring a rig up re-picks these ports precisely because the first
+    guess drove the wrong pin. Captured at build time, the correction would
+    change nothing an operator can see until the environment is activated again,
+    so the dropdown reads as a control that does nothing and they go rewire the
+    layout instead."""
+    dev, _inp, _blk, sw = wired
+    live = {"SW_A": ("sw1", 5, 6, 4)}
+    sw._binding_of = live.get
+
+    sw.set_throw("SW_A", 1)
+    assert sw._chips["sw1"].is_high(6) is False       # pulsed and released
+    seen = []
+    monkeypatch.setattr(
+        hw_interfaces,
+        "time",
+        _SleepSpy(lambda _s: seen.append(
+            {bit: dev.latched_bit("cs0", bit) for bit in (6, 9)}
+        )),
+    )
+
+    # The operator moves the diverge coil from bit 6 to bit 9.
+    live["SW_A"] = ("sw1", 5, 9, 4)
+    assert sw.set_throw("SW_A", 1) is True
+
+    assert seen == [{6: False, 9: True}]
+
+
+def test_a_cleared_binding_stops_driving_rather_than_falling_back(wired):
+    """The live lookup answers for every switch, including one the operator has
+    unbound: a switch the setup no longer wires must stop driving, not keep the
+    ports this session happened to start with."""
+    _dev, _inp, _blk, sw = wired
+    assert sw.set_throw("SW_A", 1) is True            # the built-in map works
+
+    sw._binding_of = {}.get
+    assert sw.set_throw("SW_A", 1) is False
+
+
 def test_switch_without_standby_still_de_energizes_its_coil():
     """With no standby bit the coil write is the only de-energize, so it must
     happen unconditionally."""

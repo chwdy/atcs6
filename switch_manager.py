@@ -481,6 +481,12 @@ class SwitchManager:
         switch with `Switch.manual == True` rejects the request; with the
         override, the manual filter is bypassed (the disabled filter always
         applies regardless).
+
+        This is the OPERATING throw, so it needs an operating environment: a
+        command that reaches a coil belongs to whoever owns the outputs, and
+        while no environment is active nobody does. A commissioning bench throw
+        drives its own coil and records the result through
+        `record_bench_alignment` instead.
         """
         switch = self._switch_registry.get(switch_id)
         if switch is None:
@@ -490,7 +496,62 @@ class SwitchManager:
             and not getattr(self.simulation_controller, "environment_active", True)
         ):
             return (False, "selected operating environment is not active")
+        return self._apply_alignment(
+            switch,
+            int(new_position),
+            manual_override=manual_override,
+            drive=True,
+            operation="request_position_change",
+        )
 
+    def record_bench_alignment(self, switch_id: str, position: int) -> tuple[bool, str]:
+        """Record the alignment a commissioning bench throw has ALREADY driven
+        onto the points (design_new.md "Hardware setup", Self-test and
+        commissioning ownership).
+
+        Commissioning owns the device exactly when no operating environment
+        does, so `request_position_change` cannot serve a bench throw twice
+        over: it refuses while the environment is inactive, which is every
+        bench throw, and it would drive the coil a second time through an
+        output the commissioning session has taken.
+
+        So this is that same model write without either half — the position
+        applies and the block reachability graph follows — for a coil the
+        caller has already pulsed. It commands nothing: no path through here
+        reaches a motor, which is why it may run while the outputs belong to
+        commissioning. A bench throw is an operator alignment, so it carries
+        the same `manual` override an operator's own throw does.
+        """
+        switch = self._switch_registry.get(switch_id)
+        if switch is None:
+            return (False, f"Unknown switch {switch_id}")
+        return self._apply_alignment(
+            switch,
+            int(position),
+            manual_override=True,
+            drive=False,
+            operation="record_bench_alignment",
+        )
+
+    def _apply_alignment(
+        self,
+        switch: "Switch",
+        new_position: int,
+        *,
+        manual_override: bool,
+        drive: bool,
+        operation: str,
+    ) -> tuple[bool, str]:
+        """Apply one commanded alignment: the position, the block reachability
+        graph, the coil when this caller owns it, and the event.
+
+        Shared by the operating throw and the commissioning bench throw, which
+        differ only in who drives the coil. Everything else an alignment means
+        to the rest of the app is the same either way, so it is the same code
+        and the two cannot drift into disagreeing about what a thrown switch
+        did to the layout.
+        """
+        switch_id = switch.switch_id
         old_position = int(switch.position)
         success, message = switch.apply_position_change(
             new_position, manual_override=manual_override
@@ -502,19 +563,20 @@ class SwitchManager:
         if block_manager is not None:
             block_manager.on_switch_position_changed(switch_id)
 
-        # Drive the physical throw (design_new.md "Power", Switch throw output)
-        # on every accepted command, including one that names the alignment
-        # `Switch.position` already held: the operator asking for MAIN on a
-        # switch the app already calls MAIN is how a divergence between the
-        # model and the actual points gets corrected, so it has to reach a coil.
-        # `_drive_throw` skips only what the output itself last drove there. A
-        # throw the hardware could not be commanded to make is reported as a
-        # failed command; `Switch.position` is not rolled back, and the service
-        # layer surfaces this `(False, reason)` as the operator's
-        # `command_result` warning.
-        fail_reason = self._drive_throw(switch, int(new_position))
-        if fail_reason is not None:
-            return (False, fail_reason)
+        if drive:
+            # Drive the physical throw (design_new.md "Power", Switch throw
+            # output) on every accepted command, including one that names the
+            # alignment `Switch.position` already held: the operator asking for
+            # MAIN on a switch the app already calls MAIN is how a divergence
+            # between the model and the actual points gets corrected, so it has
+            # to reach a coil. `_drive_throw` skips only what the output itself
+            # last drove there. A throw the hardware could not be commanded to
+            # make is reported as a failed command; `Switch.position` is not
+            # rolled back, and the service layer surfaces this `(False, reason)`
+            # as the operator's `command_result` warning.
+            fail_reason = self._drive_throw(switch, int(new_position))
+            if fail_reason is not None:
+                return (False, fail_reason)
 
         # design_new.md "Event log": a confirmed operator alignment CHANGE is a
         # SWITCH_THROWN event. A re-assert of the position already held is not
@@ -527,7 +589,7 @@ class SwitchManager:
 
                 nc.emit(
                     source="SwitchManager",
-                    operation="request_position_change",
+                    operation=operation,
                     kind=Kind.INFO,
                     message=(
                         f"switch {switch_id} thrown to "

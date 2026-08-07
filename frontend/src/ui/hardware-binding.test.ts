@@ -71,6 +71,21 @@ describe('block hardware section', () => {
     expect(section(cfg({ operation_environment: 'simulation' }))).toContain('Hardware Setup is not active');
   });
 
+  it('carries a standing note for saved changes the running session is not using', () => {
+    // A toast is missable, and the operator is looking at this panel when the
+    // edit lands, so the state lives in the section rather than only in a
+    // notification. Hidden until it is true, rather than absent, so revealing
+    // it after a save needs no re-render.
+    const pending = section(cfg({ awaits_activation: true }));
+    expect(pending).toContain('hw-pending-note');
+    expect(pending).toContain('Saved setup changes are not in the running session');
+    expect(pending).not.toContain('hw-pending-note" hidden');
+
+    const clean = section(cfg({ awaits_activation: false }));
+    expect(clean).toContain('hw-pending-note');
+    expect(clean).toContain('hidden');
+  });
+
   it('opens the picker for track power instead of a dropdown of fixed pairs', () => {
     // The two rails are independently-chosen channels, which a dropdown of
     // pre-paired ports could not express.

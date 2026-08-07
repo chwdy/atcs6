@@ -48,6 +48,10 @@ interface HwChip {
 export interface HwConfig {
   operation_environment?: string;
   environment_active?: boolean;
+  /** Saved setup changes the running session was not built with. Covers only
+   * what activation captures — a coil port or a rail-polarity flag is read per
+   * write, so editing one never raises this. */
+  awaits_activation?: boolean;
   chips: HwChip[];
   block_track: Record<string, TrackBinding>;
   block_occupancy: Record<string, Binding>;
@@ -107,6 +111,7 @@ export async function fetchHardwareConfig(): Promise<HwConfig | null> {
       ...res.config,
       operation_environment: res.session?.operation_environment,
       environment_active: !!res.session?.environment_active,
+      awaits_activation: !!res.session?.awaits_activation,
     };
   } catch {
     return null;
@@ -147,20 +152,45 @@ export function hardwareSectionHtml(cfg: HwConfig | null, logicalId: string, slo
       <div class="control-section-header">Hardware</div>
       ${rows}
       <p class="text-muted text-xs">Pick a port, then Test to confirm the wire responds.</p>
-      ${notLiveNoteHtml(cfg)}
+      ${activationNoteHtml(cfg)}
     </div>`;
 }
 
-/** A one-line reminder when the current run is not using the configured rig. */
-function notLiveNoteHtml(cfg: HwConfig): string {
-  if (cfg.environment_active && cfg.operation_environment !== 'simulation') return '';
-  return `<p class="text-warning text-xs mt-4">This Hardware Setup is not active. Wiring saves now and Test works; activate Virtual Hardware or Real Hardware from Run Environment to use it.</p>`;
+/** The one-line note about how this section's edits reach the rig — which one
+ * applies depends on whether a hardware session is running.
+ *
+ * Not running: wiring is still worth doing, and the bench tests still drive the
+ * ports, so the note says so rather than reading as "nothing here works".
+ * Running: the note is the standing reminder that saved setup changes are not
+ * in the session yet. It renders hidden and is revealed by `noteBindingSaved`,
+ * because the edit that makes it true happens while the operator is looking at
+ * this panel and a toast alone is missable. */
+function activationNoteHtml(cfg: HwConfig): string {
+  if (!cfg.environment_active || cfg.operation_environment === 'simulation') {
+    return `<p class="text-warning text-xs mt-4">This Hardware Setup is not active. Wiring saves now and Test works; activate Virtual Hardware or Real Hardware from Run Environment to use it.</p>`;
+  }
+  return `<p class="text-warning text-xs mt-4 hw-pending-note"${cfg.awaits_activation ? '' : ' hidden'}>Saved setup changes are not in the running session — activate the environment again from Run Environment to apply them.</p>`;
 }
 
-/** Remind an operator that a changed live binding must be re-activated. */
+/** Report a saved binding that the running session captured at activation and
+ * therefore is NOT using yet: toast it, and reveal the standing note so the
+ * state survives the toast. */
 function noteBindingSaved(cfg: HwConfig, what: string): void {
   if (!cfg.environment_active || cfg.operation_environment === 'simulation') return;
+  cfg.awaits_activation = true;
+  document
+    .querySelectorAll<HTMLElement>('.hw-pending-note')
+    .forEach((note) => { note.hidden = false; });
   showToast(`${what} saved — activate the environment again to apply.`, 'info', 4000);
+}
+
+/** Report a saved binding the drivers read per write, which the running session
+ * is therefore already using. Its own note because the opposite message —
+ * "activate again to apply" — is what made re-picking a coil port look like it
+ * did nothing. */
+function noteBindingLive(cfg: HwConfig, what: string): void {
+  if (!cfg.environment_active || cfg.operation_environment === 'simulation') return;
+  showToast(`${what} saved — the next throw uses it.`, 'info', 3000);
 }
 
 function channelOptions(
@@ -426,7 +456,7 @@ export function switchHardwareSectionHtml(cfg: HwConfig | null, switchId: string
         Test throws it main / diverge once a second and lights the coil it just fired,
         moving this switch's position with it so the points and the app stay in step.
         Each throw energizes the coil for 10&nbsp;ms only, so the motor cannot burn out.</p>
-      ${notLiveNoteHtml(cfg)}
+      ${activationNoteHtml(cfg)}
     </div>`;
 }
 
@@ -502,7 +532,7 @@ export function bindSwitchHardwareSection(cfg: HwConfig | null, switchId: string
       }
       if (testBtn) testBtn.disabled = !cfg.switch_output[switchId];
       flashField(flashTarget, 'ok');
-      noteBindingSaved(cfg, 'Switch wiring');
+      noteBindingLive(cfg, 'Switch wiring');
     } catch (e: any) {
       flashField(flashTarget, 'err');
       showToast(e?.message || 'Could not save switch wiring.', 'error', 4000);
@@ -526,7 +556,7 @@ export function bindSwitchHardwareSection(cfg: HwConfig | null, switchId: string
       if (blockId) cfg.switch_track_source[switchId] = blockId;
       else delete cfg.switch_track_source[switchId];
       flashField(feedSelect, 'ok');
-      noteBindingSaved(cfg, 'Switch rail feed');
+      noteBindingLive(cfg, 'Switch rail feed');
     } catch (e: any) {
       flashField(feedSelect, 'err');
       showToast(e?.message || 'Could not save the rail feed.', 'error', 4000);
