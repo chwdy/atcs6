@@ -32,6 +32,15 @@ The two operations:
     current channel for every bound block, plus the verdict the runtime's zone
     rule would take. Nothing is driven by a read.
 
+`read()` also keeps a running PEAK of each channel's current since the last
+reset. A single sample cannot answer the question the numbers are wanted for —
+`baseline_ma` is "where does this channel sit with nothing on the block" and
+`threshold_ma` is "how far above that counts", and both are decided by the
+WORST reading a quiet channel produces, not by whatever the last poll caught.
+An ADC that drifts a few mA shows its drift over seconds; a panel that displays
+only the instant sample makes the operator eyeball a flickering number and
+guess. The peak is that guess, measured.
+
 PWM holds its duty in the chip's own registers, so one `drive()` call keeps the
 rails energized until the next one — the panel polls `read()` without having to
 re-command anything. Like the commissioning session this expires when a client
@@ -81,6 +90,11 @@ class OccupancyBenchSession:
         # bench is where an operator finds the number, `hardware_config` is
         # where it gets saved — this never writes there.
         self._threshold_ma: Optional[float] = None
+        # Per block, the largest-magnitude current this channel has read since
+        # the last reset, and how many reads carried a number at all. Keyed the
+        # same as the block rows; a block with no current binding never gets an
+        # entry, which is how "unwired" stays distinct from "reads 0.0".
+        self._peaks: Dict[str, Dict[str, Any]] = {}
         self._last = 0.0
 
     # -- lifecycle -------------------------------------------------------
@@ -156,6 +170,11 @@ class OccupancyBenchSession:
             # replaced, so it goes back on for the same reason.
             if self._occupancy is not None:
                 self._occupancy.set_current_threshold_override(self._threshold_ma)
+            # Peaks do NOT survive a reopen: they are readings of one wiring at
+            # one drive level, and a reopen may have picked up a rebound channel.
+            # Carrying a number across that would attribute one channel's peak
+            # to another block's binding.
+            self._reset_peaks_locked()
             self._touch()
             return self.status()
 
@@ -190,6 +209,10 @@ class OccupancyBenchSession:
         the detectors are judged AGAINST, not what the rails are doing: sweeping
         it must not require re-commanding the track, and re-commanding the track
         must not silently carry a threshold with it.
+
+        Leaves the peaks alone, for that same reason: the threshold decides the
+        verdict, never the measurement, so a sweep of it must not throw away the
+        measurement history the operator is sweeping against.
         """
         with self._lock:
             self._require_open()
@@ -198,6 +221,21 @@ class OccupancyBenchSession:
             )
             if self._occupancy is not None:
                 self._occupancy.set_current_threshold_override(self._threshold_ma)
+            self._touch()
+            return self.status()
+
+    def reset_peaks(self) -> Dict[str, Any]:
+        """Start every channel's peak over from the next read.
+
+        The peak answers "how high does this channel go under these conditions",
+        so it is only meaningful within one set of conditions. `drive()` resets
+        it on its own whenever it changes them; this is the manual version, for
+        when what changed was on the layout rather than in the bench — a
+        locomotive lifted off, a rail cleaned, a suspect block rewired.
+        """
+        with self._lock:
+            self._require_open()
+            self._reset_peaks_locked()
             self._touch()
             return self.status()
 
@@ -220,14 +258,26 @@ class OccupancyBenchSession:
         driver's safe state: `enter_safe_state` drops the chips wholesale, and
         the bench wants the blocks it commanded zeroed and its `_voltages`
         read-back kept coherent for the zone rule the next read applies.
+
+        Any actual change to what the rails are doing clears the peaks. A peak
+        is only readable as "the worst this channel does AT THIS DRIVE", and the
+        leakage a stray-current baseline is being measured against scales with
+        the applied voltage — so a peak carried from 40% into a 12% sweep would
+        read as that channel's noise floor while actually being a memory of
+        three times the voltage. Re-sending the same command is not a change and
+        keeps the history, so a panel that re-asserts its state does not
+        silently wipe a measurement in progress.
         """
         with self._lock:
             self._require_open()
+            before = (self._running, self._percent, frozenset(self._flipped))
             if percent is not None:
                 self._percent = max(0.0, min(100.0, float(percent)))
             if flipped is not None:
                 self._flipped = {str(b) for b in flipped}
             self._running = bool(running)
+            if (self._running, self._percent, frozenset(self._flipped)) != before:
+                self._reset_peaks_locked()
             self._apply_drive_locked()
             self._touch()
             return self.status()
@@ -248,12 +298,20 @@ class OccupancyBenchSession:
         bit), `current` (the sense channel), and `overall` (the verdict the
         runtime's zone rule takes from the two). A `None` on either detector means
         that block has no binding on that side.
+
+        Each entry also carries `peak_ma` / `peak_samples` — that channel's
+        largest-magnitude reading since the last reset and how many reads are
+        behind it — and the payload carries a `peak` summary naming the worst
+        channel of the whole layout. Every read feeds them, including reads taken
+        with the drive stopped: the zero-drive noise floor is one of the numbers
+        a threshold has to clear, and it is only visible with the rails quiet.
         """
         with self._lock:
             self._require_open()
             blocks: Dict[str, Any] = (
                 self._occupancy.read_all_sources() if self._occupancy is not None else {}
             )
+            self._observe_peaks_locked(blocks)
             for block_id in self._block_ids:
                 entry = blocks.setdefault(
                     block_id, {"digital": None, "current": None, "overall": False,
@@ -266,8 +324,11 @@ class OccupancyBenchSession:
                 )
                 entry["flipped"] = block_id in self._flipped
                 entry["track_bound"] = block_id in self._track_bound
+                peak = self._peaks.get(block_id)
+                entry["peak_ma"] = peak["peak_ma"] if peak else None
+                entry["peak_samples"] = peak["samples"] if peak else 0
             self._touch()
-            return {"blocks": blocks, **self.status()}
+            return {"blocks": blocks, "peak": self._peak_summary_locked(), **self.status()}
 
     def link_status(self) -> Optional[Dict[str, Any]]:
         """The USB bridge's own view of itself, or None for a device with no link
@@ -282,6 +343,60 @@ class OccupancyBenchSession:
 
     def _drive_volts(self) -> float:
         return round(MAX_TRACK_VOLTAGE * self._percent / 100.0, 3)
+
+    def _reset_peaks_locked(self) -> None:
+        self._peaks = {}
+
+    def _observe_peaks_locked(self, blocks: Dict[str, Any]) -> None:
+        """Fold one read's currents into the running peaks. Caller holds the lock.
+
+        Compared on MAGNITUDE but stored SIGNED. A block driven in reverse reads
+        its current negative, and a reversed channel peaking at -9 mA is the same
+        finding as a forward one peaking at +9 mA — comparing raw values would
+        report the reversed channel's quietest moment as its peak. Keeping the
+        sign is what then tells the operator which of the two they are looking at
+        rather than showing a magnitude that matches no reading on screen.
+        """
+        for block_id, entry in blocks.items():
+            value = entry.get("current_ma")
+            if value is None:
+                continue
+            try:
+                ma = float(value)
+            except (TypeError, ValueError):
+                continue
+            peak = self._peaks.setdefault(block_id, {"peak_ma": None, "samples": 0})
+            peak["samples"] += 1
+            if peak["peak_ma"] is None or abs(ma) > abs(peak["peak_ma"]):
+                peak["peak_ma"] = ma
+
+    def _peak_summary_locked(self) -> Dict[str, Any]:
+        """The worst channel on the layout: `{block_id, peak_ma, samples}`.
+
+        This is the number a single threshold has to clear. Every current
+        channel on the rig is judged against the same `current_sense_min_drive_v`
+        regime, and an operator setting one value for the layout needs the
+        loudest quiet channel, not the average of them — a threshold set from the
+        mean leaves the noisiest block reading occupied on an empty track, which
+        is the fault being chased in the first place.
+
+        `samples` is the total across all channels rather than the winner's own:
+        it answers "has this been watched long enough to trust", and the read
+        loop samples every channel together, so one count describes them all.
+        """
+        worst_id: Optional[str] = None
+        worst: Optional[float] = None
+        for block_id in sorted(self._peaks):
+            ma = self._peaks[block_id]["peak_ma"]
+            if ma is None:
+                continue
+            if worst is None or abs(ma) > abs(worst):
+                worst, worst_id = ma, block_id
+        return {
+            "block_id": worst_id,
+            "peak_ma": worst,
+            "samples": sum(p["samples"] for p in self._peaks.values()),
+        }
 
     @staticmethod
     def _open_real(cfg: Any) -> Any:
@@ -324,6 +439,7 @@ class OccupancyBenchSession:
         self._running = False
         self._flipped = set()
         self._threshold_ma = None
+        self._peaks = {}
 
 
 _session = OccupancyBenchSession()

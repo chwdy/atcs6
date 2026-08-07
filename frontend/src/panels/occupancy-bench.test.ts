@@ -6,6 +6,7 @@ import {
     directionTitle,
     numberOrNull,
     parseThreshold,
+    peakSummaryText,
     detectorText,
     edgeMidpoint,
     segmentBlockIndex,
@@ -233,6 +234,65 @@ describe('current reading', () => {
         });
         expect(row.detail).not.toContain('override');
         expect(row.detail).toContain('Δ 4.0 of 3.0 mA');
+    });
+});
+
+describe('peak reading', () => {
+    it('shows the running peak beside the live reading, not instead of it', () => {
+        const row = buildRow('BLK_A', { current_ma: 2.0, peak_ma: 7.24, peak_samples: 40 });
+        expect(row.currentText).toBe('2.0 mA');
+        expect(row.peakText).toBe('pk 7.2');
+    });
+
+    it('keeps the sign, so the number matches a reading that was on screen', () => {
+        // A reversed channel reads negative; showing |9.0| would be a value the
+        // operator never saw the live chip display.
+        expect(buildRow('BLK_A', { peak_ma: -9.04 }).peakText).toBe('pk -9.0');
+    });
+
+    it('stays empty when the channel has read nothing — "— mA" already says that', () => {
+        expect(buildRow('BLK_A', {}).peakText).toBe('');
+        expect(buildRow('BLK_A', { peak_ma: null }).peakText).toBe('');
+        expect(buildRow('BLK_A', undefined).peakText).toBe('');
+    });
+
+    it('puts the sample count in the tooltip — a peak from three polls is not one', () => {
+        expect(buildRow('BLK_A', { peak_ma: 6.0, peak_samples: 128 }).detail).toContain(
+            'peak 6.0 mA over 128 reads'
+        );
+        expect(buildRow('BLK_A', { peak_ma: 6.0, peak_samples: 1 }).detail).toContain(
+            'over 1 read'
+        );
+    });
+});
+
+describe('peakSummaryText', () => {
+    it('names the worst channel and how long it was watched', () => {
+        expect(
+            peakSummaryText({ block_id: 'BLK_4F5CE3', peak_ma: 6.04, samples: 512 })
+        ).toBe('Peak 6.0 mA on 4F5CE3 over 512 reads');
+    });
+
+    it('says nothing has been measured rather than reporting a peak of zero', () => {
+        expect(peakSummaryText({ block_id: null, peak_ma: null, samples: 0 })).toBe(
+            'No current readings yet'
+        );
+        expect(peakSummaryText(null)).toBe('No current readings yet');
+        expect(peakSummaryText(undefined)).toBe('No current readings yet');
+    });
+
+    it('distinguishes "watched but silent" from "not watched"', () => {
+        expect(peakSummaryText({ block_id: null, peak_ma: null, samples: 8 })).toBe(
+            'No current channel read a number over 8 reads'
+        );
+    });
+
+    it('reports a genuine zero peak as a measurement, not as missing', () => {
+        // A channel that really reads 0.0 is a finding — an unwired shunt looks
+        // exactly like this, and it must not be swallowed as "no data".
+        expect(peakSummaryText({ block_id: 'BLK_A', peak_ma: 0, samples: 20 })).toBe(
+            'Peak 0.0 mA on A over 20 reads'
+        );
     });
 });
 

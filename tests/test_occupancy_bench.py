@@ -353,6 +353,177 @@ def test_setting_a_threshold_does_not_disturb_the_rails(bench):
     assert device.duty_cycle(PWM_ADDR, 7) == pytest.approx(0.4, abs=0.01)
 
 
+# ---------------------------------------------------------------------------
+# Peak current — the running maximum an operator reads off to pick a channel's
+# baseline_ma / threshold_ma
+#
+# The INA quantizes to its own LSB, so a channel set to 19 mA reads back 18.8.
+# These assert against the commanded value with a tolerance wider than that
+# step: the peak logic is about WHICH reading is kept, and pinning the exact mA
+# would be testing the fake's conversion instead.
+MA_TOLERANCE = 0.5
+
+
+def test_the_peak_holds_the_highest_reading_not_the_latest(bench):
+    """The whole point: a channel that spiked once and settled must still report
+    the spike, because that is the number a threshold has to clear."""
+    session, device, _cfg = bench
+    device.set_ina3221_current(0x41, 1, 0.004)
+    session.read()
+    device.set_ina3221_current(0x41, 1, 0.019)
+    session.read()
+    device.set_ina3221_current(0x41, 1, 0.002)
+    entry = session.read()["blocks"]["B1"]
+
+    assert entry["current_ma"] == pytest.approx(2.0, abs=MA_TOLERANCE)
+    assert entry["peak_ma"] == pytest.approx(19.0, abs=MA_TOLERANCE)
+    assert entry["peak_samples"] == 3
+
+
+def test_the_peak_is_chosen_by_magnitude_and_reported_signed(bench):
+    """A reversed channel reads negative. Comparing raw values would call its
+    quietest moment its peak; the sign is kept so the number still matches a
+    reading the operator can see on screen."""
+    session, device, _cfg = bench
+    device.set_ina3221_current(0x41, 1, 0.005)
+    session.read()
+    device.set_ina3221_current(0x41, 1, -0.017)
+    session.read()
+
+    assert session.read()["blocks"]["B1"]["peak_ma"] == pytest.approx(-17.0, abs=MA_TOLERANCE)
+
+
+def test_the_summary_names_the_worst_channel_on_the_layout(bench):
+    session, device, _cfg = bench
+    device.set_ina3221_current(0x41, 1, 0.006)      # B1 -> sensor channel 1
+    device.set_ina3221_current(0x41, 2, 0.014)      # B2 -> sensor channel 2
+    session.read()
+
+    peak = session.read()["peak"]
+    assert peak["block_id"] == "B2"
+    assert peak["peak_ma"] == pytest.approx(14.0, abs=MA_TOLERANCE)
+    assert peak["samples"] == 4                     # 2 channels x 2 reads
+
+
+def test_a_layout_with_no_current_channels_reports_no_peak():
+    """A bound channel always answers with a number, so "no peak" is what a rig
+    with nothing to measure looks like — not a rig that measured zero."""
+    cfg = _config()
+    cfg.block_occupancy_current = {}
+    device = FakeCh347Device(present_addresses={PWM_ADDR, 0x41})
+    session = OccupancyBenchSession()
+    session.open(cfg, open_device=lambda: device)
+    try:
+        peak = session.read()["peak"]
+        assert peak["samples"] == 0
+        assert peak["block_id"] is None
+        assert peak["peak_ma"] is None
+    finally:
+        session.close()
+
+
+def test_peaks_accumulate_with_the_drive_stopped(bench):
+    """The zero-drive noise floor is one of the numbers a threshold has to clear,
+    and it is only visible with the rails quiet — so a stopped bench must still
+    be measuring."""
+    session, device, _cfg = bench
+    assert session.status()["running"] is False
+    device.set_ina3221_current(0x41, 1, 0.003)
+    session.read()
+
+    assert session.read()["blocks"]["B1"]["peak_ma"] == pytest.approx(3.0, abs=MA_TOLERANCE)
+
+
+def test_changing_the_drive_starts_the_peaks_over(bench):
+    """Leakage scales with the applied voltage, so a peak measured at one drive
+    level says nothing about another — carrying it across would report three
+    times the voltage as this level's noise floor."""
+    session, device, _cfg = bench
+    device.set_ina3221_current(0x41, 1, 0.018)
+    session.read()
+    assert session.read()["blocks"]["B1"]["peak_ma"] == pytest.approx(18.0, abs=MA_TOLERANCE)
+
+    session.drive(True, percent=DEFAULT_DRIVE_PERCENT, flipped=[])
+    device.set_ina3221_current(0x41, 1, 0.002)
+
+    assert session.read()["blocks"]["B1"]["peak_ma"] == pytest.approx(2.0, abs=MA_TOLERANCE)
+
+
+def test_re_sending_the_same_drive_keeps_the_peaks(bench):
+    """A panel that re-asserts its own state must not silently wipe a
+    measurement in progress — only an actual change resets."""
+    session, device, _cfg = bench
+    session.drive(True, percent=DEFAULT_DRIVE_PERCENT, flipped=[])
+    device.set_ina3221_current(0x41, 1, 0.016)
+    session.read()
+
+    session.drive(True, percent=DEFAULT_DRIVE_PERCENT, flipped=[])
+    device.set_ina3221_current(0x41, 1, 0.001)
+
+    assert session.read()["blocks"]["B1"]["peak_ma"] == pytest.approx(16.0, abs=MA_TOLERANCE)
+
+
+def test_sweeping_the_threshold_keeps_the_peaks(bench):
+    """The threshold decides the verdict, never the measurement — a sweep of it
+    must not throw away the history being swept against."""
+    session, device, _cfg = bench
+    device.set_ina3221_current(0x41, 1, 0.012)
+    session.read()
+
+    session.set_current_threshold(20.0)
+
+    assert session.read()["blocks"]["B1"]["peak_ma"] == pytest.approx(12.0, abs=MA_TOLERANCE)
+
+
+def test_reset_peaks_starts_every_channel_over(bench):
+    session, device, _cfg = bench
+    device.set_ina3221_current(0x41, 1, 0.015)
+    device.set_ina3221_current(0x41, 2, 0.011)
+    session.read()
+
+    session.reset_peaks()
+    payload = session.read()
+
+    assert payload["blocks"]["B1"]["peak_samples"] == 1
+    assert payload["blocks"]["B2"]["peak_samples"] == 1
+    assert payload["peak"]["samples"] == 2
+
+
+def test_a_block_with_no_current_binding_reports_no_peak():
+    """"Unwired" and "reads 0.0" are the two answers this panel exists to
+    separate, and that holds for the peak as much as for the live reading."""
+    cfg = _config()
+    del cfg.block_occupancy_current["B2"]
+    device = FakeCh347Device(present_addresses={PWM_ADDR, 0x41})
+    session = OccupancyBenchSession()
+    session.open(cfg, open_device=lambda: device)
+    try:
+        entry = session.read()["blocks"]["B2"]
+        assert entry["peak_ma"] is None
+        assert entry["peak_samples"] == 0
+    finally:
+        session.close()
+
+
+def test_reopening_starts_the_peaks_over(bench):
+    """A reopen may have picked up a rebound channel; carrying a number across
+    would attribute one channel's peak to another block's binding."""
+    session, device, cfg = bench
+    device.set_ina3221_current(0x41, 1, 0.013)
+    session.read()
+
+    session.open(cfg, open_device=lambda: device)
+
+    assert session.read()["blocks"]["B1"]["peak_samples"] == 1
+
+
+def test_resetting_peaks_on_a_closed_bench_raises(bench):
+    session, _device, _cfg = bench
+    session.close()
+    with pytest.raises(RuntimeError):
+        session.reset_peaks()
+
+
 def test_close_de_energizes_before_letting_go(bench):
     session, device, _cfg = bench
     session.drive(True, percent=DEFAULT_DRIVE_PERCENT, flipped=[])

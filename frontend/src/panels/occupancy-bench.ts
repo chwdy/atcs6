@@ -236,6 +236,18 @@ export interface BenchBlockState {
     raw_bit?: boolean;
     flipped?: boolean;
     track_bound?: boolean;
+    /** Largest-magnitude reading this channel has produced since the last reset,
+     *  sign preserved. Null when the channel has produced no number at all. */
+    peak_ma?: number | null;
+    /** How many reads are behind that peak — a peak from three polls is not one. */
+    peak_samples?: number;
+}
+
+/** The worst channel on the layout, as the bench summarises it. */
+export interface BenchPeak {
+    block_id?: string | null;
+    peak_ma?: number | null;
+    samples?: number;
 }
 
 export interface BenchRow {
@@ -253,6 +265,11 @@ export interface BenchRow {
     /** What the current channel measured, e.g. "14.2 mA", or "— mA" when there
      *  is no number yet. Never empty — the chip is always on screen. */
     currentText: string;
+    /** The running peak, e.g. "pk 7.2", or "" when the channel has read nothing
+     *  yet. Empty rather than "pk —" because this chip is additional to the live
+     *  reading beside it: a placeholder for a number that does not exist yet
+     *  would just be a second way of saying what "— mA" already says. */
+    peakText: string;
     /** How far the reading sits from the threshold deciding it, for the tooltip. */
     marginText: string;
     /** The long-form explanation, for the row's tooltip. */
@@ -331,6 +348,9 @@ export function buildRow(
     // it has nothing to say is indistinguishable from a field that was never
     // built. "— mA" says "no number here", which is the honest answer.
     const currentText = ma === null ? '— mA' : `${ma.toFixed(1)} mA`;
+    const peak = numberOrNull(entry.peak_ma);
+    const peakSamples = Number(entry.peak_samples) || 0;
+    const peakText = peak === null ? '' : `pk ${peak.toFixed(1)}`;
     // What actually decides the verdict is |reading − baseline| against the
     // threshold, so the margin is the number worth reading when a block is
     // sitting near its own crossover — which is the whole reason to sweep it.
@@ -356,6 +376,9 @@ export function buildRow(
                 : marginText
         );
     }
+    if (peak !== null) {
+        detail.push(`peak ${peak.toFixed(1)} mA over ${peakSamples} read${peakSamples === 1 ? '' : 's'}`);
+    }
     if (entry.source) detail.push(`decided by: ${entry.source}`);
     if (entry.zone) detail.push(`drive zone: ${entry.zone}`);
     if (volts !== null) detail.push(`commanded: ${volts.toFixed(1)} V`);
@@ -370,9 +393,28 @@ export function buildRow(
         flipped: flipped === undefined ? !!entry.flipped : flipped,
         volts,
         currentText,
+        peakText,
         marginText,
         detail: detail.join(' · '),
     };
+}
+
+/**
+ * The transport's peak line: the worst channel on the layout, or why there
+ * isn't one yet.
+ *
+ * Named as its own pure function because it is the sentence the whole feature
+ * exists to produce — the number an operator reads off to pick a channel's
+ * `baseline_ma` and `threshold_ma` — and it has to stay legible in the three
+ * states it can be in: nothing measured yet, measured but silent, measured with
+ * a winner.
+ */
+export function peakSummaryText(peak: BenchPeak | null | undefined): string {
+    const ma = numberOrNull(peak?.peak_ma);
+    const samples = Number(peak?.samples) || 0;
+    if (!samples) return 'No current readings yet';
+    if (ma === null || !peak?.block_id) return `No current channel read a number over ${samples} reads`;
+    return `Peak ${ma.toFixed(1)} mA on ${shortBlockName(String(peak.block_id))} over ${samples} reads`;
 }
 
 function escapeHtml(value: string): string {
@@ -394,6 +436,9 @@ class OccupancyBench {
     private _statusEl!: HTMLElement;
     private _playBtnEl!: HTMLButtonElement;
     private _thresholdEl!: HTMLInputElement;
+    private _peakEl!: HTMLElement;
+    private _peakListEl!: HTMLElement;
+    private _resetPeaksBtnEl!: HTMLButtonElement;
     private _footerEl!: HTMLElement;
 
     private _persistenceEnv = browserWindowPersistenceEnv();
@@ -411,6 +456,8 @@ class OccupancyBench {
     /** One threshold for every current channel, or null to leave each block on
      *  its own configured value. */
     private _thresholdMa: number | null = null;
+    /** The worst current channel since the last reset, as the server reports it. */
+    private _peak: BenchPeak | null = null;
     private _busy = false;
     private _error: string | null = null;
 
@@ -474,14 +521,28 @@ class OccupancyBench {
                 </label>
                 <span class="bench-footer" data-role="footer"></span>
             </div>
+            <div class="bench-peaks">
+                <span class="bench-peaks-summary" data-role="peak"></span>
+                <span class="bench-peaks-list" data-role="peak-list"></span>
+                <button class="bench-peak-reset" type="button" data-role="reset-peaks"
+                        title="Start every channel's peak over — press after changing the layout (lifting a loco off, rewiring a block). Changing the drive resets it on its own.">
+                    Reset peaks
+                </button>
+            </div>
         `;
         this._stageEl = contentEl.querySelector('[data-role="stage"]') as HTMLElement;
         this._statusEl = contentEl.querySelector('[data-role="status"]') as HTMLElement;
         this._playBtnEl = contentEl.querySelector('[data-role="play"]') as HTMLButtonElement;
         this._thresholdEl = contentEl.querySelector('[data-role="threshold"]') as HTMLInputElement;
+        this._peakEl = contentEl.querySelector('[data-role="peak"]') as HTMLElement;
+        this._peakListEl = contentEl.querySelector('[data-role="peak-list"]') as HTMLElement;
+        this._resetPeaksBtnEl = contentEl.querySelector(
+            '[data-role="reset-peaks"]'
+        ) as HTMLButtonElement;
         this._footerEl = contentEl.querySelector('[data-role="footer"]') as HTMLElement;
 
         this._playBtnEl.addEventListener('click', () => void this._togglePlay());
+        this._resetPeaksBtnEl.addEventListener('click', () => void this._resetPeaks());
         // Commit on blur and on Enter, the same contract as the block editor's
         // numeric fields — a threshold sweep is typed, not stepped, and firing
         // per keystroke would send a request for every digit of "12.5".
@@ -639,7 +700,45 @@ class OccupancyBench {
         this._render();
     }
 
+    /** Clear every channel's running peak and show the empty state at once.
+     *
+     *  The local clear is not just optimism about the round trip: the peaks live
+     *  in `_states`, which only a poll replaces, so a reset that waited for the
+     *  server would leave the old numbers on screen for up to a poll period —
+     *  long enough to read them as the post-reset measurement. */
+    private async _resetPeaks(): Promise<void> {
+        if (!this._open || this._busy) return;
+        for (const state of Object.values(this._states)) {
+            state.peak_ma = null;
+            state.peak_samples = 0;
+        }
+        this._peak = null;
+        this._busy = true;
+        this._render();
+        try {
+            const result = await api.resetOccupancyBenchPeaks();
+            if (result?.ok === false) throw new Error(result.error || 'the reset was refused');
+            this._applyStatus(result);
+            this._error = null;
+        } catch (err) {
+            this._error = (err as Error)?.message || String(err);
+        } finally {
+            this._busy = false;
+        }
+        this._render();
+        await this._pollOnce();
+    }
+
     private async _commandDrive(running: boolean): Promise<void> {
+        // The session drops its peaks whenever the drive actually changes, and
+        // every caller here changes something. Drop the displayed ones with it,
+        // so the panel never shows a peak measured at the previous drive level
+        // beside the new one's live reading.
+        for (const state of Object.values(this._states)) {
+            state.peak_ma = null;
+            state.peak_samples = 0;
+        }
+        this._peak = null;
         this._busy = true;
         this._render();
         try {
@@ -712,6 +811,7 @@ class OccupancyBench {
                 this._error = payload.error || 'the bench read failed';
             } else {
                 this._states = payload?.blocks || {};
+                this._peak = payload?.peak ?? null;
                 this._applyStatus(payload, !this._busy);
                 this._error = null;
             }
@@ -862,11 +962,49 @@ class OccupancyBench {
                 : `Every current channel is judged against ${this._thresholdMa} mA. ` +
                   'Clear the box to put each block back on its configured threshold.';
 
+        this._renderPeaks();
+
         const volts = ((this._percent / 100) * 12).toFixed(1);
         const occupied = this._blockIds.filter((id) => this._states[id]?.overall).length;
         this._footerEl.textContent = this._running
             ? `${this._percent}% (${volts} V) on ${this._blockIds.length} blocks · ${occupied} reading occupied`
             : `Stopped · ${this._percent}% (${volts} V) when running · ${occupied} reading occupied`;
+    }
+
+    /**
+     * The peaks strip: the layout-wide worst channel, then every block's own.
+     *
+     * Its own row rather than a fourth chip on each block label, which is where
+     * this started and where it does not fit — a fourth chip pushed two adjacent
+     * labels into each other and clipped one block's peak behind another's. The
+     * schematic is for spotting WHICH block is misbehaving; this row is for
+     * reading numbers off to write into a channel's baseline and threshold, and
+     * a flat list beats hunting five labels scattered across a diagram for that.
+     */
+    private _renderPeaks(): void {
+        this._peakEl.textContent = peakSummaryText(this._peak);
+        this._peakEl.title =
+            'The largest-magnitude current any channel has read since the last ' +
+            'reset. With the track empty this is the number a threshold has to ' +
+            'clear; with a locomotive on a block it is what that block actually draws.';
+        this._resetPeaksBtnEl.disabled = !this._open || this._busy;
+
+        const worst = this._peak?.block_id ?? null;
+        this._peakListEl.innerHTML = this._blockIds
+            .map((blockId) => {
+                const row = buildRow(blockId, this._states[blockId], this._flipped.has(blockId));
+                const classes = ['bench-peaks-item'];
+                if (blockId === worst) classes.push('bench-peaks-item-worst');
+                // An unmeasured channel still gets a slot: a block missing from
+                // the list reads as a block with a quiet channel, and those are
+                // the opposite finding.
+                const value = row.peakText ? row.peakText.replace(/^pk /, '') : '—';
+                return `<span class="${classes.join(' ')}" title="${escapeHtml(row.detail)}">
+                    <span class="bench-peaks-item-name">${escapeHtml(shortBlockName(blockId))}</span>
+                    <span class="bench-peaks-item-ma">${escapeHtml(value)}</span>
+                </span>`;
+            })
+            .join('');
     }
 
     // ----- persistence -----------------------------------------------------

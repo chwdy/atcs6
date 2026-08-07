@@ -454,6 +454,17 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
+  /** Start every bench current channel's running peak over. The bench already
+   * resets them whenever the drive changes; this is for a change on the layout
+   * — a loco lifted off, a block rewired — that the server cannot see. */
+  async resetOccupancyBenchPeaks(): Promise<any> {
+    return this._request(
+      '/hardware/bench/peaks/reset',
+      { method: 'POST' },
+      'resetOccupancyBenchPeaks'
+    );
+  }
+
   /** Read the operator-facing event log — the one NotificationCenter stream
    * (design_new.md "Event log"). `query` is the already-encoded filter string
    * built by the viewer (level / source / operation / entity / free text /

@@ -4,9 +4,11 @@
    file styles only what is mounted inside it.
 
    Layout grammar: a status line, a stage that takes all the remaining height,
-   and a fixed transport strip. The stage holds one SVG scaled to the layout's
-   own aspect ratio with an HTML label per block positioned over it in percent,
-   so the schematic and its readouts stay registered through any resize.
+   then two fixed strips — the transport, and the peaks row under it. The stage
+   holds one SVG scaled to the layout's own aspect ratio with an HTML label per
+   block positioned over it in percent, so the schematic and its readouts stay
+   registered through any resize. The two strips are the two things read off
+   this panel: what the rails are doing, and what the channels have measured.
 
    Colour grammar follows DESIGN_LANGUAGE §17: danger is reserved for faults and
    occupancy, so `occupied` — the one state the operator is hunting — is the only
@@ -404,6 +406,104 @@
 .bench-threshold-unit {
     font-size: var(--font-size-micro);
     color: var(--text-secondary);
+}
+
+/* ---- Peaks strip ----
+   Its own row under the transport, not a chip on each block label: a fourth
+   chip up on the schematic pushed neighbouring labels into each other and
+   clipped one block's peak behind another's. The two surfaces answer different
+   questions anyway — the schematic shows WHICH block is misbehaving, this row
+   is the flat list of numbers that get written into a channel's baseline and
+   threshold, and a list is what a column of numbers wants to be.
+
+   Directly under the threshold box for the same reason it sits near Play: the
+   number being typed there is chosen by reading the numbers here. */
+.bench-peaks {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-6) var(--space-10);
+    padding: var(--space-8) var(--space-12);
+    border-top: 1px solid var(--border-color);
+    background-color: var(--bg-dark);
+}
+
+.bench-peaks-summary {
+    flex: 0 0 auto;
+    font-size: var(--font-size-label);
+    color: var(--text-primary);
+    white-space: nowrap;
+}
+
+/* Wraps rather than scrolls: every channel has to be readable at once for the
+   comparison this row exists for, and a layout with more blocks than fit on one
+   line should grow a second line, not hide half its readings behind a scrollbar. */
+.bench-peaks-list {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-4) var(--space-6);
+    min-width: 0;
+}
+
+.bench-peaks-item {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--space-4);
+    padding: 1px var(--space-6);
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--border-color);
+    background-color: var(--bg-panel);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-micro);
+    white-space: nowrap;
+}
+
+.bench-peaks-item-name {
+    color: var(--text-secondary);
+}
+
+.bench-peaks-item-ma {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+/* The channel the summary named. Marked so the sentence and the list agree at a
+   glance — accent, not danger: the loudest channel is the answer being looked
+   for here, not a fault in itself. */
+.bench-peaks-item-worst {
+    border-color: rgba(var(--accent-rgb), 0.6);
+    background-image: linear-gradient(
+        rgba(var(--accent-rgb), 0.14),
+        rgba(var(--accent-rgb), 0.14)
+    );
+}
+
+.bench-peak-reset {
+    flex: 0 0 auto;
+    height: var(--control-height-xs);
+    padding: 0 var(--space-10);
+    background-color: var(--bg-panel);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    font-family: var(--font-main);
+    font-size: var(--font-size-micro);
+    cursor: pointer;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.bench-peak-reset:hover:not(:disabled) {
+    background-color: var(--bg-hover);
+    border-color: var(--accent-color);
+    color: var(--text-primary);
+}
+
+.bench-peak-reset:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 
 .bench-footer {

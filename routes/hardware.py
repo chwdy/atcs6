@@ -768,6 +768,26 @@ def register(app, state: AppState) -> None:
                 return jsonify({"ok": False, "error": str(exc)}), 200
         return jsonify({"ok": True, **status})
 
+    @app.route("/api/hardware/bench/peaks/reset", methods=["POST"])
+    def hardware_bench_reset_peaks():
+        """Start every current channel's running peak over.
+
+        Takes no body: a peak is per channel but only ever reset all at once,
+        because the point of the summary is comparing channels measured over the
+        same window. The bench resets them itself whenever the drive changes;
+        this is for when what changed was on the layout — a locomotive lifted
+        off, a block rewired — which nothing on this side can observe.
+        """
+        session = _bench_session()
+        if not session.is_open():
+            return jsonify({"ok": False, "error": "the occupancy bench is not open"}), 409
+        with state.simulation_lock:
+            try:
+                status = session.reset_peaks()
+            except Exception as exc:  # noqa: BLE001 - reported to the panel
+                return jsonify({"ok": False, "error": str(exc)}), 200
+        return jsonify({"ok": True, **status})
+
     @app.route("/api/hardware/commission/open", methods=["POST"])
     def hardware_commission_open():
         if not state.commissioning_active:
