@@ -240,16 +240,12 @@ def register(app, state: AppState) -> None:
                             task.task_kind == "dwell"
                             and next_idx < len(exec_state.task_runs)
                         ):
-                            dwell_started_at = exec_state.task_started_at(
-                                next_idx
-                            )
-                            if dwell_started_at is not None:
-                                status["dwell_remaining_sec"] = (
-                                    task.get_remaining_dwell_time(
-                                        state.sim_controller.simulation_time,
-                                        dwell_started_at,
-                                    )
+                            status["dwell_remaining_sec"] = (
+                                state.sim_controller.route_executor
+                                .dwell_remaining_seconds(
+                                    exec_state, route, next_idx
                                 )
+                            )
 
             trains_status.append(status)
 

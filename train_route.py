@@ -214,69 +214,83 @@ class RouteTask:
 
     def should_depart(
         self,
-        now: float,
-        dwell_started_at: Optional[float],
+        now_wall: float,
+        now_basis: float,
+        dwell_started_at_basis: Optional[float],
     ) -> bool:
         """Return True when the task is ready to depart.
 
-        For a `dwell` task the canonical rule (design_new.md "Task time
-        semantics") is: depart when
+        Evaluated only on a `dwell` row (design_new.md "Task time semantics").
+        `now_wall` is wall-clock seconds; `now_basis` and
+        `dwell_started_at_basis` are readings of whichever clock the route's
+        `timing_basis` names — `AppState.operating_time` under `"operating"`,
+        wall under `"realtime"`. An absolute instant is read in wall time under
+        either basis, which is why `target_time` is compared against
+        `now_wall`.
 
-            now >= max(dwell_started_at, target_time) + task_time
+        The three cases:
 
-        treating `target_time` as -inf when unset and `task_time` as 0 when
-        unset. So with both set, the train holds for `task_time` after the
-        later of its actual arrival and the scheduled start — a late arrival
-        still serves the full hold, an early arrival waits for the schedule.
+        - with `target_time` set: depart when `now_wall >= target_time`.
+          `task_time` is not read on such a row, because the schedule already
+          names the moment.
+        - with `target_time` absent and `task_time` set: depart when
+          `now_basis - dwell_started_at_basis >= task_time`.
+        - with neither set: depart immediately.
 
-        For `waypoint` and `stop` tasks, returns True (the caller controls
-        movement; this method is consulted only by the Phase 1 dwell-complete
-        check).
+        A late train is not held for being late. The schedule names when the
+        train leaves; a hold served on top of an already-passed departure only
+        adds the delay it was meant to absorb to every task after it.
+
+        For `waypoint` / `stop` / `run` tasks, returns True — the caller
+        controls movement, and this method is consulted only by the Phase 1
+        dwell-complete check.
         """
         if self.task_kind != "dwell":
             return True
 
-        task_t = self.task_time if (self.task_time is not None and self.task_time > 0.0) else 0.0
+        if self.target_time is not None:
+            return now_wall >= self.target_time
 
-        if dwell_started_at is None:
-            # Predecessor not finished, so the dwell has not actually started.
-            # Only an absolute scheduled departure can authorize leaving early.
-            if self.target_time is None:
-                return False
-            return now >= self.target_time + task_t
-
-        if self.target_time is None:
-            base = dwell_started_at
-        else:
-            base = max(dwell_started_at, self.target_time)
-        return now >= base + task_t
+        task_t = (
+            self.task_time
+            if (self.task_time is not None and self.task_time > 0.0)
+            else 0.0
+        )
+        if task_t <= 0.0:
+            return True
+        if dwell_started_at_basis is None:
+            # The dwell has not begun, so its hold cannot have elapsed.
+            return False
+        return now_basis - dwell_started_at_basis >= task_t
 
     def get_remaining_dwell_time(
         self,
-        now: float,
-        dwell_started_at: Optional[float],
+        now_wall: float,
+        now_basis: float,
+        dwell_started_at_basis: Optional[float],
     ) -> float:
         """Return remaining seconds before depart-ready (`dwell` only).
 
-        Mirrors `should_depart`: remaining = (depart threshold) - now, clamped
-        at 0, where the threshold is `max(dwell_started_at, target_time) +
-        task_time` (design_new.md "Task time semantics").
+        Mirrors `should_depart(...)` case for case, clamped at 0. A row with a
+        `target_time` counts down in wall seconds; a row holding for
+        `task_time` counts down against the route's timing basis.
         """
         if self.task_kind != "dwell":
             return 0.0
 
-        task_t = self.task_time if (self.task_time is not None and self.task_time > 0.0) else 0.0
+        if self.target_time is not None:
+            return max(0.0, self.target_time - now_wall)
 
-        if dwell_started_at is None:
-            if self.target_time is None:
-                return task_t
-            return max(0.0, self.target_time + task_t - now)
-
-        if self.target_time is None:
-            base = dwell_started_at
-        else:
-            base = max(dwell_started_at, self.target_time)
-        return max(0.0, base + task_t - now)
+        task_t = (
+            self.task_time
+            if (self.task_time is not None and self.task_time > 0.0)
+            else 0.0
+        )
+        if task_t <= 0.0:
+            return 0.0
+        if dwell_started_at_basis is None:
+            return task_t
+        return max(0.0, dwell_started_at_basis + task_t - now_basis)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to a JSON-compatible dict.
@@ -336,6 +350,14 @@ class RouteTaskRun:
     task_index: int
     resolved_target: Optional["ResolvedRouteTarget"] = None
     finished_at: Optional[float] = None
+    # The `AppState.operating_time` readings taken at the same moments
+    # `started_at` was sampled and `finished_at` was written (design_new.md
+    # "RouteTaskRun schema"). They are what a duration measures against under
+    # the `"operating"` timing basis, so an operator's stop does not count
+    # toward a dwell or make a train late. Never persisted and never
+    # displayed: the number means nothing against a later session's clock.
+    started_at_operating: Optional[float] = None
+    finished_at_operating: Optional[float] = None
     delay_class: Optional[Literal["early", "on_time", "late"]] = None
     # Stored simulated-time accumulator for a `task_kind == "run"` task's
     # timer. Per design_new.md "RouteTaskRun schema": Phase 1 step `6a0d`
@@ -363,6 +385,8 @@ class Route:
         acquisition_mode: Default route path-acquisition policy
             ("all_or_nothing" or "best_effort"). Default is ``best_effort``
             per design_new.md line 1052.
+        timing_basis: Which clock task durations measure against —
+            ``"operating"`` (default) or ``"realtime"``.
         manual_override: Operator override for ``manual`` resources (default
             False); route-level only, not a per-run override. See
             design_new.md "manual_override" (Route field schema).
@@ -394,6 +418,16 @@ class Route:
     # `manual` availability flags canonical home. Route-level only — never a
     # per-run override.
     manual_override: bool = False
+    # Which clock this route's task durations measure against (design_new.md
+    # "Route data"). `"operating"` measures them against
+    # `AppState.operating_time`, so an operator stop neither consumes a dwell
+    # nor makes a train late; `"realtime"` measures them against wall time,
+    # for a timetable run to a real clock. It governs `should_depart(...)` and
+    # `delay_class` together, and never governs `RouteTask.target_time`, which
+    # is an absolute wall instant under either basis. An edit takes effect on
+    # the next evaluation with no run teardown, because every `RouteTaskRun`
+    # row already stores both stamps.
+    timing_basis: Literal["operating", "realtime"] = "operating"
     # Start-mode default (per design_new.md "Run start-mode seeding"). Read once
     # when Phase 1 allocates a fresh RouteRun to seed its starting walk-position;
     # NOT a live RouteRun override (it has no meaning after allocation). A
@@ -499,6 +533,7 @@ class Route:
             "priority": self.priority,
             "acquisition_mode": self.acquisition_mode.value,
             "manual_override": self.manual_override,
+            "timing_basis": self.timing_basis,
             "start_mode": self.start_mode.value,
             "start_task_index": self.start_task_index,
         }
@@ -549,6 +584,9 @@ class Route:
             priority=int(data.get("priority", 5)),
             acquisition_mode=acquisition_mode,  # type: ignore[arg-type]
             manual_override=bool(data.get("manual_override", False)),
+            timing_basis=(
+                "realtime" if data.get("timing_basis") == "realtime" else "operating"
+            ),
             start_mode=start_mode,
             start_task_index=start_task_index,
             created_at=float(data.get("created_at") or 0.0),

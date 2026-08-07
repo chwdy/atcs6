@@ -778,7 +778,15 @@ def setup_demo_train(
             current_route_status=RouteRunStatus.RUNNING,
         )
         for i in range(phase_idx):
-            exec_state.task_runs.append(RouteTaskRun(task_index=i, finished_at=now))
+            exec_state.task_runs.append(
+                RouteTaskRun(
+                    task_index=i,
+                    finished_at=now,
+                    # The operating clock reads 0.0 until the first
+                    # tick, and this prefill runs at build time.
+                    finished_at_operating=0.0,
+                )
+            )
         exec_state.task_runs.append(RouteTaskRun(task_index=phase_idx))
         executor.execution_states[train_id] = exec_state
 

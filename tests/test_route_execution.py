@@ -60,7 +60,8 @@ class TestRouteAndTask:
         assert simple_route.started_at == 100.0
 
     def test_dwell_task_should_depart_relative(self):
-        """Test dwell task depart logic with task_time only."""
+        """`task_time` with no `target_time` holds for that many seconds of the
+        route's timing basis."""
         task = RouteTask(
             task_kind="dwell",
             task_location="STA_A",
@@ -68,18 +69,18 @@ class TestRouteAndTask:
         )
 
         # Started dwelling at t=0, now at t=10 (10 sec elapsed) - should not depart
-        should_depart = task.should_depart(now=10.0, dwell_started_at=0.0)
-        assert should_depart is False
+        assert task.should_depart(0.0, 10.0, 0.0) is False
 
         # Started dwelling at t=0, now at t=30 - should depart
-        should_depart = task.should_depart(now=30.0, dwell_started_at=0.0)
-        assert should_depart is True
+        assert task.should_depart(0.0, 30.0, 0.0) is True
 
-    def test_dwell_task_should_depart_absolute_target(self):
-        """Both target_time and task_time set: hold task_time past the LATER of
-        actual start and the scheduled start (design_new.md "Task time
-        semantics"). Scheduled start 1000 + 10s hold => depart at 1010; the
-        earlier arrival (800) does not shorten the hold."""
+    def test_dwell_with_a_target_time_departs_at_the_schedule(self):
+        """With `target_time` set, the schedule names the departure moment and
+        `task_time` is not read at all (design_new.md "Task time semantics").
+
+        The instant is compared against wall time under either timing basis,
+        because an absolute instant is only ever written in wall time.
+        """
         task = RouteTask(
             task_kind="dwell",
             task_location="STA_A",
@@ -87,34 +88,41 @@ class TestRouteAndTask:
             target_time=1000.0,
         )
 
-        # Before the scheduled start: too early.
-        assert task.should_depart(now=900.0, dwell_started_at=800.0) is False
-        # At/after the scheduled start but before the hold elapses: still holding.
-        assert task.should_depart(now=1000.0, dwell_started_at=800.0) is False
-        assert task.should_depart(now=1009.0, dwell_started_at=800.0) is False
-        # Full hold served past the scheduled start.
-        assert task.should_depart(now=1010.0, dwell_started_at=800.0) is True
+        # Before the scheduled departure: holding, however long it has stood.
+        assert task.should_depart(900.0, 900.0, 800.0) is False
+        assert task.should_depart(999.0, 999.0, 800.0) is False
+        # At the scheduled departure it leaves — the 10s `task_time` is not
+        # added on top, because the schedule already named the moment.
+        assert task.should_depart(1000.0, 1000.0, 800.0) is True
 
-    def test_dwell_late_arrival_serves_full_hold(self):
-        """A late arrival (after target_time) still serves the full task_time
-        hold from its actual start (design_new.md "Task time semantics")."""
+    def test_a_late_train_is_not_held_for_being_late(self):
+        """A train arriving after its scheduled departure leaves on arrival.
+
+        Holding it for `task_time` on top of an already-passed departure would
+        add the very delay the hold was meant to absorb to every task after it
+        (design_new.md "Task time semantics").
+        """
         task = RouteTask(
             task_kind="dwell",
             task_location="STA_A",
             task_time=30.0,
             target_time=1000.0,
         )
-        # Arrived late at 1050; hold 30s from max(1050, 1000) = 1050 -> 1080.
-        assert task.should_depart(now=1070.0, dwell_started_at=1050.0) is False
-        assert task.should_depart(now=1080.0, dwell_started_at=1050.0) is True
+        # Arrived late at 1050, which is already past the 1000 departure.
+        assert task.should_depart(1050.0, 1050.0, 1050.0) is True
+
+    def test_dwell_with_neither_time_departs_immediately(self):
+        task = RouteTask(task_kind="dwell", task_location="STA_A")
+
+        assert task.should_depart(0.0, 0.0, 0.0) is True
 
     def test_non_dwell_task_should_depart_immediately(self):
         """waypoint and stop tasks return True for should_depart (caller controls movement)."""
         wp_task = RouteTask(task_kind="waypoint", task_location="STA_A")
         stop_task = RouteTask(task_kind="stop", task_location="STA_B")
 
-        assert wp_task.should_depart(now=0.0, dwell_started_at=None) is True
-        assert stop_task.should_depart(now=0.0, dwell_started_at=None) is True
+        assert wp_task.should_depart(0.0, 0.0, None) is True
+        assert stop_task.should_depart(0.0, 0.0, None) is True
 
     def test_route_to_dict(self, simple_route):
         """Test route serialization."""

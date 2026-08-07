@@ -50,6 +50,10 @@ class RuntimeConfig:
     idle_hold_cooldown_ticks: int = C.IDLE_HOLD_COOLDOWN_TICKS
     # --- Route planning ---
     waypoint_lookahead_blocks: int = C.WAYPOINT_LOOKAHEAD_BLOCKS
+    # --- Route timing ---
+    delay_class_on_time_tolerance_seconds: float = (
+        C.DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS
+    )
     # --- Event stream ---
     notification_retention_rows: int = C.NOTIFICATION_RETENTION_ROWS
 
@@ -115,6 +119,10 @@ _TARGETS: Dict[str, List[Tuple[str, str]]] = {
     "waypoint_lookahead_blocks": [
         ("constants", "WAYPOINT_LOOKAHEAD_BLOCKS"),
         ("route_executor", "WAYPOINT_LOOKAHEAD_BLOCKS"),
+    ],
+    "delay_class_on_time_tolerance_seconds": [
+        ("constants", "DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS"),
+        ("route_executor", "DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS"),
     ],
     "notification_retention_rows": [
         ("constants", "NOTIFICATION_RETENTION_ROWS"),

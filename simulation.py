@@ -258,6 +258,25 @@ class SimulationController(SwitchOutputOwner):
         # `_unidentified_clock` for why it is wall-clock and not `simulation_time`.
         # Replaceable so a test can age a window out without sleeping.
         self.unidentified_clock: Callable[[], float] = time.monotonic
+        # The `AppState.operating_time` clock, for the route layer's
+        # `"operating"` timing basis (design_new.md "Clocks"): monotonic
+        # seconds of *operation*, advanced once per running pass by that pass's
+        # playback-scaled delta and by nothing else. It is accumulated rather
+        # than read off a real clock, so a scene that runs 400 ticks in a
+        # millisecond advances it by the 40 s those ticks represent.
+        #
+        # The accumulator belongs on `AppState`, because a layout load builds a
+        # fresh `SimulationController` and must not reset the clock a schedule
+        # holds against. These two seams are how it gets there: `AppState`
+        # rebinds both, and a controller built without one — a unit test, a
+        # scenario runner — keeps the local accumulator below.
+        self._operating_time_local: float = 0.0
+        self.operating_clock: Callable[[], float] = (
+            lambda: self._operating_time_local
+        )
+        self.operating_clock_advance: Callable[[float], None] = (
+            self._advance_local_operating_time
+        )
         self.route_executor = RouteExecutor(network, path_dispatcher, self.controllers)
         self.speed_profile_registry = network.speed_profiles
         self.simulation_time: float = 0.0
@@ -325,6 +344,11 @@ class SimulationController(SwitchOutputOwner):
           5. After all trains have committed, refresh signals from blocks.
         """
         self.simulation_time += delta_seconds
+        # One running pass of the runtime loop; a stopped pass calls
+        # `poll_hardware_occupancy()` instead and adds nothing, which is what
+        # keeps an operator's stop from consuming a dwell (design_new.md
+        # "Clocks").
+        self.operating_clock_advance(delta_seconds)
 
         # When a fatal physical-entry conflict has been reported, halt all
         # train ticks (Phase 1/2/3 skipped) for the rest of this session.
@@ -415,6 +439,11 @@ class SimulationController(SwitchOutputOwner):
             net.bump_lookahead_world_version()
         finally:
             net._lookahead_memo_active = False
+
+    def _advance_local_operating_time(self, delta_seconds: float) -> None:
+        """Advance the fallback operating clock for a controller with no
+        `AppState` wired. See `operating_clock` in `__init__`."""
+        self._operating_time_local += max(delta_seconds, 0.0)
 
     def _accrue_block_occupied_seconds(
         self, delta_seconds: Optional[float]
@@ -2015,10 +2044,10 @@ class SimulationController(SwitchOutputOwner):
         exit leaves the detected track in the declared direction, and how far
         back from that exit edge the head sits.
 
-        Falls back to the first claimed tile flush at its exit edge when the
-        detected track has no single front tile for this facing — a ring of
-        blocks with no end, or a facing no claimed tile can exit through, which
-        `place_train` then reports on its own terms.
+        Falls back to the first claimed tile flush at its exit edge only when NO
+        claimed tile can leave the detected track through this facing, which
+        `place_train` then reports on its own terms. Two candidate fronts is not
+        that case and must not zero the offset: see below.
 
         The detected length is the sum of the claimed tiles' lengths. An unidentified train
         holding two blocks joined by a switch tile is centered to within half
@@ -2036,8 +2065,25 @@ class SimulationController(SwitchOutputOwner):
                 continue
             if self.network._get_neighbor_coords(tile[0], tile[1], exit_edge) not in claimed:
                 fronts.append(tile)
-        if len(fronts) != 1:
+        if not fronts:
             return claimed_tiles[0], 0.0
+        # More than one candidate means both ends of the run leave the detected
+        # track through the same compass edge — an L- or U-shaped block, which is
+        # ordinary track and most of what a real layout is made of. The facing
+        # cannot say which of the two ends the nose is at, but it does not have
+        # to: centering is symmetric, so measuring back from either end puts the
+        # body in the SAME place and only head-versus-tail differs. So pick an end
+        # of the run (`claimed_tiles` is in connectivity order) and centre anyway.
+        # Bailing out to a zero offset here is what stood every train adopted on a
+        # corner block flush against a block boundary.
+        front = (
+            fronts[0]
+            if len(fronts) == 1
+            else next(
+                (t for t in (claimed_tiles[0], claimed_tiles[-1]) if t in fronts),
+                fronts[0],
+            )
+        )
 
         detected_length_cm = sum(
             self.network._get_tile_length_cm(x, y) for (x, y) in claimed_tiles
@@ -2046,7 +2092,7 @@ class SimulationController(SwitchOutputOwner):
         # detector sees. The head stays flush at the front and `place_train`
         # decides whether the overhang lands on undetected track (a switch tile,
         # which is fine) or on a block reading no current (which it refuses).
-        return fronts[0], max(0.0, (detected_length_cm - length_cm) / 2.0)
+        return front, max(0.0, (detected_length_cm - length_cm) / 2.0)
 
     def _hand_surplus_blocks_to_unidentified(
         self, train_id: str, surplus: List[str]

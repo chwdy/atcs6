@@ -47,18 +47,26 @@ class Demo5Scene:
                 )
             )
 
-        # Back-date every train's prefilled `task_runs[*].finished_at` by
-        # 10 minutes so the demo's 2-second dwell timer (driven by wall
-        # clock) is already elapsed when the harness starts ticking.
-        # Without this every train stays in RUNNING_AT_STATION forever
-        # within the test budget.
+        # Back-date every train's prefilled task-run stamps by 10 minutes so
+        # the demo's 2-second dwell timer is already elapsed when the harness
+        # starts ticking. Without this every train stays in
+        # RUNNING_AT_STATION forever within the test budget.
+        #
+        # Both clocks are back-dated: a dwell holding for `task_time` measures
+        # against the route's timing basis, which defaults to the operating
+        # clock (design_new.md "Task time semantics"). That clock starts at
+        # 0.0 on a fresh controller, so ten minutes before it is -600.0 — it
+        # is an accumulator of elapsed operation, not an instant.
         executor = sim_controller.route_executor
         ten_minutes_ago = time.time() - 600.0
+        ten_minutes_of_operation_ago = -600.0
         for exec_state in executor.execution_states.values():
             exec_state.started_at = ten_minutes_ago
+            exec_state.started_at_operating = ten_minutes_of_operation_ago
             for run in exec_state.task_runs:
                 if run.finished_at is not None:
                     run.finished_at = ten_minutes_ago
+                    run.finished_at_operating = ten_minutes_of_operation_ago
 
         return SceneFixture(
             network=network,

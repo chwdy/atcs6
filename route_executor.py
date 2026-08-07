@@ -122,6 +122,11 @@ class RouteExecutionState:
     # creation as `current_time` and never mutated afterward." Required at
     # construction; no default.
     started_at: float
+    # The `AppState.operating_time` reading at that same moment, so a duration
+    # measured from the run's start under the `"operating"` timing basis never
+    # subtracts a wall instant from an operating-clock one (design_new.md
+    # "RouteTaskRun schema", predecessor timestamp lookup). Never persisted.
+    started_at_operating: float = 0.0
     # Effective traversal direction for the current directed walk.
     # Per design_new.md "Route-run state" — stored as the literal string
     # `"forward"` or `"reverse"`. ROUND_TRIP arithmetic computes a local
@@ -709,6 +714,71 @@ class RouteExecutor:
         """System-time Unix seconds; canonical timestamp source for v1."""
         return time.time()
 
+    def _now_operating(self) -> float:
+        """The current `AppState.operating_time` reading (design_new.md
+        "Clocks").
+
+        Monotonic seconds of *operation*: it advances only while the session is
+        running, so an operator's stop neither consumes a dwell nor makes a
+        train late. The runtime reaches the accumulator through
+        `SimulationController.operating_clock`, the seam `AppState` wires. A
+        route executor built without a runtime falls back to wall time, which
+        is the same reading for a session nothing ever stops.
+        """
+        sim = getattr(self, "simulation_controller", None)
+        clock = getattr(sim, "operating_clock", None)
+        return float(clock()) if callable(clock) else time.time()
+
+    def _now_basis(self, route: "Route") -> float:
+        """The reading of whichever clock this route's `timing_basis` names."""
+        if getattr(route, "timing_basis", "operating") == "realtime":
+            return self._now()
+        return self._now_operating()
+
+    def dwell_remaining_seconds(
+        self,
+        exec_state: RouteExecutionState,
+        route: "Route",
+        walk_position: int,
+    ) -> float:
+        """Seconds remaining before a `dwell` walk-position is depart-ready.
+
+        The one place the UI-facing countdown is computed, so the wall/basis
+        clock split lives here rather than at each payload site. A row with a
+        `target_time` counts down in wall seconds; a row holding for
+        `task_time` counts down against the route's `timing_basis` (design_new.md
+        "Task time semantics").
+        """
+        if not (0 <= walk_position < len(exec_state.task_runs)):
+            return 0.0
+        row = exec_state.task_runs[walk_position]
+        if not (0 <= row.task_index < len(route.tasks)):
+            return 0.0
+        task = route.tasks[row.task_index]
+        return task.get_remaining_dwell_time(
+            self._now(),
+            self._now_basis(route),
+            self._predecessor_finish_basis(exec_state, route, walk_position),
+        )
+
+    def _predecessor_finish_basis(
+        self, exec_state: RouteExecutionState, route: "Route", row_pos: int
+    ) -> Optional[float]:
+        """The directed-walk predecessor's finish, read on the route's basis.
+
+        Walk-position `0` anchors on the run's own start. Reading both ends on
+        one clock is what keeps a duration from subtracting a wall instant from
+        an operating-clock one (design_new.md "RouteTaskRun schema",
+        predecessor timestamp lookup).
+        """
+        realtime = getattr(route, "timing_basis", "operating") == "realtime"
+        if row_pos == 0:
+            return (
+                exec_state.started_at if realtime else exec_state.started_at_operating
+            )
+        prev = exec_state.task_runs[row_pos - 1]
+        return prev.finished_at if realtime else prev.finished_at_operating
+
     def _compose_run_number(self, route_id: str, run_count: int) -> int:
         """Compose the diagnostic ``RouteRun.run_number``.
 
@@ -1000,6 +1070,7 @@ class RouteExecutor:
                 train_id=train.train_id,
                 route_id=route.route_id,
                 started_at=now,
+                started_at_operating=self._now_operating(),
                 run_number=self._compose_run_number(route.route_id, run_count),
             )
             self.execution_states[train.train_id] = exec_state
@@ -1118,7 +1189,13 @@ class RouteExecutor:
         # s is a valid in-range index; s == 0 means the chosen stop is already
         # the first task, so no prefix needs skipping (mode stays as resolved).
         for i in range(s):
+            # Both stamps, on the two clocks, so a successor's duration never
+            # finds a `None` predecessor under the `"operating"` basis
+            # (design_new.md "RouteTaskRun schema").
             exec_state.task_runs[i].finished_at = exec_state.started_at
+            exec_state.task_runs[i].finished_at_operating = (
+                exec_state.started_at_operating
+            )
         # Record the seeded first-target walk-position for the `is_starting`
         # phase tier (design_new.md "Run start-mode seeding"). For the initial
         # walk, walk-position == task_index, so this is the seed index `s`;
@@ -1529,6 +1606,7 @@ class RouteExecutor:
             "task skipped: target missing from network",
         )
         failed_row.finished_at = now
+        failed_row.finished_at_operating = self._now_operating()
         try:
             exec_state._append_next_walk_task(route)
         except Exception:
@@ -1736,12 +1814,13 @@ class RouteExecutor:
         # task_runs entry's finished_at (or RouteRun.started_at for the
         # first entry). Use the row's list position, not its task_index,
         # so wraparound entries anchor on the correct predecessor.
-        if row_pos == 0:
-            dwell_started_at = exec_state.started_at
-        else:
-            dwell_started_at = exec_state.task_runs[row_pos - 1].finished_at
+        dwell_started_at_basis = self._predecessor_finish_basis(
+            exec_state, route, row_pos
+        )
 
-        if not task.should_depart(now, dwell_started_at):
+        if not task.should_depart(
+            now, self._now_basis(route), dwell_started_at_basis
+        ):
             return
 
         # Mark the dwell row finished and advance through the canonical
@@ -2752,14 +2831,17 @@ class RouteExecutor:
         task = route.tasks[row.task_index]
         if task.task_kind == "dwell" or task.task_time is None:
             return
-        started = (
-            exec_state.started_at
-            if row_pos == 0
-            else exec_state.task_runs[row_pos - 1].finished_at
-        )
+        started = self._predecessor_finish_basis(exec_state, route, row_pos)
         if started is None:
             return
-        elapsed = now - started
+        finished = (
+            row.finished_at
+            if getattr(route, "timing_basis", "operating") == "realtime"
+            else row.finished_at_operating
+        )
+        if finished is None:
+            return
+        elapsed = finished - started
         tol = DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS
         if elapsed < task.task_time - tol:
             row.delay_class = "early"
@@ -2793,6 +2875,9 @@ class RouteExecutor:
         if row.finished_at is not None:
             return
         row.finished_at = now
+        # The operating-clock reading of the same moment, so a duration
+        # measured across this row never mixes the two clocks.
+        row.finished_at_operating = self._now_operating()
         self._record_delay_class(exec_state, route, walk_position, now)
         exec_state._append_next_walk_task(route)
 

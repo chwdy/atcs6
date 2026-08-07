@@ -34,6 +34,33 @@ class AppState:
     simulation_speed: float
     last_update_time: datetime
     last_autosave_time: float = 0.0
+    # Monotonic seconds of *operation* since process start — the clock a
+    # schedule holds against (design_new.md "Clocks"). Each running pass of the
+    # runtime loop adds that pass's wall delta multiplied by
+    # `simulation_speed`; a stopped pass adds nothing, so an operator's stop
+    # neither consumes a dwell nor makes a train late. It lives here rather
+    # than on `SimulationController` because loading a layout builds a fresh
+    # controller and must not reset it; only a process restart does.
+    operating_time: float = 0.0
+
+    def __post_init__(self) -> None:
+        """Hand the runtime the seam it reads `operating_time` through.
+
+        The accumulator stays here — a layout load builds a fresh
+        `SimulationController` and must not reset it — so the controller only
+        ever reads the value, never owns it.
+        """
+        def _advance(delta_seconds: float) -> None:
+            self.operating_time += max(delta_seconds, 0.0)
+
+        try:
+            self.sim_controller.operating_clock = lambda: self.operating_time
+            self.sim_controller.operating_clock_advance = _advance
+        except AttributeError:
+            # A stand-in controller that accepts no attributes (a smoke-test
+            # double) keeps its own fallback clock; see
+            # `SimulationController.operating_clock`.
+            pass
 
     @property
     def speed_profile_registry(self) -> SpeedProfileRegistry:

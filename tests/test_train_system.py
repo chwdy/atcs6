@@ -176,14 +176,16 @@ class TestRouteTask:
         )
 
         # Not enough time yet (dwell started at 0, now 25 = 25s elapsed < 30s)
-        assert task.should_depart(now=25.0, dwell_started_at=0.0) is False
+        assert task.should_depart(0.0, 25.0, 0.0) is False
 
         # Enough time elapsed
-        assert task.should_depart(now=30.0, dwell_started_at=0.0) is True
-        assert task.should_depart(now=35.0, dwell_started_at=0.0) is True
+        assert task.should_depart(0.0, 30.0, 0.0) is True
+        assert task.should_depart(0.0, 35.0, 0.0) is True
 
     def test_should_depart_absolute_mode(self):
-        """Test departure with absolute timing (target_time)."""
+        """With `target_time` set the schedule names the moment, and it is read
+        in wall time under either timing basis (design_new.md "Task time
+        semantics")."""
         task = RouteTask(
             task_kind="dwell",
             task_location=PlatformTarget(platform_id="STN_001"),
@@ -191,13 +193,13 @@ class TestRouteTask:
         )
 
         # Before target time
-        assert task.should_depart(now=450.0, dwell_started_at=400.0) is False
+        assert task.should_depart(450.0, 450.0, 400.0) is False
 
         # At target time
-        assert task.should_depart(now=500.0, dwell_started_at=400.0) is True
+        assert task.should_depart(500.0, 500.0, 400.0) is True
 
         # After target time
-        assert task.should_depart(now=550.0, dwell_started_at=400.0) is True
+        assert task.should_depart(550.0, 550.0, 400.0) is True
 
     def test_to_dict_from_dict_roundtrip(self):
         """Test task serialization."""

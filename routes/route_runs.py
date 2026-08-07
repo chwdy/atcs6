@@ -136,6 +136,26 @@ def register(app, state: AppState) -> None:
         if target_run is None:
             return jsonify({"error": "RouteRun not found"}), 404
 
+        def _elapsed_basis(run, pos: int):
+            """Elapsed seconds on the route's timing basis, or `None`."""
+            started = (
+                run.started_at_operating
+                if pos == 0
+                else run.task_runs[pos - 1].finished_at_operating
+            )
+            finished = run.task_runs[pos].finished_at_operating
+            if started is None or finished is None:
+                return None
+            return max(0.0, finished - started)
+
+        def _elapsed_wall(run, pos: int):
+            """Elapsed wall seconds, or `None`."""
+            started = run.task_started_at(pos)
+            finished = run.task_runs[pos].finished_at
+            if started is None or finished is None:
+                return None
+            return max(0.0, finished - started)
+
         tasks_out = []
         for i, task_run in enumerate(target_run.task_runs):
             task_index = task_run.task_index
@@ -173,12 +193,20 @@ def register(app, state: AppState) -> None:
                     "task_direction": task.task_direction if task else None,
                     "task_time": task.task_time if task else None,
                     # target_time applies to every task kind (load-bearing on
-                    # `dwell`, whose scheduled departure is target_time + task_time
-                    # per RouteTask.should_depart) — not stop-only.
+                    # `dwell`, whose scheduled departure it names outright per
+                    # RouteTask.should_depart) — not stop-only.
                     "target_time": task.target_time if task else None,
                     "started_at": target_run.task_started_at(i),
                     "finished_at": task_run.finished_at,
                     "delay_class": task_run.delay_class,
+                    # Both elapsed figures, because a run that was stopped for
+                    # ten minutes is honestly described only by both: the basis
+                    # figure is what `delay_class` was computed from, and the
+                    # wall figure is how long it actually took (design_new.md
+                    # "Data Flow To UI"). The server owns them — a client never
+                    # derives a duration from its own clock.
+                    "elapsed_basis_seconds": _elapsed_basis(target_run, i),
+                    "elapsed_wall_seconds": _elapsed_wall(target_run, i),
                     "resolved_target": resolved_payload,
                     "last_error": _task_error(route_executor, target_run, i),
                 }

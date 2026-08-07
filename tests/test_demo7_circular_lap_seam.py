@@ -174,13 +174,15 @@ def test_path_does_not_accumulate_across_laps(demo7_runtime, dt):
 def test_dwell_holds_for_its_configured_time(monkeypatch):
     """The stop's dwell holds for `HOLD_SECONDS` before the next lap starts.
 
-    Dwell timing is wall-clock per design_new.md "Task time semantics", so this
-    measures wall-clock rather than simulated time. On a layout running at 1x
-    the two coincide, which is what makes `HOLD_SECONDS = 5.0` a five-second
-    stand in front of an audience.
+    A dwell holding for `task_time` measures against the route's timing basis,
+    which defaults to the operating clock (design_new.md "Task time
+    semantics"). That clock is seconds of *operation*: it advances with the
+    tick, is scaled by playback, and stops when the operator stops. On a
+    layout running at 1x with nobody touching Stop it coincides with wall
+    time, which is what makes `HOLD_SECONDS = 5.0` a five-second stand in
+    front of an audience — and it stays a five-second stand at 4x playback of
+    a four-times-faster world.
     """
-    import time
-
     import demo7
 
     hold_seconds = 0.75
@@ -197,11 +199,11 @@ def test_dwell_holds_for_its_configured_time(monkeypatch):
     def traced_create(**kwargs):
         result = original_create(**kwargs)
         if result.success:
-            marks.append(("create", time.time()))
+            marks.append(("create", sim.operating_clock()))
         return result
 
     def traced_complete(*args, **kwargs):
-        marks.append(("complete", time.time()))
+        marks.append(("complete", sim.operating_clock()))
         return original_complete(*args, **kwargs)
 
     dispatcher.create_path = traced_create
@@ -220,5 +222,6 @@ def test_dwell_holds_for_its_configured_time(monkeypatch):
     ]
     assert holds, f"never saw a completion followed by the next lap's create: {marks}"
     assert holds[0] >= hold_seconds, (
-        f"departed after {holds[0]:.2f} s, before the {hold_seconds} s dwell elapsed"
+        f"departed after {holds[0]:.2f} s of operation, before the "
+        f"{hold_seconds} s dwell elapsed"
     )

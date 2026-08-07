@@ -485,17 +485,17 @@ def register(app, state: AppState) -> None:
                             and task.task_kind == "dwell"
                             and next_idx < len(exec_state.task_runs)
                         ):
-                            # `target_time` and `dwell_started_at` are stored
-                            # as wall-clock Unix seconds (RouteExecutor._now()
-                            # uses time.time()), so the remaining duration
-                            # must be computed in wall-clock units too.
-                            # The finish time is then shifted onto the
-                            # sim-clock the HMI already shows.
-                            wall_now = time.time()
+                            # The remaining hold is computed by the route
+                            # executor, which owns the wall/timing-basis split
+                            # (design_new.md "Task time semantics"). The finish
+                            # time is then shifted onto the sim-clock the HMI
+                            # already shows.
                             sim_now = state.sim_controller.simulation_time
-                            dwell_started_at = exec_state.task_started_at(next_idx)
-                            remaining = task.get_remaining_dwell_time(
-                                wall_now, dwell_started_at
+                            remaining = (
+                                state.sim_controller.route_executor
+                                .dwell_remaining_seconds(
+                                    exec_state, route, next_idx
+                                )
                             )
                             finish_sim_sec = sim_now + remaining
                             payload["current_task_kind"] = "dwell"
