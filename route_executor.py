@@ -2074,26 +2074,27 @@ class RouteExecutor:
         if not success:
             # Auto-recover from a structural extend_path failure: the live path
             # cannot be grown toward this target at all, whatever the live
-            # traffic does. INVALID_REVERSE means the new destination needs the
-            # train to turn around at the current authority end; NO_VIABLE_PATH
-            # means no legal forward suffix exists to it, including when the
-            # only route there runs back through a block this path still holds.
-            # Neither clears by waiting, so retrying against the same path would
-            # spin until the train ran out its authority and stopped. Latch a
-            # cancellation so Phase 3 tears the stale path down once the train
-            # stops; the next eligible Phase 1 will see no active path and
-            # acquire via create_path from the train's current span instead.
-            # Per the **Planning Kernel** section these are the failure kinds that
-            # "latch cancellation before a fresh create attempt", and per the
+            # traffic does. NO_VIABLE_PATH means no legal forward suffix exists
+            # to it — including when the only route there runs back through a
+            # block this path still holds, and including a target that would
+            # need the train to turn around at the current authority end, since
+            # extension is forward-only. That does not clear by waiting, so
+            # retrying against the same path would spin until the train ran out
+            # its authority and stopped. Latch a cancellation so Phase 3 tears
+            # the stale path down once the train stops; the next eligible
+            # Phase 1 will see no active path and acquire via create_path from
+            # the train's current span instead.
+            # Per the **Planning Kernel** section this is the failure kind that
+            # "latches cancellation before a fresh create attempt", and per the
             # latch-table rules this is the same pattern Phase 1 uses for any
             # "live path must be replaced" condition: write the latch, stop
             # planning this tick, let Phase 3 commit. BLOCKED_BEFORE_TARGET is
             # deliberately not here — it is a temporary live conflict, and the
             # path stays valid while Phase 1 retries.
             fkind = getattr(result, "failure_kind", None)
-            if active_path_id is not None and fkind in (
-                PathAcquisitionFailureKind.INVALID_REVERSE,
-                PathAcquisitionFailureKind.NO_VIABLE_PATH,
+            if (
+                active_path_id is not None
+                and fkind is PathAcquisitionFailureKind.NO_VIABLE_PATH
             ):
                 cancel_reason = (
                     getattr(result, "reason", None)

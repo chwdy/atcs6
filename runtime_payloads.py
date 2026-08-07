@@ -558,9 +558,13 @@ class PathAcquisitionFailureKind(Enum):
 
     NO_VIABLE_PATH = "no_viable_path"
     BLOCKED_BEFORE_TARGET = "blocked_before_target"
-    INVALID_REVERSE = "invalid_reverse"
+    # Caller-contract violations. They return a structured failure rather than
+    # raising, so every create/extend call has one return shape. No runtime
+    # code branches on these three — `RouteExecutor` branches on
+    # NO_VIABLE_PATH and retries on everything else — so they exist to pin the
+    # violation set a caller may assert against (design_new.md
+    # "`create_path()` / `extend_path()` return contract").
     INVALID_REQUEST = "invalid_request"
-    HEAD_ON_SWITCH_NO_BLOCK_AUTHORITY = "head_on_switch_no_block_authority"
     MISSING_OR_INACTIVE_PATH = "missing_or_inactive_path"
     TRAIN_ALREADY_HAS_ACTIVE_PATH = "train_already_has_active_path"
 

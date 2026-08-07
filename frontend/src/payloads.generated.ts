@@ -5,7 +5,7 @@
 
 export type AcquisitionMode = "all_or_nothing" | "best_effort";
 
-export type PathAcquisitionFailureKind = "no_viable_path" | "blocked_before_target" | "invalid_reverse" | "invalid_request" | "head_on_switch_no_block_authority" | "missing_or_inactive_path" | "train_already_has_active_path";
+export type PathAcquisitionFailureKind = "no_viable_path" | "blocked_before_target" | "invalid_request" | "missing_or_inactive_path" | "train_already_has_active_path";
 
 export type TargetResolutionFailureKind = "missing_target" | "target_unavailable";
 

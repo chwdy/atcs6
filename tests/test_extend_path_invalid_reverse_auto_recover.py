@@ -1,8 +1,8 @@
 """How Phase 1 sorts extend_path failures into structural and temporary.
 
 Per design_new.md **Planning Kernel**, a structural extend failure on a live
-path — `invalid_reverse`, `no_viable_path`, or any other non-temporary kind —
-latches `pending_path_cancel_request` rather than surfacing a hard
+path — `no_viable_path` — latches `pending_path_cancel_request` rather than
+surfacing a hard
 an error event. Phase 3 cancels the stale path once the train stops, and the
 next eligible Phase 1 acquires fresh authority via `create_path()` from the
 train's current span, which is free to pick a route the extend could not.
@@ -93,14 +93,18 @@ def _make_exec_state():
     return state
 
 
-def test_invalid_reverse_latches_cancel_and_emits_no_hard_error():
+def test_reverse_at_authority_end_latches_cancel_and_emits_no_hard_error():
+    """A target that needs the train to turn around at the current authority
+    end is `no_viable_path`: extension is forward-only, so no forward suffix
+    reaches it. The `reason` names the reversal (design_new.md
+    "`create_path()` / `extend_path()` return contract")."""
     train_id = "T3"
     train = SimpleNamespace(train_id=train_id)
     route = MagicMock()
 
     extend_result = SimpleNamespace(
         success=False,
-        failure_kind=PathAcquisitionFailureKind.INVALID_REVERSE,
+        failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
         reason="extend would reverse at authority end",
         path_id="P1",
     )
@@ -137,9 +141,9 @@ def test_invalid_reverse_latches_cancel_and_emits_no_hard_error():
 def test_no_viable_path_also_latches_cancellation():
     """NO_VIABLE_PATH on a live path is structural, so it latches too.
 
-    Per design_new.md **Planning Kernel**, "Only `no_viable_path`, `invalid_reverse`, or
-    another non-temporary structural failure latches cancellation before a
-    fresh create attempt." No legal forward suffix to the target exists, and
+    Per design_new.md **Planning Kernel**, `no_viable_path` is the failure that
+    "latches cancellation before a fresh create attempt". No legal forward
+    suffix to the target exists, and
     waiting will not produce one, so retrying against the same path would spin
     until the train ran out its authority. This is the failure a circular route
     hits at the lap seam when the only way on runs back through a block the

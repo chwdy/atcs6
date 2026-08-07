@@ -185,7 +185,8 @@ class PathDispatcher:
         that knows how to handle a head on a switch has run, and report it as a
         train whose position cannot be resolved rather than as what it is. When
         authority genuinely cannot be built from that position, the best-effort
-        path still says so through `HEAD_ON_SWITCH_NO_BLOCK_AUTHORITY`.
+        path still says so, through `BLOCKED_BEFORE_TARGET` and a `reason`
+        naming the head-on-switch case.
         """
         head_tile = self._head_tile_for_train(train)
         if not head_tile:
@@ -1188,7 +1189,7 @@ class PathDispatcher:
             if last_failed_resource_id:
                 head_switch_reason += f" (blocked at {last_failed_resource_id})"
             return self._reject(
-                failure_kind=PathAcquisitionFailureKind.HEAD_ON_SWITCH_NO_BLOCK_AUTHORITY,
+                failure_kind=PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
                 reason=head_switch_reason,
@@ -1346,7 +1347,10 @@ class PathDispatcher:
         # contract", the new suffix must continue forward from the existing
         # prefix's travel frame; if every candidate would have to exit the
         # authority-end block via an edge other than the prefix's terminal
-        # exit_edge, the request is an invalid reverse.
+        # exit_edge, no forward suffix reaches the target. Extension is
+        # forward-only, so that is `no_viable_path` and the `reason` names the
+        # reversal (design_new.md "`create_path()` / `extend_path()` return
+        # contract", the `no_viable_path` entry).
         forward_candidates = [
             cand
             for cand in candidates
@@ -1354,7 +1358,7 @@ class PathDispatcher:
         ]
         if not forward_candidates:
             return self._reject(
-                failure_kind=PathAcquisitionFailureKind.INVALID_REVERSE,
+                failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
