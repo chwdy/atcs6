@@ -242,6 +242,12 @@ class SimulationController(SwitchOutputOwner):
         self.block_occupancy_detector.reachable_blocks = (
             self.unidentified_trains.reachable_blocks
         )
+        # Adjacency says two things are next to each other and nothing about
+        # which way either is going, so every adjacency match is also gated on
+        # whether the train could be entering the block at all — moving, and
+        # driving toward it (design_new.md "Power", Attribution is gated on
+        # plausibility).
+        self.block_occupancy_detector.can_enter = self._train_could_be_entering
         # The clock the unidentified train tracker's hold windows are measured against — see
         # `_unidentified_clock` for why it is wall-clock and not `simulation_time`.
         # Replaceable so a test can age a window out without sleeping.
@@ -482,6 +488,24 @@ class SimulationController(SwitchOutputOwner):
             self.power_controller.deenergize_unheld_blocks(skip=held)
 
         self.network.update_signals_from_blocks()
+
+    def _train_could_be_entering(self, train_id: str, block_id: str) -> bool:
+        """Whether `train_id` could be the current that just appeared on
+        `block_id` (design_new.md "Power", Attribution is gated on plausibility).
+
+        The physics instance owns the answer — it holds the span, the direction
+        of travel, and the speed. This is the seam that hands it to the detector,
+        which knows only blocks. An unidentified train is never a candidate: it
+        is never energized and integrates no motion, so it enters nothing under
+        its own power, and its own blocks arrive through its detected span.
+        """
+        train = self.network.trains.get(train_id)
+        if train is None or getattr(train, "is_unidentified", False):
+            return False
+        physics = self.physics_instances.get(train_id)
+        if physics is None:
+            return False
+        return physics.could_be_entering(block_id)
 
     def _entries_for_adjacent_trains(
         self, unmatched: Set[str], claimed: Dict[str, Set[str]]
@@ -739,6 +763,7 @@ class SimulationController(SwitchOutputOwner):
             input_interface=self.input_interface,
             controllers=self.controllers,
             reachable_blocks=self.unidentified_trains.reachable_blocks,
+            can_enter=self._train_could_be_entering,
             notify=lambda operation, message: self.notification_center.emit(
                 source="BlockOccupancyDetector",
                 operation=operation,

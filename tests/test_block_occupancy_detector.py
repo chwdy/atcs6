@@ -60,7 +60,13 @@ class FakeController:
 
 
 def make_detector(
-    block_ids, frames, on=1, off=3, controllers=None, neighbours=None
+    block_ids,
+    frames,
+    on=1,
+    off=3,
+    controllers=None,
+    neighbours=None,
+    can_enter=None,
 ):
     """A detector over `block_ids`.
 
@@ -69,6 +75,13 @@ def make_detector(
     blocks reachable from it with nothing in between. Attribution needs it to
     decide whether a train could physically be standing on a block it reserved,
     so a test that exercises the reservation match must declare it.
+
+    `can_enter` is the plausibility gate the real `TrainPhysics.
+    could_be_entering` supplies: whether a train could be the current that just
+    appeared on a block, which it answers from the train's direction of travel.
+    These tests isolate adjacency and the reservation match, so the default
+    allows every candidate; `test_block_occupancy_plausibility.py` covers the
+    gate itself against real geometry.
     """
     network = FakeNetwork(blocks={bid: FakeBlock() for bid in block_ids})
     adjacency = {bid: set(vals) for bid, vals in (neighbours or {}).items()}
@@ -79,6 +92,7 @@ def make_detector(
         on_threshold=on,
         off_threshold=off,
         reachable_blocks=lambda block_id: adjacency.get(block_id, set()),
+        can_enter=can_enter or (lambda train_id, block_id: True),
     )
     return network, detector
 

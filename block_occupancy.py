@@ -146,6 +146,14 @@ class BlockOccupancyDetector:
     # construction. Without it no entry is ever credited to a train it is not
     # standing next to, which is the fail-safe reading.
     reachable_blocks: Optional[Callable[[str], Set[str]]] = None
+    # Whether a given train could be the current that just appeared on a given
+    # block — it is moving, and the block is in front of it. Adjacency says two
+    # things are next to each other and nothing about which way either is going,
+    # so on its own it reads a hand-placed locomotive beside a stopped train as
+    # that train. `SimulationController` wires this to
+    # `TrainPhysics.could_be_entering`. Without it no entry is credited to an
+    # adjacent train at all, which is the fail-safe reading.
+    can_enter: Optional[Callable[[str, str], bool]] = None
     _on_counts: Dict[str, int] = field(default_factory=dict)
     _off_counts: Dict[str, int] = field(default_factory=dict)
     _confirmed: Set[str] = field(default_factory=set)
@@ -247,9 +255,10 @@ class BlockOccupancyDetector:
 
         Entered blocks attribute to `Block.reserved_for_train` (the train that
         reserved the block it is entering) **only when that train is standing
-        next to the block**, falling back to the train whose live span covers
-        the block. Vacated blocks attribute to `Block.occupied_by`; a vacate
-        whose block is already clear is a benign double-clear and is skipped.
+        next to the block and could be entering it**, falling back to the train
+        whose live span covers the block. Vacated blocks attribute to
+        `Block.occupied_by`; a vacate whose block is already clear is a benign
+        double-clear and is skipped.
 
         The adjacency condition on the reservation match is what keeps a
         reserved-ahead corridor from swallowing a foreign occupant. A train
@@ -263,6 +272,14 @@ class BlockOccupancyDetector:
         span and reachability matches already read it (`reachable_blocks`
         stops at the first block, so a block with a clear block between it and
         every train matches nobody).
+
+        Adjacency alone is still not enough, because it says two things are next
+        to each other and nothing about which way either is going. A train
+        standing at a signal and a locomotive somebody sets down in front of it
+        are adjacent; so are a train driving east and current appearing on the
+        block behind it. Neither is that train arriving. Every adjacency match
+        therefore also asks `can_enter` whether the train is moving and driving
+        toward the block (`_could_enter`).
 
         Matching runs to a fixed point rather than in one pass, because a train
         fast enough to cross several blocks between two reads has them all
@@ -364,23 +381,48 @@ class BlockOccupancyDetector:
                 covered = set(span.occupied_blocks or []) if span is not None else set()
                 if claimed:
                     covered |= claimed.get(train_id, set())
-                if neighbour_id in covered:
+                if neighbour_id in covered and self._could_enter(train_id, block_id):
                     return train_id
             block = self.network.blocks.get(neighbour_id)
             owner = getattr(block, "occupied_by", None) if block else None
-            if owner is not None and not self._is_unidentified(owner):
+            if (
+                owner is not None
+                and not self._is_unidentified(owner)
+                and self._could_enter(owner, block_id)
+            ):
                 return owner
         return None
+
+    def _could_enter(self, train_id: str, block_id: str) -> bool:
+        """Whether `train_id` could be the current that just appeared on
+        `block_id` — moving, and driving toward it rather than away.
+
+        Adjacency alone answers a different question: it says the two are next
+        to each other, which is true of a locomotive somebody set down beside a
+        train standing at a signal. This is the gate that keeps such current
+        from being read as the train (design_new.md "Power", Attribution is
+        gated on plausibility). With no gate wired nothing is plausible, so no
+        entry is credited to an adjacent train.
+        """
+        if self.can_enter is None:
+            return False
+        return bool(self.can_enter(train_id, block_id))
 
     def _train_is_adjacent(
         self, train_id: str, block_id: str, claimed: Dict[str, Set[str]]
     ) -> bool:
-        """Whether `train_id` in particular is standing next to `block_id`.
+        """Whether `train_id` in particular is standing next to `block_id` and
+        could be entering it.
 
         `adjacent_train_for_block` answers with one train, picked by its own
         preference order; the reservation gate needs the answer for the
         reserving train specifically, because a block may sit next to a
         different train than the one that reserved it.
+
+        A reservation is the weakest evidence of the three, so it carries the
+        plausibility gate too: a train stopped at the end of its authority still
+        holds the reservation on the block in front of it, and current appearing
+        there while it stands still is not that train.
         """
         if self.reachable_blocks is None:
             return False
@@ -393,7 +435,9 @@ class BlockOccupancyDetector:
             for bid, block in self.network.blocks.items()
             if getattr(block, "occupied_by", None) == train_id
         }
-        return bool(standing_on & self.reachable_blocks(block_id))
+        if not (standing_on & self.reachable_blocks(block_id)):
+            return False
+        return self._could_enter(train_id, block_id)
 
     def _is_unidentified(self, train_id: str) -> bool:
         train = self.network.trains.get(train_id)

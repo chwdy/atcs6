@@ -1521,6 +1521,58 @@ class TrainPhysics:
         self._work = None
         return moved
 
+    def could_be_entering(self, block_id: str) -> bool:
+        """Whether this train could be the current that just appeared on
+        `block_id` (design_new.md "Power", A train is not entering a block it is
+        being driven away from).
+
+        **A moving train can only have entered a block in front of it.** A train
+        is driven one way at a time and the polarity on its rails says which, so
+        current appearing on the side it is driving *away* from is not that train
+        arriving there. It is something else on the track behind it.
+
+        Forward means the same walk `reconcile_to_detected_occupancy` corrects
+        along, so it follows the points as aligned and stops at the first
+        `detected block` the detector has not confirmed. A train that genuinely
+        crossed two blocks between reads has both confirmed, so the walk reaches
+        both and both stay plausible; a block with a clear detected block in
+        between does not, which is the same line every other rule holds.
+
+        **A train that is not moving is not being driven away from anything, so
+        every neighbouring block stays plausible for it.** The model never knows
+        where inside a block a train sits — the position between two confirmed
+        fixes is integrated from a speed solution, and an adopted train is placed
+        in the middle of its blocks because nobody knows better. A stationary
+        locomotive may therefore be bridging an insulated joint the model shows
+        it well clear of, drawing current on the block on either side of it, and
+        no geometry the app holds can rule that out.
+
+        The test uses only the direction of the motion, never its magnitude. A
+        `SpeedProfile` describes the locomotive it was calibrated for, so the
+        modeled distance is exactly the number this cannot trust — a train
+        reaching a block early is the whole case this exists for. Which way a
+        train is being driven survives a wrong profile; how far it got does not.
+        """
+        span = self.controller.physics_sync.current_span if self.controller else None
+        if span is None or self.network is None:
+            return False
+        if block_id in (span.occupied_blocks or []):
+            return True
+        train = self._get_train()
+        if train is None:
+            return False
+        if abs(self._read_current_speed(train)) <= STOPPED_SPEED_THRESHOLD_KMH:
+            return True
+
+        previous_work = self._work
+        try:
+            self._work = _work_from_span(
+                span, self.controller._head_end_label() == "end_a"
+            )
+            return bool(self._entered_blocks_ahead({block_id}))
+        finally:
+            self._work = previous_work
+
     def _entered_blocks_ahead(self, entered: Set[str]) -> Set[str]:
         """Of `entered`, the blocks the head reaches by travelling forward.
 
