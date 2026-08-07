@@ -36,6 +36,52 @@ These are the rules the document expects every patch to honor.
 - **Requirement keywords are binding.** Write `must` / `must not` for contract requirements and `may` for permitted behavior; never write `should` in a normative statement (doc Authoring Rule 8). Code-generation agents treat these keywords literally.
 - **Declarative v1 voice, not refactor-delta voice.** State what v1 is ("`X` is the…", "`Y` carries…"), never edit instructions against prior code ("Add X", "Remove Y", "Keep Z", "Stop doing W", "In the desired model…", "no longer", "for now"). The only sanctioned current-code name mappings live in the Scope terminology list and the Canonical Entity Index (e.g. `RouteRun` vs `RouteExecutionState`).
 
+## Sentence and structure style for `design_new.md`
+
+These rules govern how a dense rule is laid out on the page. They are a pure syntax
+transform — every clause of the original must survive; nothing is added except
+quantifier words ("all three", "any of these") and first-use definitions of
+identifier-bound terms. If restructuring a bullet would change its meaning, its actor,
+or which entity owns the logic, stop and surface that instead of "simplifying" it.
+
+1. **One rule per bullet, bold label first.** Every rule opens with a **bold label**
+   naming it, followed by one short sentence stating the action. A bullet that needs
+   internal bold headers to stay navigable is actually several bullets — split it into
+   labeled sub-bullets.
+2. **Conditions are lists, not comma prose.** Multi-part conditions use an explicit
+   quantifier line plus list items: "…when **all three hold**:" / "…when **any of these
+   holds**:". Each item is one clause; its machine-checkable definition follows after a
+   dash (e.g. "the authority did not grow this tick — the call reported
+   `appended_resource_count == 0`"). This applies equally to trigger conditions and to
+   reset/stop/exemption enumerations — a five-item reset list is a list, never a comma
+   chain.
+3. **When/then phrasing.** State rules as "When X, then Y," not trailing clauses ("…as
+   soon as…", "…provided that…"). Enumerable step outcomes (branch targets, stop
+   conditions) become lists too.
+4. **Rationale is its own sentence, placed after the contract.** The *why* never lives
+   inside a condition or as a mid-sentence parenthetical. State the contract, then state
+   the reason.
+5. **Parentheticals only for definitions.** A parenthetical may hold the
+   machine-checkable definition of the term it follows — never an exception, a
+   rationale, or a second rule.
+6. **The actor rule.** The grammatical subject of a contract sentence must be the entity
+   whose code performs the action. Never reword a sentence in a way that moves
+   responsibility to a different entity — "higher priority overrides lower" and "lower
+   priority yields when it sees a higher-priority waiter" describe different designs,
+   not two phrasings of the same one.
+7. **Two kinds of jargon, two treatments.** Pure prose jargon gets replaced with plain
+   words ("Concrete" → "Exact", "yields" → "gives up"). Identifier-bound terms — a word
+   that appears in a field, setting, or method name ("cap" / `acquisition_cap_block_id`,
+   "idle-hold" / `idle_hold_ticks`, "contention snapshot") — are kept, but get a one-line
+   plain-English definition at first use (e.g. "An idle hold is a run keeping its
+   reserved blocks and switch locks while making no progress toward its target.").
+   Renaming the prose without renaming the code creates a worse mismatch than leaving
+   the term jargon-y and defining it.
+8. **Bold labels must match how other sections reference the rule.** When a rule already
+   has a name used elsewhere ("Idle-hold maintenance and release," "the reversal-trap
+   exclusion"), its bold label is that exact name, so the restructure turns
+   cross-references into visible anchors instead of orphaning them.
+
 ## When you edit `design_new.md`
 
 - Sweep every cross-reference in one edit. The cross-reference drift rule means you cannot leave one section updated and another stale.
