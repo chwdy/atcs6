@@ -707,7 +707,7 @@ export class TrainEditorHandler {
 
                         <div class="input-small-row">
                             <label class="input-small-label input-small-label-inline" for="unidentified-adopt-length">Length</label>
-                            <input type="number" id="unidentified-adopt-length" class="input-small-field" value="100" min="10" step="10">
+                            <input type="number" id="unidentified-adopt-length" class="input-small-field" value="10" min="10" step="10">
                             <span class="at-unit">cm</span>
                         </div>
 
@@ -860,7 +860,7 @@ export class TrainEditorHandler {
     const DIR: Record<string, string> = { N: 'NORTH', E: 'EAST', S: 'SOUTH', W: 'WEST' };
     const body: any = {
       new_train_id: newId,
-      length_cm: Math.max(1, parseFloat(inputValue('unidentified-adopt-length')) || 100),
+      length_cm: Math.max(1, parseFloat(inputValue('unidentified-adopt-length')) || 10),
       max_speed: parseFloat(inputValue('unidentified-adopt-max-speed')) || 100,
       direction: DIR[this._adoptFacing] || 'EAST',
       // Two exits were offered as Cab A / Cab B in that order, so the chosen
