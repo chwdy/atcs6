@@ -224,7 +224,33 @@ class ProgressReportBuilder:
             if head_tile_xy is not None:
                 seq_idx = tile_xy_to_seq_index.get(head_tile_xy)
                 if seq_idx is None:
-                    # Head tile is not in the resource_sequence — out of sequence.
+                    # The tile map missed, so ask the resource. The predicate is
+                    # about the head's RESOURCE, not its tile (design_new.md:608
+                    # — "the train head is in a resource that appears nowhere in
+                    # the active resource_sequence"), and a path's stored
+                    # `path_tiles` for a block hold only the tiles the train will
+                    # traverse, not every tile of the block.
+                    #
+                    # A reverse departure is the case that makes the difference
+                    # load-bearing. When the path leaves out the train's other
+                    # end, `create_path` seeds the sequence starting at the exit
+                    # tile of the block the train is standing on — a tile the
+                    # train is not on. Tile-matching then reads its own start
+                    # block as a deviation and cancels the path on the first tick
+                    # after it was assigned, before the operator can even press
+                    # GO: no authority, ATC limit 0, and a dead rail under a train
+                    # the app is showing as ready to run. The head is on its
+                    # authorized path; it is just not yet on the tile the path
+                    # will take it out through.
+                    head_block_id = self._c._get_current_block_id()
+                    seq_idx = (
+                        block_to_seq_index.get(head_block_id)
+                        if head_block_id is not None
+                        else None
+                    )
+                if seq_idx is None:
+                    # Head resource is not in the resource_sequence — out of
+                    # sequence.
                     deviation = True
                     deviation_error = ErrorRecord(
                         "train head is not on its authorized path",

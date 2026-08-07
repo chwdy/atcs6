@@ -7,7 +7,7 @@ back-reference ``self._c`` (read-only). The public entry is
 """
 from __future__ import annotations
 
-from typing import Optional, TYPE_CHECKING
+from typing import Dict, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from train_controller import TrainController
@@ -96,13 +96,28 @@ class CabFlipPolicy:
     def required_cab_for_path(self) -> Optional[str]:
         """Determine the required cab for the current path.
 
+        The head is "the physical end of the current span on the authority side"
+        (design_new.md:150), so the required cab is the one that puts the head
+        there. Both tests below answer that question off real geometry; only the
+        last resort guesses from cardinal directions.
+
         Strategy (in priority order):
         1. **Track connectivity** — compare the head tile's entry edge with
-           the edge toward the path's next tile.  Reliable on zigzag /
-           diagonal staircase tracks where cardinal directions are misleading.
-        2. **Direction fallback** — when the head tile isn't in the path (e.g.
-           the path was prepended from a different tile), compare the
-           ``facing_direction`` with the path's overall direction vector.
+           the edge toward the path's next tile. Exact, and reliable on curves,
+           zigzag / diagonal staircases and tunnel hops, where cardinal
+           directions are misleading. When it can answer at all it is the whole
+           answer. It can only answer when the head tile is itself enumerated by
+           the path, which is *not* the common case at path-creation time — see
+           below.
+        2. **Authority side** — the rule design_new.md:2213 states: compare
+           ``TrainSpan.end_a`` and ``TrainSpan.end_b`` against the ordered
+           ``resource_sequence``, which runs tail-to-authority, and take the end
+           that sits later in it. This is what answers for a train whose span
+           covers more than one resource, which is exactly where test 1 goes
+           quiet.
+        3. **Direction fallback** — the dead heat, when both ends resolve to the
+           same resource so neither test above can separate them. Only here do
+           cardinal directions get a vote.
 
         Returns:
             ``"A"`` or ``"B"``, or ``None`` if the check cannot be performed.
@@ -118,24 +133,38 @@ class CabFlipPolicy:
         if flip:
             return "B" if current_cab == "A" else "A"
 
-        # When the path contains a tunnel hop (a tile pair that is not
-        # grid-adjacent), the cardinal-direction fallback below cannot be
-        # trusted: it projects a straight-line displacement across the
-        # tunnel, which has no physical meaning. Trust Approach 1's
-        # "no flip" verdict in that case as long as the connectivity check
-        # was conclusive (head tile in path with a next tile). For ordinary
-        # grid-contiguous paths we still fall through to Approach 2 to
-        # preserve the diagonal-staircase return-trip case, where the
-        # per-tile direction is 90° from facing but the overall vector is
-        # the true reversal. See design_new.md "Tunnels": tile-pair
-        # adjacency can be non-grid.
-        if (
-            self._connectivity_check_was_conclusive(train)
-            and self._path_has_tunnel_hop()
-        ):
+        # A conclusive connectivity verdict is exact geometry, so it is the
+        # whole answer: the head's entry edge against the edge toward the next
+        # path tile decides whether the path leaves back the way the head came
+        # in, which is what a reversal *is*. Nothing the cardinal-direction
+        # fallbacks add can improve on that, and on a curved head tile they
+        # actively contradict it.
+        #
+        # A curve is the case that bites. `facing` is the heading the head
+        # *entered* its tile on, and through a curve the rail bends away from
+        # it, so the exit heading the path takes is 90° off — the same trap
+        # `get_span_end_exits` documents for span-end seeds. Neither the
+        # equal nor the opposite test below then matches, and the decision
+        # falls to the gross start->end vector, which on a loop points back at
+        # the train and flips the cab. The flip is not a harmless mislabel:
+        # it moves the head to the other end of the consist, that end's tile
+        # is not on the path the dispatcher just built from the old head, and
+        # the very next progress report reads out_of_sequence and cancels the
+        # path — leaving the train with no authority, an ATC limit of 0, and a
+        # dead rail under it.
+        #
+        # A tunnel hop is the same argument by a different route: the fallback
+        # projects a straight-line displacement across a non-grid tile pair,
+        # which has no physical meaning (design_new.md "Tunnels").
+        if self._connectivity_check_was_conclusive(train):
             return current_cab
 
-        # --- Approach 2: direction fallback ---
+        # --- Approach 2: authority side (design_new.md:2213) ---
+        authority_side_cab = self._authority_side_cab()
+        if authority_side_cab is not None:
+            return authority_side_cab
+
+        # --- Approach 3: direction fallback ---
         # Compare the path's travel direction with the train's facing
         # direction. This also resolves the "90 degrees at the head but overall
         # reverse" diagonal case after the direct backtracking check above.
@@ -188,30 +217,74 @@ class CabFlipPolicy:
 
         return current_cab
 
-    def _path_has_tunnel_hop(self) -> bool:
-        """Return True when the current path's tile sequence contains a hop
-        between two tiles that are not grid-adjacent — i.e. the hop crosses
-        a tunnel edge. Used by ``required_cab_for_path`` to decide whether
-        the cardinal-direction fallback is safe to consult: across a tunnel
-        the dominant-vector heuristic projects a meaningless straight-line
-        displacement, so we have to trust the connectivity-based verdict.
+    def _authority_side_cab(self) -> Optional[str]:
+        """The cab that puts the head on the span's authority-side end, or None
+        when the two ends cannot be separated this way.
+
+        design_new.md:2213 defines the comparison: the ordered
+        ``resource_sequence`` is the covered span plus forward authority in
+        **tail-to-authority order**, so of the two physical span ends, the one
+        whose resource sits *later* in that sequence is the authority side —
+        which is what ``head`` means (design_new.md:150).
+
+        This is the test that answers at path-creation time. ``create_path``
+        seeds the start block's entry with the tile the train will *leave*
+        through, not the tile it is standing on, so the head tile is usually
+        absent from the path and the exact connectivity check above stays
+        silent. Before this existed the decision fell all the way through to the
+        gross start->end displacement vector, which reads a curve or a
+        doubling-back destination as a reversal and flips the cab — dropping the
+        head onto the other end of the consist, off the path, where the next
+        progress report cancels the authority and the rail goes dead.
+
+        ``None`` means "no opinion", not "no flip": both ends in the same
+        resource (a short consist inside one block, where tail-to-authority
+        order has nothing to order), or neither end resolvable. The caller falls
+        through to the cardinal-direction fallback, which is the documented
+        dead-heat case.
         """
-        path_tiles = self._c._get_effective_path_tiles()
-        if not path_tiles or len(path_tiles) < 2:
-            return False
-        for i in range(len(path_tiles) - 1):
-            a = path_tiles[i]
-            b = path_tiles[i + 1]
-            dx = b[0] - a[0]
-            dy = b[1] - a[1]
-            # Grid-adjacent tiles differ by exactly one cardinal unit. Any
-            # other delta (zero, diagonal, or non-unit) signals a tunnel hop
-            # for v1 (paths never repeat a tile in one direction of travel,
-            # per design_new.md "v1 path geometry forbids tile re-visits in
-            # a single direction of travel" — train_controller.py:1281).
-            if (abs(dx), abs(dy)) != (1, 0) and (abs(dx), abs(dy)) != (0, 1):
-                return True
-        return False
+        plan = self._c.path_projection.received_path_plan
+        span = getattr(self._c.physics_sync, "current_span", None)
+        if plan is None or span is None or self._c.network is None:
+            return None
+
+        # First occurrence wins: a lapping path can carry one block at two
+        # indices (the repeated-resource rule), and the earlier one is always
+        # the covered end. Reading both span ends the same way keeps the
+        # comparison between them honest whichever half of the lap they are in.
+        first_index: Dict[str, int] = {}
+        for entry in plan.resource_sequence:
+            if entry.resource_id not in first_index:
+                first_index[entry.resource_id] = entry.sequence_index
+
+        def index_of_end(locator) -> Optional[int]:
+            tile = getattr(locator, "tile", None)
+            if tile is None:
+                return None
+            track = self._c.network.get_track(int(tile[0]), int(tile[1]))
+            if track is None:
+                return None
+            # A span end sitting on a switch tile carries no block id; the
+            # switch is a resource in its own right, so try it too.
+            for resource_id in (track.block_id, getattr(track, "switch_id", None)):
+                if resource_id and resource_id in first_index:
+                    return first_index[resource_id]
+            return None
+
+        index_a = index_of_end(span.end_a)
+        index_b = index_of_end(span.end_b)
+
+        if index_a is None and index_b is None:
+            return None
+        # An end whose resource the path never mentions is behind the seed, so
+        # it is the tail: the other end is the authority side.
+        if index_a is None:
+            return "B"
+        if index_b is None:
+            return "A"
+        if index_a == index_b:
+            return None
+        return "A" if index_a > index_b else "B"
 
     def _connectivity_check_was_conclusive(self, train) -> bool:
         """Return True if _path_needs_cab_flip had enough data to decide.

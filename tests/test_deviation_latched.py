@@ -291,6 +291,66 @@ def test_deviation_while_rolling_latches_and_holds_resources():
     assert controller.path_projection.received_path_plan is None
 
 
+def test_head_on_path_resource_but_unenumerated_tile_is_not_a_deviation():
+    """The predicate is the head's RESOURCE, not its tile (design_new.md:608).
+
+    A path's stored ``path_tiles`` for a block hold only the tiles the train
+    will traverse, not every tile of the block, so a head can sit on its own
+    authorized block and still miss the tile map. Tile-matching alone called
+    that a deviation.
+
+    This is the reverse departure: when the path leaves out the train's other
+    end, ``create_path`` seeds the sequence at the exit tile of the block the
+    train is standing on — a tile the train is not on. The path was cancelled
+    on the first tick after it was assigned, before the operator could press
+    GO, leaving no authority, an ATC limit of 0, and a dead rail under a train
+    the app was showing as ready to run.
+    """
+    network, _switch = _build_switch_network()
+    _sim, dispatcher, controller, _train, path_id = _seed_rolling_train_on_live_path(
+        network
+    )
+
+    plan = controller.path_projection.received_path_plan
+    start = plan.resource_sequence[0]
+    assert start.resource_id == "BLK_A"
+    enumerated = {(t.x, t.y) for t in start.path_tiles}
+    unenumerated = (0, 0)
+    assert unenumerated not in enumerated, (
+        "fixture no longer exercises the case: the path enumerates every tile "
+        "of its own start block"
+    )
+
+    # Put the head on that unenumerated tile of BLK_A — still the path's own
+    # sequence-0 resource.
+    new_span = make_train_span(
+        unenumerated,
+        facing_direction=Direction.EAST,
+        occupied_blocks=["BLK_A"],
+    )
+    controller.on_physics_updated(
+        event_time=FIXED_EVENT_TIME,
+        span_update=PhysicsSpanUpdate(
+            new_span=new_span,
+            current_speed_kmh=20.0,
+            added_tiles=[],
+            removed_tiles=[],
+        ),
+    )
+
+    reports = list(controller.physics_sync.queued_progress_reports)
+    assert reports, "no progress report was enqueued"
+    assert not any(r.deviation for r in reports), (
+        "head on its own authorized block was reported as a deviation"
+    )
+    assert reports[-1].current_head_sequence_index == start.sequence_index
+
+    _drain_progress_reports(dispatcher, controller)
+    assert controller.route_hooks.phase_latches.path_cancel_request is None
+    assert dispatcher.active_path_id_by_train("T1") == path_id
+    assert dispatcher.get_path(path_id).status == PathStatus.ACTIVE
+
+
 def test_no_latch_head_off_path_reports_no_authority():
     """Discrimination guard: the SAME head-off-path geometry, but with NO
     deviation latch pending, reports NO_AUTHORITY -- not DEVIATION.

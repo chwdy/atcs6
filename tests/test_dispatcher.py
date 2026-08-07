@@ -1294,17 +1294,28 @@ class TestATODirectionDetection:
         # Train faces NORTH, path at head goes SOUTH -> opposite -> switch cab
         assert info.required_cab == "B"
 
-    def test_ato_info_diagonal_facing_east_path_south(self):
-        """Train on diagonal facing EAST, path goes SOUTH — 90 degrees at head.
+    def test_ato_info_head_on_a_curve_is_a_turn_not_a_reversal(self):
+        """A 90° first move off a curved head tile is a turn: the cab stays put.
 
-        The first path tile direction (SOUTH) is 90 degrees from the train's
-        facing direction (EAST).  However, the *overall* path vector from
-        (1,4) to (0,3) points WEST (dx=-1), which is the opposite of EAST.
-        So the cab SHOULD switch.
+        The head sits on (1,4), a SE curve, having entered through the W edge
+        (facing EAST), and the path leaves through the S edge. Entry edge and
+        exit edge differ, so the path does not go back out the way the head came
+        in — no reversal, no cab flip.
 
-        This was previously kept as 'ambiguous', but the overall-vector
-        resolution introduced to fix the diagonal staircase return-trip bug
-        now correctly detects this as a turn-around.
+        The gross start->end vector says otherwise: (1,4) -> (0,3) has dx=-1,
+        which reads WEST, the opposite of EAST. That heuristic used to decide
+        this case and answer "B". It is wrong on any curve, because
+        ``facing`` is the heading the head *entered* on and a curve bends the
+        rail away from it, so the exit heading is 90° off by construction. On a
+        loop the gross vector then points back at the train and flips the cab —
+        which moves the head to the other end of the consist, off the path the
+        dispatcher just built from the old head, so the next progress report
+        reads out_of_sequence and cancels the path. The train is left with no
+        authority, an ATC limit of 0 and a dead rail under it.
+
+        So the exact connectivity verdict wins whenever it can answer at all,
+        and the cardinal-direction fallbacks are reached only when the head tile
+        is not on the path.
         """
         network = self._build_diagonal_network()
         train = self._create_stopped_train(network, (1, 4), Direction.EAST, "BLK_DIAG")
@@ -1313,13 +1324,93 @@ class TestATODirectionDetection:
         controller = _make_seeded_controller(sim, train)
         controller.commands.cab = "A"
 
-        # Return path: (1,4) -> (1,3) = SOUTH
+        # Path: (1,4) -> (1,3) = SOUTH, out an edge the head did not enter by.
         self._attach_live_path(controller, train, [(1, 4), (1, 3), (0, 3)], "test_return", end_block_id="BLK_SOUTH")
 
         info = controller.ato.compute_info()
         assert info is not None
-        # Overall vector (1,4)->(0,3): dx=-1 -> WEST, opposite of EAST -> switch cab
-        assert info.required_cab == "B"
+        assert info.required_cab == "A"
+
+    def test_authority_side_decides_when_head_tile_is_not_on_the_path(self):
+        """A real `create_path` seeds the start block with the tile the train
+        will LEAVE through, not the tile it stands on — so the exact
+        connectivity check has nothing to compare, and the authority-side rule
+        (design_new.md:2213) has to answer.
+
+        Geometry: a consist straddling BLK_TAIL and BLK_HEAD, head at (2,0)
+        facing EAST, with a curve at (3,0) turning north and BLK_FAR doubling
+        back west. The path leaves forward, out of the head — cab A is correct.
+
+        The gross start->end displacement vector says otherwise: (3,0) -> (1,2)
+        reads WEST, the opposite of EAST, so it demanded cab B. That flip put
+        the head on (1,0) in BLK_TAIL — a block the path never enumerates,
+        because the seed starts at the head-side block — and the first progress
+        report cancelled the authority for deviation. Assigning a path left the
+        train with no authority, an ATC limit of 0 and a dead rail under it.
+
+        The authority-side comparison gets it right without any cardinal
+        reasoning: BLK_HEAD is in the sequence and BLK_TAIL is not, so end_a is
+        the authority side and cab A stays.
+        """
+        network = RailwayNetwork()
+        for x in (0, 1, 2):
+            network.add_track(Tile(x, 0, track_bits=TRACK_EW))
+        # (3,0) curves from the W edge up to the N edge; (3,2) curves back west.
+        network.add_track(Tile(3, 0, track_bits=TRACK_NW))
+        network.add_track(Tile(3, 1, track_bits=TRACK_NS))
+        network.add_track(Tile(3, 2, track_bits=TRACK_SW))
+        for x in (1, 2):
+            network.add_track(Tile(x, 2, track_bits=TRACK_EW))
+
+        make_segment_block_with_tracks(
+            network, "BLK_TAIL", positions=[(0, 0), (1, 0)], name="Tail",
+            length_cm=200.0,
+        )
+        make_segment_block_with_tracks(
+            network, "BLK_HEAD", positions=[(2, 0), (3, 0)], name="Head",
+            length_cm=200.0,
+        )
+        make_segment_block_with_tracks(
+            network, "BLK_FAR", positions=[(3, 1), (3, 2), (2, 2), (1, 2)],
+            name="Far", length_cm=400.0,
+        )
+
+        # 150 cm of consist straddles both blocks: head (2,0), tail (1,0).
+        car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=150.0)
+        train = Train(train_id="T1", consist=[car], max_speed=60.0)
+        network.add_train(train)
+        span = network.place_train(train, 2, 0, direction=Direction.EAST)
+
+        dispatcher = PathDispatcher(network)
+        sim = SimulationController(network, dispatcher)
+        controller = sim._get_or_create_controller(train)
+        controller.physics_sync.current_span = span
+        controller.ops.state = TrainState.READY
+        controller.commands.control_mode = "ato"
+        controller.commands.cab = "A"
+
+        result = dispatcher.create_path(
+            train_id="T1", requested_destination_block_id="BLK_FAR"
+        )
+        assert result.success, f"create_path failed: {result.reason}"
+
+        plan = controller.path_projection.received_path_plan
+        enumerated = {(t.x, t.y) for e in plan.resource_sequence for t in e.path_tiles}
+        assert controller._get_head_tile() not in enumerated, (
+            "fixture no longer exercises the case: the path enumerates the "
+            "head's own tile, so the connectivity check can answer"
+        )
+        assert "BLK_TAIL" not in {e.resource_id for e in plan.resource_sequence}
+
+        assert controller.cab_policy.required_cab_for_path() == "A"
+
+        # And the whole way through: no flip, the path survives departure.
+        assert controller.ato.go().success
+        assert controller.commands.cab == "A"
+        for _ in range(20):
+            sim.update(0.05)
+        assert dispatcher.active_path_id_by_train("T1") == result.path_id
+        assert controller.physics_sync.current_speed_kmh > 0
 
     def test_ato_info_tunnel_loop_no_spurious_flip(self):
         """Train traversing a circular loop through a tunnel: cab must NOT flip.
