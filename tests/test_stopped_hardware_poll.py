@@ -161,6 +161,119 @@ def test_a_stopped_poll_does_not_move_a_train():
     assert physics._tick_count == ticks_before
 
 
+# ------------------------------------------------ a stopped pass consumes no latch
+
+
+class _ArrivalSpy:
+    """Records whether Phase-3 step 3b reached the dispatcher."""
+
+    def __init__(self):
+        self.completion_calls = 0
+
+    def on_controller_progress(self, report):
+        pass
+
+    def active_path_id_by_train(self, train_id):
+        return "PATH_1"
+
+    def try_complete_active_path(self, train_id):
+        self.completion_calls += 1
+
+
+def _stopped_train_carrying_a_latch():
+    """A powered-off train with a detected block change this pass and a
+    `path_cancel_request` waiting for Phase 3 to commit."""
+    from train import Train
+
+    network, sim, _detector = build_sim()
+    train = Train(train_id="T1")
+    network.add_train(train)
+    controller = sim.get_or_create_controller("T1")
+    controller.route_hooks.phase_latches.set_path_cancel_request(
+        initiator="operator_cancelled", reason="operator cancelled"
+    )
+    # Only a train Step 0 attributed a change to reaches Phase 3 while OFF.
+    sim._detected_change_train_ids = {"T1"}
+    return sim, train, controller
+
+
+def test_a_stopped_pass_does_not_consume_a_pending_latch():
+    """design_new.md "Latch Table": "A stopped session consumes no latch."
+
+    Committing one is authored work, and a stopped session causes nothing. The
+    train is stopped, so the gate would otherwise be satisfied on this pass.
+    """
+    sim, train, controller = _stopped_train_carrying_a_latch()
+
+    sim._commit_train_phase3(controller, train, observing_only=True)
+
+    assert controller.route_hooks.phase_latches.path_cancel_request is not None
+
+
+def test_the_resumed_pass_consumes_the_latch_the_stopped_pass_kept():
+    """The latch keeps its payload across the stop and is consumed by the first
+    pass of the resumed session whose gate holds — it is deferred, not lost."""
+    sim, train, controller = _stopped_train_carrying_a_latch()
+    sim._commit_train_phase3(controller, train, observing_only=True)
+
+    sim._commit_train_phase3(controller, train)
+
+    assert controller.route_hooks.phase_latches.path_cancel_request is None
+
+
+def test_a_stopped_pass_reaches_no_arrival_verdict():
+    """Arrival is a statement about live authority, and a stopped session
+    exercises none — so step 3b does not run either (design_new.md "Running and
+    stopped"; the stopped pass commits the detected-blocks report alone)."""
+    from train import Train
+
+    network, sim, _detector = build_sim()
+    train = Train(train_id="T1")
+    network.add_train(train)
+    controller = sim.get_or_create_controller("T1")
+    sim._detected_change_train_ids = {"T1"}
+    spy = _ArrivalSpy()
+    sim.path_dispatcher = spy
+
+    sim._commit_train_phase3(controller, train, observing_only=True)
+
+    assert spy.completion_calls == 0
+
+
+# ------------------------------------------- the occupied-seconds counter runs
+
+
+def test_a_stopped_poll_accrues_occupied_seconds():
+    """design_new.md "Maintenance counters": `Block.occupied_seconds` is an
+    observing measurement — a locomotive standing on a block wears that block
+    whether or not the session is running — so a stopped pass accrues the wall
+    seconds since the previous pass."""
+    network, sim, detector = build_sim()
+    detector.current = {"BLK_1": True}
+    block = network.blocks["BLK_1"]
+
+    sim.poll_hardware_occupancy()
+    # The first pass has no interval behind it, and only now is the block held.
+    assert block.occupied_by is not None
+    assert block.occupied_seconds == 0.0
+
+    sim._last_pass_wall_time -= 2.0        # stand there for two seconds
+    sim.poll_hardware_occupancy()
+
+    assert block.occupied_seconds >= 2.0
+
+
+def test_a_stopped_poll_accrues_nothing_for_an_empty_block():
+    network, sim, detector = build_sim()
+    detector.current = {"BLK_1": True}
+    sim.poll_hardware_occupancy()
+
+    sim._last_pass_wall_time -= 2.0
+    sim.poll_hardware_occupancy()
+
+    assert network.blocks["BLK_0"].occupied_seconds == 0.0
+
+
 # ------------------------------------------------------------ sim mode opts out
 
 

@@ -180,6 +180,12 @@ class SimulationController(SwitchOutputOwner):
         # Phase-3 gate for a still-OFF transaction (design_new.md ":2181").
         self._detected_change_train_ids: Set[str] = set()
 
+        # Wall time of the previous pass of the runtime loop, running or
+        # stopped. A stopped pass has no `delta_seconds` of its own, so this is
+        # what its `occupied_seconds` accrual measures against — see
+        # `_accrue_block_occupied_seconds()`. `None` until the first pass.
+        self._last_pass_wall_time: Optional[float] = None
+
         # Initialize components with shared controllers. The block/switch power
         # output interfaces come from the session-build override (real backend)
         # or default to the simulated interfaces (sim mode) — design_new.md
@@ -404,15 +410,43 @@ class SimulationController(SwitchOutputOwner):
 
             self._settle_after_commits()
 
-            # Maintenance counter: accrue occupied time for every block holding a
-            # train this tick (see design_new.md "Maintenance counters").
-            for _blk in self.network.blocks.values():
-                if _blk.occupied_by is not None:
-                    _blk.occupied_seconds += delta_seconds
+            self._accrue_block_occupied_seconds(delta_seconds)
 
             net.bump_lookahead_world_version()
         finally:
             net._lookahead_memo_active = False
+
+    def _accrue_block_occupied_seconds(
+        self, delta_seconds: Optional[float]
+    ) -> None:
+        """Maintenance counter: add this pass's occupied time to every block a
+        train is standing on (design_new.md "Maintenance counters").
+
+        It is an observing measurement — a locomotive standing on a block wears
+        that block whether or not the session is running — so both the running
+        tick and the stopped detector pass call it, immediately after the
+        de-energize drain and the signal refresh.
+
+        A running pass hands it that pass's own `delta_seconds`. A stopped pass
+        hands it `None`, because nothing advances `simulation_time` while
+        stopped, and gets the wall seconds since the previous pass instead.
+        Every pass stamps the wall time, so the first stopped pass after a stop
+        measures from the last running tick rather than from whenever the
+        session was last stopped, and the first pass of all accrues nothing
+        because it has no interval behind it.
+        """
+        now = time.time()
+        previous = self._last_pass_wall_time
+        self._last_pass_wall_time = now
+        if delta_seconds is None:
+            if previous is None:
+                return
+            delta_seconds = max(0.0, now - previous)
+        if delta_seconds <= 0.0:
+            return
+        for block in self.network.blocks.values():
+            if block.occupied_by is not None:
+                block.occupied_seconds += delta_seconds
 
     def _unidentified_clock(self) -> float:
         """The clock `UnidentifiedTrainTracker` measures its hold windows against.
@@ -598,7 +632,14 @@ class SimulationController(SwitchOutputOwner):
         path design_new.md already defines for an occupant the app does not
         drive (":2181"): Step 0 attributes the confirmed transitions, each
         affected train enqueues a detected-blocks-only report, and its Phase 3
-        commits it.
+        commits that report alone (`observing_only`).
+
+        No latch is consumed here and no arrival is recognized, because both
+        are authored work (design_new.md "Latch Table": "A stopped session
+        consumes no latch"). Each latch keeps its payload across the stop and
+        is consumed by the first pass of the resumed session whose gate holds.
+        The `occupied_seconds` accrual does run: a locomotive standing on a
+        block wears it whether or not the session is running.
 
         Sim mode is left alone. Its simulated detector derives current from the
         live spans, so a poll with no motion between it and the last one can
@@ -628,13 +669,14 @@ class SimulationController(SwitchOutputOwner):
                 # into a progress report; there is no Phase 2 here, so the
                 # controller is asked for that report directly.
                 controller.enqueue_detected_blocks_report(time.time())
-                self._commit_train_phase3(controller, train)
+                self._commit_train_phase3(controller, train, observing_only=True)
                 net.bump_lookahead_world_version()
                 if self.runtime_halted:
                     return
 
             self.unidentified_trains.reconcile(self._unidentified_clock())
             self._settle_after_commits()
+            self._accrue_block_occupied_seconds(None)
             net.bump_lookahead_world_version()
         finally:
             net._lookahead_memo_active = False
@@ -1128,7 +1170,7 @@ class SimulationController(SwitchOutputOwner):
         self._commit_train_phase3(controller, train)
 
     def _commit_train_phase3(
-        self, controller: TrainController, train: Train
+        self, controller: TrainController, train: Train, observing_only: bool = False
     ) -> None:
         """Phase 3 - Feedback / cleanup for one train.
 
@@ -1145,6 +1187,17 @@ class SimulationController(SwitchOutputOwner):
         by hand, or an occupant the app does not control — still has its block
         entries and vacates committed, and Phase 3 is the only path that
         commits them.
+
+        `observing_only` runs step `3e9b` and nothing after it. A stopped pass
+        passes it, because committing a latch is authored work and stopped
+        causes nothing (design_new.md "Running and stopped": the stopped pass
+        consumes that report "as the Phase-3 occupancy commit alone. ... No
+        latch is consumed, and no other Phase-3 step runs"; "Latch Table": "A
+        stopped session consumes no latch"). Arrival is held back for the same
+        reason it is: a stop the train reached while the session was stopped is
+        a statement about live authority, which a stopped session exercises
+        none of. Every latch keeps its payload across the stop and is consumed
+        by the first pass of the resumed session whose gate holds.
         """
         if (
             controller.ops.state == TrainState.OFF
@@ -1158,6 +1211,10 @@ class SimulationController(SwitchOutputOwner):
             while controller.physics_sync.queued_progress_reports:
                 report = controller.physics_sync.queued_progress_reports.pop(0)
                 self.path_dispatcher.on_controller_progress(report)
+
+        if observing_only:
+            self._sync_persistent_train_state(train, controller)
+            return
 
         # 3b. Post-physics usable-authority stop check + path completion.
         # A pending path-cancel outranks completion (design_new.md step `c6f1`):
