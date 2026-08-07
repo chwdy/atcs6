@@ -697,7 +697,7 @@ class SimulationController(SwitchOutputOwner):
                 # The Phase-2 physics callback would normally turn the slice
                 # into a progress report; there is no Phase 2 here, so the
                 # controller is asked for that report directly.
-                controller.enqueue_detected_blocks_report(time.time())
+                controller.build_detected_progress_report(time.time())
                 self._commit_train_phase3(controller, train, observing_only=True)
                 net.bump_lookahead_world_version()
                 if self.runtime_halted:

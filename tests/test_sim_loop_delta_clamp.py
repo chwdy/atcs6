@@ -15,7 +15,8 @@ import io
 import pytest
 
 from bootstrap import bootstrap_runtime
-from runtime import MAX_SIM_DELTA_SECONDS, _clamp_sim_delta
+from constants import MAX_SIM_DELTA_SECONDS
+from runtime import _clamp_sim_delta
 
 
 def test_normal_ticks_pass_through_unclamped():

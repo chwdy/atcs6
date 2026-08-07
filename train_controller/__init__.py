@@ -1842,7 +1842,7 @@ class TrainController:
         """
         self.progress_report.on_physics_updated(event_time, span_update)
 
-    def enqueue_detected_blocks_report(self, event_time: float) -> None:
+    def build_detected_progress_report(self, event_time: float) -> None:
         """Queue a Phase-3 report carrying only this tick's detector-confirmed
         block events. Delegates to ``ProgressReportBuilder``.
 
@@ -1852,7 +1852,7 @@ class TrainController:
         blocks still have to reach Phase 3, which is the only path that commits
         them (see `SimulationController.poll_hardware_occupancy`).
         """
-        self.progress_report.enqueue_detected_blocks_report(event_time)
+        self.progress_report.build_detected_progress_report(event_time)
 
     # -------------------------------------------------------------------------
     # Lookahead Calculation (shared by ATC and ATO)

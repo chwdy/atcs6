@@ -271,7 +271,7 @@ class ProgressReportBuilder:
         )
         self._c.physics_sync.queued_progress_reports.append(report)
 
-    def enqueue_detected_blocks_report(self, event_time: float) -> None:
+    def build_detected_progress_report(self, event_time: float) -> None:
         """Public entry to the detected-blocks-only report, for a caller that
         has no span update to apply.
 

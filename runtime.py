@@ -17,24 +17,13 @@ from datetime import datetime
 from typing import Callable, Optional, Tuple
 
 from app_state import AppState
+from constants import MAX_SIM_DELTA_SECONDS
 from enums import OperationMode
 
 # Configuration
 AUTOSAVE_INTERVAL = 300  # 5 minutes in seconds
 AUTOSAVE_FILENAME = "_autosave"
 
-# Hard ceiling on a single per-tick sim delta. Normal operation — including a
-# few-times `simulation_speed` multiplier — stays well under this, so it is a
-# pass-through in the common case and the loop runs ONE update() per tick. It
-# only ever caps a multi-second hitch: the loop stalled (lock contention with
-# request handlers, GC, a host that fell behind) and resumed with a huge
-# accumulated wall-clock delta. Integrated in one step, such a delta overshoots
-# the train's max speed and teleports the head past its authority, tripping a
-# spurious ATC overspeed EB. Empirically the EB only appears around a ~3.5s
-# step with a full demo trainset, so this sits below that with margin. When a
-# hitch is clamped the surplus sim-time is dropped (the sim briefly runs slower
-# than real time) rather than teleporting; sub-second steps are physically fine.
-MAX_SIM_DELTA_SECONDS = 1.0
 
 # Cadence of the loop, and how often a stuck fault is re-reported. A fault that
 # survives its own recovery (a USB bridge that stays unplugged, say) fails every
