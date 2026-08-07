@@ -74,7 +74,7 @@ WAYPOINT_LOOKAHEAD_BLOCKS: int = 3
 # (delay_class). A task's actual elapsed travel time is compared with its
 # expected `task_time`: elapsed below `task_time - tol` is "early", above
 # `task_time + tol` is "late", otherwise "on_time". Tunable; diagnostic only.
-DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS: float = 5.0
+DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS: float = 30.0
 
 # Block occupancy detection debounce per design_new.md "Power -> Block occupancy
 # detection". Each electrically-isolated block has a current detector; current
@@ -84,14 +84,23 @@ DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS: float = 5.0
 # current reads and confirmed CLEAR after OCCUPANCY_OFF_THRESHOLD consecutive
 # no-current reads. The bias is fail-safe: quick to occupy, slow to clear (ride
 # through dropouts). Counted in detection ticks; the runtime loop reads at 10 Hz,
-# so occupancy is confirmed on the first read and cleared after ~1 s.
+# so occupancy is confirmed after ~0.2 s and cleared after ~1 s.
+#
+# Two reads rather than one, because a single read is one sample of a noisy
+# line and a block that confirms on it inherits every glitch that line carries.
+# A confirmed entry is not a private opinion of the detector: it is attributed
+# to a train, it writes `Block.occupied_by`, and an occupied block is energized
+# — so one bad sample moves a train in the model and puts voltage on rail. Two
+# consecutive reads cost 100 ms of extra latency against a sensor lag the
+# design already accepts as one tick, and they are what a detector must produce
+# to be believed rather than merely heard.
 #
 # The clear window is sized against real dirty-rail dropouts under a MOVING
 # train, which routinely outlast a few hundred milliseconds at low speed. It is
 # not what protects a stopped, lit train — no debounce can, because there the
 # detector reads clear indefinitely for as long as the train is parked; that
 # case is handled a layer down, in `OccupancyDriver`'s lighting zone.
-OCCUPANCY_ON_THRESHOLD: int = 1
+OCCUPANCY_ON_THRESHOLD: int = 2
 OCCUPANCY_OFF_THRESHOLD: int = 10
 
 # How many blocks a forward span correction must gain before it is reported as

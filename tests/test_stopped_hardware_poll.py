@@ -19,7 +19,7 @@ Run with:
 
 from block import Block
 from block_occupancy import OccupancyInput
-from constants import OCCUPANCY_OFF_THRESHOLD
+from constants import OCCUPANCY_OFF_THRESHOLD, OCCUPANCY_ON_THRESHOLD
 from enums import BlockState, OperationMode, TrainState
 from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
@@ -62,6 +62,17 @@ def build_sim(mode=OperationMode.REAL, num_blocks: int = 3):
     return network, sim, detector
 
 
+def poll_to_confirm(sim):
+    """Poll enough passes for a newly-present current to be confirmed.
+
+    The mirror of the `OCCUPANCY_OFF_THRESHOLD` loops below: confirming takes
+    `OCCUPANCY_ON_THRESHOLD` consecutive reads, so a test that wants a block
+    held asks for that many rather than assuming one read is enough.
+    """
+    for _ in range(OCCUPANCY_ON_THRESHOLD):
+        sim.poll_hardware_occupancy()
+
+
 # ----------------------------------------------------------- it does commit
 
 
@@ -69,7 +80,7 @@ def test_a_stopped_poll_commits_a_detected_occupancy():
     network, sim, detector = build_sim()
     detector.current = {"BLK_1": True}
 
-    sim.poll_hardware_occupancy()          # update() is never called
+    poll_to_confirm(sim)                   # update() is never called
 
     block = network.blocks["BLK_1"]
     assert block.occupied_by is not None
@@ -82,7 +93,7 @@ def test_a_stopped_poll_commits_a_detected_occupancy():
 def test_a_stopped_poll_vacates_when_the_detector_clears():
     network, sim, detector = build_sim()
     detector.current = {"BLK_1": True}
-    sim.poll_hardware_occupancy()
+    poll_to_confirm(sim)
     assert network.blocks["BLK_1"].occupied_by is not None
 
     # Fail-safe debounce: quick to occupy, slow to clear.
@@ -97,7 +108,7 @@ def test_a_stopped_poll_vacates_when_the_detector_clears():
 def test_a_stopped_poll_tracks_an_unidentified_train_moving_between_blocks():
     network, sim, detector = build_sim()
     detector.current = {"BLK_0": True}
-    sim.poll_hardware_occupancy()
+    poll_to_confirm(sim)
     unidentified_id = network.blocks["BLK_0"].occupied_by
 
     # It rolls on: BLK_1 lights up before BLK_0 has cleared its debounce.
@@ -252,10 +263,11 @@ def test_a_stopped_poll_accrues_occupied_seconds():
     detector.current = {"BLK_1": True}
     block = network.blocks["BLK_1"]
 
-    sim.poll_hardware_occupancy()
-    # The first pass has no interval behind it, and only now is the block held.
+    poll_to_confirm(sim)
+    # Only now is the block held, so the only interval behind the counter is the
+    # gap between the debounce reads themselves — milliseconds, not a real stand.
     assert block.occupied_by is not None
-    assert block.occupied_seconds == 0.0
+    assert block.occupied_seconds < 1.0
 
     sim._last_pass_wall_time -= 2.0        # stand there for two seconds
     sim.poll_hardware_occupancy()

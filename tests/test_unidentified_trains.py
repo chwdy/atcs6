@@ -19,7 +19,11 @@ import pytest
 
 from block import Block
 from block_occupancy import OccupancyInput
-from constants import UNIDENTIFIED_GAP_HOLD_S, OCCUPANCY_OFF_THRESHOLD
+from constants import (
+    UNIDENTIFIED_GAP_HOLD_S,
+    OCCUPANCY_OFF_THRESHOLD,
+    OCCUPANCY_ON_THRESHOLD,
+)
 from enums import BlockState
 from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
@@ -98,7 +102,14 @@ def build_sim_facing_blocks():
     return network, sim, detector
 
 
-def tick(sim, seconds: float = 0.1, times: int = 1):
+def tick(sim, seconds: float = 0.1, times: int = OCCUPANCY_ON_THRESHOLD):
+    """Advance the runtime far enough for a detector change to be believed.
+
+    The default is the ON debounce rather than a bare 1, because almost every
+    test here sets a current and then asks what the runtime made of it — which
+    takes `OCCUPANCY_ON_THRESHOLD` consecutive reads, whatever that is tuned to.
+    Tests that care about a specific number of reads pass `times` explicitly.
+    """
     for _ in range(times):
         sim._fake_clock += seconds
         sim.update(seconds)

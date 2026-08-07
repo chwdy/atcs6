@@ -292,15 +292,28 @@ def _wire_session(state, inp):
         state.network.blocks.setdefault(block_id, Block(block_id))
 
 
-def _run_step_zero(state):
-    """Run the tick's Step 0 once: read the detectors and debounce.
+def _run_step_zero(state, times: int = 1):
+    """Run the tick's Step 0: read the detectors and debounce.
 
     What turns a poked register into the verdict the bench's "App sees" column
     reports. The runtime does this at 10 Hz — from `update()` while running and
     from `poll_hardware_occupancy()` while stopped — but nothing ticks under the
     test client, so a test that wants a verdict has to ask for the read.
     """
-    state.sim_controller.block_occupancy_detector.step()
+    for _ in range(times):
+        state.sim_controller.block_occupancy_detector.step()
+
+
+def _confirm_step_zero(state):
+    """Read enough times for a poked presence to be confirmed occupied.
+
+    Confirming takes `OCCUPANCY_ON_THRESHOLD` consecutive reads, so a test that
+    wants a block held asks for that many rather than assuming one is enough —
+    the mirror of the `OCCUPANCY_OFF_THRESHOLD` loops on the clear side.
+    """
+    from constants import OCCUPANCY_ON_THRESHOLD
+
+    _run_step_zero(state, OCCUPANCY_ON_THRESHOLD)
 
 
 def test_debug_endpoints_409_when_not_develop(client):
@@ -329,7 +342,7 @@ def test_debug_occupancy_poke_and_readback(client):
     # ...but `occupied` is the pipeline's verdict, not the register, so it
     # appears only once Step 0 has read and debounced.
     assert data["blocks"]["B1"]["occupied"] is False
-    _run_step_zero(state)
+    _confirm_step_zero(state)
     data = test_client.get("/api/debug/hw").get_json()
     assert data["blocks"]["B1"]["occupied"] is True
 
@@ -341,7 +354,7 @@ def test_debug_current_poke_and_readback(client):
     resp = test_client.post("/api/debug/hw/current",
                             json={"block_id": "B1", "current_ma": 25.0})
     assert resp.status_code == 200
-    _run_step_zero(state)
+    _confirm_step_zero(state)
     data = test_client.get("/api/debug/hw").get_json()
     assert data["blocks"]["B1"]["current_ma"] == pytest.approx(25.0, abs=1.0)
     assert data["blocks"]["B1"]["volts"] == pytest.approx(8.0, abs=0.1)
@@ -542,7 +555,7 @@ def test_readback_verdict_follows_the_debounce_not_the_register(client):
 
     test_client.put("/api/virtual-hardware/input/presence",
                     json={"block_id": "B1", "present": True})
-    _run_step_zero(state)
+    _confirm_step_zero(state)
     assert test_client.get("/api/virtual-hardware").get_json()["blocks"]["B1"]["occupied"] is True
 
     test_client.put("/api/virtual-hardware/input/presence",
