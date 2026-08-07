@@ -45,6 +45,23 @@ def _isolated_hw_config(tmp_path, monkeypatch):
     hardware_config.reset_to_defaults()
 
 
+def _empty_the_virtual_layout(device=None):
+    """Lift the startup train off every bound block.
+
+    A Virtual Hardware session comes up with one block occupied (see
+    `virtual_rig.seed_startup_presence`) because a rig at rest is a layout with a
+    loco parked on it. Tests that exercise the pipeline itself want neither that
+    train nor the register file's raw default — they want only the state they
+    place — so they start from an empty layout.
+    """
+    from hardware import virtual_rig
+
+    cfg = hardware_config.get_hardware_config()
+    device = device if device is not None else hardware_config.get_session_device()
+    for block_id in virtual_rig.bound_block_ids(cfg):
+        virtual_rig.set_block_presence(cfg, device, block_id, False)
+
+
 def _develop_payload(**overrides):
     """A full develop-mode configuration: every chip kind, all binding maps."""
     payload = {
@@ -135,11 +152,41 @@ def test_factory_develop_off_still_needs_real_driver(monkeypatch):
     assert hardware_config.get_session_device() is None
 
 
-# --- occupancy pipeline on injected fake state ------------------------------
+# --- the state a fresh virtual rig comes up in ------------------------------
+def test_virtual_session_starts_with_exactly_one_block_occupied():
+    """One train parked on the layout, not a full one and not an empty one.
+
+    The register file's own default is neither: an untouched `FakeCh347Device`
+    returns zero for every '165 byte, which on an `active_low` chain reads as
+    CURRENT DETECTED — so the session used to come up with every bound block
+    occupied, a state no real rig can be in.
+    """
+    for active_low in (False, True):
+        chips = [
+            dict(c, active_low=active_low) if c["chip_id"] == "in1" else c
+            for c in _develop_payload()["chips"]
+        ]
+        hardware_config.apply_updates(
+            _develop_payload(
+                chips=chips,
+                block_occupancy={
+                    "B1": {"chip_id": "in1", "port": 2},
+                    "B2": {"chip_id": "in1", "port": 3},
+                    "B3": {"chip_id": "in1", "port": 4},
+                },
+            ),
+            persist=False,
+        )
+        inp, _blk, _sw = hardware_config.build_session_interfaces()
+        occupied = {b for b, v in inp.read_block_currents().items() if v}
+        assert occupied == {"B1"}, f"active_low={active_low}"
+
+
 def test_injected_occupancy_bit_reaches_the_pipeline():
     hardware_config.apply_updates(_develop_payload(), persist=False)
     inp, blk, sw = hardware_config.build_session_interfaces()
     device = hardware_config.get_session_device()
+    _empty_the_virtual_layout(device)
     assert inp.read_block_currents()["B1"] is False
     device.set_input_bit("cs1", 2, True)   # B1's '165 binding: in1 port 2
     assert inp.read_block_currents()["B1"] is True
@@ -151,6 +198,7 @@ def test_injected_current_decides_while_driven():
     hardware_config.apply_updates(_develop_payload(), persist=False)
     inp, blk, sw = hardware_config.build_session_interfaces()
     device = hardware_config.get_session_device()
+    _empty_the_virtual_layout(device)
     # Drive B1 above the idle deadband: the current channel now decides.
     blk.set_voltage("B1", 8.0)
     device.set_ina3221_current(0x41, 1, 0.025)   # 25 mA > 15 mA threshold
@@ -197,6 +245,7 @@ def _boot_develop_session(state):
     running SimulationController, so the debug endpoints see the live fake."""
     hardware_config.apply_updates(_develop_payload(), persist=False)
     inp, blk, sw = hardware_config.build_session_interfaces()
+    _empty_the_virtual_layout()
     _wire_session(state, inp)
     return inp, blk, sw
 

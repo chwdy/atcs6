@@ -1498,6 +1498,7 @@ def build_session_interfaces(
         # No ch347api needed, and the loss-of-control watchdog stays unarmed —
         # there is no physical track to protect, and a paused dev session must
         # not have its outputs zeroed under it.
+        from hardware import virtual_rig
         from hardware.fake import FakeCh347Device
         from hardware.interfaces import build_real_interfaces
 
@@ -1520,6 +1521,11 @@ def build_session_interfaces(
                 track_polarity_of=track_polarity_of,
                 watchdog_timeout_s=None,
             )
+            # A rig at rest is an empty layout with one train parked on it, not
+            # the raw register file. See `seed_startup_presence` — on an
+            # `active_low` detector chain an unwritten fake reads every block
+            # occupied, which is the one state a real rig can never be in.
+            virtual_rig.seed_startup_presence(cfg, device)
         except Exception as exc:
             raise HardwareBackendUnavailable(
                 f"failed to initialize fake hardware chips: {exc}"

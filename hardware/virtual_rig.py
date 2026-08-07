@@ -65,6 +65,48 @@ def set_block_presence(cfg: Any, device: Any, block_id: str, present: bool) -> N
             device.set_ina3221_current(chip.address, current.port + 1, milliamps / 1000.0)
 
 
+def bound_block_ids(cfg: Any) -> List[str]:
+    """Every block this module can write a presence for, in configured order.
+
+    Digital bindings first, then the current-only ones, so a block bound both
+    ways keeps the position its detector binding gave it.
+    """
+    ordered = list(cfg.block_occupancy)
+    seen = set(ordered)
+    ordered.extend(b for b in cfg.block_occupancy_current if b not in seen)
+    return ordered
+
+
+def seed_startup_presence(
+    cfg: Any, device: Any, *, occupied_block_id: Optional[str] = None
+) -> Optional[str]:
+    """Put a fresh virtual device into "one train parked on the layout".
+
+    An untouched `FakeCh347Device` returns zeros for every '165 byte, and zero on
+    an `active_low` chain means CURRENT DETECTED — so a Virtual Hardware session
+    used to come up with *every* bound block occupied, and the bench's Place
+    toggles offered to place trains where one already was. Writing the bindings
+    explicitly here makes the rest state a property of this module rather than of
+    whatever the register file happens to hold: every block is written clear
+    through the same polarity-correcting path the Place toggle uses, and then one
+    block is given a train.
+
+    Returns the block the train landed on, or None when nothing is bound.
+    """
+    blocks = bound_block_ids(cfg)
+    if not blocks:
+        return None
+    for block_id in blocks:
+        set_block_presence(cfg, device, block_id, False)
+    chosen = (
+        occupied_block_id
+        if occupied_block_id is not None and occupied_block_id in blocks
+        else blocks[0]
+    )
+    set_block_presence(cfg, device, chosen, True)
+    return chosen
+
+
 @dataclass
 class VirtualRig:
     blocks: List[str] = field(default_factory=list)
