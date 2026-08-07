@@ -561,14 +561,15 @@ class TestBlockPowerController:
         assert controller.get_block_voltage("BLK_001") == MAX_TRACK_VOLTAGE
 
     def test_voltage_clamping_min(self, controller: BlockPowerController):
-        """A block voltage is a magnitude, so the floor is 0.
+        """A block voltage is signed, so the range is symmetric.
 
-        The rails are two 0-100% PWM channels into an H-bridge: direction is
-        which channel the driver drives, resolved from the rail binding below
-        this layer, never a sign on the commanded voltage.
+        The sign is the block-relative direction the train runs through that
+        block, not a voltage on the rails: the rails are two 0-100% PWM
+        channels into an H-bridge, and which channel a sign reaches is wiring
+        the driver resolves from the rail binding below this layer.
         """
         controller.set_block_voltage("BLK_001", -15.0)
-        assert controller.get_block_voltage("BLK_001") == 0.0
+        assert controller.get_block_voltage("BLK_001") == -MAX_TRACK_VOLTAGE
 
     def test_calculate_voltage_for_off_train(
         self, controller: BlockPowerController, train_off: Train
@@ -637,19 +638,19 @@ class TestBlockPowerController:
         assert restored.get_block_voltage("BLK_001") == 5.0
         assert restored.get_block_voltage("BLK_002") == 8.0
 
-    def test_from_dict_without_min_voltage_uses_the_zero_floor(self):
+    def test_from_dict_without_min_voltage_uses_the_symmetric_floor(self):
         """A dict that omits ``min_voltage`` gets the same floor a fresh
         controller has.
 
         ``to_dict`` always writes ``min_voltage``, so round-trips are fine, but
         a hand-written dict may omit it. The fallback must match the dataclass
-        default rather than opening a range the constructor does not give.
+        default rather than closing a range the constructor does give.
         """
         restored = BlockPowerController.from_dict({"voltages": {}})
 
-        assert restored.min_voltage == 0.0
+        assert restored.min_voltage == -MAX_TRACK_VOLTAGE
         restored.set_block_voltage("BLK_001", -8.0)
-        assert restored.get_block_voltage("BLK_001") == 0.0
+        assert restored.get_block_voltage("BLK_001") == -8.0
 
 
 class TestBlockCurrentVoltage:

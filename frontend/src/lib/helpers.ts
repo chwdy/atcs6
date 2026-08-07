@@ -1264,6 +1264,10 @@ export function bindDirectionSegment(
 // controls above, with two cells instead of three. Distinct from the travel
 // direction control it sits near: that one is a routing policy the pathfinder
 // reads, this one is wiring — which physical rail a positive voltage drives.
+// The two steps are separate on purpose: the block's tile order fixes which way
+// a positive voltage MEANS (toward the F arrow the renderer draws at the
+// higher-index end), and this flag fixes which rail carries it. Only the second
+// can be checked by eye, which is what the track Test sweep is for.
 // The flag lives on the block's `block_track` hardware binding and auto-saves
 // with it (design_new.md "Power", Rail polarity lives on the rail binding), so
 // the control is disabled until the rails are bound: with no binding there is
@@ -1281,9 +1285,11 @@ export function renderPolaritySegment(
   const disabledAttr = opts.disabled ? 'disabled' : '';
   const help =
     opts.help ||
-    'Which rail a positive voltage drives. Flip this when a block runs trains backwards ' +
-      'because its two rails are wired the other way round. Applies to every segment in ' +
-      'the block, and leaves the detection wiring where it is.';
+    'Which of the block’s two rails a positive voltage drives. To check it, run the ' +
+      'track Test below: its first leg should move the loco toward the green F arrow on ' +
+      'the map. If it moves toward R instead, the rails are wired the other way round — ' +
+      'switch to Reversed and sweep again. Applies to every segment in the block, and ' +
+      'leaves the detection wiring where it is.';
   return `
         <div class="input-large-container mb-8" data-polarity-segment="${entityKind}" data-sim-keep>
             <label class="input-large-label">${label}</label>
@@ -1292,12 +1298,12 @@ export function renderPolaritySegment(
                     class="switch-btn ${reversed ? '' : 'active'}"
                     id="${idBase}-normal"
                     data-polarity="normal" ${disabledAttr}
-                    title="Rails wired as the layout expects">Normal</button>
+                    title="A positive voltage drives the loco toward the F arrow">Normal</button>
                 <button type="button"
                     class="switch-btn ${reversed ? 'active' : ''}"
                     id="${idBase}-reversed"
                     data-polarity="reversed" ${disabledAttr}
-                    title="Rails swapped — a positive voltage drives the other rail">Reversed</button>
+                    title="Rails swapped — the block’s other rail is the one a positive voltage drives">Reversed</button>
             </div>
             <div class="text-xxs text-muted mt-4">${help}</div>
         </div>

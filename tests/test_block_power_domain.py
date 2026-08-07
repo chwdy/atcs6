@@ -173,9 +173,25 @@ def test_reserve_rejected_when_block_reserved_for_other_path():
 # --- power: one feed per block ---------------------------------------------
 
 
-def test_energized_set_is_the_held_set():
-    """A block is one feed, so the blocks carrying a train's voltage are
-    exactly the ones it holds (occupied + reserved-ahead)."""
+def test_a_grouped_block_is_one_entry_in_the_energized_set():
+    """A block is one feed, so three segments wired together carry one voltage
+    under one block id — not one entry per segment."""
+    from train import Train
+    from train_physics import TrainPhysics
+
+    net = _grouped_network()
+    train = Train(train_id="T1")
+    net.trains["T1"] = train
+    net.block_manager.occupy_block("G", "T1")
+    physics = TrainPhysics(train_id="T1", network=net)
+    assert physics._energized_blocks_for_train(train) == {"G"}
+
+
+def test_a_reservation_alone_energizes_nothing():
+    """A reserved block is pre-energized only once it is the *next* block ahead
+    of a train that is actually somewhere (design_new.md "Power", Only the next
+    reserved block is pre-energized). A train with no live span is nowhere, so
+    there is no head to be one block ahead of, and nothing is driven."""
     from train import Train
     from train_physics import TrainPhysics
 
@@ -186,7 +202,7 @@ def test_energized_set_is_the_held_set():
         ["G"], "P1", "T1", directions={"G": _fwd()}
     )
     physics = TrainPhysics(train_id="T1", network=net)
-    assert physics._energized_blocks_for_train(train) == {"G"}
+    assert physics._energized_blocks_for_train(train) == set()
 
 
 def test_deenergize_keeps_a_held_block_energized():

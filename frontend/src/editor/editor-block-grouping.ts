@@ -332,6 +332,13 @@ export class BlockGroupingEditorHandler {
 
     const displayName = String(block.name || '').trim() || blockId;
     this.editor.showSecondarySidebar(displayName, content);
+    // Put this block's F / R arrows on the map, the way the segment panel does.
+    // They are what makes the Track direction control below checkable: F marks
+    // the end a positive track voltage drives toward, which is the first leg of
+    // the track Test sweep, so the operator can watch the loco and see whether
+    // the wiring agrees (design_new.md "Power", A block voltage carries a
+    // direction).
+    this.editor.renderer?.setBlockDirectionFocus?.(blockId);
     this._setColorLayer(true);
     setTimeout(() => this._initDetailHandlers(blockId, hwCfg), 0);
   }

@@ -25,7 +25,7 @@ Key concepts:
 """
 
 from dataclasses import dataclass
-from typing import List, NamedTuple, Optional, Dict, Any, Set
+from typing import List, NamedTuple, Optional, Dict, Any, Sequence, Set, Tuple
 from enums import BlockState
 from entity_ids import segment_id_for_block
 from track_resource import TrackResource
@@ -746,6 +746,15 @@ class Block(TrackResource):
         Used by `PathDispatcher.try_complete_active_path(...)` to verify
         that the terminal authority traversal direction matches
         `Path.requested_destination_direction` (block-relative).
+
+        Known limit: on a single-tile block whose rails meet at a corner, the
+        forward exit is derived as the anchor's geometric opposite, which is the
+        tile's other rail only on a straight. A curve's real forward exit
+        therefore matches neither candidate and this returns `None`. Deciding it
+        off the anchor instead is correct in isolation but changes what the
+        pathfinder's entry-keyed companion reports for such a block, and that
+        breaks `tests/test_demo_5_throat_routing.py` — so the pair is left
+        as-is until that consumer is understood.
         """
         if exit_edge is None:
             return None
@@ -774,7 +783,7 @@ class Block(TrackResource):
         caller decides by entry tile instead), so this returns `None` there.
         Canonical home for the single-tile entry-edge-vs-anchor direction rule;
         `RailwayPathfinder` routes its single-tile branches through here rather
-        than re-deriving the anchor.
+        than re-deriving the anchor. It inherits that helper's corner limit.
         """
         if entry_edge is None:
             return None
@@ -785,6 +794,36 @@ class Block(TrackResource):
             return None
         opposite = {"N": "S", "S": "N", "E": "W", "W": "E"}
         return self.block_direction_for_compass_exit(opposite[upper])
+
+    def block_direction_for_tile_walk(
+        self, walk: Sequence[Tuple[int, int]]
+    ) -> Optional[str]:
+        """Block-relative direction of a directed tile walk through this block.
+
+        `walk` is an ordered run of `(x, y)` tiles in travel order; tiles that
+        are not this block's are skipped, so a caller may hand over a whole
+        train's line of travel. The verdict is which way that walk moves
+        through `ordered_tiles`: `"forward"` when it advances to higher
+        indices, `"reverse"` when it advances to lower ones.
+
+        Returns `None` when the walk touches fewer than two of this block's
+        tiles, because one tile does not fix a direction. The emission layer
+        reads this to sign a block's voltage (design_new.md "Power", A block
+        voltage carries a direction) and falls back to another source when the
+        answer is `None`.
+        """
+        ordered = self.ordered_tiles
+        if len(ordered) < 2:
+            return None
+        index_of = {(e[0], e[1]): i for i, e in enumerate(ordered)}
+        seen: List[int] = []
+        for tile in walk:
+            idx = index_of.get((int(tile[0]), int(tile[1])))
+            if idx is not None and (not seen or seen[-1] != idx):
+                seen.append(idx)
+        if len(seen) < 2:
+            return None
+        return "forward" if seen[-1] > seen[0] else "reverse"
 
     def _resolve_reservation_direction(
         self, direction: Optional[str]

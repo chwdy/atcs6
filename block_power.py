@@ -141,7 +141,7 @@ class BlockPowerController:
         network: Reference to the railway network
         output_interface: Interface for actual voltage output
         max_voltage: Maximum allowable voltage (default 12V)
-        min_voltage: Minimum voltage (default 0V)
+        min_voltage: Most negative commandable voltage (default -12V)
     """
 
     network: Optional["RailwayNetwork"] = None
@@ -149,13 +149,15 @@ class BlockPowerController:
 
     # Voltage limits
     max_voltage: float = MAX_TRACK_VOLTAGE
-    # A block's rails are two 0-100% PWM channels into an H-bridge, so there is
-    # no negative rail to command: direction is which of the two channels is
-    # driven, and the driver resolves that from the binding below this layer
-    # (design_new.md "Power", Rail polarity lives on the rail binding). Every
-    # producer of a block voltage emits a magnitude — `compute_track_voltage`
-    # is the only non-zero one — so the floor is 0.
-    min_voltage: float = 0.0
+    # A commanded block voltage is signed: the magnitude is `track_voltage`
+    # and the sign is the block-relative direction the train runs through that
+    # block (design_new.md "Power", A block voltage carries a direction), so
+    # the range is symmetric. The sign is not a voltage on the rails — a
+    # block's rails are two 0-100% PWM channels into an H-bridge, and which
+    # channel a sign reaches is wiring the driver resolves from the binding
+    # below this layer (design_new.md "Power", The rail binding bonds tile
+    # order to rail polarity).
+    min_voltage: float = -MAX_TRACK_VOLTAGE
 
     # SimulationController back-reference, set by bootstrap so this
     # controller can fetch the live `TrainController` (for the operational
@@ -371,28 +373,32 @@ class BlockPowerController:
     def deenergize_unheld_blocks(
         self, skip: Optional[Set[str]] = None
     ) -> None:
-        """Drop every block that no train holds back to 0V (full reconciliation).
+        """Drop every block no train is standing on back to 0V (full
+        reconciliation).
 
-        A block is *held* when a train physically occupies it (``occupied_by``)
-        or has reserved it as future authority (``reserved_for_train``). Per-train
-        voltage emission (TrainPhysics) only drives a train's own held blocks, so
-        a block a train has vacated and released would otherwise keep its last
-        commanded voltage forever.
+        A block is *held* when a train physically occupies it (``occupied_by``).
+        A reservation is not a hold: a reserved block the train has not reached
+        yet carries no voltage, because only the *next* block of a corridor is
+        pre-energized (design_new.md "Power", Only the next reserved block is
+        pre-energized). Per-tick voltage emission (TrainPhysics) drives only a
+        train's own energized set, so a block it has vacated, released, or run
+        past would otherwise keep its last commanded voltage forever.
 
-        ``skip`` names blocks to leave alone whatever this test says. The runtime
-        passes the trains' ``pending-entry blocks`` — detected blocks a span cap
-        is holding a head out of, which are neither occupied nor necessarily
-        reserved, and which must stay live for the locomotive to reach the
-        detector that releases its own cap (design_new.md "Power", Block
-        power-controller role).
+        ``skip`` names blocks to leave alone whatever this test says, and is how
+        the calculated half of the energized set reaches this sweep: the runtime
+        passes each train's calculated span, its ``pending-entry block``, and its
+        one next reserved block — none of which this scan can see from the block
+        fields alone, and all of which must stay live under or in front of a
+        locomotive (design_new.md "Power", Block power-controller role). Called
+        bare, with no ``skip``, it reconciles against physical occupancy only.
 
         An unidentified train is excluded from that test: it commands no voltage, so a
         block held only by an unidentified train is driven to ``0`` (design_new.md "Unidentified train
         trains", Never energized).
 
         The per-tick path is event-driven: `BlockManager` queues each block as
-        its holder clears and `SimulationController` drains
-        `BlockManager.take_blocks_to_deenergize()` to drive those to 0V. This
+        its holder clears, `TrainPhysics` reports each block that left its
+        energized set, and `SimulationController` drains both to 0V. This
         O(all-blocks) sweep is the fallback for a runtime with no BlockManager
         wired, plus an admin/test reconciliation primitive.
         """
@@ -405,12 +411,8 @@ class BlockPowerController:
                 continue
             occupant = getattr(block, "occupied_by", None)
             occupant_train = trains.get(occupant) if occupant else None
-            held_by_occupant = occupant is not None and not getattr(
+            held = occupant is not None and not getattr(
                 occupant_train, "is_unidentified", False
-            )
-            held = (
-                held_by_occupant
-                or getattr(block, "reserved_for_train", None) is not None
             )
             if not held and float(getattr(block, "current_voltage", 0.0)) != 0.0:
                 self.set_block_voltage(block_id, 0.0)
@@ -429,7 +431,8 @@ class BlockPowerController:
 
         Voltage limits are only overridden when present in ``data``;
         absent keys fall back to the dataclass field defaults
-        (``max_voltage`` = ``MAX_TRACK_VOLTAGE``, ``min_voltage`` = 0).
+        (``max_voltage`` = ``MAX_TRACK_VOLTAGE``, ``min_voltage`` =
+        ``-MAX_TRACK_VOLTAGE``).
         Keeping the defaults in one place — the fields themselves — means a
         hand-written dict that omits either limit gets the same range a
         freshly constructed controller has.

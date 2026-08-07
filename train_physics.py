@@ -198,6 +198,19 @@ class TrainPhysics:
     # from the confirmed set every tick and read back through
     # `pending_entry_block`.
     _pending_entry_block: Optional[str] = None
+    # The one reserved-ahead block this train energizes — the first block of its
+    # reserved corridor the head reaches by going forward (design_new.md
+    # "Power", Only the next reserved block is pre-energized). Per-tick derived
+    # state, resolved at emission and read back through `next_reserved_block`.
+    _next_reserved_block: Optional[str] = None
+    # What the last emission energized, and what fell out of it since. A block
+    # leaves the energized set for two different reasons: its holder cleared,
+    # which `BlockManager` queues on its own, or it stayed reserved but stopped
+    # being the next one ahead — a corridor the train reversed on, or one a
+    # replan reordered. Nothing queues the second kind, so the emission side
+    # records it and `SimulationController` drains both together.
+    _last_energized_blocks: Set[str] = field(default_factory=set)
+    _blocks_dropped_from_energized: Set[str] = field(default_factory=set)
 
     # =========================================================================
     # Internal Helpers
@@ -278,9 +291,11 @@ class TrainPhysics:
 
         event_time = time.time()
 
-        # No cap carries across ticks: it is recomputed below from this tick's
-        # confirmed set, and an OFF train that returns early has none at all.
+        # Neither of these carries across ticks: both are recomputed below from
+        # this tick's confirmed set and reservations, and an OFF train that
+        # returns early has no cap at all.
         self._pending_entry_block = None
+        self._next_reserved_block = None
 
         # 1. Skip movement if powered off, but still set voltage to 0 and emit
         # the canonical no-boundary callback so controller-owned span/speed
@@ -590,6 +605,16 @@ class TrainPhysics:
         if controller is None or operational_state == TrainState.OFF:
             return 0.0
 
+        # An open lighting-voltage run drives its candidate in place of the
+        # stopped-but-lit value this state would otherwise output, so each press
+        # of the panel's step control is answered by the locomotive itself
+        # (design_new.md "Lighting-voltage calibration", What the run drives).
+        # Nothing else about emission changes: the value is still a magnitude
+        # reaching this train's ordinary energized set, signed per block.
+        candidate = self._lighting_calibration_candidate(controller)
+        if candidate is not None:
+            return candidate
+
         lighting_voltage = (
             speed_profile.lighting_voltage if speed_profile is not None else 0.0
         )
@@ -614,6 +639,22 @@ class TrainPhysics:
                 return speed_profile.power_to_voltage(float(source_percent))
             return speed_profile.speed_to_voltage_two_stage(voltage_speed)
         return self._linear_speed_to_voltage(voltage_speed)
+
+    def _lighting_calibration_candidate(
+        self, controller: Optional["TrainController"]
+    ) -> Optional[float]:
+        """The candidate voltage of an open lighting-voltage run, or None.
+
+        `SpeedCalibration` owns the run (design_new.md "Lighting-voltage
+        calibration", Where it lives); physics reaches it through the
+        controller's `simulation_controller` back-reference, the same channel
+        the controller uses for the notification center.
+        """
+        sc = getattr(controller, "simulation_controller", None)
+        calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
+        if calibration is None:
+            return None
+        return calibration.lighting_candidate(self.train_id)
 
     @staticmethod
     def _linear_speed_to_voltage(speed_kmh: float) -> float:
@@ -1932,35 +1973,136 @@ class TrainPhysics:
         self._set_voltage_for_blocks(train, voltage)
 
     def _set_voltage_for_blocks(self, train: "Train", voltage: float) -> None:
-        """Energize every power district this train holds at the same
-        `track_voltage`.
+        """Energize every block this train stands on, plus the one block ahead it
+        is about to enter, at the same `track_voltage` — signed per block by the
+        way the train runs through it.
 
-        The held set is the train's occupied blocks plus its reserved-ahead
-        authority corridor (`Block.reserved_for_train`). Because a power district
-        shares one feed, the *whole* district carries the voltage, not only the
-        held blocks (design_new.md "Power", Block power-controller role), so the
-        emission set is the held set expanded to each held block's full district
-        (`_energized_blocks_for_train`). Pre-energizing the reserved corridor at
-        the same voltage as the occupied blocks means the loco crosses each block
-        boundary without a power gap. A district whose holder clears (tail vacate
-        / reservation release) is returned to 0V by SimulationController draining
-        `BlockManager.take_blocks_to_deenergize()` after every train has emitted.
+        The set is the train's occupied blocks, the blocks the detector confirms
+        it is standing on, its `pending-entry block`, and the single next block
+        of its reserved corridor (`_energized_blocks_for_train`). One block ahead
+        is what it takes to cross an insulated boundary without a power gap, and
+        it is also all that may be live: rail energized further ahead than the
+        locomotive is authorized to be *this instant* is rail a train running
+        faster than the model keeps accelerating over (design_new.md "Power",
+        Only the next reserved block is pre-energized). A block that leaves this
+        set is returned to 0V by SimulationController after every train has
+        emitted, draining `BlockManager.take_blocks_to_deenergize()` together
+        with this instance's `take_blocks_dropped_from_energized()`.
+
+        `track_voltage` is a magnitude; a DC locomotive's direction is the
+        polarity on its rails, so each block gets that magnitude signed by the
+        block-relative direction the train runs through it — positive for
+        `forward`, negative for `reverse` (design_new.md "Power", A block
+        voltage carries a direction). The sign is resolved per block, not per
+        train: each block's tile order is drawn on its own, so two blocks a
+        train holds at once may run opposite ways against its line of travel.
+        A block no source can fix a direction for is driven positive.
         """
         power_controller = self._get_power_controller()
         if not power_controller:
             return
 
-        for block_id in self._energized_blocks_for_train(train):
-            power_controller.set_block_voltage(block_id, voltage)
+        energized = self._energized_blocks_for_train(train)
+        # Record what fell out of the set before driving the new one, so the
+        # drain can zero a block this train stopped energizing for a reason
+        # BlockManager never queued (see `_blocks_dropped_from_energized`).
+        self._blocks_dropped_from_energized |= self._last_energized_blocks - energized
+        self._blocks_dropped_from_energized -= energized
+        self._last_energized_blocks = set(energized)
 
-    def _held_blocks_for_train(self, train: "Train") -> Set[str]:
-        """Blocks this train holds: occupied span, blocks the detector confirms
-        it is standing on, and its reserved-ahead corridor.
+        directions = self._block_traversal_directions()
+        for block_id in energized:
+            signed = -voltage if directions.get(block_id) == "reverse" else voltage
+            power_controller.set_block_voltage(block_id, signed)
+
+    def take_blocks_dropped_from_energized(self) -> Set[str]:
+        """Return and clear the blocks this train stopped energizing since the
+        last call, for `SimulationController`'s post-train de-energize drain.
+
+        Reported rather than zeroed here because one block is one feed and the
+        drain is the only place that can see every train: this instance knows
+        only that *it* stopped driving the block, not whether another train
+        picked it up in the same tick.
+        """
+        dropped = self._blocks_dropped_from_energized
+        self._blocks_dropped_from_energized = set()
+        return dropped
+
+    def _block_traversal_directions(self) -> Dict[str, str]:
+        """Block-relative direction for each block this train runs through.
+
+        Two sources, in this order. The active path's `resource_sequence` runs
+        from the train's tail to its authority end, so its per-block directed
+        tile slice covers the calculated span, the pending-entry block, and the
+        whole reserved corridor in one read. A train driving without a path has
+        no such record, so the directed span walk — ordered tail end to cab end
+        — answers for the blocks it covers. A block neither source can fix is
+        absent from the mapping and the caller drives it positive
+        (design_new.md "Power", A block voltage carries a direction).
+        """
+        directions: Dict[str, str] = {}
+        if self.network is None:
+            return directions
+        blocks = self.network.blocks
+
+        projection = getattr(self.controller, "path_projection", None)
+        plan = getattr(projection, "received_path_plan", None)
+        for entry in getattr(plan, "resource_sequence", None) or []:
+            if getattr(entry, "resource_type", None) != "block":
+                continue
+            block = blocks.get(entry.resource_id)
+            if block is None:
+                continue
+            resolved = block.block_direction_for_tile_walk(
+                [(t.x, t.y) for t in (entry.path_tiles or [])]
+            )
+            if resolved is None:
+                # One tile of the block on the walk fixes no direction — a
+                # single-tile block always lands here. The path entry carries the
+                # directed frame the walk could not supply, so the edge the
+                # traversal leaves by decides it.
+                resolved = block.block_direction_for_compass_exit(
+                    getattr(entry, "exit_edge", None)
+                )
+            if resolved is not None:
+                directions[entry.resource_id] = resolved
+
+        work = self._work
+        if work is not None and work.occupied_tiles:
+            # `occupied_tiles` is ordered end_a -> end_b and carries no head
+            # label; the line of travel runs tail -> head, so the walk is that
+            # list reversed when the cab selects end_a as the head.
+            walk = list(work.occupied_tiles)
+            if work.head_is_a:
+                walk.reverse()
+            head_tile = work.end_a_tile if work.head_is_a else work.end_b_tile
+            head_entry_edge = (
+                work.end_a_entry_edge if work.head_is_a else work.end_b_entry_edge
+            )
+            head_block_id = self.network.tile_to_block_id(*head_tile) if head_tile else None
+            for block_id in work.occupied_blocks:
+                if block_id in directions:
+                    continue
+                block = blocks.get(block_id)
+                if block is None:
+                    continue
+                resolved = block.block_direction_for_tile_walk(walk)
+                if resolved is None and block_id == head_block_id:
+                    # The same one-tile gap as the path branch, with no path to
+                    # supply the frame. The head's own entry edge supplies it,
+                    # but only for the block the head stands in — and the helper
+                    # answers only for single-tile blocks, which is the gap.
+                    resolved = block.block_direction_for_compass_entry(head_entry_edge)
+                if resolved is not None:
+                    directions[block_id] = resolved
+        return directions
+
+    def _standing_blocks_for_train(self, train: "Train") -> Set[str]:
+        """The blocks this train is standing on: its calculated span, plus the
+        blocks the detector confirms it is standing on.
 
         Span blocks come from the movement scratchpad (the physics-canonical view
-        of where the train is this tick). The reserved-ahead corridor is the
-        dispatcher-owned future authority, read from the BlockManager's per-train
-        reserved index (`reserved_blocks_for_train`).
+        of where the train is this tick).
 
         The detector half exists because the two views can disagree about where
         the train is, and the rail must never go dead under a locomotive on
@@ -1973,42 +2115,117 @@ class TrainPhysics:
         outside `BlockManager` (adoption's re-key, initial placement) and a
         hand-maintained reverse index would drift from them.
         """
-        held = self._get_blocks_for_train(train)
+        standing = self._get_blocks_for_train(train)
         if self.network is None:
-            return held
+            return standing
         train_id = train.train_id
-        held |= {
+        standing |= {
             block_id
             for block_id, block in self.network.blocks.items()
             if getattr(block, "occupied_by", None) == train_id
         }
+        return standing
+
+    def _reserved_blocks_for_train(self, train: "Train") -> Set[str]:
+        """This train's reserved-ahead corridor — the dispatcher-owned future
+        authority, read from the BlockManager's per-train reserved index."""
+        if self.network is None:
+            return set()
+        train_id = train.train_id
         block_manager = getattr(self.network, "block_manager", None)
         if block_manager is not None:
-            held |= block_manager.reserved_blocks_for_train(train_id)
+            return block_manager.reserved_blocks_for_train(train_id)
+        # Fallback for a network with no BlockManager wired (isolated unit
+        # tests). Production networks always create one (RailwayNetwork).
+        return {
+            block_id
+            for block_id, block in self.network.blocks.items()
+            if getattr(block, "reserved_for_train", None) == train_id
+        }
+
+    def _resolve_next_reserved_block(
+        self, train: "Train", standing: Set[str]
+    ) -> Optional[str]:
+        """The first block of this train's reserved corridor the head reaches by
+        going forward, or None when it has no reserved block ahead of it.
+
+        The corridor is a set, not an order, so the order comes from the rail:
+        the same forward tile walk the seam cap uses, which follows the points as
+        they are actually aligned rather than as a plan describes them. The walk
+        passes over the blocks the train is already standing on — a corridor
+        block can still be occupied for the ticks a long consist straddles it —
+        and answers with the first one ahead that is reserved and not yet stood
+        on.
+
+        A train that has run past its authority has nothing reserved ahead and
+        gets None, which is exactly the intent: the rail in front of a train
+        beyond its authority end is dead (design_new.md "Power", Only the next
+        reserved block is pre-energized).
+        """
+        work = self._work
+        if work is None or self.network is None:
+            return None
+        reserved = self._reserved_blocks_for_train(train)
+        if not reserved:
+            return None
+
+        if work.head_is_a:
+            tile, distance, entry = (
+                work.end_a_tile,
+                work.end_a_distance_cm,
+                work.end_a_entry_edge,
+            )
         else:
-            # Fallback for a network with no BlockManager wired (isolated unit
-            # tests). Production networks always create one (RailwayNetwork).
-            tid = train.train_id
-            for block_id, block in self.network.blocks.items():
-                if getattr(block, "reserved_for_train", None) == tid:
-                    held.add(block_id)
-        return held
+            tile, distance, entry = (
+                work.end_b_tile,
+                work.end_b_distance_cm,
+                work.end_b_entry_edge,
+            )
+
+        for next_tile, _travelled in self._walk_forward_tiles(
+            tile, distance, entry, float("inf")
+        ):
+            block_id = self._block_of_tile(next_tile)
+            if block_id is None or block_id in standing:
+                continue
+            return block_id if block_id in reserved else None
+        return None
+
+    @property
+    def next_reserved_block(self) -> Optional[str]:
+        """The one reserved-ahead block this train energizes, or None.
+
+        Resolved at emission and read back by `SimulationController` so the
+        de-energize drain holds the same block the emission side drives
+        (design_new.md "Power", De-energize against the same source).
+        """
+        return self._next_reserved_block
 
     def _energized_blocks_for_train(self, train: "Train") -> Set[str]:
         """Every block that carries this train's `track_voltage` this tick.
 
         Per design_new.md "Power", Block power-controller role: the train drives
-        its one voltage onto every block it holds. A block is one power feed —
-        it owns the one `track voltage` its member segments share — so the
-        energized set is exactly the held set (`_held_blocks_for_train`:
-        occupied + reserved-ahead).
+        its one voltage onto the blocks it stands on and onto the one block in
+        front of it. A block is one power feed — it owns the one `track voltage`
+        its member segments share — so the set is:
 
-        The one block outside the held set is this train's `pending-entry block`
-        — the detected block a cap is holding its head out of. Its calculated
-        span stops short of that block, so without this the rail the locomotive
-        has to roll onto to release its own cap would be dead. A train driving
-        under a reservation already has that block through the reserved-ahead
-        half; this reaches the one driving without one.
+          - the blocks it is standing on (`_standing_blocks_for_train`: the
+            calculated span, plus what the detector confirms under it),
+          - its `pending-entry block`, the detected block a cap is holding its
+            head out of. Its calculated span stops short of that block, so
+            without this the rail the locomotive has to roll onto to release its
+            own cap would be dead,
+          - the next block of its reserved corridor
+            (`_resolve_next_reserved_block`), so it crosses the insulated
+            boundary in front of it without a power gap.
+
+        **Only the next reserved block, never the whole corridor.** One block
+        ahead is all it takes to close the boundary gap, and it is also all that
+        may be live. A train whose speed profile runs fast reaches the seam
+        before the model says it has, and every further block of live rail in
+        front of it is track it keeps accelerating over while the app still
+        believes it is a block back. Energizing one block bounds that overrun to
+        one block, and puts dead rail immediately beyond the authority end.
 
         An unidentified train commands no `track_voltage` at all, so its set is empty and
         a block held only by an unidentified train is driven to `0` by the de-energize drain.
@@ -2017,10 +2234,16 @@ class TrainPhysics:
         trains", Never energized).
         """
         if getattr(train, "is_unidentified", False):
+            self._next_reserved_block = None
             return set()
-        energized = self._held_blocks_for_train(train)
+        energized = self._standing_blocks_for_train(train)
         if self._pending_entry_block is not None:
             energized.add(self._pending_entry_block)
+        self._next_reserved_block = self._resolve_next_reserved_block(
+            train, energized
+        )
+        if self._next_reserved_block is not None:
+            energized.add(self._next_reserved_block)
         return energized
 
     # =========================================================================

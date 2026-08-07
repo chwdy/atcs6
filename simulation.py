@@ -434,14 +434,22 @@ class SimulationController(SwitchOutputOwner):
         """Drain the de-energize queue and refresh signals, after every train's
         Phase 3 has committed.
 
-        After every train has emitted its held-block voltages, drop any block
-        whose holder cleared this pass (tail vacate / reservation release) to
-        0V. BlockManager queued those blocks as their holders cleared and
-        re-checks each is still unheld, so the energized set is exactly each
-        train's occupied blocks plus its reserved-ahead corridor (design_new.md
-        "Power", Block power-controller role). The all-blocks sweep is the
-        fallback for a runtime with no BlockManager wired. Signals are then
-        refreshed so they reflect every block state change committed above.
+        After every train has emitted its voltages, drop any block that left the
+        energized set this pass to 0V. Two things put a block in that state and
+        both are drained here, because neither sees the other:
+
+          - its holder cleared (tail vacate / reservation release), which
+            `BlockManager` queues as it happens and re-checks is still unheld;
+          - it stayed reserved but stopped being the train's *next* reserved
+            block, which only the emission side knows — a train that reversed on
+            its corridor, or a replan that reordered one. `BlockManager` counts
+            such a block as held, so nothing would ever queue it and it would
+            hold its last commanded voltage for good (design_new.md "Power",
+            Only the next reserved block is pre-energized).
+
+        The all-blocks sweep is the fallback for a runtime with no BlockManager
+        wired. Signals are then refreshed so they reflect every block state
+        change committed above.
 
         Shared by the tick and by `poll_hardware_occupancy`: a detector-driven
         commit changes block state exactly like a moving train's does, so the
@@ -461,8 +469,12 @@ class SimulationController(SwitchOutputOwner):
         (design_new.md "Power", De-energize against the same source).
         """
         held = self._calculated_hold_blocks()
+        dropped: Set[str] = set()
+        for physics in self.physics_instances.values():
+            dropped |= physics.take_blocks_dropped_from_energized()
         if self.block_manager is not None:
-            for block_id in self.block_manager.take_blocks_to_deenergize():
+            queued = set(self.block_manager.take_blocks_to_deenergize())
+            for block_id in sorted(queued | dropped):
                 if block_id in held:
                     continue
                 self.power_controller.set_block_voltage(block_id, 0.0)
@@ -510,13 +522,18 @@ class SimulationController(SwitchOutputOwner):
         return out
 
     def _calculated_hold_blocks(self) -> Set[str]:
-        """Every block some controllable train holds this tick, by calculation.
+        """Every block some controllable train energizes this tick, by
+        calculation.
 
-        The union, over every train that is not an unidentified train, of its calculated span's
-        `occupied_blocks`, its `pending-entry block`, and its reserved-ahead
-        corridor — exactly the emission set `TrainPhysics` drives each tick
-        (design_new.md "Power", Energized set: calculated span plus
-        reservations). Unidentified trains are excluded because they command no
+        The union, over every train that is not an unidentified train, of its
+        calculated span's `occupied_blocks`, its `pending-entry block`, and the
+        one next block of its reserved corridor — exactly the emission set
+        `TrainPhysics` drives each tick (design_new.md "Power", Energized set:
+        where the train stands plus one block ahead). The rest of the corridor is
+        deliberately absent: a reserved block the train has not reached yet is
+        not energized, so it must not be held against the drain either, or the
+        two sides would disagree and a block would be driven and zeroed on the
+        same tick. Unidentified trains are excluded because they command no
         `track_voltage`, so a block held only by an unidentified train is driven to `0`.
         """
         held: Set[str] = set()
@@ -533,9 +550,9 @@ class SimulationController(SwitchOutputOwner):
             pending = physics.pending_entry_block
             if pending is not None:
                 held.add(pending)
-        for block_id, block in self.network.blocks.items():
-            if getattr(block, "reserved_for_train", None) is not None:
-                held.add(block_id)
+            next_reserved = physics.next_reserved_block
+            if next_reserved is not None:
+                held.add(next_reserved)
         return held
 
     def poll_hardware_occupancy(self) -> None:
