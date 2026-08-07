@@ -94,6 +94,15 @@ DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS: float = 5.0
 OCCUPANCY_ON_THRESHOLD: int = 1
 OCCUPANCY_OFF_THRESHOLD: int = 10
 
+# How many blocks a forward span correction must gain before it is reported as
+# an overrun (design_new.md "Power", A large correction is reported). One block
+# is the ordinary sensor-latency correction: the cap parks the head on a block's
+# entry seam and the correction walks it one tile inside once that block
+# confirms, so every normal block entry gains exactly one. Gaining two or more
+# means the detector found the train a whole block past where the model had it,
+# which the model cannot explain by latency and the operator needs to see.
+OVERRUN_REPORT_MIN_BLOCKS: int = 2
+
 # How many consecutive reads BOTH occupancy sources must agree a lighting-zone
 # block is clear before the driver stops holding it occupied (design_new.md
 # "Power -> Occupancy source follows drive state"). Counted in the same 10 Hz

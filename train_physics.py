@@ -50,7 +50,7 @@ from typing import (
     Tuple,
 )
 
-from constants import STOPPED_SPEED_THRESHOLD_KMH
+from constants import OVERRUN_REPORT_MIN_BLOCKS, STOPPED_SPEED_THRESHOLD_KMH
 from enums import BRAKE_MULTIPLIERS, POWER_MULTIPLIERS, Direction, HandlePosition, TrainState
 from model_scale import kmh_to_cm_per_sec
 from runtime_payloads import PhysicsSpanUpdate, TileTraversal
@@ -1508,18 +1508,106 @@ class TrainPhysics:
                 return True
             return False
 
+        blocks_before = set(self._work.occupied_blocks or [])
         moved = False
+        moved_cm = 0.0
         guard = 0
         while disagrees() and guard < 200:
             guard += 1
+            step_cm = self._head_distance_to_next_tile()
             if not self._advance_head_to_next_tile(train):
                 break  # end of track / no forward tile — cannot reconcile further
             moved = True
+            moved_cm += step_cm
 
         if moved:
             ps.current_span = _span_from_work(self._work)
+            gained = set(self._work.occupied_blocks or []) - blocks_before
+            self._report_overrun(train, gained, moved_cm)
         self._work = None
         return moved
+
+    def _head_distance_to_next_tile(self) -> float:
+        """How far the head end moves to sit on the next tile's entry seam — the
+        track left in the tile it is on. Read before the step that consumes it,
+        so a correction can report the distance it made up."""
+        work = self._work
+        if work is None:
+            return 0.0
+        if work.head_is_a:
+            tile, distance = work.end_a_tile, work.end_a_distance_cm
+        else:
+            tile, distance = work.end_b_tile, work.end_b_distance_cm
+        tile_length = self._get_tile_length_cm(tile)
+        return max(0.0, tile_length - distance) if tile_length > 0 else 0.0
+
+    def _report_overrun(
+        self, train: "Train", gained: Set[str], moved_cm: float
+    ) -> None:
+        """Report a span correction that gained `OVERRUN_REPORT_MIN_BLOCKS` or
+        more blocks (design_new.md "Power", A large correction is reported).
+
+        A correction is the app agreeing the train is further along than it
+        thought, and it is silent by design at one block: the cap parks the head
+        on the entry seam of the block it is entering, so every ordinary block
+        entry gains exactly that one block once its detector confirms. That is
+        sensor latency, not news.
+
+        Two or more blocks is different. It means the detector found the train a
+        whole block past where the model had it, which latency does not explain —
+        the locomotive is running faster than its speed profile says, and every
+        estimate built on that profile (arrival time, braking distance, where the
+        train is inside its current block) is wrong in the same direction. The
+        app corrects the position either way; this is what stops it correcting
+        silently forever.
+        """
+        if len(gained) < OVERRUN_REPORT_MIN_BLOCKS:
+            return
+        sc = getattr(self.controller, "simulation_controller", None)
+        center = getattr(sc, "notification_center", None) if sc is not None else None
+        if center is None:
+            logger.warning(
+                "[TrainPhysics %s] span correction gained %d blocks (%s) over "
+                "%.1fcm: the train is running ahead of its speed profile",
+                train.train_id,
+                len(gained),
+                sorted(gained),
+                moved_cm,
+            )
+            return
+        from notification_center import Kind, train_ref
+        from runtime_payloads import ErrorRecord
+
+        try:
+            center.emit(
+                source="TrainPhysics",
+                operation="reconcile_to_detected_occupancy",
+                kind=Kind.WARNING,
+                message=(
+                    f"train {train.train_id} was detected {len(gained)} blocks "
+                    f"ahead of where the model had it ({', '.join(sorted(gained))}); "
+                    f"the span was corrected forward {moved_cm:.1f}cm. The "
+                    f"locomotive is running faster than its speed profile."
+                ),
+                entities=[train_ref(train.train_id)],
+                error=ErrorRecord(
+                    "the detector led the calculated span by more than one block",
+                    "span_overrun_correction",
+                ),
+                event_time=time.time(),
+                payload={
+                    "train_id": train.train_id,
+                    "blocks_gained": sorted(gained),
+                    "correction_cm": round(float(moved_cm), 1),
+                },
+            )
+        except Exception:
+            # A reporting failure must not undo a correction that already landed.
+            logger.warning(
+                "[TrainPhysics %s] span correction gained %d blocks",
+                train.train_id,
+                len(gained),
+            )
 
     def could_be_entering(self, block_id: str) -> bool:
         """Whether this train could be the current that just appeared on

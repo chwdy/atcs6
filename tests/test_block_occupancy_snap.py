@@ -157,3 +157,63 @@ def test_snap_no_op_with_empty_slices():
 
     assert moved is False
     assert controller.physics_sync.current_span is before
+
+
+# ---------------------------------------------------------------------------
+# A large correction is reported (design_new.md "Power")
+# ---------------------------------------------------------------------------
+
+
+def overrun_events(sim):
+    """The overrun warnings on the stream, newest last."""
+    return [
+        n
+        for n in sim.notification_center.peek_recent(200)
+        if getattr(n, "operation", None) == "reconcile_to_detected_occupancy"
+    ]
+
+
+def test_an_ordinary_one_block_correction_is_not_reported():
+    """The cap parks the head on the next block's entry seam, so every normal
+    entry gains exactly that one block once it confirms. Reporting it would
+    bury the stream in sensor latency."""
+    network = build_line(6)
+    sim, train, controller, physics = place(network, "T", head_x=0, length_cm=40.0)
+    sim.block_occupancy_detector.input_interface = FakeDetectorInput(
+        detected={f"BLK_{i}" for i in range(6)}, live={"BLK_0", "BLK_1"}
+    )
+    sim.block_occupancy_detector.seed_occupied({"BLK_0", "BLK_1"})
+    controller.physics_sync.pending_detected_entered_blocks = {"BLK_1"}
+
+    assert physics.reconcile_to_detected_occupancy(train, controller) is True
+    assert overrun_events(sim) == []
+
+
+def test_a_two_block_correction_is_reported_as_an_overrun():
+    network = build_line(6)
+    sim, train, controller, physics = place(network, "T", head_x=0, length_cm=40.0)
+    sim.block_occupancy_detector.input_interface = FakeDetectorInput(
+        detected={f"BLK_{i}" for i in range(6)},
+        live={"BLK_0", "BLK_1", "BLK_2"},
+    )
+    sim.block_occupancy_detector.seed_occupied({"BLK_0", "BLK_1", "BLK_2"})
+    controller.physics_sync.pending_detected_entered_blocks = {"BLK_1", "BLK_2"}
+
+    assert physics.reconcile_to_detected_occupancy(train, controller) is True
+
+    events = overrun_events(sim)
+    assert len(events) == 1
+    event = events[0]
+    assert event.kind == "warning"
+    assert event.error.origin == "span_overrun_correction"
+    assert event.payload["blocks_gained"] == ["BLK_1", "BLK_2"]
+    assert event.payload["correction_cm"] > 0
+    assert event.payload["train_id"] == "T"
+
+
+def test_a_correction_that_moves_nothing_reports_nothing():
+    network = build_line(6)
+    sim, train, controller, physics = place(network, "T", head_x=0, length_cm=40.0)
+
+    assert physics.reconcile_to_detected_occupancy(train, controller) is False
+    assert overrun_events(sim) == []
