@@ -34,7 +34,7 @@ live resource_sequence ... the call fails." So:
     acquires a route that leaves X1's neighbourhood.
   * Approaching from S2-N: create_path truncates to BLK_X1_TO_S2_N (advance to
     the block before X1 and wait) - the working near case must still work.
-  * extend_path from that truncated authority returns BLOCKED_NO_GROWTH (keep
+  * extend_path from that truncated authority appends nothing (keep
     retrying the same path_id), never a detour.
 """
 
@@ -149,7 +149,7 @@ def test_parked_before_locked_crossover_does_not_detour():
     # a prefix (no forward block before X1), so the call fails - TB waits.
     assert not res.success, (
         f"expected create_path to fail (TB waits before X1), got "
-        f"{res.result_kind} seq={_seq_ids(res)}"
+        f"failure_kind={res.failure_kind!r} seq={_seq_ids(res)}"
     )
 
 
@@ -176,7 +176,7 @@ def test_approaching_crossover_truncates_to_block_before_x1():
 
 def test_extend_at_locked_crossover_blocks_no_growth():
     """After the truncated create, extend_path from the authority end must
-    return BLOCKED_NO_GROWTH (keep waiting on the same path), not detour."""
+    append nothing (keep waiting on the same path), not detour."""
     network, dispatcher, sim = _build_demo4(setup_train=True)
     _lock_x1_diverge_via_train_a(dispatcher, network)
 
@@ -199,10 +199,12 @@ def test_extend_at_locked_crossover_blocks_no_growth():
     assert not _is_detour(extended), (
         f"extend routed T4 around the map: {_seq_ids(extended)}"
     )
-    from runtime_payloads import PathAcquisitionResultKind
-    assert extended.result_kind == PathAcquisitionResultKind.BLOCKED_NO_GROWTH, (
-        f"expected BLOCKED_NO_GROWTH (wait), got "
-        f"success={extended.success} kind={extended.result_kind} "
+    assert extended.success and extended.appended_resource_count == 0, (
+        f"expected a no-growth hold (wait), got "
+        f"success={extended.success} "
+        f"appended={extended.appended_resource_count} "
+        f"reached={extended.reached_target} "
         f"fail={extended.failure_kind}"
     )
+    assert extended.reached_target is False
     assert _seq_ids(extended) == seq_before, "authority must be unchanged while waiting"

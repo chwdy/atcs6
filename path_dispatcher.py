@@ -37,7 +37,7 @@ from path import (
 )
 from enums import BlockState, direction_from_delta, OPPOSITE_DIRECTIONS
 from track import OPPOSITE_EDGE
-from runtime_payloads import AcquisitionMode, CancellationResult, ControllerProgressReport, PathAcquisitionFailureKind, PathAcquisitionResult, PathAcquisitionResultKind, PathCompletionResult, PathSegment, ResourceEvent, RouteExecutorForPathDispatcher, ValidationError, ValidationErrorType, ValidationResult
+from runtime_payloads import AcquisitionMode, CancellationResult, ControllerProgressReport, PathAcquisitionFailureKind, PathAcquisitionResult, PathCompletionResult, PathSegment, ResourceEvent, RouteExecutorForPathDispatcher, ValidationError, ValidationErrorType, ValidationResult
 from block_manager import ReservedBlockTraversal
 from switch_manager import SwitchLockRequest
 from railway_pathfinder import RailwayPathfinder
@@ -758,13 +758,15 @@ class PathDispatcher:
 
         Per the **`create_path()` / `extend_path()` return contract**: on
         failure only `failure_kind` and `reason` carry information. `path_id`,
-        `resource_sequence`, `authority_end_block_id`, `result_kind`, and both
+        `resource_sequence`, `authority_end_block_id`, `appended_resource_count`,
+        `reached_target`, and both
         target fields are `None`, so a caller can never mistake a rejection's
         echoed request for authority the dispatcher actually stored.
 
         The context each guard passes is folded into `reason` instead, so no
         diagnostic is lost. `reason` is human-readable only — callers branch on
-        `success`, `result_kind`, and `failure_kind`, never on this text.
+        `success`, `appended_resource_count == 0` versus `> 0`, `reached_target`,
+        and `failure_kind`, never on this text.
         """
         context = []
         if path_id:
@@ -811,7 +813,7 @@ class PathDispatcher:
                 cap). When set short of the requested target, authority is
                 acquired toward the requested target but never stored past the
                 cap block, so `authority_end_block_id` lands on the cap and the
-                result is TRUNCATED_GREW (never REACHED_REQUESTED_TARGET) — the
+                result carries `reached_target = False` (never `True`) — the
                 train holds at the cap without completing. The requested target
                 is unchanged.
 
@@ -1004,7 +1006,7 @@ class PathDispatcher:
             # authority past the cap block. Raw-slice the candidate walk at the
             # cap, then let the ordinary validate/acquire path below handle any
             # within-cap conflict (best-effort truncation pulls it back further)
-            # and report TRUNCATED_GREW via the cap-aware success return.
+            # and report `reached_target = False` via the cap-aware success return.
             cap_status, capped_segment, capped_walk = self._truncate_segment_to_cap(
                 segment, ordered_walk,
                 acquisition_cap_block_id, requested_destination_block_id,
@@ -1073,7 +1075,12 @@ class PathDispatcher:
                 self.paths[path_id] = path
                 return PathAcquisitionResult(
                     success=True,
-                    result_kind=PathAcquisitionResultKind.TRUNCATED_GREW,
+                    # A create builds a brand-new record, so every entry in it
+                    # is one this call added.
+                    appended_resource_count=len(path.resource_sequence),
+                    reached_target=path.reaches_target(
+                        requested_destination_block_id
+                    ),
                     path_id=path_id,
                     requested_destination_block_id=requested_destination_block_id,
                     requested_destination_direction=requested_destination_direction,
@@ -1118,7 +1125,12 @@ class PathDispatcher:
                 self.paths[path_id] = path
                 return PathAcquisitionResult(
                     success=True,
-                    result_kind=PathAcquisitionResultKind.TRUNCATED_GREW,
+                    # A create builds a brand-new record, so every entry in it
+                    # is one this call added.
+                    appended_resource_count=len(path.resource_sequence),
+                    reached_target=path.reaches_target(
+                        requested_destination_block_id
+                    ),
                     path_id=path_id,
                     requested_destination_block_id=requested_destination_block_id,
                     requested_destination_direction=requested_destination_direction,
@@ -1139,18 +1151,19 @@ class PathDispatcher:
             )
             self.paths[path_id] = path
             # When a meet acquisition cap left the stored authority short of the
-            # requested target, report TRUNCATED_GREW so the path never satisfies
-            # try_complete_active_path — the train holds at the cap
-            # (design_new.md:1025).
-            if path.get_authority_end_block_id() == requested_destination_block_id:
-                created_kind = PathAcquisitionResultKind.REACHED_REQUESTED_TARGET
-                created_reason = "created"
-            else:
-                created_kind = PathAcquisitionResultKind.TRUNCATED_GREW
-                created_reason = "created (capped short of requested target)"
+            # requested target, report `reached_target = False` so the path
+            # never satisfies try_complete_active_path — the train holds at the
+            # cap (design_new.md "Acquisition-cap rule", Capped-short behavior).
+            created_reached = path.reaches_target(requested_destination_block_id)
+            created_reason = (
+                "created"
+                if created_reached
+                else "created (capped short of requested target)"
+            )
             return PathAcquisitionResult(
                 success=True,
-                result_kind=created_kind,
+                appended_resource_count=len(path.resource_sequence),
+                reached_target=created_reached,
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
@@ -1211,7 +1224,7 @@ class PathDispatcher:
         acquisition cap per the `Acquisition-cap rule` (design_new.md:1025).
         When set short of the requested target, the append is truncated so
         authority never extends past the cap block; when the next forward
-        resource lies beyond the cap, the extend returns BLOCKED_NO_GROWTH (a
+        resource lies beyond the cap, the extend appends nothing (a
         valid prefix held back by the cap) and the train holds there. The
         requested target is unchanged.
         """
@@ -1260,14 +1273,15 @@ class PathDispatcher:
         # one on the terminal frame this path already stored, and
         # `try_complete_active_path(...)` checks that independently before it
         # commits completion.
-        if requested_destination_block_id == path.get_authority_end_block_id():
+        if path.reaches_target(requested_destination_block_id):
             # Report the direction the live authority actually has, not the
             # one the caller asked with. Nothing was appended, so the terminal
             # frame is unchanged, and the caller records this pair as the match
             # key for stop completion.
             return PathAcquisitionResult(
                 success=True,
-                result_kind=PathAcquisitionResultKind.REACHED_REQUESTED_TARGET,
+                appended_resource_count=0,
+                reached_target=True,
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=path.requested_destination_direction,
@@ -1395,7 +1409,7 @@ class PathDispatcher:
         # "Path And PathDispatcher") — like create_path, extend commits to
         # EXACTLY ONE candidate (the shortest forward-continuing extension) and
         # never falls through to a longer alternative route to the same target.
-        # When that one extension is blocked the tail returns BLOCKED_NO_GROWTH
+        # When that one extension is blocked the tail appends nothing
         # so RouteExecutor keeps retrying the same path_id (train waits) rather
         # than the dispatcher detouring it.
         candidates = candidates[:1]
@@ -1413,7 +1427,7 @@ class PathDispatcher:
             # Meet-coordination acquisition cap (design_new.md:1025): never append
             # authority past the cap block. The forward suffix's first block is
             # the current authority end; a cap there (or off this suffix) means
-            # the train already holds at the cap -> no growth (BLOCKED_NO_GROWTH).
+            # the train already holds at the cap -> no growth.
             cap_status, capped_segment, capped_walk = self._truncate_segment_to_cap(
                 segment, ordered_walk,
                 acquisition_cap_block_id, requested_destination_block_id,
@@ -1450,7 +1464,7 @@ class PathDispatcher:
                 # Pure occupancy failure: this is the "valid prefix,
                 # temporarily blocked" condition described by
                 # design_new.md ":994". Track it so the tail can return
-                # `BLOCKED_NO_GROWTH` if no candidate grows the path.
+                # `appended_resource_count = 0` if no candidate grows the path.
                 had_occupancy_blocker = True
                 if acquisition_mode == AcquisitionMode.ALL_OR_NOTHING:
                     continue
@@ -1482,7 +1496,7 @@ class PathDispatcher:
                     # Acquire-time failure on a validation-passing segment
                     # is an occupancy-class blocker (a race between
                     # validation and acquire); track it so the tail can
-                    # return `BLOCKED_NO_GROWTH` per design_new.md ":994".
+                    # append nothing per the viable-but-unavailable rule.
                     had_occupancy_blocker = True
                     if acquisition_mode == AcquisitionMode.ALL_OR_NOTHING:
                         continue
@@ -1525,20 +1539,20 @@ class PathDispatcher:
             # real `status` transition, so a successful extend must not re-stamp
             # it.
 
-            # Per design_new.md: when the live authority reaches the
-            # requested target, return REACHED_REQUESTED_TARGET; otherwise
-            # the live authority grew but is still short of the target, so
-            # return TRUNCATED_GREW.
-            if path.get_authority_end_block_id() == requested_destination_block_id:
-                grown_kind = PathAcquisitionResultKind.REACHED_REQUESTED_TARGET
-                grown_reason = "extended to requested target"
-            else:
-                grown_kind = PathAcquisitionResultKind.TRUNCATED_GREW
-                grown_reason = "extended (truncated short of requested target)"
+            # Per design_new.md "create_path() / extend_path() return
+            # contract": the authority grew, and `reached_target` says whether
+            # it now reaches the requested target or is still short of it.
+            grown_reached = path.reaches_target(requested_destination_block_id)
+            grown_reason = (
+                "extended to requested target"
+                if grown_reached
+                else "extended (truncated short of requested target)"
+            )
 
             return PathAcquisitionResult(
                 success=True,
-                result_kind=grown_kind,
+                appended_resource_count=len(new_entries),
+                reached_target=grown_reached,
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
@@ -1556,10 +1570,11 @@ class PathDispatcher:
         # forward prefix to the requested target (`find_paths` returned
         # forward candidates above) and the only obstruction was an
         # occupancy/reservation/lock conflict, return
-        # `success=True / result_kind=BLOCKED_NO_GROWTH`. The stored
-        # requested target is updated to reflect this attempt; the
-        # `resource_sequence` is left untouched. Route executors use this
-        # outcome to keep retrying the same path_id rather than cancelling.
+        # `success=True` with `appended_resource_count = 0` and
+        # `reached_target = False`. The stored requested target is updated to
+        # reflect this attempt; the `resource_sequence` is left untouched.
+        # Route executors use this outcome to keep retrying the same path_id
+        # rather than cancelling.
         if (
             acquisition_mode == AcquisitionMode.BEST_EFFORT
             and had_occupancy_blocker
@@ -1567,14 +1582,15 @@ class PathDispatcher:
             path.requested_destination_block_id = requested_destination_block_id
             path.requested_destination_direction = requested_destination_direction
             # No status transition here: the path is already ACTIVE and stays
-            # ACTIVE on a BLOCKED_NO_GROWTH hold, so `last_status_updated_time`
-            # must not be re-stamped (design_new.md: status transitions only).
+            # ACTIVE on a no-growth hold, so `last_status_updated_time` must
+            # not be re-stamped (design_new.md: status transitions only).
             # The "waiting on" block is not stored — `get_active_path_progress`
             # recomputes it live (the `waiting_for_block_id` live-recompute rule
             # in design_new.md "Data Flow To UI", API payload ownership).
             return PathAcquisitionResult(
                 success=True,
-                result_kind=PathAcquisitionResultKind.BLOCKED_NO_GROWTH,
+                appended_resource_count=0,
+                reached_target=False,
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
@@ -2285,14 +2301,15 @@ class PathDispatcher:
         - ``("hold", None, None)`` — the cap is the walk's start block, so no
           resource may be acquired/appended past it. The caller holds without
           growth (``create_path`` skips the candidate; ``extend_path`` returns
-          ``BLOCKED_NO_GROWTH``).
+          ``appended_resource_count = 0``).
         - ``("capped", truncated_segment, sliced_ordered_walk)`` — acquire only
           up to the cap block. The truncated segment is fed through the ordinary
           validate/acquire path, so any conflict within the cap truncates it
           further and ``authority_end_block_id`` lands on the cap (or earlier).
 
         The cap never changes ``requested_destination_block_id``; the success
-        path reports ``TRUNCATED_GREW`` because ``authority_end != requested``.
+        path reports ``reached_target = False`` because the authority is short of
+        the requested target.
         """
         if (
             not acquisition_cap_block_id

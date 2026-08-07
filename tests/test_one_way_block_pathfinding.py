@@ -17,7 +17,7 @@ used to survive the search, fail reservation at BLK_ML_16
 (`direction_not_allowed`), and get best-effort-truncated to an authority
 ending at PLT_ML_9_A_BLOCK — the block immediately before the one-way block.
 The train then drove there and held forever while every extend returned
-BLOCKED_NO_GROWTH ("direction_not_allowed (blocked at BLK_ML_16)"), a
+a no-growth hold ("direction_not_allowed (blocked at BLK_ML_16)"), a
 transient classification for a condition that can never clear.
 """
 
@@ -29,7 +29,6 @@ import pytest
 from runtime_payloads import (
     AcquisitionMode,
     PathAcquisitionFailureKind,
-    PathAcquisitionResultKind,
 )
 from bootstrap import bootstrap_runtime
 
@@ -95,7 +94,7 @@ def test_create_path_reroutes_around_one_way_block():
         f"expected a reroute around {ONE_WAY}; got "
         f"failure_kind={result.failure_kind!r} reason={result.reason!r}"
     )
-    assert result.result_kind == PathAcquisitionResultKind.REACHED_REQUESTED_TARGET
+    assert result.reached_target is True
     assert result.authority_end_block_id == TARGET_WITH_ALTERNATIVE
     assert ONE_WAY not in _sequence_ids(result), (
         "the granted path must not cross the one-way block against its "
@@ -106,7 +105,7 @@ def test_create_path_reroutes_around_one_way_block():
 def test_create_path_fails_no_viable_path_when_no_legal_alternative():
     """The regression: a target only reachable against the one-way policy
     must be a hard NO_VIABLE_PATH failure with no path stored — never a
-    TRUNCATED_GREW authority parked just before the one-way block."""
+    a grown-but-short authority parked just before the one-way block."""
     network, dispatcher, _sim = _boot()
     network.blocks[ONE_WAY].allowed_travel_directions = {"forward"}
 
@@ -118,7 +117,7 @@ def test_create_path_fails_no_viable_path_when_no_legal_alternative():
 
     assert not result.success, (
         "a one-way violation with no alternative must fail the create call, "
-        f"got result_kind={result.result_kind!r} "
+        f"got reached_target={result.reached_target!r} "
         f"authority_end={result.authority_end_block_id!r}"
     )
     assert result.failure_kind == PathAcquisitionFailureKind.NO_VIABLE_PATH
@@ -131,7 +130,7 @@ def test_create_path_fails_no_viable_path_when_no_legal_alternative():
 def test_extend_path_fails_no_viable_path_not_blocked_no_growth():
     """An extend whose every suffix crosses the one-way block against its
     direction is statically impossible: NO_VIABLE_PATH per design_new.md
-    :1082, not the transient BLOCKED_NO_GROWTH retry signal."""
+    :1082, not the transient no-growth retry signal."""
     network, dispatcher, _sim = _boot()
 
     # Legal prefix first: authority up to PLT_ML_10_A_BLOCK (before ML_16).
@@ -168,9 +167,9 @@ def test_extend_path_fails_no_viable_path_not_blocked_no_growth():
 
     assert not extended.success
     assert extended.failure_kind == PathAcquisitionFailureKind.NO_VIABLE_PATH
-    assert extended.result_kind != PathAcquisitionResultKind.BLOCKED_NO_GROWTH, (
-        "a statically impossible suffix must not be classified as a "
-        "transient occupancy hold"
+    assert extended.appended_resource_count is None, (
+        "a statically impossible suffix must fail outright, not be classified "
+        "as a transient occupancy hold"
     )
 
 

@@ -324,7 +324,8 @@ def register(app, state: AppState) -> None:
         }
 
         Returns:
-            PathAcquisitionResult JSON (with result_kind=EXTENDED on success).
+            PathAcquisitionResult JSON (appended_resource_count / reached_target
+            describe the outcome on success).
         """
         data = request.json or {}
 

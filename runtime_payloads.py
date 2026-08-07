@@ -549,24 +549,6 @@ class AcquisitionMode(Enum):
     BEST_EFFORT = "best_effort"
 
 
-class PathAcquisitionResultKind(Enum):
-    """Outcome flavour for create_path / extend_path success cases.
-
-    Per design_new.md "create_path() / extend_path() return contract":
-      * REACHED_REQUESTED_TARGET — live authority reaches the requested target
-      * TRUNCATED_GREW — best_effort acquired at least one new forward
-        resource but the live authority is still short of the requested target
-      * BLOCKED_NO_GROWTH — extend_path proved the existing path is still a
-        valid prefix toward the requested target but could not acquire the
-        next forward resource. Valid only for extend_path; create_path
-        never returns this kind.
-    """
-
-    REACHED_REQUESTED_TARGET = "reached_requested_target"
-    TRUNCATED_GREW = "truncated_grew"
-    BLOCKED_NO_GROWTH = "blocked_no_growth"
-
-
 class PathAcquisitionFailureKind(Enum):
     """Failure kinds returned by create_path / extend_path.
 
@@ -601,16 +583,43 @@ class PathAcquisitionResult:
     """Structured result for create_path / extend_path.
 
     Per design_new.md "create_path() / extend_path() return contract", the
-    payload carries the success flag, the structured `result_kind` /
-    `failure_kind` discriminators, the live `path_id`, the live
+    payload carries the success flag, the two values that describe every
+    successful outcome (`appended_resource_count` and `reached_target`), the
+    `failure_kind` discriminator, the live `path_id`, the live
     `resource_sequence` (typed as `Any` to avoid the path.py forward
     import), the caller-supplied target contract, and the live authority
-    boundary. Callers must branch on `success`/`result_kind`/`failure_kind`,
-    not on `reason` text.
+    boundary. Callers branch on `success`, `appended_resource_count == 0`
+    versus `> 0`, `reached_target`, and `failure_kind` — never on `reason`
+    text.
+
+    The two success values are orthogonal, and their four combinations are
+    the four success shapes:
+
+      * `> 0` / `True`  — authority grew and now reaches the requested target
+      * `> 0` / `False` — authority grew but is still short of it
+      * `0`   / `True`  — the live authority already reaches it, so there was
+                          nothing to append
+      * `0`   / `False` — still a legal prefix toward it, but it could not
+                          grow this tick; keep the path and retry
+
+    `create_path(...)` has one extra rule: a successful create must append at
+    least one resource, so `appended_resource_count == 0` is never a create
+    success. That is what makes every stored create a non-empty
+    block-terminated live path.
     """
 
     success: bool
-    result_kind: Optional[PathAcquisitionResultKind] = None
+    # How many new resources this call added to the live `resource_sequence`.
+    # Callers may branch only on `== 0` versus `> 0`; the number itself is
+    # diagnostic. It counts `resource_sequence` entries, which interleave
+    # blocks and switches, so it is not a distance.
+    appended_resource_count: Optional[int] = None
+    # `Path.reaches_target(requested_destination_block_id)` evaluated after
+    # the call. The test is on the block alone, satisfied whether the
+    # authority ends on that block or runs past it. It means "there is
+    # nothing left to extend", not "the train has arrived" — the
+    # Stop-arrival check owns the physical arrival test separately.
+    reached_target: Optional[bool] = None
     failure_kind: Optional[PathAcquisitionFailureKind] = None
     path_id: Optional[str] = None
     requested_destination_block_id: Optional[str] = None
@@ -624,7 +633,8 @@ class PathAcquisitionResult:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "success": self.success,
-            "result_kind": self.result_kind.value if self.result_kind else None,
+            "appended_resource_count": self.appended_resource_count,
+            "reached_target": self.reached_target,
             "failure_kind": self.failure_kind.value if self.failure_kind else None,
             "path_id": self.path_id,
             "requested_destination_block_id": self.requested_destination_block_id,

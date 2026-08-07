@@ -5,8 +5,6 @@
 
 export type AcquisitionMode = "all_or_nothing" | "best_effort";
 
-export type PathAcquisitionResultKind = "reached_requested_target" | "truncated_grew" | "blocked_no_growth";
-
 export type PathAcquisitionFailureKind = "no_viable_path" | "blocked_before_target" | "invalid_reverse" | "invalid_request" | "head_on_switch_no_block_authority" | "missing_or_inactive_path" | "train_already_has_active_path";
 
 export type TargetResolutionFailureKind = "missing_target" | "target_unavailable";
@@ -81,7 +79,8 @@ export interface PathCompletionResult {
 
 export interface PathAcquisitionResult {
   success: boolean;
-  result_kind: PathAcquisitionResultKind | null;
+  appended_resource_count: number | null;
+  reached_target: boolean | null;
   failure_kind: PathAcquisitionFailureKind | null;
   path_id: string | null;
   requested_destination_block_id: string | null;

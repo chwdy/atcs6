@@ -2342,22 +2342,24 @@ class RouteExecutor:
         Per design_new.md "Idle-hold maintenance and release" (Planning Kernel
         step 66aa). Returns True when it latched an idle-hold release (the caller
         stops planning this tick; Phase 3 commits the cancel). A truncated
-        best-effort authority (``authority_end_block_id !=
-        requested_destination_block_id``) that neither grew this tick (the
-        authority end is unchanged from ``auth_end_before``) nor has the train
-        moving accrues `idle_hold_ticks`; at `IDLE_HOLD_RELEASE_TICKS` it latches
-        ``pending_path_cancel_request(initiator="idle_hold_release")``, starts the
-        cooldown, and returns True. Any growth, train movement, full authority,
-        or no live path resets `idle_hold_ticks` to 0.
+        best-effort authority — one whose live walk does not reach the requested
+        target, per ``Path.reaches_target(...)`` — that neither grew this tick
+        (the authority end is unchanged from ``auth_end_before``) nor has the
+        train moving accrues `idle_hold_ticks`; at `IDLE_HOLD_RELEASE_TICKS` it
+        latches ``pending_path_cancel_request(initiator="idle_hold_release")``,
+        starts the cooldown, and returns True. Any growth, train movement, full
+        authority, or no live path resets `idle_hold_ticks` to 0.
         """
         path = (
             self.path_dispatcher.get_active_path(train_id)
             if self.path_dispatcher is not None
             else None
         )
-        if path is None or (
-            path.get_authority_end_block_id() == path.requested_destination_block_id
-        ):
+        # "Short of the target" is `reaches_target(...)`, never an equality test
+        # against the authority end (design_new.md "Path field schema"): an
+        # authority that legitimately runs past its target has reached it, and
+        # holding it back for an idle-hold release would be wrong.
+        if path is None or path.reaches_target(path.requested_destination_block_id):
             # Full authority or no live path → not a truncated best-effort hold.
             exec_state.idle_hold_ticks = 0
             return False

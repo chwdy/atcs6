@@ -4,8 +4,7 @@ line 1025).
 A cap short of the requested target must:
   * leave ``requested_destination_block_id`` at the real route target,
   * truncate stored authority so ``authority_end_block_id`` lands on the cap,
-  * report ``TRUNCATED_GREW`` / ``BLOCKED_NO_GROWTH`` (never
-    ``REACHED_REQUESTED_TARGET``),
+  * report ``reached_target = False`` (never ``True``),
   * never satisfy ``try_complete_active_path(...)``, so the train holds at the
     cap.
 
@@ -21,7 +20,6 @@ from network import RailwayNetwork
 from track import Tile, TRACK_EW
 from train import Train, TrainCar
 from path_dispatcher import PathDispatcher
-from runtime_payloads import PathAcquisitionResultKind
 from simulation import SimulationController
 from enums import Direction
 from tests.train_test_helpers import set_train_span
@@ -68,7 +66,7 @@ def _dispatcher_with_seeded_head(network, train):
 
 def test_create_path_caps_authority_and_never_completes():
     """create_path with a cap short of the target lands authority on the cap,
-    keeps the requested target, reports TRUNCATED_GREW, and never completes."""
+    keeps the requested target, reports reached_target=False, and never completes."""
     network = _linear_network()
     train = _train_at_a(network)
     dispatcher = _dispatcher_with_seeded_head(network, train)
@@ -81,7 +79,8 @@ def test_create_path_caps_authority_and_never_completes():
     assert result.success, result.reason
     # Requested target is unchanged; authority is capped at the cap block.
     assert result.requested_destination_block_id == "BLOCK_E"
-    assert result.result_kind == PathAcquisitionResultKind.TRUNCATED_GREW
+    assert result.reached_target is False
+    assert result.appended_resource_count > 0
 
     path = dispatcher.get_path(result.path_id)
     assert path.get_authority_end_block_id() == "BLOCK_C"
@@ -106,7 +105,7 @@ def test_create_path_cap_equal_to_target_is_no_cap():
         acquisition_cap_block_id="BLOCK_C",
     )
     assert result.success, result.reason
-    assert result.result_kind == PathAcquisitionResultKind.REACHED_REQUESTED_TARGET
+    assert result.reached_target is True
     assert dispatcher.get_path(result.path_id).get_authority_end_block_id() == "BLOCK_C"
 
 
@@ -122,7 +121,7 @@ def test_create_path_no_cap_reaches_target():
         requested_destination_block_id="BLOCK_D",
     )
     assert result.success, result.reason
-    assert result.result_kind == PathAcquisitionResultKind.REACHED_REQUESTED_TARGET
+    assert result.reached_target is True
     assert dispatcher.get_path(result.path_id).get_authority_end_block_id() == "BLOCK_D"
 
 
@@ -146,13 +145,14 @@ def test_extend_path_holds_no_growth_when_already_at_cap():
         acquisition_cap_block_id="BLOCK_C",
     )
     assert ext.success is True
-    assert ext.result_kind == PathAcquisitionResultKind.BLOCKED_NO_GROWTH
+    assert ext.appended_resource_count == 0
+    assert ext.reached_target is False
     assert dispatcher.get_path(path_id).get_authority_end_block_id() == "BLOCK_C"
 
 
 def test_extend_path_caps_ahead_of_authority_end():
     """extend_path with a cap ahead of the current authority end grows only to
-    the cap and reports TRUNCATED_GREW, keeping the requested target."""
+    the cap and reports reached_target=False, keeping the requested target."""
     network = _linear_network()
     train = _train_at_a(network)
     dispatcher = _dispatcher_with_seeded_head(network, train)
@@ -169,7 +169,8 @@ def test_extend_path_caps_ahead_of_authority_end():
         acquisition_cap_block_id="BLOCK_D",
     )
     assert ext.success is True, ext.reason
-    assert ext.result_kind == PathAcquisitionResultKind.TRUNCATED_GREW
+    assert ext.appended_resource_count > 0
+    assert ext.reached_target is False
     path = dispatcher.get_path(path_id)
     assert path.get_authority_end_block_id() == "BLOCK_D"
     assert path.requested_destination_block_id == "BLOCK_E"
@@ -179,7 +180,8 @@ def test_extend_path_caps_ahead_of_authority_end():
 def test_failed_acquisition_result_nulls_every_field_but_failure_kind_and_reason():
     """design_new.md "`create_path()` / `extend_path()` return contract":
     "On failure, `success = False`, `path_id = None`, `resource_sequence = None`,
-    all target fields are `None`, `result_kind = None`, `failure_kind` is
+    all target fields are `None`, `appended_resource_count = None`,
+    `reached_target = None`, `failure_kind` is
     required, and `reason` is required."
 
     A rejection must not echo the caller's request back as if it were stored
@@ -204,7 +206,8 @@ def test_failed_acquisition_result_nulls_every_field_but_failure_kind_and_reason
 
     assert result.path_id is None
     assert result.resource_sequence is None
-    assert result.result_kind is None
+    assert result.appended_resource_count is None
+    assert result.reached_target is None
     assert result.requested_destination_block_id is None
     assert result.requested_destination_direction is None
     assert result.authority_end_block_id is None

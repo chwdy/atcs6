@@ -24,7 +24,7 @@ Predicted behavior (citations from `design_new.md`)
   * :884-:911   `create_path(..., BEST_EFFORT)` truncates the candidate
                 to the furthest forward block-terminated prefix it can
                 acquire, and the truncated path counts as a SUCCESSFUL
-                create (`result_kind=TRUNCATED_GREW`).
+                create (`reached_target=False`).
   * :891       "Special case: if the furthest acquirable prefix ends on
                 a `switch` resource, dispatcher must truncate again to
                 the previous `block` resource before storing the live
@@ -43,7 +43,7 @@ What this test asserts
 Per design_new.md:884-:911 and :938, calling
 `PathDispatcher.create_path(..., BEST_EFFORT)` against a destination whose
 future blocks include one currently OCCUPIED by another train must return
-`success=True, result_kind=TRUNCATED_GREW` with `authority_end_block_id`
+`success=True, reached_target=False` with `authority_end_block_id`
 set to the longest acquirable block-terminated prefix. For the T1 →
 PLT_S2_S_BLOCK probe (with T2 still occupying PLT_S2_S_BLOCK), that
 prefix ends at `BLK_X1_TO_S2_S` — the block immediately before the
@@ -56,7 +56,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import pytest
 
-from runtime_payloads import AcquisitionMode, PathAcquisitionResultKind
+from runtime_payloads import AcquisitionMode
 
 from tests.journey.events import Event, Invariant, Journey
 from tests.journey.harness import JourneyHarness, Snapshot
@@ -288,7 +288,7 @@ def _t1_path_capture_window(
     in the same shape as a direct `dispatcher.create_path(...)` call.
 
     Under BEST_EFFORT, T1's first-tick create_path returns
-    `TRUNCATED_GREW` because T2 still occupies PLT_S2_S_BLOCK; this
+    `reached_target=False` because T2 still occupies PLT_S2_S_BLOCK; this
     function exposes that result for assertion without re-calling
     create_path (which would fail with TRAIN_ALREADY_HAS_ACTIVE_PATH).
     """
@@ -299,7 +299,7 @@ def _t1_path_capture_window(
     if path is None:
         return {
             "success": False,
-            "result_kind": None,
+            "reached_target": None,
             "failure_kind": None,
             "reason": "T1 has no active path",
             "path_id": None,
@@ -308,17 +308,11 @@ def _t1_path_capture_window(
         }
     auth_end = path.get_authority_end_block_id()
     target = path.requested_destination_block_id
-    # Map the stored Path back into a result-kind shape: TRUNCATED_GREW
-    # when authority_end != requested target; REACHED_REQUESTED_TARGET
-    # otherwise.
-    from runtime_payloads import PathAcquisitionResultKind as _Kind
-    if auth_end == target:
-        kind = _Kind.REACHED_REQUESTED_TARGET
-    else:
-        kind = _Kind.TRUNCATED_GREW
+    # Map the stored Path back into the return-contract shape: the live walk
+    # either reaches the requested target or is still short of it.
     return {
         "success": True,
-        "result_kind": kind,
+        "reached_target": path.reaches_target(target),
         "failure_kind": None,
         "reason": "stored path snapshot",
         "path_id": path.path_id,
@@ -425,13 +419,13 @@ def test_best_effort_crossover_block_states(dt, label, capsys):
     # ---- Assert the BEST_EFFORT truncation contract. ----
     #
     # Per design_new.md:884-:911 and :938, the probe must succeed with
-    # `result_kind=TRUNCATED_GREW` and authority ending at the block just
+    # `reached_target=False` and authority ending at the block just
     # before the OCCUPIED destination (`BLK_S1_S_TO_X1`).
     assert probe_result is not None
     print(
         "\nBEST_EFFORT contract assertion:"
         f"\n  observed success      = {probe_result.get('success')!r}"
-        f"\n  observed result_kind  = {probe_result.get('result_kind')!r}"
+        f"\n  observed reached      = {probe_result.get('reached_target')!r}"
         f"\n  observed authority    = {probe_result.get('authority_end_block_id')!r}"
         f"\n  observed reason       = {probe_result.get('reason')!r}"
     )
@@ -440,10 +434,10 @@ def test_best_effort_crossover_block_states(dt, label, capsys):
         f"with a TRUNCATED authority per design_new.md:884-:911. "
         f"Probe result: {probe_result}"
     )
-    assert probe_result["result_kind"] == PathAcquisitionResultKind.TRUNCATED_GREW, (
-        f"Expected result_kind=TRUNCATED_GREW (PLT_S2_S_BLOCK is occupied "
+    assert probe_result["reached_target"] is False, (
+        f"Expected reached_target=False (PLT_S2_S_BLOCK is occupied "
         f"by T2, so the full target cannot be reached). "
-        f"Got: {probe_result['result_kind']!r}"
+        f"Got: {probe_result['reached_target']!r}"
     )
     assert probe_result["authority_end_block_id"] == "BLK_S1_S_TO_X1", (
         f"Expected truncation to BLK_S1_S_TO_X1 (held back before SW_X1). The "
@@ -453,7 +447,7 @@ def test_best_effort_crossover_block_states(dt, label, capsys):
         f"Got: {probe_result['authority_end_block_id']!r}"
     )
     assert probe_result["resource_sequence_len"] >= 1, (
-        f"TRUNCATED_GREW result should carry a non-empty resource_sequence. "
+        f"A grown-but-short result should carry a non-empty resource_sequence. "
         f"Got len={probe_result['resource_sequence_len']}"
     )
 

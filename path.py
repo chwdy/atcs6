@@ -212,6 +212,32 @@ class Path:
             return ""
         return str(getattr(terminal, "resource_id", "") or "")
 
+    def reaches_target(self, block_id: str) -> bool:
+        """Whether the live authority reaches `block_id`.
+
+        Per design_new.md "Path field schema": `True` when `block_id` appears
+        as a `block` entry in `resource_sequence` at a `sequence_index` at or
+        after `current_resource_index`. Exposed as a function, not a stored
+        field; no writers.
+
+        This is the canonical test for "is this authority still short of that
+        target?". It is deliberately not an equality test against
+        `get_authority_end_block_id()`: a target the authority already runs
+        past is reached, not missed. Entries before `current_resource_index`
+        are the train's own covered span behind the head, so they never count
+        as reached.
+        """
+        if not block_id:
+            return False
+        for entry in self.resource_sequence:
+            if getattr(entry, "resource_type", None) != "block":
+                continue
+            if getattr(entry, "resource_id", None) != block_id:
+                continue
+            if int(getattr(entry, "sequence_index", 0)) >= self.current_resource_index:
+                return True
+        return False
+
     def is_active(self) -> bool:
         return self.status == PathStatus.ACTIVE
 

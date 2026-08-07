@@ -28,7 +28,6 @@ from runtime_payloads import (
     AcquisitionMode,
     PathAcquisitionResult,
     PathAcquisitionFailureKind,
-    PathAcquisitionResultKind,
     SwitchLockClaim,
 )
 from enums import PathStatus
@@ -1582,7 +1581,7 @@ class TestBestEffortAcquisitionContract:
 
     Cites:
       * :884-:911 — BEST_EFFORT must truncate to the longest acquirable
-        block-terminated prefix and return `result_kind=TRUNCATED_GREW`.
+        block-terminated prefix and return `reached_target=False`.
       * :890     — structural failures (disabled blocks, missing tracks)
         still hard-reject.
       * :938     — the first failing block/switch is the truncation point.
@@ -1618,7 +1617,7 @@ class TestBestEffortAcquisitionContract:
         self, simple_linear_network, dispatcher,
     ):
         """An OCCUPIED future block in BEST_EFFORT mode is a truncation
-        point — create_path must succeed with TRUNCATED_GREW. Without the
+        point — create_path must succeed short of the target. Without the
         fix, this asserts success=False with BLOCKED_BEFORE_TARGET.
         """
         dispatcher.network = simple_linear_network
@@ -1637,7 +1636,8 @@ class TestBestEffortAcquisitionContract:
             f"block per design_new.md:884-911. Got failure_kind="
             f"{result.failure_kind!r}, reason={result.reason!r}"
         )
-        assert result.result_kind == PathAcquisitionResultKind.TRUNCATED_GREW
+        assert result.reached_target is False
+        assert result.appended_resource_count > 0
         assert result.authority_end_block_id == "BLOCK_B", (
             f"Expected truncation to BLOCK_B (longest acquirable prefix "
             f"toward occupied BLOCK_C). Got: {result.authority_end_block_id!r}"
@@ -1729,7 +1729,7 @@ class TestBestEffortAcquisitionContract:
         # With BLOCK_C the only new block in the extension segment and it
         # occupied by another train, no new resource can be appended. Per
         # design_new.md ":994" / ":997", BEST_EFFORT extend in this case
-        # must return `success=True, result_kind=BLOCKED_NO_GROWTH` — the
+        # must return `success=True` with `appended_resource_count = 0` — the
         # existing path is still a legal prefix toward BLOCK_C; the
         # obstruction is purely live occupancy. Route executors use this
         # to distinguish "temporarily blocked, retry" from cancellation.
@@ -1737,7 +1737,8 @@ class TestBestEffortAcquisitionContract:
             f"extend_path should report blocked_no_growth as success per "
             f"design_new.md:994; got failure_kind={result.failure_kind!r}"
         )
-        assert result.result_kind == PathAcquisitionResultKind.BLOCKED_NO_GROWTH
+        assert result.appended_resource_count == 0
+        assert result.reached_target is False
         # Existing path must still be ACTIVE and unchanged.
         live_path = dispatcher.paths.get(path_id)
         assert live_path is not None
@@ -1805,7 +1806,8 @@ class TestBestEffortAcquisitionContract:
             f"boundary switch per design_new.md:891/:938. Got "
             f"failure_kind={result.failure_kind!r}, reason={result.reason!r}"
         )
-        assert result.result_kind == PathAcquisitionResultKind.TRUNCATED_GREW
+        assert result.reached_target is False
+        assert result.appended_resource_count > 0
         assert result.authority_end_block_id == "BLOCK_B", (
             f"Truncated authority must land at BLOCK_B (before the "
             f"contested switch). Got: {result.authority_end_block_id!r}"
@@ -1871,7 +1873,7 @@ class TestSameBlockRejected:
     def _assert_same_block_rejected(self, result, dispatcher):
         assert not result.success, (
             f"same-block create_path must be rejected per design_new.md:982; "
-            f"got success result_kind={result.result_kind!r}"
+            f"got success reached_target={result.reached_target!r}"
         )
         assert (
             result.failure_kind == PathAcquisitionFailureKind.INVALID_REQUEST
