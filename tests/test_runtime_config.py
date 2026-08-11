@@ -41,6 +41,53 @@ def test_apply_updates_coerces_and_propagates_to_module_globals():
     assert train_controller.atc.CAUTION_SPEED_LIMIT_KMH == 33.0
 
 
+def test_every_mirror_target_resolves():
+    """Every `_TARGETS` entry must name a module global that actually exists.
+
+    `_propagate` guards each rebind with `hasattr(module, attr)`, so a target
+    that was renamed — or that never existed — is skipped in silence: the
+    settings API accepts the value, stores it, and serves it back while the
+    consumer keeps its old constant. That failure is invisible at runtime, so
+    it has to be caught here.
+
+    A tunable whose consumer does not yet read a module global simply gets no
+    mirror for it (see `waypoint_lookahead_blocks`), rather than a mirror that
+    silently does nothing.
+    """
+    import importlib
+
+    dead = []
+    for field_name, targets in rc._TARGETS.items():
+        for module_path, attr in targets:
+            try:
+                module = importlib.import_module(module_path)
+            except Exception as exc:  # noqa: BLE001 - reported, not raised
+                dead.append(f"{field_name} -> {module_path}.{attr} (import failed: {exc})")
+                continue
+            if not hasattr(module, attr):
+                dead.append(f"{field_name} -> {module_path}.{attr} (attribute missing)")
+
+    assert not dead, (
+        "runtime_config._TARGETS names module globals that do not exist, so "
+        "`_propagate` skips them and the tunable silently does nothing:\n  "
+        + "\n  ".join(dead)
+    )
+
+
+def test_every_tunable_has_at_least_one_mirror():
+    """A `RuntimeConfig` field with no `_TARGETS` entry is a settings-API knob
+    that cannot reach any consumer. Kept separate from the resolve check so the
+    two failures read differently."""
+    from dataclasses import fields
+
+    unmirrored = [
+        f.name for f in fields(rc.RuntimeConfig) if not rc._TARGETS.get(f.name)
+    ]
+    assert not unmirrored, (
+        f"RuntimeConfig fields with no propagation target: {unmirrored}"
+    )
+
+
 def test_reset_restores_defaults_and_repropagates():
     import train_controller
 

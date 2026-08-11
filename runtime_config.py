@@ -75,14 +75,8 @@ _TARGETS: Dict[str, List[Tuple[str, str]]] = {
     "ato_speed_tolerance_max_kmh": [("train_controller.ato", "ATO_SPEED_TOLERANCE_MAX")],
     "ato_speed_tolerance_min_kmh": [("train_controller.ato", "ATO_SPEED_TOLERANCE_MIN")],
     "ato_speed_tolerance_ratio": [("train_controller.ato", "ATO_SPEED_TOLERANCE_RATIO")],
-    "lookahead_headroom": [
-        ("train_controller.ato", "LOOKAHEAD_HEADROOM"),
-        ("routes.inspector", "LOOKAHEAD_HEADROOM"),
-    ],
-    "min_lookahead_cm": [
-        ("train_controller.ato", "MIN_LOOKAHEAD_CM"),
-        ("routes.inspector", "MIN_LOOKAHEAD_CM"),
-    ],
+    "lookahead_headroom": [("train_controller.ato", "LOOKAHEAD_HEADROOM")],
+    "min_lookahead_cm": [("train_controller.ato", "MIN_LOOKAHEAD_CM")],
     "lookahead_sample_count": [("train_controller.ato", "LOOKAHEAD_SAMPLE_COUNT")],
     "brake_deadband_kmh": [("train_controller.ato", "BRAKE_DEADBAND_KMH")],
     "stopped_speed_threshold_kmh": [
@@ -106,7 +100,6 @@ _TARGETS: Dict[str, List[Tuple[str, str]]] = {
         ("constants", "CAUTION_SPEED_LIMIT_KMH"),
         ("train_controller", "CAUTION_SPEED_LIMIT_KMH"),
         ("train_controller.atc", "CAUTION_SPEED_LIMIT_KMH"),
-        ("block", "CAUTION_SPEED_LIMIT_KMH"),
     ],
     "idle_hold_release_ticks": [
         ("constants", "IDLE_HOLD_RELEASE_TICKS"),
@@ -116,10 +109,11 @@ _TARGETS: Dict[str, List[Tuple[str, str]]] = {
         ("constants", "IDLE_HOLD_COOLDOWN_TICKS"),
         ("route_executor", "IDLE_HOLD_COOLDOWN_TICKS"),
     ],
-    "waypoint_lookahead_blocks": [
-        ("constants", "WAYPOINT_LOOKAHEAD_BLOCKS"),
-        ("route_executor", "WAYPOINT_LOOKAHEAD_BLOCKS"),
-    ],
+    # No `route_executor` mirror: the doc's step `66aa` waypoint-lookahead
+    # arming is not implemented, so `route_executor` holds no module global to
+    # rebind. Add the mirror back in the same commit that implements the step —
+    # `test_every_mirror_target_resolves` fails on a target that does not exist.
+    "waypoint_lookahead_blocks": [("constants", "WAYPOINT_LOOKAHEAD_BLOCKS")],
     "delay_class_on_time_tolerance_seconds": [
         ("constants", "DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS"),
         ("route_executor", "DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS"),
