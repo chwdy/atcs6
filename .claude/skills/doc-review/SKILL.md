@@ -136,7 +136,7 @@ One subagent per partition. Send them in a single message so they run concurrent
   refs. You are going to re-test those;
 - an instruction to **return its findings as its final message**, not to write a file. Subagents here
   often cannot get Write approved, and a reader that spends its budget fighting the filesystem returns
-  nothing. You persist the outputs.
+  nothing. You carry their outputs into the final report.
 
 Three cost rules, learned the hard way — a single unbounded fan-out over this document ran past a
 million tokens and took the whole review down with it:
@@ -182,6 +182,12 @@ This is the step that separates a real review from a summary of six opinions.
   sharpest fix, union the line refs.
 
 ## 6. Write the report in exactly this shape.
+
+**Output the whole report as your reply in the conversation. Do not write it to a file**, do not put it in
+a scratchpad, and do not hand it back as an attachment — the user reads it inline, in the transcript, and a
+file is one more thing for them to open. Length is not a reason to move it out of the conversation: a long
+review belongs in the conversation at full length. Never summarize the report and offer the full version
+elsewhere. The only exception is an explicit request from the user in this session for a file.
 
 Findings first, grouped by severity, HIGH then MEDIUM then LOW, ordered by importance within each group.
 
