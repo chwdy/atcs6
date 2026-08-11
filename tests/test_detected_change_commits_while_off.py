@@ -4,7 +4,8 @@ Two contracts, both real-hardware-only in effect (the simulated detector builds
 current from live spans, so neither fires in a pure-sim run), exercised here as
 unit contracts:
 
-- design_new.md ":1043"/":1045" — `direction` on
+- design_new.md "`on_block_tail_vacated()` behaviour (directional CAUTION
+  evaluation)" — `direction` on
   `BlockManager.on_block_tail_vacated(...)` is `Optional[edge]`. With `None` (the
   train left the detected area and no exit edge is known) the block clears
   `occupied_by`, writes no caution, and goes straight to FREE. The Step-0
@@ -12,7 +13,8 @@ unit contracts:
   through that same canonical entry (see the unidentified-train tests), so the
   de-energize queueing, BLOCK_VACATED event, and history record are not skipped.
 
-- design_new.md ":2181"/":2641" — Phase 3 is skipped for a still-OFF transaction
+- design_new.md "Running and stopped" — Phase 3 is skipped for a still-OFF
+  transaction
   only when it has nothing to commit. When Step 0 attributed a block entry or
   vacate to the train this tick, Phase 3 runs anyway: that is the only path that
   commits the entries/vacates of a train that moves without power (pushed by
@@ -110,7 +112,7 @@ def _sim_with_off_train():
     dispatcher = _RecordingDispatcher()
     sim.path_dispatcher = dispatcher
     # The train has never been powered on, which is also an unidentified train's standing
-    # condition (design_new.md ":2641": its controller stays OFF).
+    # condition (design_new.md "Running and stopped": its controller stays OFF).
     assert controller.ops.state == TrainState.OFF
     return sim, train, controller, dispatcher
 

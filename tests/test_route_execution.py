@@ -321,8 +321,9 @@ class TestRouteCallbacksWrapAround:
     """Regression tests for the `task_runs` list-index vs `Route.tasks`
     index conflation in Phase-3 callbacks.
 
-    Per design_new.md line 1104 + line 1267, `walk_position` (the list
-    index in `RouteRun.task_runs`) and `task_index` (the index into
+    Per design_new.md "Route-run state" and "RouteTaskRun schema",
+    `walk_position` (the list index in `RouteRun.task_runs`) and `task_index`
+    (the index into
     `Route.tasks`) decouple after `CIRCULAR` / `ROUND_TRIP` wrap-around
     once `len(task_runs) > len(Route.tasks)`. The callbacks must index
     `task_runs` by list position, never by `task_index`, or they will
@@ -535,7 +536,8 @@ class TestRouteCallbacksWrapAround:
 
     def test_handle_train_advanced_skips_wrong_direction_waypoint(self):
         """A head-entry into the waypoint's block in the WRONG block-relative
-        direction must NOT consume the waypoint (design_new.md:465; gap #4).
+        direction must NOT consume the waypoint
+        (design_new.md "Canonical Route-Progress Events"; gap #4).
         Direction is matched on `traversal_direction`, not the compass
         `exit_edge`, and a known mismatch is a no-op."""
         network = RailwayNetwork()

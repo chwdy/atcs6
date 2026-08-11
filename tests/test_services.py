@@ -111,9 +111,10 @@ class TestTrainRouteService:
         assert "ROUTE_T2" not in registry
 
     def test_assigning_train_to_new_route_unassigns_previous(self, state_with_train):
-        """design_new.md:1219-1227 — a train is assigned to at most one route. A
-        route create/update that assigns an already-assigned train unassigns it
-        from its previous route first (no double-assignment across routes)."""
+        """design_new.md "Route assignment writers" — a train is assigned to
+        at most one route. A route create/update that assigns an already-
+        assigned train unassigns it from its previous route first (no
+        double-assignment across routes)."""
         r1 = train_route_service.create_route(
             state_with_train, route_id="ROUTE_R1", name="r1",
             assigned_train_ids=["TRAIN_A"],
@@ -646,7 +647,7 @@ class TestSegmentService:
         # A station/platform owning exactly one block: deleting the block's only
         # segment empties the block, which must drop it from the platform's
         # block_assignments and, since that empties the platform, delete the
-        # platform too (design_new.md:644).
+        # platform too (design_new.md "Platform and station model").
         from track import TRACK_NS
 
         state.network.add_track(Tile(0, 0, TRACK_NS))
@@ -673,7 +674,7 @@ class TestSegmentService:
         # Removing the LAST tile of a platform-owned block empties its segment;
         # the auto-delete must run the same downward platform cascade, so the
         # emptied platform is torn down instead of left with a dangling
-        # block_assignments entry (design_new.md:644).
+        # block_assignments entry (design_new.md "Platform and station model").
         from track import TRACK_NS
 
         state.network.add_track(Tile(0, 0, TRACK_NS))
@@ -775,8 +776,9 @@ class TestTrackService:
         assert track_service.get_track(state, 0, 0) is None
 
     # H4: editor connectivity edits must refresh switch flank protection so it
-    # cannot go stale and corrupt acquisition (design_new.md:720). Spy on the
-    # recompute to assert each edit path triggers it.
+    # cannot go stale and corrupt acquisition (design_new.md "Flank
+    # protection computation"). Spy on the recompute to assert each edit
+    # path triggers it.
     def _spy_flank(self, state, monkeypatch):
         calls = []
         monkeypatch.setattr(
@@ -894,7 +896,8 @@ class TestPlatformService:
 
 
 class TestRouteServiceLeadingDwell:
-    """design_new.md:1310 — a route's first task must not be a dwell."""
+    """design_new.md "Route-definition validation" — a route's first task must
+    not be a dwell."""
 
     def test_create_route_rejects_leading_dwell(self, state):
         with pytest.raises(ValidationError):

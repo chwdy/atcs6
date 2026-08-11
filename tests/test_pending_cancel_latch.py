@@ -157,7 +157,7 @@ def test_activate_emergency_idempotent_rejects_duplicate():
 
 
 # =============================================================================
-# Inclusive-latch writers (per design_new.md line 199)
+# Inclusive-latch writers (per design_new.md "Latch Table")
 # =============================================================================
 
 

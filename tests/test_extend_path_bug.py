@@ -660,7 +660,7 @@ class TestEffectivePathTiles:
         )
 
     def test_effective_path_tiles_returns_none_without_dispatcher(self, simple_network):
-        """Per design_new.md ~line 1292, the dispatcher's `Path` is the
+        """Per design_new.md "Train ownership", the dispatcher's `Path` is the
         single source of truth for path tiles. With no dispatcher wired
         and no active path, `_get_effective_path_tiles()` returns `None`."""
         network = simple_network

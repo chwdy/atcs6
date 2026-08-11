@@ -1,6 +1,7 @@
 """M7 — platform target resolution must consider BOTH platform-end blocks.
 
-design_new.md line 1247: for a multi-block platform, the candidate end blocks
+design_new.md "Canonical Next-Target Selection": for a multi-block platform,
+the candidate end blocks
 are the first and last entries of `Platform.ordered_blocks`; the resolver picks
 the shortest successful candidate using the canonical candidate comparison
 (`tile_count`, then `walk_length_cm`, then `candidate_rank`, then `end_a`). For a

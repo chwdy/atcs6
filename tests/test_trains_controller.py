@@ -128,7 +128,8 @@ class TestRaceConditionFix:
 
         # Should trigger EB
         assert controller.eb.active == True, "EB should trigger at 12 km/h overspeed"
-        # Per design_new.md ~line 161, "speed-limit reason" comes from the
+        # Per design_new.md "canonical lookahead payload", the "speed-limit
+        # reason" comes from the
         # canonical lookahead at distance 0; for EB-active state that reads
         # "Emergency brake active". The trigger context (overspeed) is
         # carried by NotificationCenter via the controller's pending

@@ -24,8 +24,8 @@ BLK_X1_TO_S2_N) the crossing route had no forward block to truncate to, so the
 loop committed the train to an ~8-block detour around the map via SW_X2 -
 producing the head-to-head deadlock the operator reported.
 
-Post-fix expectation (design_new.md:931 / :940)
------------------------------------------------
+Post-fix expectation (design_new.md "`create_path()` flow")
+---------------------------------------------------------
 "selects exactly one candidate ... There is no fall-through to a second
 candidate within the same call; if that candidate cannot produce any storable
 live resource_sequence ... the call fails." So:
@@ -145,7 +145,8 @@ def test_parked_before_locked_crossover_does_not_detour():
         f"dispatcher routed TB around the map instead of waiting at X1: "
         f"{_seq_ids(res)}"
     )
-    # Per design_new.md:940 the single chosen (crossing) candidate cannot store
+    # Per design_new.md "`create_path()` flow" the single chosen (crossing)
+    # candidate cannot store
     # a prefix (no forward block before X1), so the call fails - TB waits.
     assert not res.success, (
         f"expected create_path to fail (TB waits before X1), got "

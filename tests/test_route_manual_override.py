@@ -1,6 +1,7 @@
 """A2 — `Route.manual_override` lets a route serve `manual` resources.
 
-design_new.md line 1208 / line 640: `RouteExecutor` applies the assigned
+design_new.md "`disabled` and `manual` availability flags": `RouteExecutor`
+applies the assigned
 route's `manual_override` to the target resolver's `manual` filtering. With the
 flag set, a `manual` block/platform/station resolves as a target; without it
 (the default — every automatic route), a `manual` resource is filtered out like

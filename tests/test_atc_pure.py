@@ -119,7 +119,8 @@ def test_clearance_ahead_stops_at_obstructed_block():
 
 
 def test_clearance_ahead_ignores_signal_state():
-    """Signal state is not an ATC clearance input (design_new.md:1849).
+    """Signal state is not an ATC clearance input (design_new.md
+    "Signals (display-only)").
 
     The walk sums the full authority-bounded ``blocks_ahead`` regardless
     of any red signal protecting a block on the train's own live

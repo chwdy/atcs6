@@ -142,8 +142,9 @@ class TestCreatePathDirectionOverride:
         """Same setup as above without the override. `create_path` must
         reject the request for the direction-policy reason.
 
-        Per design_new.md:779 (reservation eligibility) and :931/:963
-        (pathfinder rejection), `manual_override == False` keeps the
+        Per design_new.md "Resource acquisition" (reservation eligibility)
+        and "`create_path()` flow" (pathfinder rejection),
+        `manual_override == False` keeps the
         `Block.allowed_travel_directions` filter active. The rejection may
         surface as `NO_VIABLE_PATH` (pathfinder filtered the candidate) or
         as `BLOCKED_BEFORE_TARGET` with reason `direction_not_allowed`
@@ -177,8 +178,9 @@ class TestCreatePathDirectionOverride:
         self, linear_network, dispatcher
     ):
         """Belt-and-braces: omitting `manual_override` entirely (the
-        automatic-caller shape per design_new.md:563) must enforce the
-        direction policy. Same rejection surface as the explicit
+        automatic-caller shape per design_new.md "`disabled` and `manual`
+        availability flags") must enforce the direction policy. Same
+        rejection surface as the explicit
         `manual_override=False` case above.
         """
         _place_probe_train(linear_network, dispatcher)

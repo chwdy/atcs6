@@ -292,7 +292,8 @@ def test_deviation_while_rolling_latches_and_holds_resources():
 
 
 def test_head_on_path_resource_but_unenumerated_tile_is_not_a_deviation():
-    """The predicate is the head's RESOURCE, not its tile (design_new.md:608).
+    """The predicate is the head's RESOURCE, not its tile
+    (design_new.md "Controller-mediated progress").
 
     A path's stored ``path_tiles`` for a block hold only the tiles the train
     will traverse, not every tile of the block, so a head can sit on its own

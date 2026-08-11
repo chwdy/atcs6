@@ -1,9 +1,11 @@
 """Regression: ROUND_TRIP `direction` must flip when a bare-`stop` apex
 completes through `handle_path_completion` (the Phase-3 stop-completion path).
 
-design_new.md:1281-1288 is the canonical ROUND_TRIP truth table; case `c733`
+design_new.md "Canonical Next-Target Selection" holds the canonical ROUND_TRIP
+truth table; case `c733`
 requires the forward apex to reflect: `(2, forward) -> (1, reverse)`.
-design_new.md:1312 sanctions a turnaround terminal with no dwell as a bare
+design_new.md "Route-definition validation" sanctions a turnaround terminal
+with no dwell as a bare
 `stop` task. `RouteRun.direction` is flipped by `_advance_to_next_task`, which
 every walk-advance site pairs with `advance_walk_position` EXCEPT
 `handle_path_completion`. Without the flip, a ROUND_TRIP whose forward apex is
@@ -93,7 +95,8 @@ def test_round_trip_bare_stop_apex_flips_direction_and_reflects():
     # The apex stop is finished through the canonical writer.
     assert exec_state.task_runs[2].finished_at == 30.0
     # The forward apex must reflect: direction flips to reverse
-    # (design_new.md:1286, case `c733`). This is the assertion that FAILS
+    # (design_new.md "Canonical Next-Target Selection", case `c733`). This is
+    # the assertion that FAILS
     # before the fix — handle_path_completion never called the flip helper.
     assert exec_state.direction == "reverse"
     # The reflected next walk-position targets B (task_index 1).

@@ -11,9 +11,10 @@ The train starts at (0,0) facing EAST, so the run forces two reversals at
 non-platform blocks: one at the east main block to come back, and one at
 the (0,0) dock to head out to North Station via switch (3,0).
 
-Pins design_new.md:703 / :1751 (CAUTION is a speed cap, not an obstruction)
-and design_new.md:1145 (`task_direction == "either"` on a BlockTarget picks
-whichever block-relative direction is reachable from the current span).
+Pins design_new.md "`CAUTION` vs reservation independence" (CAUTION is a speed
+cap, not an obstruction) and design_new.md "Canonical Next-Target Selection"
+(`task_direction == "either"` on a BlockTarget picks whichever block-relative
+direction is reachable from the current span).
 """
 
 from train_route import (

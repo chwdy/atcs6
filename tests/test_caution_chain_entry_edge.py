@@ -3,7 +3,8 @@ train's ``travel_direction`` against the protection chain's ACTUAL
 chain-entry edge at the occupant block, not the geometric opposite of the
 CAUTION block's ``caution.exit_edge``.
 
-Per design_new.md line 842: "the same connectivity walk that found the
+Per design_new.md "`on_block_tail_vacated()` behaviour (directional CAUTION
+evaluation)": "the same connectivity walk that found the
 forward block also yields the edge through which the chain enters that
 block (for a straight adjacent block this is simply the side facing the
 CAUTION block; through switch tiles and curves it is the entry edge the

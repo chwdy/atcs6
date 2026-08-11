@@ -6,8 +6,9 @@ switch within FLANK_PROTECTION_DISTANCE_CM and record
 `(neighbour_switch_id, blocking_state)` on `Switch.flank_protection` for
 every nearby switch whose active branch could point back toward it.
 Acquisition then locks the neighbour to the safe state `1 - blocking_state`
-(design_new.md:990). Regression guard for gap #1 (the producer was missing
-entirely; the field stayed `[]` and every flank consumer no-opped).
+(design_new.md "Flank protection computation"). Regression guard for gap #1
+(the producer was missing entirely; the field stayed `[]` and every flank
+consumer no-opped).
 """
 
 import pytest
@@ -101,7 +102,8 @@ class TestFlankProducer:
 
     def test_acquiring_primary_lock_acquires_neighbour_flank_lock_at_safe_state(self):
         """Locking a throat switch must also acquire a flank lock on its
-        neighbour at the SAFE state = 1 - blocking_state (design_new.md:990)."""
+        neighbour at the SAFE state = 1 - blocking_state
+        (design_new.md "Flank protection computation")."""
         net = _demo5()
         sm = net.switch_manager
         n = net.switches["SW_XOVER_N"]
@@ -292,11 +294,11 @@ class TestSegmentRollbackReleasesFlankLocks:
 
 class TestTailVacateReleasesFlankProtection:
     """Head-entry converts a path-owned flank lock into a train-owned
-    `train_protection_claims` entry on the neighbour (design_new.md:678, :700).
-    The source switch's tail-vacate is the ONLY event that clears it --
-    cancellation/completion never do, they only touch path-owned `locks`
-    (design_new.md:1069-1070). The release must iterate the SOURCE switch's own
-    `flank_protection` list, mirroring the create side
+    `train_protection_claims` entry on the neighbour (design_new.md "Switch
+    entity"). The source switch's tail-vacate is the ONLY event that clears
+    it -- cancellation/completion never do, they only touch path-owned `locks`
+    (design_new.md "Flank protection computation"). The release must iterate
+    the SOURCE switch's own `flank_protection` list, mirroring the create side
     (`SwitchManager._convert_locks_on_entry`).
 
     Regression for the asymmetric pair: SW_LEAD flank-protects SW_XOVER_N, but
@@ -380,7 +382,8 @@ class TestTailVacateReleasesFlankProtection:
 class TestFlankRecompute:
     def test_remove_switch_drops_stale_flank_entries(self):
         """Removing a switch must recompute neighbours so no stale
-        (removed_id, state) entry survives (design_new.md:686)."""
+        (removed_id, state) entry survives
+        (design_new.md "Flank protection computation")."""
         net = _demo5()
         # SW_XOVER_N flanks SW_XOVER_S; remove SW_XOVER_S and confirm the
         # dangling reference is gone from SW_XOVER_N.

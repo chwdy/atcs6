@@ -450,7 +450,7 @@ class TestSetCabDoubleFlipBugFix:
     def test_set_cab_none_rejected_in_running_at_station(self, network):
         """`set_cab(None)` from RUNNING_AT_STATION must reject.
 
-        Per design_new.md line 1630 + Allowed (state, cab) pairs table,
+        Per design_new.md "Controller state machine",
         `(RUNNING_AT_STATION, None)` is not a legal pair. Deselecting cab
         while dwelling must return success=False with an explanatory
         diagnostic and leave both `cab` and `state` unchanged.

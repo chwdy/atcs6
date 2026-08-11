@@ -40,7 +40,7 @@ Predicted behavior (citations from `design_new.md`)
 
 What this test asserts
 ----------------------
-Per design_new.md:884-:911 and :938, calling
+Per design_new.md "`create_path()` flow" and "Authority truncation", calling
 `PathDispatcher.create_path(..., BEST_EFFORT)` against a destination whose
 future blocks include one currently OCCUPIED by another train must return
 `success=True, reached_target=False` with `authority_end_block_id`
@@ -350,8 +350,9 @@ def test_best_effort_crossover_block_states(dt, label, capsys):
     )
 
     # The contention scenario at this point: T2 still occupies
-    # PLT_S2_S_BLOCK (T1's planned destination). Per design_new.md:884-:911
-    # and :938, BEST_EFFORT must produce a TRUNCATED path ending at
+    # PLT_S2_S_BLOCK (T1's planned destination). Per design_new.md
+    # "`create_path()` flow" and "Authority truncation", BEST_EFFORT must
+    # produce a TRUNCATED path ending at
     # BLK_S1_S_TO_X1 (the furthest forward block-terminated prefix).
     print("\n--- BEST_EFFORT direct create_path probe (T1 -> PLT_S2_S_BLOCK) ---")
     for k, v in probe_result.items():
@@ -418,7 +419,8 @@ def test_best_effort_crossover_block_states(dt, label, capsys):
 
     # ---- Assert the BEST_EFFORT truncation contract. ----
     #
-    # Per design_new.md:884-:911 and :938, the probe must succeed with
+    # Per design_new.md "`create_path()` flow" and "Authority truncation",
+    # the probe must succeed with
     # `reached_target=False` and authority ending at the block just
     # before the OCCUPIED destination (`BLK_S1_S_TO_X1`).
     assert probe_result is not None
@@ -431,7 +433,8 @@ def test_best_effort_crossover_block_states(dt, label, capsys):
     )
     assert probe_result["success"] is True, (
         f"BEST_EFFORT create_path for T1 -> PLT_S2_S_BLOCK should succeed "
-        f"with a TRUNCATED authority per design_new.md:884-:911. "
+        f"with a TRUNCATED authority per design_new.md "
+        f"\"Authority truncation\". "
         f"Probe result: {probe_result}"
     )
     assert probe_result["reached_target"] is False, (

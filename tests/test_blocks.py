@@ -144,7 +144,7 @@ class TestBlock:
 
         Mirrors the reservation eligibility predicate in
         `BlockManager.reserve_blocks_for_path(...)`: per design_new.md
-        "`CAUTION` vs reservation independence" (and design_new.md:783, :809),
+        "`CAUTION` vs reservation independence",
         `caution is not None` is not an eligibility failure by itself. A
         CAUTION block is available unless it is reserved by *another* path.
         Without this, any consumer that trusts the boolean would wrongly
@@ -559,12 +559,12 @@ class TestBlockManager:
 
     def test_occupy_block_from_caution_consumes_same_train_reservation(self):
         """A reservation can live under a CAUTION because CAUTION outranks
-        RESERVED in `Block.state` priority. Per design_new.md:717 clean
-        entry must "consume any same-train reservation by clearing
-        block.reservation" — for entry from CAUTION as well as from
-        RESERVED. Without this, the reservation survives the train's
-        traversal and the block flips to RESERVED (green) instead of FREE
-        (blue) once caution clears later, surfacing as a phantom
+        RESERVED in `Block.state` priority. Per design_new.md
+        "Block-manager model", clean entry must "consume any same-train
+        reservation by clearing block.reservation" — for entry from CAUTION
+        as well as from RESERVED. Without this, the reservation survives the
+        train's traversal and the block flips to RESERVED (green) instead of
+        FREE (blue) once caution clears later, surfacing as a phantom
         reservation behind the departed train.
         """
         from block_manager import BlockManager
@@ -584,7 +584,7 @@ class TestBlockManager:
         assert block.state == BlockState.OCCUPIED
         assert block.reservation is None, (
             "Clean entry from CAUTION must consume the same-train "
-            "reservation per design_new.md:717."
+            "reservation per design_new.md \"Block-manager model\"."
         )
 
         # Now simulate the rest of the lifecycle: train tail vacates,
@@ -603,8 +603,8 @@ class TestBlockManager:
     def test_occupy_block_from_caution_rejects_cross_train_reservation(self):
         """If a CAUTION block holds a reservation for a DIFFERENT train,
         clean entry by another train must hard-reject — mirrors the
-        RESERVED case at design_new.md:717. Previously the CAUTION-entry
-        branch silently overrode the conflicting reservation.
+        RESERVED case in design_new.md "Block-manager model". Previously the
+        CAUTION-entry branch silently overrode the conflicting reservation.
         """
         from block_manager import BlockManager
         from block import CautionState

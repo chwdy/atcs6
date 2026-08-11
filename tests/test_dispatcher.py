@@ -271,7 +271,7 @@ class TestSwitchLocking:
     """Tests for v1 multi-owner switch locking via `Switch.acquire_lock` /
     `Switch.release_lock`. `Tile` exposes no lock surface in v1; all
     lock state lives on the owning `Switch` entity (`Switch.locks`,
-    `Switch.is_locked()`) per design_new.md:651."""
+    `Switch.is_locked()`) per design_new.md "Switch entity"."""
 
     def _make_switch_at(self, network, x: int, y: int):
         track = Tile(x=x, y=y, track_bits=TRACK_EW | TRACK_NE)
@@ -298,7 +298,7 @@ class TestSwitchLocking:
         assert switch.locks[("PATH_001", None)][1] == 0
 
     def test_lock_switch_conflicting_state(self, network):
-        """Lock compatibility rules per design_new.md:617, :624, :633:
+        """Lock compatibility rules per design_new.md "Path locking":
 
         - same-train multi-path same-state co-locking is allowed
           (e.g. extend_path reuses the live path's lock);
@@ -328,7 +328,7 @@ class TestSwitchLocking:
         )
         assert not switch.acquire_lock(cross_train), (
             "Cross-train primary same-state co-locking is rejected per "
-            "design_new.md:624 — the second arriving train would crash "
+            "design_new.md \"Path locking\" — the second arriving train would crash "
             "on Switch.occupied_by single-owner check."
         )
 
@@ -351,7 +351,7 @@ class TestSwitchLocking:
     def test_cross_train_non_conflicting_routes_coexist(self, network):
         """Two trains with geometrically non-conflicting routes (NW + SE on
         a scissors crossover) may both hold primary locks at the same
-        ``locked_state``, per design_new.md:617/:624/:649. This is the
+        ``locked_state``, per design_new.md "Path locking". This is the
         case the bare cross-train-primary rejection used to block — with
         route info the lock layer is gated by geometry instead.
         """
@@ -389,7 +389,7 @@ class TestSwitchLocking:
         assert switch.acquire_lock(t2), (
             "Cross-train primary co-locking must be allowed when the "
             "routes are geometrically non-conflicting per "
-            "design_new.md:624."
+            "design_new.md \"Path locking\"."
         )
         # A third train trying NS (which crosses the tile center) must
         # conflict with both — NS shares N with NW and S with SE.
@@ -455,7 +455,7 @@ class TestSwitchLocking:
     def test_lock_record_shape(self, network):
         """A recorded lock is keyed by `(path_id, source_switch_id)` and
         stores `(train_id, locked_state)` on the owning `Switch` per
-        design_new.md:651."""
+        design_new.md "Switch entity"."""
         _, switch = self._make_switch_at(network, 0, 0)
 
         assert switch.locks == {}
@@ -1334,7 +1334,7 @@ class TestATODirectionDetection:
         """A real `create_path` seeds the start block with the tile the train
         will LEAVE through, not the tile it stands on — so the exact
         connectivity check has nothing to compare, and the authority-side rule
-        (design_new.md:2213) has to answer.
+        (design_new.md "Head-mapping rule") has to answer.
 
         Geometry: a consist straddling BLK_TAIL and BLK_HEAD, head at (2,0)
         facing EAST, with a curve at (3,0) turning north and BLK_FAR doubling
@@ -1571,7 +1571,7 @@ class TestATODirectionDetection:
 
     # v1: removed test_calculate_ato_info_short_path which wrote
     # `train.current_path` / `train.assigned_path_id` to fake path data.
-    # Per design_new.md ~line 1292 those fields are forbidden — the
+    # Per design_new.md "Train ownership" those fields are forbidden — the
     # dispatcher's Path is the source of truth and ato_info should be
     # tested via a real `PathDispatcher.create_path(...)` setup.
 
@@ -1633,7 +1633,7 @@ class TestBestEffortAcquisitionContract:
 
         assert result.success, (
             f"BEST_EFFORT create_path must truncate on an occupied future "
-            f"block per design_new.md:884-911. Got failure_kind="
+            f"block per design_new.md \"Authority truncation\". Got failure_kind="
             f"{result.failure_kind!r}, reason={result.reason!r}"
         )
         assert result.reached_target is False
@@ -1670,7 +1670,7 @@ class TestBestEffortAcquisitionContract:
         self, simple_linear_network, dispatcher,
     ):
         """Structural failures (BLOCK_DISABLED) must still hard-reject
-        even in BEST_EFFORT mode, per design_new.md:890.
+        even in BEST_EFFORT mode, per design_new.md "Resource acquisition".
         """
         dispatcher.network = simple_linear_network
         self._make_probe_train(simple_linear_network, dispatcher)
@@ -1685,7 +1685,7 @@ class TestBestEffortAcquisitionContract:
 
         assert not result.success, (
             "A disabled future block is structural and must hard-reject "
-            "regardless of acquisition_mode (design_new.md:890)."
+            "regardless of acquisition_mode (design_new.md \"Resource acquisition\")."
         )
         # The disabled block can be filtered by the pathfinder upstream
         # (NO_VIABLE_PATH) or caught by validate_path (BLOCKED_BEFORE_TARGET).
@@ -1699,7 +1699,7 @@ class TestBestEffortAcquisitionContract:
         self, simple_linear_network, dispatcher,
     ):
         """extend_path BEST_EFFORT must also truncate (symmetric with
-        create_path) per design_new.md:994. First create a successful
+        create_path) per design_new.md "Path extension". First create a successful
         path to BLOCK_B, then try to extend to BLOCK_C with BLOCK_C
         occupied — the extension cannot grow but the existing path
         remains intact.
@@ -1728,14 +1728,14 @@ class TestBestEffortAcquisitionContract:
 
         # With BLOCK_C the only new block in the extension segment and it
         # occupied by another train, no new resource can be appended. Per
-        # design_new.md ":994" / ":997", BEST_EFFORT extend in this case
+        # design_new.md "Path extension", BEST_EFFORT extend in this case
         # must return `success=True` with `appended_resource_count = 0` — the
         # existing path is still a legal prefix toward BLOCK_C; the
         # obstruction is purely live occupancy. Route executors use this
         # to distinguish "temporarily blocked, retry" from cancellation.
         assert result.success, (
             f"extend_path should report blocked_no_growth as success per "
-            f"design_new.md:994; got failure_kind={result.failure_kind!r}"
+            f"design_new.md \"Path extension\"; got failure_kind={result.failure_kind!r}"
         )
         assert result.appended_resource_count == 0
         assert result.reached_target is False
@@ -1757,7 +1757,7 @@ class TestBestEffortAcquisitionContract:
 
         With SW pre-locked by another path in DIVERGE (state=1), the
         candidate A->B->SW->C requires state=0 and cannot acquire SW.
-        Per design_new.md ":891" / ":938", BEST_EFFORT must truncate the
+        Per design_new.md "Authority truncation", BEST_EFFORT must truncate the
         live authority to land BEFORE the contested switch (authority
         ends at BLOCK_B). Without the fix `_best_effort_truncate` keeps
         the switch tile in `cutoff_tiles`, propagates its lock request
@@ -1803,7 +1803,7 @@ class TestBestEffortAcquisitionContract:
 
         assert result.success, (
             f"BEST_EFFORT create_path must truncate before a locked "
-            f"boundary switch per design_new.md:891/:938. Got "
+            f"boundary switch per design_new.md \"Authority truncation\". Got "
             f"failure_kind={result.failure_kind!r}, reason={result.reason!r}"
         )
         assert result.reached_target is False
@@ -1872,13 +1872,15 @@ class TestSameBlockRejected:
 
     def _assert_same_block_rejected(self, result, dispatcher):
         assert not result.success, (
-            f"same-block create_path must be rejected per design_new.md:982; "
+            f"same-block create_path must be rejected per design_new.md "
+            f"\"`create_path()` flow\"; "
             f"got success reached_target={result.reached_target!r}"
         )
         assert (
             result.failure_kind == PathAcquisitionFailureKind.INVALID_REQUEST
         ), (
-            f"rejection must use INVALID_REQUEST (design_new.md:1012); got "
+            f"rejection must use INVALID_REQUEST (design_new.md "
+            f"\"`create_path()` / `extend_path()` return contract\"); got "
             f"failure_kind={result.failure_kind!r}, reason={result.reason!r}"
         )
         assert result.path_id is None
@@ -1891,7 +1893,7 @@ class TestSameBlockRejected:
     ):
         """A train spanning multi-tile BLOCK_B that requests BLOCK_B (forward)
         as its own destination is rejected with invalid_request, not
-        synthesized (design_new.md:982)."""
+        synthesized (design_new.md "`create_path()` flow")."""
         dispatcher.network = simple_linear_network
         self._rebuild_geometry(simple_linear_network)
         self._seed_train_in_block(
@@ -1914,7 +1916,7 @@ class TestSameBlockRejected:
         self, simple_linear_network, dispatcher,
     ):
         """A reverse same-block request is rejected too — direction does not
-        unlock a synthetic in-place frame (design_new.md:982)."""
+        unlock a synthetic in-place frame (design_new.md "`create_path()` flow")."""
         dispatcher.network = simple_linear_network
         self._rebuild_geometry(simple_linear_network)
         self._seed_train_in_block(
@@ -1964,7 +1966,7 @@ class TestSameBlockRejected:
     def test_same_tile_with_cab_rejected(self, network, dispatcher):
         """A single-tile same-block request WITH a selected cab is still
         rejected — the same-block rule does not depend on cab state
-        (design_new.md:982)."""
+        (design_new.md "`create_path()` flow")."""
         network.add_track(Tile(x=0, y=0, track_bits=TRACK_EW))
         network.add_track(Tile(x=1, y=0, track_bits=TRACK_EW))
         make_segment_block(network, "BLOCK_A", "Block A")

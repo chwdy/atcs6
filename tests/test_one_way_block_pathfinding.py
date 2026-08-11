@@ -1,12 +1,13 @@
 """One-way blocks are a pathfinding filter, not a wait-for-clear blocker.
 
-Per design_new.md create_path step 2 (":967"), pathfinding-home item 6
-(":971"), and the `query_graph_walks` contract (":2090"), candidate search
-rejects any candidate **whose traversal violates** a block's
-`Block.allowed_travel_directions` when `manual_override == False` — every
-traversed block, not just the destination. A one-way restriction is static:
+Per design_new.md "`create_path()` flow" and "Pathfinding-home migration"
+(the `query_graph_walks` contract), candidate search rejects any candidate
+**whose traversal violates** a block's `Block.allowed_travel_directions`
+when `manual_override == False` — every traversed block, not just the
+destination. A one-way restriction is static:
 a walk that crosses it against its direction can never be acquired, so per
-the `no_viable_path` definition (":1000") it must surface as a hard
+the `no_viable_path` definition (design_new.md "`create_path()` /
+`extend_path()` return contract") it must surface as a hard
 pathfinding failure (or be rerouted around), never as a best-effort
 truncation that parks authority just before the one-way block and retries
 forever.
@@ -74,7 +75,7 @@ def test_search_rejects_walks_crossing_one_way_block_in_reverse():
         assert not reverse_steps, (
             f"candidate {cand.ordered_blocks} traverses {ONE_WAY} in reverse "
             "— the allowed_travel_directions filter must reject it at search "
-            "time (design_new.md :967/:971/:2090)"
+            "time (design_new.md \"`create_path()` flow\")"
         )
 
 
@@ -175,8 +176,9 @@ def test_extend_path_fails_no_viable_path_not_blocked_no_growth():
 
 def test_manual_override_still_bypasses_one_way_policy():
     """Operator manual_override=True relaxes allowed_travel_directions for the
-    whole walk (design_new.md :582): the walk through the one-way block in
-    reverse survives the search again. Without override it is rejected (see
+    whole walk (design_new.md "`disabled` and `manual` availability flags"):
+    the walk through the one-way block in reverse survives the search again.
+    Without override it is rejected (see
     test_search_rejects_walks_crossing_one_way_block_in_reverse), so its
     reappearance here is the relaxation contract.
 

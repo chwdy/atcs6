@@ -22,7 +22,8 @@ Findings as of the audit:
 
   F3  Phase-ownership violation: `TrainController.tick()` (Phase 2)
       writes `state = RUNNING_AT_STATION` from its at-station check.
-      design_new.md:196,282 says only Phase 1 (`enter_station_dwell()`)
+      design_new.md "Phase structure" says only Phase 1
+      (`enter_station_dwell()`)
       may make that transition.
 
   F4  Path-completion gate never fires: because F3 closes the state==
@@ -34,7 +35,8 @@ Findings as of the audit:
   F5  One-tick `RUNNING_AT_STATION` + ACTIVE path window: at the tick
       Phase 2 transitions to RUNNING_AT_STATION, Phase 3 hasn't run yet,
       so the snapshot violates the design invariant "RUNNING_AT_STATION
-      ⇒ received_path_plan is None" (design_new.md ~line 1632 / the
+      ⇒ received_path_plan is None" (design_new.md "Controller state
+      machine" / the
       `at_station_implies_no_path` invariant in `tests/journey/`).
 
   F6  Route run never gets removed for normal completion: because F4
@@ -104,8 +106,8 @@ def _run_demo_until_stopped(max_ticks: int = 2000, dt: float = 0.1):
 
 
 def test_F3_phase2_does_not_write_running_at_station_state():
-    """`TrainController.tick()` is Phase 2. Per design_new.md ~line 196 and
-    ~line 282, only `RouteExecutor` (Phase 1) may transition the controller
+    """`TrainController.tick()` is Phase 2. Per design_new.md "Phase
+    structure", only `RouteExecutor` (Phase 1) may transition the controller
     into `RUNNING_AT_STATION`, via `TrainController.enter_station_dwell()`.
 
     The current implementation writes `self.state = RUNNING_AT_STATION`
@@ -183,7 +185,7 @@ def test_F4_path_completes_on_arrival_at_terminal():
 
 
 def test_F5_at_station_implies_no_active_path():
-    """design_new.md ~line 1632 (and the existing
+    """design_new.md "Controller state machine" (and the existing
     `at_station_implies_no_path` invariant in tests/journey/invariants.py)
     requires: `state == RUNNING_AT_STATION` implies
     `received_path_plan is None`.

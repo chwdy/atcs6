@@ -1,4 +1,4 @@
-"""Switch intrusion check is route-aware (design_new.md:741).
+"""Switch intrusion check is route-aware (design_new.md "Canonical runtime procedures").
 
 A train physically entering a switch must hold a lock *granting the route it
 occupies* — not merely any main lock on the switch. A lock recorded for a

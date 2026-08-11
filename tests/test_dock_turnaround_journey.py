@@ -5,9 +5,11 @@ at non-platform blocks (one east of the dock, one at the (0,0) dock
 itself) before reaching North Station.
 
 Pins the two design contracts that previously regressed:
-  * design_new.md:703 / :1751 — CAUTION is only a speed cap; it must
+  * design_new.md "`CAUTION` vs reservation independence" — CAUTION is only
+    a speed cap; it must
     not block clearance into the cautioned block.
-  * design_new.md:1145 — `task_direction == "either"` for a BlockTarget
+  * design_new.md "Canonical Next-Target Selection" — `task_direction ==
+    "either"` for a BlockTarget
     must pick whichever block-relative direction is reachable from the
     train's current span (not the route walk direction).
 """

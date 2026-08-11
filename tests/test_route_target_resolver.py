@@ -138,7 +138,8 @@ def test_resolve_task_direction_passes_through_explicit_reverse():
 
 
 def test_resolve_task_direction_either_picks_only_reachable_direction():
-    """Per design_new.md:1145, `task_direction == "either"` on a
+    """Per design_new.md "Canonical Next-Target Selection",
+    `task_direction == "either"` on a
     BlockTarget picks whichever block-relative direction is reachable
     from the train's current span. When only "reverse" yields a
     candidate, "either" must resolve to "reverse" even if the route
@@ -179,7 +180,8 @@ def test_resolve_task_direction_either_picks_forward_when_only_forward_reachable
 
 
 def test_resolve_task_direction_either_tie_breaks_by_shortest_candidate():
-    """Per design_new.md:1158, when both directions yield candidates the
+    """Per design_new.md "Canonical Next-Target Selection", when both
+    directions yield candidates the
     shortest allowed candidate wins."""
     forward_long = _StubSegment(
         tiles=[(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)]

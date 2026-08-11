@@ -182,8 +182,9 @@ def test_route_tasks_create_save_reload_roundtrip(client, connected_network):
             "target_time": None,
         },
         {
-            # Terminal stop so the route is activatable (design_new.md line 1282:
-            # the task list must end in a stop, optionally followed by dwell).
+            # Terminal stop so the route is activatable (design_new.md
+            # "Route-definition validation": the task list must end in a
+            # stop, optionally followed by dwell).
             "task_kind": "stop",
             "task_location": {"platform_id": "PLT_A"},
             "task_direction": "forward",

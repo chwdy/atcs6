@@ -133,7 +133,8 @@ class TestSwitchLocking:
         assert len(data["locks"]) == 1
         lock_entry = data["locks"][0]
         assert lock_entry["path_id"] == "PATH_1"
-        # claim_role is a derived diagnostic field; per design_new.md:651 it is
+        # claim_role is a derived diagnostic field; per design_new.md
+            # "Switch entity" it is
         # "main" when source_switch_id is None (else "flank").
         assert lock_entry["claim_role"] == "main"
         assert lock_entry["source_switch_id"] is None

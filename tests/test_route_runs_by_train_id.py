@@ -1,4 +1,5 @@
-"""`route_runs_by_train_id` composite sibling payload (design_new.md:2309).
+"""`route_runs_by_train_id` composite sibling payload
+(design_new.md "API payload ownership").
 
 Per the canonical "Data Flow To UI" contract, any composite network/train
 snapshot must expose a 4th sibling payload group `route_runs_by_train_id`
@@ -38,7 +39,7 @@ def test_route_run_summary_for_running_deviated_finished_missing():
 
     # display_state projects DEVIATED / CANCELLED while path_cancelled, split by
     # path_cancel_was_deviation, but state stays RUNNING (cancellation is not a
-    # stored state) — design_new.md:1449.
+    # stored state) — design_new.md "Route-run state".
     run.path_cancelled = True
     run.path_cancel_was_deviation = True
     deviated = ex.route_run_summary_for("T1")
@@ -102,7 +103,7 @@ def test_build_network_payload_emits_route_runs_sibling():
 def test_handle_path_cancellation_records_was_deviation_for_display_split():
     """`handle_path_cancellation` stores its `was_deviation` argument on the run
     so `display_state` projects DEVIATED for a movement deviation and CANCELLED
-    for every other authority cancellation (design_new.md:1456, 1700, 1730)."""
+    for every other authority cancellation (design_new.md "Route-run state")."""
     ex = RouteExecutor(RailwayNetwork())
     run = RouteExecutionState(train_id="T1", route_id="R1", started_at=0.0)
     run.current_route_status = RouteRunStatus.RUNNING

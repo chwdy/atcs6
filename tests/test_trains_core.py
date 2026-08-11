@@ -154,7 +154,8 @@ class TestSimulationController:
         assert simulation.route_executor.assigned_route_id_for("TRAIN_1") is None
         # ...and completion was delivered through the SimulationController
         # surface, so a `path_completion` NotificationCenter event fired
-        # (design_new.md:240/415/1553; gap #6 — the dispatcher must not call
+        # (design_new.md "Path completion notification flow"; gap #6 — the
+        # dispatcher must not call
         # RouteExecutor directly and skip the notification).
         completion_notes = [
             n

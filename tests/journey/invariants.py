@@ -111,7 +111,8 @@ def state_cab_pair_valid() -> Invariant:
 
 
 def at_station_implies_no_path() -> Invariant:
-    """Per design_new.md:1632 — RUNNING_AT_STATION ⇒ received_path_plan is None."""
+    """Per design_new.md "Controller state machine" — RUNNING_AT_STATION ⇒
+    received_path_plan is None."""
 
     def check(s: Snapshot) -> None:
         if s.state == TrainState.RUNNING_AT_STATION:

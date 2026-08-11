@@ -77,7 +77,8 @@ def test_received_path_plan_reads_live_from_dispatcher():
 def test_received_path_plan_projection_carries_only_canonical_fields():
     """The serialized received_path_plan exposes exactly the canonical
     schema (path_id, resource_sequence, authority_end_block_id) and must
-    NOT leak dispatcher-only fields (design_new.md:1740, 2187; gap #7)."""
+    NOT leak dispatcher-only fields
+    (design_new.md "received_path_plan schema"; gap #7)."""
     network = _build_three_block_network()
     car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T1", consist=[car], max_speed=60.0)

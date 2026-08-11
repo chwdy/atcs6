@@ -10,8 +10,9 @@ path's already-committed authority-end — while leaving it in `resource_sequenc
 The block then sat in T1's forward authority as FREE for ~120 ticks, rendering
 blue, and T1 eventually drove its head onto an unreserved block.
 
-design_new.md:1059 / :1062 require a blocked extend to leave the live path
-unchanged ("keep the live path and retry later"); :179 says PathDispatcher owns
+design_new.md "Path extension" requires a blocked extend to leave the live path
+unchanged ("keep the live path and retry later"); "Resource acquisition" says
+PathDispatcher owns
 the reservations for every not-yet-entered authority block. The canonical
 `active_path_blocks_held_or_owned` invariant encodes that coupling and trips the
 moment the seam goes FREE-but-forward (~tick 5), long before the daisy-chain

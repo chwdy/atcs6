@@ -222,7 +222,7 @@ class TestTrainControlPanelDataBugFix:
     train control panel could not reflect power/handle status or ATO path info.
 
     FIX: /api/network exposes a sibling `controllers_by_train_id` map per
-    design_new.md "Data Flow To UI" (~line 2065).
+    design_new.md "API payload ownership".
     """
 
     def test_network_includes_controller_sibling(self):

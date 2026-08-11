@@ -130,7 +130,7 @@ class TestAtoAutoCabSelectionBugFix:
 
     # v1: removed test_depart_selects_cab_and_starts_ato — tested the
     # legacy `Train.assigned_path_id` + `network.paths` mirror pattern
-    # that design_new.md ~line 1292 forbids.
+    # that design_new.md "Train ownership" forbids.
 
     def test_tick_does_not_auto_select_cab_when_missing(self, network):
         """
@@ -247,13 +247,15 @@ class TestAtoDepartCallsAtoGo:
 
 
         # depart() is called by RouteExecutor.
-        # Per design_new.md line 1812: depart() requires an active path plan.
+        # Per design_new.md "`TrainController.depart()` canonical contract":
+        # depart() requires an active path plan.
         from unittest.mock import MagicMock
         mock_plan = MagicMock()
         mock_dispatcher = MagicMock()
         mock_dispatcher.get_active_path.return_value = mock_plan
         controller.path_dispatcher = mock_dispatcher
-        # depart() now returns (bool, Optional[str]) per design_new.md line 1812.
+        # depart() now returns (bool, Optional[str]) per design_new.md
+        # "`TrainController.depart()` canonical contract".
         success, reason = controller.depart()
         assert success is True
 
@@ -1096,7 +1098,8 @@ class TestSpeedCurveCalculation:
         self, train_and_controller
     ):
         """A CAUTION block ahead caps the curve at CAUTION_SPEED_LIMIT_KMH
-        even when it carries no nominal speed_limit_kmh (design_new.md:1849).
+        even when it carries no nominal speed_limit_kmh (design_new.md
+        "ATC speed limit").
 
         Regression for gap #8: previously the curve only applied a CAUTION
         restriction when the block also had a nominal limit, so a CAUTION

@@ -1,4 +1,5 @@
-"""`power_off_cmd()` while already OFF is a no-op (design_new.md:1783).
+"""`power_off_cmd()` while already OFF is a no-op
+(design_new.md "Power/cab/mode command contracts").
 
 Regression for the gap-analysis finding: power_off from OFF armed the
 `power_off` Phase-3 latch unconditionally. That stale latch survived a later

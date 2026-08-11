@@ -1,4 +1,4 @@
-"""Per-train default SpeedProfile seeding (design_new.md:2235, :2257, :2259).
+"""Per-train default SpeedProfile seeding (design_new.md "SpeedProfile").
 
 Every train must have a default `SpeedProfile` whose `power_speed_curve` maps
 100% -> the OWNING train's configured `max_speed`, seeded when the train's

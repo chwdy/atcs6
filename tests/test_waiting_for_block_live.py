@@ -1,4 +1,4 @@
-"""Live recompute of ``waiting_for_block_id`` (design_new.md:2309).
+"""Live recompute of ``waiting_for_block_id`` (design_new.md "API payload ownership").
 
 Per the canonical "Data Flow To UI" contract, the dispatcher-progress field
 ``waiting_for_block_id`` is "recomputed live on each read, never stored — re-runs

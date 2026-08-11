@@ -104,7 +104,7 @@ def test_bootstrap_demo_train_respects_east_terminal_speed_limit_at_3x():
                     }
                 )
 
-        # Per design_new.md ~line 1292, operational state lives on the
+        # Per design_new.md "Train ownership", operational state lives on the
         # controller; check the controller's state machine directly.
         if (
             tick > 30

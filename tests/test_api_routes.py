@@ -1055,7 +1055,8 @@ class TestPathRoutes:
         self, client, app_state, network_with_tracks
     ):
         """POST /api/paths constructs a one-off operator route and assigns the
-        train (design_new.md:655 Quick Route). It returns 202 accepted and does
+        train (design_new.md "Availability flag REST API surface",
+        Quick Route). It returns 202 accepted and does
         NOT create dispatcher authority inline — Phase 1 builds the path. The
         "one active path per train" invariant is enforced by the dispatcher in
         Phase 1 (create_path rejects a second active path), not by this handler.
@@ -1365,7 +1366,8 @@ class TestRouteRedesignApis:
     # ------------------------------------------------------------------
     # Quick Route flow: the canonical replacement for the legacy
     # POST /api/paths create_path call from the editor's path tool.
-    # Per design_new.md:1297, manual reposition is modeled through an
+    # Per design_new.md "Route data" (Quick Route), manual reposition
+    # is modeled through an
     # ordinary one-off Route + RouteRun rather than a raw path.
     # ------------------------------------------------------------------
 

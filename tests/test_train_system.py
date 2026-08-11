@@ -43,7 +43,7 @@ def create_test_train_with_controller(
     network.add_train(train)
     controller = create_controller_for_train(train_id, network)
 
-    # Per design_new.md ~line 1292, live runtime state lives on the
+    # Per design_new.md "Train ownership", live runtime state lives on the
     # controller; tests configure it directly there instead of mirroring
     # through Train.
     controller.physics_sync.current_speed_kmh = current_speed
@@ -307,7 +307,7 @@ class TestTrainPhase1:
     ):
         """Test new Phase 1 properties (Train-side persistent fields only).
 
-        Per design_new.md ~line 1292, `state` and `travel_direction` live
+        Per design_new.md "Train ownership", `state` and `travel_direction` live
         on `TrainController`, not `Train`; this test checks the
         persistent/configuration fields that remain on Train plus the
         controller-derived facing direction.
@@ -383,7 +383,7 @@ class TestTrainPhase1:
         assert train.speed_profile_id == "profile_002"
         # `assigned_route_id` is no longer carried on `Train`; the canonical
         # store is `RouteExecutor.assigned_route_id_for(train_id)`.
-        # Per design_new.md ~line 1292, Train no longer mirrors live
+        # Per design_new.md "Train ownership", Train no longer mirrors live
         # state/travel_direction/current_speed; those load on the
         # controller via add_train(...) / explicit controller commands.
 
@@ -855,7 +855,8 @@ class TestTrainStateTransitions:
         # Manual depart now requires a cab to be selected explicitly.
         controller.commands.control_mode = "manual"
         controller.commands.cab = "A"
-        # Per design_new.md line 1812: depart() requires an active path plan.
+        # Per design_new.md "`TrainController.depart()` canonical contract":
+        # depart() requires an active path plan.
         # Stub the path dispatcher to satisfy the received_path_plan precondition.
         mock_plan = MagicMock()
         mock_dispatcher = MagicMock()
@@ -911,7 +912,8 @@ class TestTrainStateTransitions:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.READY
         )
-        # Per design_new.md line 1812: depart() requires an active path plan
+        # Per design_new.md "`TrainController.depart()` canonical contract":
+        # depart() requires an active path plan
         # before checking other preconditions (direction, state).
         mock_plan = MagicMock()
         mock_dispatcher = MagicMock()
@@ -931,7 +933,8 @@ class TestTrainStateTransitions:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.RUNNING_AT_STATION
         )
-        # Per design_new.md line 1812: depart() requires an active path plan.
+        # Per design_new.md "`TrainController.depart()` canonical contract":
+        # depart() requires an active path plan.
         mock_plan = MagicMock()
         mock_dispatcher = MagicMock()
         mock_dispatcher.get_active_path.return_value = mock_plan
@@ -946,7 +949,8 @@ class TestTrainStateTransitions:
     def test_enter_station_dwell_transition(self):
         """enter_station_dwell() transitions READY -> RUNNING_AT_STATION.
 
-        Per design_new.md:1516/1901 dwell entry is valid only from the
+        Per design_new.md "Controller state machine", dwell entry is valid
+        only from the
         dispatcher-completed READY state: stop completion lands the train in
         READY (on_path_complete), and the next Phase-1 dwell-entry step calls
         enter_station_dwell() from there.
@@ -960,7 +964,8 @@ class TestTrainStateTransitions:
 
     def test_enter_station_dwell_rejected_from_running_moving(self):
         """enter_station_dwell() is rejected (state unchanged) when not in
-        READY — the documented acceptance precondition (design_new.md:1901)."""
+        READY — the documented acceptance precondition
+        (design_new.md "Controller state machine")."""
         train, controller, network = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING
         )
@@ -981,7 +986,7 @@ class TestTrainStateTransitions:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING
         )
-        # Per design_new.md ~line 1292, EB state lives on the controller;
+        # Per design_new.md "Train ownership", EB state lives on the controller;
         # set the speed via the controller (live runtime field) and assert
         # against `eb_active` rather than a Train-side `emergency_brake`
         # mirror.
@@ -1185,7 +1190,8 @@ class TestCompleteStateFlows:
         assert controller.ops.state == TrainState.READY
 
         # Depart (manual mode to bypass ATO auto-cab selection).
-        # Per design_new.md line 1812: depart() now returns (bool, Optional[str]).
+        # Per design_new.md "`TrainController.depart()` canonical contract":
+        # depart() now returns (bool, Optional[str]).
         from unittest.mock import MagicMock
         controller.commands.control_mode = "manual"
         mock_plan = MagicMock()
@@ -1209,7 +1215,7 @@ class TestCompleteStateFlows:
 
         # Stop completion lands the train in READY first (on_path_complete),
         # which is the only state dwell entry is valid from
-        # (design_new.md:1516/1901).
+        # (design_new.md "Controller state machine").
         controller.on_path_complete()
         assert controller.ops.state == TrainState.READY
 
@@ -1231,7 +1237,8 @@ class TestCompleteStateFlows:
         # depart now requires a cab to be selected explicitly.
         controller.commands.control_mode = "manual"
         controller.commands.cab = "A"
-        # Per design_new.md line 1812: depart() requires an active path plan.
+        # Per design_new.md "`TrainController.depart()` canonical contract":
+        # depart() requires an active path plan.
         mock_plan = MagicMock()
         mock_dispatcher = MagicMock()
         mock_dispatcher.get_active_path.return_value = mock_plan
@@ -1306,7 +1313,8 @@ class TestHandleUnderEmergencyBrake:
     """
     Handle / power-percent input while the emergency brake is latched.
 
-    Per design_new.md line 1731: ``set_handle()`` is accepted while
+    Per design_new.md "Power/cab/mode command contracts": ``set_handle()`` is
+    accepted while
     ``eb.active == True`` (the operator may move the lever to any position),
     but EB overrides motion and the handle NEVER releases EB. EB is released
     only by ``eb.release()`` (gated on stopped + cancel consumed + no live
@@ -1333,7 +1341,8 @@ class TestHandleUnderEmergencyBrake:
         train, controller, _ = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING, current_speed=30.0
         )
-        # set_handle is a manual-mode command (design_new.md line 1757); put the
+        # set_handle is a manual-mode command (design_new.md "Power/cab/mode
+        # command contracts"); put the
         # controller in manual mode with a cab so the lever input is accepted.
         controller.commands.control_mode = "manual"
         controller.commands.cab = "A"
@@ -1355,7 +1364,8 @@ class TestHandleUnderEmergencyBrake:
         train, controller, _ = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING, current_speed=30.0
         )
-        # set_handle is a manual-mode command (design_new.md line 1757).
+        # set_handle is a manual-mode command (design_new.md "Power/cab/mode
+        # command contracts").
         controller.commands.control_mode = "manual"
         controller.commands.cab = "A"
 
@@ -1372,7 +1382,8 @@ class TestHandleUnderEmergencyBrake:
         train, controller, _ = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING, current_speed=0.0
         )
-        # set_handle is a manual-mode command (design_new.md line 1757).
+        # set_handle is a manual-mode command (design_new.md "Power/cab/mode
+        # command contracts").
         controller.commands.control_mode = "manual"
         controller.commands.cab = "A"
 

@@ -1,6 +1,7 @@
 """A3 — entity-flag PATCH endpoints emit a canonical command_result.
 
-design_new.md line 658: all four entity-flag PATCH endpoints (block / switch /
+design_new.md "Availability flag REST API surface": all four entity-flag PATCH
+endpoints (block / switch /
 platform / station) emit one `command_result` notification with payload
 `{command_id, command_name, <entity>_id, success, reason}`, on success and on
 the 409 admin-reject alike. This exercises the shared emit helper they route

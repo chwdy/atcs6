@@ -1,6 +1,6 @@
 """C3 — Block.is_holding_point: persistence + service write surface.
 
-design_new.md "Block" field schema (line 848): `is_holding_point` is a static,
+design_new.md "Block model": `is_holding_point` is a static,
 operator-set config flag persisted with the layout and never written by runtime.
 Its only consumer is the best-effort truncation holding-point preference (item
 11 under "Path And PathDispatcher"): a holding-point terminal overrides the
