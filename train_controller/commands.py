@@ -496,6 +496,8 @@ class OperatorCommands:
         - Train must be stopped
         - 'ato' / 'manual' both leave a stopped train in READY, unless coming
           from RUNNING_AT_STATION which is preserved.
+        - The retained `manual.manual_power_percent` is cleared, per
+          design_new.md "Driver-control interlock".
         """
         c = self._c
         train = c._get_train()
@@ -511,6 +513,13 @@ class OperatorCommands:
         self.control_mode = mode
         # Per design_new.md, set_mode disengages any active ATO run.
         c.ato.running = False
+        # Per design_new.md "Driver-control interlock": `manual_power_percent`
+        # is set-and-forget, so a mode change must clear it. Otherwise a
+        # percentage parked before the change becomes the train's command
+        # after it with no fresh driver input — the EB path is covered by
+        # `produce_physics_command()`'s per-tick reset, but a plain
+        # manual -> ato -> manual cycle never passes through that branch.
+        c.manual.reset_power_percent_for_safety()
 
         # Preserve dwell state if currently dwelling; otherwise land in READY.
         if c.ops.state != TrainState.RUNNING_AT_STATION:

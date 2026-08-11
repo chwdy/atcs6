@@ -1008,6 +1008,41 @@ class TestTrainStateTransitions:
         result = controller.commands.set_mode("manual")
         assert result.success is False
 
+    def test_set_mode_clears_retained_manual_power_percent(self):
+        """A mode change clears `manual.manual_power_percent`, per
+        design_new.md "Driver-control interlock".
+
+        The percentage is set-and-forget: nothing re-asserts it per tick, so a
+        value parked before the mode change would become the train's command
+        after it with no fresh driver input. The EB path is already covered by
+        `produce_physics_command()`, which zeroes the field on every tick while
+        `eb.active` — but a plain manual -> ato -> manual cycle never enters
+        that branch, which is the hole this closes.
+        """
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.READY
+        )
+        controller.commands.power_on_cmd()
+        controller.commands.set_mode("manual")
+        controller.commands.set_cab("A")
+        controller.commands.set_manual_mode_type("power_percent")
+        assert controller.commands.set_manual_power_percent(60).success is True
+        assert controller.manual.manual_power_percent == 60
+
+        assert controller.commands.set_mode("ato").success is True
+        assert controller.manual.manual_power_percent == 0, (
+            "set_mode('ato') must clear the retained power percent; a value "
+            "surviving the mode change commands the train with no fresh "
+            "driver input."
+        )
+
+        # And returning to manual leaves nothing to re-apply: the submode is
+        # still power_percent, so a surviving value would command motion here.
+        controller.commands.set_manual_power_percent(45)
+        assert controller.commands.set_mode("manual").success is True
+        assert controller.manual.manual_mode_type == "power_percent"
+        assert controller.manual.manual_power_percent == 0
+
 
 
 
