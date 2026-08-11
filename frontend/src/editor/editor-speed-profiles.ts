@@ -10,7 +10,7 @@
 // Owned by the Editor (`new SpeedProfileEditorHandler(this)`).
 
 import { showToast } from '../lib/toast';
-import { showConfirmModal, showFormModal } from '../lib/helpers';
+import { escapeAttr, showConfirmModal, showFormModal } from '../lib/helpers';
 import type { EditorHost } from './types';
 import {
   type Curve,
@@ -29,6 +29,12 @@ import {
 interface SpeedProfileData {
   profile_id: string;
   name: string;
+  // The locomotive model this profile describes, matched against
+  // RosterEntry.model so one measured curve serves every locomotive of a model.
+  model: string;
+  // ISO stamp of the last speed-calibration commit; null while the curve is
+  // still the seeded linear default.
+  calibrated_at: string | null;
   power_speed_curve: CurvePoint[];
   voltage_power_curve: CurvePoint[];
   lighting_voltage: number;
@@ -590,6 +596,8 @@ export class SpeedProfileEditorHandler {
     return {
       profile_id: d.profile_id,
       name: d.name || '',
+      model: d.model || '',
+      calibrated_at: d.calibrated_at || null,
       voltage_power_curve: vp,
       power_speed_curve: ps,
       // max_voltage may be absent on older GETs — fall back to the curve top.
@@ -682,9 +690,22 @@ export class SpeedProfileEditorHandler {
                 <div class="control-section">
                     <div class="control-section-header">Calibration</div>
                     <div class="input-small-row mb-8">
+                        <label class="input-small-label input-small-label-inline" for="sp-model">Model</label>
+                        <input type="text" id="sp-model" class="input-small-field input-small-field-compact" value="${escapeAttr(p.model || '')}" placeholder="e.g. Kato EF66">
+                    </div>
+                    <div class="text-muted text-xs mb-8">${
+                      p.calibrated_at
+                        ? `Measured ${escapeAttr(String(p.calibrated_at).replace('T', ' ').replace('+00:00', ' UTC'))}`
+                        : 'Not measured — the curve is still the seeded linear default.'
+                    }</div>
+                    <div class="input-small-row mb-8">
                         <label class="input-small-label input-small-label-inline" for="sp-lighting">Lighting voltage (0% power)</label>
                         <input type="number" id="sp-lighting" class="input-small-field input-small-field-compact" value="${fmt(p.lighting_voltage)}" min="0" step="0.1">
                         <button id="sp-lighting-calibrate" class="btn btn-secondary btn-sm" title="Find this locomotive's lighting voltage on the track">Calibrate</button>
+                    </div>
+                    <div class="input-small-row mb-8">
+                        <label class="input-small-label input-small-label-inline">Power → speed curve</label>
+                        <button id="sp-speed-calibrate" class="btn btn-secondary btn-sm" title="Measure this locomotive by running it back and forth across a block">Calibrate speed</button>
                     </div>
                     <div class="input-small-row mb-8">
                         <label class="input-small-label input-small-label-inline" for="sp-maxv">Max voltage (100% power)</label>
@@ -782,6 +803,230 @@ export class SpeedProfileEditorHandler {
 
     const calibrate = document.getElementById('sp-lighting-calibrate');
     if (calibrate) calibrate.onclick = () => this._openLightingCalibration();
+
+    const speedCalibrate = document.getElementById('sp-speed-calibrate');
+    if (speedCalibrate) speedCalibrate.onclick = () => this._openSpeedCalibration();
+
+    const model = document.getElementById('sp-model') as HTMLInputElement | null;
+    if (model)
+      model.onchange = () => {
+        this._profile!.model = model.value.trim();
+        this._commit();
+      };
+  }
+
+  // === Speed calibration ===
+  //
+  // design_new.md "Speed calibration". The pass times the locomotive across one
+  // operator-named measured block and turns it around at each end itself, so a
+  // plain length of track measures a locomotive with no loop to lap. It writes
+  // nothing until the operator picks a commit target: Replace gives every
+  // locomotive of the model the measurement, Save as new forks a profile for a
+  // locomotive that does not run like the rest of its model.
+
+  private _calPoll: number | null = null;
+
+  private async _openSpeedCalibration(): Promise<void> {
+    const train = await this._calibrationTrain();
+    if (!train) return;
+    this._showSpeedCalibrationPanel(train);
+  }
+
+  /** A placed train running this profile — the pass has to drive one. */
+  private async _calibrationTrain(): Promise<any | null> {
+    let trains: any[] = [];
+    try {
+      trains = await this.api.getTrains();
+    } catch (err: any) {
+      showToast('Failed to load trains: ' + (err.message || err), 'error', 5000);
+      return null;
+    }
+    const profileId = this._profile!.profile_id;
+    const matches = (trains || []).filter((t: any) => t?.speed_profile_id === profileId);
+    if (!matches.length) {
+      showToast(
+        'Place a train that uses this profile first — calibration drives the locomotive',
+        'warning',
+        5000
+      );
+      return null;
+    }
+    return matches[0];
+  }
+
+  private _showSpeedCalibrationPanel(train: any): void {
+    document.querySelector('.app-modal-overlay')?.remove();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'app-modal-overlay';
+    overlay.innerHTML = `
+      <div class="app-modal sp-calibration-modal">
+        <div class="app-modal-header">Calibrate speed — ${escapeAttr(train.car_number || train.id)}</div>
+        <div class="app-modal-body">
+          <div class="app-modal-message">The train runs back and forth across the
+          measured block. The two blocks either side are its run-up and its
+          stopping room, so give it a stretch long enough to get up to speed and
+          pull up again.</div>
+          <div class="input-small-row mb-8">
+            <label class="input-small-label input-small-label-inline" for="sp-cal-block">Measured block</label>
+            <input type="text" id="sp-cal-block" class="input-small-field input-small-field-compact" placeholder="block id">
+          </div>
+          <div class="text-muted text-xs mb-8" id="sp-cal-stretch">Name a block to see the stretch.</div>
+          <div id="sp-cal-progress" class="text-muted text-xs mb-8"></div>
+        </div>
+        <div class="app-modal-footer">
+          <button class="btn btn-secondary btn-sm" id="sp-cal-close">Close</button>
+          <button class="btn btn-primary btn-sm" id="sp-cal-start" disabled>Start</button>
+        </div>
+      </div>`;
+
+    const blockEl = overlay.querySelector('#sp-cal-block') as HTMLInputElement;
+    const stretchEl = overlay.querySelector('#sp-cal-stretch') as HTMLElement;
+    const progressEl = overlay.querySelector('#sp-cal-progress') as HTMLElement;
+    const startBtn = overlay.querySelector('#sp-cal-start') as HTMLButtonElement;
+    const closeBtn = overlay.querySelector('#sp-cal-close') as HTMLButtonElement;
+
+    // Resolving the stretch before Start is what lets the operator see which
+    // two blocks the points currently lead to, rather than finding out by
+    // watching the locomotive run into one.
+    blockEl.onchange = async () => {
+      const blockId = blockEl.value.trim();
+      startBtn.disabled = true;
+      if (!blockId) {
+        stretchEl.textContent = 'Name a block to see the stretch.';
+        return;
+      }
+      try {
+        const s = await this.api.getCalibrationStretch(train.id, blockId);
+        stretchEl.textContent =
+          `Run-up / stopping room: ${s.outer_block_ids.join(' ↔ ')} · ` +
+          `measured length ${s.length_cm} cm`;
+        startBtn.disabled = false;
+      } catch (err: any) {
+        stretchEl.textContent = err.message || 'Cannot use that block';
+      }
+    };
+
+    startBtn.onclick = async () => {
+      startBtn.disabled = true;
+      try {
+        await this.api.startCalibration(train.id, {
+          mode: 'auto',
+          measured_block_id: blockEl.value.trim(),
+        });
+      } catch (err: any) {
+        showToast(err.message || 'Cannot start calibration', 'error', 6000);
+        startBtn.disabled = false;
+        return;
+      }
+      blockEl.disabled = true;
+      this._pollCalibration(train, overlay, progressEl);
+    };
+
+    const close = () => {
+      if (this._calPoll !== null) {
+        window.clearInterval(this._calPoll);
+        this._calPoll = null;
+      }
+      overlay.remove();
+    };
+    closeBtn.onclick = close;
+    document.body.appendChild(overlay);
+  }
+
+  /** Poll the open pass and render its progress, then its commit controls. */
+  private _pollCalibration(train: any, overlay: HTMLElement, progressEl: HTMLElement): void {
+    if (this._calPoll !== null) window.clearInterval(this._calPoll);
+    this._calPoll = window.setInterval(async () => {
+      let run: any;
+      try {
+        run = await this.api.getCalibration(train.id);
+      } catch {
+        return;
+      }
+      if (!run.open) {
+        progressEl.textContent = 'The pass ended.';
+        window.clearInterval(this._calPoll!);
+        this._calPoll = null;
+        return;
+      }
+      if (run.phase === 'failed') {
+        progressEl.textContent = `Failed: ${run.failure_reason}`;
+        window.clearInterval(this._calPoll!);
+        this._calPoll = null;
+        return;
+      }
+      if (run.phase === 'measured') {
+        window.clearInterval(this._calPoll!);
+        this._calPoll = null;
+        this._showCommitControls(train, overlay, run);
+        return;
+      }
+      progressEl.textContent =
+        `Measuring ${run.current_power_percent}% — step ${run.step_index + 1} of ` +
+        `${run.step_count}, crossing ${run.crossings_done + 1} of ${run.crossings_target}`;
+    }, 1000);
+  }
+
+  /** The measured curve plus the two commit targets. Nothing is written until
+   *  the operator picks one; closing discards the pass. */
+  private _showCommitControls(train: any, overlay: HTMLElement, run: any): void {
+    const body = overlay.querySelector('.app-modal-body') as HTMLElement;
+    const footer = overlay.querySelector('.app-modal-footer') as HTMLElement;
+    const points = (run.samples || [])
+      .map((s: any) => `${s.power_percent}% → ${s.speed_kmh.toFixed(1)} km/h`)
+      .join('<br>');
+    body.innerHTML = `
+      <div class="app-modal-message">Measured ${run.samples.length} points.</div>
+      <div class="text-muted text-xs mb-8">${points}</div>
+      <div class="input-small-row mb-8">
+        <label class="input-small-label input-small-label-inline" for="sp-cal-model">Model</label>
+        <input type="text" id="sp-cal-model" class="input-small-field input-small-field-compact" value="${escapeAttr(this._profile!.model || '')}" placeholder="e.g. Kato EF66">
+      </div>
+      <div class="input-small-row mb-8">
+        <label class="input-small-label input-small-label-inline" for="sp-cal-name">New profile name</label>
+        <input type="text" id="sp-cal-name" class="input-small-field input-small-field-compact" placeholder="only used by Save as new">
+      </div>`;
+    footer.innerHTML = `
+      <button class="btn btn-secondary btn-sm" id="sp-cal-discard">Discard</button>
+      <button class="btn btn-secondary btn-sm" id="sp-cal-new">Save as new profile</button>
+      <button class="btn btn-primary btn-sm" id="sp-cal-replace">Replace this profile</button>`;
+
+    const modelEl = body.querySelector('#sp-cal-model') as HTMLInputElement;
+    const nameEl = body.querySelector('#sp-cal-name') as HTMLInputElement;
+
+    const commit = async (target: string) => {
+      let result: any;
+      try {
+        result = await this.api.commitCalibration(train.id, {
+          target,
+          name: nameEl.value.trim(),
+          model: modelEl.value.trim(),
+        });
+      } catch (err: any) {
+        showToast(err.message || 'Commit failed', 'error', 6000);
+        return;
+      }
+      overlay.remove();
+      showToast(
+        target === 'new' ? 'Saved as a new profile' : 'Profile updated',
+        'success',
+        4000
+      );
+      // Save as new wrote a different profile and relinked the train to it, so
+      // open the one that was actually written rather than the one on screen.
+      const written = result?.profile?.profile_id || this._profile!.profile_id;
+      this.showProfileEditor(written);
+    };
+
+    (footer.querySelector('#sp-cal-replace') as HTMLButtonElement).onclick = () =>
+      commit('replace');
+    (footer.querySelector('#sp-cal-new') as HTMLButtonElement).onclick = () =>
+      commit('new');
+    (footer.querySelector('#sp-cal-discard') as HTMLButtonElement).onclick = async () => {
+      await this.api.cancelCalibration(train.id).catch(() => {});
+      overlay.remove();
+    };
   }
 
   // === Lighting-voltage calibration ===

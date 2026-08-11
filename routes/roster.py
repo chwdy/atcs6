@@ -18,6 +18,15 @@ def register(app, state: AppState) -> None:
     def _roster():
         return state.network.train_roster
 
+    def _profiles():
+        """Every registered `SpeedProfile`, for the model match."""
+        registry = state.network.speed_profiles
+        return [
+            p
+            for p in (registry.get(pid) for pid in registry.list_profiles())
+            if p is not None
+        ]
+
     @app.route("/api/roster", methods=["GET"])
     def list_roster():
         return jsonify({"roster": _roster().to_dict()})
@@ -29,6 +38,12 @@ def register(app, state: AppState) -> None:
             data.get("entry_id") or f"ROSTER-{uuid.uuid4().hex[:6].upper()}"
         )
         entry = RosterEntry.from_dict(data)
+        # Profiles are matched by model (design_new.md "Train Roster"): an entry
+        # that names no profile links the one already measured for its model, so
+        # a second locomotive of that model starts from a real curve. The match
+        # is made here, once, as the entry's model is written; every later read
+        # follows the stored `speed_profile_id`.
+        _roster().link_profile_by_model(entry, _profiles())
         _roster().add_entry(entry)
         return jsonify({"status": "success", "entry": entry.to_dict()})
 

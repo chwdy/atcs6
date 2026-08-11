@@ -432,6 +432,14 @@ class SimulationController(SwitchOutputOwner):
             # (design_new.md "Power -> Unidentified trains").
             self.unidentified_trains.reconcile(self._unidentified_clock())
 
+            # An open speed-calibration pass reads the confirmed occupancy this
+            # tick settled on, so it runs after every train's Phase 3: what it
+            # watches for is a block entry attribution has already credited to
+            # the calibration train. Its commands go out through the ordinary
+            # Phase-2 manual surface and land on the next tick's drain
+            # (design_new.md "Speed calibration", Where it runs).
+            self.speed_calibration.tick()
+
             self._settle_after_commits()
 
             self._accrue_block_occupied_seconds(delta_seconds)
@@ -1634,6 +1642,7 @@ class SimulationController(SwitchOutputOwner):
         # below, keeping the locomotive's measured curves tied to it across
         # placements.
         if roster_entry is not None:
+            train.roster_entry_id = roster_entry.entry_id
             if roster_entry.min_radius_cm is not None:
                 train.min_radius_cm = float(roster_entry.min_radius_cm)
             train.max_slope = float(roster_entry.max_slope)

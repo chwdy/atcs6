@@ -81,6 +81,12 @@ class Train:
     # `TrainController` per design_new.md; consumers read them from the
     # controller, not from `Train`.
     speed_profile_id: Optional[str] = None  # SpeedProfile for this train
+    # The `RosterEntry` this train was placed from, when placement named one.
+    # Speed calibration's Save-as-new commit relinks both the train and this
+    # entry to the profile it creates, so the measurement reaches the locomotive
+    # it was taken on rather than every locomotive of the model
+    # (design_new.md "Speed calibration", What commit writes).
+    roster_entry_id: Optional[str] = None
 
     # Maintenance counters (see design_new.md "Maintenance counters"): durable
     # cumulative usage, written during simulation and persisted with the layout.
@@ -135,6 +141,7 @@ class Train:
             "min_radius_cm": self.min_radius_cm,
             "max_slope": self.max_slope,
             "speed_profile_id": self.speed_profile_id,
+            "roster_entry_id": self.roster_entry_id,
             "total_distance_cm": self.total_distance_cm,
             "total_run_time_seconds": self.total_run_time_seconds,
             # Read by the UI so an unidentified train is shown as itself, marked apart from the
@@ -168,6 +175,7 @@ class Train:
         train.max_slope = float(data.get("max_slope", 0.0))
 
         train.speed_profile_id = data.get("speed_profile_id")
+        train.roster_entry_id = data.get("roster_entry_id")
 
         train.total_distance_cm = float(data.get("total_distance_cm", 0.0))
         train.total_run_time_seconds = float(data.get("total_run_time_seconds", 0.0))

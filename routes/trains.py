@@ -332,16 +332,22 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/trains/<train_id>/calibrate", methods=["POST"])
     def calibrate_train(train_id):
-        """Run a speed-calibration pass (design_new.md "Speed calibration").
+        """Open a speed-calibration pass (design_new.md "Speed calibration").
 
-        Body: ``{ "mode": "auto" | "manual" }`` (default "auto"). Auto runs the
-        full voltage sweep and commits; manual begins the run and the operator
-        marks laps via ``/calibrate/record``.
+        Body: ``{"mode": "auto"|"manual", "measured_block_id": str,
+        "marker_spacing_cm": float}``. Auto profiling names the measured block
+        and the pass resolves its two neighbours and drives itself; manual
+        marking names the marker spacing and the operator marks with
+        ``/calibrate/record``. The pass writes nothing until ``/calibrate/commit``.
         """
         data = request.get_json(silent=True) or {}
         try:
             run = train_service.calibrate_train(
-                state, train_id, mode=data.get("mode", "auto")
+                state,
+                train_id,
+                mode=data.get("mode", "auto"),
+                measured_block_id=data.get("measured_block_id", ""),
+                marker_spacing_cm=float(data.get("marker_spacing_cm", 0) or 0),
             )
         except NotFoundError as exc:
             return jsonify({"error": str(exc)}), 404
@@ -349,28 +355,82 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": str(exc)}), 409
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
-        return jsonify(
-            {
-                "status": "success",
-                "mode": run.mode,
-                "steps": len(run.commanded_voltages),
-                "samples": len(run.samples),
-                "complete": run.is_complete,
-            }
-        )
+        return jsonify({"status": "success", **run.to_dict()})
+
+    @app.route("/api/trains/<train_id>/calibrate", methods=["GET"])
+    def calibrate_status(train_id):
+        """Progress of the open pass, for the panel to poll."""
+        run = train_service.calibrate_status(state, train_id)
+        if run is None:
+            return jsonify({"open": False})
+        return jsonify({"open": True, **run.to_dict()})
+
+    @app.route("/api/trains/<train_id>/calibrate", methods=["DELETE"])
+    def calibrate_cancel(train_id):
+        """Drop the open pass. Its samples go with it."""
+        train_service.calibrate_cancel(state, train_id)
+        return "", 204
 
     @app.route("/api/trains/<train_id>/calibrate/record", methods=["POST"])
     def calibrate_record(train_id):
-        """Manual-mode lap marker: record one lap for the active run."""
+        """Manual marking: the operator marks one pass of a marker."""
         try:
-            sample = train_service.calibrate_record(state, train_id)
+            run = train_service.calibrate_record(state, train_id)
         except NotFoundError as exc:
             return jsonify({"error": str(exc)}), 404
         except ConflictError as exc:
             return jsonify({"error": str(exc)}), 409
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
-        return jsonify({"status": "success", "committed_step": sample is not None})
+        if run is None:
+            return jsonify({"error": "No manual calibration pass is open"}), 409
+        return jsonify({"status": "success", **run.to_dict()})
+
+    @app.route("/api/trains/<train_id>/calibrate/commit", methods=["POST"])
+    def calibrate_commit(train_id):
+        """Write a measured pass onto a profile.
+
+        Body: ``{"target": "replace"|"new", "name": str, "model": str}``.
+        ``replace`` writes the linked profile, so every locomotive of that model
+        gets the measurement; ``new`` forks a profile and relinks this train and
+        its roster entry to it (design_new.md "What commit writes").
+        """
+        data = request.get_json(silent=True) or {}
+        try:
+            profile = train_service.calibrate_commit(
+                state,
+                train_id,
+                target=data.get("target", "replace"),
+                name=data.get("name", ""),
+                model=data.get("model", ""),
+            )
+        except NotFoundError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except ConflictError as exc:
+            return jsonify({"error": str(exc)}), 409
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"status": "success", "profile": profile.to_dict()})
+
+    @app.route("/api/trains/<train_id>/calibrate/stretch/<block_id>", methods=["GET"])
+    def calibrate_stretch(train_id, block_id):
+        """The two outer blocks a measured block resolves to, for the panel to
+        show before the operator starts the pass."""
+        try:
+            outer, length_cm = train_service.resolve_calibration_stretch(
+                state, block_id
+            )
+        except NotFoundError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify(
+            {
+                "measured_block_id": block_id,
+                "outer_block_ids": list(outer),
+                "length_cm": length_cm,
+            }
+        )
 
     # ---------------------------------------------------------------- #
     # Lighting-voltage calibration

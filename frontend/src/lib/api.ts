@@ -197,6 +197,98 @@ export class API implements LayoutDataClient, SimClient {
     return result.trains || [];
   }
 
+  // === Speed calibration (design_new.md "Speed calibration") ===
+  //
+  // A pass measures a locomotive's power/speed response by timing it across an
+  // operator-named measured block, turning it around at each end. It writes
+  // nothing until `commitCalibration` — the operator picks whether the result
+  // replaces the linked profile (every locomotive of that model gets it) or
+  // forks a new one.
+
+  /** The two outer blocks a measured block resolves to, plus its length. Shown
+   *  before Start so the operator sees which stretch the train will run. */
+  async getCalibrationStretch(trainId: string, blockId: string): Promise<any> {
+    return this._request(
+      `/trains/${trainId}/calibrate/stretch/${blockId}`,
+      {},
+      'getCalibrationStretch'
+    );
+  }
+
+  async startCalibration(trainId: string, body: Record<string, unknown>): Promise<any> {
+    return this._request(
+      `/trains/${trainId}/calibrate`,
+      { method: 'POST', body },
+      'startCalibration'
+    );
+  }
+
+  /** Progress of the open pass; `{open: false}` when there is none. */
+  async getCalibration(trainId: string): Promise<any> {
+    return this._request(`/trains/${trainId}/calibrate`, {}, 'getCalibration');
+  }
+
+  async cancelCalibration(trainId: string): Promise<any> {
+    return this._request(
+      `/trains/${trainId}/calibrate`,
+      { method: 'DELETE' },
+      'cancelCalibration'
+    );
+  }
+
+  /** Manual marking: the operator marks one pass of a marker. */
+  async recordCalibrationMark(trainId: string): Promise<any> {
+    return this._request(
+      `/trains/${trainId}/calibrate/record`,
+      { method: 'POST' },
+      'recordCalibrationMark'
+    );
+  }
+
+  /** `target` is 'replace' or 'new'; 'new' also relinks the train and its
+   *  roster entry to the profile it creates. */
+  async commitCalibration(trainId: string, body: Record<string, unknown>): Promise<any> {
+    return this._request(
+      `/trains/${trainId}/calibrate/commit`,
+      { method: 'POST', body },
+      'commitCalibration'
+    );
+  }
+
+  // === Lighting-voltage calibration ===
+
+  async startLightingCalibration(trainId: string): Promise<any> {
+    return this._request(
+      `/trains/${trainId}/calibrate/lighting`,
+      { method: 'POST' },
+      'startLightingCalibration'
+    );
+  }
+
+  async stepLightingCalibration(trainId: string, direction: number): Promise<any> {
+    return this._request(
+      `/trains/${trainId}/calibrate/lighting/step`,
+      { method: 'POST', body: { direction } },
+      'stepLightingCalibration'
+    );
+  }
+
+  async saveLightingCalibration(trainId: string): Promise<any> {
+    return this._request(
+      `/trains/${trainId}/calibrate/lighting/save`,
+      { method: 'POST' },
+      'saveLightingCalibration'
+    );
+  }
+
+  async cancelLightingCalibration(trainId: string): Promise<any> {
+    return this._request(
+      `/trains/${trainId}/calibrate/lighting`,
+      { method: 'DELETE' },
+      'cancelLightingCalibration'
+    );
+  }
+
   /**
    * Map of train_id -> assigned route_id (or null), from the /trains sibling
    * payload's `assigned_routes_by_train_id`. Used to tell which trains are

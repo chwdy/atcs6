@@ -139,14 +139,23 @@ LIGHTING_CLEAR_HOLD_READS: int = 30
 # keeps its `train_id`.
 UNIDENTIFIED_GAP_HOLD_S: float = 5.0
 
-# Speed calibration (design_new.md "Speed calibration"). A calibration pass
-# commands a fixed sweep of CALIBRATION_VOLTAGE_STEPS track-voltage steps from
-# the profile's lighting_voltage to its max_voltage and measures the speed the
-# train reaches at each, filling the SpeedProfile curves. In manual mode the
-# operator marks each lap and calibration averages CALIBRATION_MANUAL_LAPS laps
-# per step so one noisy lap does not set a point.
-CALIBRATION_VOLTAGE_STEPS: int = 8
-CALIBRATION_MANUAL_LAPS: int = 3
+# Speed calibration (design_new.md "Speed calibration"). A pass sweeps
+# power_percent in CALIBRATION_POWER_STEP_PERCENT increments up to 100% and
+# measures the speed the locomotive reaches at each, filling
+# SpeedProfile.power_speed_curve. The 0% point needs no measurement: 0% power
+# is lighting_voltage, so (0%, 0 km/h) is the curve's origin by definition.
+CALIBRATION_POWER_STEP_PERCENT: int = 10
+
+# Each step runs this many round trips across the measured block, so it
+# collects twice this many crossings, half in each direction. Averaging equal
+# counts each way cancels the stretch's grade: the uphill leg measures slow by
+# very nearly what the downhill leg measures fast.
+CALIBRATION_ROUND_TRIPS: int = 2
+
+# A step whose measured-block entry does not confirm within this many seconds
+# of `AppState.operating_time` records 0 km/h and the pass moves on. The flat
+# bottom this leaves on the curve is that locomotive's real stall band.
+CALIBRATION_STEP_TIMEOUT_S: float = 30.0
 
 # Lighting-voltage calibration (design_new.md "Lighting-voltage calibration").
 # One press of the panel's step control moves the candidate voltage by this

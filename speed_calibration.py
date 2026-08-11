@@ -1,56 +1,129 @@
-"""Speed calibration — measure a locomotive's voltage/power/speed response and
-write it into its `SpeedProfile` (design_new.md "Speed calibration").
+"""Speed calibration — measure a locomotive's power/speed response and write it
+into a `SpeedProfile` (design_new.md "Speed calibration").
 
-A calibration pass commands a fixed sweep of `track_voltage` steps and measures
-the speed the train actually reaches at each, instead of asking for a target
-speed: the second-stage curve that turns a target speed into a control value is
-the very thing the pass is building, so it cannot lean on it. Each step yields
-one `(track_voltage, power_percent)` point for `voltage_power_curve` and one
-`(power_percent, speed_kmh)` point for `power_speed_curve`. On completion the
-collected points are written onto the locomotive's linked `SpeedProfile`, so the
-calibration stays tied to the locomotive across placements.
+A pass sweeps `power_percent` in `CALIBRATION_POWER_STEP_PERCENT` increments up
+to `100%` and measures the speed that comes back at each. It must work this way
+round: `power_speed_curve` is the curve that turns a wanted speed into a control
+value, and it is the very thing the pass is building, so the pass must not ask
+for a target speed while building it.
 
-`CalibrationRun` is the transient working record of one pass — in-memory only;
-only its committed result (the profile curves) persists, through ordinary
-`SpeedProfile` persistence. Two measurement modes:
-- **Auto** times the loco against block-current detection (head crosses two
-  block seams a known distance apart). `run_pass` measures every step.
-- **Manual** times the loco against an operator marker: `record` is issued as
-  the head passes a chosen point each lap, and calibration averages
-  `CALIBRATION_MANUAL_LAPS` laps per step so one noisy lap does not set a point.
+**Auto profiling** times the head across one operator-named measured block, B,
+between two confirmed block entries — into B and into the block after it. Timing
+between two entries of the same kind measures exactly one block whatever the
+start position was, and the detector's fixed lag lands on both stamps and
+cancels in the difference. B's two neighbours are A and C: the run-up at one end
+and the stopping room at the other, and which is which flips each leg.
 
-Both produce the same `(track_voltage, power_percent, speed_kmh)` samples and
-feed the same commit. In simulation the measured speed comes from the model, so
-a pass reproduces the model's own curve; on real hardware the same pass captures
-the physical locomotive's true response. The measurement source is the only
-difference — `measured_speed_fn` supplies it, defaulting to the model.
+The pass turns the train around at each end itself — power to 0, wait for the
+canonical stopped predicate, `set_cab(...)` the other end, re-command the step —
+so a plain length of track can measure a locomotive with no loop to lap. Each
+step runs `CALIBRATION_ROUND_TRIPS` round trips and averages twice that many
+crossings, half in each direction: a stretch is rarely dead level, and equal
+counts each way cancel the grade.
 
-This class also owns the second, smaller procedure (design_new.md
+**Manual marking** is the fallback for a layout the detectors cannot time. The
+operator sets two marks a known distance apart and issues `record` at each; the
+operator also drives the shuttle, because nothing confirms a block entry for the
+pass to reverse on.
+
+Measuring every step does not commit the run. It holds its finished samples
+until the operator picks a target — replace the linked profile, or save a new
+one — which is what `commit(...)` writes. `CalibrationRun` is in-memory only;
+only the committed result persists, through ordinary `SpeedProfile` persistence.
+
+This module also owns the second, smaller procedure (design_new.md
 "Lighting-voltage calibration"): finding the one voltage at which a locomotive
 is lit and still holds, and writing it to `lighting_voltage`. It comes first for
 a newly added locomotive, because a speed pass takes its bottom step from that
-anchor. It has no measurement step at all — the operator watching the
-locomotive is the instrument — so `LightingCalibrationRun` carries a candidate
-voltage the operator steps up and down and nothing else.
+anchor. It has no measurement step at all — the operator watching the locomotive
+is the instrument — so `LightingCalibrationRun` carries a candidate voltage the
+operator steps up and down and nothing else.
 """
 
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from constants import (
-    CALIBRATION_MANUAL_LAPS,
-    CALIBRATION_VOLTAGE_STEPS,
+    CALIBRATION_POWER_STEP_PERCENT,
+    CALIBRATION_ROUND_TRIPS,
+    CALIBRATION_STEP_TIMEOUT_S,
     LIGHTING_VOLTAGE_STEP_V,
 )
+from model_scale import cm_per_sec_to_kmh
+
+# A measured mean this far below the previous step's is treated as equal rather
+# than as a fall, so float noise in the crossing mean cannot trip the
+# non-decreasing rule.
+_MONOTONIC_EPSILON_KMH = 1e-6
+
+# Run phases. "leg" and "stopping" are the two halves of one crossing; the pass
+# alternates between them until every step is measured.
+PHASE_LEG = "leg"
+PHASE_STOPPING = "stopping"
+PHASE_MEASURED = "measured"
+PHASE_FAILED = "failed"
 
 
 @dataclass(frozen=True)
 class CalibrationSample:
-    """One measured calibration point."""
+    """One measured curve point: the mean of a step's crossings."""
 
-    track_voltage: float
     power_percent: float
     speed_kmh: float
+
+
+@dataclass(frozen=True)
+class CalibrationObservation:
+    """What the world looks like to an open pass on one tick.
+
+    Built by `SpeedCalibration.tick()` from committed runtime state and passed
+    into `advance(...)`, which is the whole of the pass's decision logic. Keeping
+    the two apart is what lets the state machine be driven directly by a test
+    with synthetic confirmations instead of a moving simulation.
+    """
+
+    now: float
+    """`AppState.operating_time`. Wall time would count an operator's stop as
+    distance covered; `operating_time` advances only while the session runs."""
+
+    newly_confirmed: Tuple[str, ...] = ()
+    """Block ids that became confirmed-OCCUPIED by the calibration train since
+    the last observation. Attribution has already credited these to this train,
+    so another train moving elsewhere cannot start or stop the clock."""
+
+    is_stopped: bool = False
+    """The canonical stopped predicate, `TrainController.is_stopped()`."""
+
+    head_block: str = ""
+    """The block the train's head is in. Arming a leg reads it to orient from
+    where the train actually stands. It is the head's block and not the whole
+    span, because a consist longer than a block still holds the one behind it,
+    and the block the tail is trailing through is not where the train is going."""
+
+    safe_state_generation: int = 0
+    """`SimulationController.safe_state_generation`. A change means a session
+    stop or another safe-state request occurred."""
+
+
+@dataclass(frozen=True)
+class CalibrationCommand:
+    """What the pass wants issued this tick.
+
+    Applied by `SpeedCalibration.tick()` the way an operator driving in manual
+    mode would: authority through `PathDispatcher`, power and cab through the
+    ordinary Phase-2 manual command surface. ATC, service-stop, and EB keep the
+    same authority over the pass that they hold over any manual command.
+    """
+
+    power_percent: Optional[float] = None
+    reverse_cab: bool = False
+    release_path: bool = False
+    acquire_path_to: Optional[str] = None
+    """Block to acquire authority to before the power command lands. A leg
+    without a path could not move: with `received_path_plan is None` the ATC
+    limit is `0` (`no_authority`) and the safety-cap ordering clamps the
+    commanded percent to it."""
 
 
 @dataclass
@@ -60,15 +133,88 @@ class CalibrationRun:
     train_id: str
     profile_id: str
     mode: str  # "auto" | "manual"
-    commanded_voltages: List[float]
-    samples: List[CalibrationSample] = field(default_factory=list)
+    power_steps: List[float]
+
+    # Auto profiling: the stretch. `outer_block_ids` is (A, C); `heading_to`
+    # indexes the one the train is currently running toward, so it names the
+    # stopping room this leg and the run-up the next.
+    measured_block_id: str = ""
+    outer_block_ids: Tuple[str, str] = ("", "")
+    block_length_cm: float = 0.0
+    heading_to: int = 1
+
+    # Manual marking: the distance between the operator's two marks, and the
+    # open mark waiting for its pair.
+    marker_spacing_cm: float = 0.0
+    mark_opened_at: Optional[float] = None
+
+    phase: str = PHASE_LEG
+    leg_armed: bool = False
+    """Whether this leg's path and power have been commanded. Every leg starts
+    unarmed, so one code path arms them all — including the pass's first."""
+    needs_reverse: bool = False
+    """Whether arming this leg must flip the cab first. False for the opening
+    leg and after a stall, where the train never turned around."""
     step_index: int = 0
-    # Manual mode: lap speeds accumulated for the current voltage step.
-    _lap_speeds: List[float] = field(default_factory=list)
+    samples: List[CalibrationSample] = field(default_factory=list)
+    crossings: List[float] = field(default_factory=list)
+    step_remeasured: bool = False
+
+    leg_started_at: float = 0.0
+    clock_started_at: Optional[float] = None
+
+    safe_state_generation: int = 0
+    failure_reason: str = ""
+    path_id: str = ""
+    """The leg's live authority, held from arming the leg to confirming its
+    stop. Empty between legs and once the pass ends."""
 
     @property
-    def is_complete(self) -> bool:
-        return self.step_index >= len(self.commanded_voltages)
+    def crossings_target(self) -> int:
+        """Twice the round-trip count: one crossing of B per leg."""
+        return 2 * max(1, int(CALIBRATION_ROUND_TRIPS))
+
+    @property
+    def current_power(self) -> float:
+        """The `power_percent` this step commands."""
+        if self.step_index >= len(self.power_steps):
+            return 0.0
+        return self.power_steps[self.step_index]
+
+    @property
+    def is_measuring(self) -> bool:
+        return self.phase in (PHASE_LEG, PHASE_STOPPING)
+
+    @property
+    def is_measured(self) -> bool:
+        """Every step measured, waiting for the operator to pick a commit
+        target. The pass writes nothing until they do."""
+        return self.phase == PHASE_MEASURED
+
+    @property
+    def heading_toward_block_id(self) -> str:
+        return self.outer_block_ids[self.heading_to]
+
+    def to_dict(self) -> Dict[str, object]:
+        """Progress payload for the calibration panel."""
+        return {
+            "train_id": self.train_id,
+            "profile_id": self.profile_id,
+            "mode": self.mode,
+            "phase": self.phase,
+            "measured_block_id": self.measured_block_id,
+            "outer_block_ids": list(self.outer_block_ids),
+            "step_index": self.step_index,
+            "step_count": len(self.power_steps),
+            "current_power_percent": self.current_power,
+            "crossings_done": len(self.crossings),
+            "crossings_target": self.crossings_target,
+            "samples": [
+                {"power_percent": s.power_percent, "speed_kmh": s.speed_kmh}
+                for s in self.samples
+            ],
+            "failure_reason": self.failure_reason,
+        }
 
 
 @dataclass
@@ -87,114 +233,527 @@ class LightingCalibrationRun:
     ceiling_voltage: float
 
 
-# Real hardware supplies the measured speed for a commanded (voltage, power);
-# in simulation it defaults to the model's own response.
-MeasuredSpeedFn = Callable[[float, float], float]
+def power_sweep() -> List[float]:
+    """The commanded steps: `CALIBRATION_POWER_STEP_PERCENT` increments up to
+    `100%`.
+
+    `0%` is not measured. `0%` power is `lighting_voltage`, the voltage at which
+    the train is lit and holds, so `(0%, 0 km/h)` is the curve's origin by
+    definition and the commit writes it as such.
+    """
+    step = max(1, int(CALIBRATION_POWER_STEP_PERCENT))
+    return [float(p) for p in range(step, 101, step)]
 
 
 class SpeedCalibration:
     """Runs calibration passes and commits the measured curves.
 
-    Holds the active `CalibrationRun` per train. Calibration is a controlled
-    pass — it must not run while the train is following an ATO route; that gate
-    is enforced by the caller (the service layer) before `start`.
+    Holds the active `CalibrationRun` per train. The opening preconditions
+    (placed, manual `power_percent`, `READY` and stopped, cab selected, no ATO
+    route, no lighting run open) are enforced by the caller — the service layer
+    — before `start`.
     """
 
     def __init__(self, simulation_controller=None) -> None:
         self._sc = simulation_controller
         self.runs: Dict[str, CalibrationRun] = {}
         self.lighting_runs: Dict[str, LightingCalibrationRun] = {}
+        # Confirmed-occupancy edge detection per train: the block set the pass
+        # saw last tick, so `tick()` can report only what is newly confirmed.
+        self._seen_blocks: Dict[str, frozenset] = {}
 
     # -- lifecycle --------------------------------------------------------
 
-    def start(self, train, profile, mode: str = "auto") -> CalibrationRun:
-        """Begin a calibration pass over the commanded voltage sweep."""
+    def start(
+        self,
+        train,
+        profile,
+        *,
+        mode: str = "auto",
+        measured_block_id: str = "",
+        outer_block_ids: Sequence[str] = (),
+        block_length_cm: float = 0.0,
+        marker_spacing_cm: float = 0.0,
+        heading_to: int = 1,
+        safe_state_generation: int = 0,
+        now: float = 0.0,
+    ) -> CalibrationRun:
+        """Open a pass over the power sweep.
+
+        Auto profiling needs the measured block, its two resolved neighbours,
+        and its length; manual marking needs the operator's marker spacing. The
+        caller resolves the stretch, because walking the track through the
+        points as they are aligned needs the network, and it passes `heading_to`
+        as the index of the outer block the train is running *toward* — the one
+        it is not already standing in.
+        """
+        outer = tuple(outer_block_ids)[:2]
+        if len(outer) < 2:
+            outer = (outer + ("", ""))[:2]
         run = CalibrationRun(
             train_id=train.train_id,
             profile_id=profile.profile_id,
             mode="manual" if mode == "manual" else "auto",
-            commanded_voltages=self._commanded_voltages(profile),
+            power_steps=power_sweep(),
+            measured_block_id=measured_block_id,
+            outer_block_ids=(outer[0], outer[1]),
+            block_length_cm=float(block_length_cm or 0.0),
+            marker_spacing_cm=float(marker_spacing_cm or 0.0),
+            heading_to=1 if int(heading_to) else 0,
+            safe_state_generation=int(safe_state_generation),
+            leg_started_at=float(now),
         )
         self.runs[train.train_id] = run
+        self._seen_blocks.pop(train.train_id, None)
         return run
 
-    @staticmethod
-    def _commanded_voltages(profile) -> List[float]:
-        """`CALIBRATION_VOLTAGE_STEPS` evenly-spaced voltages from the profile's
-        `lighting_voltage` (0% power anchor) to its `max_voltage` (100%)."""
-        lo = float(getattr(profile, "lighting_voltage", 1.5))
-        hi = float(getattr(profile, "max_voltage", 12.0))
-        n = max(2, int(CALIBRATION_VOLTAGE_STEPS))
-        return [lo + (hi - lo) * i / (n - 1) for i in range(n)]
+    def cancel(self, train_id: str, reason: str = "cancelled") -> None:
+        """Drop a pass without writing. The samples go with it."""
+        run = self.runs.pop(train_id, None)
+        self._seen_blocks.pop(train_id, None)
+        if run is not None:
+            self._release_path(run)
+            self._emit_command_result(
+                train_id,
+                operation="speed_calibration",
+                success=False,
+                reason=reason,
+            )
 
-    # -- measurement ------------------------------------------------------
+    def fail(self, run: CalibrationRun, reason: str) -> CalibrationCommand:
+        """Abandon a pass, command `power_percent = 0`, and report the reason.
 
-    def run_pass(
-        self,
-        run: CalibrationRun,
-        profile,
-        measured_speed_fn: Optional[MeasuredSpeedFn] = None,
-    ) -> CalibrationRun:
-        """Auto mode: measure every commanded step, then commit."""
-        while not run.is_complete:
-            self._measure_step(run, profile, measured_speed_fn)
-        self._commit(run, profile)
-        return run
+        The profile's previous curve is left in place — a pass that does not
+        measure every step writes nothing.
+        """
+        run.phase = PHASE_FAILED
+        run.failure_reason = reason
+        self._emit_command_result(
+            run.train_id, operation="speed_calibration", success=False, reason=reason
+        )
+        return CalibrationCommand(power_percent=0.0, release_path=True)
 
-    def record(
-        self,
-        train_id: str,
-        profile,
-        measured_speed_fn: Optional[MeasuredSpeedFn] = None,
-    ) -> Optional[CalibrationSample]:
-        """Manual mode: the operator marks one lap. Accumulates lap speeds for
-        the current voltage step; after `CALIBRATION_MANUAL_LAPS` laps it
-        averages them into one sample, advances, and commits when complete.
-        Returns the committed sample for the step, or None mid-step."""
+    # -- the pass ---------------------------------------------------------
+
+    def advance(
+        self, run: CalibrationRun, obs: CalibrationObservation
+    ) -> Optional[CalibrationCommand]:
+        """Advance one auto-profiling pass by one observation.
+
+        Returns the command to issue this tick, or None when the pass wants
+        nothing issued. This is the whole of the pass's decision logic.
+        """
+        if not run.is_measuring:
+            return None
+        if obs.safe_state_generation != run.safe_state_generation:
+            return self.fail(run, "session stopped during the pass")
+
+        if run.phase == PHASE_LEG:
+            return self._advance_leg(run, obs)
+        return self._advance_stopping(run, obs)
+
+    def _advance_leg(
+        self, run: CalibrationRun, obs: CalibrationObservation
+    ) -> Optional[CalibrationCommand]:
+        stretch = {run.measured_block_id, *run.outer_block_ids}
+        far_block = run.heading_toward_block_id
+
+        if not run.leg_armed:
+            # Every leg is armed here, the opening one included: take authority
+            # to the far end, turn around if the last leg left the train facing
+            # the other way, and command this step's power.
+            #
+            # Orient from where the train actually stands. A leg runs toward the
+            # outer block it is *not* in, and asking for authority to the block
+            # the head already occupies is refused outright — so whenever the
+            # train is sitting in the block this leg was aiming at, the aim is
+            # what is stale, not the position.
+            if obs.head_block and far_block == obs.head_block:
+                run.heading_to = 1 - run.heading_to
+                run.needs_reverse = True
+                far_block = run.heading_toward_block_id
+            run.leg_armed = True
+            run.leg_started_at = obs.now
+            run.clock_started_at = None
+            return CalibrationCommand(
+                power_percent=run.current_power,
+                reverse_cab=run.needs_reverse,
+                acquire_path_to=far_block,
+            )
+
+        for block_id in obs.newly_confirmed:
+            if block_id not in stretch:
+                # The locomotive needed more stopping room than the stretch
+                # has. Nothing on the rails prevents this: the block ahead of a
+                # train's head is energized as its pending-entry block whichever
+                # block that turns out to be.
+                return self.fail(
+                    run, f"train overran the stretch into block {block_id}"
+                )
+
+        if run.measured_block_id in obs.newly_confirmed and run.clock_started_at is None:
+            run.clock_started_at = obs.now
+            return None
+
+        if far_block in obs.newly_confirmed and run.clock_started_at is not None:
+            elapsed = obs.now - run.clock_started_at
+            run.clock_started_at = None
+            if elapsed <= 0.0 or run.block_length_cm <= 0.0:
+                return self.fail(run, "measured block crossing timed at zero")
+            run.crossings.append(
+                cm_per_sec_to_kmh(run.block_length_cm / elapsed)
+            )
+            run.phase = PHASE_STOPPING
+            return CalibrationCommand(power_percent=0.0, release_path=True)
+
+        if obs.now - run.leg_started_at < CALIBRATION_STEP_TIMEOUT_S:
+            return None
+
+        # A leg that runs out of time has done one of two different things, and
+        # they are not the same fault.
+        if run.clock_started_at is None:
+            # The locomotive never reached the measured block: the low steps may
+            # not overcome its stiction at all. The flat bottom this leaves on
+            # the curve is that locomotive's real stall band.
+            return self._record_stall(run, obs)
+        # It entered the measured block and never came out the far end, so it
+        # stopped somewhere inside the stretch. A part-crossing is not a slow
+        # measurement, it is no measurement, and timing it would put a speed on
+        # the curve that the locomotive never held.
+        return self.fail(
+            run,
+            f"train entered {run.measured_block_id} but never reached {far_block}",
+        )
+
+    def _advance_stopping(
+        self, run: CalibrationRun, obs: CalibrationObservation
+    ) -> Optional[CalibrationCommand]:
+        if not obs.is_stopped:
+            return None
+        if len(run.crossings) >= run.crossings_target:
+            outcome = self._close_step(run)
+            if outcome is not None:
+                return outcome
+        # Whatever happened to the step, the train is standing at one end of the
+        # stretch and the next leg runs back the other way. Leave it unarmed:
+        # the next tick's leg branch takes the path, flips the cab, and powers
+        # up, which is the one place any leg starts.
+        run.heading_to = 1 - run.heading_to
+        run.phase = PHASE_LEG
+        run.leg_armed = False
+        run.needs_reverse = True
+        return None
+
+    def _close_step(self, run: CalibrationRun) -> Optional[CalibrationCommand]:
+        """Average the step's crossings and either bank the sample or repeat.
+
+        Returns a command when the pass is finished or failed, None when the
+        caller should carry on to the next leg.
+        """
+        mean_speed = sum(run.crossings) / len(run.crossings)
+        previous = run.samples[-1].speed_kmh if run.samples else 0.0
+        run.crossings = []
+
+        if mean_speed + _MONOTONIC_EPSILON_KMH < previous:
+            # `power_speed_curve` must stay invertible, so samples have to rise
+            # with power. One re-measure tells a noisy crossing apart from a
+            # locomotive that really does run slower at more power.
+            if run.step_remeasured:
+                return self.fail(
+                    run,
+                    f"{run.current_power:.0f}% measured slower than a lower step twice",
+                )
+            run.step_remeasured = True
+            return None
+
+        run.samples.append(
+            CalibrationSample(power_percent=run.current_power, speed_kmh=mean_speed)
+        )
+        run.step_remeasured = False
+        run.step_index += 1
+        if run.step_index >= len(run.power_steps):
+            return self._finish_sweep(run)
+        return None
+
+    def _finish_sweep(self, run: CalibrationRun) -> CalibrationCommand:
+        """Close a sweep that has run every step.
+
+        A sweep in which no step moved the locomotive is not a curve of a
+        locomotive that cannot move — it is a stretch the pass could not measure
+        on. Committing it would store a profile saying the locomotive stands
+        still at full power, and every speed the app later asked of it would map
+        back to that. So the pass reports the stretch instead.
+        """
+        if not any(s.speed_kmh > 0.0 for s in run.samples):
+            return self.fail(
+                run,
+                "no step moved the train across the measured block — check the "
+                "stretch is long enough for the consist and clear to run",
+            )
+        run.phase = PHASE_MEASURED
+        self._emit_command_result(
+            run.train_id,
+            operation="speed_calibration",
+            success=True,
+            reason=f"measured {len(run.samples)} points — pick a profile to write",
+        )
+        return CalibrationCommand(power_percent=0.0, release_path=True)
+
+    def _record_stall(
+        self, run: CalibrationRun, obs: CalibrationObservation
+    ) -> Optional[CalibrationCommand]:
+        """Bank a `0 km/h` sample and move on without turning the train around.
+
+        The train never left the outer block it stood in, so the next step
+        commands from where it stands, facing the way it already faces.
+        """
+        run.crossings = []
+        run.step_remeasured = False
+        run.samples.append(
+            CalibrationSample(power_percent=run.current_power, speed_kmh=0.0)
+        )
+        run.step_index += 1
+        if run.step_index >= len(run.power_steps):
+            return self._finish_sweep(run)
+        # The train is still standing where the leg began, facing the same way,
+        # so the next step re-arms in place without turning around.
+        run.leg_armed = False
+        run.needs_reverse = False
+        return CalibrationCommand(power_percent=0.0, release_path=True)
+
+    def record(self, train_id: str, now: float) -> Optional[CalibrationRun]:
+        """Manual marking: the operator marks one pass of a marker.
+
+        Marks pair up. The first opens a crossing and the second closes it, so
+        the reversal dwell between round trips falls between pairs and is never
+        timed as a crossing.
+        """
         run = self.runs.get(train_id)
-        if run is None or run.is_complete:
+        if run is None or not run.is_measuring or run.mode != "manual":
             return None
-        voltage = run.commanded_voltages[run.step_index]
-        power = float(profile.voltage_to_power(voltage))
-        run._lap_speeds.append(self._measure_speed(voltage, power, profile, measured_speed_fn))
-        if len(run._lap_speeds) < max(1, int(CALIBRATION_MANUAL_LAPS)):
-            return None
-        avg_speed = sum(run._lap_speeds) / len(run._lap_speeds)
-        sample = CalibrationSample(track_voltage=voltage, power_percent=power, speed_kmh=avg_speed)
-        run.samples.append(sample)
-        run.step_index += 1
-        run._lap_speeds = []
-        if run.is_complete:
-            self._commit(run, profile)
-        return sample
+        if run.mark_opened_at is None:
+            run.mark_opened_at = float(now)
+            return run
 
-    def _measure_step(
-        self,
-        run: CalibrationRun,
-        profile,
-        measured_speed_fn: Optional[MeasuredSpeedFn],
-    ) -> CalibrationSample:
-        voltage = run.commanded_voltages[run.step_index]
-        power = float(profile.voltage_to_power(voltage))
-        speed = self._measure_speed(voltage, power, profile, measured_speed_fn)
-        sample = CalibrationSample(track_voltage=voltage, power_percent=power, speed_kmh=speed)
-        run.samples.append(sample)
-        run.step_index += 1
-        return sample
+        elapsed = float(now) - run.mark_opened_at
+        run.mark_opened_at = None
+        if elapsed <= 0.0 or run.marker_spacing_cm <= 0.0:
+            self.fail(run, "marker crossing timed at zero")
+            return run
+        run.crossings.append(cm_per_sec_to_kmh(run.marker_spacing_cm / elapsed))
+        if len(run.crossings) >= run.crossings_target:
+            self._close_step(run)
+        return run
+
+    # -- runtime hook -----------------------------------------------------
+
+    def tick(self) -> None:
+        """Advance every open auto pass against committed runtime state.
+
+        Called once per `SimulationController.update(...)`, after every train's
+        Phase 3, so `Block.occupied_by` is the confirmed occupancy this tick
+        settled on. Commands go out through the ordinary Phase-2 manual command
+        surface and land on the next tick's drain.
+        """
+        sc = self._sc
+        if sc is None or not self.runs:
+            return
+        for train_id, run in list(self.runs.items()):
+            if run.mode != "auto" or not run.is_measuring:
+                continue
+            controller = self._controller(train_id)
+            if controller is None:
+                continue
+            obs = CalibrationObservation(
+                now=self._operating_time(),
+                newly_confirmed=self._newly_confirmed(train_id),
+                is_stopped=bool(controller.is_stopped()),
+                head_block=self._head_block(controller),
+                safe_state_generation=int(
+                    getattr(sc, "safe_state_generation", 0) or 0
+                ),
+            )
+            command = self.advance(run, obs)
+            if command is not None:
+                self._apply(run, controller, command)
+
+    def _apply(self, run: CalibrationRun, controller, command: CalibrationCommand) -> None:
+        """Issue a pass command the way an operator driving manually would.
+
+        Order matters. The path is released first so the reversal is not fighting
+        stale authority pointing the other way, then the cab flips, then power
+        goes out; `set_cab(...)` runs before `set_manual_power_percent(...)` in
+        the canonical drain order, so queueing both in one tick lands them that
+        way round.
+        """
+        try:
+            if command.release_path:
+                self._release_path(run)
+            if command.reverse_cab:
+                cab = getattr(controller.commands, "cab", None)
+                controller.commands.enqueue_command(
+                    "set_cab", {"cab": "A" if cab == "B" else "B"}
+                )
+            if command.acquire_path_to:
+                self._acquire_path(run, command.acquire_path_to)
+            if command.power_percent is not None:
+                controller.commands.enqueue_command(
+                    "set_manual_power_percent",
+                    {"percent": int(round(command.power_percent))},
+                )
+        except Exception:
+            pass
+
+    def _acquire_path(self, run: CalibrationRun, destination_block_id: str) -> None:
+        """Take authority to the leg's far end through the ordinary dispatcher.
+
+        A failed acquisition fails the pass rather than leaving the train to sit
+        under a zero no-authority cap: the stretch the operator picked is not
+        one this train can currently take.
+        """
+        dispatcher = getattr(self._sc, "path_dispatcher", None)
+        if dispatcher is None:
+            return
+        from runtime_payloads import AcquisitionMode
+
+        # All-or-nothing, because a best-effort acquisition that stops short
+        # would drive the locomotive to a short authority end somewhere inside
+        # the stretch and hold it there. The leg needs the whole stretch or it
+        # is not a leg, and saying so now beats timing out mid-crossing.
+        result = dispatcher.create_path(
+            train_id=run.train_id,
+            requested_destination_block_id=destination_block_id,
+            acquisition_mode=AcquisitionMode.ALL_OR_NOTHING,
+        )
+        path_id = getattr(result, "path_id", None)
+        if not path_id:
+            reason = getattr(result, "reason", "") or "no authority to the stretch end"
+            self.fail(run, f"could not take authority to {destination_block_id}: {reason}")
+            return
+        run.path_id = path_id
+
+    def _release_path(self, run: CalibrationRun) -> None:
+        """Give the leg's authority back once its stop is confirmed."""
+        dispatcher = getattr(self._sc, "path_dispatcher", None)
+        if dispatcher is None or not run.path_id:
+            return
+        try:
+            dispatcher.cancel_path(
+                run.path_id, initiator="SpeedCalibration", reason="calibration leg ended"
+            )
+        except Exception:
+            pass
+        run.path_id = ""
 
     @staticmethod
-    def _measure_speed(
-        voltage: float,
-        power: float,
-        profile,
-        measured_speed_fn: Optional[MeasuredSpeedFn],
-    ) -> float:
-        """The speed measured at a commanded (voltage, power). Real hardware
-        reads physical motion via `measured_speed_fn`; in simulation it is the
-        model's own response (`SpeedProfile.power_percent_to_speed`)."""
-        if measured_speed_fn is not None:
-            return float(measured_speed_fn(voltage, power))
-        return float(profile.power_percent_to_speed(power))
+    def _head_block(controller) -> str:
+        """The block the train's head is in.
+
+        `TrainSpan.occupied_blocks` is ordered `end_a` to `end_b`, and the cab
+        names which physical end is the head — cab `B` puts it at `end_b`, so
+        that end's block is the last entry rather than the first.
+        """
+        span = controller.get_current_span()
+        blocks = list(getattr(span, "occupied_blocks", ()) or ())
+        if not blocks:
+            return ""
+        return blocks[-1] if getattr(controller.commands, "cab", None) == "B" else blocks[0]
+
+    def _controller(self, train_id: str):
+        sc = self._sc
+        controllers = getattr(sc, "controllers", None) if sc is not None else None
+        if not controllers:
+            return None
+        return controllers.get(train_id)
+
+    def _operating_time(self) -> float:
+        """`AppState.operating_time`, the clock every calibration interval is
+        measured against."""
+        sc = self._sc
+        clock = getattr(sc, "operating_clock", None) if sc is not None else None
+        if callable(clock):
+            try:
+                return float(clock())
+            except Exception:
+                return 0.0
+        return 0.0
+
+    def _newly_confirmed(self, train_id: str) -> Tuple[str, ...]:
+        """Block ids that became confirmed-OCCUPIED by this train since the last
+        observation.
+
+        Read from `Block.occupied_by`, which is what attribution committed, so
+        only entries credited to the calibration train are ever seen.
+        """
+        sc = self._sc
+        network = getattr(sc, "network", None) if sc is not None else None
+        blocks = getattr(network, "blocks", None) if network is not None else None
+        if not blocks:
+            return ()
+        held = frozenset(
+            block_id
+            for block_id, block in blocks.items()
+            if getattr(block, "occupied_by", None) == train_id
+        )
+        previous = self._seen_blocks.get(train_id)
+        self._seen_blocks[train_id] = held
+        if previous is None:
+            # First observation of the pass: the blocks the train already stands
+            # on are not entries it just made.
+            return ()
+        return tuple(sorted(held - previous))
+
+    # -- commit -----------------------------------------------------------
+
+    def measured_curve(self, run: CalibrationRun) -> List[Tuple[float, float]]:
+        """The `power_speed_curve` this pass measured, origin included."""
+        return [(0.0, 0.0)] + [(s.power_percent, s.speed_kmh) for s in run.samples]
+
+    def commit(
+        self, train_id: str, profile, *, model: Optional[str] = None
+    ) -> List[Tuple[float, float]]:
+        """Write the measured curve onto `profile` and close the run.
+
+        Writes three fields and no others: `power_speed_curve`, `model`, and
+        `calibrated_at`. It must not write `voltage_power_curve` —
+        **Lighting-voltage calibration** is the one procedure that moves that
+        curve's anchor — and it must not write a motion rate or a notch table.
+
+        Which profile object arrives here is the operator's commit-target
+        choice, resolved by the caller: the train's linked profile for Replace,
+        or a fresh clone for Save as new.
+        """
+        run = self.runs.get(train_id)
+        if run is None:
+            raise ValueError("No calibration pass is open for this train")
+        # Commit is all or nothing. A partly replaced curve would be part
+        # measured and part seeded with nothing on the profile to say which part
+        # is which, and no later reading of it could tell.
+        if not run.is_measured:
+            raise ValueError("Calibration pass has not measured every step")
+
+        curve = self.measured_curve(run)
+        speeds = [s for _p, s in curve]
+        if any(b + _MONOTONIC_EPSILON_KMH < a for a, b in zip(speeds, speeds[1:])):
+            raise ValueError(
+                "Measured curve falls with power and could not be read backwards"
+            )
+
+        profile.power_speed_curve = curve
+        if model is not None:
+            profile.model = str(model)
+        profile.calibrated_at = datetime.now(timezone.utc).isoformat(
+            timespec="seconds"
+        )
+        self.runs.pop(train_id, None)
+        self._seen_blocks.pop(train_id, None)
+        self._emit_command_result(
+            train_id,
+            operation="speed_calibration",
+            success=True,
+            reason=f"wrote {len(run.samples)} measured points to {profile.profile_id}",
+        )
+        return curve
 
     # -- lighting voltage -------------------------------------------------
     # design_new.md "Lighting-voltage calibration". No measurement step: the
@@ -312,30 +871,7 @@ class SpeedCalibration:
             kept = [(float(getattr(profile, "max_voltage", 12.0)), 100.0)]
         return [(anchor, 0.0)] + sorted(kept)
 
-    # -- commit -----------------------------------------------------------
-
-    def _commit(self, run: CalibrationRun, profile) -> None:
-        """Write the collected samples onto the locomotive's `SpeedProfile`:
-        measured `(voltage, power)` become `voltage_power_curve` and
-        `(power, speed)` become `power_speed_curve`. Clears the run and reports
-        the result through the `command_result` stream."""
-        profile.voltage_power_curve = sorted(
-            {(s.track_voltage, s.power_percent) for s in run.samples}
-        )
-        profile.power_speed_curve = sorted(
-            {(s.power_percent, s.speed_kmh) for s in run.samples}
-        )
-        self.runs.pop(run.train_id, None)
-        self._emit_result(
-            run, success=True, reason=f"calibrated {len(run.samples)} points"
-        )
-
-    def _emit_result(self, run: CalibrationRun, *, success: bool, reason: str) -> None:
-        """Report progress/result through the existing `command_result` stream
-        (no new event sink), per design_new.md "Speed calibration"."""
-        self._emit_command_result(
-            run.train_id, operation="speed_calibration", success=success, reason=reason
-        )
+    # -- reporting --------------------------------------------------------
 
     def _emit_command_result(
         self, train_id: str, *, operation: str, success: bool, reason: str

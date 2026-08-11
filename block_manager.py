@@ -1052,6 +1052,29 @@ class BlockManager:
     }
     _OPPOSITE_EDGE: Dict[str, str] = {"N": "S", "S": "N", "E": "W", "W": "E"}
 
+    def adjacent_blocks(self, block_id: str) -> List[str]:
+        """The blocks reachable out of this block's ends, points as aligned.
+
+        Walks each of the four compass exits through `_next_block_along_direction`,
+        so it follows the switches as they are actually set rather than as any
+        plan describes them, and returns the distinct blocks found. A switch-free
+        run has at most two — one out each end — which is what
+        `services.train_service` resolves a calibration stretch from
+        (design_new.md "Speed calibration", The operator names the measured block).
+        """
+        block = self.blocks.get(block_id) if self.blocks else None
+        if block is None:
+            return []
+        found: List[str] = []
+        for direction in self._EDGE_OFFSETS:
+            neighbour, _entry_edge = self._next_block_along_direction(block, direction)
+            if neighbour is None:
+                continue
+            if neighbour.block_id == block_id or neighbour.block_id in found:
+                continue
+            found.append(neighbour.block_id)
+        return found
+
     def _next_block_along_direction(
         self, block: Block, direction: str
     ) -> Tuple[Optional[Block], Optional[str]]:

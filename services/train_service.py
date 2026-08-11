@@ -28,6 +28,7 @@ from typing import Any, List, Optional, Tuple
 from app_state import AppState
 from enums import CommandResult, Direction, HandlePosition, TrainState
 from services.exceptions import ConflictError, NotFoundError, ValidationError
+from speed_profile import SpeedProfile
 from train import Train, TrainCar
 from train_route import RouteStartMode
 
@@ -904,25 +905,220 @@ def _calibration_profile(state: AppState, train_id: str):
     return train, profile, sim
 
 
-def calibrate_train(state: AppState, train_id: str, *, mode: str = "auto"):
-    """Run a speed-calibration pass (design_new.md "Speed calibration").
+def resolve_calibration_stretch(state: AppState, measured_block_id: str):
+    """The measured block's two neighbours, and its length.
 
-    Auto mode measures the full commanded voltage sweep synchronously and
-    commits the curves. Manual mode begins the run; the operator then issues
-    ``calibrate_record`` as the head passes the marker each lap. Returns the
-    `CalibrationRun`.
+    The operator names one block because the other two are not a choice: they
+    are whatever the points are set to. Returns ``(outer_block_ids, length_cm)``.
+    """
+    block = state.network.blocks.get(measured_block_id) if state.network else None
+    if block is None:
+        raise NotFoundError(f"Block '{measured_block_id}' not found")
+    length_cm = float(getattr(block, "length_cm", 0.0) or 0.0)
+    if length_cm <= 0.0:
+        raise ValidationError(
+            f"Block '{measured_block_id}' has no recorded length — "
+            "that length is the whole of what the measurement rests on"
+        )
+    manager = getattr(state.network, "block_manager", None)
+    if manager is None:
+        raise ValidationError("Resolving a calibration stretch requires a runtime")
+    outer = manager.adjacent_blocks(measured_block_id)
+    if len(outer) < 2:
+        raise ValidationError(
+            f"Block '{measured_block_id}' does not have a block at both ends as "
+            "the points are currently set — the outer blocks are the run-up and "
+            "the stopping room"
+        )
+    return (outer[0], outer[1]), length_cm
+
+
+def _require_calibration_ready(state: AppState, train_id: str, train, sim) -> None:
+    """The opening preconditions (design_new.md "Speed calibration", Where it runs).
+
+    Every one of them is a condition the commands the pass issues already carry:
+    the pass drives with `set_manual_power_percent(...)` and turns the train
+    around with `set_cab(...)`, and both are manual-only, stopped-only commands.
+    """
+    controller = _controller(state, train)
+    if controller.commands.control_mode != "manual":
+        raise ConflictError(
+            "Speed calibration drives the train manually — switch it to manual"
+        )
+    if controller.manual.manual_mode_type != "power_percent":
+        raise ConflictError(
+            "Speed calibration commands a power percent — switch the manual "
+            "mode to power_percent"
+        )
+    if controller.ops.state != TrainState.READY:
+        raise ConflictError(
+            f"Train must be READY to calibrate (currently {controller.ops.state.value})"
+        )
+    if not controller.is_stopped():
+        raise ConflictError("Train must be stopped to start a calibration pass")
+    if controller.commands.cab is None:
+        raise ConflictError(
+            "Select a cab first — the pass reverses by writing the other end"
+        )
+    if sim.speed_calibration.lighting_runs.get(train_id) is not None:
+        raise ConflictError("A lighting-voltage run is already open for this train")
+    if sim.speed_calibration.runs.get(train_id) is not None:
+        raise ConflictError("A speed-calibration pass is already open for this train")
+
+
+def calibrate_train(
+    state: AppState,
+    train_id: str,
+    *,
+    mode: str = "auto",
+    measured_block_id: str = "",
+    marker_spacing_cm: float = 0.0,
+):
+    """Open a speed-calibration pass (design_new.md "Speed calibration").
+
+    Auto profiling needs the measured block; the pass resolves its two
+    neighbours and then drives itself from the runtime tick, turning the train
+    around at each end. Manual marking needs the operator's marker spacing, and
+    the operator drives the shuttle and issues ``calibrate_record`` at each mark.
+    Returns the `CalibrationRun`.
     """
     train, profile, sim = _calibration_profile(state, train_id)
-    run = sim.speed_calibration.start(train, profile, mode=mode)
-    if run.mode == "auto":
-        sim.speed_calibration.run_pass(run, profile)
-    return run
+    _require_calibration_ready(state, train_id, train, sim)
+
+    outer: tuple = ()
+    length_cm = 0.0
+    heading_to = 1
+    if mode != "manual":
+        if not measured_block_id:
+            raise ValidationError("measured_block_id is required for auto profiling")
+        outer, length_cm = resolve_calibration_stretch(state, measured_block_id)
+        heading_to = _leg_heading(state, train_id, outer)
+    elif float(marker_spacing_cm or 0.0) <= 0.0:
+        raise ValidationError("marker_spacing_cm is required for manual marking")
+
+    return sim.speed_calibration.start(
+        train,
+        profile,
+        mode=mode,
+        measured_block_id=measured_block_id,
+        outer_block_ids=outer,
+        block_length_cm=length_cm,
+        marker_spacing_cm=float(marker_spacing_cm or 0.0),
+        heading_to=heading_to,
+        safe_state_generation=int(getattr(sim, "safe_state_generation", 0) or 0),
+        now=float(sim.operating_clock()),
+    )
+
+
+def _leg_heading(state: AppState, train_id: str, outer: tuple) -> int:
+    """Which outer block the opening leg runs toward.
+
+    A leg starts from a stand in an outer block, so the train must be standing
+    in one of the two, and the first leg runs toward the other one. Asking for
+    authority to the block the train is already standing in is refused by the
+    dispatcher, so this orientation is what makes the opening leg possible at
+    all (design_new.md "Speed calibration", Where it runs).
+    """
+    controller = _controller(state, require_train(state, train_id))
+    span = controller.get_current_span()
+    held = set(getattr(span, "occupied_blocks", []) or [])
+    if outer[0] in held:
+        return 1
+    if outer[1] in held:
+        return 0
+    raise ConflictError(
+        f"Train must be standing in {outer[0]} or {outer[1]} to measure across "
+        "this block — a leg starts from a stand in an outer block"
+    )
 
 
 def calibrate_record(state: AppState, train_id: str):
-    """Manual-mode lap marker: record one lap for the active calibration run."""
+    """Manual marking: the operator marks one pass of a marker."""
+    _train, _profile, sim = _calibration_profile(state, train_id)
+    return sim.speed_calibration.record(train_id, now=float(sim.operating_clock()))
+
+
+def calibrate_status(state: AppState, train_id: str):
+    """The open pass's progress payload, or None when none is open."""
+    sim = getattr(state, "sim_controller", None)
+    if sim is None:
+        return None
+    return sim.speed_calibration.runs.get(train_id)
+
+
+def calibrate_cancel(state: AppState, train_id: str) -> None:
+    """Drop an open pass. Its samples go with it and the profile is untouched."""
+    sim = getattr(state, "sim_controller", None)
+    if sim is not None:
+        sim.speed_calibration.cancel(train_id, reason="cancelled by the operator")
+
+
+def calibrate_commit(
+    state: AppState,
+    train_id: str,
+    *,
+    target: str = "replace",
+    name: str = "",
+    model: str = "",
+):
+    """Write a measured pass onto a profile (design_new.md "What commit writes").
+
+    ``target="replace"`` writes onto the profile the calibrated train is linked
+    to, so every train and roster entry linked to it runs on the new curve —
+    that is what a profile shared across one model is for. ``target="new"``
+    creates a profile carrying the measured curve with every other field copied
+    from the one the pass ran against, and links the calibrated train and its
+    roster entry to it: the pass measured this locomotive, so the profile it
+    produced must be the one that drives it.
+    """
     train, profile, sim = _calibration_profile(state, train_id)
-    return sim.speed_calibration.record(train_id, profile)
+    run = sim.speed_calibration.runs.get(train_id)
+    if run is None:
+        raise NotFoundError("No calibration pass is open for this train")
+    if not run.is_measured:
+        raise ConflictError(
+            "Calibration pass has not measured every step — a pass that does "
+            "not finish writes nothing"
+        )
+
+    with state.simulation_lock:
+        if target == "new":
+            written = _fork_profile(state, train, profile, name=name, model=model)
+        elif target == "replace":
+            written = profile
+        else:
+            raise ValidationError("target must be 'replace' or 'new'")
+        try:
+            sim.speed_calibration.commit(
+                train_id, written, model=(model or None)
+            )
+        except ValueError as exc:
+            raise ConflictError(str(exc)) from exc
+    return written
+
+
+def _fork_profile(state: AppState, train, source, *, name: str, model: str):
+    """Clone `source` under a fresh id and link the train and its roster entry.
+
+    Linking is part of the commit, not a step the operator takes afterwards: a
+    new profile nothing named would be a measurement the layout never reads.
+    """
+    import uuid
+
+    data = source.to_dict()
+    data["profile_id"] = f"profile_{uuid.uuid4().hex[:8]}"
+    data["name"] = name or f"{source.name} (measured)"
+    data["model"] = model or source.model
+    clone = SpeedProfile.from_dict(data)
+    state.network.speed_profiles.register(clone)
+
+    train.speed_profile_id = clone.profile_id
+    roster = getattr(state.network, "train_roster", None)
+    entry_id = getattr(train, "roster_entry_id", None)
+    entry = roster.get_entry(entry_id) if (roster and entry_id) else None
+    if entry is not None:
+        entry.speed_profile_id = clone.profile_id
+    return clone
 
 
 # ------------------------------------------- lighting-voltage calibration ----

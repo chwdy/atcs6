@@ -85,6 +85,47 @@ class TrainRoster:
     def remove_entry(self, entry_id: str) -> bool:
         return self.entries.pop(entry_id, None) is not None
 
+    @staticmethod
+    def match_profile_for_model(model: str, profiles) -> Optional[str]:
+        """The `profile_id` measured for this model, or None.
+
+        Profiles are matched by model (design_new.md "Train Roster"): comparing
+        the two strings exactly, the profile carrying this model is the one a
+        new entry links, so a second locomotive of a model starts from the curve
+        the first one produced. When more than one profile carries the model the
+        most recently calibrated wins, and a profile with no `calibrated_at`
+        loses to any that has one — an unmeasured placeholder should never
+        outrank a real measurement.
+
+        `profiles` is any iterable of `SpeedProfile` records.
+        """
+        wanted = (model or "").strip()
+        if not wanted:
+            return None
+        matches = [
+            p for p in profiles if (getattr(p, "model", "") or "").strip() == wanted
+        ]
+        if not matches:
+            return None
+        # `calibrated_at` is an ISO-8601 stamp, so string order is time order;
+        # "" sorts below every real stamp, which is exactly the tiebreak wanted.
+        matches.sort(key=lambda p: (getattr(p, "calibrated_at", None) or ""))
+        return matches[-1].profile_id
+
+    def link_profile_by_model(self, entry: "RosterEntry", profiles) -> Optional[str]:
+        """Link `entry` to the profile measured for its model, if it names none.
+
+        The match is made once, at the moment the entry's model is written; the
+        stored `speed_profile_id` is the link every later read follows, so a
+        placement resolves a profile by id and never by string.
+        """
+        if entry.speed_profile_id:
+            return entry.speed_profile_id
+        matched = self.match_profile_for_model(entry.model, profiles)
+        if matched:
+            entry.speed_profile_id = matched
+        return entry.speed_profile_id
+
     def clear(self) -> None:
         self.entries.clear()
 

@@ -69,6 +69,18 @@ class SpeedProfile:
 
     profile_id: str
     name: str
+    # The locomotive model this profile describes, written the same way
+    # `RosterEntry.model` writes it (design_new.md "SpeedProfile"). It is what
+    # makes a measured curve reusable: `train_roster.match_profile_for_model`
+    # links a new roster entry to the profile already measured for its model,
+    # so a second locomotive of that model starts from a real curve instead of
+    # the seeded linear default. Blank on a profile seeded at train creation.
+    model: str = ""
+    # Wall-clock ISO-8601 stamp of the last `power_speed_curve` write by a
+    # speed-calibration commit; None while the curve is still the seeded linear
+    # default. It is the one field that says whether a profile is measured or a
+    # placeholder, and it breaks ties when two profiles name one model.
+    calibrated_at: Optional[str] = None
     power_speed_curve: List[Tuple[float, float]] = field(
         default_factory=lambda: [(0.0, 0.0), (100.0, 100.0)]
     )
@@ -270,6 +282,8 @@ class SpeedProfile:
         return {
             "profile_id": self.profile_id,
             "name": self.name,
+            "model": self.model,
+            "calibrated_at": self.calibrated_at,
             "power_speed_curve": [[p, s] for p, s in self.power_speed_curve],
             "voltage_power_curve": [[v, p] for v, p in self.voltage_power_curve],
             "lighting_voltage": self.lighting_voltage,
@@ -310,6 +324,8 @@ class SpeedProfile:
         return cls(
             profile_id=data.get("profile_id", ""),
             name=data.get("name", ""),
+            model=str(data.get("model", "") or ""),
+            calibrated_at=data.get("calibrated_at") or None,
             power_speed_curve=power_tuples,
             voltage_power_curve=voltage_power_tuples,
             lighting_voltage=float(data.get("lighting_voltage", 1.5)),
