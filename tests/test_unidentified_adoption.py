@@ -31,7 +31,7 @@ from tests.test_unidentified_trains import (
     only_unidentified,
     tick,
 )
-from track import Tile, TRACK_EW
+from track import Tile, TRACK_EW, TRACK_NS, TRACK_NW, TRACK_SW
 from entity_ids import segment_id_for_block
 
 
@@ -331,6 +331,148 @@ def test_a_consist_spanning_two_detected_blocks_is_centered_across_both():
     # runs from 100 cm into BLK_0 to 200 cm into BLK_1.
     assert sorted(span.occupied_blocks) == ["BLK_0", "BLK_1"]
     assert line_extent_cm(network, span) == (100.0, 500.0)
+
+
+# ------------------------------------- placement on a block that is not straight
+
+# The run in canonical order, each tile with the edge it is entered through when
+# walked in that order — exactly what the block's `ordered_tiles` carries.
+HORSESHOE_RUN = [(1, 0, "W"), (2, 0, "W"), (2, 1, "S"), (2, 2, "S"), (1, 2, "E")]
+HORSESHOE_TILES = [(x, y) for (x, y, _edge) in HORSESHOE_RUN]
+
+
+def build_horseshoe_sim():
+    """One block bent into a horseshoe, so BOTH of its ends exit WEST.
+
+    Every other scene here is a straight east-west line, where a block's two
+    ends face opposite compass points and the declared facing therefore names one
+    of them on its own. Real layouts are mostly corners, and a corner block's two
+    ends can leave the detected track through the SAME compass edge:
+
+        (1,0) --E-- (2,0)        west end at (1,0), exits W
+                      |
+                    (2,1)
+                      |
+        (1,2) --E-- (2,2)        west end at (1,2), also exits W
+
+    Tiles are `DEFAULT_TILE_LENGTH_CM` (100 cm) each, so the block is 500 cm of
+    detected track. Both ends get a stub tile beyond them owned by no block,
+    because `place_train` needs track past the head's exit edge to face into and
+    a real block's ends always have a neighbour there.
+    """
+    network = RailwayNetwork()
+    for stub in ((0, 0), (0, 2)):
+        network.add_track(Tile(x=stub[0], y=stub[1], track_bits=TRACK_EW))
+    bits = {
+        (1, 0): TRACK_EW,
+        (2, 0): TRACK_NW,
+        (2, 1): TRACK_NS,
+        (2, 2): TRACK_SW,
+        (1, 2): TRACK_EW,
+    }
+    block = Block(block_id="BLK_U", length_cm=500.0)
+    for tile in HORSESHOE_TILES:
+        track = Tile(x=tile[0], y=tile[1], track_bits=bits[tile])
+        track.segment_id = segment_id_for_block("BLK_U")
+        network.add_track(track)
+    block.ordered_tiles = list(HORSESHOE_RUN)
+    network.blocks["BLK_U"] = block
+    detector = FakeDetector()
+    sim = SimulationController(
+        network, PathDispatcher(network), input_interface=detector
+    )
+    sim.unidentified_clock = lambda: sim._fake_clock
+    sim._fake_clock = 0.0
+    return network, sim, detector
+
+
+def run_extent_cm(network, span):
+    """(near end, far end) of `span` in centimetres along the horseshoe run.
+
+    The same measurement `line_extent_cm` makes, walking the block's canonical
+    tile order instead of the x axis, because a bent run has no single axis. Zero
+    is the outer edge of the run's first tile, 500 the outer edge of its last.
+    """
+    starts = {}
+    run = 0.0
+    for x, y in HORSESHOE_TILES:
+        starts[(x, y)] = run
+        run += network._get_tile_length_cm(x, y)
+    canonical = {(x, y): edge for (x, y, edge) in HORSESHOE_RUN}
+
+    def position(end):
+        tile = tuple(end.tile)
+        length = network._get_tile_length_cm(*tile)
+        along = (
+            end.distance_cm
+            if end.entry_edge == canonical[tile]
+            else length - end.distance_cm
+        )
+        return starts[tile] + along
+
+    return tuple(sorted((position(span.end_a), position(span.end_b))))
+
+
+def test_a_block_whose_two_ends_face_the_same_way_still_centers_the_consist():
+    """The declared facing matches BOTH ends of a horseshoe, so it cannot say
+    which one the nose is at. That does not license giving up on centering:
+    measuring back from either end puts the body in the same place, because
+    centering is symmetric. Only which end is the head differs, and the operator
+    can pin that with a head tile."""
+    network, sim, detector = build_horseshoe_sim()
+    detector.current = {"BLK_U": True}
+    tick(sim, times=3)
+    unidentified_id = only_unidentified(network)
+
+    adopt(sim, unidentified_id, length_cm=150.0, direction="WEST")
+
+    span = sim.controllers["T1"].physics_sync.current_span
+    # 500 cm detected, 150 cm of train: 175 cm unaccounted for at each end.
+    assert run_extent_cm(network, span) == (175.0, 325.0)
+    assert span.occupied_blocks == ["BLK_U"]
+
+
+def test_a_bent_block_does_not_stand_the_adopted_train_on_its_boundary():
+    """The bug this pair exists for. Resolving the front by matching the facing
+    against every claimed tile finds two candidates on a horseshoe, and the
+    offset used to be dropped to zero whenever the count was not exactly one —
+    which put the nose flush on the block boundary, the one position the detector
+    gives no reason to believe (design_new.md "Unidentified trains", Adoption)."""
+    network, sim, detector = build_horseshoe_sim()
+    detector.current = {"BLK_U": True}
+    tick(sim, times=3)
+    unidentified_id = only_unidentified(network)
+
+    adopt(sim, unidentified_id, length_cm=150.0, direction="WEST")
+
+    span = sim.controllers["T1"].physics_sync.current_span
+    # The body sits on the three interior tiles, so it touches neither end of the
+    # run and neither end locator is flush against an outer edge.
+    assert {tuple(t) for t in span.occupied_tiles} == {(2, 0), (2, 1), (2, 2)}
+    for end in (span.end_a, span.end_b):
+        length = network._get_tile_length_cm(*tuple(end.tile))
+        assert 0.0 < end.distance_cm < length
+
+
+def test_a_facing_no_claimed_tile_can_exit_is_still_placed_flush():
+    """The one case that legitimately has no front to measure back from: nothing
+    in the detected track leaves it this way. Placement falls back to the first
+    claimed tile and `place_train` reports on its own terms, rather than the
+    centering silently picking an end the facing never named."""
+    network, sim, detector = build_horseshoe_sim()
+    detector.current = {"BLK_U": True}
+    tick(sim, times=3)
+    unidentified_id = only_unidentified(network)
+
+    # No tile of the horseshoe exits EAST: (2,0) and (2,2) have no east edge, and
+    # the east edges of (1,0)/(1,2) both lead to claimed tiles.
+    adopt(sim, unidentified_id, length_cm=50.0, direction="EAST")
+
+    span = sim.controllers["T1"].physics_sync.current_span
+    # Flush at the east edge of the first claimed tile, offset zero.
+    assert tuple(span.end_a.tile) == (1, 0)
+    assert span.end_a.distance_cm == 100.0
+    assert {tuple(t) for t in span.occupied_tiles} == {(1, 0)}
 
 
 # ------------------------------------------------------------------- driving
