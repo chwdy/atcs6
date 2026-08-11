@@ -662,7 +662,17 @@ def register(app, state: AppState) -> None:
                     track_polarity_of=hardware_config.track_polarity_reversed,
                 )
             except Exception as exc:  # noqa: BLE001 - reported to the panel
-                return jsonify({"ok": False, "error": str(exc)}), 200
+                # The handover above already happened, so a failure here has
+                # taken the controller and produced no bench to hold it: the
+                # environment is down, `commissioning_active` is latched, and
+                # the panel never starts polling `bench/state` because it has
+                # nothing open to poll — so nothing else will notice. An
+                # operator who opened the bench with the rig unplugged was left
+                # with a silently dead railway and an error about the wrong
+                # thing. Give back exactly what this call took, then report.
+                _bench_session().close()
+                restored = _restore_after_bench_locked()
+                return jsonify({"ok": False, "error": str(exc), **restored}), 200
         return jsonify({"ok": True, **status})
 
     @app.route("/api/hardware/bench/close", methods=["POST"])
@@ -684,21 +694,44 @@ def register(app, state: AppState) -> None:
         """
         with state.simulation_lock:
             _bench_session().close()
-            if not state.bench_owns_commissioning:
-                # Hardware Setup was holding the device before this bench opened
-                # and is holding it still. Nothing of ours to give back.
-                return jsonify({"ok": True, "commissioning": True, "reactivated": False})
-            state.commissioning_active = False
-            state.bench_owns_commissioning = False
-            restore = state.bench_restore_environment
-            state.bench_restore_environment = False
-            blocked = _activate_locked(operation_environment.get_selected()) if restore else None
-        return jsonify({
-            "ok": True,
+            restored = _restore_after_bench_locked()
+        return jsonify({"ok": True, **restored})
+
+    def _restore_after_bench_locked():
+        """Put back the ownership a bench open took. Caller holds the lock.
+
+        Split out of the close route because closing is not the only way a bench
+        ends. `IDLE_TIMEOUT_S` closes the session from the inside — dropping the
+        device and de-energizing — but it can only reach the objects it owns, and
+        `commissioning_active` and the environment are the app's, not the
+        session's. An expiry alone therefore left the runtime locked out of a
+        controller that nothing was holding any more: no detection, no drive, and
+        no window on screen to explain it, until someone opened and closed a
+        bench again. Every path that observes the session closed calls this, so
+        the handover is undone by whichever one gets there first.
+
+        Idempotent: with nothing of ours outstanding it reports the state and
+        touches none of it, which is what makes it safe on a polling route.
+        """
+        if not state.bench_owns_commissioning:
+            # Either there was nothing to give back, or Hardware Setup was
+            # holding the device before this bench opened and is holding it
+            # still. Neither is ours to undo.
+            return {
+                "commissioning": bool(state.commissioning_active),
+                "reactivated": False,
+                "issues": [],
+            }
+        state.commissioning_active = False
+        state.bench_owns_commissioning = False
+        restore = state.bench_restore_environment
+        state.bench_restore_environment = False
+        blocked = _activate_locked(operation_environment.get_selected()) if restore else None
+        return {
             "commissioning": False,
             "reactivated": bool(restore and blocked is None),
             "issues": (blocked or {}).get("issues", []),
-        })
+        }
 
     @app.route("/api/hardware/bench/state", methods=["GET"])
     def hardware_bench_state():
@@ -706,10 +739,18 @@ def register(app, state: AppState) -> None:
 
         Answers with `open: false` rather than an error when no bench is running,
         so the panel can poll one endpoint whether or not it holds the device.
+
+        `is_open()` is also where an idle session is reaped, which makes this the
+        route that most often first observes a bench that ended without anyone
+        closing it. So it undoes the handover on the way out
+        (`_restore_after_bench_locked`) instead of reporting `open: false` over a
+        runtime still locked out of the controller.
         """
         session = _bench_session()
         if not session.is_open():
-            return jsonify({"ok": True, "open": False, "blocks": {}})
+            with state.simulation_lock:
+                restored = _restore_after_bench_locked()
+            return jsonify({"ok": True, "open": False, "blocks": {}, **restored})
         with state.simulation_lock:
             try:
                 payload = session.read()

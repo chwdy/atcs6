@@ -61,12 +61,21 @@ from block_power import MAX_TRACK_VOLTAGE
 # not at the browser, and the panel polls anyway whenever it is open.
 IDLE_TIMEOUT_S = 120.0
 
-# What the panel's Play button commands, in percent of full scale. Named here
+# Where the panel's drive control STARTS, in percent of full scale. Named here
 # because it is a property of the bench, not of the UI: at 40% of 12 V the rails
 # sit at 4.8 V, which is above `current_sense_min_drive_v` (4.0 V) and so puts
 # every block in the `driven` zone — the regime where the current channel decides
-# and the '165 is swamped. That is the regime worth bench-testing; a level chosen
-# below the floor would silently be testing the other detector instead.
+# and the '165 is swamped. That is the regime a wiring check wants, and it is the
+# wrong default to leave implicit, because a level chosen below the floor is
+# silently testing the other detector instead.
+#
+# The operator can drive any level from here. Choosing one BELOW the floor is a
+# supported measurement, not a mistake: the `lighting` band between the idle
+# deadband and this floor is where a stopped-but-lit locomotive actually sits,
+# and it is the band where both detectors are at their weakest — so it is
+# precisely the one an operator calibrating `threshold_ma` or `lighting_voltage`
+# needs to park in and read. The panel names the zone each level lands in so
+# that choice is deliberate rather than discovered afterwards.
 DEFAULT_DRIVE_PERCENT = 40.0
 
 
@@ -90,6 +99,15 @@ class OccupancyBenchSession:
         # bench is where an operator finds the number, `hardware_config` is
         # where it gets saved — this never writes there.
         self._threshold_ma: Optional[float] = None
+        # The two drive levels that decide WHICH detector answers (see
+        # `OccupancyDriver`), carried on the status so the panel can name the
+        # zone a chosen percent lands in. Reported rather than recomputed
+        # client-side: they are configuration, and a panel that hardcoded them
+        # would keep labelling a level `driven` after the rig was retuned —
+        # the one thing an operator choosing a level must not be told wrongly.
+        # None until a config is opened, which is when they become knowable.
+        self._idle_deadband_v: Optional[float] = None
+        self._current_sense_min_drive_v: Optional[float] = None
         # Per block, the largest-magnitude current this channel has read since
         # the last reset, and how many reads carried a number at all. Keyed the
         # same as the block rows; a block with no current binding never gets an
@@ -148,6 +166,8 @@ class OccupancyBenchSession:
             )
             self._track = track
             self._occupancy = occupancy
+            self._idle_deadband_v = cfg.idle_deadband_v
+            self._current_sense_min_drive_v = cfg.current_sense_min_drive_v
             self._track_bound = set(cfg.block_track)
             # Every block the bench can say anything about: one with rails to
             # drive, a detector to read, or both. A block bound on only one side
@@ -199,6 +219,8 @@ class OccupancyBenchSession:
                 "threshold_ma": self._threshold_ma,
                 "block_ids": list(self._block_ids),
                 "max_voltage": MAX_TRACK_VOLTAGE,
+                "idle_deadband_v": self._idle_deadband_v,
+                "current_sense_min_drive_v": self._current_sense_min_drive_v,
             }
 
     def set_current_threshold(self, threshold_ma: Optional[float]) -> Dict[str, Any]:

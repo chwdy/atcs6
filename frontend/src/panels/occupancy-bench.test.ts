@@ -4,7 +4,9 @@ import {
     buildRow,
     buildSchematic,
     directionTitle,
+    driveZone,
     numberOrNull,
+    parsePercent,
     parseThreshold,
     peakSummaryText,
     detectorText,
@@ -316,6 +318,69 @@ describe('parseThreshold', () => {
 
     it('treats unparseable text as no override rather than as a number', () => {
         expect(parseThreshold('abc')).toBeNull();
+    });
+});
+
+describe('parsePercent', () => {
+    it('reads a level, including zero', () => {
+        // 0 is how you ask for no volts — a real level, not an empty field.
+        expect(parsePercent('40')).toBe(40);
+        expect(parsePercent('12.5')).toBe(12.5);
+        expect(parsePercent('0')).toBe(0);
+    });
+
+    it('clamps to the same 0..100 the session clamps to', () => {
+        // Otherwise the box would claim a level the server silently reduced.
+        expect(parsePercent('250')).toBe(100);
+        expect(parsePercent('-10')).toBe(0);
+    });
+
+    it('reads a blank or unparseable box as no answer, not as zero', () => {
+        // There is no "no drive level": blank means the caller puts the box
+        // back to what the bench holds, rather than commanding 0 V.
+        expect(parsePercent('')).toBeNull();
+        expect(parsePercent('  ')).toBeNull();
+        expect(parsePercent('abc')).toBeNull();
+    });
+});
+
+describe('driveZone', () => {
+    // The rig's own numbers, as hardware_config.json carries them.
+    const IDLE = 0.25;
+    const MIN_DRIVE = 4.0;
+
+    it('names the three regimes by their boundaries', () => {
+        expect(driveZone(0, IDLE, MIN_DRIVE)).toBe('idle');
+        expect(driveZone(1.5, IDLE, MIN_DRIVE)).toBe('lighting');
+        expect(driveZone(4.8, IDLE, MIN_DRIVE)).toBe('driven');
+    });
+
+    it('puts the boundaries themselves in the zone the driver puts them in', () => {
+        // OccupancyDriver._drive_zone: idle is `<=` the deadband, driven is
+        // `>=` the floor. The panel must not disagree with it by an epsilon.
+        expect(driveZone(IDLE, IDLE, MIN_DRIVE)).toBe('idle');
+        expect(driveZone(MIN_DRIVE, IDLE, MIN_DRIVE)).toBe('driven');
+    });
+
+    it('reads the magnitude, so a flipped block lands in the same zone', () => {
+        expect(driveZone(-1.5, IDLE, MIN_DRIVE)).toBe('lighting');
+        expect(driveZone(-4.8, IDLE, MIN_DRIVE)).toBe('driven');
+    });
+
+    it('places the default 40% of 12 V in the driven zone', () => {
+        expect(driveZone(0.4 * 12, IDLE, MIN_DRIVE)).toBe('driven');
+    });
+
+    it('places a 1.5 V lighting_voltage in the lighting band', () => {
+        // The band this control exists to reach: 12.5% of 12 V.
+        expect(driveZone(0.125 * 12, IDLE, MIN_DRIVE)).toBe('lighting');
+    });
+
+    it('says nothing rather than guessing when the bounds are unknown', () => {
+        // No bench open. Asserting a zone from defaults would mislabel a
+        // retuned rig, which is the one thing this label must not do.
+        expect(driveZone(4.8, null, MIN_DRIVE)).toBeNull();
+        expect(driveZone(4.8, IDLE, null)).toBeNull();
     });
 });
 

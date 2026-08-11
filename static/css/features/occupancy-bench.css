@@ -403,6 +403,13 @@
     opacity: 0.55;
 }
 
+/* The drive box holds at most "100" — the threshold field's 84px is sized for a
+   placeholder this one does not have, and that much empty track beside a
+   three-character number reads as a field that failed to fill in. */
+.bench-threshold-input input[data-role='drive'] {
+    width: 44px;
+}
+
 .bench-threshold-unit {
     font-size: var(--font-size-micro);
     color: var(--text-secondary);

@@ -865,6 +865,111 @@ def test_a_blocked_rebuild_is_reported_rather_than_swallowed(client):
     assert state.sim_controller.environment_active is False
 
 
+def test_an_expired_bench_gives_the_controller_back(client, monkeypatch):
+    """A bench that ends on its idle timer must hand back what its open took.
+
+    `IDLE_TIMEOUT_S` closes the session from the inside — it drops the device and
+    de-energizes — but `commissioning_active` and the environment belong to the
+    app, not the session, so the expiry alone could not restore them. That left
+    the runtime locked out of a controller nothing was holding: no detection, no
+    drive, and no window on screen to explain it, until someone opened and closed
+    a bench by hand. The state poll is where the expiry is observed, so it is
+    where the handover is now undone.
+    """
+    test_client, state = client
+    _ready_virtual_layout(state)
+    assert test_client.post("/api/operation/activate").status_code == 200
+    assert test_client.post("/api/hardware/bench/open").get_json()["ok"] is True
+    assert state.commissioning_active is True
+    assert state.sim_controller.environment_active is False
+
+    import hardware.occupancy_bench as bench_module
+
+    session = bench_module.get_session()
+    later = session._last + bench_module.IDLE_TIMEOUT_S + 1
+    monkeypatch.setattr(bench_module.time, "monotonic", lambda: later)
+
+    data = test_client.get("/api/hardware/bench/state").get_json()
+
+    assert data["open"] is False
+    assert data["reactivated"] is True
+    assert state.commissioning_active is False
+    assert state.bench_owns_commissioning is False
+    assert state.sim_controller.environment_active is True
+    assert hardware_config.get_live_device() is not None
+
+
+def test_a_bench_that_fails_to_open_gives_the_controller_straight_back(client):
+    """The handover happens before the device is opened, so a failed open had
+    taken the controller and produced no bench to hold it — environment down,
+    `commissioning_active` latched, and no panel polling `bench/state` to notice,
+    because there was nothing open to poll. Opening the bench with the rig
+    unplugged left a silently dead railway behind an error about the device."""
+    test_client, state = client
+    _ready_virtual_layout(state)
+    assert test_client.post("/api/operation/activate").status_code == 200
+    assert state.sim_controller.environment_active is True
+
+    import hardware.occupancy_bench as bench_module
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("read error")
+
+    original = bench_module.OccupancyBenchSession.open
+    bench_module.OccupancyBenchSession.open = _boom
+    try:
+        data = test_client.post("/api/hardware/bench/open").get_json()
+    finally:
+        bench_module.OccupancyBenchSession.open = original
+
+    assert data["ok"] is False
+    assert "read error" in data["error"]
+    # The railway is back, not stranded behind the failure.
+    assert state.commissioning_active is False
+    assert state.bench_owns_commissioning is False
+    assert data["reactivated"] is True
+    assert state.sim_controller.environment_active is True
+
+
+def test_polling_a_bench_that_was_never_open_restores_nothing(client):
+    """The restore rides on a route the panel polls, so it has to be inert when
+    there is nothing outstanding — otherwise a poll from a closed panel would
+    activate an environment on nobody's request."""
+    test_client, state = client
+    _ready_virtual_layout(state)
+    assert state.commissioning_active is False
+    before = state.sim_controller.environment_active
+
+    data = test_client.get("/api/hardware/bench/state").get_json()
+
+    assert data["open"] is False
+    assert data["reactivated"] is False
+    assert state.commissioning_active is False
+    # Whatever the environment was, the poll left it there.
+    assert state.sim_controller.environment_active is before
+
+
+def test_an_expired_bench_leaves_hardware_setup_s_commissioning_alone(client):
+    """Same rule the close route follows: a bench that took nothing gives nothing
+    back. Hardware Setup holding the device must survive the bench expiring."""
+    test_client, state = client
+    _ready_virtual_layout(state)
+    assert test_client.post("/api/operation/commissioning/enter").status_code == 200
+    test_client.post("/api/hardware/bench/open")
+
+    import hardware.occupancy_bench as bench_module
+
+    session = bench_module.get_session()
+    session._last -= bench_module.IDLE_TIMEOUT_S + 1
+
+    data = test_client.get("/api/hardware/bench/state").get_json()
+
+    assert data["open"] is False
+    assert data["reactivated"] is False
+    # The port grid is still driving the device; the bench never took it.
+    assert state.commissioning_active is True
+
+
 def test_commissioning_enter_reports_a_clean_safe_state(client):
     """The ordinary entry says so explicitly, so `safe_state.ok` is a fact the
     caller can read rather than an absence it has to infer."""

@@ -3,17 +3,26 @@
  *
  * The panel is two halves of one question. On top, a schematic of the layout in
  * which every block is a button: pressing it flips that block's drive direction,
- * and its label reads the two detectors and the verdict. Below, one Play / Stop
- * that holds every block at 40% of full scale.
+ * and its label reads the two detectors and the verdict. Below, Play / Stop and
+ * the level they hold every block at.
  *
  * Why the readout is `idle-current overall` rather than one verdict: occupancy
  * is a hybrid of a '165 digital detector and an INA current channel, and the
  * runtime believes exactly one of them per block depending on how hard that
- * block is being driven. At 40% the rails sit in the `driven` zone, where the
- * current channel decides and the '165 is never sampled — so "occupied is wrong
- * here" splits into two very different faults (the trusted detector is lying vs.
- * the wrong detector is being trusted) that a single verdict cannot tell apart.
- * The bench reads both every poll and shows both.
+ * block is being driven — so "occupied is wrong here" splits into two very
+ * different faults (the trusted detector is lying vs. the wrong detector is
+ * being trusted) that a single verdict cannot tell apart. The bench reads both
+ * every poll and shows both.
+ *
+ * Why the drive level is an input and not a constant: which detector answers is
+ * a function of that level, so it is the variable of the experiment. It opens at
+ * 40% (4.8 V, the `driven` zone) because that is what a wiring check wants, but
+ * the band worth the most is the one BELOW the current-sense floor — the
+ * `lighting` zone, where a stopped-but-lit locomotive actually sits and both
+ * detectors are at their weakest. That is the band where `threshold_ma` and
+ * `SpeedProfile.lighting_voltage` get calibrated, and it cannot be reached from
+ * a fixed 40%. The footer names the zone each level lands in, so choosing one is
+ * deliberate rather than discovered afterwards.
  *
  * Why the direction button: the detectors are not symmetric in the rails. One
  * rail of the pair carries the idle detection, so a block wired backwards reads
@@ -36,6 +45,7 @@
 
 import { api } from '../lib/api';
 import { showToast } from '../lib/toast';
+import { setBenchOccupancyMirror } from '../lib/bench-occupancy-mirror';
 import { FloatingWindow, windowManager, type WindowGeometry } from '../lib/window-manager';
 import {
     browserWindowPersistenceEnv,
@@ -294,6 +304,57 @@ export function parseThreshold(raw: string): number | null {
     return Math.max(0, parsed);
 }
 
+/**
+ * What the drive box means, given its raw text.
+ *
+ * Null for anything unreadable, which the caller turns into "put the box back to
+ * what the bench holds" — unlike the threshold field, blank is NOT a setting
+ * here. There is no such thing as "no drive level"; 0 % is how you ask for no
+ * volts, and it is typed.
+ *
+ * Clamped to the same 0..100 the session clamps to, so the box and the rails
+ * agree about what a typed 250 did rather than leaving the panel claiming a
+ * level the server silently reduced.
+ */
+export function parsePercent(raw: string): number | null {
+    const text = String(raw ?? '').trim();
+    if (!text) return null;
+    const parsed = Number(text);
+    if (!Number.isFinite(parsed)) return null;
+    return Math.min(100, Math.max(0, parsed));
+}
+
+/**
+ * Which detector regime a commanded level lands in, named as `OccupancyDriver`
+ * names them. This is the whole reason the drive control is worth having: the
+ * three zones are the difference between testing the '165, testing the INA, and
+ * testing the band where a stopped-but-lit locomotive actually sits and neither
+ * detector is reliable.
+ *
+ * Null when the bounds are unknown (no bench open), so the caller can leave the
+ * label off rather than assert a zone from defaults that may not be this rig's.
+ */
+export function driveZone(
+    volts: number,
+    idleDeadbandV: number | null,
+    minDriveV: number | null,
+): 'idle' | 'lighting' | 'driven' | null {
+    if (idleDeadbandV === null || minDriveV === null) return null;
+    const magnitude = Math.abs(volts);
+    if (magnitude <= idleDeadbandV) return 'idle';
+    if (magnitude >= minDriveV) return 'driven';
+    return 'lighting';
+}
+
+/** What each zone means for the reading, in the operator's terms. */
+export const ZONE_HELP: Record<'idle' | 'lighting' | 'driven', string> = {
+    idle: "rails quiet — the '165 decides and the current channel reads its noise floor",
+    lighting:
+        "the band a stopped-but-lit loco sits in — the '165 flickers under PWM and the " +
+        'current channel is at its weakest, so no single read clears a block here',
+    driven: "the current channel decides and the '165 is swamped",
+};
+
 /** A finite number, or null for anything the backend left out or nulled. `0` is
  *  a real reading and must survive — a channel measuring nothing is exactly what
  *  a miswired block looks like. */
@@ -436,6 +497,7 @@ class OccupancyBench {
     private _statusEl!: HTMLElement;
     private _playBtnEl!: HTMLButtonElement;
     private _thresholdEl!: HTMLInputElement;
+    private _driveEl!: HTMLInputElement;
     private _peakEl!: HTMLElement;
     private _peakListEl!: HTMLElement;
     private _resetPeaksBtnEl!: HTMLButtonElement;
@@ -453,6 +515,12 @@ class OccupancyBench {
     private _running = false;
     private _open = false;
     private _percent = 40;
+    /** Full-scale track voltage, as the session reports it. */
+    private _maxVoltage = 12;
+    /** The two zone boundaries, from the rig's config — null until a bench is
+     *  open, which is when they become knowable. See `driveZone`. */
+    private _idleDeadbandV: number | null = null;
+    private _minDriveV: number | null = null;
     /** One threshold for every current channel, or null to leave each block on
      *  its own configured value. */
     private _thresholdMa: number | null = null;
@@ -512,6 +580,14 @@ class OccupancyBench {
             <div class="bench-transport">
                 <button class="bench-play" type="button" data-role="play"></button>
                 <label class="bench-threshold">
+                    <span class="bench-threshold-label">Drive</span>
+                    <span class="bench-threshold-input">
+                        <input type="number" data-role="drive" min="0" max="100" step="1"
+                               inputmode="decimal" />
+                        <span class="bench-threshold-unit">%</span>
+                    </span>
+                </label>
+                <label class="bench-threshold">
                     <span class="bench-threshold-label">Current threshold</span>
                     <span class="bench-threshold-input">
                         <input type="number" data-role="threshold" min="0" step="0.1"
@@ -534,6 +610,7 @@ class OccupancyBench {
         this._statusEl = contentEl.querySelector('[data-role="status"]') as HTMLElement;
         this._playBtnEl = contentEl.querySelector('[data-role="play"]') as HTMLButtonElement;
         this._thresholdEl = contentEl.querySelector('[data-role="threshold"]') as HTMLInputElement;
+        this._driveEl = contentEl.querySelector('[data-role="drive"]') as HTMLInputElement;
         this._peakEl = contentEl.querySelector('[data-role="peak"]') as HTMLElement;
         this._peakListEl = contentEl.querySelector('[data-role="peak-list"]') as HTMLElement;
         this._resetPeaksBtnEl = contentEl.querySelector(
@@ -551,6 +628,16 @@ class OccupancyBench {
             if ((event as KeyboardEvent).key === 'Enter') {
                 event.preventDefault();
                 void this._commitThreshold();
+            }
+        });
+        // Same commit contract as the threshold box, and for a stronger reason:
+        // this one moves real rails, so firing per keystroke would sweep the
+        // track through 1 %, 12 %, 120 %-clamped on the way to "12".
+        this._driveEl.addEventListener('change', () => void this._commitDrive());
+        this._driveEl.addEventListener('keydown', (event) => {
+            if ((event as KeyboardEvent).key === 'Enter') {
+                event.preventDefault();
+                void this._commitDrive();
             }
         });
         // Delegated: the schematic is re-rendered on every poll, so per-button
@@ -628,6 +715,10 @@ class OccupancyBench {
         if (!this._open) return;
         this._open = false;
         this._running = false;
+        // Before the round trip, not after: the overlay is this panel's reading
+        // of a device it is in the middle of letting go, and a close that
+        // hangs or throws must not leave the layout painted from it.
+        this._publishMirror(false);
         try {
             const result = await api.closeOccupancyBench();
             if (result?.reactivated === false && Array.isArray(result.issues) && result.issues.length) {
@@ -644,6 +735,26 @@ class OccupancyBench {
         } catch {
             /* the idle timeout is the backstop */
         }
+    }
+
+    /** Push the last read onto the layout, or take the overlay down.
+     *
+     *  Every block the bench reports on is published, clear ones included: the
+     *  overlay stands in for detection that is not running, so a block the
+     *  detectors call free has to read free rather than keep the color the
+     *  runtime committed before the handover. Blocks the bench says nothing
+     *  about are simply absent, and keep painting from the server.
+     */
+    private _publishMirror(active: boolean): void {
+        if (!active) {
+            setBenchOccupancyMirror(null);
+            return;
+        }
+        setBenchOccupancyMirror(
+            Object.entries(this._states).map(
+                ([blockId, state]) => [blockId, !!state?.overall] as const,
+            ),
+        );
     }
 
     private async _loadSchematic(): Promise<void> {
@@ -671,6 +782,29 @@ class OccupancyBench {
         // button press, and a button that only moves once the rails have answered
         // reads as a dropped click.
         this._render();
+        await this._commandDrive(this._running);
+    }
+
+    /** Send the drive level, keeping the running state exactly as it is.
+     *
+     *  Settable stopped as well as running: choosing the level and then pressing
+     *  Play is the ordinary way to approach a rig, and a control that only
+     *  worked while energized would force every change to go through the track.
+     *  When it IS running the rails follow immediately, which is the point — a
+     *  sweep down through the lighting band is meant to be watched, not
+     *  reconstructed from a sequence of stop/set/start.
+     */
+    private async _commitDrive(): Promise<void> {
+        const next = parsePercent(this._driveEl.value);
+        if (next === null || !this._open) {
+            // Unreadable, or nothing to apply it to. Put the box back to what
+            // the bench actually holds rather than leaving a number on screen
+            // that commands nothing.
+            this._renderTransport();
+            return;
+        }
+        if (next === this._percent) return;
+        this._percent = next;
         await this._commandDrive(this._running);
     }
 
@@ -771,6 +905,18 @@ class OccupancyBench {
     private _applyStatus(payload: any, adoptIntent = true): void {
         if (!payload || typeof payload !== 'object') return;
         if (Array.isArray(payload.block_ids)) this._blockIds = payload.block_ids.map(String);
+        // Adopted on every status, `adoptIntent` or not, for the same reason the
+        // block list is: these are the rig's configuration, not a thing a click
+        // in this panel changes.
+        if ('max_voltage' in payload) {
+            this._maxVoltage = numberOrNull(payload.max_voltage) ?? this._maxVoltage;
+        }
+        if ('idle_deadband_v' in payload) {
+            this._idleDeadbandV = numberOrNull(payload.idle_deadband_v);
+        }
+        if ('current_sense_min_drive_v' in payload) {
+            this._minDriveV = numberOrNull(payload.current_sense_min_drive_v);
+        }
         if (!adoptIntent) return;
         if (typeof payload.running === 'boolean') this._running = payload.running;
         if (Number.isFinite(Number(payload.percent))) this._percent = Number(payload.percent);
@@ -807,6 +953,11 @@ class OccupancyBench {
                 this._running = false;
                 this._stopPolling();
                 this._error = 'the bench released the controller — reopen it';
+                // The overlay outlived its source. Drop it here rather than
+                // waiting for a close that is no longer coming: a layout still
+                // painted from a bench that let go of the device is showing
+                // readings nothing is taking any more.
+                this._publishMirror(false);
             } else if (payload?.ok === false) {
                 this._error = payload.error || 'the bench read failed';
             } else {
@@ -814,6 +965,7 @@ class OccupancyBench {
                 this._peak = payload?.peak ?? null;
                 this._applyStatus(payload, !this._busy);
                 this._error = null;
+                this._publishMirror(true);
             }
             this._render();
         } catch (err) {
@@ -962,13 +1114,33 @@ class OccupancyBench {
                 : `Every current channel is judged against ${this._thresholdMa} mA. ` +
                   'Clear the box to put each block back on its configured threshold.';
 
+        this._driveEl.disabled = !this._open || this._busy;
+        if (document.activeElement !== this._driveEl) {
+            this._driveEl.value = String(this._percent);
+        }
+
         this._renderPeaks();
 
-        const volts = ((this._percent / 100) * 12).toFixed(1);
+        const volts = (this._percent / 100) * this._maxVoltage;
+        const zone = driveZone(volts, this._idleDeadbandV, this._minDriveV);
+        this._driveEl.title = zone
+            ? `${volts.toFixed(1)} V of ${this._maxVoltage} V — the ${zone} zone: ${ZONE_HELP[zone]}.`
+            : 'Percent of full-scale track voltage.';
+
+        // The zone rides in the footer beside the level, because the level alone
+        // does not say what is being measured — 12 % and 40 % put the question to
+        // two different detectors, and an operator reading a channel's peak has
+        // to know which one answered.
+        // Inside the parenthesis with the volts, not appended after it: the zone
+        // is a property of that level, and hanging it off the end split
+        // "40% (4.8 V)" from the "when running" that qualifies it.
+        const level = zone
+            ? `${this._percent}% (${volts.toFixed(1)} V, ${zone} zone)`
+            : `${this._percent}% (${volts.toFixed(1)} V)`;
         const occupied = this._blockIds.filter((id) => this._states[id]?.overall).length;
         this._footerEl.textContent = this._running
-            ? `${this._percent}% (${volts} V) on ${this._blockIds.length} blocks · ${occupied} reading occupied`
-            : `Stopped · ${this._percent}% (${volts} V) when running · ${occupied} reading occupied`;
+            ? `${level} on ${this._blockIds.length} blocks · ${occupied} reading occupied`
+            : `Stopped · ${level} when running · ${occupied} reading occupied`;
     }
 
     /**

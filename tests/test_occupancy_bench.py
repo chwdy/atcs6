@@ -555,3 +555,90 @@ def test_an_abandoned_bench_expires_and_de_energizes(monkeypatch, bench):
     assert session.is_open() is False
     for channel in (0, 1, 6, 7):
         assert device.duty_cycle(PWM_ADDR, channel) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Drive level — the panel's control over which detector is being asked
+
+
+def test_status_carries_the_zone_boundaries_from_the_config(bench):
+    """The panel names the zone a chosen level lands in, and must not compute it
+    from hardcoded defaults: they are configuration, so a panel holding its own
+    copy would keep calling a level `driven` after the rig was retuned — the one
+    thing an operator picking a level must not be told wrongly."""
+    session, _device, cfg = bench
+
+    status = session.status()
+
+    assert status["idle_deadband_v"] == cfg.idle_deadband_v
+    assert status["current_sense_min_drive_v"] == cfg.current_sense_min_drive_v
+    assert status["max_voltage"] > 0
+
+
+def test_a_closed_bench_claims_no_zone_boundaries():
+    """Unknowable until a config is opened. Reporting defaults instead would let
+    the panel label a zone for a rig it has not read."""
+    session = OccupancyBenchSession()
+
+    status = session.status()
+
+    assert status["idle_deadband_v"] is None
+    assert status["current_sense_min_drive_v"] is None
+
+
+def test_driving_below_the_current_sense_floor_is_supported(bench):
+    """The lighting band is the point of the control, not an accident of it: it
+    is where a stopped-but-lit loco sits and where `threshold_ma` and
+    `lighting_voltage` get calibrated, and a bench fixed at 40% cannot reach it."""
+    session, device, cfg = bench
+
+    # 12.5% of 12 V = 1.5 V — under `current_sense_min_drive_v`, over the idle
+    # deadband, i.e. squarely in the lighting band.
+    status = session.drive(True, percent=12.5, flipped=[])
+
+    assert status["percent"] == 12.5
+    volts = status["volts"]
+    assert cfg.idle_deadband_v < volts < cfg.current_sense_min_drive_v
+    # The rails actually went there, rather than the level being stored and the
+    # drive left at its previous duty. Loose tolerance because the duty lands on
+    # one of the PWM's 12-bit steps, not on the exact ratio.
+    assert device.duty_cycle(PWM_ADDR, 0) == pytest.approx(
+        volts / status["max_voltage"], rel=1e-2
+    )
+
+
+def test_a_drive_level_is_clamped_to_full_scale(bench):
+    """The panel clamps too, but the session is the authority — a request built
+    by hand must not command more than the rails can take."""
+    session, _device, _cfg = bench
+
+    assert session.drive(True, percent=250)["percent"] == 100.0
+    assert session.drive(True, percent=-30)["percent"] == 0.0
+
+
+def test_changing_the_drive_level_drops_the_peaks(bench):
+    """A peak reads as "the worst this channel does AT THIS DRIVE". Carried from
+    40% into a 12% sweep it would read as that channel's noise floor while
+    actually being a memory of three times the voltage."""
+    session, _device, _cfg = bench
+    session.drive(True, percent=40, flipped=[])
+    session.read()
+    session.read()
+    assert any(entry["peak_samples"] for entry in session.read()["blocks"].values())
+
+    session.drive(True, percent=12.5, flipped=[])
+
+    # Checked on the session's own store, not on a read: `read()` would record a
+    # fresh peak on its way out and hide whether the old one had been dropped.
+    assert session._peaks == {}
+    # ...and the history starts over at the new level rather than resuming.
+    assert all(
+        entry["peak_samples"] <= 1 for entry in session.read()["blocks"].values()
+    )
+
+    # Re-sending the same level is not a change, so a panel re-asserting its
+    # state must not silently wipe a measurement in progress.
+    session.read()
+    before = {k: dict(v) for k, v in session._peaks.items()}
+    session.drive(True, percent=12.5, flipped=[])
+    assert session._peaks == before
