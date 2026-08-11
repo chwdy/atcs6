@@ -12,6 +12,20 @@
       "runtimeExecutable": "/opt/homebrew/anaconda3/envs/general/bin/python",
       "runtimeArgs": ["server.py", "--skip-startup-tests", "--port", "5011"],
       "port": 5011
+    },
+    {
+      "name": "atcs6-readonly",
+      "runtimeExecutable": "/opt/homebrew/anaconda3/envs/general/bin/python",
+      "runtimeArgs": [
+        "server.py",
+        "--skip-startup-tests",
+        "--skip-frontend-build",
+        "--no-autosave",
+        "--no-reload",
+        "--port",
+        "5012"
+      ],
+      "port": 5012
     }
   ]
 }
