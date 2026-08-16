@@ -638,8 +638,14 @@ class SpeedCalibration:
         if dispatcher is None or not run.path_id:
             return
         try:
+            from runtime_payloads import ErrorRecord as _ErrorRecord
+
             dispatcher.cancel_path(
-                run.path_id, initiator="SpeedCalibration", reason="calibration leg ended"
+                run.path_id,
+                error=_ErrorRecord(
+                    "calibration leg ended", "calibration_leg_complete"
+                ),
+                kind="info",
             )
         except Exception:
             pass

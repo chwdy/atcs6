@@ -28,7 +28,10 @@ class RecordingNotifier:
         # recorder answers to that name as well as being callable directly.
         self.emit = self
 
-    def __call__(self, message, *, operation, kind, error=None, payload=None):
+    def __call__(
+        self, message, *, operation, kind, error=None, payload=None,
+        latch_event=False,
+    ):
         self.events.append(
             {
                 "message": message,
@@ -36,6 +39,7 @@ class RecordingNotifier:
                 "kind": kind,
                 "error": error,
                 "payload": payload or {},
+                "latch_event": latch_event,
             }
         )
 
@@ -57,19 +61,46 @@ def latches():
 
 def test_setting_the_leaf_latch_reports_it(latches):
     lat, notifier = latches
-    lat.set_path_cancel_request("eb", "ATC overspeed escalation")
+    lat.set_path_cancel_request(
+        ErrorRecord("ATC overspeed escalation", "eb"), "warning"
+    )
 
     assert notifier.operations() == ["set_path_cancel_request"]
     ev = notifier.events[0]
-    assert ev["kind"] == "info"
+    assert ev["kind"] == "warning"
     assert ev["payload"]["latch"] == "path_cancel_request"
-    assert ev["payload"]["initiator"] == "eb"
+    assert ev["payload"]["origin"] == "eb"
 
 
-def test_a_write_carrying_an_error_record_is_a_warning(latches):
+def test_every_latch_write_is_marked_a_latch_event(latches):
+    """design_new.md "Error events" (Latch events are exempt): a latch write
+    passes `latch_event=True`, so the unchanged-repeat suppression never drops
+    it even when it carries an `ErrorRecord`. Without that, a second identical
+    cancellation would leave the intent invisible."""
+    lat, notifier = latches
+    lat.set_route_abort("operator abort", has_active_path=True)
+
+    assert [e["latch_event"] for e in notifier.events] == [True, True]
+
+
+def test_the_writer_declares_the_level_rather_than_deriving_it(latches):
+    """design_new.md "Writer-helper rule": `kind` is recorded unchanged and
+    independently of the optional `ErrorRecord`. An ordinary operator
+    cancellation stays `info` even though it carries a diagnostic, which is
+    what keeps it out of `latest_error_for(...)`."""
+    lat, notifier = latches
+    record = ErrorRecord("operator cancelled their own path", "operator_cancelled")
+    lat.set_path_cancel_request(record, "info")
+
+    ev = notifier.events[0]
+    assert ev["kind"] == "info"
+    assert ev["error"] is record
+
+
+def test_a_deviation_write_declares_warning(latches):
     lat, notifier = latches
     record = ErrorRecord("head is not in the resource sequence", "out_of_sequence")
-    lat.set_path_cancel_request("deviation", deviation=True, error=record)
+    lat.set_path_cancel_request(record, "warning", deviation=True)
 
     ev = notifier.events[0]
     assert ev["kind"] == "warning"
@@ -84,10 +115,10 @@ def test_an_overwritten_intent_is_still_reported(latches):
     first `ErrorRecord` never reaches Phase 3. It must still be in the stream.
     """
     lat, notifier = latches
-    first = ErrorRecord("deviated off the authority", "deviation")
+    first = ErrorRecord("deviated off the authority", "out_of_sequence")
     second = ErrorRecord("operator pulled the plug", "power_off")
-    lat.set_path_cancel_request("deviation", error=first)
-    lat.set_path_cancel_request("power_off", error=second)
+    lat.set_path_cancel_request(first, "warning")
+    lat.set_path_cancel_request(second, "info")
 
     # The latch itself kept only the most recent payload...
     assert lat.path_cancel_request.error is second
@@ -103,7 +134,7 @@ def test_an_inclusive_teardown_reports_both_halves(latches):
 
     assert notifier.operations() == ["set_route_abort", "set_path_cancel_request"]
     assert lat.route_abort is True
-    assert lat.path_cancel_request.initiator == "operator_cancelled"
+    assert lat.path_cancel_request.error.origin == "operator_cancelled"
 
 
 def test_a_teardown_with_no_live_path_reports_only_itself(latches):
@@ -116,39 +147,39 @@ def test_a_teardown_with_no_live_path_reports_only_itself(latches):
 
 # ---------------------------------------------------------------------------
 # Latch commits
+#
+# design_new.md "Latch Table" (No shared consume accessor) + "Latch consumption
+# events": the aggregate does not consume. Each field is cleared by its own
+# named Phase-3 consumer step, and the commit event comes from that step's own
+# consume-side call — `PathDispatcher.cancel_path(...)`,
+# `RouteExecutor.remove_train_route_run(...)`, or
+# `TrainController.complete_power_off()`. Those emitters are covered where they
+# live; here we only pin that clearing is silent and side-effect-free.
 
 
-def test_committing_a_latch_reports_it(latches):
+def test_clearing_a_latch_emits_nothing_from_the_aggregate(latches):
     lat, notifier = latches
     lat.set_route_deactivate("route deactivated", has_active_path=False)
     notifier.events.clear()
 
-    assert lat.consume_route_deactivate() is True
-    assert notifier.operations() == ["consume_route_deactivate"]
-    assert notifier.events[0]["kind"] == "info"
-
-
-def test_an_empty_consume_reports_nothing(latches):
-    """Phase 3 reaches all four consumers every tick for every train. Emitting
-    on the empty pass would bury the stream in events saying nothing happened."""
-    lat, notifier = latches
-
-    assert lat.consume_path_cancel_request() is None
-    assert lat.consume_route_abort() is False
-    assert lat.consume_power_off() is False
-    assert lat.consume_route_deactivate() is False
+    lat.clear("route_deactivate")
+    assert lat.route_deactivate is False
     assert notifier.events == []
 
 
-def test_the_commit_carries_the_committed_payload(latches):
-    lat, notifier = latches
-    lat.set_path_cancel_request("run_complete", route_progress_kind="run_complete")
-    notifier.events.clear()
+def test_the_committed_payload_survives_until_the_step_reads_it(latches):
+    """The consumer step reads the payload, then clears: the `kind` and the
+    `ErrorRecord` it forwards into `cancel_path(...)` must both still be
+    there when it does."""
+    lat, _ = latches
+    lat.set_path_cancel_request(None, "info", run_complete=True)
 
-    lat.consume_path_cancel_request()
-    payload = notifier.events[0]["payload"]
-    assert payload["initiator"] == "run_complete"
-    assert payload["run_complete"] is True
+    payload = lat.path_cancel_request
+    lat.clear("path_cancel_request")
+    assert payload.run_complete is True
+    assert payload.kind == "info"
+    assert payload.error is None
+    assert lat.path_cancel_request is None
 
 
 def test_an_aggregate_with_no_notifier_is_silent():

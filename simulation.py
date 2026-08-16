@@ -1030,8 +1030,7 @@ class SimulationController(SwitchOutputOwner):
                 controller = self.controllers.get(reserved_for)
                 if controller is not None and path_id:
                     controller.route_hooks.phase_latches.set_path_cancel_request(
-                        initiator="revoked",
-                        reason=reason,
+                        ErrorRecord(reason, "revoked"), Kind.INFO
                     )
 
     def _update_presence_unknown(self, detector) -> None:
@@ -1118,8 +1117,11 @@ class SimulationController(SwitchOutputOwner):
             if path_id:
                 dispatcher.cancel_path(
                     path_id,
-                    initiator="presence_unknown",
-                    reason="no occupancy backs this train's position",
+                    error=ErrorRecord(
+                        "no occupancy backs this train's position",
+                        "presence_unknown",
+                    ),
+                    kind=Kind.WARNING,
                 )
 
         # The canonical teardown for a train with no detector observation left
@@ -1298,36 +1300,52 @@ class SimulationController(SwitchOutputOwner):
             return
 
         if self.path_dispatcher is None:
-            controller.route_hooks.phase_latches.consume_path_cancel_request()
+            controller.route_hooks.phase_latches.clear("path_cancel_request")
             return
 
-        payload = controller.route_hooks.phase_latches.consume_path_cancel_request()
+        payload = controller.route_hooks.phase_latches.path_cancel_request
+        controller.route_hooks.phase_latches.clear("path_cancel_request")
 
         active_path_id = self.path_dispatcher.active_path_id_by_train(train.train_id)
         if active_path_id is not None:
-            # Step `389a`: a movement-derived deviation latch carries the
-            # writer's whole `ErrorRecord`; forward it from the latch payload
-            # into the commit so it reaches the cancellation event's `error`.
+            # Step `389a`: the latch payload carries the writer's whole
+            # `ErrorRecord` and its declared `kind`; forward both into the
+            # commit. `cancel_path(...)`'s own event is this latch's
+            # consumption event (design_new.md "Latch consumption events"), so
+            # this step emits nothing itself on this branch.
             self.path_dispatcher.cancel_path(
                 active_path_id,
-                initiator=payload.initiator,
-                reason=payload.reason,
                 error=payload.error,
-                route_progress_kind=payload.route_progress_kind,
+                kind=payload.kind,
+                deviation=payload.deviation,
+                run_complete=payload.run_complete,
             )
         else:
-            # design_new.md fix #18: emit INFO notification instead of logger.debug.
+            # No live path to cancel. Per design_new.md "Phase-3 latched-cancel
+            # consumption" this step emits the consumption event itself here,
+            # with `kind = "info"` and `error = None` — the latch found nothing
+            # to do, which is not a failure — and passes `latch_event=True` so
+            # the repeat suppression never drops it.
             self.notification_center.emit(
                 source="SimulationController",
                 operation="_consume_pending_path_cancel_request",
-                kind=Kind.DEBUG,
+                kind=Kind.INFO,
                 message=(
                     f"latched cancel for {train.train_id} found no active path; "
                     "the latch was cleared without a dispatcher call"
                 ),
                 entities=[train_ref(train.train_id)],
-                payload={"initiator": payload.initiator},
+                error=None,
+                payload={
+                    "latch": "path_cancel_request",
+                    "origin": (
+                        payload.error.origin
+                        if payload.error is not None
+                        else "run_complete"
+                    ),
+                },
                 event_time=time.time(),
+                latch_event=True,
             )
 
     def _consume_pending_route_abort(
@@ -1350,8 +1368,11 @@ class SimulationController(SwitchOutputOwner):
             # Latch survives until the inclusive cancel has been consumed.
             return
 
+        # `remove_train_route_run(...)` is this latch's consume-side emitter
+        # (design_new.md "Latch consumption events"); this step clears the
+        # field once that call returns.
         self.route_executor.remove_train_route_run(train.train_id)
-        controller.route_hooks.phase_latches.consume_route_abort()
+        controller.route_hooks.phase_latches.clear("route_abort")
 
     def _consume_pending_power_off(
         self, controller: TrainController, train: Train
@@ -1417,7 +1438,9 @@ class SimulationController(SwitchOutputOwner):
             self.route_executor.apply_pending_reassign(train.train_id)
         else:
             self.route_executor.discard_pending_reassign(train.train_id)
-        controller.route_hooks.phase_latches.consume_route_deactivate()
+        # As with route-abort, `remove_train_route_run(...)` is the
+        # consume-side emitter and this step clears the field after it returns.
+        controller.route_hooks.phase_latches.clear("route_deactivate")
 
     # =========================================================================
     # Persistent state sync (Train <- TrainController)
@@ -2507,34 +2530,26 @@ class SimulationController(SwitchOutputOwner):
         self,
         train_id: str,
         path_id: str,
-        initiator: str,
-        reason: str,
-        event_time: float,
+        error: Optional[ErrorRecord] = None,
+        was_deviation: bool = False,
+        was_run_completion: bool = False,
     ) -> None:
-        """Forward a path-cancellation event to the RouteExecutor and emit the
-        canonical `path_cancellation` notification.
+        """Deliver a committed path cancellation to the `RouteExecutor`.
 
-        Per design_new.md, the `initiator` field is the writer-supplied
-        free-form string (``"eb"``, ``"operator_cancelled"``, ``"power_off"``,
-        ``"deviation"``, ``"revoked"``, …); routing/planning layers must not
-        branch on it.
+        Per design_new.md "Phase handoff rule" this is the sanctioned
+        same-transaction hop: `PathDispatcher.cancel_path(...)` calls here and
+        this method delegates to `RouteExecutor.handle_path_cancellation(...)`.
+        It emits nothing of its own — the `cancel_path` event the dispatcher
+        already emitted *is* the `path_cancel_request` consumption event
+        (design_new.md "Latch consumption events"), and a second event here
+        would be a duplicate sink for the same commit.
         """
-        # Per design_new.md line 1559: the diagnostic `initiator` does not cross
-        # the route callback boundary; it is carried only on the notification
-        # emitted below.
-        self.route_executor.handle_path_cancellation(train_id, path_id, reason)
-        # `kind` is the level the writer declared; `error` is independent of it.
-        # An operator-requested cancellation is ordinary `info` traffic and
-        # still carries the record naming what ended the path.
-        self.notification_center.emit(
-            source="SimulationController",
-            operation="handle_path_cancellation",
-            kind=Kind.INFO if initiator == "operator" else Kind.WARNING,
-            message=f"path {path_id} cancelled for {train_id}",
-            entities=[train_ref(train_id), path_ref(path_id)],
-            error=ErrorRecord(reason, initiator),
-            event_time=event_time,
-            payload={"initiator": initiator, "reason": reason},
+        self.route_executor.handle_path_cancellation(
+            train_id,
+            path_id,
+            error=error,
+            was_deviation=was_deviation,
+            was_run_completion=was_run_completion,
         )
 
 

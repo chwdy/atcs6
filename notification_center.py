@@ -215,6 +215,7 @@ class NotificationCenter:
         error: Optional[ErrorRecord] = None,
         payload: Optional[Dict[str, Any]] = None,
         event_time: Optional[float] = None,
+        latch_event: bool = False,
     ) -> Optional[Notification]:
         """Append one event and return it, or `None` when it was suppressed as
         an unchanged repeat.
@@ -236,10 +237,18 @@ class NotificationCenter:
                 one case design_new.md "Time sampling" allows. Never pass
                 `simulation_time`: the stream is wall-clock by design, so a
                 playback-scaled value would not order against its siblings.
+            latch_event: True from a latch writer helper or a latch's
+                consume-side emitter. It exempts the event from the
+                unchanged-repeat suppression below and is a control argument
+                only — it is not part of the persisted Event schema and is
+                never stored. The point of the write/consume pair is to show
+                intent and commit separately (design_new.md "Error events",
+                Latch events are exempt), so dropping either one as a repeat
+                would hide the very thing the pair exists to show.
         """
         refs = list(entities or [])
         data = dict(payload) if payload else {}
-        if self._is_unchanged_repeat(refs, operation, error, data):
+        if not latch_event and self._is_unchanged_repeat(refs, operation, error, data):
             return None
 
         n = Notification(
@@ -280,7 +289,9 @@ class NotificationCenter:
         `NotificationCenter` owns this, which is why the rule needs no
         per-caller state. Only diagnostic-carrying events are suppressed:
         ordinary traffic that carries no `ErrorRecord` is never a "same reason"
-        repeat, and dropping it would lose real occurrences.
+        repeat, and dropping it would lose real occurrences. Latch writes and
+        latch consumptions are exempt regardless — `emit(...)` skips this check
+        for a `latch_event=True` call.
         """
         if error is None:
             return False

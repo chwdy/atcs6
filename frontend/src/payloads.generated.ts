@@ -56,11 +56,10 @@ export interface ControllerProgressReport {
 }
 
 export interface PendingPathCancelRequest {
-  initiator: string;
-  reason: string | null;
-  deviation: boolean;
+  kind: string;
   error: ErrorRecord | null;
-  route_progress_kind: "run_complete" | null;
+  deviation: boolean;
+  run_complete: boolean;
 }
 
 export interface PhaseLatches {

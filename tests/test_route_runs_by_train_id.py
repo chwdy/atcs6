@@ -12,6 +12,7 @@ it.
 
 from network import RailwayNetwork
 from route_executor import RouteExecutor, RouteExecutionState
+from runtime_payloads import ErrorRecord
 from train_route import RouteRunStatus
 from simulation import SimulationController, build_network_payload
 
@@ -110,14 +111,20 @@ def test_handle_path_cancellation_records_was_deviation_for_display_split():
     ex.execution_states["T1"] = run
 
     # Movement-derived deviation -> DEVIATED.
-    ex.handle_path_cancellation("T1", "P1", reason="off-sequence", was_deviation=True)
+    ex.handle_path_cancellation(
+        "T1", "P1", error=ErrorRecord("off-sequence", "out_of_sequence"),
+        was_deviation=True,
+    )
     assert run.path_cancelled is True
     assert run.path_cancel_was_deviation is True
     assert run.display_state == "DEVIATED"
 
     # A non-deviation cancellation (operator / revoke / EB / power-off)
     # re-classifies the latch to CANCELLED.
-    ex.handle_path_cancellation("T1", "P1", reason="operator stop", was_deviation=False)
+    ex.handle_path_cancellation(
+        "T1", "P1", error=ErrorRecord("operator stop", "operator_cancelled"),
+        was_deviation=False,
+    )
     assert run.path_cancel_was_deviation is False
     assert run.display_state == "CANCELLED"
 

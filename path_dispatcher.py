@@ -37,7 +37,7 @@ from path import (
 )
 from enums import BlockState, direction_from_delta, OPPOSITE_DIRECTIONS
 from track import OPPOSITE_EDGE
-from runtime_payloads import AcquisitionMode, CancellationResult, ControllerProgressReport, PathAcquisitionFailureKind, PathAcquisitionResult, PathCompletionResult, PathSegment, ResourceEvent, RouteExecutorForPathDispatcher, ValidationError, ValidationErrorType, ValidationResult
+from runtime_payloads import AcquisitionMode, CancellationResult, ControllerProgressReport, ErrorRecord, PathAcquisitionFailureKind, PathAcquisitionResult, PathCompletionResult, PathSegment, ResourceEvent, RouteExecutorForPathDispatcher, ValidationError, ValidationErrorType, ValidationResult
 from block_manager import ReservedBlockTraversal
 from switch_manager import SwitchLockRequest
 from railway_pathfinder import RailwayPathfinder
@@ -1617,42 +1617,44 @@ class PathDispatcher:
             reason=ext_reason,
         )
 
-    @staticmethod
-    def _kind_for_initiator(initiator: Optional[str]) -> str:
-        """Map cancel initiator to the event level.
-
-        Per design_new.md: "eb" is `error` (safety-critical); "deviation" is
-        `warning` (off-path); all other initiators ("operator_cancelled",
-        "power_off", "revoked", None) are `info`. The level is independent of
-        whether the event carries an `ErrorRecord` — an operator-requested
-        cancellation is `info` and still carries the record naming what ended
-        the path.
-        """
-        from notification_center import Kind as _Kind
-        if initiator == "eb":
-            return _Kind.ERROR
-        if initiator == "deviation":
-            return _Kind.WARNING
-        return _Kind.INFO
-
     def cancel_path(
         self,
         path_id: str,
-        initiator: Optional[str] = None,
-        reason: Optional[str] = None,
         error: Optional["ErrorRecord"] = None,
-        route_progress_kind: Optional[str] = None,
+        kind: str = "info",
+        deviation: bool = False,
+        run_complete: bool = False,
     ) -> CancellationResult:
         """v1 cancel_path: release reservations, mark path CANCELLED.
 
-        Per design_new.md "cancel_path() return contract" (lines 925-934):
-          * `initiator` is a free-form diagnostic string carried on the
-            ``path_cancellation`` notification (default ``None``); planning
-            logic must not branch on it.
+        Per design_new.md "cancel_path() return contract":
+          * `error` is the diagnostic `ErrorRecord` that flows straight into the
+            `cancel_path` event; its `origin` names what ended the path. It is
+            required for every cancellation except a `run_complete` release,
+            where it is `None`. No planning or routing logic branches on
+            anything inside it.
+          * `kind` is the event level the latch writer declared, carried through
+            unchanged. This emit *is* the `path_cancel_request` consumption
+            event (design_new.md "Latch consumption events"), so it reports the
+            latched payload's own level rather than a level derived here.
+          * `deviation` and `run_complete` are the two structured, mutually
+            exclusive classification booleans forwarded to the route callback.
           * Failure reasons use the canonical strings ``"path not found"``,
             ``"already completed"``, ``"already cancelled"``.
           * On success the result carries ``new_status = PathStatus.CANCELLED``.
         """
+        if deviation and run_complete:
+            raise ValueError(
+                "a cancellation cannot be both a deviation and a "
+                "run-completion release"
+            )
+        if run_complete and error is not None:
+            raise ValueError("a run_complete release must carry error=None")
+        if not run_complete and error is None:
+            raise ValueError(
+                "every cancellation except a run_complete release must carry "
+                "an ErrorRecord"
+            )
         path = self.paths.get(path_id)
         if path is None:
             return CancellationResult(
@@ -1695,60 +1697,71 @@ class PathDispatcher:
         # Mark path CANCELLED.
         path._set_status(PathStatus.CANCELLED, now)
 
-        # Notify route executor (bookkeeping only). Per the
-        # `pending_path_cancel_request` payload rule in design_new.md "Core
-        # Runtime Loop", the diagnostic `initiator` does not cross the callback
-        # boundary — it is carried only on the `path_cancellation` notification
-        # emitted below.
+        # Notify route executor (bookkeeping only). Per design_new.md "route
+        # path-event callback schema" the canonical signature is
+        # `handle_path_cancellation(train_id, path_id, error, was_deviation,
+        # was_run_completion)`: the dispatcher derives the two classification
+        # bits from the structured cancel-request fields, never from anything
+        # inside `error`, so the route side projects DEVIATED vs CANCELLED vs
+        # (for a completing run) neither.
         train_id = path.train_id
         if train_id:
-            route_executor = self._get_route_executor()
-            if route_executor is not None:
-                # design_new.md "route path-event callback schema" (1700, 1730):
-                # forward the optional `reason` and the two classification bits
-                # `was_deviation = initiator == "deviation"` and
-                # `was_run_completion = route_progress_kind == "run_complete"`
-                # so the route side projects DEVIATED vs CANCELLED vs (for a
-                # completing run) neither. The free-form `initiator` stays on
-                # the notification emitted below.
-                route_executor.handle_path_cancellation(
+            sc = self.simulation_controller
+            if sc is not None and hasattr(sc, "handle_path_cancellation"):
+                sc.handle_path_cancellation(
                     train_id,
                     path_id,
-                    reason=reason,
-                    was_deviation=(initiator == "deviation"),
-                    was_run_completion=(route_progress_kind == "run_complete"),
+                    error=error,
+                    was_deviation=deviation,
+                    was_run_completion=run_complete,
                 )
+            else:
+                # No `SimulationController` wired (isolated dispatcher tests):
+                # reach the route side directly rather than dropping the
+                # bookkeeping the callback owns.
+                route_executor = self._get_route_executor()
+                if route_executor is not None:
+                    route_executor.handle_path_cancellation(
+                        train_id,
+                        path_id,
+                        error=error,
+                        was_deviation=deviation,
+                        was_run_completion=run_complete,
+                    )
 
-        # Emit the canonical `path_cancellation` notification.
+        # Emit the canonical `cancel_path` notification. Per design_new.md
+        # "Latch consumption events" this event *is* the
+        # `path_cancel_request` consumption event, so it carries the latched
+        # payload's own `kind` (set by whichever writer latched it) rather than
+        # a level derived here, and passes `latch_event=True` so the
+        # unchanged-repeat suppression never drops it.
         sc = self.simulation_controller
         nc = getattr(sc, "notification_center", None) if sc is not None else None
         if nc is not None:
             try:
-                # The level is driven by the initiator, not hardcoded. The
-                # diagnostic rides in `error`, whose `origin` names what ended
-                # the path.
                 from notification_center import train_ref as _train_ref, path_ref as _path_ref
-                from runtime_payloads import ErrorRecord as _ErrorRecord
 
                 nc.emit(
                     source="PathDispatcher",
                     operation="cancel_path",
-                    kind=self._kind_for_initiator(initiator),
+                    kind=kind,
                     message=f"path {path_id} cancelled for {train_id}",
                     entities=[_train_ref(train_id), _path_ref(path_id)],
-                    error=error or _ErrorRecord(reason or "", initiator or "revoked"),
+                    error=error,
                     event_time=now,
                     payload={
-                        "initiator": initiator,
-                        "reason": reason or "",
+                        "latch": "path_cancel_request",
+                        "origin": error.origin if error is not None else "run_complete",
+                        "deviation": deviation,
+                        "run_complete": run_complete,
                     },
+                    latch_event=True,
                 )
             except Exception:
                 logger.warning(
-                    "NotificationCenter.emit() failed for path_cancellation "
-                    "(path=%s, initiator=%s); cancellation itself committed",
+                    "NotificationCenter.emit() failed for cancel_path "
+                    "(path=%s); cancellation itself committed",
                     path_id,
-                    initiator,
                     exc_info=True,
                 )
 
@@ -1762,7 +1775,10 @@ class PathDispatcher:
             success=True,
             path_id=path_id,
             new_status=PathStatus.CANCELLED,
-            reason=reason,
+            # `reason` is optional plain-text diagnostic context on the result;
+            # the writer's own text now lives on the `ErrorRecord` that reaches
+            # the event, so surface that rather than a second copy.
+            reason=error.text if error is not None else None,
         )
 
     def truncate_path_before_block(
@@ -3013,15 +3029,15 @@ class PathDispatcher:
                 # carrying the report's own `ErrorRecord` forward.
                 controller = self._get_controller(train_id)
                 if controller is not None:
+                    # A recoverable problem the runtime acts on, so `"warning"`
+                    # per design_new.md "Error events". The writer's own
+                    # `ErrorRecord` (origin `"out_of_sequence"`) rides the
+                    # payload into the Phase-3 commit.
                     controller.route_hooks.phase_latches.set_path_cancel_request(
-                        initiator="deviation",
-                        reason=(
-                            report.deviation_error.text
-                            if report.deviation_error is not None
-                            else ""
-                        ),
+                        report.deviation_error
+                        or ErrorRecord("head left resource_sequence", "out_of_sequence"),
+                        "warning",
                         deviation=True,
-                        error=report.deviation_error,
                     )
             # design_new.md fix #2: do NOT return here — fall through so that
             # tail_vacated_resources for already-occupied resources still fire.

@@ -18,6 +18,7 @@ from path_dispatcher import PathDispatcher
 from simulation import SimulationController
 from tests.train_test_helpers import set_train_span
 from tests.segment_test_helpers import make_segment_block_with_tracks
+from runtime_payloads import ErrorRecord
 
 
 def _build_three_block_network() -> RailwayNetwork:
@@ -192,7 +193,9 @@ def test_received_path_plan_returns_none_after_path_status_changes():
     assert controller.path_projection.received_path_plan is not None
 
     # Cancel the path (this drops it from active_paths and changes status).
-    dispatcher.cancel_path(result.path_id)
+    dispatcher.cancel_path(
+        result.path_id, error=ErrorRecord("test teardown", "revoked"), kind="info"
+    )
 
     # Next read of received_path_plan returns None automatically — there is
     # no setter, no explicit clear required.

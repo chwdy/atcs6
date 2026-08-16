@@ -16,8 +16,10 @@ from flask import jsonify, request
 
 from app_state import AppState
 from path_utils import assign_complete_path_to_train, convert_tiles_to_train_path
+from notification_center import Kind
 from runtime_payloads import (
     AcquisitionMode,
+    ErrorRecord,
 )
 from services import train_route_service, train_service
 from services.exceptions import NotFoundError, ValidationError, ConflictError
@@ -299,8 +301,7 @@ def register(app, state: AppState) -> None:
                 ), 503
 
             controller.route_hooks.phase_latches.set_path_cancel_request(
-                initiator="operator_cancelled",
-                reason="api cancel",
+                ErrorRecord("api cancel", "operator_cancelled"), Kind.INFO
             )
             return jsonify(
                 {

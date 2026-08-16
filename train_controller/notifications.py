@@ -41,8 +41,14 @@ class Notifications:
         kind: Optional[str] = None,
         error: Optional["ErrorRecord"] = None,
         payload: Optional[Dict[str, Any]] = None,
+        latch_event: bool = False,
     ) -> None:
         """Emit one event about this train.
+
+        `latch_event` passes straight through to `NotificationCenter.emit(...)`,
+        which exempts a latch write or a latch consumption from the
+        unchanged-repeat suppression (design_new.md "Error events", Latch events
+        are exempt). It is a control argument, not an event field.
 
         Best-effort: resolves the sink defensively and no-ops when none is
         wired (isolated unit-test controllers), and never raises into the
@@ -63,6 +69,7 @@ class Notifications:
                 entities=[train_ref(self._c.train_id)],
                 error=error,
                 payload=payload,
+                latch_event=latch_event,
             )
         except Exception:
             pass

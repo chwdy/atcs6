@@ -10,7 +10,7 @@ When a train's head leaves its authorized ``resource_sequence`` while ROLLING
    releasing future authority ahead of a moving train is unsafe.
 2. The cancel is LATCHED:
    ``controller.route_hooks.phase_latches.path_cancel_request`` is written with
-   ``initiator == "deviation"`` (carrying its ``ErrorRecord``) by
+   ``deviation=True`` (carrying its ``ErrorRecord``) by
    ``PathDispatcher.on_controller_progress``. It is NOT committed inline.
 3. The canonical lookahead reports ``atc_limit == 0`` at distance 0 with
    ``atc_limit_reason_code == AtcLimitReasonCode.DEVIATION`` (NOT
@@ -24,7 +24,7 @@ Why this discriminates latched-vs-inline behaviour
 The *same* head-off-path geometry reports ``NO_AUTHORITY`` when no deviation
 latch is pending, and ``DEVIATION`` only when the deviation latch is set (the
 lookahead branch in ``train_controller/__init__.py`` keys on a pending
-``initiator == "deviation"`` latch). Under the OLD inline-cancel behaviour,
+``deviation=True`` latch). Under the OLD inline-cancel behaviour,
 ``on_controller_progress`` would have called ``cancel_path(...)`` immediately
 on the deviating tick while the train was still rolling, so:
 
@@ -192,7 +192,7 @@ def _anchor_reason_code(controller) -> AtcLimitReasonCode:
 def test_deviation_while_rolling_latches_and_holds_resources():
     """The whole contract in one flow:
 
-    rolling deviation -> latch set (initiator "deviation"), path stays ACTIVE,
+    rolling deviation -> latch set (deviation=True), path stays ACTIVE,
     block reservation + switch lock STILL held, lookahead reports DEVIATION at
     atc_limit 0; Phase-3 does NOT commit while rolling; once stopped, Phase-3
     commits cancel_path (resources released, latch cleared, path CANCELLED).
@@ -219,11 +219,11 @@ def test_deviation_while_rolling_latches_and_holds_resources():
     _apply_span_update(controller, OFF_SEQUENCE_TILE, speed_kmh=20.0)
     _drain_progress_reports(dispatcher, controller)
 
-    # (2) The cancel is LATCHED with initiator "deviation" + its ErrorRecord.
+    # (2) The cancel is LATCHED with deviation=True + its ErrorRecord.
     latch = controller.route_hooks.phase_latches.path_cancel_request
     assert latch is not None, "deviation must LATCH a cancel request"
-    assert latch.initiator == "deviation", (
-        f"expected initiator 'deviation', got {latch.initiator!r}"
+    assert latch.deviation is True, (
+        "expected the movement-derived deviation classification on the latch"
     )
     assert latch.deviation is True
     assert latch.error is not None

@@ -138,8 +138,8 @@ def test_reverse_at_authority_end_latches_cancel_and_emits_no_hard_error():
     # The recovery path latches a Phase-3 cancellation instead of bubbling
     # the failure up as an operator-facing error.
     assert latches.path_cancel_request is not None
-    assert latches.path_cancel_request.initiator == "revoked"
-    assert "reverse" in (latches.path_cancel_request.reason or "")
+    assert latches.path_cancel_request.error.origin == "revoked"
+    assert "reverse" in (latches.path_cancel_request.error.text or "")
 
     # No hard error event — the operator does not need to act.
     assert _emitted_errors(executor) == []
@@ -187,8 +187,8 @@ def test_no_viable_path_also_latches_cancellation():
 
     assert result is False
     assert latches.path_cancel_request is not None
-    assert latches.path_cancel_request.initiator == "revoked"
-    assert "still held" in (latches.path_cancel_request.reason or "")
+    assert latches.path_cancel_request.error.origin == "revoked"
+    assert "still held" in (latches.path_cancel_request.error.text or "")
     assert _emitted_errors(executor) == []
 
 

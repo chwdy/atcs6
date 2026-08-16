@@ -26,6 +26,7 @@ from path_dispatcher import PathDispatcher
 from simulation import SimulationController
 from track import Tile, TRACK_EW
 from entity_ids import segment_id_for_block
+from runtime_payloads import ErrorRecord
 
 
 class FakeDetector(OccupancyInput):
@@ -201,7 +202,7 @@ def _stopped_train_carrying_a_latch():
     network.add_train(train)
     controller = sim.get_or_create_controller("T1")
     controller.route_hooks.phase_latches.set_path_cancel_request(
-        initiator="operator_cancelled", reason="operator cancelled"
+        ErrorRecord("operator cancelled", "operator_cancelled"), "info"
     )
     # Only a train Step 0 attributed a change to reaches Phase 3 while OFF.
     sim._detected_change_train_ids = {"T1"}

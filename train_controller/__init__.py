@@ -772,7 +772,7 @@ class TrainController:
             self.ato.running = False
             if self.path_projection.received_path_plan is not None:
                 self.route_hooks.phase_latches.set_path_cancel_request(
-                    "eb", "ATC overspeed escalation"
+                    _ErrorRecord("ATC overspeed escalation", "eb"), "warning"
                 )
             self.notifications.emit(
                 "ATC triggered emergency brake: overspeed"
@@ -2395,6 +2395,13 @@ class TrainController:
         of ``state``. Callable only while ``power_off`` is latched; on commit it
         transitions ``state`` to ``OFF``, clears the active cab selection, clears
         ``eb.active``, clears ``ato.running``, and consumes ``pending_power_off``.
+
+        Per design_new.md "Latch Table" (Clear/consume access) this method is
+        the one place `phase_latches.power_off` is cleared — not the Phase-3
+        power-off consumer step that invokes it — so the field is cleared
+        whichever of its two callers ran. It is also that latch's consume-side
+        emitter (Latch consumption events), which is why the event below passes
+        `latch_event=True`.
         """
         if not self.route_hooks.phase_latches.power_off:
             return
@@ -2407,7 +2414,14 @@ class TrainController:
         # Force-clear through the service-stop teardown path so an
         # interrupted run never leaves braking armed on a later route.
         self.consume_service_stop(force=True)
-        self.route_hooks.phase_latches.consume_power_off()
+        self.route_hooks.phase_latches.clear("power_off")
+        self.notifications.emit(
+            f"power off committed for {self.train_id}",
+            operation="complete_power_off",
+            kind="info",
+            payload={"latch": "power_off"},
+            latch_event=True,
+        )
 
     # -------------------------------------------------------------------------
     # Serialization

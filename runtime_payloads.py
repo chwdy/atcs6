@@ -53,6 +53,14 @@ MIN_PRIORITY = 1
 MAX_PRIORITY = 10
 
 
+# The two event levels a latch writer may declare (design_new.md
+# "Writer-helper rule": no latch writer uses `"error"`). Spelled as literals
+# rather than imported from `notification_center.Kind` because that module
+# imports `ErrorRecord` from here — the import may only run one way.
+_KIND_INFO = "info"
+_KIND_WARNING = "warning"
+
+
 # =============================================================================
 # Per-run / per-task error record
 # =============================================================================
@@ -206,26 +214,32 @@ class ControllerProgressReport:
 class PendingPathCancelRequest:
     """Phase-3 latched cancellation payload written to TrainController.
 
-    Per design_new.md (Latch Table) the canonical fields are:
-      * `initiator: str` — free-form label populated by the writer for the
-        `path_cancellation` notification. Common values: ``"eb"``,
-        ``"operator_cancelled"``, ``"power_off"``, ``"deviation"``,
-        ``"revoked"``. Functional behavior is identical regardless of value;
-        consumers must not branch on it.
-      * `reason: Optional[str]` — optional plain-text diagnostic.
+    Per design_new.md (Latch Table, Payload fields) the canonical fields are
+    exactly these four:
+      * `kind: str` — the event level the writer declares for this
+        cancellation: ``"info"`` for a normal cancellation and ``"warning"``
+        for a recoverable problem or safety action. Latch writers never use
+        ``"error"``. It is recorded unchanged and independently of `error`,
+        and it is the level the Phase-3 `cancel_path(...)` consumption event
+        carries.
+      * `error: Optional[ErrorRecord]` — the whole diagnostic record the writer
+        hands forward. Required (non-`None`) on every request except a
+        `run_complete` release, where it must be `None`. Its `origin` carries
+        the free-form notification label (``"eb"``, ``"operator_cancelled"``,
+        ``"power_off"``, ``"out_of_sequence"``, ``"revoked"``,
+        ``"idle_hold_release"``, ``"contention_release"``,
+        ``"calibration_leg_complete"``); the Phase-3 commit puts the record in
+        the cancellation event's `error` field.
       * `deviation: bool` — set only by the movement-derived deviation writer.
         It rides the latch payload so the Phase-3 commit can forward the
         classification into `cancel_path(...)`.
-      * `error: Optional[ErrorRecord]` — the whole diagnostic record the writer
-        hands forward. The Phase-3 commit puts it in the cancellation event's
-        `error` field, where `origin` names what ended the path.
-      * `route_progress_kind: Optional["run_complete"]` — set only by Phase 1
-        run step `6a0d` after its timer elapses and service stopping begins.
-        `deviation` and `route_progress_kind`, never `initiator`, drive the
-        only cancellation-callback classifications: `deviation` produces the
-        deviation diagnostic latch, while `route_progress_kind ==
-        "run_complete"` marks a normal route-progress release that must not set
-        `RouteRun.path_cancelled`.
+      * `run_complete: bool` — set only by Phase 1 run step `6a0d` after its
+        timer elapses and service stopping begins.
+
+    The two booleans, never anything read out of `error`, drive the only
+    cancellation-callback classifications: `deviation` produces the deviation
+    diagnostic latch, while `run_complete` marks a normal route-progress
+    release that must not set `RouteRun.path_cancelled`.
 
     Consumed by Phase 3 only when the train is fully stopped. While the train
     is still rolling, the latch survives across ticks and is reconsidered on
@@ -233,18 +247,17 @@ class PendingPathCancelRequest:
     per train, the payload does not need a `path_id` routing key.
     """
 
-    initiator: str
-    reason: Optional[str] = None
-    deviation: bool = False
+    kind: str
     error: Optional[ErrorRecord] = None
-    route_progress_kind: Optional[Literal["run_complete"]] = None
+    deviation: bool = False
+    run_complete: bool = False
 
 
 # Note: per design_new.md (Latch Table), `pending_route_abort` and
 # `pending_route_deactivate` are bare-bool latches on `TrainController`. The
-# diagnostic `reason` for the originating action is recorded only on the
-# `path_cancellation` and `command_result` notifications (the inclusive
-# `pending_path_cancel_request.reason` carries it through to the cancellation
+# diagnostic detail for the originating action is recorded only on the
+# `cancel_path` and `command_result` notifications (the inclusive
+# `pending_path_cancel_request.error` carries it through to the cancellation
 # event), not on any field on `RouteRun` or on the route-abort / deactivate
 # latches themselves.
 
@@ -262,8 +275,16 @@ class PhaseLatches:
     The leaf writer is `set_path_cancel_request(...)`; the three composite
     setters (`set_route_abort`, `set_power_off`, `set_route_deactivate`) own
     their respective bool field and, when an active path exists, fan out to
-    `set_path_cancel_request(...)` with the design-canonical `initiator`
+    `set_path_cancel_request(...)` with the design-canonical `ErrorRecord.origin`
     value (`"operator_cancelled"`, `"power_off"`, `"revoked"`).
+
+    Per design_new.md "Latch Table" (No shared consume accessor) this aggregate
+    exposes no `consume_*()` accessor for the four fields. Each is cleared by
+    its own named Phase-3 consumer step, and the consume-side event is emitted
+    by that step's own consume-side call (`PathDispatcher.cancel_path(...)`,
+    `RouteExecutor.remove_train_route_run(...)`, or
+    `TrainController.complete_power_off()`) per the Latch consumption events
+    table.
 
     The cross-field side effect of `power_off` (clearing
     `TrainController.ato_running`) does NOT live here — that is a controller
@@ -296,10 +317,11 @@ class PhaseLatches:
         self,
         operation: str,
         message: str,
+        kind: str,
         error: Optional[ErrorRecord] = None,
         payload: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Report one latch write or one latch commit.
+        """Report one latch write.
 
         A latch records an action the runtime means to take and cannot commit
         yet, so setting one and committing one are both worth seeing
@@ -308,21 +330,23 @@ class PhaseLatches:
         the payload before Phase 3 reaches it — most-recent-payload-wins means
         the first writer's `ErrorRecord` would otherwise never be seen at all.
 
-        `kind` follows the record: `warning` when the write carries an
-        `ErrorRecord`, `info` when it does not. Best-effort — a reporting failure
-        must never change what the latch did.
+        `kind` is the writer-declared level, recorded unchanged and
+        independently of the optional `ErrorRecord` (design_new.md
+        "Writer-helper rule"). The call passes `latch_event=True`, so the
+        unchanged-repeat suppression in "Emit on change, not per tick" never
+        drops a latch write. Best-effort — a reporting failure must never
+        change what the latch did.
         """
         if self.notify is None:
             return
         try:
-            from notification_center import Kind
-
             self.notify(
                 message,
                 operation=operation,
-                kind=Kind.WARNING if error is not None else Kind.INFO,
+                kind=kind,
                 error=error,
                 payload=payload,
+                latch_event=True,
             )
         except Exception:
             pass
@@ -333,39 +357,61 @@ class PhaseLatches:
 
     def set_path_cancel_request(
         self,
-        initiator: str,
-        reason: Optional[str] = None,
+        error: Optional[ErrorRecord],
+        kind: str,
         deviation: bool = False,
-        error: Optional[ErrorRecord] = None,
-        route_progress_kind: Optional[Literal["run_complete"]] = None,
+        run_complete: bool = False,
     ) -> None:
         """Leaf writer for `path_cancel_request`.
 
-        `deviation` is set only by the movement-derived deviation writer
-        (`initiator="deviation"`); it rides the latch payload into the Phase-3
-        `cancel_path(...)` commit. `error` is the whole `ErrorRecord` the writer
-        hands forward, which the commit puts on the cancellation event.
-        `route_progress_kind` is set only by Phase 1 run step `6a0d`; this is
-        the only writer permitted to pass a non-`None` value for it.
+        `kind` is the writer-declared event level, recorded unchanged and
+        independently of `error`: ``"info"`` for a normal cancellation,
+        ``"warning"`` for a recoverable problem or safety action. No latch
+        writer uses ``"error"``.
+
+        `error` carries the whole `ErrorRecord` the writer hands forward, whose
+        `origin` names what ended the path. Per design_new.md's
+        `pending_path_cancel_request` payload contract it is required on every
+        request except a `run_complete` release, where it must be `None`; this
+        writer validates that pairing so `cancel_path(...)` never sees a
+        malformed payload.
+
+        `deviation` is set only by the movement-derived deviation writer; it
+        rides the latch payload into the Phase-3 `cancel_path(...)` commit.
+        `run_complete` is set only by Phase 1 run step `6a0d`; that is the only
+        writer permitted to pass `True`. The two are mutually exclusive.
         """
+        if deviation and run_complete:
+            raise ValueError(
+                "a cancel request cannot be both a deviation and a "
+                "run-completion release"
+            )
+        if run_complete and error is not None:
+            raise ValueError("a run_complete release must carry error=None")
+        if not run_complete and error is None:
+            raise ValueError(
+                "every cancel request except a run_complete release must "
+                "carry an ErrorRecord"
+            )
+
         self.path_cancel_request = PendingPathCancelRequest(
-            initiator=initiator,
-            reason=reason,
-            deviation=deviation,
+            kind=kind,
             error=error,
-            route_progress_kind=route_progress_kind,
+            deviation=deviation,
+            run_complete=run_complete,
         )
+        origin = error.origin if error is not None else "run_complete"
         self._emit(
             "set_path_cancel_request",
-            f"path cancel requested by {initiator}"
-            + (f": {reason}" if reason else ""),
+            f"path cancel requested by {origin}"
+            + (f": {error.text}" if error is not None and error.text else ""),
+            kind=kind,
             error=error,
             payload={
                 "latch": "path_cancel_request",
-                "initiator": initiator,
-                "reason": reason,
+                "origin": origin,
                 "deviation": deviation,
-                "run_complete": route_progress_kind == "run_complete",
+                "run_complete": run_complete,
             },
         )
 
@@ -375,7 +421,7 @@ class PhaseLatches:
         has_active_path: bool = False,
     ) -> None:
         """Set `route_abort`; when a live path exists, also set the inclusive
-        `path_cancel_request` with `initiator="operator_cancelled"`."""
+        `path_cancel_request` with `error.origin = "operator_cancelled"`."""
         self.route_abort = True
         # The fan-out emits its own event from `set_path_cancel_request`, so an
         # inclusive teardown reads back as two events — the intent and the
@@ -383,10 +429,13 @@ class PhaseLatches:
         self._emit(
             "set_route_abort",
             "route abort requested" + (f": {reason}" if reason else ""),
+            kind=_KIND_INFO,
             payload={"latch": "route_abort", "reason": reason},
         )
         if has_active_path:
-            self.set_path_cancel_request("operator_cancelled", reason)
+            self.set_path_cancel_request(
+                ErrorRecord(reason, "operator_cancelled"), _KIND_INFO
+            )
 
     def set_power_off(
         self,
@@ -394,7 +443,7 @@ class PhaseLatches:
         has_active_path: bool = False,
     ) -> None:
         """Set `power_off`; when a live path exists, also set the inclusive
-        `path_cancel_request` with `initiator="power_off"`."""
+        `path_cancel_request` with `error.origin = "power_off"`."""
         self.power_off = True
         # The fan-out emits its own event from `set_path_cancel_request`, so an
         # inclusive teardown reads back as two events — the intent and the
@@ -402,10 +451,13 @@ class PhaseLatches:
         self._emit(
             "set_power_off",
             "power off requested" + (f": {reason}" if reason else ""),
+            kind=_KIND_INFO,
             payload={"latch": "power_off", "reason": reason},
         )
         if has_active_path:
-            self.set_path_cancel_request("power_off", reason)
+            self.set_path_cancel_request(
+                ErrorRecord(reason, "power_off"), _KIND_INFO
+            )
 
     def set_route_deactivate(
         self,
@@ -413,7 +465,7 @@ class PhaseLatches:
         has_active_path: bool = False,
     ) -> None:
         """Set `route_deactivate`; when a live path exists, also set the
-        inclusive `path_cancel_request` with `initiator="revoked"`."""
+        inclusive `path_cancel_request` with `error.origin = "revoked"`."""
         self.route_deactivate = True
         # The fan-out emits its own event from `set_path_cancel_request`, so an
         # inclusive teardown reads back as two events — the intent and the
@@ -421,10 +473,13 @@ class PhaseLatches:
         self._emit(
             "set_route_deactivate",
             "route deactivate requested" + (f": {reason}" if reason else ""),
+            kind=_KIND_INFO,
             payload={"latch": "route_deactivate", "reason": reason},
         )
         if has_active_path:
-            self.set_path_cancel_request("revoked", reason)
+            self.set_path_cancel_request(
+                ErrorRecord(reason, "revoked"), _KIND_INFO
+            )
 
     # ------------------------------------------------------------------
     # Read predicates
@@ -451,62 +506,36 @@ class PhaseLatches:
         return self.route_abort or self.route_deactivate
 
     # ------------------------------------------------------------------
-    # Consumers (read-and-clear)
+    # Clearing
     # ------------------------------------------------------------------
 
-    # Each consumer reports only when it actually commits. Phase 3 reaches all
-    # four every tick for every train, so emitting on the empty pass would bury
-    # the stream in events that say nothing happened.
+    # Per design_new.md "Latch Table" (No shared consume accessor) there is no
+    # `consume_*()` accessor for these four fields — `TrainController
+    # .consume_service_stop()` is the only one in v1, and it owns the one latch
+    # outside this aggregate. Each field is cleared by its own named Phase-3
+    # consumer step through `clear(...)` below, and the consume-side event is
+    # emitted by that step's own consume-side call, not from here: `cancel_path`
+    # for `path_cancel_request`, `remove_train_route_run` for `route_abort` and
+    # `route_deactivate`, and `complete_power_off` for `power_off` (Latch
+    # consumption events).
 
-    def consume_path_cancel_request(self) -> Optional[PendingPathCancelRequest]:
-        v = self.path_cancel_request
-        self.path_cancel_request = None
-        if v is not None:
-            self._emit(
-                "consume_path_cancel_request",
-                f"path cancel committed for {v.initiator}",
-                payload={
-                    "latch": "path_cancel_request",
-                    "initiator": v.initiator,
-                    "reason": v.reason,
-                    "deviation": v.deviation,
-                    "run_complete": v.route_progress_kind == "run_complete",
-                },
-            )
-        return v
+    def clear(self, field_name: str) -> None:
+        """Clear one latch field by name, for that field's own Phase-3
+        consumer step.
 
-    def consume_route_abort(self) -> bool:
-        v = self.route_abort
-        self.route_abort = False
-        if v:
-            self._emit(
-                "consume_route_abort",
-                "route abort committed",
-                payload={"latch": "route_abort"},
-            )
-        return v
-
-    def consume_power_off(self) -> bool:
-        v = self.power_off
-        self.power_off = False
-        if v:
-            self._emit(
-                "consume_power_off",
-                "power off committed",
-                payload={"latch": "power_off"},
-            )
-        return v
-
-    def consume_route_deactivate(self) -> bool:
-        v = self.route_deactivate
-        self.route_deactivate = False
-        if v:
-            self._emit(
-                "consume_route_deactivate",
-                "route deactivate committed",
-                payload={"latch": "route_deactivate"},
-            )
-        return v
+        Emits nothing: the consume-side event belongs to the step's
+        consume-side call per the Latch consumption events table.
+        """
+        if field_name not in (
+            "path_cancel_request",
+            "route_abort",
+            "power_off",
+            "route_deactivate",
+        ):
+            raise ValueError(f"{field_name} is not a PhaseLatches field")
+        setattr(
+            self, field_name, None if field_name == "path_cancel_request" else False
+        )
 
 
 # =============================================================================

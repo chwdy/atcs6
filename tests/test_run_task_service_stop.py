@@ -8,8 +8,8 @@ normal-progress authority release"): while `RouteTaskRun.run_elapsed_seconds
 the window elapses, it calls the idempotent `TrainController.
 begin_service_stop()` (setting `ops.service_stop_active = True` and clearing
 `ato.running`) and, if live authority exists, latches
-`pending_path_cancel_request(initiator="run_complete",
-route_progress_kind="run_complete")` — the classification that must NOT set
+`pending_path_cancel_request(error=None, kind="info", run_complete=True)`
+— the classification that must NOT set
 `RouteRun.path_cancelled` (design_new.md "pending_path_cancel_request" /
 M-PAYLOAD). Only once the train is stopped, the release request has been
 consumed, and `received_path_plan is None` does the step call
@@ -156,8 +156,8 @@ def test_run_task_timer_elapses_begins_service_stop_without_cancelling_run():
     # NOT set RouteRun.path_cancelled (M-PAYLOAD / display_state != CANCELLED).
     req = controller.route_hooks.phase_latches.path_cancel_request
     assert req is not None
-    assert req.initiator == "run_complete"
-    assert req.route_progress_kind == "run_complete"
+    assert req.run_complete is True
+    assert req.error is None, "a run_complete release carries no ErrorRecord"
 
 
 def test_run_task_completes_only_after_stopped_with_authority_released():
@@ -191,7 +191,7 @@ def test_run_task_completes_only_after_stopped_with_authority_released():
     assert controller.ops.service_stop_active is True  # not cleared yet
 
     # Phase 3 commits the cancel: consumes the latch and releases the path.
-    controller.route_hooks.phase_latches.consume_path_cancel_request()
+    controller.route_hooks.phase_latches.clear("path_cancel_request")
     del stub.paths_by_train[train.train_id]
 
     finished = executor._run_task_step(

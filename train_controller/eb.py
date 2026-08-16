@@ -28,6 +28,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from enums import CommandResult, HandlePosition, TrainState
+from runtime_payloads import ErrorRecord
 
 if TYPE_CHECKING:
     from train_controller import TrainController
@@ -71,7 +72,11 @@ class EBWorkflow:
             c.ops.state != TrainState.RUNNING_AT_STATION
             and c.path_projection.received_path_plan is not None
         ):
-            c.route_hooks.phase_latches.set_path_cancel_request("eb", "operator EB")
+            # A safety action that recovers, so `"warning"` — never `"error"`,
+            # which design_new.md reserves for the two fatal session entries.
+            c.route_hooks.phase_latches.set_path_cancel_request(
+                ErrorRecord("operator EB", "eb"), "warning"
+            )
 
         from notification_center import Kind
 

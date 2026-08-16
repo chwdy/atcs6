@@ -69,11 +69,11 @@ def test_activate_emergency_with_path_sets_pending_cancel():
     assert cmd_result.success is True
     assert controller.eb.active is True
 
-    # Latch is written with initiator == "eb".
+    # Latch is written with `error.origin == "eb"`.
     latch = controller.route_hooks.phase_latches.path_cancel_request
     assert latch is not None
     assert isinstance(latch, PendingPathCancelRequest)
-    assert latch.initiator == "eb"
+    assert latch.error.origin == "eb"
 
 
 def test_activate_emergency_without_path_does_not_set_latch():
@@ -217,7 +217,7 @@ class _FakePathDispatcher:
 
 def test_set_pending_route_abort_inclusive_cancel_when_path_exists():
     """_set_pending_route_abort writes pending_route_abort = True + inclusive
-    pending_path_cancel_request(initiator="operator_cancelled") when a live
+    pending_path_cancel_request(error.origin="operator_cancelled") when a live
     path exists."""
     network = _build_three_block_network()
     car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
@@ -249,7 +249,7 @@ def test_set_pending_route_abort_inclusive_cancel_when_path_exists():
 
     cancel = controller.route_hooks.phase_latches.path_cancel_request
     assert cancel is not None
-    assert cancel.initiator == "operator_cancelled"
+    assert cancel.error.origin == "operator_cancelled"
 
 
 class _StubSimController:
@@ -268,7 +268,7 @@ class _StubSimController:
 def test_route_deactivate_writes_latches_per_assigned_train():
     """Route.deactivate(simulation_controller) writes pending_route_deactivate
     on each assigned train's controller, and inclusive
-    pending_path_cancel_request(initiator="revoked") when that train has a
+    pending_path_cancel_request(error.origin="revoked") when that train has a
     live path."""
     from train_route import Route, RouteMode
 
@@ -322,7 +322,7 @@ def test_route_deactivate_writes_latches_per_assigned_train():
     # Only controller1 (live path) gets the inclusive cancel latch.
     cancel1 = controller1.route_hooks.phase_latches.path_cancel_request
     assert cancel1 is not None
-    assert cancel1.initiator == "revoked"
+    assert cancel1.error.origin == "revoked"
 
     assert controller2.route_hooks.phase_latches.path_cancel_request is None
 

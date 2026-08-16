@@ -39,6 +39,7 @@ from train_route import (
     RouteTask,
     RouteTaskRun,
 )
+from notification_center import Kind
 from runtime_payloads import AcquisitionMode, ErrorRecord, FatalConflictKind, FatalPhysicalEntryConflict, PathAcquisitionFailureKind, PathDispatcherForRouteExecutor, ResolvedRouteTarget, ResourceEvent, TargetResolutionFailureKind
 
 if TYPE_CHECKING:
@@ -1400,15 +1401,16 @@ class RouteExecutor:
                 != new_target.requested_destination_block_id
             ):
                 controller.route_hooks.phase_latches.set_path_cancel_request(
-                    initiator="revoked",
-                    reason=(
+                    ErrorRecord(
                         "live-path target re-resolved for walk-position "
                         f"{projection.walk_position} "
                         f"({stored_target.requested_destination_block_id} -> "
                         f"{new_target.requested_destination_block_id}); "
                         "cancelling stale authority so the next pass replans "
-                        "toward the new target"
+                        "toward the new target",
+                        "revoked",
                     ),
+                    Kind.INFO,
                 )
                 return
 
@@ -1900,10 +1902,11 @@ class RouteExecutor:
             self._get_active_path_id(train_id) is not None
             and controller.route_hooks.phase_latches.path_cancel_request is None
         ):
+            # The one writer permitted to pass `run_complete=True`; a
+            # run-completion release carries `error=None` because nothing
+            # failed (design_new.md "Latch Table", Payload fields).
             controller.route_hooks.phase_latches.set_path_cancel_request(
-                initiator="run_complete",
-                reason=f"run task (walk-position {walk_pos}) timer elapsed",
-                route_progress_kind="run_complete",
+                None, Kind.INFO, run_complete=True
             )
 
         if (
@@ -2248,12 +2251,13 @@ class RouteExecutor:
                     or "extend cannot grow this path toward the target"
                 )
                 controller.route_hooks.phase_latches.set_path_cancel_request(
-                    initiator="revoked",
-                    reason=(
+                    ErrorRecord(
                         f"{cancel_reason}; auto-cancelling so the next "
                         "acquisition uses create_path from the train's "
-                        "current span"
+                        "current span",
+                        "revoked",
                     ),
+                    Kind.INFO,
                 )
                 return False
 
@@ -2527,12 +2531,13 @@ class RouteExecutor:
         # Phase 3 commits the cancel once stopped), only sooner.
         if self._contention_release_due(train_id):
             controller.route_hooks.phase_latches.set_path_cancel_request(
-                initiator="contention_release",
-                reason=(
+                ErrorRecord(
                     f"best-effort authority at {path.get_authority_end_block_id()} "
                     "released for a higher-priority run blocked on a held "
-                    "reservation"
+                    "reservation",
+                    "contention_release",
                 ),
+                Kind.INFO,
             )
             exec_state.release_cooldown_ticks = IDLE_HOLD_COOLDOWN_TICKS
             exec_state.idle_hold_ticks = 0
@@ -2553,12 +2558,13 @@ class RouteExecutor:
         # cancel once stopped) and start the cooldown so the freed resources
         # stay available for higher-priority runs.
         controller.route_hooks.phase_latches.set_path_cancel_request(
-            initiator="idle_hold_release",
-            reason=(
+            ErrorRecord(
                 f"best-effort authority idle for {exec_state.idle_hold_ticks} "
                 f"ticks at {path.get_authority_end_block_id()}; releasing so "
-                "higher-priority runs can use the held resources"
+                "higher-priority runs can use the held resources",
+                "idle_hold_release",
             ),
+            Kind.INFO,
         )
         exec_state.release_cooldown_ticks = IDLE_HOLD_COOLDOWN_TICKS
         exec_state.idle_hold_ticks = 0
@@ -2670,22 +2676,22 @@ class RouteExecutor:
         self,
         train_id: str,
         path_id: str,
-        reason: Optional[str] = None,
+        error: Optional["ErrorRecord"] = None,
         was_deviation: bool = False,
         was_run_completion: bool = False,
     ) -> None:
         """Phase-3 cancellation callback.
 
-        Per design_new.md "route path-event callback schema" (lines 1700,
-        1730), the v1 callback signature is ``(train_id, path_id, reason=None,
-        was_deviation=False, was_run_completion=False)``. Every cancellation
-        kind shares the same body; ``was_deviation`` and ``was_run_completion``
-        are the two classification bits ``PathDispatcher.cancel_path(...)``
-        derives from ``deviation`` / ``route_progress_kind`` and are the
-        only cancellation-kind details that cross this callback boundary. The
-        callback is bookkeeping only: it must not choose a fresh target or
-        create fresh authority. The free-form diagnostic `initiator` stays on
-        the `path_cancellation` notification.
+        Per design_new.md "route path-event callback schema" the v1 callback
+        signature is ``(train_id, path_id, error, was_deviation=False,
+        was_run_completion=False)``. Every cancellation kind shares the same
+        body; ``was_deviation`` and ``was_run_completion`` are the two
+        classification bits ``PathDispatcher.cancel_path(...)`` derives from
+        the structured cancel-request fields, never from anything inside
+        ``error``, and they are the only cancellation-kind details that cross
+        this callback boundary. ``error`` is diagnostic context only and must
+        not be used for branching. The callback is bookkeeping only: it must
+        not choose a fresh target or create fresh authority.
 
         A `was_run_completion` callback writes neither `path_cancelled` nor
         `path_cancel_was_deviation`: a timer-elapsed `run` task releasing its
@@ -2704,12 +2710,14 @@ class RouteExecutor:
         # `current_route_status` does not transition.
         exec_state.path_cancelled = True
         exec_state.path_cancel_was_deviation = was_deviation
-        # The cancellation reason is emitted, not stored.
+        # The cancellation reason is emitted, not stored. `error.origin` is the
+        # writer-supplied label naming what ended the path.
         self._emit_run_error(
             exec_state,
             exec_state.current_waypoint_index,
-            "deviation" if was_deviation else "operator_cancelled",
-            f"cancelled: {reason}" if reason else "cancelled",
+            error.origin if error is not None else "revoked",
+            f"cancelled: {error.text}" if error is not None and error.text
+            else "cancelled",
             operation="handle_path_cancellation",
         )
 
@@ -3040,6 +3048,31 @@ class RouteExecutor:
         # Mark DEACTIVATED and move to the historical archive.
         exec_state.current_route_status = RouteRunStatus.DEACTIVATED
         self._archive_run(exec_state)
+
+        # This call is the consume-side emitter for whichever of
+        # `phase_latches.route_abort` / `route_deactivate` drove the teardown
+        # (design_new.md "Latch consumption events"). The Phase-3 step that
+        # invoked it clears the field once this returns. `latch_event=True`
+        # keeps the commit half of the write/commit pair out of the
+        # unchanged-repeat suppression.
+        sc = self.simulation_controller
+        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        if nc is not None:
+            try:
+                from notification_center import train_ref as _tref, route_run_ref as _rref
+
+                nc.emit(
+                    source="RouteExecutor",
+                    operation="remove_train_route_run",
+                    kind=Kind.INFO,
+                    message=f"route run torn down for {train_id}",
+                    entities=[_tref(train_id), _rref(exec_state.run_id)],
+                    event_time=time.time(),
+                    payload={"route_id": exec_state.route_id},
+                    latch_event=True,
+                )
+            except Exception:
+                pass
 
     def record_pending_reassign(self, train_id: str, route_id: str) -> None:
         """Hold a same-route re-assignment until the Phase-3 deactivate clear
