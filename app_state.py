@@ -44,18 +44,27 @@ class AppState:
     operating_time: float = 0.0
 
     def __post_init__(self) -> None:
-        """Hand the runtime the seam it reads `operating_time` through.
+        """Hand the runtime the seams it reaches `AppState` through.
 
-        The accumulator stays here — a layout load builds a fresh
-        `SimulationController` and must not reset it — so the controller only
-        ever reads the value, never owns it.
+        The `operating_time` accumulator stays here — a layout load builds a
+        fresh `SimulationController` and must not reset it — so the controller
+        only ever reads the value, never owns it. `simulation_running` stays
+        here for the same reason, and the runtime stops the session through the
+        seam rather than owning the flag.
         """
         def _advance(delta_seconds: float) -> None:
             self.operating_time += max(delta_seconds, 0.0)
 
+        def _stop_session() -> None:
+            self.simulation_running = False
+
         try:
             self.sim_controller.operating_clock = lambda: self.operating_time
             self.sim_controller.operating_clock_advance = _advance
+            # The two fatal halt entries stop the session through this seam, so
+            # `simulation_running` reads False the moment the gate latches
+            # (design_new.md "Running and stopped").
+            self.sim_controller.request_session_stop = _stop_session
         except AttributeError:
             # A stand-in controller that accepts no attributes (a smoke-test
             # double) keeps its own fallback clock; see

@@ -186,11 +186,24 @@ class SwitchPowerController:
     # Safe state
     # ------------------------------------------------------------------
 
+    def de_energize_device_outputs(self) -> None:
+        """De-energize every point motor on the device, recording nothing.
+
+        This is the switch half of the `OutputSafety.enter_safe_state()`
+        sequence, and it runs first: points are dropped before block voltages
+        (design_new.md "Power", Safe state / fail-safe). It commands the device
+        transport directly and does not touch `Switch.position` or any other
+        recorded model field — the commanded alignment stays the authority;
+        this only stops asserting drive — so the sequence is safe to call from
+        any thread, including the Real Hardware `OutputWatchdog` daemon.
+        """
+        self.output_interface.enter_safe_state()
+
     def enter_safe_state(self) -> None:
         """De-energize every point motor (design_new.md "Power", Safe state /
         fail-safe). As the only caller of the output interface, the controller
         delegates the de-energizing to it."""
-        self.output_interface.enter_safe_state()
+        self.de_energize_device_outputs()
 
 
 class SwitchOutputOwner:

@@ -121,6 +121,23 @@ class EBWorkflow:
             return CommandResult(
                 False, "Pre-EB path authority has not cleared yet"
             )
+        # Driver-control interlock (design_new.md "EB workflow state machine",
+        # row `ad04`): a manual `power_percent` driver holding a retained
+        # percentage must zero it before the release is accepted. EB caps the
+        # tick to zero but leaves the retained field alone, so without this gate
+        # clearing `eb.active` would hand the train straight back to a
+        # percentage the driver never withdrew. `set_manual_power_percent(...)`
+        # runs before `eb.release()` in the drain order, so a driver can satisfy
+        # this and release in one batch.
+        if (
+            c.commands.control_mode == "manual"
+            and c.manual.manual_mode_type == "power_percent"
+            and c.manual.manual_power_percent != 0
+        ):
+            return CommandResult(
+                False,
+                "Set power to 0 before releasing the emergency brake",
+            )
 
         self.active = False
         c.ops.handle_position = HandlePosition.N

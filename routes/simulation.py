@@ -150,11 +150,15 @@ def register(app, state: AppState) -> None:
             state.simulation_speed = data.get("speed", 1.0)
 
         if action in ("stop", "reset"):
-            # design_new.md:2235 — issue enter_safe_state when the runtime stops
-            # driving outputs (block voltages 0, switch motors de-energized).
+            # Stopping is a physical act (design_new.md "Running and stopped"):
+            # it advances the runtime safe-state generation and delegates to the
+            # de-energize sequence, so every block voltage goes to 0 and every
+            # point motor de-energizes. Through the runtime-thread wrapper, not
+            # the raw sequence, so the recorded voltages are reconciled and an
+            # open calibration pass sees the generation move.
             sim = getattr(state, "sim_controller", None)
             if sim is not None:
-                sim.enter_safe_state()
+                sim.enter_output_safe_state()
 
         return jsonify(
             {

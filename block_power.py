@@ -172,19 +172,41 @@ class BlockPowerController:
     # fault is a static wiring/configuration one, not a per-tick event.
     _unreachable_blocks: Set[str] = field(default_factory=set)
 
+    def zero_device_outputs(self) -> None:
+        """Command every block voltage to `0` on the device, recording nothing.
+
+        This is the block half of the `OutputSafety.enter_safe_state()` sequence
+        (design_new.md "Power", Safe state / fail-safe). It commands the device
+        transport directly and does not touch `Block.current_voltage` or any
+        other recorded model field, which is what makes the sequence safe to
+        call from any thread — including the Real Hardware `OutputWatchdog`
+        daemon. Reconciling the recorded fields is a separate, later step owned
+        by the runtime thread: `SimulationController.enter_output_safe_state()`.
+        """
+        self.output_interface.enter_safe_state()
+
+    def reconcile_recorded_voltages(self) -> None:
+        """Bring `Block.current_voltage` into line with a rail already at `0`.
+
+        The runtime-thread half of a safe-state entry. Kept apart from
+        `zero_device_outputs()` so the device write stays non-recording.
+        """
+        if self.network is not None:
+            for block in self.network.blocks.values():
+                block.current_voltage = 0.0
+
     def enter_safe_state(self) -> None:
-        """Put the block output hardware into its safe state — every block track
-        voltage at 0 (design_new.md "Power", Safe state / fail-safe). Issued by
-        the runtime when it stops driving outputs. As the only caller of the
-        output interface, the controller delegates the zeroing/de-energizing
-        to it.
+        """Zero the block outputs and reconcile the recorded voltages.
+
+        The runtime-thread convenience pairing of the two halves above. Callers
+        that own the outputs reach it through
+        `SimulationController.enter_output_safe_state()`, which also advances
+        the safe-state generation.
         """
         try:
-            self.output_interface.enter_safe_state()
+            self.zero_device_outputs()
         finally:
-            if self.network is not None:
-                for block in self.network.blocks.values():
-                    block.current_voltage = 0.0
+            self.reconcile_recorded_voltages()
 
     def _calculate_voltage_for_train(
         self, train: "Train", speed_profile: Optional["SpeedProfile"] = None

@@ -932,8 +932,13 @@ class TrainController:
                 voltage_source_speed_kmh=0.0,
             )
         if self.eb.active:
-            # Per design_new.md line 1755: clear manual_power_percent on EB.
-            self.manual.reset_power_percent_for_safety()
+            # An EB override caps the tick to zero but leaves the retained
+            # `manual_power_percent` alone (design_new.md "Controller tick
+            # order", Retained-field reset). The driver clears it, and
+            # `eb.release()` is gated on that clear through its
+            # **driver-control interlock** — which is what keeps a retained
+            # percentage from driving the train the moment EB lifts. Clearing it
+            # here instead would make that interlock unreachable.
             return PhysicsCommand(
                 kind=PHYSICS_KIND_EMERGENCY_BRAKE,
                 handle=HandlePosition.EB,

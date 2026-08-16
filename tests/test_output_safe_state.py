@@ -192,3 +192,97 @@ def test_a_simulated_session_stops_and_starts_the_same_way():
 
     assert pc.set_block_voltage("BLK_A", 9.0) is True
     assert sim.hardware_failure is False
+
+
+# --- the runtime-thread wrapper ---------------------------------------------
+#
+# design_new.md "Power", Safe state / fail-safe: `enter_safe_state()` is the
+# sequence and touches no recorded model field, so the watchdog daemon may run
+# it off-thread. `SimulationController.enter_output_safe_state()` is the
+# runtime-thread entry that wraps it — it advances the safe-state generation
+# and reconciles the recorded voltages afterwards.
+
+
+def _recorded_block(sim):
+    """The recorded model row for BLK_A, which the bare test network lacks."""
+    from block import Block
+
+    block = Block(block_id="BLK_A", name="A")
+    sim.network.blocks["BLK_A"] = block
+    return block
+
+
+def test_the_sequence_drops_points_before_it_zeroes_track():
+    """Points first, then block voltages — the order the doc fixes."""
+    calls = []
+
+    class _Recorder:
+        def __init__(self, name):
+            self.name = name
+
+        def de_energize_device_outputs(self):
+            calls.append(self.name)
+
+        def zero_device_outputs(self):
+            calls.append(self.name)
+
+        def reconcile_recorded_voltages(self):
+            pass
+
+    _dev, sim = hardware_session()
+    sim.switch_power_controller = _Recorder("switch")
+    sim.power_controller = _Recorder("block")
+
+    sim.enter_safe_state()
+
+    assert calls == ["switch", "block"]
+
+
+def test_the_sequence_records_nothing_so_it_is_thread_safe():
+    """The device write must not touch `Block.current_voltage`: that is what
+    lets the `OutputWatchdog` daemon run the same sequence off-thread."""
+    _dev, sim = hardware_session()
+    block = _recorded_block(sim)
+    sim.power_controller.set_block_voltage("BLK_A", 9.0)
+    block.current_voltage = 9.0
+
+    sim.enter_safe_state()
+
+    assert block.current_voltage == 9.0, (
+        "the sequence itself must leave the recorded field alone"
+    )
+
+
+def test_the_runtime_wrapper_reconciles_the_recorded_voltage():
+    _dev, sim = hardware_session()
+    block = _recorded_block(sim)
+    sim.power_controller.set_block_voltage("BLK_A", 9.0)
+    block.current_voltage = 9.0
+
+    sim.enter_output_safe_state()
+
+    assert block.current_voltage == 0.0
+
+
+def test_the_runtime_wrapper_advances_the_safe_state_generation():
+    """An open calibration pass compares this before every command and every
+    sample, so a stop abandons the pass instead of measuring across the gap."""
+    _dev, sim = hardware_session()
+    before = sim.safe_state_generation
+
+    sim.enter_output_safe_state()
+    assert sim.safe_state_generation == before + 1
+
+    sim.enter_output_safe_state()
+    assert sim.safe_state_generation == before + 2
+
+
+def test_the_bare_sequence_does_not_advance_the_generation():
+    """The watchdog calls the sequence directly; the runtime advances the
+    generation when it later consumes the trip record, not off-thread."""
+    _dev, sim = hardware_session()
+    before = sim.safe_state_generation
+
+    sim.enter_safe_state()
+
+    assert sim.safe_state_generation == before

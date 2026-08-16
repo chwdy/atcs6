@@ -295,6 +295,24 @@ class SimulationController(SwitchOutputOwner):
         # across the gap (design_new.md "Speed calibration").
         self.safe_state_generation: int = 0
 
+        # Seam onto `AppState.simulation_running`, wired by `AppState` the same
+        # way `operating_clock` is. `POST /api/simulation/control` writes the
+        # flag for ordinary start/stop; the two fatal halt entries
+        # (`enter_failed_runtime` / `enter_hardware_failure`) write it `False`
+        # through this seam before latching their gates. No other writer exists
+        # (design_new.md "Running and stopped"). A controller built without an
+        # `AppState` — a unit test, a scenario runner — has no session flag to
+        # stop, so the default is a no-op.
+        self.request_session_stop: Callable[[], None] = lambda: None
+
+        # Runtime-only counters, both starting at `0` (design_new.md "Power").
+        # `POST /api/operation/activate` bumps the first on every successful
+        # activation; the second records the activation generation at which the
+        # current `hardware_failure` was latched, so a clear can tell a stale
+        # failure from one raised since the last activation.
+        self.environment_activation_generation: int = 0
+        self.hardware_failure_activation_generation: int = 0
+
         # Wire back-references so peer components can reach the notification
         # center, the route executor, and each other.
         if self.path_dispatcher is not None:
@@ -733,24 +751,43 @@ class SimulationController(SwitchOutputOwner):
         voltage at 0 and every switch motor de-energized (design_new.md Power,
         Hardware interface boundary).
 
-        Advances `safe_state_generation`. An open `CalibrationRun` captured the
-        generation when it opened and compares the live value before issuing
-        each command and before accepting each sample, so a session stop or any
-        other safe-state request abandons the pass rather than letting it
-        measure across the gap (design_new.md "Speed calibration"). That
-        comparison is the complete handoff — `OutputSafety` never calls into
-        calibration.
+        This is the sequence itself. Points are dropped before block voltages,
+        and each half is its controller's non-recording device write, so this
+        call touches no recorded model field and is safe from any thread —
+        including the Real Hardware `OutputWatchdog` daemon, which is the sole
+        direct caller. Every runtime-thread caller goes through
+        `enter_output_safe_state()` instead, which advances the safe-state
+        generation and reconciles the recorded fields afterwards.
+        """
+        if self.switch_power_controller is not None:
+            self.switch_power_controller.de_energize_device_outputs()
+        if self.power_controller is not None:
+            self.power_controller.zero_device_outputs()
 
-        The runtime issues this when it stops driving outputs (simulation stop
-        or process shutdown). Track voltage routes through `BlockPowerController`
-        and switch throw through `SwitchPowerController`; each controller is the
-        only caller of its own output interface.
+    def enter_output_safe_state(self) -> None:
+        """The runtime-thread entry to the safe state.
+
+        Per design_new.md "Power" (Safe state / fail-safe) this wrapper:
+
+          1. advances `safe_state_generation`. An open `CalibrationRun` captured
+             the generation when it opened and compares the live value before
+             issuing each command and before accepting each sample, so a session
+             stop or any other safe-state request abandons the pass rather than
+             letting it measure across the gap. That comparison is the complete
+             handoff — `OutputSafety` never calls into calibration.
+          2. delegates to `enter_safe_state()`, the whole de-energize sequence.
+          3. reconciles the recorded model fields synchronously, immediately
+             after the sequence returns. That reconciliation is always the
+             runtime thread's, never the sequence's, which is what lets the
+             watchdog run the same sequence off-thread without racing a model
+             write.
         """
         self.safe_state_generation += 1
-        if self.power_controller is not None:
-            self.power_controller.enter_safe_state()
-        if self.switch_power_controller is not None:
-            self.switch_power_controller.enter_safe_state()
+        try:
+            self.enter_safe_state()
+        finally:
+            if self.power_controller is not None:
+                self.power_controller.reconcile_recorded_voltages()
 
     def try_enter_safe_state(self) -> Optional[List[str]]:
         """`enter_safe_state()` for callers that must keep going when the rig
@@ -783,7 +820,7 @@ class SimulationController(SwitchOutputOwner):
         switch_output_interface: Optional[Any],
     ) -> None:
         """Atomically replace the whole environment boundary while stopped."""
-        self.enter_safe_state()
+        self.enter_output_safe_state()
         self.environment_active = False
         self.operation_mode = operation_environment.parse(environment)
 
@@ -798,6 +835,11 @@ class SimulationController(SwitchOutputOwner):
         self.hardware_failure_at = None
         self.activation_issues = []
         self.environment_active = True
+        # Every successful activation is a new generation, so a later reader can
+        # tell a hardware failure raised since the last activation from a stale
+        # one (design_new.md "Power", Recovery is reactivation followed by an
+        # explicit clear).
+        self.environment_activation_generation += 1
 
     def release_interfaces(self) -> None:
         """Drop the hardware boundary once its controller handle is released.
@@ -2330,16 +2372,21 @@ class SimulationController(SwitchOutputOwner):
     def enter_failed_runtime(self, payload: FatalPhysicalEntryConflict) -> None:
         """Halt further train ticks until manually released.
 
-        Before freezing, calls :meth:`enter_safe_state` on every configured
-        block and switch output interface, zeroing track voltage and
+        Before freezing, calls :meth:`enter_output_safe_state` on every
+        configured block and switch output interface, zeroing track voltage and
         switching off point motors — the safe-state write touches hardware
         outputs only, never controller/path/route/resource/occupancy state.
-        Then sets :attr:`failed_runtime`, stores the typed fatal payload for
-        inspection, and emits a FATAL notification carrying the conflict
-        details. While the flag is set, :meth:`update` only advances
-        ``simulation_time`` and skips Phase 1/2/3 for every train.
+        It also stops the session: this is one of the three writers of
+        ``AppState.simulation_running``, and it writes ``False`` through the
+        same stop-state transition an ordinary stop uses before latching the
+        failure gate (design_new.md "Running and stopped"). Then sets
+        :attr:`failed_runtime`, stores the typed fatal payload for inspection,
+        and emits a FATAL notification carrying the conflict details. While the
+        flag is set, :meth:`update` only advances ``simulation_time`` and skips
+        Phase 1/2/3 for every train.
         """
-        self.enter_safe_state()
+        self.enter_output_safe_state()
+        self.request_session_stop()
         self.failed_runtime = True
         self.failed_runtime_payload: Optional[FatalPhysicalEntryConflict] = payload
         self.failed_runtime_at = self.simulation_time
@@ -2385,8 +2432,13 @@ class SimulationController(SwitchOutputOwner):
         if self.runtime_halted:
             return
         safe_state_error: Optional[str] = None
+        # The other of the two fatal halt entries that stop the session; it
+        # writes `simulation_running = False` through the same stop-state
+        # transition before latching its gate (design_new.md "Running and
+        # stopped").
+        self.request_session_stop()
         try:
-            self.enter_safe_state()
+            self.enter_output_safe_state()
         except Exception as exc:  # noqa: BLE001 - the failure still must latch
             safe_state_error = str(exc)
             logger.exception("hardware safe-state command failed")
@@ -2394,6 +2446,12 @@ class SimulationController(SwitchOutputOwner):
             self.hardware_failure = True
             self.hardware_failure_payload = payload
             self.hardware_failure_at = self.simulation_time
+            # Record which activation generation this failure was raised
+            # against, so a later reader can tell it apart from one latched
+            # before the most recent activation.
+            self.hardware_failure_activation_generation = (
+                self.environment_activation_generation
+            )
             # Safe state revoked physical output permission. The environment is
             # no longer driving anything, and only activation grants that back.
             self.environment_active = False

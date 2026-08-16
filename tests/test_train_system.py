@@ -1283,6 +1283,69 @@ class TestCompleteStateFlows:
         assert result.success is True
         assert controller.eb.active is False
 
+    def test_eb_keeps_the_drivers_retained_power_percent(self):
+        """design_new.md "Controller tick order", Retained-field reset: an EB
+        override caps the tick to zero but leaves `manual_power_percent` alone.
+        The driver clears it, and `eb.release()` is gated on that clear."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.READY, current_speed=0.0
+        )
+        assert controller.commands.set_mode("manual").success is True
+        controller.manual.manual_mode_type = "power_percent"
+        controller.manual.manual_power_percent = 55.0
+
+        controller.eb.activate()
+        controller.produce_physics_command()
+
+        assert controller.manual.manual_power_percent == 55.0
+
+    def test_eb_release_is_refused_while_a_retained_percent_is_held(self):
+        """The driver-control interlock (row `ad04`). Without it, clearing
+        `eb.active` would hand the train straight back to a percentage the
+        driver never withdrew."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.READY, current_speed=0.0
+        )
+        assert controller.commands.set_mode("manual").success is True
+        controller.manual.manual_mode_type = "power_percent"
+        controller.manual.manual_power_percent = 55.0
+        controller.eb.activate()
+
+        result = controller.eb.release()
+
+        assert result.success is False
+        assert controller.eb.active is True
+
+    def test_zeroing_the_percent_satisfies_the_interlock(self):
+        """`set_manual_power_percent(...)` runs before `eb.release()` in the
+        drain order, so a driver satisfies this and releases in one batch."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.READY, current_speed=0.0
+        )
+        assert controller.commands.set_mode("manual").success is True
+        controller.manual.manual_mode_type = "power_percent"
+        controller.manual.manual_power_percent = 55.0
+        controller.eb.activate()
+
+        controller.manual.manual_power_percent = 0.0
+        result = controller.eb.release()
+
+        assert result.success is True
+        assert controller.eb.active is False
+
+    def test_the_interlock_does_not_gate_a_handle_driver(self):
+        """It is a `power_percent`-submode gate: a handle driver has no
+        retained percentage to withdraw."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.READY, current_speed=0.0
+        )
+        assert controller.commands.set_mode("manual").success is True
+        controller.manual.manual_mode_type = "simulation"
+        controller.manual.manual_power_percent = 55.0
+        controller.eb.activate()
+
+        assert controller.eb.release().success is True
+
     def test_shutdown_flow(self):
         """Test complete shutdown flow.
 
