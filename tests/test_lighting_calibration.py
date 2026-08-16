@@ -36,16 +36,16 @@ def _open_run(profile=None):
 def test_run_starts_at_the_profiles_stored_lighting_voltage():
     cal, profile, run = _open_run()
     assert run.candidate_voltage == pytest.approx(profile.lighting_voltage)
-    assert cal.lighting_candidate("T1") == pytest.approx(profile.lighting_voltage)
+    assert cal.lighting_candidate_voltage("T1") == pytest.approx(profile.lighting_voltage)
 
 
 def test_each_step_moves_one_constant_step():
     cal, profile, _run = _open_run()
     start = profile.lighting_voltage
     cal.step_lighting("T1", 1)
-    assert cal.lighting_candidate("T1") == pytest.approx(start + LIGHTING_VOLTAGE_STEP_V)
+    assert cal.lighting_candidate_voltage("T1") == pytest.approx(start + LIGHTING_VOLTAGE_STEP_V)
     cal.step_lighting("T1", -1)
-    assert cal.lighting_candidate("T1") == pytest.approx(start)
+    assert cal.lighting_candidate_voltage("T1") == pytest.approx(start)
 
 
 def test_step_up_stops_at_the_ceiling_and_down_stops_at_zero():
@@ -53,10 +53,10 @@ def test_step_up_stops_at_the_ceiling_and_down_stops_at_zero():
     cal, profile, run = _open_run()
     for _ in range(500):
         cal.step_lighting("T1", 1)
-    assert cal.lighting_candidate("T1") == pytest.approx(run.ceiling_voltage)
+    assert cal.lighting_candidate_voltage("T1") == pytest.approx(run.ceiling_voltage)
     for _ in range(500):
         cal.step_lighting("T1", -1)
-    assert cal.lighting_candidate("T1") == 0.0
+    assert cal.lighting_candidate_voltage("T1") == 0.0
 
 
 def test_ceiling_sits_below_the_current_sense_drive_level():
@@ -80,7 +80,7 @@ def test_ceiling_follows_max_voltage_when_it_is_the_lower_bound():
 def test_stepping_without_an_open_run_is_a_no_op():
     cal = SpeedCalibration()
     assert cal.step_lighting("T1", 1) is None
-    assert cal.lighting_candidate("T1") is None
+    assert cal.lighting_candidate_voltage("T1") is None
 
 
 # ----------------------------------------------------------------- commit ---
@@ -89,10 +89,10 @@ def test_stepping_without_an_open_run_is_a_no_op():
 def test_commit_writes_the_candidate_and_closes_the_run():
     cal, profile, _run = _open_run()
     cal.step_lighting("T1", 1)
-    candidate = cal.lighting_candidate("T1")
+    candidate = cal.lighting_candidate_voltage("T1")
     assert cal.commit_lighting("T1", profile) == pytest.approx(candidate)
     assert profile.lighting_voltage == pytest.approx(candidate)
-    assert cal.lighting_candidate("T1") is None
+    assert cal.lighting_candidate_voltage("T1") is None
 
 
 def test_commit_moves_the_curves_zero_power_anchor_up():
@@ -136,7 +136,7 @@ def test_cancel_discards_the_candidate():
     before = profile.lighting_voltage
     cal.step_lighting("T1", 1)
     cal.cancel_lighting("T1")
-    assert cal.lighting_candidate("T1") is None
+    assert cal.lighting_candidate_voltage("T1") is None
     assert profile.lighting_voltage == pytest.approx(before)
 
 
@@ -169,7 +169,7 @@ def test_open_run_drives_its_candidate_in_place_of_the_lit_voltage():
 
     for _ in range(4):
         cal.step_lighting("T1", 1)
-    candidate = cal.lighting_candidate("T1")
+    candidate = cal.lighting_candidate_voltage("T1")
     assert candidate != pytest.approx(profile.lighting_voltage)
     assert physics.compute_track_voltage(controller, profile) == pytest.approx(candidate)
 
@@ -256,7 +256,7 @@ def test_service_opens_a_run_from_ready_manual_with_a_cab(state_with_train):
     run = train_service.start_lighting_calibration(state_with_train, "TRAIN_A")
     assert run.train_id == "TRAIN_A"
     assert (
-        state_with_train.sim_controller.speed_calibration.lighting_candidate("TRAIN_A")
+        state_with_train.sim_controller.speed_calibration.lighting_candidate_voltage("TRAIN_A")
         is not None
     )
 
@@ -318,6 +318,6 @@ def test_service_save_writes_the_profile_and_closes_the_run(state_with_train):
     )
     assert profile.lighting_voltage == pytest.approx(saved)
     assert (
-        state_with_train.sim_controller.speed_calibration.lighting_candidate("TRAIN_A")
+        state_with_train.sim_controller.speed_calibration.lighting_candidate_voltage("TRAIN_A")
         is None
     )

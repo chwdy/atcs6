@@ -2399,14 +2399,21 @@ class TrainController:
         Per design_new.md "Latch Table" (Clear/consume access) this method is
         the one place `phase_latches.power_off` is cleared — not the Phase-3
         power-off consumer step that invokes it — so the field is cleared
-        whichever of its two callers ran. It is also that latch's consume-side
-        emitter (Latch consumption events), which is why the event below passes
-        `latch_event=True`.
+        whichever of its two callers ran: that consumer step in the ordinary
+        case, or `SimulationController.clear_failed_runtime()`'s step-`7c41`
+        fan-out across every controller, which is not a Phase-3 step at all. It
+        consumes the latch *when present* rather than requiring it, because the
+        fan-out reaches controllers that never latched one — every entry to
+        `OFF` except the startup default goes through here (Controller state
+        machine, the `OFF` row). It is also that latch's consume-side emitter
+        (Latch consumption events), which is why the event below passes
+        `latch_event=True` — and why it is emitted only when a latch was
+        actually consumed.
         """
-        if not self.route_hooks.phase_latches.power_off:
-            return
+        had_latch = self.route_hooks.phase_latches.power_off
         self.ops.state = TrainState.OFF
         self.commands.cab = None
+        self.ops.handle_position = HandlePosition.N
         # design_new.md:1895 — clear the EB latch through the EB-owned helper so
         # the EB Workflow stays the single writer of `eb.active`.
         self.eb.clear()
@@ -2414,14 +2421,15 @@ class TrainController:
         # Force-clear through the service-stop teardown path so an
         # interrupted run never leaves braking armed on a later route.
         self.consume_service_stop(force=True)
-        self.route_hooks.phase_latches.clear("power_off")
-        self.notifications.emit(
-            f"power off committed for {self.train_id}",
-            operation="complete_power_off",
-            kind="info",
-            payload={"latch": "power_off"},
-            latch_event=True,
-        )
+        if had_latch:
+            self.route_hooks.phase_latches.clear("power_off")
+            self.notifications.emit(
+                f"power off committed for {self.train_id}",
+                operation="complete_power_off",
+                kind="info",
+                payload={"latch": "power_off"},
+                latch_event=True,
+            )
 
     # -------------------------------------------------------------------------
     # Serialization

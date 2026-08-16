@@ -288,6 +288,13 @@ class SimulationController(SwitchOutputOwner):
 
         self.speed_calibration = SpeedCalibration(self)
 
+        # Bumped by every safe-state entry. A `CalibrationRun` captures it when
+        # it opens and compares the live value before issuing each command and
+        # before accepting each sample, so a session stop or any other
+        # safe-state request abandons the pass instead of letting it measure
+        # across the gap (design_new.md "Speed calibration").
+        self.safe_state_generation: int = 0
+
         # Wire back-references so peer components can reach the notification
         # center, the route executor, and each other.
         if self.path_dispatcher is not None:
@@ -376,6 +383,13 @@ class SimulationController(SwitchOutputOwner):
             # on_controller_progress flow, and the precise position is snapped to the
             # block seam where the hardware leads it.
             self._detect_block_occupancy()
+            # An open speed-calibration pass reads the calibration train's
+            # detected-entry slice here, inside the Step-0 window: attribution
+            # has just written it, and the train's own final Phase-2 callback
+            # has not yet folded and cleared it (design_new.md "Speed
+            # calibration", The clock is two confirmed entries). It is a read
+            # against an existing Step-0 handoff and writes nothing.
+            self.speed_calibration.observe_detected_entries()
             net.bump_lookahead_world_version()
 
             # Refresh route-managed scheduling state (time advancement only).
@@ -431,14 +445,6 @@ class SimulationController(SwitchOutputOwner):
             # retirement) runs once here, after every train's Phase 3
             # (design_new.md "Power -> Unidentified trains").
             self.unidentified_trains.reconcile(self._unidentified_clock())
-
-            # An open speed-calibration pass reads the confirmed occupancy this
-            # tick settled on, so it runs after every train's Phase 3: what it
-            # watches for is a block entry attribution has already credited to
-            # the calibration train. Its commands go out through the ordinary
-            # Phase-2 manual surface and land on the next tick's drain
-            # (design_new.md "Speed calibration", Where it runs).
-            self.speed_calibration.tick()
 
             self._settle_after_commits()
 
@@ -693,6 +699,10 @@ class SimulationController(SwitchOutputOwner):
         net.bump_lookahead_world_version()
         try:
             self._detect_block_occupancy()
+            # No calibration read here. A stopped pass runs the observing steps
+            # and nothing else, so no Phase 2 follows to consume a stashed
+            # slice; stashing one would leave a stale entry for the first tick
+            # after the resume to mistake for a fresh confirmation.
             net.bump_lookahead_world_version()
 
             # Only trains Step 0 attributed something to: every other train's
@@ -723,11 +733,20 @@ class SimulationController(SwitchOutputOwner):
         voltage at 0 and every switch motor de-energized (design_new.md Power,
         Hardware interface boundary).
 
+        Advances `safe_state_generation`. An open `CalibrationRun` captured the
+        generation when it opened and compares the live value before issuing
+        each command and before accepting each sample, so a session stop or any
+        other safe-state request abandons the pass rather than letting it
+        measure across the gap (design_new.md "Speed calibration"). That
+        comparison is the complete handoff — `OutputSafety` never calls into
+        calibration.
+
         The runtime issues this when it stops driving outputs (simulation stop
         or process shutdown). Track voltage routes through `BlockPowerController`
         and switch throw through `SwitchPowerController`; each controller is the
         only caller of its own output interface.
         """
+        self.safe_state_generation += 1
         if self.power_controller is not None:
             self.power_controller.enter_safe_state()
         if self.switch_power_controller is not None:
@@ -1200,6 +1219,12 @@ class SimulationController(SwitchOutputOwner):
             return
 
         # Phase 2 - Execute.
+        # Step `c9e1`: for the calibration train only, the speed-calibration
+        # pass driver runs immediately before `TrainController.tick(...)`, so
+        # the power/cab command it issues is already queued when that tick's
+        # operator-command processing slot drains (design_new.md "Speed
+        # calibration", Where it runs). It is a no-op for every other train.
+        self.speed_calibration.tick_train(train.train_id)
         # TrainController.tick(...) begins by draining the queued operator
         # commands; TrainPhysics.tick(...) computes motion and invokes
         # TrainController.on_physics_updated(...) at least once per tick.
@@ -1270,6 +1295,13 @@ class SimulationController(SwitchOutputOwner):
         self._consume_pending_route_abort(controller, train)
         self._consume_pending_power_off(controller, train)
         self._consume_pending_route_deactivate(controller, train)
+
+        # 3g (`26f5`). Re-evaluate this train's open lighting-voltage run.
+        # Ordered last so it observes this same pass's power-off and
+        # route-deactivate consumption before deciding whether the run has
+        # ended (design_new.md "Lighting-voltage calibration", What the run
+        # drives): the run ends the same tick its condition is met.
+        self._reevaluate_lighting_run(train)
 
         # Sync only persistent/configuration state back to Train. Live state
         # (target_speed, speed_limit_reason, controller state, current_speed)
@@ -1441,6 +1473,26 @@ class SimulationController(SwitchOutputOwner):
         # As with route-abort, `remove_train_route_run(...)` is the
         # consume-side emitter and this step clears the field after it returns.
         controller.route_hooks.phase_latches.clear("route_deactivate")
+
+    def _reevaluate_lighting_run(self, train: Train) -> None:
+        """Phase-3 step `26f5` — end an open lighting run whose conditions no
+        longer hold.
+
+        A run ends the moment the train leaves `READY`, leaves `manual` control
+        mode, loses its cab, is powered off, has EB activated, or is assigned a
+        route — not only on Save or panel-close. The controller-side conditions
+        are `SpeedCalibration.lighting_run_still_valid(...)`; the route
+        assignment is checked here because it lives on `RouteExecutor`.
+        """
+        calibration = self.speed_calibration
+        if not calibration.lighting_runs:
+            return
+        train_id = train.train_id
+        if train_id not in calibration.lighting_runs:
+            return
+        assigned = self.route_executor.assigned_route_id_for(train_id)
+        if assigned is not None or not calibration.lighting_run_still_valid(train_id):
+            calibration.cancel_lighting(train_id)
 
     # =========================================================================
     # Persistent state sync (Train <- TrainController)
@@ -2439,10 +2491,14 @@ class SimulationController(SwitchOutputOwner):
 
         Reopening it does not resume mid-motion. Every train is written straight
         to `OFF` at zero speed with its handle at `N` and any EB cleared, so
-        nothing moves until the operator powers it back up deliberately. This is
-        a direct write rather than a queued `power_off_cmd()`, for two reasons:
-        the command is stopped-only and the frozen speed may be non-zero, and it
-        defers its work to a Phase 3 that cannot run while the gate is shut.
+        nothing moves until the operator powers it back up deliberately. The OFF
+        transition goes through `TrainController.complete_power_off()` — the
+        canonical `OFF` writer for every entry but the startup default — rather
+        than a queued `power_off_cmd()`, for two reasons: the command is
+        stopped-only and the frozen speed may be non-zero, and it defers its
+        work to a Phase 3 that cannot run while the gate is shut. Routing
+        through `complete_power_off()` is also what clears any `power_off`
+        latch a controller was still holding when the halt shut the gate.
         Track voltage stays at the `0` `enter_safe_state()` left it at; the next
         tick re-emits from each train's energized set, which is empty while they
         are all `OFF`.
@@ -2458,12 +2514,16 @@ class SimulationController(SwitchOutputOwner):
             raise ValueError("The runtime is not halted; there is nothing to clear")
 
         payload = self.failed_runtime_payload
-        for controller in self.controllers.values():
-            controller.ops.state = TrainState.OFF
-            controller.ops.handle_position = HandlePosition.N
+        for train_id, controller in self.controllers.items():
+            controller.complete_power_off()
+            # The halt froze each train at whatever speed it was carrying, and
+            # `complete_power_off()` writes no speed; zero it here so nothing
+            # resumes mid-motion.
             controller.physics_sync.current_speed_kmh = 0.0
-            controller.eb.active = False
-            controller.ato.running = False
+            # This fan-out is not a Phase-3 pass, so step `26f5` does not run
+            # for it — end any open lighting run here instead (design_new.md
+            # "Lighting-voltage calibration", What the run drives).
+            self.speed_calibration.cancel_lighting(train_id)
 
         self.failed_runtime = False
         self.failed_runtime_payload = None

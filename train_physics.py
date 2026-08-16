@@ -654,7 +654,7 @@ class TrainPhysics:
         calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
         if calibration is None:
             return None
-        return calibration.lighting_candidate(self.train_id)
+        return calibration.lighting_candidate_voltage(self.train_id)
 
     @staticmethod
     def _linear_speed_to_voltage(speed_kmh: float) -> float:

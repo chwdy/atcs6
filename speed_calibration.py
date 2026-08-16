@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from enums import TrainState
 from constants import (
     CALIBRATION_POWER_STEP_PERCENT,
     CALIBRATION_ROUND_TRIPS,
@@ -258,9 +259,13 @@ class SpeedCalibration:
         self._sc = simulation_controller
         self.runs: Dict[str, CalibrationRun] = {}
         self.lighting_runs: Dict[str, LightingCalibrationRun] = {}
-        # Confirmed-occupancy edge detection per train: the block set the pass
-        # saw last tick, so `tick()` can report only what is newly confirmed.
-        self._seen_blocks: Dict[str, frozenset] = {}
+        # This tick's Step-0 detector read for the calibration train, stashed
+        # by `observe_detected_entries(...)` and consumed by `tick_train(...)`
+        # in Phase 2 (design_new.md "Speed calibration", The clock is two
+        # confirmed entries). The read happens in Step 0 because that is where
+        # attribution has just written the slice and before the train's own
+        # final Phase-2 callback folds and clears it.
+        self._step0_entries: Dict[str, Tuple[str, ...]] = {}
 
     # -- lifecycle --------------------------------------------------------
 
@@ -304,14 +309,31 @@ class SpeedCalibration:
             leg_started_at=float(now),
         )
         self.runs[train.train_id] = run
-        self._seen_blocks.pop(train.train_id, None)
+        self._step0_entries.pop(train.train_id, None)
         return run
 
     def cancel(self, train_id: str, reason: str = "cancelled") -> None:
-        """Drop a pass without writing. The samples go with it."""
+        """Drop a pass without writing. The samples go with it.
+
+        Operator Stop and a mid-run panel close are pass-abandonment cases, and
+        every one of those commands `power_percent = 0` and latches the ordinary
+        cancel for the still-live leg path in the same step (design_new.md
+        "Speed calibration", Pass-abandonment cases command a stop and release
+        the leg path). The power command is what brings the train to the stand
+        the latched cancel's `is_stopped()` gate waits on; without it the train
+        would run out its remaining authority first.
+        """
         run = self.runs.pop(train_id, None)
-        self._seen_blocks.pop(train_id, None)
+        self._step0_entries.pop(train_id, None)
         if run is not None:
+            controller = self._controller(train_id)
+            if controller is not None:
+                try:
+                    controller.commands.enqueue_command(
+                        "set_manual_power_percent", {"power_percent": 0.0}
+                    )
+                except Exception:
+                    pass
             self._release_path(run)
             self._emit_command_result(
                 train_id,
@@ -547,35 +569,67 @@ class SpeedCalibration:
 
     # -- runtime hook -----------------------------------------------------
 
-    def tick(self) -> None:
-        """Advance every open auto pass against committed runtime state.
+    def observe_detected_entries(self) -> None:
+        """Read each open auto pass's Step-0 detected-entry slice.
 
-        Called once per `SimulationController.update(...)`, after every train's
-        Phase 3, so `Block.occupied_by` is the confirmed occupancy this tick
-        settled on. Commands go out through the ordinary Phase-2 manual command
-        surface and land on the next tick's drain.
+        Called inside the Step-0 window, after attribution has written every
+        train's `physics_sync.pending_detected_entered_blocks` and before the
+        per-train loop begins, so the pass sees a confirmation the same tick
+        Step 0 credits it and before that train's own final Phase-2 callback
+        folds and clears the slice (design_new.md "Speed calibration", The
+        clock is two confirmed entries).
+
+        This is a read against an existing Step-0 handoff, not an additional
+        one: it writes nothing into the slice (design_new.md "Phase handoff
+        rule", A read is not a handoff).
         """
-        sc = self._sc
-        if sc is None or not self.runs:
+        if not self.runs:
             return
-        for train_id, run in list(self.runs.items()):
+        for train_id, run in self.runs.items():
             if run.mode != "auto" or not run.is_measuring:
                 continue
             controller = self._controller(train_id)
             if controller is None:
                 continue
-            obs = CalibrationObservation(
-                now=self._operating_time(),
-                newly_confirmed=self._newly_confirmed(train_id),
-                is_stopped=bool(controller.is_stopped()),
-                head_block=self._head_block(controller),
-                safe_state_generation=int(
-                    getattr(sc, "safe_state_generation", 0) or 0
-                ),
+            entered = getattr(
+                controller.physics_sync, "pending_detected_entered_blocks", None
             )
-            command = self.advance(run, obs)
-            if command is not None:
-                self._apply(run, controller, command)
+            if entered:
+                self._step0_entries[train_id] = tuple(sorted(entered))
+
+    def tick_train(self, train_id: str) -> None:
+        """Step `c9e1` — advance this train's open auto pass.
+
+        Called by `SimulationController._update_train(train, delta_seconds)`
+        immediately before `TrainController.tick(...)` begins for the
+        calibration train, ahead of that same tick's operator-command
+        processing slot (design_new.md "Speed calibration", Where it runs), so
+        the command this step issues is already queued when that slot drains.
+
+        It arms a leg, evaluates step progress, and issues that step's
+        power/cab command through the ordinary manual-command surface.
+        """
+        sc = self._sc
+        run = self.runs.get(train_id)
+        if sc is None or run is None:
+            return
+        if run.mode != "auto" or not run.is_measuring:
+            return
+        controller = self._controller(train_id)
+        if controller is None:
+            return
+        obs = CalibrationObservation(
+            now=self._operating_time(),
+            newly_confirmed=self._step0_entries.pop(train_id, ()),
+            is_stopped=bool(controller.is_stopped()),
+            head_block=self._head_block(controller),
+            safe_state_generation=int(
+                getattr(sc, "safe_state_generation", 0) or 0
+            ),
+        )
+        command = self.advance(run, obs)
+        if command is not None:
+            self._apply(run, controller, command)
 
     def _apply(self, run: CalibrationRun, controller, command: CalibrationCommand) -> None:
         """Issue a pass command the way an operator driving manually would.
@@ -633,22 +687,32 @@ class SpeedCalibration:
         run.path_id = path_id
 
     def _release_path(self, run: CalibrationRun) -> None:
-        """Give the leg's authority back once its stop is confirmed."""
-        dispatcher = getattr(self._sc, "path_dispatcher", None)
-        if dispatcher is None or not run.path_id:
+        """Give the leg's authority back once its stop is confirmed.
+
+        Through the ordinary cancel latch, not a direct dispatcher call: the
+        pass writes `set_path_cancel_request(...)` with
+        `error.origin = "calibration_leg_complete"` like every other
+        cancellation, and the Phase-3 explicit-cancel step `7b40` commits it
+        once the train has stopped (design_new.md "Speed calibration",
+        Releasing a leg's authority goes through the ordinary cancel latch).
+
+        An existing request is not duplicated: when an EB or a movement-derived
+        deviation latched the leg path first, that cancel tears the leg down and
+        the pass writes no second request.
+        """
+        if not run.path_id:
             return
-        try:
+        controller = self._controller(run.train_id)
+        if controller is None:
+            return
+        latches = controller.route_hooks.phase_latches
+        if latches.path_cancel_request is None:
             from runtime_payloads import ErrorRecord as _ErrorRecord
 
-            dispatcher.cancel_path(
-                run.path_id,
-                error=_ErrorRecord(
-                    "calibration leg ended", "calibration_leg_complete"
-                ),
-                kind="info",
+            latches.set_path_cancel_request(
+                _ErrorRecord("calibration leg ended", "calibration_leg_complete"),
+                "info",
             )
-        except Exception:
-            pass
         run.path_id = ""
 
     @staticmethod
@@ -683,31 +747,6 @@ class SpeedCalibration:
             except Exception:
                 return 0.0
         return 0.0
-
-    def _newly_confirmed(self, train_id: str) -> Tuple[str, ...]:
-        """Block ids that became confirmed-OCCUPIED by this train since the last
-        observation.
-
-        Read from `Block.occupied_by`, which is what attribution committed, so
-        only entries credited to the calibration train are ever seen.
-        """
-        sc = self._sc
-        network = getattr(sc, "network", None) if sc is not None else None
-        blocks = getattr(network, "blocks", None) if network is not None else None
-        if not blocks:
-            return ()
-        held = frozenset(
-            block_id
-            for block_id, block in blocks.items()
-            if getattr(block, "occupied_by", None) == train_id
-        )
-        previous = self._seen_blocks.get(train_id)
-        self._seen_blocks[train_id] = held
-        if previous is None:
-            # First observation of the pass: the blocks the train already stands
-            # on are not entries it just made.
-            return ()
-        return tuple(sorted(held - previous))
 
     # -- commit -----------------------------------------------------------
 
@@ -752,7 +791,7 @@ class SpeedCalibration:
             timespec="seconds"
         )
         self.runs.pop(train_id, None)
-        self._seen_blocks.pop(train_id, None)
+        self._step0_entries.pop(train_id, None)
         self._emit_command_result(
             train_id,
             operation="speed_calibration",
@@ -784,6 +823,35 @@ class SpeedCalibration:
         )
         self.lighting_runs[train.train_id] = run
         return run
+
+    def lighting_run_still_valid(self, train_id: str) -> bool:
+        """Whether this train's open lighting run still meets its conditions.
+
+        A run ends the moment any of these holds, not only on Save or
+        panel-close: the train leaves `READY`, leaves `manual` control mode,
+        loses its cab, is powered off, or has EB activated (design_new.md
+        "Lighting-voltage calibration", What the run drives). Being assigned a
+        route ends it too; that check is the caller's, because the route
+        assignment lives on `RouteExecutor` rather than the controller.
+
+        Returns True when no run is open, so a caller with nothing to
+        re-evaluate takes no action.
+        """
+        run = self.lighting_runs.get(train_id)
+        if run is None:
+            return True
+        controller = self._controller(train_id)
+        if controller is None:
+            return False
+        if controller.ops.state != TrainState.READY:
+            return False
+        if getattr(controller.commands, "control_mode", None) != "manual":
+            return False
+        if getattr(controller.commands, "cab", None) not in ("A", "B"):
+            return False
+        if controller.eb.active:
+            return False
+        return True
 
     def step_lighting(self, train_id: str, direction: int) -> Optional[LightingCalibrationRun]:
         """Move the candidate one `LIGHTING_VOLTAGE_STEP_V` up or down.
@@ -830,7 +898,7 @@ class SpeedCalibration:
         train's `track_voltage` goes back to what its state ordinarily outputs."""
         self.lighting_runs.pop(train_id, None)
 
-    def lighting_candidate(self, train_id: str) -> Optional[float]:
+    def lighting_candidate_voltage(self, train_id: str) -> Optional[float]:
         """The open run's candidate voltage, or None when no run is open.
 
         This is the read `TrainPhysics.compute_track_voltage(...)` makes.

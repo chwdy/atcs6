@@ -99,7 +99,11 @@ def test_the_layout_survives_the_whole_round_trip():
     sim.clear_failed_runtime()
 
     assert sorted(network.trains) == ["T1"]
-    assert sim.controllers["T1"].commands.cab == "A"
+    # Clearing the halt reaches `OFF` through `complete_power_off()`, so the cab
+    # is cleared with it: `(OFF, None)` is the only legal pair in the Allowed
+    # `(state, cab)` pairs table (design_new.md "Controller state machine").
+    assert sim.controllers["T1"].ops.state == TrainState.OFF
+    assert sim.controllers["T1"].commands.cab is None
     assert network.trains["T1"].speed_profile_id == "default_T1"
 
 

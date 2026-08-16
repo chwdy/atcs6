@@ -183,5 +183,22 @@ def test_cancelling_a_pass_releases_its_authority(state):
     train_service.calibrate_cancel(state, train_id)
     assert train_service.calibrate_status(state, train_id) is None
     if held:
+        # The release goes through the ordinary cancel latch, not a direct
+        # dispatcher call, so the path stays ACTIVE until the Phase-3
+        # explicit-cancel step commits it with the train stopped (design_new.md
+        # "Speed calibration", Releasing a leg's authority goes through the
+        # ordinary cancel latch).
+        controller = sim.controllers[train_id]
+        assert (
+            controller.route_hooks.phase_latches.path_cancel_request is not None
+        ), "cancelling the pass must latch the leg path's cancel"
+        # The cancel commands `power_percent = 0` but forces no stop, so the
+        # train runs out the authority it already holds and halts at its end
+        # (~13s here); the latch commits on the first Phase 3 after that.
+        for _ in range(400):
+            sim.update(0.1)
+            path = sim.path_dispatcher.paths.get(held)
+            if path is None or path.status.value != "active":
+                break
         path = sim.path_dispatcher.paths.get(held)
         assert path is None or path.status.value != "active"
