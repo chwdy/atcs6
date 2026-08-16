@@ -281,7 +281,7 @@ def _build_recording_journey(records: List[TickRecord], train_id: str = "T1") ->
 
 
 def _t1_path_capture_window(
-    sim_controller, dispatcher, observe_ticks: int = 5
+    sim_controller, dispatcher, observe_ticks: int = 400
 ) -> Optional[dict]:
     """Run a few ticks so the dispatcher has planned T1's initial path,
     then read T1's stored Path and report the create_path return contract
@@ -292,8 +292,16 @@ def _t1_path_capture_window(
     function exposes that result for assertion without re-calling
     create_path (which would fail with TRAIN_ALREADY_HAS_ACTIVE_PATH).
     """
+    # Poll rather than fixing a tick count: T1's run is start-mode seeded onto a
+    # `stop` followed by a `dwell`, and a dwell now holds for its configured time
+    # measured from dwell ENTRY (design_new.md "RouteTaskRun schema", the
+    # `started_at` row) rather than from the seeded stop's synthetic finish —
+    # which used to be the run's own start, so the opening dwell expired
+    # instantly. T1 therefore serves its opening dwell before it plans at all.
     for _ in range(observe_ticks):
         sim_controller.update(0.1)
+        if dispatcher.get_active_path("T1") is not None:
+            break
 
     path = dispatcher.get_active_path("T1")
     if path is None:
@@ -346,7 +354,7 @@ def test_best_effort_crossover_block_states(dt, label, capsys):
     probe_result = _t1_path_capture_window(
         sim_controller=fixture.sim_controller,
         dispatcher=fixture.sim_controller.path_dispatcher,
-        observe_ticks=5,
+        observe_ticks=400,
     )
 
     # The contention scenario at this point: T2 still occupies

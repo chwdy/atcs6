@@ -436,7 +436,11 @@ class TestRouteCallbacksWrapAround:
         )
 
         assert ok is True
-        assert exec_state.task_runs[2].finished_at == 30.0
+        # Finished through `advance_walk_position(...)`, which samples both
+        # clocks itself — callers pass no clock value (design_new.md
+        # "`RouteRun.advance_walk_position(walk_position)`") — so assert which
+        # row was written rather than pinning a caller-supplied instant.
+        assert exec_state.task_runs[2].finished_at is not None
         # Already-finished rows must NOT have been touched.
         assert exec_state.task_runs[0].finished_at == 10.0
         assert exec_state.task_runs[1].finished_at == 20.0

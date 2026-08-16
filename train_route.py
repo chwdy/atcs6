@@ -342,13 +342,20 @@ class RouteTaskRun:
 
     Per design_new.md "RouteTaskRun schema". Owns per-task `finished_at`,
     resolved dispatcher target, delay classification, and error context.
-    The `started_at` field is derived: read it via
-    `RouteExecutionState.task_started_at(i)`, which returns
-    `RouteRun.started_at` for i==0 and `task_runs[i-1].finished_at` otherwise.
+
+    `started_at` is stored on a `dwell` row and derived on every other row.
+    `RouteExecutor` step `3a37` samples and writes the pair
+    (`started_at` / `started_at_operating`) immediately before it calls
+    `TrainController.enter_station_dwell()`, and the dwell timer reads the
+    dwell row's own stored value — not its predecessor's `finished_at`. For
+    every other row it is a read-only derivation with no writers: read it via
+    `RouteExecutionState.task_started_at(i)`, which returns `RouteRun.started_at`
+    for i==0 and `task_runs[i-1].finished_at` otherwise.
     """
 
     task_index: int
     resolved_target: Optional["ResolvedRouteTarget"] = None
+    started_at: Optional[float] = None
     finished_at: Optional[float] = None
     # The `AppState.operating_time` readings taken at the same moments
     # `started_at` was sampled and `finished_at` was written (design_new.md

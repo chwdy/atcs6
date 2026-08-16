@@ -92,8 +92,12 @@ def test_round_trip_bare_stop_apex_flips_direction_and_reflects():
     )
 
     assert ok is True
-    # The apex stop is finished through the canonical writer.
-    assert exec_state.task_runs[2].finished_at == 30.0
+    # The apex stop is finished through the canonical writer, which samples both
+    # clocks itself — callers pass no clock value (design_new.md
+    # "`RouteRun.advance_walk_position(walk_position)`"), so assert the pair was
+    # written rather than pinning a caller-supplied instant.
+    assert exec_state.task_runs[2].finished_at is not None
+    assert exec_state.task_runs[2].finished_at_operating is not None
     # The forward apex must reflect: direction flips to reverse
     # (design_new.md "Canonical Next-Target Selection", case `c733`). This is
     # the assertion that FAILS

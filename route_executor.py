@@ -69,6 +69,28 @@ _PENDING_CANCEL_CONDITIONS = frozenset(
 
 
 @dataclass
+class ArmedTaskProjection:
+    """Projection returned by `RouteExecutor.find_armed_task(train_id)`.
+
+    The public derived read for the task whose target the live authority was
+    most recently acquired toward (design_new.md "ArmedTaskProjection schema").
+    Read-only: it never resolves, appends, or writes.
+
+    It is one of three named cursors, and callers use the one matching their
+    question rather than deriving an armed row through raw index arithmetic:
+    `_find_next_task_target(...)` resolves the next planning candidate, this
+    helper identifies the acquired authority target, and
+    `RouteRun.current_waypoint_index` remains only the derived physical-progress
+    cursor.
+    """
+
+    walk_position: int
+    task_index: int
+    task_kind: str  # "waypoint" | "stop" | "dwell" | "run"
+    stored_resolved_target: ResolvedRouteTarget
+
+
+@dataclass
 class ResolvedNextTaskProjection:
     """Projection returned by `_find_next_task_target(train_id)`.
 
@@ -762,6 +784,56 @@ class RouteExecutor:
             self._now_basis(route),
             self._predecessor_finish_basis(exec_state, route, walk_position),
         )
+
+    def find_armed_task(self, train_id: str) -> Optional["ArmedTaskProjection"]:
+        """The task whose target the live authority was most recently acquired
+        toward, or `None`.
+
+        Per design_new.md "ArmedTaskProjection schema": it requires a `RUNNING`
+        run and an active dispatcher path, then selects the greatest
+        non-finished walk-position whose `resolved_target` is non-`None`.
+        Append-only walk order plus step `66aa`'s single-writer rule make that
+        the most recently acquired row — including a waypoint-lookahead row
+        sitting ahead of the physically served task.
+
+        It never resolves, appends, or writes, and returns `None` when there is
+        no live authority or no acquired row.
+        """
+        exec_state = self.execution_state_for(train_id)
+        if exec_state is None:
+            return None
+        if self._get_active_path_id(train_id) is None:
+            return None
+        route = self.route_registry.get(exec_state.route_id)
+        for pos in range(len(exec_state.task_runs) - 1, -1, -1):
+            row = exec_state.task_runs[pos]
+            if row.finished_at is not None or row.resolved_target is None:
+                continue
+            task = route.get_task_at(row.task_index) if route is not None else None
+            return ArmedTaskProjection(
+                walk_position=pos,
+                task_index=row.task_index,
+                task_kind=getattr(task, "task_kind", "") if task is not None else "",
+                stored_resolved_target=row.resolved_target,
+            )
+        return None
+
+    def _in_flight_row_pos_for_task(
+        self, exec_state: RouteExecutionState, task_index: int
+    ) -> int:
+        """The walk-position of the unfinished row representing `task_index`.
+
+        For the initial walk-positions the list index matches `task_index`, but
+        after `CIRCULAR` / `ROUND_TRIP` wraparound several list positions share
+        one `task_index` — the in-flight one is the latest entry whose
+        `finished_at` is still `None`, so walk backward and take the first
+        match. Returns -1 when there is none.
+        """
+        for pos in range(len(exec_state.task_runs) - 1, -1, -1):
+            r = exec_state.task_runs[pos]
+            if r.task_index == task_index and r.finished_at is None:
+                return pos
+        return -1
 
     def _predecessor_finish_basis(
         self, exec_state: RouteExecutionState, route: "Route", row_pos: int
@@ -1803,23 +1875,22 @@ class RouteExecutor:
         # share the same task_index — the in-flight one is the latest
         # entry whose finished_at is still None. Walk from the trailing
         # entry backward and pick the first match.
-        row = None
-        row_pos = -1
-        for pos in range(len(exec_state.task_runs) - 1, -1, -1):
-            r = exec_state.task_runs[pos]
-            if r.task_index == task_index and r.finished_at is None:
-                row = r
-                row_pos = pos
-                break
-        if row is None:
+        row_pos = self._in_flight_row_pos_for_task(exec_state, task_index)
+        if row_pos < 0:
             return
-        # `started_at` for this walk-position is the previous
-        # task_runs entry's finished_at (or RouteRun.started_at for the
-        # first entry). Use the row's list position, not its task_index,
-        # so wraparound entries anchor on the correct predecessor.
-        dwell_started_at_basis = self._predecessor_finish_basis(
-            exec_state, route, row_pos
+        row = exec_state.task_runs[row_pos]
+        # A dwell row stores its OWN start, written by step `3a37` immediately
+        # before it entered dwell (design_new.md "RouteTaskRun schema"): the
+        # hold is measured from the moment the train entered dwell, never from
+        # its predecessor's `finished_at`. Read it on the route's own basis so
+        # the duration never subtracts a wall instant from an operating one.
+        realtime = getattr(route, "timing_basis", "operating") == "realtime"
+        dwell_started_at_basis = (
+            row.started_at if realtime else row.started_at_operating
         )
+        if dwell_started_at_basis is None:
+            # Dwell entry has not stamped the row yet, so no hold has begun.
+            return
 
         if not task.should_depart(
             now, self._now_basis(route), dwell_started_at_basis
@@ -1829,7 +1900,7 @@ class RouteExecutor:
         # Mark the dwell row finished and advance through the canonical
         # finished_at + delay_class + walk-append writer (delay_class no-ops
         # for dwell rows per `_record_delay_class`).
-        self.advance_walk_position(exec_state, route, row_pos, now)
+        self.advance_walk_position(exec_state, route, row_pos)
 
         # Advance the per-run cursor based on the route mode.
         self._advance_to_next_task(route, exec_state)
@@ -1920,7 +1991,7 @@ class RouteExecutor:
         # cursor so the next task (typically a dwell at this position) is
         # armed on the next tick.
         controller.consume_service_stop()
-        self.advance_walk_position(exec_state, route, walk_pos, now)
+        self.advance_walk_position(exec_state, route, walk_pos)
         self._advance_to_next_task(route, exec_state)
         return True
 
@@ -2020,7 +2091,7 @@ class RouteExecutor:
                     break
             if row is None:
                 break
-            self.advance_walk_position(exec_state, route, pos, now)
+            self.advance_walk_position(exec_state, route, pos)
             self._advance_to_next_task(route, exec_state)
 
     @staticmethod
@@ -2050,20 +2121,43 @@ class RouteExecutor:
         route: "Route",
         exec_state: RouteExecutionState,
         controller: TrainController,
-        task_index: int,
+        walk_position: int,
     ) -> None:
-        """Phase 1 step 5: enter dwell when the next task is `dwell`.
+        """Phase 1 step `3a37`: enter dwell when the next task is `dwell`.
 
         Preconditions: predecessor task finished, controller is in READY,
-        `received_path_plan is None`. The dwell row's `started_at` is already
-        populated by the predecessor's `finished_at` writer per the canonical
-        first-write rule; this step does not write `started_at`.
+        `received_path_plan is None`, and a cab is selected.
+
+        This step samples and writes the dwell row's paired
+        `started_at` / `started_at_operating` immediately before calling
+        `TrainController.enter_station_dwell()` (design_new.md "RouteTaskRun
+        schema", the `started_at` row). The dwell timer then reads the dwell
+        row's own stored value rather than its predecessor's `finished_at`:
+        the hold is measured from the moment the train actually entered dwell,
+        not from whenever the stop before it finished. The controller call
+        performs the state transition only and never reads or writes `RouteRun`.
         """
         if controller.ops.state == TrainState.RUNNING_AT_STATION:
             return
         # Per design_new.md, the dwell-entry gate is `is_recovery_clean`.
         if not getattr(controller, "is_recovery_clean", False):
             return
+        # Step `3a37` lists a selected cab among the dwell-entry preconditions
+        # alongside `is_recovery_clean`.
+        if getattr(controller.commands, "cab", None) not in ("A", "B"):
+            return
+
+        # The caller passes the walk position the projection named, so index the
+        # row directly. `_dwell_complete_check` finds the same row from the other
+        # side — the latest unfinished row carrying this dwell's `task_index`,
+        # which on the current walk is exactly this position — so the stamp and
+        # the timer always agree, including after a CIRCULAR wrap appends a
+        # second row for the same task.
+        if 0 <= walk_position < len(exec_state.task_runs):
+            row = exec_state.task_runs[walk_position]
+            if row.started_at is None:
+                row.started_at = self._now()
+                row.started_at_operating = self._now_operating()
 
         # Unpack (success, reason) tuple per train_controller agent signature.
         _esd_success, _esd_reason = controller.enter_station_dwell()
@@ -2668,7 +2762,7 @@ class RouteExecutor:
         now = self._now()
         idx = projection.walk_position
         self._sync_task_runs(route, exec_state)
-        self.advance_walk_position(exec_state, route, idx, now)
+        self.advance_walk_position(exec_state, route, idx)
 
         self._advance_to_next_task(route, exec_state)
 
@@ -2740,8 +2834,12 @@ class RouteExecutor:
             task's started_at if empty
           * clear route-owned active-path correlation
         """
-        if event_time is None:
-            event_time = self._now()
+        # `event_time` no longer reaches the finish write: the completed row is
+        # stamped by `advance_walk_position(...)`, which samples both clocks
+        # itself so the wall and operating readings of one finish are taken at
+        # the same moment (design_new.md "`RouteRun.advance_walk_position`").
+        # The parameter stays for callers that pass their own sample.
+        del event_time
 
         train, route, exec_state = self._resolve_run_route(train_id)
         if train is None or route is None or exec_state is None:
@@ -2858,7 +2956,7 @@ class RouteExecutor:
                 task = route.get_task_at(row.task_index)
                 if task is None or task.task_kind != "waypoint":
                     continue
-            self.advance_walk_position(exec_state, route, pos, event_time)
+            self.advance_walk_position(exec_state, route, pos)
         # ROUND_TRIP / CIRCULAR walks reflect or wrap at route ends by
         # flipping `RouteRun.direction` so the next `_append_next_walk_task`
         # appends the reflected walk-position. Every other advance site
@@ -2894,9 +2992,12 @@ class RouteExecutor:
 
         Per design_new.md "RouteTaskRun schema": compares the shared task's
         expected `task_time` with elapsed time since the predecessor walk
-        position's finish (`RouteRun.started_at` for row 0). No-op for `dwell`
-        rows and for tasks with no `task_time`. Tasks pre-finished by start-mode
-        seeding or skipped as broken are never routed here, so they keep
+        position's finish (`RouteRun.started_at` for row 0). It is computed for
+        `waypoint` and `stop` rows only — never for `dwell` or `run`, because a
+        dwell time is a hold duration and a run time is a simulated-time
+        movement window tracked separately by `run_elapsed_seconds` — and never
+        for a task with no `task_time`. Tasks pre-finished by start-mode seeding
+        or skipped as broken are never routed here, so they keep
         `delay_class = None`.
         """
         if not (0 <= row_pos < len(exec_state.task_runs)):
@@ -2905,7 +3006,7 @@ class RouteExecutor:
         if not (0 <= row.task_index < len(route.tasks)):
             return
         task = route.tasks[row.task_index]
-        if task.task_kind == "dwell" or task.task_time is None:
+        if task.task_kind in ("dwell", "run") or task.task_time is None:
             return
         started = self._predecessor_finish_basis(exec_state, route, row_pos)
         if started is None:
@@ -2931,7 +3032,6 @@ class RouteExecutor:
         exec_state: RouteExecutionState,
         route: "Route",
         walk_position: int,
-        now: float,
     ) -> None:
         """Advance one walk-position: write `task_runs[walk_position].finished_at`,
         classify `delay_class`, and append the next walk task.
@@ -2942,14 +3042,20 @@ class RouteExecutor:
         (stop arrival, head-advance, covered-task advance, dwell-complete)
         routes through it so the three steps cannot drift. Idempotent: a
         walk-position whose `finished_at` is already set is a no-op.
-        `_record_delay_class` no-ops for `dwell` rows and tasks without
-        `task_time`.
+        `_record_delay_class` no-ops for `dwell` and `run` rows and for tasks
+        without `task_time`.
+
+        Callers pass no clock value: this call samples both clocks itself, so
+        the wall and operating readings of one finish are always taken at the
+        same moment and no caller can hand in a stale `now` (design_new.md
+        "`RouteRun.advance_walk_position(walk_position)`").
         """
         if not (0 <= walk_position < len(exec_state.task_runs)):
             return
         row = exec_state.task_runs[walk_position]
         if row.finished_at is not None:
             return
+        now = self._now()
         row.finished_at = now
         # The operating-clock reading of the same moment, so a duration
         # measured across this row never mixes the two clocks.

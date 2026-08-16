@@ -200,7 +200,11 @@ def test_run_task_completes_only_after_stopped_with_authority_released():
 
     assert finished is True
     assert controller.ops.service_stop_active is False  # consume_service_stop() ran
-    assert row.finished_at == 26.0
+    # Finished through `advance_walk_position(...)`, which samples both clocks
+    # itself — callers pass no clock value (design_new.md
+    # "`RouteRun.advance_walk_position(walk_position)`").
+    assert row.finished_at is not None
+    assert row.finished_at_operating is not None
     assert row.run_elapsed_seconds == 20.0  # unchanged by the final tick
 
 
@@ -245,4 +249,6 @@ def test_handle_path_completion_never_fires_for_a_run_task():
 
     assert calls == []  # enter_failed_runtime must never be called
     assert ok is True
-    assert exec_state.task_runs[1].finished_at == 30.0  # matched the stop, not the run
+    # Matched the stop, not the run. `advance_walk_position(...)` samples the
+    # clocks itself, so assert which row finished rather than pinning an instant.
+    assert exec_state.task_runs[1].finished_at is not None
