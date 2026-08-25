@@ -13,6 +13,7 @@
 import type { StateManager } from '../lib/state-manager';
 import { showToast } from '../lib/toast';
 import { showContextMenu, type ContextMenuItem } from '../lib/context-menu';
+import { copyIdButton } from '../lib/copy-id';
 import type { FullDataClient } from '../lib/layout-data-client';
 import {
   ConstructionPathfinder,
@@ -2480,6 +2481,7 @@ export class Editor {
                             <span class="entity-card-id">${train.id}</span>
                             <span class="entity-card-state">${controller?.state || 'unknown'}</span>
                         </div>
+                        ${copyIdButton(train.id, 'Train ID')}
                         <button class="edit-btn edit-train-btn" data-train-id="${train.id}">Edit</button>
                     </div>
                 </div>
@@ -2508,7 +2510,7 @@ export class Editor {
                         </div>
                         ${
                           hasSwitchId
-                            ? `<button class="edit-btn edit-switch-btn" data-switch-id="${track.switch_id}">Edit</button>`
+                            ? `${copyIdButton(track.switch_id, 'Switch ID')}<button class="edit-btn edit-switch-btn" data-switch-id="${track.switch_id}">Edit</button>`
                             : `<span class="text-muted text-xs">No switch entity</span>`
                         }
                     </div>
@@ -2537,6 +2539,7 @@ export class Editor {
                         <span class="entity-card-id">${signal.signal_id}</span>
                         <span class="entity-card-meta">→${signal.detection_direction}</span>
                     </div>
+                    ${copyIdButton(signal.signal_id, 'Signal ID')}
                     <button class="edit-btn edit-signal-btn" data-signal-id="${signal.signal_id}">Edit</button>
                 </div>
             </div>
@@ -2559,6 +2562,7 @@ export class Editor {
                             <span class="entity-card-id">${track.segment_id}</span>
                             <span class="entity-card-meta">geometry</span>
                         </div>
+                        ${copyIdButton(track.segment_id, 'Segment ID')}
                         <button class="edit-btn edit-segment-btn" data-segment-id="${track.segment_id}">Edit</button>
                     </div>
                 </div>
@@ -2581,6 +2585,7 @@ export class Editor {
                             <span class="entity-card-id">${track.block_section_id}</span>
                             <span class="entity-card-state" style="color: ${stateColor}">${block ? block.state : 'UNKNOWN'}</span>
                         </div>
+                        ${copyIdButton(track.block_section_id, 'Block ID')}
                         <button class="edit-btn edit-block-btn" data-block-id="${track.block_section_id}">Edit</button>
                     </div>
                 </div>
@@ -2604,6 +2609,7 @@ export class Editor {
                             <span class="entity-card-id">${track.station_id}</span>
                             ${platform && platform.name ? `<span class="entity-card-meta" style="color: var(--info-color)">${platform.name}</span>` : ''}
                         </div>
+                        ${copyIdButton(track.station_id, 'Platform ID')}
                         <button class="edit-btn edit-platform-btn" data-platform-id="${track.station_id}">Edit</button>
                     </div>
                 </div>
@@ -2631,6 +2637,7 @@ export class Editor {
                             <span class="entity-card-id">${group.station_id}</span>
                             ${group.name ? `<span class="entity-card-meta" style="color: var(--info-color)">${group.name}</span>` : ''}
                         </div>
+                        ${copyIdButton(group.station_id, 'Station ID')}
                         <button class="edit-btn edit-station-btn" data-station-id="${group.station_id}">Edit</button>
                     </div>
                 </div>

@@ -13,6 +13,9 @@
                                / .status-header-id / .status-header-name
                                / .status-header-ident / .status-header-role
                                / .status-sep
+     §11 Identifier + copy    — .id-copy-group / .copy-id-btn
+                               (used by every identity display, not just the
+                               status header — see frontend/src/lib/copy-id.ts)
 
    These are panel-language primitives — they are NOT feature-specific. Any
    editor or detail panel that needs a §11 status header, a §7 chip, or a
@@ -171,6 +174,66 @@
 
 .status-sep {
     color: var(--text-tertiary);
+}
+
+/* ---- Identifier + copy button ----
+   Pairs any identity display (.status-header-id, .entity-card-id, .tc-train-id)
+   with its copy button. The wrapper is what keeps the id's ellipsis working:
+   the clamp needs `min-width: 0` on every flex ancestor, so the group declares
+   it too and the button keeps its intrinsic width while the id gives way. */
+
+.id-copy-group {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+}
+
+/* The copy affordance itself. Deliberately smaller than the 28px §3 control
+   height: this is an inline *text* affordance riding next to an 11–14px
+   identifier inside a dense card, not a control-row button, and a 28px box
+   would set the row height off the button rather than off its own content.
+   `--radius-xs` is the token for "small controls inside cards" (§1).
+
+   Its resting state is transparent so the id reads as the content and the
+   button as chrome; the hover fill is an accent *tint* rather than a
+   surface swap because these sit on both --bg-dark (entity card) and
+   --bg-hover (status header), and a tint is the one treatment that reads
+   against both (§3 flat ghost, adapted). */
+.copy-id-btn {
+    flex: 0 0 auto;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background-color: transparent;
+    color: var(--text-tertiary);
+    border: none;
+    border-radius: var(--radius-xs);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    transition: color 0.15s, background-color 0.15s;
+}
+
+.copy-id-btn:hover {
+    background-color: rgba(var(--accent-rgb), 0.16);
+    color: var(--accent-hover);
+}
+
+.copy-id-btn:focus-visible {
+    outline: 1px solid var(--accent-color);
+    outline-offset: 1px;
+}
+
+/* Copied — the 1.2s checkmark flash, held in success green so the
+   acknowledgement is legible without a second glance at the toast. */
+.copy-id-btn-done,
+.copy-id-btn-done:hover {
+    color: var(--success-color);
+    background-color: rgba(var(--success-rgb), 0.16);
 }
 
 /* ---- §6 Status accent left-border helpers ----

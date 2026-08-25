@@ -6,6 +6,7 @@
 // Owned by the Editor (`new SwitchEditorHandler(this)`).
 
 import { showToast } from '../lib/toast';
+import { copyIdButton } from '../lib/copy-id';
 import type { EditorHost } from './types';
 import {
   renderAvailabilitySegment,
@@ -230,7 +231,10 @@ export class SwitchEditorHandler {
             <!-- §11 Status header — identity + state pill, dynamic accent. -->
             <div class="status-header ${accentClass}">
                 <div class="status-header-row">
-                    <div class="status-header-id font-mono" title="${switchData.switch_id}">${switchData.switch_id}</div>
+                    <div class="id-copy-group">
+                        <div class="status-header-id font-mono" title="${switchData.switch_id}">${switchData.switch_id}</div>
+                        ${copyIdButton(switchData.switch_id, 'Switch ID')}
+                    </div>
                     <span class="chip chip-state ${chipClass}">${stateText}</span>
                 </div>
                 <div class="status-header-ident">

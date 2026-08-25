@@ -854,8 +854,39 @@ export class SpeedProfileEditorHandler {
     return matches[0];
   }
 
+  /** The "x,y" tiles of a block, from the editor's cached track list. */
+  private _blockTiles(blockId: string): Set<string> {
+    const keys = new Set<string>();
+    for (const t of this.editor.cachedNetwork?.tracks || []) {
+      if (t.block_section_id === blockId) keys.add(`${t.x},${t.y}`);
+    }
+    return keys;
+  }
+
+  /** Every block on the layout, as menu rows for the measured-block picker. */
+  private _blockChoices(): Array<{ id: string; label: string }> {
+    const blocks = Object.values(this.editor.cachedNetwork?.blocks || {}) as any[];
+    return blocks
+      .map((b) => {
+        const id = String(b.block_id);
+        const name = String(b.name || '').trim();
+        const len = Number(b.length_cm) || 0;
+        return {
+          id,
+          label:
+            (name && name !== id ? `${name} — ${id}` : id) +
+            (len > 0 ? ` (${len} cm)` : ' (no length)'),
+        };
+      })
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }
+
   private _showSpeedCalibrationPanel(train: any): void {
     document.querySelector('.app-modal-overlay')?.remove();
+
+    const options = this._blockChoices()
+      .map((c) => `<option value="${escapeAttr(c.id)}">${escapeAttr(c.label)}</option>`)
+      .join('');
 
     const overlay = document.createElement('div');
     overlay.className = 'app-modal-overlay';
@@ -869,9 +900,13 @@ export class SpeedProfileEditorHandler {
           pull up again.</div>
           <div class="input-small-row mb-8">
             <label class="input-small-label input-small-label-inline" for="sp-cal-block">Measured block</label>
-            <input type="text" id="sp-cal-block" class="input-small-field input-small-field-compact" placeholder="block id">
+            <select id="sp-cal-block" class="input-small-field input-small-field-compact">
+              <option value="">Choose a block…</option>
+              ${options}
+            </select>
+            <button id="sp-cal-pick" class="btn btn-secondary btn-sm" title="Click the block on the layout">Pick on layout</button>
           </div>
-          <div class="text-muted text-xs mb-8" id="sp-cal-stretch">Name a block to see the stretch.</div>
+          <div class="text-muted text-xs mb-8" id="sp-cal-stretch">Choose a block to see the stretch.</div>
           <div id="sp-cal-progress" class="text-muted text-xs mb-8"></div>
         </div>
         <div class="app-modal-footer">
@@ -880,7 +915,8 @@ export class SpeedProfileEditorHandler {
         </div>
       </div>`;
 
-    const blockEl = overlay.querySelector('#sp-cal-block') as HTMLInputElement;
+    const blockEl = overlay.querySelector('#sp-cal-block') as HTMLSelectElement;
+    const pickBtn = overlay.querySelector('#sp-cal-pick') as HTMLButtonElement;
     const stretchEl = overlay.querySelector('#sp-cal-stretch') as HTMLElement;
     const progressEl = overlay.querySelector('#sp-cal-progress') as HTMLElement;
     const startBtn = overlay.querySelector('#sp-cal-start') as HTMLButtonElement;
@@ -888,23 +924,44 @@ export class SpeedProfileEditorHandler {
 
     // Resolving the stretch before Start is what lets the operator see which
     // two blocks the points currently lead to, rather than finding out by
-    // watching the locomotive run into one.
-    blockEl.onchange = async () => {
+    // watching the locomotive run into one. The same three blocks light up on
+    // the layout, so "which stretch is this?" is answered by looking at the map
+    // rather than by reading three ids.
+    const resolveStretch = async () => {
       const blockId = blockEl.value.trim();
       startBtn.disabled = true;
+      this.editor.highlighter.clear('reachable');
       if (!blockId) {
-        stretchEl.textContent = 'Name a block to see the stretch.';
+        stretchEl.textContent = 'Choose a block to see the stretch.';
+        this.editor.renderer?.requestRedraw();
         return;
       }
+      const lit = this._blockTiles(blockId);
       try {
         const s = await this.api.getCalibrationStretch(train.id, blockId);
         stretchEl.textContent =
           `Run-up / stopping room: ${s.outer_block_ids.join(' ↔ ')} · ` +
           `measured length ${s.length_cm} cm`;
         startBtn.disabled = false;
+        for (const outer of s.outer_block_ids) {
+          this._blockTiles(outer).forEach((k: string) => lit.add(k));
+        }
       } catch (err: any) {
+        // The measured block still lights up on a rejection: seeing where it
+        // sits is how the operator works out which end has no room.
         stretchEl.textContent = err.message || 'Cannot use that block';
       }
+      this.editor.highlighter.show({ keys: lit }, { channel: 'reachable' });
+      this.editor.renderer?.requestRedraw();
+    };
+    blockEl.onchange = resolveStretch;
+
+    // Picking on the layout is the same choice by a different gesture: the
+    // modal steps aside, the next click on a block fills the menu, and the
+    // stretch resolves exactly as if the block had been chosen from the list.
+    pickBtn.onclick = () => {
+      overlay.style.display = 'none';
+      this.editor.enterMode(this._buildMeasuredBlockPickMode(overlay, blockEl, resolveStretch));
     };
 
     startBtn.onclick = async () => {
@@ -928,10 +985,62 @@ export class SpeedProfileEditorHandler {
         window.clearInterval(this._calPoll);
         this._calPoll = null;
       }
+      this.editor.highlighter.clear('reachable');
+      this.editor.renderer?.requestRedraw();
       overlay.remove();
     };
     closeBtn.onclick = close;
     document.body.appendChild(overlay);
+  }
+
+  /**
+   * Layout-click mode for the measured block. The modal is hidden while it
+   * runs and restored by `onExit`, so both endings — a click on a block and
+   * an Esc through the mode manager — put the dialog back the same way.
+   */
+  private _buildMeasuredBlockPickMode(
+    overlay: HTMLElement,
+    blockEl: HTMLSelectElement,
+    onPicked: () => void
+  ): any {
+    const setStatus = (text: string) => {
+      const status = this.editor.$id?.('status-state');
+      if (status) status.textContent = text;
+    };
+    let picked: string | null = null;
+    return {
+      name: 'calibration-block-pick',
+      toolName: 'inspect',
+      cancelMessage: 'Measured block pick cancelled',
+      onEnter: () => setStatus('Calibration: click the block to measure. Esc to cancel.'),
+      onClick: async ({ gridPos }: any) => {
+        const track = (this.editor.cachedNetwork?.tracks || []).find(
+          (t: any) => t.x === gridPos.x && t.y === gridPos.y
+        );
+        if (!track?.block_section_id) {
+          showToast('That tile is not in a block — click a track inside one', 'info', 2500);
+          return true;
+        }
+        picked = String(track.block_section_id);
+        await this.editor.exitMode();
+        return true;
+      },
+      onExit: () => {
+        setStatus('Ready');
+        overlay.style.display = '';
+        if (!picked) return;
+        // A block the cached network did not carry when the menu was built
+        // still has to be selectable — add the row rather than drop the pick.
+        if (!Array.from(blockEl.options).some((o) => o.value === picked)) {
+          const opt = document.createElement('option');
+          opt.value = picked;
+          opt.textContent = picked;
+          blockEl.appendChild(opt);
+        }
+        blockEl.value = picked;
+        onPicked();
+      },
+    };
   }
 
   /** Poll the open pass and render its progress, then its commit controls. */

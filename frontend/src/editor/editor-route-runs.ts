@@ -19,6 +19,7 @@
 // Owned by the Editor (`new RouteRunEditorHandler(this)`).
 
 import { showToast } from '../lib/toast';
+import { copyIdButton } from '../lib/copy-id';
 import type { EditorHost } from './types';
 import { formatBlockDirection, validatePriorityInput, showConfirmModal } from '../lib/helpers';
 
@@ -186,7 +187,10 @@ export class RouteRunEditorHandler {
     const headerHtml = `
             <div class="status-header accent-${accent}">
                 <div class="status-header-row">
-                    <div class="status-header-id font-mono" title="${this._esc(run.train_id)}">${this._esc(run.train_id)}</div>
+                    <div class="id-copy-group">
+                        <div class="status-header-id font-mono" title="${this._esc(run.train_id)}">${this._esc(run.train_id)}</div>
+                        ${copyIdButton(run.train_id, 'Train ID')}
+                    </div>
                     <span class="chip chip-state chip-${accent}">${this._esc(display)}</span>
                 </div>
                 <div class="status-header-ident">

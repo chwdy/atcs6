@@ -5,6 +5,7 @@
 // (`new PlatformEditorHandler(this)` / `new StationGroupEditorHandler(this)`).
 
 import { showToast } from '../lib/toast';
+import { copyIdButton } from '../lib/copy-id';
 import type { EditorHost } from './types';
 import {
   renderTileList,
@@ -74,7 +75,10 @@ export class PlatformEditorHandler {
                 <!-- §11 Status header — identity + availability pill, dynamic accent. -->
                 <div class="status-header ${accentClass}">
                     <div class="status-header-row">
-                        <div class="status-header-id font-mono" title="${escAttr(platformId)}">${platformId}</div>
+                        <div class="id-copy-group">
+                            <div class="status-header-id font-mono" title="${escAttr(platformId)}">${platformId}</div>
+                            ${copyIdButton(platformId, 'Platform ID')}
+                        </div>
                         ${stateChip}
                     </div>
                     <input type="text" id="platform-name-input" class="status-header-name-input"
@@ -509,6 +513,7 @@ export class StationGroupEditorHandler {
                         <span class="entity-card-id">${station.station_id}</span>
                         <span class="entity-card-meta" style="color: var(--info-color)">${memberIds.length} platform${memberIds.length === 1 ? '' : 's'}</span>
                     </div>
+                    ${copyIdButton(station.station_id, 'Station ID')}
                 </div>
 
                 <label class="property-label">Name</label>

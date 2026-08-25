@@ -15,6 +15,7 @@
 // Owned by the Editor (`new SegmentEditorHandler(this)`).
 
 import { showToast } from '../lib/toast';
+import { copyIdButton } from '../lib/copy-id';
 import type { EditorHost } from './types';
 import {
   renderTileList,
@@ -208,7 +209,10 @@ export class SegmentEditorHandler {
                      buried in a property field. -->
                 <div class="status-header ${accentClass}">
                     <div class="status-header-row">
-                        <div class="status-header-id font-mono" title="${escapeAttr(segmentId)}">${segmentId}</div>
+                        <div class="id-copy-group">
+                            <div class="status-header-id font-mono" title="${escapeAttr(segmentId)}">${segmentId}</div>
+                            ${copyIdButton(segmentId, 'Segment ID')}
+                        </div>
                         <span class="chip chip-state ${chipClass}">${stateText}</span>
                     </div>
                     <input type="text" id="segment-name-input" class="status-header-name-input"

@@ -4,6 +4,7 @@
 // Behavior is unchanged. Owned by the Editor (`new SignalEditorHandler(this)`).
 
 import { showToast } from '../lib/toast';
+import { copyIdButton } from '../lib/copy-id';
 import { applyStructuralLock } from '../lib/helpers';
 import type { EditorHost } from './types';
 
@@ -71,7 +72,10 @@ export class SignalEditorHandler {
                     <!-- §11 Status header — identity + aspect pill, dynamic accent. -->
                     <div class="status-header ${accentClass}">
                         <div class="status-header-row">
-                            <div class="status-header-id font-mono" title="${signal.signal_id}">${signal.signal_id}</div>
+                            <div class="id-copy-group">
+                                <div class="status-header-id font-mono" title="${signal.signal_id}">${signal.signal_id}</div>
+                                ${copyIdButton(signal.signal_id, 'Signal ID')}
+                            </div>
                             <span class="chip chip-state ${chipClass}">${state}</span>
                         </div>
                         <div class="status-header-ident">
@@ -234,7 +238,10 @@ export class SignalEditorHandler {
             <!-- §11 Status header — identity + aspect pill, dynamic accent. -->
             <div class="status-header ${accentClass}" id="signal-status-header">
                 <div class="status-header-row">
-                    <div class="status-header-id font-mono" title="${signal.signal_id}">${signal.signal_id}</div>
+                    <div class="id-copy-group">
+                        <div class="status-header-id font-mono" title="${signal.signal_id}">${signal.signal_id}</div>
+                        ${copyIdButton(signal.signal_id, 'Signal ID')}
+                    </div>
                     <span class="chip chip-state ${chipClass}" id="signal-state-chip">${stateText}</span>
                 </div>
                 <div class="status-header-ident">

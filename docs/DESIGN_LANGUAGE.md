@@ -1263,7 +1263,10 @@ white-space: nowrap;
 min-width: 0;   /* required on flex children — without it the cell ignores overflow */
 ```
 
-Pair with `title="${full string}"` so the value stays reachable.
+Pair with `title="${full string}"` so the value stays reachable — and, on a
+canonical identity display, with a copy button (see [§11 Copy button on an
+identifier](#copy-button-on-an-identifier)): hovering recovers the tail for
+*reading*, but the user usually wants it for *carrying*.
 
 **Human-readable display names** (route names, station names, anything
 written for humans to *read*): wrap to multiple lines instead. The
@@ -1491,6 +1494,62 @@ For an alert state, layer a horizontal gradient wash over the bg:
 `linear-gradient(90deg, rgba(232, 63, 91, 0.10), var(--bg-hover) 60%)`
 turns the emergency state into a tinted but still readable block.
 References: `.tc-status-headline`, `.tc-section-task`.
+
+### Copy button on an identifier
+
+Every canonical identity display — the id in a status header, in an entity
+card, in a train-control headline — carries a copy button immediately to its
+right. Entity ids are not read so much as *carried*: into a filter box, a bug
+report, an API call. They clamp to an ellipsis (see [§5 Overflow: identifiers
+vs names](#overflow-identifiers-vs-names)), so the differentiating tail is
+exactly the part hardest to retype by eye.
+
+Wrap the id and its button in `.id-copy-group` and call
+`copyIdButton(id, 'Segment ID')` from
+[lib/copy-id.ts](../frontend/src/lib/copy-id.ts). The wrapper is load-bearing:
+the clamp needs `min-width: 0` on every flex ancestor, so the group declares it
+and the button keeps its intrinsic width while the id gives way.
+
+```html
+<div class="id-copy-group">
+    <div class="status-header-id font-mono" title="${id}">${id}</div>
+    ${copyIdButton(id, 'Segment ID')}
+</div>
+```
+
+Three rules this button breaks on purpose, all for the same reason — it is an
+inline *text* affordance riding next to an 11–14px identifier, not a control-row
+button:
+
+- **20px square, not the §3 28px control height.** A 28px box inside a dense
+  entity card sets the row height off the button instead of off its content.
+  Radius is `--radius-xs`, the §1 token for small controls inside cards.
+- **Hover is an accent tint, not a surface swap.** These sit on both
+  `--bg-dark` (entity card) and `--bg-hover` (status header); a
+  `rgba(var(--accent-rgb), 0.16)` tint is the one treatment that reads against
+  both, where the §3 flat ghost's `--bg-hover` fill would vanish on the header.
+- **Resting state is transparent with `--text-tertiary`.** The id is the
+  content; the button is chrome, and only steps forward on hover.
+
+Acknowledgement is doubled on purpose: the glyph flips to `ti-copy-check` in
+`--success-color` for 1.2s (local — answers "did *this* button fire?") and a
+toast names the value (answers "*which* id did I just take?" when several are
+on screen).
+
+Copying must never also activate whatever the id sits inside. The single
+delegated handler in `copy-id.ts` listens on `document` in the **capture**
+phase, so `stopPropagation()` cuts the event off before it reaches the
+clickable card or row below. Panels wire nothing themselves — they rebuild
+their `innerHTML` on every poll, and a per-panel handler would need re-binding
+after each render.
+
+Reference: `.id-copy-group` / `.copy-id-btn` in
+[components/status-blocks.css](../static/css/components/status-blocks.css).
+
+Not every appearance of an id gets a button. **List rows do not** — a list
+exists to navigate into the detail panel, and the detail panel's identity
+display is where the copy lives. A button per row is clutter that competes with
+the row's own click target.
 
 ### Disclosure (collapsible card)
 

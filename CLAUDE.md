@@ -8,6 +8,16 @@ This file collects directives for working in this repo. Every rule below is glob
 - Other files (code, current docs, implementation index) follow their own conventions.
 - "Running Python in this repo" applies to every Python invocation.
 - "Browser preview" applies whenever you use the browser preview tools.
+- "How to communicate" applies to every message, doc, comment, and commit you write.
+
+## How to communicate
+
+Say what a thing does in plain words. Do not invent a short label for an idea and then spend a paragraph explaining what the label means — if a term needs a paragraph to decode, the term is wrong, so write the plain description instead. A reader should never have to hold a private glossary in their head to follow you.
+
+- **No buzzwords, no coined jargon.** Words like "preamble," "fuse," "integrate all trains," "barrier" (as a coined tick term) hide meaning behind a label. Replace each with what actually happens: "the first step of the tick," "compare the calculated position against the detector reading and make them agree," "calculate every train's new position before any train plans."
+- **The explanation is the writing, not a footnote to it.** If you catch yourself writing a term and then a sentence that translates it, delete the term and keep the translation.
+- **Real identifiers are allowed, defined once, plainly.** A word that names actual code — a field, method, class, or an established project concept — may be used, but give it a one-line plain-English meaning the first time it appears (for example: "the span — the stretch of track from the back of the last car to the front of the loco"). This is the only kind of "term" permitted, and only because it points at something concrete in the code.
+- **Short beats clever.** Prefer the sentence a junior engineer understands on first read over the compact phrase that sounds precise but has to be unpacked.
 
 ## Running Python in this repo
 

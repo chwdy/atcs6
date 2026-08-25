@@ -1,3 +1,12 @@
+## How to communicate
+
+Say what a thing does in plain words. Do not invent a short label for an idea and then spend a paragraph explaining what the label means — if a term needs a paragraph to decode, the term is wrong, so write the plain description instead. This applies to every message, doc, code comment, and commit message.
+
+- **No buzzwords, no coined jargon.** Words like "preamble," "fuse," "integrate all trains," "barrier" hide meaning behind a label. Replace each with what actually happens: "the first step of the tick," "compare the calculated position against the detector reading and make them agree," "calculate every train's new position before any train plans."
+- **The explanation is the writing, not a footnote to it.** If you write a term and then a sentence that translates it, delete the term and keep the translation.
+- **Real identifiers are allowed, defined once, plainly.** A word that names actual code — a field, method, class, or established project concept — may be used, but give it a one-line plain-English meaning the first time it appears. That is the only kind of "term" permitted, and only because it points at something concrete in the code.
+- **Short beats clever.** Prefer the sentence a junior engineer understands on first read.
+
 ## Project Workflow
 
 - Treat the `README.md` "Getting started" and "Run the verification suite"

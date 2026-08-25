@@ -11,6 +11,7 @@
 import { stateManager } from '../lib/state-manager';
 import { formatSpeedReadout, formatATOEta, formatSimClock, middleTruncate } from './train-format';
 import { showToast } from '../lib/toast';
+import { copyIdButton } from '../lib/copy-id';
 import type { EditorHost } from './types';
 import { showConfirmModal, getTrackExits, getNeighborPosition, formatDuration, formatDistanceCm } from '../lib/helpers';
 
@@ -740,7 +741,10 @@ export class TrainEditorHandler {
             <div class="tc-panel train-control-panel train-control-panel-unidentified" data-train-id="${trainId}">
                 <section class="tc-section tc-section-task">
                     <header class="tc-status-headline">
-                        <span class="tc-train-id">${trainId}</span>
+                        <span class="id-copy-group">
+                            <span class="tc-train-id">${trainId}</span>
+                            ${copyIdButton(trainId, 'Train ID')}
+                        </span>
                         <span class="tc-state-badge">UNIDENTIFIED</span>
                     </header>
                     <div class="banner banner-warn tc-banner">
@@ -1232,7 +1236,10 @@ export class TrainEditorHandler {
                 <!-- ZONE 1: TASK -->
                 <section class="tc-section tc-section-task ${obcStateClass}">
                     <header class="tc-status-headline">
-                        <span class="tc-train-id">${trainId}</span>
+                        <span class="id-copy-group">
+                            <span class="tc-train-id">${trainId}</span>
+                            ${copyIdButton(trainId, 'Train ID')}
+                        </span>
                         <span class="tc-state-badge train-state-display ${trainStateClass}">${trainState.toUpperCase().replace('_', ' ')}</span>
                         <span id="obc-ato-running-badge" class="tc-running-badge ${atoRunning ? '' : 'hidden'}">▶ ATO</span>
                         <span id="train-eb-badge" class="tc-eb-badge tc-status-emergency ${emergencyActive ? '' : 'hidden'}">EB ACTIVE</span>

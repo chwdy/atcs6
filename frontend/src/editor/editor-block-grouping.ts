@@ -21,6 +21,7 @@
 // no feed of its own.
 
 import { showToast } from '../lib/toast';
+import { copyIdButton } from '../lib/copy-id';
 import type { EditorHost } from './types';
 import { blockColorCss } from '../lib/block-color';
 import {
@@ -272,6 +273,7 @@ export class BlockGroupingEditorHandler {
                         <span class="entity-card-id">${escAttr(blockId)}</span>
                         <span class="entity-card-meta">${memberIds.length} segment${memberIds.length === 1 ? '' : 's'}</span>
                     </div>
+                    ${copyIdButton(blockId, 'Block ID')}
                 </div>
 
                 <label class="property-label">Name</label>
