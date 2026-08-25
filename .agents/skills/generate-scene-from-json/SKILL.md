@@ -1,6 +1,6 @@
 ---
 name: generate-scene-from-json
-description: Bake a saved layout JSON (the editor's `layouts/*.json` save format, with a top-level `snapshot`) into a demo_6-style Python scene module by running this repo's `json_to_scene.py` baker. Use this whenever the user wants to "generate a scene from json", "convert a layout to a .py scene", "bake layouts/X.json", "turn a saved layout into a demo_* scene", or otherwise produce a runnable `demo_*`-style scene file (TILES / SWITCHES / STATIONS / BLOCKS / TUNNELS lists plus `create_comprehensive_demo`) from a saved layout. Reach for it even when the user just says "bake the layout" or names a `layouts/*.json` file and asks for a scene — the baker already exists and is round-trip-verified, so do NOT hand-write a new converter. Do NOT trigger for: saving/exporting a layout FROM the editor (that direction produces the JSON), loading a layout at runtime (`RailwayNetwork.from_dict` already does that), hand-editing an existing `demo_*.py` scene, or generic JSON parsing/transforms unrelated to scenes.
+description: Bake the editor's saved layout JSON into a runnable demo-style Python scene with this repo's json_to_scene.py converter, then verify the result. Use for requests to generate, convert, or bake a saved layout into a scene module. Do not use for editor exports, runtime JSON loading, hand-editing an existing scene, or unrelated JSON transformations.
 ---
 
 # Generate a scene from a layout JSON
