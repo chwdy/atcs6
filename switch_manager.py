@@ -152,10 +152,15 @@ class SwitchManager:
         expanded = self._expand_flank_requests(requests, path_id, train_id)
 
         recorded: List[SwitchLockRequest] = []
+        # SwitchClaimKey insertion journal (design_new.md "SwitchManager"): only
+        # the claims THIS call newly inserted enter it, so a rollback releases
+        # only what this call added. An idempotently pre-existing claim — a
+        # re-touch of a lock this path already holds — must survive rollback.
+        inserted: List[SwitchLockRequest] = []
         for req in expanded:
             switch = self._switch_registry.get(req.switch_id)
             if switch is None:
-                self._rollback(recorded, path_id)
+                self._rollback(inserted, path_id)
                 return LockAcquireResult(
                     success=False,
                     failed_switch_id=req.switch_id,
@@ -170,7 +175,7 @@ class SwitchManager:
             # fallback (which used to leave Switch.lock_routes empty and
             # break later route-aware acquires on the same switch).
             if req.source_switch_id is None and req.route is None:
-                self._rollback(recorded, path_id)
+                self._rollback(inserted, path_id)
                 return LockAcquireResult(
                     success=False,
                     failed_switch_id=req.switch_id,
@@ -184,12 +189,19 @@ class SwitchManager:
                 manual_override=manual_override,
                 route=req.route,
             )
+            # Whether a claim keyed (path_id, source_switch_id) already exists on
+            # this switch BEFORE the acquire. `acquire_lock` only inserts when the
+            # key is absent (a present key with a different state is rejected), so
+            # `was_present` marks an idempotent re-touch: it must not enter the
+            # rollback journal, and a failure later in this segment must not
+            # release it (design_new.md "SwitchManager").
+            was_present = (path_id, req.source_switch_id) in switch.locks
             # Fix #23 (design_new.md line 617): SwitchManager wraps the entity
             # bool into a structured LockAcquireResult so manager-level callers
             # always unpack .success. The entity returns bool for unit-test compat.
             ok = switch.acquire_lock(claim)
             if not ok:
-                self._rollback(recorded, path_id)
+                self._rollback(inserted, path_id)
                 return LockAcquireResult(
                     success=False,
                     failed_switch_id=req.switch_id,
@@ -206,13 +218,14 @@ class SwitchManager:
                     int(req.locked_state), manual_override=manual_override
                 )
                 if not ok_throw:
-                    # Roll back this lock and any earlier ones acquired in
-                    # this segment so the request is fully atomic.
-                    switch.release_lock(
-                        path_id=path_id,
-                        source_switch_id=req.source_switch_id,
-                    )
-                    self._rollback(recorded, path_id)
+                    # Roll back only what this call inserted so the request is
+                    # atomic without releasing an idempotently pre-existing claim.
+                    if not was_present:
+                        switch.release_lock(
+                            path_id=path_id,
+                            source_switch_id=req.source_switch_id,
+                        )
+                    self._rollback(inserted, path_id)
                     return LockAcquireResult(
                         success=False,
                         failed_switch_id=req.switch_id,
@@ -238,11 +251,12 @@ class SwitchManager:
             )
             if fail_reason is not None:
                 self._emit_throw_diagnostic(req.switch_id, fail_reason)
-                switch.release_lock(
-                    path_id=path_id,
-                    source_switch_id=req.source_switch_id,
-                )
-                self._rollback(recorded, path_id)
+                if not was_present:
+                    switch.release_lock(
+                        path_id=path_id,
+                        source_switch_id=req.source_switch_id,
+                    )
+                self._rollback(inserted, path_id)
                 return LockAcquireResult(
                     success=False,
                     failed_switch_id=req.switch_id,
@@ -254,6 +268,10 @@ class SwitchManager:
             # `network.switches[switch_id]`) and read `Switch.locks` directly,
             # so there is no Track-side mirror to maintain here.
             recorded.append(req)
+            if not was_present:
+                # Newly inserted this call — journal it so a later rollback in
+                # this segment releases it while leaving idempotent claims intact.
+                inserted.append(req)
         return LockAcquireResult(
             success=True,
             locked_switch_ids=[r.switch_id for r in recorded],
