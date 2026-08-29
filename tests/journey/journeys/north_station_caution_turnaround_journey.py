@@ -1,5 +1,5 @@
-"""Journey: pin the direction-aware CAUTION clear after a north-branch
-turnaround.
+"""Journey: pin that a cab flip does NOT retire a CAUTION margin — the
+reevaluator is occupancy-only — after a north-branch turnaround.
 
 Setup (see NorthStationCautionTurnaroundScene): a single multi-stop
 route drives the demo train origin -> North Station -> BLOCK_BRANCH_2
@@ -15,13 +15,14 @@ End-state contract (design_new.md _reevaluate_caution_blocks() section):
     whose train's travel_direction is also S (same as protection
     direction) — the train is still moving away from BRANCH_2's
     protection chain, so CAUTION is preserved.
-  * BLOCK_BRANCH_1 (3,1) is FREE. Its CAUTION (exit_edge=N) was set
-    when the train first arrived going north. After the cab flip the
-    forward chain from BRANCH_1 in direction N still lands on the
-    OCCUPIED station block, but the train there now has
-    travel_direction=S — the opposite of BRANCH_1's protection
-    direction. The direction-aware reevaluation clears the stale
-    CAUTION.
+  * BLOCK_BRANCH_1 (3,1) stays CAUTION with exit_edge=N. Its CAUTION was
+    set when the train first passed through going north. After the cab flip
+    the forward chain from BRANCH_1 in direction N still lands on the
+    OCCUPIED station block, so the reevaluator — which reads only occupancy
+    and connectivity, never the occupant's travel_direction — preserves it.
+    The margin retires only when the train's new path reserves BRANCH_1 the
+    other way (the Opposing-traversal caution clear in reserve_blocks_for_path),
+    which this route never does.
 """
 
 from enums import BlockState, TrainState
@@ -70,23 +71,28 @@ def _assert_branch_2_caution_south():
     return check
 
 
-def _assert_branch_1_cleared():
-    """BRANCH_1 must be FREE — its stale northbound CAUTION should have
-    been cleared by the direction-aware reevaluator once the train's cab
-    flipped to south at the turnaround."""
+def _assert_branch_1_caution_preserved():
+    """BRANCH_1 must STAY CAUTION with exit_edge=N after the turnaround.
+
+    Its northbound margin was set when the train first passed through going
+    north. The reevaluator reads only occupancy and connectivity — never the
+    occupant's `travel_direction` — so a cab flip does NOT retire the margin
+    (design_new.md: the reevaluator's keep test is occupancy alone). The margin
+    retires only when the train's new path reserves BRANCH_1 the other way (the
+    Opposing-traversal caution clear in `reserve_blocks_for_path`) or the
+    tail-vacate cascade clears it as the train leaves the protected chain —
+    neither has happened here, so the margin correctly persists."""
 
     def check(s):
         block = s.network.blocks.get(_BRANCH_1)
         assert block is not None
-        assert block.caution is None, (
-            f"{_BRANCH_1} caution should have been cleared by the "
-            f"direction-aware reevaluator after the turnaround, but "
-            f"caution.exit_edge={block.caution.exit_edge!r} "
-            f"(station-block train travel_direction is S, opposite the "
-            f"recorded N protection direction)"
+        assert block.caution is not None, (
+            f"{_BRANCH_1} caution should be PRESERVED after the cab flip — the "
+            f"reevaluator no longer clears on reversal — but caution=None"
         )
-        assert block.state == BlockState.FREE, (
-            f"{_BRANCH_1} state={block.state.value}, expected FREE"
+        assert block.caution.exit_edge == "N", (
+            f"{_BRANCH_1} caution.exit_edge={block.caution.exit_edge!r}, "
+            f"expected 'N'"
         )
 
     return check
@@ -105,7 +111,7 @@ def build_north_station_caution_turnaround_journey(
                     assert_state(TrainState.READY),
                     assert_cab("B"),
                     _assert_branch_2_caution_south(),
-                    _assert_branch_1_cleared(),
+                    _assert_branch_1_caution_preserved(),
                 ],
             ),
         ],

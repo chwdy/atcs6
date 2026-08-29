@@ -1,18 +1,14 @@
-"""Pin the direction-aware CAUTION clear after a north-branch turnaround.
+"""Pin that a cab flip does NOT retire a CAUTION margin after a north-branch
+turnaround: `block_manager.py._reevaluate_caution_blocks()` reads only occupancy
+and connectivity, never the occupant's `travel_direction`.
 
-Regression for block_manager.py _reevaluate_caution_blocks() and its new
-helper _forward_train_has_reversed(): when the OCCUPIED forward neighbor
-of a CAUTION block holds a train whose current travel_direction is the
-opposite of the recorded caution.exit_edge, the protection chain is stale
-(train has flipped its cab and is no longer moving away in the protect
-direction), so CAUTION must clear instead of being preserved.
-
-Without the direction-aware clear, the end-of-turnaround end-state
-showed BOTH BLOCK_BRANCH_1 (south of the station) and BLOCK_BRANCH_2
-(north of the station) as CAUTION at once — visually wrong because the
-"protection" on BRANCH_1 was no longer protecting anything (the train
-in the station block had reversed cab and was now moving away from
-BRANCH_1, not toward it).
+Per design_new.md, a stale margin is retired only when the reversed train's new
+path reserves the block the other way (the Opposing-traversal caution clear in
+`reserve_blocks_for_path`) or the ordinary tail-vacate cascade clears it as the
+train leaves the protected chain — not on the cab flip itself. So at the end of
+the turnaround BLOCK_BRANCH_1's northbound CAUTION is preserved (the return route
+never reserves it back), while BLOCK_BRANCH_2's southbound CAUTION is preserved
+for the ordinary reason (an OCCUPIED forward block).
 
 Parametrized over three playback speeds (dt = 0.1 / 0.2 / 0.3).
 """

@@ -748,6 +748,21 @@ class BlockManager:
             block = self._block_registry[block_id]
             traversal = directions[block_id]
             block.reserve_for_path(path_id, train_id, traversal.exit_edge)
+            # Opposing-traversal caution clear (design_new.md "Opposing-traversal
+            # caution clear"): a block is a switch-free two-ended run, so this
+            # reserved exit_edge either equals block.caution.exit_edge (the
+            # reserving train traverses the way the departing train went — keep
+            # the margin, which the CAUTION_SPEED_LIMIT_KMH cap exists for) or is
+            # the block's other end (it traverses away from the protected chain,
+            # whose margin now sits behind it and restricts nothing ahead — retire
+            # it, so the computed state becomes RESERVED). No _reevaluate_caution
+            # cascade is needed: clearing one block's caution changes no block's
+            # occupied_by, which is the only thing the reevaluator's keep test reads.
+            if (
+                block.caution is not None
+                and traversal.exit_edge != block.caution.exit_edge
+            ):
+                block.caution = None
             self._index_add_reserved(block_id, train_id)
             self._record_history(
                 block_id,
@@ -980,9 +995,13 @@ class BlockManager:
                 block.caution = None
                 cleared.append(block.block_id)
                 continue
-            if self._forward_train_has_reversed(next_block, chain_entry_edge):
-                block.caution = None
-                cleared.append(block.block_id)
+            # An OCCUPIED forward block keeps this CAUTION: a train is still
+            # standing in the protected chain. Retiring a margin the protecting
+            # train has reversed away from is NOT this walk's job — that is the
+            # Opposing-traversal caution clear in reserve_blocks_for_path
+            # (design_new.md: the reevaluator reads no train, controller, or
+            # travel_direction state; occupancy of the one forward block is the
+            # whole test).
 
         for block_id in cleared:
             self._record_history(
@@ -992,53 +1011,6 @@ class BlockManager:
                 registry[block_id].state,
                 None,
             )
-
-    def _forward_train_has_reversed(
-        self, next_block: Block, chain_entry_edge: str
-    ) -> bool:
-        """Return True when the OCCUPIED ``next_block`` holds a train whose
-        current ``travel_direction`` points back out through the protection
-        chain's entry edge at that block (the train has flipped its cab and
-        is heading back toward the CAUTION block).
-
-        ``chain_entry_edge`` is the edge through which the connectivity walk
-        actually entered ``next_block`` (per design_new.md line 842): for a
-        straight adjacent block this is the side facing the CAUTION block, but
-        through switch legs and curves it is the entry edge the walk used, not
-        the geometric opposite of the CAUTION block's exit edge. The CAUTION
-        block's protection chain was built assuming the train ahead is still
-        moving away from that entry edge; if the train's travel direction now
-        equals that entry edge, it is heading back through the chain and the
-        protection is stale.
-
-        Returns False (preserve current keep-caution behaviour) whenever the
-        train, its controller, or its travel direction cannot be resolved —
-        the call must never escalate to a clear without positive evidence
-        of reversal.
-        """
-        train_id = next_block.occupied_by
-        if train_id is None:
-            return False
-        if self.simulation_controller is None:
-            return False
-        # design_new.md line 819: resolve the occupant through the canonical
-        # get_or_create_controller accessor (an OCCUPIED block's occupant always
-        # has a controller, so this never spuriously creates one).
-        get_or_create_controller = getattr(
-            self.simulation_controller, "get_or_create_controller", None
-        )
-        if get_or_create_controller is None:
-            return False
-        controller = get_or_create_controller(train_id)
-        if controller is None:
-            return False
-        travel_direction = getattr(controller, "travel_direction", None)
-        if not isinstance(travel_direction, str) or not travel_direction:
-            return False
-        entry_edge = chain_entry_edge.upper() if chain_entry_edge else None
-        if entry_edge not in self._EDGE_OFFSETS:
-            return False
-        return travel_direction.upper() == entry_edge
 
     # ------------------------------------------------------------------
     # Topology walk helper for directional caution reevaluation
