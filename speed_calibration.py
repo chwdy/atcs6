@@ -600,7 +600,7 @@ class SpeedCalibration:
     def tick_train(self, train_id: str) -> None:
         """Step `c9e1` — advance this train's open auto pass.
 
-        Called by `SimulationController._update_train(train, delta_seconds)`
+        Called by `SimulationController._act_train(train, delta_seconds)`
         immediately before `TrainController.tick(...)` begins for the
         calibration train, ahead of that same tick's operator-command
         processing slot (design_new.md "Speed calibration", Where it runs), so

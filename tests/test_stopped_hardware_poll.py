@@ -217,7 +217,7 @@ def test_a_stopped_pass_does_not_consume_a_pending_latch():
     """
     sim, train, controller = _stopped_train_carrying_a_latch()
 
-    sim._commit_train_phase3(controller, train, observing_only=True)
+    sim._commit_train_observe(controller, train, observing_only=True)
 
     assert controller.route_hooks.phase_latches.path_cancel_request is not None
 
@@ -226,9 +226,9 @@ def test_the_resumed_pass_consumes_the_latch_the_stopped_pass_kept():
     """The latch keeps its payload across the stop and is consumed by the first
     pass of the resumed session whose gate holds — it is deferred, not lost."""
     sim, train, controller = _stopped_train_carrying_a_latch()
-    sim._commit_train_phase3(controller, train, observing_only=True)
+    sim._commit_train_observe(controller, train, observing_only=True)
 
-    sim._commit_train_phase3(controller, train)
+    sim._commit_train_act(controller, train)
 
     assert controller.route_hooks.phase_latches.path_cancel_request is None
 
@@ -247,7 +247,7 @@ def test_a_stopped_pass_reaches_no_arrival_verdict():
     spy = _ArrivalSpy()
     sim.path_dispatcher = spy
 
-    sim._commit_train_phase3(controller, train, observing_only=True)
+    sim._commit_train_observe(controller, train, observing_only=True)
 
     assert spy.completion_calls == 0
 

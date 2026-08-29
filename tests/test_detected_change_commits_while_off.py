@@ -75,8 +75,9 @@ def test_tail_vacate_with_an_edge_still_takes_caution():
 
 
 class _RecordingDispatcher:
-    """Minimal stand-in for the Phase-3 collaborator surface `_update_train`
-    touches: the progress-report drain (3a) and the completion check (3b)."""
+    """Minimal stand-in for the Observe-commit collaborator surface
+    `_observe_train` touches: the progress-report drain (3e9b) and the
+    completion check (9d8b)."""
 
     def __init__(self):
         self.reports = []
@@ -122,7 +123,7 @@ def test_off_train_with_a_detected_block_change_runs_phase_3():
     controller.physics_sync.queued_progress_reports.append(object())
     sim._detected_change_train_ids = {"T1"}
 
-    sim._update_train(train, 0.1)
+    sim._observe_train(train, 0.1)
 
     assert dispatcher.reports, "Phase 3 must drain the report Step 0 produced"
     assert controller.physics_sync.queued_progress_reports == []
@@ -133,7 +134,7 @@ def test_off_train_with_no_detected_block_change_still_skips_phase_3():
     controller.physics_sync.queued_progress_reports.append(object())
     sim._detected_change_train_ids = set()
 
-    sim._update_train(train, 0.1)
+    sim._observe_train(train, 0.1)
 
     assert dispatcher.reports == []
     assert len(controller.physics_sync.queued_progress_reports) == 1

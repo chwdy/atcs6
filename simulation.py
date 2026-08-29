@@ -356,16 +356,18 @@ class SimulationController(SwitchOutputOwner):
     def update(self, delta_seconds: float) -> None:
         """Advance the simulation by one tick.
 
-        Per design_new.md per-train tick transaction:
+        Per design_new.md per-train tick transaction (Observe, Plan, Action):
           1. Advance simulation_time.
-          2. RouteExecutor.update(delta_seconds) refreshes route-managed
-             scheduling state (does NOT iterate trains).
-          3. RouteExecutor.order_runnable_trains(...) returns the ordered
-             runnable train ids. SimulationController owns running each
-             train transaction in that order.
-          4. For each ordered train, run Phase 1 (RouteExecutor planning,
-             skipped while controller is OFF) followed by Phase 2 + Phase 3
-             via _update_train(...).
+          2. Step 0 reads every block's detector once; RouteExecutor.update(...)
+             refreshes route-managed scheduling state; order_runnable_trains(...)
+             returns the ordered runnable train ids.
+          3. OBSERVE (batch): for every train, integrate movement and commit
+             occupancy via _observe_train(...), before any train plans, so each
+             train plans against where every other train really is.
+          4. For each ordered train, PLAN (RouteExecutor planning, skipped while
+             controller is OFF) then ACTION (command drain, control, voltage, and
+             teardown via _act_train(...)) — one train fully commits before the
+             next train's Plan.
           5. After all trains have committed, refresh signals from blocks.
         """
         self.simulation_time += delta_seconds
@@ -426,34 +428,49 @@ class SimulationController(SwitchOutputOwner):
             # plus the runnable order, and Phase-1 step 66aa consumes them.
             self.route_executor.build_tick_coordination(ordered_train_ids)
 
+            # === OBSERVE (all trains, one batch) ===
+            # Before any train plans, work out where every train is and write it
+            # down: integrate movement over the elapsed time, then commit
+            # occupancy and recognize a normal stop arrival. Committing every
+            # train's position before planning means each train plans against
+            # where every other train really is, not a stale guess for the trains
+            # ordered later this tick (design_new.md Core Runtime Loop, step 2).
+            for train_id in ordered_train_ids:
+                train = self.network.trains.get(train_id)
+                if train is None:
+                    continue
+                self._observe_train(train, delta_seconds)
+                # A fatal physical-entry conflict during an Observe commit freezes
+                # the runtime "at the moment of detection" (design_new.md `b9a2`):
+                # abort the rest of this tick so all state is left as it was for
+                # inspection until the operator releases the runtime failure.
+                if self.runtime_halted:
+                    return
+            # Observe moved heads and committed occupancy — invalidate before Plan.
+            net.bump_lookahead_world_version()
+
+            # === PLAN then ACTION, one train at a time in priority order ===
+            # One train's Plan and Action fully commit before the next train's
+            # Plan begins (design_new.md Core Runtime Loop, step 4).
             for train_id in ordered_train_ids:
                 train = self.network.trains.get(train_id)
                 if train is None:
                     continue
 
-                # Phase 1 - Setup. Run before the per-train transaction so the
-                # planning kernel sits in the outer loop. Skip while the
-                # controller is OFF; the Phase-2 command drain must run first so
-                # that power_on_cmd() can be accepted.
+                # Plan. Skip while the controller is OFF; the Action command
+                # drain must run first so that power_on_cmd() can be accepted.
                 controller = self._get_or_create_controller(train)
                 if controller.ops.state != TrainState.OFF:
                     self.route_executor.tick_train_phase1(train_id, delta_seconds)
-                # Phase 1 may have reserved blocks, locked/aligned switches, or
-                # (re)built this train's path — invalidate before Phase 2 reads.
+                # Plan may have reserved blocks, locked/aligned switches, or
+                # (re)built this train's path — invalidate before Action reads.
                 net.bump_lookahead_world_version()
 
-                self._update_train(train, delta_seconds)
-                # Phase 2/3 moved the head and may have completed/cancelled the
-                # path — invalidate before the next train (and next tick) reads.
+                self._act_train(train, delta_seconds)
+                # Action set the track voltage and consumed teardown latches —
+                # invalidate before the next train (and next tick) reads.
                 net.bump_lookahead_world_version()
 
-                # A fatal physical-entry conflict during this train's Phase 3
-                # freezes the runtime "at the moment of detection"
-                # (design_new.md:459 `b9a2`): abort the rest of this tick — no
-                # further trains, and none of the post-loop voltage drain /
-                # signal refresh / maintenance-counter writes below — so all
-                # state is left exactly as it was for inspection until the
-                # operator manually cleans up and releases the runtime failure.
                 if self.runtime_halted:
                     return
 
@@ -730,11 +747,11 @@ class SimulationController(SwitchOutputOwner):
                 controller = self.controllers.get(train_id)
                 if train is None or controller is None:
                     continue
-                # The Phase-2 physics callback would normally turn the slice
-                # into a progress report; there is no Phase 2 here, so the
+                # The Observe movement callback would normally turn the slice
+                # into a progress report; there is no movement here, so the
                 # controller is asked for that report directly.
                 controller.build_detected_progress_report(time.time())
-                self._commit_train_phase3(controller, train, observing_only=True)
+                self._commit_train_observe(controller, train, observing_only=True)
                 net.bump_lookahead_world_version()
                 if self.runtime_halted:
                     return
@@ -1234,76 +1251,93 @@ class SimulationController(SwitchOutputOwner):
     # Per-train three-phase transaction
     # =========================================================================
 
-    def _update_train(self, train: Train, delta_seconds: float) -> None:
-        """Run Phase 2 + Phase 3 of one per-train transaction.
+    def _observe_train(self, train: Train, delta_seconds: float) -> None:
+        """Observe stage for one train: integrate its movement over the elapsed
+        time, then commit occupancy and recognize a normal stop arrival.
 
-        Phase 1 (`RouteExecutor.tick_train_phase1(...)`) runs in the outer
-        `update()` loop immediately before this call.
-
-        Phase 2 - Execute: TrainController.tick(...) drains operator commands
-            then runs control logic; TrainPhysics.tick(...) integrates motion
-            and calls TrainController.on_physics_updated(...) per Agent D.
-        Phase 3 - Feedback / cleanup: drain queued progress reports, run the
-            post-physics path-completion check, then consume the latch table
-            in canonical order.
+        Runs for every train as a batch before any train plans, so planning sees
+        every train's committed position (design_new.md Core Runtime Loop,
+        Observe). The movement calculation (`TrainPhysics.integrate_movement`)
+        and the occupancy commit both live here; setting the track voltage is
+        Action.
         """
         controller = self._get_or_create_controller(train)
         physics = self._get_or_create_physics(train)
 
         # A question-mark identifier has no physical occupancy backing its
-        # estimate.  It is a diagnostic record, not a train to keep predicting:
-        # do not drain commands or integrate physics while presence is unknown.
-        # Step 0 clears the flag automatically if detection returns, at which
-        # point the ordinary transaction resumes from the retained last span.
+        # estimate. It is a diagnostic record, not a train to keep predicting:
+        # do not integrate physics while presence is unknown. Step 0 clears the
+        # flag automatically if detection returns, at which point the ordinary
+        # transaction resumes from the retained last span.
         if controller.presence_unknown:
             self._freeze_lost_train_controller(controller)
             self._sync_persistent_train_state(train, controller)
             return
 
-        # Phase 2 - Execute.
-        # Step `c9e1`: for the calibration train only, the speed-calibration
-        # pass driver runs immediately before `TrainController.tick(...)`, so
-        # the power/cab command it issues is already queued when that tick's
-        # operator-command processing slot drains (design_new.md "Speed
-        # calibration", Where it runs). It is a no-op for every other train.
+        # Movement half of the physics pass — computes motion and invokes
+        # TrainController.on_physics_updated(...) at least once. The voltage half
+        # (TrainPhysics.apply_track_voltage) is Action.
+        physics.integrate_movement(delta_seconds)
+        self._commit_train_observe(controller, train)
+
+    def _act_train(self, train: Train, delta_seconds: float) -> None:
+        """Action stage for one train: drain operator commands, decide control,
+        set the track voltage that drives the next tick, then consume the
+        teardown latches.
+
+        Runs after this train's Plan (design_new.md Core Runtime Loop, Action).
+        Calculating movement and committing occupancy are Observe work; Action
+        never moves a span or writes `Block.occupied_by`.
+        """
+        controller = self._get_or_create_controller(train)
+        physics = self._get_or_create_physics(train)
+
+        # A lost train (presence unknown) is frozen in Observe and takes no
+        # Action: no command drain, no control decision, no voltage.
+        if controller.presence_unknown:
+            return
+
+        # Step `c9e1`: for the calibration train only, the speed-calibration pass
+        # driver runs immediately before the command drain, so the power/cab
+        # command it issues is already queued when that drain runs (design_new.md
+        # "Speed calibration", Where it runs). A no-op for every other train.
         self.speed_calibration.tick_train(train.train_id)
-        # TrainController.tick(...) begins by draining the queued operator
-        # commands; TrainPhysics.tick(...) computes motion and invokes
-        # TrainController.on_physics_updated(...) at least once per tick.
+        # TrainController.tick(...) drains the queued operator commands then runs
+        # the control decision. TrainPhysics.apply_track_voltage() then sets the
+        # block track voltage that drives the next tick's Observe movement.
         controller.tick(delta_seconds)
-        physics.tick(delta_seconds)
+        physics.apply_track_voltage()
 
-        self._commit_train_phase3(controller, train)
+        self._commit_train_act(controller, train)
 
-    def _commit_train_phase3(
+    def _commit_train_observe(
         self, controller: TrainController, train: Train, observing_only: bool = False
     ) -> None:
-        """Phase 3 - Feedback / cleanup for one train.
+        """Observe-stage commit for one train: drain the progress mailbox to
+        write occupancy (step `3e9b`), then recognize a normal stop arrival
+        (step `9d8b`).
 
-        Split out of `_update_train` because the stopped-simulation hardware
-        poll runs this phase and nothing else: it has detector observations to
-        commit but no Phase-1 planning and no Phase-2 execution to run first
-        (see `poll_hardware_occupancy`).
+        The occupancy commit and the stop-arrival check are Observe work
+        (design_new.md Observe, Plan, and Action Table, Observe row). The
+        stopped-simulation hardware poll runs only this commit — it has detector
+        observations to write but no planning or command execution first (see
+        `poll_hardware_occupancy`) — and passes `observing_only=True` to run step
+        `3e9b` and nothing after it.
 
-        If the controller is still OFF after the command drain, Phase 3 is
-        skipped for this transaction even though Phase 2 physics ran — unless
-        Step 0 attributed a block entry or vacate to this train this tick
-        (design_new.md ":2181", ":2641"). The skip is about having no movement
-        to commit, not about power: a train that moves without power — pushed
-        by hand, or an occupant the app does not control — still has its block
-        entries and vacates committed, and Phase 3 is the only path that
-        commits them.
+        If the controller is OFF and Step 0 attributed no block entry or vacate
+        to this train this tick, there is no movement to commit and this is a
+        no-op except the persistent-state sync (design_new.md ":2181", ":2641").
+        The skip is about having no movement to commit, not about power: a train
+        that moves without power — pushed by hand, or an occupant the app does
+        not control — still has its block entries and vacates committed, and this
+        is the only path that commits them.
 
-        `observing_only` runs step `3e9b` and nothing after it. A stopped pass
-        passes it, because committing a latch is authored work and stopped
-        causes nothing (design_new.md "Running and stopped": the stopped pass
-        consumes that report "as the Phase-3 occupancy commit alone. ... No
-        latch is consumed, and no other Phase-3 step runs"; "Latch Table": "A
-        stopped session consumes no latch"). Arrival is held back for the same
-        reason it is: a stop the train reached while the session was stopped is
-        a statement about live authority, which a stopped session exercises
-        none of. Every latch keeps its payload across the stop and is consumed
-        by the first pass of the resumed session whose gate holds.
+        Why `observing_only` holds arrival back: a stop the train reached while
+        the session was stopped is a statement about live authority, which a
+        stopped session exercises none of (design_new.md "Running and stopped";
+        "Latch Table": "A stopped session consumes no latch"). Every latch keeps
+        its payload across the stop and is consumed by the first pass of the
+        resumed session whose gate holds.
         """
         if (
             controller.ops.state == TrainState.OFF
@@ -1312,7 +1346,7 @@ class SimulationController(SwitchOutputOwner):
             self._sync_persistent_train_state(train, controller)
             return
 
-        # 3a. Drain queued progress reports in FIFO order.
+        # 3e9b. Drain queued progress reports in FIFO order → occupancy commit.
         if self.path_dispatcher is not None:
             while controller.physics_sync.queued_progress_reports:
                 report = controller.physics_sync.queued_progress_reports.pop(0)
@@ -1322,32 +1356,60 @@ class SimulationController(SwitchOutputOwner):
             self._sync_persistent_train_state(train, controller)
             return
 
-        # 3b. Post-physics usable-authority stop check + path completion.
+        # 9d8b. Post-movement usable-authority stop check + path completion.
         # A pending path-cancel outranks completion (design_new.md step `c6f1`):
-        # when `pending_path_cancel_request` is set, skip completion so step 3c
-        # commits the cancellation instead of finishing the stop.
+        # when `pending_path_cancel_request` is set (here, only by this same
+        # Observe pass's movement-derived deviation detection above), skip
+        # completion so Action commits the cancellation instead of finishing the
+        # stop.
         if self.path_dispatcher is not None:
             if controller.route_hooks.phase_latches.path_cancel_request is None:
                 if self.path_dispatcher.active_path_id_by_train(train.train_id) is not None:
                     if controller.is_stopped_at_authority_end():
                         self.path_dispatcher.try_complete_active_path(train.train_id)
 
-        # 3c. Consume Phase-3 latches in canonical order.
+        # Sync only persistent/configuration state back to Train. Live state
+        # (target_speed, speed_limit_reason, controller state, current_speed)
+        # lives on the controller; consumers read from the controller directly.
+        self._sync_persistent_train_state(train, controller)
+
+    def _commit_train_act(
+        self, controller: TrainController, train: Train
+    ) -> None:
+        """Action-stage teardown for one train: consume the teardown latches in
+        canonical order, then re-evaluate the open lighting-voltage run.
+
+        The dispatcher cancel latch (`pending_path_cancel_request`) is the first
+        of these consumers; the later ones are route-abort, power-off, and
+        route-deactivate. Calculating movement and committing occupancy already
+        happened in Observe; Action only tears down.
+
+        Skipped, except the persistent-state sync, for an OFF train Step 0
+        attributed no block change to — the command drain that just ran in
+        Action may have powered it on, in which case this runs (design_new.md
+        ":2181").
+        """
+        if (
+            controller.ops.state == TrainState.OFF
+            and train.train_id not in self._detected_change_train_ids
+        ):
+            self._sync_persistent_train_state(train, controller)
+            return
+
+        # Consume the teardown latches in canonical order.
         self._consume_pending_path_cancel_request(controller, train)
         self._consume_pending_route_abort(controller, train)
         self._consume_pending_power_off(controller, train)
         self._consume_pending_route_deactivate(controller, train)
 
-        # 3g (`26f5`). Re-evaluate this train's open lighting-voltage run.
-        # Ordered last so it observes this same pass's power-off and
-        # route-deactivate consumption before deciding whether the run has
-        # ended (design_new.md "Lighting-voltage calibration", What the run
-        # drives): the run ends the same tick its condition is met.
+        # 26f5. Re-evaluate this train's open lighting-voltage run. Ordered after
+        # the power-off / route-deactivate consumption above so it observes this
+        # same pass's teardown before deciding whether the run has ended
+        # (design_new.md "Lighting-voltage calibration", What the run drives):
+        # the run ends the same tick its condition is met.
         self._reevaluate_lighting_run(train)
 
-        # Sync only persistent/configuration state back to Train. Live state
-        # (target_speed, speed_limit_reason, controller state, current_speed)
-        # lives on the controller; consumers read from the controller directly.
+        # Sync only persistent/configuration state back to Train.
         self._sync_persistent_train_state(train, controller)
 
     # =========================================================================

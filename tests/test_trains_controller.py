@@ -444,8 +444,13 @@ class TestATCOverspeedWarning:
         ]
 
     def _tick_at(self, sim, controller, speed_kmh):
+        # ATC's overspeed warning is decided in TrainController.tick (the Action
+        # stage). Drive it directly so the injected speed is the speed ATC reads:
+        # a full sim.update(...) runs Observe's movement integration first and
+        # re-derives the speed from the prior tick's command before ATC sees it,
+        # so a forced current_speed_kmh would not reach ATC intact.
         controller.physics_sync.current_speed_kmh = speed_kmh
-        sim.update(0.1)
+        controller.tick(0.1)
 
     def test_sustained_overspeed_in_warn_band_emits_exactly_one_warning(self):
         sim, controller = self._sim_with_authority()
