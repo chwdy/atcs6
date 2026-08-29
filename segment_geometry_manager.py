@@ -138,11 +138,26 @@ class SegmentGeometryManager:
         write that makes them align, so grouping can keep its no-reversal rule.
 
         Each `entry_edge` is recomputed for the new direction. Returns False
-        when the segment is unknown or has fewer than two tiles.
+        when the segment is unknown, has fewer than two tiles, or is not the
+        sole member of its owning `Block` (design_new.md "Segment",
+        `reverse_segment_orientation`: reversing one member of a multi-segment
+        block would corrupt the block's stored orientation).
         """
         segment = self._n.get_segment(segment_id)
         if segment is None or len(segment.ordered_tiles) < 2:
             return False
+
+        # Reject unless the segment is the sole member of its owning Block: a
+        # local reversal of one member would break the stored orientation the
+        # rest of the block is grouped against (design_new.md "Segment",
+        # reverse_segment_orientation). The doc also requires sole membership of
+        # any containing Platform; that half awaits the Platform.ordered_segments
+        # membership model (gap D2).
+        block_id = self._n.segment_to_block_id(segment_id)
+        if block_id is not None:
+            block = self._n.blocks.get(block_id)
+            if block is not None and len(block.segment_ids) > 1:
+                return False
 
         tiles = [(e.x, e.y) for e in reversed(segment.ordered_tiles)]
         member_set = set(tiles)
