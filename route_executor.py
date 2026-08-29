@@ -4,7 +4,7 @@ Route Executor
 Per design_new.md "Route And RouteExecutor" and "Planning Kernel" sections.
 
 RouteExecutor owns:
-  * Phase 1 planning (`tick_train_phase1`) for one train: route-deviation
+  * Phase 1 planning (`tick_train_plan`) for one train: route-deviation
     cleanup, dwell-complete timer check, covered-task index advance,
     dwell-entry, target resolution, and authority acquisition via
     PathDispatcher.
@@ -107,7 +107,7 @@ class ResolvedNextTaskProjection:
     block / platform was filtered out (disabled, manual without override,
     every station platform unavailable). Phase 1 writes this string directly
     as the `ErrorRecord` of one route-run error event (inlined in
-    `tick_train_phase1`) so the operator sees why the task is stalled instead
+    `tick_train_plan`) so the operator sees why the task is stalled instead
     of an empty diagnostic. `None` for dwell projections and for the same-tick exclude
     sentinel (all candidates already attempted) — both of those non-None-
     target paths do not need a fresh resolver-level error record.
@@ -1124,7 +1124,7 @@ class RouteExecutor:
 
         Per design_new.md, this method does NOT iterate trains. The
         `SimulationController` outer loop owns per-train transactions and
-        calls `RouteExecutor.tick_train_phase1(train_id, delta_seconds)` once
+        calls `RouteExecutor.tick_train_plan(train_id, delta_seconds)` once
         for each runnable train as the entry point of Phase 1.
         """
         return
@@ -1295,7 +1295,7 @@ class RouteExecutor:
         return train, route, exec_state
 
     # ------------------------------------------------------------------ Phase 1
-    def tick_train_phase1(self, train_id: str, delta_seconds: float) -> None:
+    def tick_train_plan(self, train_id: str, delta_seconds: float) -> None:
         """Canonical Phase 1 entry point for one train.
 
         Per design_new.md "Planning Kernel" steps (1)-(7). Each step has its
@@ -1694,7 +1694,7 @@ class RouteExecutor:
 
     def _emit_run_error(
         self, exec_state, walk_position, origin: str, text: str,
-        operation: str = "tick_train_phase1",
+        operation: str = "tick_train_plan",
     ) -> None:
         """Emit a run/task error as an event (design_new.md "Error events").
 
@@ -1738,7 +1738,7 @@ class RouteExecutor:
 
     def _emit_route_warning(
         self, train_id: str, origin: str, reason: str,
-        operation: str = "tick_train_phase1",
+        operation: str = "tick_train_plan",
     ) -> None:
         """Emit an operator-facing warning via NotificationCenter, falling back
         to a logger warning when the center is unavailable. Used by the
@@ -2237,7 +2237,7 @@ class RouteExecutor:
 
         Returns True when authority was successfully acquired (create/extend
         succeeded and depart() was called), False otherwise. The return value
-        is used by the fix #14 retry loop in tick_train_phase1.
+        is used by the fix #14 retry loop in tick_train_plan.
 
         On a successful create/extend, write
         ``task_runs[projection.walk_position].resolved_target`` (Phase-1-only

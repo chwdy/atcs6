@@ -461,7 +461,7 @@ class SimulationController(SwitchOutputOwner):
                 # drain must run first so that power_on_cmd() can be accepted.
                 controller = self._get_or_create_controller(train)
                 if controller.ops.state != TrainState.OFF:
-                    self.route_executor.tick_train_phase1(train_id, delta_seconds)
+                    self.route_executor.tick_train_plan(train_id, delta_seconds)
                 # Plan may have reserved blocks, locked/aligned switches, or
                 # (re)built this train's path — invalidate before Action reads.
                 net.bump_lookahead_world_version()

@@ -298,7 +298,7 @@ def register(app, state: AppState) -> None:
         """Depart-acceptance command for the controller.
 
         Per design_new.md, dwell exit is route-driven via
-        ``RouteExecutor.tick_train_phase1(...) -> finish_dwell()``; the API
+        ``RouteExecutor.tick_train_plan(...) -> finish_dwell()``; the API
         path only invokes the canonical ``TrainController.depart()`` for the
         ``READY`` -> ``RUNNING_MOVING`` transition.
         """

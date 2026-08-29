@@ -337,7 +337,7 @@ def test_an_unchanged_repeat_error_is_suppressed():
 
     nc = NotificationCenter()
     args = dict(
-        source="RouteExecutor", operation="tick_train_phase1", kind=Kind.WARNING,
+        source="RouteExecutor", operation="tick_train_plan", kind=Kind.WARNING,
         message="blocked", entities=[train_ref("T1")],
     )
 
@@ -354,7 +354,7 @@ def test_a_changed_reason_is_a_new_event():
 
     nc = NotificationCenter()
     args = dict(
-        source="RouteExecutor", operation="tick_train_phase1", kind=Kind.WARNING,
+        source="RouteExecutor", operation="tick_train_plan", kind=Kind.WARNING,
         message="blocked", entities=[train_ref("T1")],
     )
 
@@ -384,7 +384,7 @@ def test_latest_error_for_answers_the_current_reason():
 
     nc = NotificationCenter()
     nc.emit(
-        source="RouteExecutor", operation="tick_train_phase1", kind=Kind.WARNING,
+        source="RouteExecutor", operation="tick_train_plan", kind=Kind.WARNING,
         message="blocked", entities=[train_ref("T1")],
         error=ErrorRecord("no path", "planning_failed"),
     )
@@ -399,7 +399,7 @@ def test_latest_error_for_answers_the_current_reason():
     assert found.error.origin == "planning_failed"
 
     # Narrowing by operation and origin.
-    assert nc.latest_error_for("train", "T1", operation="tick_train_phase1") is not None
+    assert nc.latest_error_for("train", "T1", operation="tick_train_plan") is not None
     assert nc.latest_error_for("train", "T1", origin="wedge") is None
     # A different entity has no reason of its own.
     assert nc.latest_error_for("train", "T2") is None
@@ -413,7 +413,7 @@ def test_a_task_event_is_found_by_both_run_and_task_filters():
 
     nc = NotificationCenter()
     nc.emit(
-        source="RouteExecutor", operation="tick_train_phase1", kind=Kind.WARNING,
+        source="RouteExecutor", operation="tick_train_plan", kind=Kind.WARNING,
         message="task blocked",
         entities=[route_run_ref("R1"), walk_position_ref("R1", 2)],
         error=ErrorRecord("target missing", "task_skipped"),

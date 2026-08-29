@@ -454,7 +454,7 @@ class RouteTargetResolver:
         cannot use manual_override). `reason` is a short human-readable
         string suitable for the error event's `ErrorRecord.text`; Phase 1
         emits it as one route-run error event (inlined in
-        `tick_train_phase1`) so the operator sees why the task stalled
+        `tick_train_plan`) so the operator sees why the task stalled
         instead of an empty diagnostic.
 
         Per design_new.md line 1125, `task_location` is a tagged union of

@@ -2562,7 +2562,7 @@ class TrainController:
         read interface for current physical span. ``current_span`` remains
         the canonical TrainSpan storage written by
         ``on_physics_updated(...)``; this accessor is the public read used
-        by ``RouteExecutor.tick_train_phase1(...)`` and
+        by ``RouteExecutor.tick_train_plan(...)`` and
         ``PathDispatcher.create_path(...)`` to discover the train's current
         span without reaching into the dataclass field directly.
         """

@@ -690,7 +690,7 @@ class TestBrokenDwellHandling:
         assert controller.state != TrainState.OFF
 
         del network.platforms["PLT_A"]
-        executor.tick_train_phase1("T_DWELL", 0.1)
+        executor.tick_train_plan("T_DWELL", 0.1)
 
         # The broken dwell row is finished (skipped), carries its diagnostic, and
         # the controller never entered a station dwell.

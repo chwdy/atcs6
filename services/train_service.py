@@ -421,7 +421,7 @@ def diagnose_stopped_train(state: AppState, train_id: str) -> dict:
          "Press Play.")
 
     # 2. An unidentified train is not driveable, and an OFF train never plans a route:
-    #    `RouteExecutor.tick_train_phase1(...)` returns immediately for `OFF`.
+    #    `RouteExecutor.tick_train_plan(...)` returns immediately for `OFF`.
     gate("not_unidentified", not getattr(train, "is_unidentified", False),
          "this is an unidentified train — the app has never been told what it is"
          if getattr(train, "is_unidentified", False) else "a real train",
