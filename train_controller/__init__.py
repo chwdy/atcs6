@@ -45,7 +45,7 @@ import logging
 import math
 import os
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, FrozenSet, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 
 from constants import (
     CAUTION_SPEED_LIMIT_KMH,
@@ -604,7 +604,9 @@ class TrainController:
     # Tick Method (Called Each Simulation Tick)
     # -------------------------------------------------------------------------
 
-    def tick(self, delta: float) -> None:
+    def tick(
+        self, delta: float, after_command_drain: Optional[Callable[[], None]] = None
+    ) -> None:
         """
         Called each simulation tick by SimulationController.
 
@@ -676,6 +678,14 @@ class TrainController:
         if not train:
             return
 
+        # design_new.md Action step `7b40`: immediately after the command drain,
+        # SimulationController's narrow callback consumes the departure /
+        # station-entry transition requests Plan wrote (calling
+        # `TrainController.depart()` / `enter_station_dwell()`), so the control
+        # decision below evaluates the post-transition state. The callback
+        # exposes no dispatcher object to the controller.
+        if after_command_drain is not None:
+            after_command_drain()
 
         # ===== 0. POWER CHECK =====
         if not self.power_on:

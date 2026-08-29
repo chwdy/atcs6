@@ -1905,8 +1905,10 @@ class RouteExecutor:
         # Advance the per-run cursor based on the route mode.
         self._advance_to_next_task(route, exec_state)
 
-        # Unpack (success, reason) tuple per train_controller agent signature.
-        _fd_success, _fd_reason = controller.finish_dwell()
+        # design_new.md step `70c3`: Plan writes `station_exit_request` after the
+        # dwell row's `finished_at` write above; the Action station-exit consumer
+        # calls `TrainController.finish_dwell()` and clears it.
+        controller.route_hooks.phase_latches.set_station_exit_request()
 
     def _run_task_step(
         self,
@@ -2159,8 +2161,10 @@ class RouteExecutor:
                 row.started_at = self._now()
                 row.started_at_operating = self._now_operating()
 
-        # Unpack (success, reason) tuple per train_controller agent signature.
-        _esd_success, _esd_reason = controller.enter_station_dwell()
+        # design_new.md step `3a37`: Plan writes `station_entry_request` after
+        # sampling the dwell row's `started_at` above; the Action station-entry
+        # consumer calls `TrainController.enter_station_dwell()` and clears it.
+        controller.route_hooks.phase_latches.set_station_entry_request()
 
     def _apply_waypoint_lookahead(
         self,
@@ -2528,52 +2532,12 @@ class RouteExecutor:
         if projection.direction in ("forward", "reverse"):
             exec_state.direction = projection.direction
 
-        # Per design_new.md line 1078: Plan always calls depart() after a
-        # successful create/extend.
-        depart = getattr(controller, "depart", None)
-        if callable(depart):
-            try:
-                # Unpack (success, reason) tuple per train_controller agent.
-                _dep_result = depart()
-                if isinstance(_dep_result, tuple):
-                    pass  # (success, reason) — no action needed on success
-            except Exception as exc:
-                # Plan retries depart() on a later tick; surface the
-                # raised reason via NotificationCenter so operators see
-                # non-acceptance without aborting the planning kernel.
-                train_id = getattr(train, "train_id", "?")
-                sc = self.simulation_controller
-                nc = (
-                    getattr(sc, "notification_center", None)
-                    if sc is not None
-                    else None
-                )
-                emitted = False
-                if nc is not None:
-                    try:
-                        from notification_center import Kind as _Kind, train_ref as _tref
-                        from runtime_payloads import ErrorRecord as _ErrRec
-
-                        nc.emit(
-                            source="RouteExecutor",
-                            operation="depart",
-                            kind=_Kind.WARNING,
-                            message=f"depart() raised for {train_id}; will retry",
-                            entities=[_tref(train_id)],
-                            error=_ErrRec(str(exc), "depart_failed"),
-                            event_time=time.time(),
-                            payload={"will_retry": True},
-                        )
-                        emitted = True
-                    except Exception:
-                        pass
-                if not emitted:
-                    logger.warning(
-                        "depart() raised for train %s; will retry on a later "
-                        "tick (NotificationCenter unavailable)",
-                        train_id,
-                        exc_info=True,
-                    )
+        # design_new.md "Plan departure-request writes": Plan writes
+        # `departure_request` after a successful create/extend; the Action depart
+        # consumer calls `TrainController.depart()`, records its result, and
+        # clears the request. If depart rejects, Plan writes a fresh request on a
+        # later eligible tick — Plan never calls `depart()` itself.
+        controller.route_hooks.phase_latches.set_departure_request()
         return True
 
     def _maintain_idle_hold(
@@ -3102,48 +3066,11 @@ class RouteExecutor:
             controller is not None
             and controller.ops.state == TrainState.RUNNING_AT_STATION
         ):
-            finish_dwell = getattr(controller, "finish_dwell", None)
-            if callable(finish_dwell):
-                try:
-                    # Unpack (success, reason) tuple per train_controller agent.
-                    _fd_result = finish_dwell()
-                    if isinstance(_fd_result, tuple):
-                        pass  # (success, reason) — no action needed on success
-                except Exception as exc:
-                    sc = self.simulation_controller
-                    nc = (
-                        getattr(sc, "notification_center", None)
-                        if sc is not None
-                        else None
-                    )
-                    emitted = False
-                    if nc is not None:
-                        try:
-                            from notification_center import Kind as _Kind, train_ref as _tref
-                            from runtime_payloads import ErrorRecord as _ErrRec
-
-                            nc.emit(
-                                source="RouteExecutor",
-                                operation="remove_train_route_run",
-                                kind=_Kind.WARNING,
-                                message=(
-                                    f"finish_dwell() raised for {train_id} during "
-                                    "route-run removal"
-                                ),
-                                entities=[_tref(train_id)],
-                                error=_ErrRec(str(exc), "finish_dwell_failed"),
-                                event_time=time.time(),
-                            )
-                            emitted = True
-                        except Exception:
-                            pass
-                    if not emitted:
-                        logger.warning(
-                            "finish_dwell() raised for train %s during route-run "
-                            "removal (NotificationCenter unavailable)",
-                            train_id,
-                            exc_info=True,
-                        )
+            # design_new.md: a teardown that removes a run while the controller is
+            # dwelling writes `station_exit_request`; the later Action station-exit
+            # consumer (step `bf3d`) calls `TrainController.finish_dwell()` to exit
+            # dwell into READY in the same Action pass.
+            controller.route_hooks.phase_latches.set_station_exit_request()
 
         route_id = exec_state.route_id
         if route_id:

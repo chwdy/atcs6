@@ -1303,13 +1303,77 @@ class SimulationController(SwitchOutputOwner):
         # command it issues is already queued when that drain runs (design_new.md
         # "Speed calibration", Where it runs). A no-op for every other train.
         self.speed_calibration.tick_train(train.train_id)
-        # TrainController.tick(...) drains the queued operator commands then runs
-        # the control decision. TrainPhysics.apply_track_voltage() then sets the
-        # block track voltage that drives the next tick's Observe movement.
-        controller.tick(delta_seconds)
+        # TrainController.tick(...) drains the queued operator commands, then —
+        # through the after_command_drain callback, before its control decision —
+        # performs the departure / station-entry transitions Plan requested
+        # (design_new.md Action step `7b40`), then runs the control decision.
+        # TrainPhysics.apply_track_voltage() then sets the block track voltage
+        # that drives the next tick's Observe movement.
+        controller.tick(
+            delta_seconds,
+            after_command_drain=lambda: self._consume_transition_requests(controller),
+        )
         physics.apply_track_voltage()
 
         self._commit_train_act(controller, train)
+
+        # design_new.md Action step `bf3d`: after the teardown latches, consume
+        # station_exit_request — a run removal in the teardown may have written it.
+        self._consume_station_exit_request(controller)
+
+    def _consume_transition_requests(self, controller: TrainController) -> None:
+        """Action early slot (design_new.md step `7b40`): perform the depart and
+        station-entry transitions Plan requested, then clear each request.
+
+        Runs between the command drain and the control decision (via
+        `TrainController.tick(..., after_command_drain=...)`) so the control
+        decision evaluates the post-transition state. `depart()` and
+        `enter_station_dwell()` self-gate on their own preconditions; a rejected
+        request is cleared and Plan may write a fresh one on a later tick.
+        """
+        latches = controller.route_hooks.phase_latches
+        if latches.departure_request:
+            try:
+                controller.depart()
+            except Exception:
+                logger.warning(
+                    "depart() raised for %s; will retry",
+                    controller.train_id,
+                    exc_info=True,
+                )
+            latches.departure_request = False
+        if latches.station_entry_request:
+            try:
+                controller.enter_station_dwell()
+            except Exception:
+                logger.warning(
+                    "enter_station_dwell() raised for %s; will retry",
+                    controller.train_id,
+                    exc_info=True,
+                )
+            latches.station_entry_request = False
+
+    def _consume_station_exit_request(self, controller: TrainController) -> None:
+        """Action step `bf3d`: perform the dwell-exit transition Plan (or a
+        teardown consumer) requested through `station_exit_request`.
+
+        When the controller is `RUNNING_AT_STATION`, call `finish_dwell()`;
+        otherwise the request is a no-op clear (the run was already torn down and
+        there is no dwell to leave). Either way, clear the request.
+        """
+        latches = controller.route_hooks.phase_latches
+        if not latches.station_exit_request:
+            return
+        if controller.ops.state == TrainState.RUNNING_AT_STATION:
+            try:
+                controller.finish_dwell()
+            except Exception:
+                logger.warning(
+                    "finish_dwell() raised for %s",
+                    controller.train_id,
+                    exc_info=True,
+                )
+        latches.station_exit_request = False
 
     def _commit_train_observe(
         self, controller: TrainController, train: Train, observing_only: bool = False
