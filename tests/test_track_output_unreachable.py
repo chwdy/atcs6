@@ -13,6 +13,7 @@ and reports the refusal once per block.
 """
 
 from block_power import BlockPowerController
+from enums import OperationMode
 from runtime_payloads import HardwareFailure
 from tests.test_unidentified_trains import build_sim
 
@@ -64,16 +65,21 @@ def test_a_refused_write_never_claims_the_block_is_energized():
 
 
 def test_a_hardware_failure_cannot_be_cleared_in_place():
-    """The safe state revoked output permission and only activation grants it
-    again, so the halt does not reopen until the environment is reactivated."""
+    """The safe state revoked output permission and only a newer activation
+    grants it again, so the halt does not reopen until the environment is
+    reactivated (design_new.md "Power", Recovery is reactivation followed by an
+    explicit clear)."""
     _network, sim, pc = power_controller({"BLK_1"})
+    # A hardware I/O failure only arises in a hardware-backed environment.
+    sim.operation_mode = OperationMode.VIRTUAL_HARDWARE
     pc.set_block_voltage("BLK_1", 10.0)
 
     import pytest
 
-    # The failure deactivated the environment, so clearing is refused.
+    # The failure deactivated the environment and no newer activation has
+    # happened since it latched, so clearing is refused.
     assert sim.environment_active is False
-    with pytest.raises(ValueError, match="reactivated"):
+    with pytest.raises(ValueError, match="activate again"):
         sim.clear_hardware_failure()
 
     # And the conflict clearer does not touch it.
@@ -84,9 +90,15 @@ def test_a_hardware_failure_cannot_be_cleared_in_place():
 
 def test_a_hardware_failure_clears_once_the_environment_is_reactivated():
     _network, sim, pc = power_controller({"BLK_1"})
+    sim.operation_mode = OperationMode.VIRTUAL_HARDWARE
     pc.set_block_voltage("BLK_1", 10.0)
 
-    sim.environment_active = True          # what activation grants back
+    # A successful reactivation: the environment is active again, with an
+    # activation generation newer than the one captured when the failure latched.
+    sim.environment_active = True
+    sim.environment_activation_generation = (
+        sim.hardware_failure_activation_generation + 1
+    )
     cleared = sim.clear_hardware_failure()
 
     assert isinstance(cleared, HardwareFailure)

@@ -377,11 +377,18 @@ class SimulationController(SwitchOutputOwner):
         # "Clocks").
         self.operating_clock_advance(delta_seconds)
 
-        # When a fatal physical-entry conflict has been reported, halt all
-        # train ticks (Observe/Plan/Action skipped) for the rest of this session.
-        # There is no release path in v1: the operator restarts the server
-        # to begin a new session.
-        if not self.environment_active or self.runtime_halted:
+        # A fatal physical-entry conflict (`failed_runtime`) halts train ticks
+        # (Observe/Plan/Action skipped) in every environment; its release path is
+        # the explicit `clear_failed_runtime()`. A hardware I/O failure
+        # (`hardware_failure`) halts only a hardware-backed environment:
+        # Simulation keeps running with a latched hardware_failure, so an operator
+        # whose hardware broke can work in Simulation while repairing it, then
+        # reactivate and explicitly clear the latch (design_new.md "Power",
+        # Recovery is reactivation followed by an explicit clear; Simulation is
+        # independent of Hardware Setup).
+        if not self.environment_active or self.failed_runtime:
+            return
+        if self.hardware_failure and self.operation_mode is not OperationMode.SIMULATION:
             return
 
         # The per-train lookahead memo is a tick-local optimization: it is only
@@ -844,12 +851,13 @@ class SimulationController(SwitchOutputOwner):
         self._bind_interfaces(
             input_interface, block_output_interface, switch_output_interface
         )
-        self.failed_runtime = False
-        self.failed_runtime_payload = None
-        self.failed_runtime_at = None
-        self.hardware_failure = False
-        self.hardware_failure_payload = None
-        self.hardware_failure_at = None
+        # Activation does NOT clear a pre-existing fatal-halt latch. Recovery is
+        # reactivation followed by an explicit clear (design_new.md "Power",
+        # Recovery is reactivation followed by an explicit clear): the sole
+        # writers of `failed_runtime = False` / `hardware_failure = False` are
+        # `clear_failed_runtime()` / `clear_hardware_failure()`. Activation only
+        # marks the environment active and advances the generation below, so a
+        # later clear can prove a successful activation happened since the failure.
         self.activation_issues = []
         self.environment_active = True
         # Every successful activation is a new generation, so a later reader can
@@ -2631,11 +2639,20 @@ class SimulationController(SwitchOutputOwner):
             raise ValueError(
                 "There is no hardware failure; there is nothing to clear"
             )
-        if not self.environment_active:
+        if self.operation_mode is OperationMode.SIMULATION:
             raise ValueError(
-                "A hardware failure cannot be cleared until the environment is "
-                "reactivated; repair the hardware and activate a newly "
-                "validated session"
+                "A hardware failure can only be cleared from a Virtual or Real "
+                "Hardware environment; the active environment is Simulation"
+            )
+        if not (
+            self.environment_active
+            and self.environment_activation_generation
+            > self.hardware_failure_activation_generation
+        ):
+            raise ValueError(
+                "A hardware failure cannot be cleared until a newly validated "
+                "hardware environment has been activated since it latched; "
+                "repair the hardware, activate again, then clear"
             )
 
         payload = self.hardware_failure_payload
