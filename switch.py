@@ -444,9 +444,8 @@ class Switch(TrackResource):
     def on_train_tail_vacated(
         self,
         train_id: str,
-        network: Optional["RailwayNetwork"] = None,
         route: Optional[FrozenSet[str]] = None,
-    ) -> List[str]:
+    ) -> Tuple[bool, List[str]]:
         """Handle a tail-vacate event for `train_id` on this switch.
 
         Returns the diagnostic messages this pass produced. `Switch` is a pure
@@ -468,9 +467,11 @@ class Switch(TrackResource):
         callers that don't have route geometry; production tail-vacate
         flows always supply it.
 
-        `network` is required to walk neighbours; production callers
-        (`SwitchManager.on_switch_tail_vacated`) inject it. In editor / unit
-        contexts where no neighbour walk is needed it may be omitted.
+        Returns ``(fully_cleared, diagnostics)``: ``fully_cleared`` is True only
+        when the train had a route entry on this switch, it was removed, and no
+        route entry of its remains — the signal for
+        `SwitchManager.on_switch_tail_vacated` to run the manager-owned neighbour
+        flank-claim release. `Switch` never walks neighbours itself.
         """
         diagnostics: List[str] = []
         cleared = False
@@ -512,41 +513,26 @@ class Switch(TrackResource):
                 f"no route_owners entry held by this train"
                 + (f" (occupied_by={other})" if other is not None else "")
             )
-            return diagnostics
+            return (False, diagnostics)
 
-        # If this train still owns another route on the switch, don't
-        # release its flank protection yet — it hasn't fully cleared.
+        # If this train still owns another route on the switch, it has not fully
+        # cleared, so its flank protection stays. Report not-fully-cleared.
         any_routes_remaining_for_train = any(
             owner == train_id for owner in self.route_owners.values()
         )
         if any_routes_remaining_for_train:
-            return diagnostics
+            return (False, diagnostics)
 
-        # Release the train-owned protection that head-entry created on each
-        # flank neighbour. This walks THIS switch's own `flank_protection`
-        # list — the same list the create side (`_convert_locks_on_entry`)
-        # iterates to build the claims. The relationship is directional: a
-        # neighbour can be in `self.flank_protection` while `self` is absent
-        # from the neighbour's list (one points at the other in exactly one
-        # state, the reverse in both/neither — see `_neighbour_blocking_state`).
-        # Iterating the neighbour's list instead would strand the claim on any
-        # asymmetric pair. `release_train_protection_from` is idempotent, so a
-        # neighbour that got the route-point exemption (no claim created) is a
-        # harmless no-op. Without a network reference we cannot resolve
-        # neighbours.
-        if network is None:
-            return diagnostics
-        switches = getattr(network, "switches", None)
-        if not switches:
-            return diagnostics
-        for neighbour_switch_id, _blocking_state in self.flank_protection:
-            neighbour = switches.get(neighbour_switch_id)
-            if neighbour is None:
-                continue
-            neighbour.release_train_protection_from(
-                source_switch_id=self.switch_id, train_id=train_id
-            )
-        return diagnostics
+        # The train has fully cleared this switch. Releasing the train-owned
+        # flank protection its head entry created on neighbour switches is
+        # manager-owned: `SwitchManager.on_switch_tail_vacated` scans every
+        # switch's `train_protection_claims` for one keyed by this switch and
+        # this train. That scan — not a walk of `self.flank_protection` — is
+        # required because `recompute_all_flank_protection()` can rewrite this
+        # switch's neighbour list between the claim's creation and this vacate,
+        # which would strand a dropped neighbour's claim (design_new.md
+        # "SwitchManager", tail-vacate release). `Switch` never walks neighbours.
+        return (True, diagnostics)
 
     def apply_position_change(
         self, new_position: int, manual_override: bool = False

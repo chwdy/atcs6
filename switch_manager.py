@@ -452,9 +452,22 @@ class SwitchManager:
         switch = self._switch_registry.get(switch_id)
         if switch is None:
             return
-        diagnostics = switch.on_train_tail_vacated(
-            train_id, network=self.network, route=route
+        fully_cleared, diagnostics = switch.on_train_tail_vacated(
+            train_id, route=route
         )
+        if fully_cleared:
+            # Manager-owned neighbour flank-claim release. Scan every switch for a
+            # `train_protection_claim` sourced from this switch for this train and
+            # release it. Scanning the claims — not this switch's current
+            # `flank_protection` list — is required: `recompute_all_flank_protection()`
+            # can rewrite that list between the claim's creation and this vacate,
+            # so a dropped neighbour's claim would be stranded (design_new.md
+            # "SwitchManager", tail-vacate release). `release_train_protection_from`
+            # is idempotent, so switches with no matching claim are a no-op.
+            for neighbour in (getattr(self.network, "switches", None) or {}).values():
+                neighbour.release_train_protection_from(
+                    source_switch_id=switch_id, train_id=train_id
+                )
         # design_new.md "Runtime notifications": component-side runtime
         # diagnostics flow through NotificationCenter, never a separate sink.
         # `Switch` cannot reach it, so the manager emits on its behalf.
