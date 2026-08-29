@@ -268,15 +268,28 @@ class TrainPhysics:
     # =========================================================================
 
     def tick(self, delta: float) -> None:
+        """Run this train's physics for the tick: integrate movement, then set
+        the track voltage that drives the next tick.
+
+        Kept as a thin wrapper so existing callers and the current tick order
+        are unchanged. The two halves are split so the runtime can later run
+        `integrate_movement(...)` at the front of the tick (Observe) and
+        `apply_track_voltage()` at the back (Action); calling them back-to-back
+        here reproduces the original single-pass behaviour exactly.
         """
-        Called each simulation tick by SimulationController.
+        self.integrate_movement(delta)
+        self.apply_track_voltage()
+
+    def integrate_movement(self, delta: float) -> None:
+        """
+        Integrate this train's motion for the tick (the movement half of the
+        physics pass).
 
         Executes physical movement and emits one ordered PhysicsSpanUpdate per
         crossed resource boundary plus one final no-boundary callback every tick
         through TrainController.on_physics_updated(event_time, span_update).
 
-        The voltage emission to BlockPowerController is preserved as the
-        software-to-hardware output layer.
+        Setting the track voltage is a separate step, `apply_track_voltage()`.
 
         Args:
             delta: Time elapsed since last tick (seconds)
@@ -297,11 +310,11 @@ class TrainPhysics:
         self._pending_entry_block = None
         self._next_reserved_block = None
 
-        # 1. Skip movement if powered off, but still set voltage to 0 and emit
-        # the canonical no-boundary callback so controller-owned span/speed
-        # storage stays canonical even on OFF ticks.
+        # 1. Skip movement if powered off, but still emit the canonical
+        # no-boundary callback so controller-owned span/speed storage stays
+        # canonical even on OFF ticks. Driving the blocks to 0 V is the voltage
+        # half's job (`apply_track_voltage()`).
         if not controller.power_on:
-            self._set_voltage_for_blocks(train, 0.0)
             current_speed_kmh = self._read_current_speed(train)
             self._emit_final_no_boundary_callback(
                 controller, train, event_time, current_speed_kmh
@@ -417,7 +430,27 @@ class TrainPhysics:
             self._validate_position_sync(train)
             self._tick_count = 0
 
-        # 14. Output voltage to occupied blocks (hardware-output path)
+    def apply_track_voltage(self) -> None:
+        """Set the track voltage that drives the next tick (the voltage half of
+        the physics pass).
+
+        Reads the controller's published `PhysicsCommand` (never physics-local
+        movement state), so it may run at the back of the tick, after planning,
+        depending on this tick's `integrate_movement(...)` only through the
+        energized-block set that step computed.
+
+        A powered-off (or unwired) train drives its blocks to 0 V.
+        """
+        train = self._get_train()
+        if not train:
+            return
+        controller = self.controller
+        if not controller:
+            return
+        if not controller.power_on:
+            self._set_voltage_for_blocks(train, 0.0)
+            return
+        # Output voltage to occupied blocks (hardware-output path).
         self._update_voltage_output(train, controller)
 
     # =========================================================================
