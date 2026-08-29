@@ -2845,7 +2845,7 @@ class RouteExecutor:
                     "planning_failed",
                     f"handle_path_completion: task_runs[{pos}] has "
                     f"resolved_target=None; skipping "
-                    f"(authority_end={authority_end_block_id}). Phase 1 must "
+                    f"(authority_end={authority_end_block_id}). Plan must "
                     f"write resolved_target before the path completes.",
                     operation="handle_path_completion",
                 )

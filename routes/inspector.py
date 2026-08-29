@@ -184,28 +184,43 @@ _DERIVED_DOC: Dict[str, Dict[str, Any]] = {
 _LATCH_META: Dict[str, Dict[str, str]] = {
     "queued_progress_reports": {
         "path": "physics_sync.queued_progress_reports",
-        "writer": "Phase 2 — TrainController.on_physics_updated",
-        "consumer": "Phase 3 — PathDispatcher.on_controller_progress (drains list)",
+        "writer": "Observe — TrainController.on_physics_updated",
+        "consumer": "Observe — PathDispatcher.on_controller_progress (drains list)",
+    },
+    "departure_request": {
+        "path": "route_hooks.phase_latches.departure_request",
+        "writer": "Plan — after a successful create/extend",
+        "consumer": "Action — depart step (before the control decision)",
+    },
+    "station_entry_request": {
+        "path": "route_hooks.phase_latches.station_entry_request",
+        "writer": "Plan — dwell-entry step",
+        "consumer": "Action — enter_station_dwell step (before the control decision)",
+    },
+    "station_exit_request": {
+        "path": "route_hooks.phase_latches.station_exit_request",
+        "writer": "Plan dwell-complete / Action teardown (run removal)",
+        "consumer": "Action — finish_dwell step (after the teardown latches)",
     },
     "pending_path_cancel_request": {
         "path": "route_hooks.phase_latches.path_cancel_request",
-        "writer": "Phase 1 reconcile / Phase 2 cmd-drain or ATC / API handler",
-        "consumer": "Phase 3 cancel step (gated by is_stopped() == True)",
+        "writer": "Plan reconcile / Action cmd-drain or ATC / API handler",
+        "consumer": "Action cancel step (gated by is_stopped() == True)",
     },
     "pending_route_abort": {
         "path": "route_hooks.phase_latches.route_abort",
         "writer": "API / route executor",
-        "consumer": "Phase 3 — RouteExecutor.on_train_progress (route abort step)",
+        "consumer": "Action — route abort step",
     },
     "pending_power_off": {
         "path": "route_hooks.phase_latches.power_off",
-        "writer": "Phase 2 — operator command drain",
-        "consumer": "Phase 3 — power-off step (gated by is_stopped())",
+        "writer": "Action — operator command drain",
+        "consumer": "Action — power-off step (gated by is_stopped())",
     },
     "pending_route_deactivate": {
         "path": "route_hooks.phase_latches.route_deactivate",
         "writer": "API / route executor",
-        "consumer": "Phase 3 — route-deactivate step",
+        "consumer": "Action — route-deactivate step",
     },
 }
 

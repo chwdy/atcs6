@@ -327,7 +327,7 @@ class OperatorCommands:
 
         self._apply_power_off_request()
 
-        return CommandResult(True, "Power off accepted; shutdown deferred to Phase 3")
+        return CommandResult(True, "Power off accepted; shutdown deferred to Action")
 
     # -------------------------------------------------------------------------
     # Power-off request side effects
