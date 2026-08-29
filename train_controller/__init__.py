@@ -773,17 +773,14 @@ class TrainController:
         )
 
         if overspeed > OVERSPEED_EB_THRESHOLD_KMH or no_authority_rolling:
-            # Emergency brake. Per design_new.md the EB controller-local
-            # effects are: set eb_active = True, force handle to EB, clear
-            # ato_running, and (when an active path exists) write
-            # pending_path_cancel_request(EB).
-            self.eb.active = True
-            self.ops.handle_position = HandlePosition.EB
-            self.ato.running = False
-            if self.path_projection.received_path_plan is not None:
-                self.route_hooks.phase_latches.set_path_cancel_request(
-                    _ErrorRecord("ATC overspeed escalation", "eb"), "warning"
-                )
+            # Raise EB through the canonical activation path (design_new.md "EB
+            # has two trigger paths" / step `826a`): `eb.activate()` performs
+            # every canonical EB effect — force handle to EB, clear `ato.running`,
+            # clear the service-stop latch via `consume_service_stop()`, and (only
+            # outside dwell, when a live path exists) latch the `eb` cancel. ATC
+            # must not assign `eb.active` itself: no site outside
+            # `train_controller/eb.py` assigns `eb.active`.
+            self.eb.activate()
             self.notifications.emit(
                 "ATC triggered emergency brake: overspeed"
                 if overspeed > OVERSPEED_EB_THRESHOLD_KMH
