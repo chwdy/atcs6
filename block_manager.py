@@ -777,6 +777,25 @@ class BlockManager:
             reserved_block_ids=list(block_ids),
         )
 
+    def matching_path_reservation_ids(
+        self, block_ids: List[str], path_id: str
+    ) -> List[str]:
+        """Read-only projection: the IDs in `block_ids` (in input order) that
+        exist and currently satisfy `block.reserved_by_path == path_id`
+        (design_new.md "BlockManager").
+
+        `ResourceCoordinator.release_path_resources(...)` uses it to drop expected
+        already-released blocks before calling `release_path_block_reservations`,
+        so those never emit a mismatch warning, and to reach reservation state
+        without reaching through `BlockManager` to the network or block registry.
+        """
+        matching: List[str] = []
+        for block_id in block_ids:
+            block = self._block_registry.get(block_id)
+            if block is not None and block.reserved_by_path == path_id:
+                matching.append(block_id)
+        return matching
+
     def release_path_block_reservations(
         self,
         block_ids: List[str],

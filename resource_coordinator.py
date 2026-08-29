@@ -164,10 +164,19 @@ class ResourceCoordinator:
         """
         released_blocks: List[str] = []
         if block_ids:
-            self.block_manager.release_path_block_reservations(
-                list(block_ids), path_id, completed=completed
+            # design_new.md: filter to the blocks actually reserved for this path
+            # before releasing, so an expected already-released block (e.g. an
+            # ahead reservation Observe authority truncation already dropped via
+            # release_authority_tail) does not emit a spurious mismatch warning.
+            # The released set is exactly that matching subset.
+            matching = self.block_manager.matching_path_reservation_ids(
+                list(block_ids), path_id
             )
-            released_blocks = list(block_ids)
+            if matching:
+                self.block_manager.release_path_block_reservations(
+                    matching, path_id, completed=completed
+                )
+            released_blocks = matching
         released_switches = self.switch_manager.release_path_locks(path_id)
         return (released_blocks, released_switches)
 
