@@ -398,12 +398,12 @@ def update_route(
     # Per design_new.md "Shared-route edit teardown": a structural Route.tasks
     # edit tears down every assigned train's currently-RUNNING RouteRun (there is
     # no in-place reconciliation in v1). Set the per-train route_deactivate latch
-    # (which fans out the inclusive path cancel when a live path exists). Phase 3
+    # (which fans out the inclusive path cancel when a live path exists). Action
     # commits the teardown via RouteExecutor.remove_train_route_run(train_id),
     # which UNASSIGNS the train from the run's route_id -- so the re-assignment
     # cannot be applied up front (it would be undone by that unassign). Instead,
-    # hold it on RouteExecutor._pending_reassign and let the Phase-3 deactivate
-    # consumer re-apply it AFTER the clear; the next eligible Phase 1 then sees
+    # hold it on RouteExecutor._pending_reassign and let the Action deactivate
+    # consumer re-apply it AFTER the clear; the next eligible Plan then sees
     # the train assigned with no RUNNING run and allocates a fresh RouteRun
     # against the edited Route.tasks. Skipped in editor-only mode (no runtime
     # surface wired, so there is no RouteRun to tear down).
@@ -464,9 +464,9 @@ def activate_route(
 ) -> Route:
     """Activate the route at simulation_time (defaults to controller now).
 
-    A route with no tasks would be terminal on the first eligible Phase 1
+    A route with no tasks would be terminal on the first eligible Plan
     tick: ``_find_next_task_target`` returns ``None`` for an empty walk,
-    which makes Phase 1 call ``finish_route_run(train_id)`` immediately,
+    which makes Plan call ``finish_route_run(train_id)`` immediately,
     which for ``RouteMode.ONE_OFF`` then calls ``route.deactivate()``
     again. The user-visible result is an "activated" toast followed by an
     auto-deactivation a few ticks later, plus any assigned train silently

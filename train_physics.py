@@ -388,7 +388,7 @@ class TrainPhysics:
             # `occupied_blocks` from the current `occupied_tiles` so the `TrainSpan`
             # forwarded to `TrainController.on_physics_updated(...)` carries the live
             # block ownership view. The actual `Block.occupied_by` / `Block.caution`
-            # writes still flow through Phase 3 via
+            # writes still flow through Observe via
             # `PathDispatcher.on_controller_progress(...)` →
             # `BlockManager.on_block_tail_vacated(...)` / `occupy_blocks(...)`.
             self._update_block_occupancy(train)
@@ -963,7 +963,7 @@ class TrainPhysics:
         Per design_new.md "Physical progress / deviation procedure":
           - one ordered span_update per crossed resource boundary in physical
             traversal order
-          - one final no-boundary callback every tick so Phase 3 always has a
+          - one final no-boundary callback every tick so Observe always has a
             deterministic consume point
 
         The ``new_span`` is built from the post-move movement scratchpad via
@@ -1411,7 +1411,7 @@ class TrainPhysics:
         method maintains:
 
         - the scratchpad's `occupied_blocks`: ordered block-level ownership
-          view (written into the new `TrainSpan` so Phase 3's tail-vacate
+          view (written into the new `TrainSpan` so Observe's tail-vacate
           suppression guard `still_occupied_block_ids` sees the live set)
         - last_block_transitions: entered/vacated sets, read by tests
         - _last_occupied_blocks: cached set used by _validate_position_sync

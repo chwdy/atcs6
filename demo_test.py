@@ -347,7 +347,7 @@ def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
     sim_controller.route_executor.register_route(route)
     route.assign_train(train.train_id)
 
-    # Queue power_on; Phase 1 acquires the route's path on the first powered
+    # Queue power_on; Plan acquires the route's path on the first powered
     # tick and the train auto-departs.
     controller = sim_controller.get_or_create_controller(train.train_id)
     controller.commands.enqueue_command("power_on")

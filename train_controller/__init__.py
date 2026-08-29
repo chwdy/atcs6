@@ -273,14 +273,14 @@ class TrainController:
     # at `self.ops`. External readers use `controller.ops.handle_reason`.
 
     # -------------------------------------------------------------------------
-    # Phase 3 Mailbox (per design_new.md)
+    # Controller mailbox (progress reports + latches; per design_new.md)
     # -------------------------------------------------------------------------
     #
     # `queued_progress_reports` lives on the `PhysicsSync` sub-module
     # attached as `self.physics_sync` in `__post_init__`. External
     # callers read via `controller.physics_sync.queued_progress_reports`.
     #
-    # The four Phase-3 latches (`path_cancel_request`, `route_abort`,
+    # The four Action latches (`path_cancel_request`, `route_abort`,
     # `power_off`, `route_deactivate`) are bundled into `PhaseLatches` and
     # live on the `RouteHooks` sub-module attached as `self.route_hooks` in
     # `__post_init__`. External callers reach them through
@@ -833,7 +833,7 @@ class TrainController:
                 # ATO not running - brake to stop. Transition to the
                 # state-machine-derived stopped ready state once stopped.
                 # RUNNING_AT_STATION (dwell) is also a powered-stopped state
-                # and is owned by Phase 1's dwell-complete check; preserve it
+                # and is owned by Plan's dwell-complete check; preserve it
                 # here so a single tick doesn't clobber dwell entry.
                 self.ops.handle_position = self.ato.calculate_braking_notch_for_speed(
                     self.physics_sync.current_speed_kmh, 0.0
@@ -851,7 +851,7 @@ class TrainController:
 
         # ===== 10a. ROUTE-OWNED SERVICE-STOP OVERRIDE (design_new.md `b41e`) =====
         # Runs after ordinary ATO/manual command generation above and replaces
-        # this tick's effective command with service stopping while a Phase 1
+        # this tick's effective command with service stopping while a Plan
         # run task's timed stop is armed (TrainController.begin_service_stop()).
         # EB and ATC, already applied above, always outrank this override.
         # Persists across ticks until TrainController.consume_service_stop()
@@ -880,16 +880,16 @@ class TrainController:
         # `path_backed_run_active` is now a derived `@property`; no write here.
 
         # ===== 8. STATE TRANSITIONS =====
-        # While RUNNING_MOVING, Phase 2 (tick()) makes no state transition here:
+        # While RUNNING_MOVING, Action (tick()) makes no state transition here:
         #
-        # - Only RouteExecutor (Phase 1) writes RUNNING_AT_STATION, via
+        # - Only RouteExecutor (Plan) writes RUNNING_AT_STATION, via
         #   TrainController.enter_station_dwell() (design_new.md "Per-train tick
-        #   transaction"). Phase 2 must not transition to RUNNING_AT_STATION
+        #   transaction"). Action must not transition to RUNNING_AT_STATION
         #   here, even when the stopped train sits in a scheduled-stop station
         #   block — the path-completion gate is_stopped_at_authority_end()
-        #   requires state == RUNNING_MOVING, and Phase 3's
-        #   try_complete_active_path(...) runs after this method returns. Dwell
-        #   entry happens on the next eligible Phase 1 tick once the dispatcher
+        #   requires state == RUNNING_MOVING, and try_complete_active_path(...)
+        #   is Observe's, running outside tick(). Dwell
+        #   entry happens on the next eligible Plan tick once the dispatcher
         #   has completed the path and recorded the stop's finished_at.
         # - A train at zero ATC clearance with live authority stays in
         #   RUNNING_MOVING with current_speed_kmh == 0. The reactive speed-based
@@ -897,7 +897,7 @@ class TrainController:
         #   case (RUNNING_MOVING -> READY once stopped with no live authority and
         #   EB clear). Per design_new.md steps `89ba` / `32dd` / `90d3`, tick()
         #   must not latch path completion or call route callbacks itself: all
-        #   completion flows through Phase 3's try_complete_active_path(...).
+        #   completion flows through Observe's try_complete_active_path(...).
         #
         # Other states (READY, RUNNING_AT_STATION, OFF) handled by commands.
 
@@ -1761,8 +1761,8 @@ class TrainController:
 
         Per design_new.md (Controller state machine subsection): true when
         ``state == READY`` and none of the active conditions
-        ``{HAS_AUTHORITY, EB_LATCHED, POWER_OFF_PENDING}`` are set. Phase-1
-        route-deviation cleanup and Phase-1 dwell-entry both gate on this
+        ``{HAS_AUTHORITY, EB_LATCHED, POWER_OFF_PENDING}`` are set. Plan
+        route-deviation cleanup and Plan dwell-entry both gate on this
         predicate; other call sites cross-reference it by name and must not
         restate the conjuncts.
         """
@@ -1781,7 +1781,7 @@ class TrainController:
         """True when the train is stopped at the usable end of active authority.
 
         Per design_new.md step `8df5`, this is the post-physics usable-
-        authority stop check used by Phase 3 path completion.
+        authority stop check used by Observe path completion.
 
         The spec lists two satisfying cases: the train has either "physically
         progressed through the final `resource_sequence` entry" (its head
@@ -1832,7 +1832,7 @@ class TrainController:
         )
 
     # -------------------------------------------------------------------------
-    # Physics callback — Phase 2 storage / Phase 3 enqueue (per design_new.md)
+    # Physics callback — span storage + progress enqueue (Observe; per design_new.md)
     # -------------------------------------------------------------------------
 
     def on_physics_updated(
@@ -1840,21 +1840,21 @@ class TrainController:
         event_time: float,
         span_update: PhysicsSpanUpdate,
     ) -> None:
-        """Apply a TrainPhysics span_update and enqueue a Phase 3 progress
-        report. Delegates to ``ProgressReportBuilder``
+        """Apply a TrainPhysics span_update and enqueue a progress report for
+        Observe. Delegates to ``ProgressReportBuilder``
         (train_controller/progress_report.py); see there for the full
-        Phase-2 storage / Phase-3 enqueue procedure.
+        span-storage and progress-enqueue procedure.
         """
         self.progress_report.on_physics_updated(event_time, span_update)
 
     def build_detected_progress_report(self, event_time: float) -> None:
-        """Queue a Phase-3 report carrying only this tick's detector-confirmed
+        """Queue a progress report carrying only this tick's detector-confirmed
         block events. Delegates to ``ProgressReportBuilder``.
 
-        The stopped-simulation hardware poll's stand-in for the Phase-2 physics
+        The stopped-simulation hardware poll's stand-in for the Observe physics
         callback: that poll integrates no motion, so there is no span update to
         apply and nothing else the callback would contribute — but the detected
-        blocks still have to reach Phase 3, which is the only path that commits
+        blocks still have to reach Observe, which is the only path that commits
         them (see `SimulationController.poll_hardware_occupancy`).
         """
         self.progress_report.build_detected_progress_report(event_time)
@@ -2253,7 +2253,7 @@ class TrainController:
             pass
 
     def enter_station_dwell(self) -> Tuple[bool, Optional[str]]:
-        """Dwell-entry transition called by Phase 1 dwell-entry step.
+        """Dwell-entry transition called by Plan dwell-entry step.
 
         Per design_new.md, RouteExecutor invokes this directly when its
         preconditions are met. Acceptance preconditions (design_new.md:1901):
@@ -2282,11 +2282,11 @@ class TrainController:
         return (True, None)
 
     def finish_dwell(self) -> Tuple[bool, Optional[str]]:
-        """Dwell-end transition called by Phase 1 dwell-complete step.
+        """Dwell-end transition called by Plan dwell-complete step.
 
         Acceptance precondition (design_new.md:1902): `state ==
         RUNNING_AT_STATION`. EB latch state is NOT a precondition — the
-        Phase-3 teardown caller `RouteExecutor.remove_train_route_run(...)`
+        Action teardown caller `RouteExecutor.remove_train_route_run(...)`
         may invoke this with `eb.active == True` (the OFF cleanup that
         follows clears the latch). On acceptance, lands in READY (powered,
         stopped, not dwelling — cab selection is preserved as an orthogonal
@@ -2334,7 +2334,7 @@ class TrainController:
         already = self.ops.service_stop_active
         self.ops.service_stop_active = True
         self.ato.running = False
-        # Idempotent, so report only the transition — Phase 1 step `6a0d` calls
+        # Idempotent, so report only the transition — Plan step `6a0d` calls
         # this on every eligible tick while the run timer is elapsed.
         if not already:
             from notification_center import Kind as _Kind
@@ -2394,7 +2394,7 @@ class TrainController:
     def complete_power_off(self) -> None:
         """Controller-owned OFF-cleanup entry point (design_new.md:282, :1808).
 
-        Invoked by the Phase-3 ``pending_power_off`` consumer (step ``886a`` of
+        Invoked by the Action ``pending_power_off`` consumer (step ``886a`` of
         the Power-off procedure). It is the only ``OFF``-writing site besides the
         startup default, so the Operational state machine stays the single writer
         of ``state``. Callable only while ``power_off`` is latched; on commit it
@@ -2402,11 +2402,11 @@ class TrainController:
         ``eb.active``, clears ``ato.running``, and consumes ``pending_power_off``.
 
         Per design_new.md "Latch Table" (Clear/consume access) this method is
-        the one place `phase_latches.power_off` is cleared — not the Phase-3
+        the one place `phase_latches.power_off` is cleared — not the Action
         power-off consumer step that invokes it — so the field is cleared
         whichever of its two callers ran: that consumer step in the ordinary
         case, or `SimulationController.clear_failed_runtime()`'s step-`7c41`
-        fan-out across every controller, which is not a Phase-3 step at all. It
+        fan-out across every controller, which is not an Action step at all. It
         consumes the latch *when present* rather than requiring it, because the
         fan-out reaches controllers that never latched one — every entry to
         `OFF` except the startup default goes through here (Controller state

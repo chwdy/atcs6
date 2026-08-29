@@ -175,9 +175,9 @@ class SimulationController(SwitchOutputOwner):
         self.controllers: Dict[str, TrainController] = {}
         self.physics_instances: Dict[str, TrainPhysics] = {}
 
-        # Trains this tick's Step-0 detector read attributed a block entry or
+        # Trains this tick's global detector read attributed a block entry or
         # vacate to. Rewritten every `_detect_block_occupancy()`; read by the
-        # Phase-3 gate for a still-OFF transaction (design_new.md ":2181").
+        # Observe gate for a still-OFF transaction (design_new.md ":2181").
         self._detected_change_train_ids: Set[str] = set()
 
         # Wall time of the previous pass of the runtime loop, running or
@@ -236,7 +236,7 @@ class SimulationController(SwitchOutputOwner):
                 message=message,
             ),
         )
-        # Unidentified trains (design_new.md "Power -> Unidentified trains"): the Step-0 owner of
+        # Unidentified trains (design_new.md "Power -> Unidentified trains"): the Observe owner of
         # every confirmed entry that matches no existing train. It creates and
         # retires the unidentified train `Train` records; their block commits then run through
         # the ordinary per-train chain like any other train's.
@@ -358,7 +358,7 @@ class SimulationController(SwitchOutputOwner):
 
         Per design_new.md per-train tick transaction (Observe, Plan, Action):
           1. Advance simulation_time.
-          2. Step 0 reads every block's detector once; RouteExecutor.update(...)
+          2. The global detector read runs once per block; RouteExecutor.update(...)
              refreshes route-managed scheduling state; order_runnable_trains(...)
              returns the ordered runnable train ids.
           3. OBSERVE (batch): for every train, integrate movement and commit
@@ -378,7 +378,7 @@ class SimulationController(SwitchOutputOwner):
         self.operating_clock_advance(delta_seconds)
 
         # When a fatal physical-entry conflict has been reported, halt all
-        # train ticks (Phase 1/2/3 skipped) for the rest of this session.
+        # train ticks (Observe/Plan/Action skipped) for the rest of this session.
         # There is no release path in v1: the operator restarts the server
         # to begin a new session.
         if not self.environment_active or self.runtime_halted:
@@ -395,20 +395,20 @@ class SimulationController(SwitchOutputOwner):
         net._lookahead_memo_active = True
         net.bump_lookahead_world_version()
         try:
-            # Step 0 - Global block-current read + debounce + attribution
+            # Observe - global block-current read + debounce + attribution
             # (design_new.md "Power -> Block occupancy detection"). One world-wide
             # current read per tick reflecting end-of-last-tick positions. Confirmed
             # entered/vacated blocks are attributed to trains and stashed per
-            # controller; each train commits its slice in Phase 3 through the normal
+            # controller; each train commits its slice in Observe through the normal
             # on_controller_progress flow, and the precise position is snapped to the
             # block seam where the hardware leads it.
             self._detect_block_occupancy()
             # An open speed-calibration pass reads the calibration train's
-            # detected-entry slice here, inside the Step-0 window: attribution
-            # has just written it, and the train's own final Phase-2 callback
-            # has not yet folded and cleared it (design_new.md "Speed
+            # detected-entry slice here, inside the global detector-read window:
+            # attribution has just written it, and the train's own movement
+            # callback has not yet folded and cleared it (design_new.md "Speed
             # calibration", The clock is two confirmed entries). It is a read
-            # against an existing Step-0 handoff and writes nothing.
+            # against an existing detector-read handoff and writes nothing.
             self.speed_calibration.observe_detected_entries()
             net.bump_lookahead_world_version()
 
@@ -423,9 +423,9 @@ class SimulationController(SwitchOutputOwner):
             )
 
             # Build the per-tick contention snapshot + meet assignment before any
-            # train's Phase 1 (design_new.md "Contention snapshot" + "Meet
+            # train's Plan (design_new.md "Contention snapshot" + "Meet
             # coordination"): both read tick-start committed reservation state
-            # plus the runnable order, and Phase-1 step 66aa consumes them.
+            # plus the runnable order, and Plan step 66aa consumes them.
             self.route_executor.build_tick_coordination(ordered_train_ids)
 
             # === OBSERVE (all trains, one batch) ===
@@ -477,7 +477,7 @@ class SimulationController(SwitchOutputOwner):
             # Unidentified train identity follows connectivity, and only the committed
             # `Block.occupied_by` says which blocks each unidentified train ended the tick
             # holding — so the unidentified train reconciliation (merge, split, gap hold,
-            # retirement) runs once here, after every train's Phase 3
+            # retirement) runs once here, after every train's transaction
             # (design_new.md "Power -> Unidentified trains").
             self.unidentified_trains.reconcile(self._unidentified_clock())
 
@@ -550,7 +550,7 @@ class SimulationController(SwitchOutputOwner):
 
     def _settle_after_commits(self) -> None:
         """Drain the de-energize queue and refresh signals, after every train's
-        Phase 3 has committed.
+        Action has committed.
 
         After every train has emitted its voltages, drop any block that left the
         energized set this pass to 0V. Two things put a block in that state and
@@ -703,14 +703,14 @@ class SimulationController(SwitchOutputOwner):
         while stopped, and every block reads FREE no matter what is standing on
         it — including at boot, which is stopped by definition.
 
-        This is the tick's Step 0 and its commit, and nothing else: no Phase-1
-        planning, no Phase-2 command drain, no physics integration. Stopped has
+        This is the tick's Observe read and commit, and nothing else: no Plan
+        planning, no Action command drain, no physics integration. Stopped has
         to keep meaning stopped — queued operator commands still wait for the
         resume, no route is planned, no train is moved. What does run is the
         path design_new.md already defines for an occupant the app does not
-        drive (":2181"): Step 0 attributes the confirmed transitions, each
-        affected train enqueues a detected-blocks-only report, and its Phase 3
-        commits that report alone (`observing_only`).
+        drive (":2181"): the global detector read attributes the confirmed
+        transitions, each affected train enqueues a detected-blocks-only report,
+        and Observe commits that report alone (`observing_only`).
 
         No latch is consumed here and no arrival is recognized, because both
         are authored work (design_new.md "Latch Table": "A stopped session
@@ -735,13 +735,13 @@ class SimulationController(SwitchOutputOwner):
         try:
             self._detect_block_occupancy()
             # No calibration read here. A stopped pass runs the observing steps
-            # and nothing else, so no Phase 2 follows to consume a stashed
+            # and nothing else, so no physics callback follows to consume a stashed
             # slice; stashing one would leave a stale entry for the first tick
             # after the resume to mistake for a fresh confirmation.
             net.bump_lookahead_world_version()
 
-            # Only trains Step 0 attributed something to: every other train's
-            # slice is empty, so its Phase 3 would have nothing to commit.
+            # Only trains the global detector read attributed something to: every
+            # other train's slice is empty, so Observe would have nothing to commit for it.
             for train_id in sorted(self._detected_change_train_ids):
                 train = self.network.trains.get(train_id)
                 controller = self.controllers.get(train_id)
@@ -949,19 +949,20 @@ class SimulationController(SwitchOutputOwner):
         return failures
 
     def _detect_block_occupancy(self) -> None:
-        """Step 0 of the tick: read every block's current detector, debounce,
-        attribute confirmed transitions to trains, and stash each train's
-        entered/vacated block slice for its Phase-3 commit (design_new.md
+        """The global detector read at the front of Observe: read every block's
+        current detector, debounce, attribute confirmed transitions to trains,
+        and stash each train's entered/vacated block slice for its Observe
+        commit (design_new.md
         "Power -> Block occupancy detection"). The controller drains its slice in
         on_physics_updated and the existing on_controller_progress flow commits
         Block.occupied_by.
 
         Also records which trains this tick's read attributed a block change to,
-        in `_detected_change_train_ids`. Phase 2 consumes and clears the pending
-        sets themselves, so that set is the only thing left by Phase-3 time that
-        can answer "did Step 0 attribute a block entry or vacate to this train
-        this tick?" — the condition under which a still-OFF transaction must run
-        Phase 3 anyway (design_new.md ":2181").
+        in `_detected_change_train_ids`. The movement callback consumes and clears
+        the pending sets themselves, so that set is the only thing left by the
+        occupancy-commit step that can answer "did the detector read attribute a
+        block entry or vacate to this train this tick?" — the condition under which
+        a still-OFF transaction must run its Observe commit anyway (design_new.md ":2181").
         """
         detector = self.block_occupancy_detector
 
@@ -1005,7 +1006,7 @@ class SimulationController(SwitchOutputOwner):
         # A block one train has just physically entered may still be reserved
         # ahead for a different train. That train's authority runs through an
         # occupied block, so it is cut back before it can be acted on — and
-        # before Phase 3 commits the entry, which would otherwise hit the
+        # before Observe commits the entry, which would otherwise hit the
         # `reserved_for_other_train` fatal conflict.
         self._truncate_authority_at_occupied_reservations(entered_by_train)
 
@@ -1069,7 +1070,7 @@ class SimulationController(SwitchOutputOwner):
 
         When no valid remainder is left — the taken block is the first thing in
         front of the train — there is no shorter authority to hold, so the path
-        is cancelled instead. Either way the reservation is gone before Phase 3
+        is cancelled instead. Either way the reservation is gone before Observe
         commits the entry, which is what keeps a legitimate arrival from being
         reported as a `reserved_for_other_train` fatal conflict.
         """
@@ -1098,7 +1099,7 @@ class SimulationController(SwitchOutputOwner):
 
                 # No shorter authority to hold. Drop this one reservation so the
                 # entry commits cleanly, then tear the rest down through the
-                # ordinary cancel latch, which Phase 3 commits for a train that
+                # ordinary cancel latch, which Action commits for a train that
                 # may still be rolling.
                 reserved_by_path = getattr(block, "reserved_by_path", None)
                 if reserved_by_path and self.block_manager is not None:
@@ -1152,7 +1153,7 @@ class SimulationController(SwitchOutputOwner):
             became_unknown = unknown and not controller.presence_unknown
             controller.presence_unknown = unknown
             if unknown:
-                # Repeat the containment before Phase 1 on every detector read,
+                # Repeat the containment before Plan on every detector read,
                 # not just the rising edge.  An API call between ticks may have
                 # powered the record or attached fresh authority; none of that
                 # may survive long enough to plan or move while no occupancy
@@ -1181,7 +1182,7 @@ class SimulationController(SwitchOutputOwner):
         controller is written straight to `OFF` at zero speed. The direct write
         rather than `power_off_cmd()` for the same reasons `clear_failed_runtime`
         uses one: that command is stopped-only against a possibly non-zero
-        frozen speed, and it defers to a later Phase 3. The span stays as the
+        frozen speed, and it defers to a later Action. The span stays as the
         last estimate, so the question mark has a place on the layout; the
         record itself is kept for the operator to remove.
         """
@@ -1233,7 +1234,7 @@ class SimulationController(SwitchOutputOwner):
     def _freeze_lost_train_controller(controller: TrainController) -> None:
         """Keep an unconfirmed identifier inert until detection returns.
 
-        Step 0 calls this on the rising edge after releasing resources, and the
+        Observe calls this on the rising edge after releasing resources, and the
         per-train loop calls it again while ``presence_unknown`` remains true.
         Reapplying it matters: a command accepted just before the detector read
         must not revive a record that no longer represents a detected train.
@@ -1266,7 +1267,7 @@ class SimulationController(SwitchOutputOwner):
 
         # A question-mark identifier has no physical occupancy backing its
         # estimate. It is a diagnostic record, not a train to keep predicting:
-        # do not integrate physics while presence is unknown. Step 0 clears the
+        # do not integrate physics while presence is unknown. Observe clears the
         # flag automatically if detection returns, at which point the ordinary
         # transaction resumes from the retained last span.
         if controller.presence_unknown:
@@ -1324,8 +1325,8 @@ class SimulationController(SwitchOutputOwner):
         `poll_hardware_occupancy`) — and passes `observing_only=True` to run step
         `3e9b` and nothing after it.
 
-        If the controller is OFF and Step 0 attributed no block entry or vacate
-        to this train this tick, there is no movement to commit and this is a
+        If the controller is OFF and the global detector read attributed no block
+        entry or vacate to this train this tick, there is no movement to commit and this is a
         no-op except the persistent-state sync (design_new.md ":2181", ":2641").
         The skip is about having no movement to commit, not about power: a train
         that moves without power — pushed by hand, or an occupant the app does
@@ -1384,8 +1385,8 @@ class SimulationController(SwitchOutputOwner):
         route-deactivate. Calculating movement and committing occupancy already
         happened in Observe; Action only tears down.
 
-        Skipped, except the persistent-state sync, for an OFF train Step 0
-        attributed no block change to — the command drain that just ran in
+        Skipped, except the persistent-state sync, for an OFF train the global
+        detector read attributed no block change to — the command drain that just ran in
         Action may have powered it on, in which case this runs (design_new.md
         ":2181").
         """
@@ -1413,7 +1414,7 @@ class SimulationController(SwitchOutputOwner):
         self._sync_persistent_train_state(train, controller)
 
     # =========================================================================
-    # Phase-3 latch consumers (per design_new.md latch consumption rules)
+    # Action latch consumers (per design_new.md latch consumption rules)
     # =========================================================================
 
     def _consume_pending_path_cancel_request(
@@ -1457,7 +1458,7 @@ class SimulationController(SwitchOutputOwner):
                 run_complete=payload.run_complete,
             )
         else:
-            # No live path to cancel. Per design_new.md "Phase-3 latched-cancel
+            # No live path to cancel. Per design_new.md "Action latched-cancel
             # consumption" this step emits the consumption event itself here,
             # with `kind = "info"` and `error = None` — the latch found nothing
             # to do, which is not a failure — and passes `latch_event=True` so
@@ -1518,7 +1519,7 @@ class SimulationController(SwitchOutputOwner):
 
         Per design_new.md: the inclusive `phase_latches.path_cancel_request`
         was armed by `_apply_power_off_request()` and committed earlier in the
-        same Phase-3 pass (or correctly skipped when no active path existed).
+        same Action pass (or correctly skipped when no active path existed).
         This consumer performs only its own teardown — route-run removal plus
         controller-local OFF cleanup. It does NOT call
         `PathDispatcher.cancel_path(...)`.
@@ -1529,7 +1530,7 @@ class SimulationController(SwitchOutputOwner):
         # Per design_new.md Latch Table: gated by
         # `phase_latches.path_cancel_request is None`. The inclusive cancel
         # was armed by `_apply_power_off_request()` and either committed
-        # earlier in this same Phase-3 pass or was never written (no live
+        # earlier in this same Action pass or was never written (no live
         # path existed). If the inclusive cancel is still pending the train
         # was not stopped this tick — defer to a later one.
         if controller.route_hooks.phase_latches.path_cancel_request is not None:
@@ -1579,7 +1580,7 @@ class SimulationController(SwitchOutputOwner):
         controller.route_hooks.phase_latches.clear("route_deactivate")
 
     def _reevaluate_lighting_run(self, train: Train) -> None:
-        """Phase-3 step `26f5` — end an open lighting run whose conditions no
+        """Action step `26f5` — end an open lighting run whose conditions no
         longer hold.
 
         A run ends the moment the train leaves `READY`, leaves `manual` control
@@ -2312,7 +2313,7 @@ class SimulationController(SwitchOutputOwner):
         for block_id in sorted(surplus):
             manager.on_block_tail_vacated(block_id, train_id, None)
 
-        # Ordinary Step-0 attribution: connected surplus blocks become one unidentified train,
+        # Ordinary Observe attribution: connected surplus blocks become one unidentified train,
         # and a group touching an unidentified train that is already there joins it.
         attribution = self.unidentified_trains.attribute_unmatched_entries(
             set(surplus), self._unidentified_clock()
@@ -2445,7 +2446,7 @@ class SimulationController(SwitchOutputOwner):
         :attr:`failed_runtime`, stores the typed fatal payload for inspection,
         and emits a FATAL notification carrying the conflict details. While the
         flag is set, :meth:`update` only advances ``simulation_time`` and skips
-        Phase 1/2/3 for every train.
+        Observe/Plan/Action for every train.
         """
         self.enter_output_safe_state()
         self.request_session_stop()
@@ -2616,7 +2617,7 @@ class SimulationController(SwitchOutputOwner):
         canonical `OFF` writer for every entry but the startup default — rather
         than a queued `power_off_cmd()`, for two reasons: the command is
         stopped-only and the frozen speed may be non-zero, and it defers its
-        work to a Phase 3 that cannot run while the gate is shut. Routing
+        work to an Action pass that cannot run while the gate is shut. Routing
         through `complete_power_off()` is also what clears any `power_off`
         latch a controller was still holding when the halt shut the gate.
         Track voltage stays at the `0` `enter_safe_state()` left it at; the next
@@ -2640,7 +2641,7 @@ class SimulationController(SwitchOutputOwner):
             # `complete_power_off()` writes no speed; zero it here so nothing
             # resumes mid-motion.
             controller.physics_sync.current_speed_kmh = 0.0
-            # This fan-out is not a Phase-3 pass, so step `26f5` does not run
+            # This fan-out is not an Action pass, so step `26f5` does not run
             # for it — end any open lighting run here instead (design_new.md
             # "Lighting-voltage calibration", What the run drives).
             self.speed_calibration.cancel_lighting(train_id)

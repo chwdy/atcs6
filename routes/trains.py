@@ -787,10 +787,10 @@ def register(app, state: AppState) -> None:
         """Assign a route to a train.
 
         Per `design_new.md` line 272 (Operator retargeting / route swap), the
-        service atomically writes the Phase-3 route-abort latch and updates
+        service atomically writes the Action route-abort latch and updates
         `Route` assignment; it does NOT mutate `RouteExecutor.execution_states`
-        or cancel the path inline -- those flow through Phase-3 cleanup, and
-        Phase 1 of the next eligible tick allocates a fresh `RouteRun`.
+        or cancel the path inline -- those flow through Action cleanup, and
+        Plan of the next eligible tick allocates a fresh `RouteRun`.
         """
         data = request.get_json() or {}
         try:

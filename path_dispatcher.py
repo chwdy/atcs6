@@ -3,7 +3,7 @@ Path Dispatcher Module (v1)
 
 The PathDispatcher is the dispatcher-owned authority registry. It owns:
 - create_path / extend_path / cancel_path lifecycle for v1 Path entities
-- on_controller_progress consumption of TrainController's Phase-3 progress reports
+- on_controller_progress consumption of TrainController's Observe progress reports
 - try_complete_active_path for the canonical completion handshake
 - pathfinding helpers (find_paths, get_reachable_endpoints) used by routes/UI
 
@@ -898,7 +898,7 @@ class PathDispatcher:
                 reason=f"Cannot resolve current block for train {train_id}",
             )
 
-        # A same-HEAD-block target is a covered stop, finished by Phase 1's
+        # A same-HEAD-block target is a covered stop, finished by Plan's
         # covered-task index advance — never by dispatcher authority. Per the
         # create_path flow (design_new.md item 8) and invariant 9 (dispatcher
         # "never synthesizes an in-place frame from the train's own covered
@@ -1260,7 +1260,7 @@ class PathDispatcher:
         # The live authority already reaches this target block, so there is
         # nothing to append. Per design_new.md "create_path() / extend_path()
         # return contract" this is `reached_requested_target`, not a failure:
-        # Phase 1 re-requests the current target on every eligible tick while
+        # Plan re-requests the current target on every eligible tick while
         # the train runs out its authority, and each of those calls is a
         # successful no-op.
         #
@@ -1376,7 +1376,7 @@ class PathDispatcher:
         # candidate whose post-seam tile path re-enters a block the path
         # already holds (via the south tunnel, or any other connection that
         # loops the network), BEST_EFFORT truncates that loop into a closed
-        # prefix, and extend_path appends one full loop every Phase-1 tick.
+        # prefix, and extend_path appends one full loop every Plan tick.
         #
         # Blocks are tested against the live holdings (`_blocks_held_by`)
         # rather than the whole history, so a lap can close over a block the
@@ -2057,7 +2057,7 @@ class PathDispatcher:
         `reserve_segment` rolls back its own switch locks on block failure), and
         head-entry consumes the reservation as the train physically enters
         (`reserved_by_path` cleared). Handing those blocks to the release call
-        anyway just fires the diagnostic — every Phase-1 tick for a BEST_EFFORT
+        anyway just fires the diagnostic — every Plan tick for a BEST_EFFORT
         path that keeps retrying `extend_path(...)`, and once per block at
         completion/cancellation. Filtering here keeps the diagnostic meaningful
         for genuine cross-path mismatches while removing the routine churn.
@@ -2992,11 +2992,11 @@ class PathDispatcher:
         return path
 
     # ========================================================================
-    # Phase 3 progress consumer
+    # Observe progress consumer
     # ========================================================================
 
     def on_controller_progress(self, report: ControllerProgressReport) -> None:
-        """Phase 3 progress consumer."""
+        """Observe progress consumer."""
         if report is None:
             return
         train_id = report.train_id
@@ -3024,7 +3024,7 @@ class PathDispatcher:
                 # resources ahead of itself. The canonical lookahead reports
                 # `atc_limit = 0` with `atc_limit_reason_code = "deviation"`, so
                 # ATC brakes the train and the overspeed branch escalates to EB;
-                # the gated Phase-3 explicit-cancel step (`7b40`) commits the
+                # the gated Action explicit-cancel step (`7b40`) commits the
                 # latch through `cancel_path(...)` once `is_stopped()` is true,
                 # carrying the report's own `ErrorRecord` forward.
                 controller = self._get_controller(train_id)
@@ -3032,7 +3032,7 @@ class PathDispatcher:
                     # A recoverable problem the runtime acts on, so `"warning"`
                     # per design_new.md "Error events". The writer's own
                     # `ErrorRecord` (origin `"out_of_sequence"`) rides the
-                    # payload into the Phase-3 commit.
+                    # payload into the Action commit.
                     controller.route_hooks.phase_latches.set_path_cancel_request(
                         report.deviation_error
                         or ErrorRecord("head left resource_sequence", "out_of_sequence"),

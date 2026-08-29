@@ -67,9 +67,9 @@ def register(app, state: AppState) -> None:
         The handler never calls PathDispatcher.create_path / extend_path
         directly. It creates a RouteMode.ONE_OFF route with a single stop task,
         activates it, and assigns the train through
-        `train_service.assign_route(force=True)` — which writes the Phase-3
-        route-abort latch for any current run so Phase 3 tears it down, and the
-        next eligible Phase 1 builds the path, passing the route's
+        `train_service.assign_route(force=True)` — which writes the Action
+        route-abort latch for any current run so Action tears it down, and the
+        next eligible Plan builds the path, passing the route's
         `manual_override` down the acquisition chain. Returns the new route_id.
         """
         route = train_route_service.create_route(
@@ -154,7 +154,7 @@ def register(app, state: AppState) -> None:
                     )
 
                 # design_new.md:655 (Quick Route): construct a one-off route and
-                # assign the train; Phase 1 builds the path. The handler must NOT
+                # assign the train; Plan builds the path. The handler must NOT
                 # call PathDispatcher.create_path inline (request handlers do not
                 # change dispatcher path records — see "Layered responsibilities").
                 route_id = _assign_one_off_route(
@@ -250,10 +250,10 @@ def register(app, state: AppState) -> None:
         v1 semantics (per `design_new.md` lines 270, 351-352, 1003): API
         callers must not invoke `PathDispatcher.cancel_path(...)` inline.
         The handler writes `controller.route_hooks.phase_latches.path_cancel_request`
-        and returns immediately with ``status: "queued"``. Phase 3 of the
+        and returns immediately with ``status: "queued"``. Action of the
         simulation tick consumes the latch and calls
         ``PathDispatcher.cancel_path(...)`` once the train is fully stopped.
-        Block reservations and switch locks are released by the same Phase-3
+        Block reservations and switch locks are released by the same Action
         consumer; clients should refresh path state on a subsequent poll
         instead of mutating local UI state.
 
@@ -370,7 +370,7 @@ def register(app, state: AppState) -> None:
                 # assign a fresh one-off route toward the new destination. The
                 # handler must NOT call PathDispatcher.extend_path inline;
                 # `assign_route(force=True)` writes the route-abort latch and the
-                # next eligible Phase 1 grows the path toward the new target.
+                # next eligible Plan grows the path toward the new target.
                 train_id = path.train_id
                 if not train_id:
                     return (

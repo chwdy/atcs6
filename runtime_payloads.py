@@ -13,7 +13,7 @@ Schemas defined here:
 - ResourceEvent: a single entered/tail-vacated resource observation
 - ControllerProgressReport: produced by TrainController, consumed by PathDispatcher.on_controller_progress
 - PendingPathCancelRequest:
-  the per-train Phase-3 mailbox payloads
+  the per-train controller mailbox payloads
 
 `TrainSpan` itself is referenced as a forward type and not defined in this module
 because it is the canonical span schema owned by the train/controller side. This
@@ -183,7 +183,7 @@ class ResourceEvent:
 
 @dataclass
 class ControllerProgressReport:
-    """Phase-3 progress report produced by
+    """Observe progress report produced by
     TrainController.on_physics_updated(...) and consumed by
     PathDispatcher.on_controller_progress(...).
 
@@ -206,13 +206,13 @@ class ControllerProgressReport:
 
 
 # =============================================================================
-# Phase-3 mailbox payloads
+# Action mailbox payloads
 # =============================================================================
 
 
 @dataclass
 class PendingPathCancelRequest:
-    """Phase-3 latched cancellation payload written to TrainController.
+    """Action latched cancellation payload written to TrainController.
 
     Per design_new.md (Latch Table, Payload fields) the canonical fields are
     exactly these four:
@@ -220,7 +220,7 @@ class PendingPathCancelRequest:
         cancellation: ``"info"`` for a normal cancellation and ``"warning"``
         for a recoverable problem or safety action. Latch writers never use
         ``"error"``. It is recorded unchanged and independently of `error`,
-        and it is the level the Phase-3 `cancel_path(...)` consumption event
+        and it is the level the Action `cancel_path(...)` consumption event
         carries.
       * `error: Optional[ErrorRecord]` — the whole diagnostic record the writer
         hands forward. Required (non-`None`) on every request except a
@@ -228,12 +228,12 @@ class PendingPathCancelRequest:
         the free-form notification label (``"eb"``, ``"operator_cancelled"``,
         ``"power_off"``, ``"out_of_sequence"``, ``"revoked"``,
         ``"idle_hold_release"``, ``"contention_release"``,
-        ``"calibration_leg_complete"``); the Phase-3 commit puts the record in
+        ``"calibration_leg_complete"``); the Action commit puts the record in
         the cancellation event's `error` field.
       * `deviation: bool` — set only by the movement-derived deviation writer.
-        It rides the latch payload so the Phase-3 commit can forward the
+        It rides the latch payload so the Action commit can forward the
         classification into `cancel_path(...)`.
-      * `run_complete: bool` — set only by Phase 1 run step `6a0d` after its
+      * `run_complete: bool` — set only by Plan run step `6a0d` after its
         timer elapses and service stopping begins.
 
     The two booleans, never anything read out of `error`, drive the only
@@ -241,9 +241,9 @@ class PendingPathCancelRequest:
     diagnostic latch, while `run_complete` marks a normal route-progress
     release that must not set `RouteRun.path_cancelled`.
 
-    Consumed by Phase 3 only when the train is fully stopped. While the train
+    Consumed by Action only when the train is fully stopped. While the train
     is still rolling, the latch survives across ticks and is reconsidered on
-    the next eligible Phase 3 pass. Because v1 allows at most one active path
+    the next eligible Action pass. Because v1 allows at most one active path
     per train, the payload does not need a `path_id` routing key.
     """
 
@@ -264,11 +264,11 @@ class PendingPathCancelRequest:
 
 @dataclass
 class PhaseLatches:
-    """Aggregate of the four Phase-3 latches owned by `TrainController`.
+    """Aggregate of the four Action latches owned by `TrainController`.
 
     Per design_new.md (Latch Table) the four latches share the same lifecycle
-    rule: a writer sets them in Phase 2 (or in command handling) and Phase 3
-    consumes-and-clears them on the same tick once the consumer's gate passes.
+    rule: a writer sets a latch and its named Action consumer consumes-and-clears
+    it once the consumer's gate passes.
     Bundling the four fields plus their canonical writers / consumers into one
     data class keeps the latch discipline in a single place.
 
@@ -280,7 +280,7 @@ class PhaseLatches:
 
     Per design_new.md "Latch Table" (No shared consume accessor) this aggregate
     exposes no `consume_*()` accessor for the four fields. Each is cleared by
-    its own named Phase-3 consumer step, and the consume-side event is emitted
+    its own named Action consumer step, and the consume-side event is emitted
     by that step's own consume-side call (`PathDispatcher.cancel_path(...)`,
     `RouteExecutor.remove_train_route_run(...)`, or
     `TrainController.complete_power_off()`) per the Latch consumption events
@@ -327,7 +327,7 @@ class PhaseLatches:
         yet, so setting one and committing one are both worth seeing
         (design_new.md "Error events", Deferred actions are events too). Without
         the set event the intent is invisible whenever a second writer overwrites
-        the payload before Phase 3 reaches it — most-recent-payload-wins means
+        the payload before Action reaches it — most-recent-payload-wins means
         the first writer's `ErrorRecord` would otherwise never be seen at all.
 
         `kind` is the writer-declared level, recorded unchanged and
@@ -377,8 +377,8 @@ class PhaseLatches:
         malformed payload.
 
         `deviation` is set only by the movement-derived deviation writer; it
-        rides the latch payload into the Phase-3 `cancel_path(...)` commit.
-        `run_complete` is set only by Phase 1 run step `6a0d`; that is the only
+        rides the latch payload into the Action `cancel_path(...)` commit.
+        `run_complete` is set only by Plan run step `6a0d`; that is the only
         writer permitted to pass `True`. The two are mutually exclusive.
         """
         if deviation and run_complete:
@@ -496,7 +496,7 @@ class PhaseLatches:
 
     def is_route_teardown_pending(self) -> bool:
         """True while an operator route teardown (abort or deactivate) is
-        latched but not yet consumed in Phase 3.
+        latched but not yet consumed in Action.
 
         Excludes `power_off` (that path ends in OFF, not a route teardown)
         and the inclusive `path_cancel_request` leaf. Used only as a UI
@@ -512,7 +512,7 @@ class PhaseLatches:
     # Per design_new.md "Latch Table" (No shared consume accessor) there is no
     # `consume_*()` accessor for these four fields — `TrainController
     # .consume_service_stop()` is the only one in v1, and it owns the one latch
-    # outside this aggregate. Each field is cleared by its own named Phase-3
+    # outside this aggregate. Each field is cleared by its own named Action
     # consumer step through `clear(...)` below, and the consume-side event is
     # emitted by that step's own consume-side call, not from here: `cancel_path`
     # for `path_cancel_request`, `remove_train_route_run` for `route_abort` and
@@ -520,7 +520,7 @@ class PhaseLatches:
     # consumption events).
 
     def clear(self, field_name: str) -> None:
-        """Clear one latch field by name, for that field's own Phase-3
+        """Clear one latch field by name, for that field's own Action
         consumer step.
 
         Emits nothing: the consume-side event belongs to the step's
@@ -979,11 +979,11 @@ class ValidationResult:
 
 
 class PathDispatcherForRouteExecutor(Protocol):
-    """The PathDispatcher surface that RouteExecutor (the Phase-1 planner) drives.
+    """The PathDispatcher surface that RouteExecutor (which runs Plan) drives.
 
     RouteExecutor acquires and reads authority through these members. It never
-    calls `cancel_path(...)`: cancellation is latched in Phase 1 and committed
-    by the Phase-3 cancel -> callback -> cleanup flow (see the RouteExecutor
+    calls `cancel_path(...)`: cancellation is latched in Plan and committed
+    by the Action cancel -> callback -> cleanup flow (see the RouteExecutor
     module docstring), so `cancel_path` is intentionally absent here.
     """
 
@@ -1012,9 +1012,9 @@ class PathDispatcherForRouteExecutor(Protocol):
 
 
 class RouteExecutorForPathDispatcher(Protocol):
-    """The RouteExecutor surface that PathDispatcher calls back into during Phase 3.
+    """The RouteExecutor surface that PathDispatcher calls back into.
 
-    Each method is bookkeeping-only: it records the consequence of a Phase-3
+    Each method is bookkeeping-only: it records the consequence of a dispatcher
     event on the route side and must not create or choose fresh authority.
     """
 

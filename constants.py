@@ -48,10 +48,10 @@ LOOKAHEAD_TICKS: int = 5
 # release" (Planning Kernel step 66aa). A RouteRun holding a truncated
 # best-effort authority (authority_end_block_id != requested_destination_block_id)
 # that neither grows nor has the train moving for IDLE_HOLD_RELEASE_TICKS
-# consecutive Phase-1 ticks releases that authority through the
+# consecutive Plan ticks releases that authority through the
 # pending_path_cancel_request latch so higher-priority runs can claim the held
 # reservations/locks, then skips acquisition for IDLE_HOLD_COOLDOWN_TICKS ticks so
-# the freed resources stay available. Counted in Phase-1 ticks (not wall-clock
+# the freed resources stay available. Counted in Plan ticks (not wall-clock
 # seconds), so the release is deterministic and testable in the journey harness.
 IDLE_HOLD_RELEASE_TICKS: int = 30
 IDLE_HOLD_COOLDOWN_TICKS: int = 20
@@ -63,7 +63,7 @@ IDLE_HOLD_COOLDOWN_TICKS: int = 20
 # operator running a long session may raise it.
 NOTIFICATION_RETENTION_ROWS: int = 10000
 
-# How few block resources may remain ahead of the train head before Phase 1
+# How few block resources may remain ahead of the train head before Plan
 # arms the next target while the current `waypoint` is still unserved
 # (design_new.md "Route And RouteExecutor", Waypoint lookahead). Raising it
 # makes trains hold more track ahead of themselves and brake less at

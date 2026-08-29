@@ -2,7 +2,7 @@
 Route Hooks sub-module of ``TrainController``.
 
 Per design_new.md "TrainController" sub-module decomposition: Route
-Hooks owns the four Phase-3 latch fields (``path_cancel_request``,
+Hooks owns the four Action latch fields (``path_cancel_request``,
 ``route_abort``, ``power_off``, ``route_deactivate``) bundled under
 ``PhaseLatches``. The orchestrator entry points
 ``enter_station_dwell()``, ``finish_dwell()``, and
@@ -44,12 +44,12 @@ if TYPE_CHECKING:
 
 
 class RouteHooks:
-    """Owns the four Phase-3 retained latches bundled under PhaseLatches."""
+    """Owns the four Action retained latches bundled under PhaseLatches."""
 
     def __init__(self, controller: "TrainController") -> None:
         self._c = controller
         # Inject the emit hook rather than letting the aggregate reach for a
-        # controller: every latch write and every Phase-3 commit reports itself
+        # controller: every latch write and every Action commit reports itself
         # on the one stream (design_new.md "Error events", Deferred actions are
         # events too), while `PhaseLatches` stays a plain data class.
         self.phase_latches: PhaseLatches = PhaseLatches()

@@ -78,7 +78,7 @@ _CONTROLLER_DERIVED_FIELDS: List[str] = [
 ]
 
 # Direct controller fields (queued_progress_reports) remain attached to
-# TrainController. The four Phase-3 latches live nested under
+# TrainController. The four Action latches live nested under
 # `controller.route_hooks.phase_latches`. Each resolver path is set in
 # `_LATCH_META`'s `path` key. There is no toast queue to inspect: the
 # `Notifications` sub-module writes straight through to the one

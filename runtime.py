@@ -150,7 +150,7 @@ def create_simulation_loop(state: AppState) -> Callable[[], None]:
                     # Stopped, but the detectors have not stopped detecting.
                     # Occupancy is what the hardware says it is, so it is read
                     # and committed on the same cadence whether or not trains
-                    # are being ticked; `poll_hardware_occupancy` runs Step 0
+                    # are being ticked; `poll_hardware_occupancy` runs the Observe read
                     # and its commit alone, so nothing else about "stopped"
                     # changes. The mode is checked before taking the lock so a
                     # sim-mode session never contends for it while idle.

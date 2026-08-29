@@ -4,7 +4,7 @@ extracted from `RouteExecutor`.
 
 Per design_new.md "Canonical Next-Target Selection" the projection is a
 pure read: it never writes `task_runs[i].resolved_target`; that field is
-the exclusive write of Phase 1's authority-acquisition step. This module
+the exclusive write of Plan's authority-acquisition step. This module
 keeps the resolution logic structurally separate so the executor's tick
 loop can stay focused on state-machine transitions.
 
@@ -57,7 +57,7 @@ class RouteTargetResolver:
 
         Returns `None` when no next task on the directed walk exists.
         Never writes `task_runs[i].resolved_target`; that is the exclusive
-        write of Phase 1's authority-acquisition step.
+        write of Plan's authority-acquisition step.
 
         Dispatches on `task_kind` from `Route.tasks[i]`:
           * `"waypoint"` / `"stop"`: resolve a concrete target block + direction.
@@ -133,7 +133,7 @@ class RouteTargetResolver:
             # dwell whose `task_location` ID has left the network is BROKEN like
             # any other task: `missing_target` "applies to all task kinds,
             # including `dwell`" (design_new.md "RouteTaskRun schema"). Without
-            # this, Phase 1 would enter RUNNING_AT_STATION and hold on the timer
+            # this, Plan would enter RUNNING_AT_STATION and hold on the timer
             # of a station that no longer exists, instead of skipping it.
             if not self.task_target_present(task):
                 from runtime_payloads import TargetResolutionFailureKind
@@ -197,7 +197,7 @@ class RouteTargetResolver:
                     == resolved.requested_destination_direction
                 ):
                     # Per design_new.md (fix #14, part b): return a sentinel
-                    # projection with resolved_target=None so Phase 1 knows
+                    # projection with resolved_target=None so Plan knows
                     # "no more candidates this tick" without claiming a
                     # terminal walk (which would finalize the run prematurely).
                     return ResolvedNextTaskProjection(
@@ -311,7 +311,7 @@ class RouteTargetResolver:
         """
         pos = after_walk_position + 1
         # One full route-length scan is the budget, the same bound every other
-        # walk scan in Phase 1 uses.
+        # walk scan in Plan uses.
         for _ in range(max(1, route.get_task_count())):
             if pos >= len(exec_state.task_runs):
                 before = len(exec_state.task_runs)
@@ -382,7 +382,7 @@ class RouteTargetResolver:
         """Resolve `task.task_location` to a concrete `block_id`.
 
         Thin wrapper over `resolve_task_target_block_detailed(...)` that
-        drops the failure reason. Callers that need the reason (e.g. Phase 1
+        drops the failure reason. Callers that need the reason (e.g. Plan
         building the route-run error event's `ErrorRecord` per the canonical
         error-record writer rule in design_new.md) call the detailed
         variant directly.
@@ -452,7 +452,7 @@ class RouteTargetResolver:
         availability filter (every candidate block / platform / station is
         `disabled` or `manual` while RouteExecutor's auto-routing context
         cannot use manual_override). `reason` is a short human-readable
-        string suitable for the error event's `ErrorRecord.text`; Phase 1
+        string suitable for the error event's `ErrorRecord.text`; Plan
         emits it as one route-run error event (inlined in
         `tick_train_plan`) so the operator sees why the task stalled
         instead of an empty diagnostic.
@@ -680,7 +680,7 @@ class RouteTargetResolver:
         # finished (see its docstring). For ONE_OFF that means "no more
         # tasks to walk" — `_append_next_walk_task` is a no-op there. The
         # in-range check below would otherwise mistakenly resurrect the
-        # already-finished last task as the "next" one and prevent Phase 1
+        # already-finished last task as the "next" one and prevent Plan
         # from calling `finish_route_run(train_id)`.
         task_runs = getattr(exec_state, "task_runs", None) or []
         if route.mode == RouteMode.ONE_OFF and task_runs:

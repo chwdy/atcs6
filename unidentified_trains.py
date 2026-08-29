@@ -9,7 +9,7 @@ keeps every other train clear of it.
 
 An unidentified train is an ordinary `Train` with `is_unidentified = True` and its own
 `TrainController`, so its block entries and vacates flow through the same
-Step-0 -> Phase-2 callback -> Phase-3 coordinator/manager chain every other train
+global-detector-read -> movement-callback -> occupancy-commit chain every other train
 uses. Nothing here writes `Block.occupied_by`; the two exceptions are the
 identity reconciliation below (a unidentified-to-unidentified handoff after a merge or split,
 which is not a detector commit) and none other.
@@ -52,7 +52,7 @@ _EDGES: Tuple[str, ...] = ("N", "E", "S", "W")
 
 
 class UnidentifiedTrainTracker:
-    """The unidentified-train side of the Step-0 detector preamble."""
+    """The unidentified-train side of the global detector read."""
 
     def __init__(
         self,
@@ -103,7 +103,7 @@ class UnidentifiedTrainTracker:
         )
 
     # ------------------------------------------------------------------
-    # Step 0: attribution of confirmed entries that match no existing train
+    # Observe: attribution of confirmed entries that match no existing train
     # ------------------------------------------------------------------
 
     def attribute_unmatched_entries(
@@ -174,7 +174,7 @@ class UnidentifiedTrainTracker:
         still holding a neighbour, that neighbour's edge is the vacated block's
         `exit_edge`, so the block it left behind takes normal CAUTION. The edge
         goes into `physics_sync.pending_block_exit_edges`, the one carrier for a
-        per-block tail-vacate direction, and the controller's Phase-2 callback
+        per-block tail-vacate direction, and the controller's movement callback
         consumes it on this same tick — for an unidentified train it never buffers across ticks.
         """
         if not vacated:
@@ -197,13 +197,13 @@ class UnidentifiedTrainTracker:
     def write_detected_span(
         self, unidentified_id: str, entered: Set[str], vacated: Set[str]
     ) -> bool:
-        """Set an unidentified train's span from this tick's detector slice, during Step 0.
+        """Set an unidentified train's span from this tick's detector slice, during the global detector read.
 
         Called by `TrainPhysics.reconcile_to_detected_occupancy(...)`, which stays
-        the Step-0 span writer for every train (design_new.md ":2629"): detection
+        the detector-read span writer for every train (design_new.md ":2629"): detection
         is an unidentified train's only span source, and it arrives through that ordinary call.
         The blocks are the ones it holds now plus this tick's confirmed entries
-        minus its confirmed vacates — the commits themselves land in Phase 3.
+        minus its confirmed vacates — the commits themselves land in the occupancy commit.
 
         Returns True when the span changed.
         """
@@ -218,7 +218,7 @@ class UnidentifiedTrainTracker:
         """Bring unidentified train identity, spans, and holds back in line with the blocks
         the detector-confirmed commits actually left in place this tick.
 
-        Runs after every train's Phase 3, so `Block.occupied_by` is committed.
+        Runs after every train's transaction, so `Block.occupied_by` is committed.
         Identity follows connectivity: one unidentified train per connected group of
         unidentified-held blocks. A group holding two ids (two unidentified trains grew together)
         keeps the older id; an unidentified train whose blocks split into two groups keeps its

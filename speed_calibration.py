@@ -113,7 +113,7 @@ class CalibrationCommand:
 
     Applied by `SpeedCalibration.tick()` the way an operator driving in manual
     mode would: authority through `PathDispatcher`, power and cab through the
-    ordinary Phase-2 manual command surface. ATC, service-stop, and EB keep the
+    ordinary Action manual command surface. ATC, service-stop, and EB keep the
     same authority over the pass that they hold over any manual command.
     """
 
@@ -259,12 +259,12 @@ class SpeedCalibration:
         self._sc = simulation_controller
         self.runs: Dict[str, CalibrationRun] = {}
         self.lighting_runs: Dict[str, LightingCalibrationRun] = {}
-        # This tick's Step-0 detector read for the calibration train, stashed
+        # This tick's global detector read for the calibration train, stashed
         # by `observe_detected_entries(...)` and consumed by `tick_train(...)`
-        # in Phase 2 (design_new.md "Speed calibration", The clock is two
-        # confirmed entries). The read happens in Step 0 because that is where
-        # attribution has just written the slice and before the train's own
-        # final Phase-2 callback folds and clears it.
+        # in Action (design_new.md "Speed calibration", The clock is two
+        # confirmed entries). The read happens during the global detector read
+        # because that is where attribution has just written the slice and
+        # before the train's own final movement callback folds and clears it.
         self._step0_entries: Dict[str, Tuple[str, ...]] = {}
 
     # -- lifecycle --------------------------------------------------------
@@ -570,16 +570,16 @@ class SpeedCalibration:
     # -- runtime hook -----------------------------------------------------
 
     def observe_detected_entries(self) -> None:
-        """Read each open auto pass's Step-0 detected-entry slice.
+        """Read each open auto pass's detected-entry slice.
 
-        Called inside the Step-0 window, after attribution has written every
+        Called inside the global detector-read window, after attribution has written every
         train's `physics_sync.pending_detected_entered_blocks` and before the
         per-train loop begins, so the pass sees a confirmation the same tick
-        Step 0 credits it and before that train's own final Phase-2 callback
+        the global detector read credits it and before that train's own final movement callback
         folds and clears the slice (design_new.md "Speed calibration", The
         clock is two confirmed entries).
 
-        This is a read against an existing Step-0 handoff, not an additional
+        This is a read against an existing detector-read handoff, not an additional
         one: it writes nothing into the slice (design_new.md "Phase handoff
         rule", A read is not a handoff).
         """
@@ -692,7 +692,7 @@ class SpeedCalibration:
         Through the ordinary cancel latch, not a direct dispatcher call: the
         pass writes `set_path_cancel_request(...)` with
         `error.origin = "calibration_leg_complete"` like every other
-        cancellation, and the Phase-3 explicit-cancel step `7b40` commits it
+        cancellation, and the Action explicit-cancel step `7b40` commits it
         once the train has stopped (design_new.md "Speed calibration",
         Releasing a leg's authority goes through the ordinary cancel latch).
 

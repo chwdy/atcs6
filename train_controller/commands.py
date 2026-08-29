@@ -108,7 +108,7 @@ class OperatorCommands:
     def _drain_command_inbox(self, event_time: float) -> None:
         """Drain the command inbox in canonical kind order, FIFO within each.
 
-        Per design_new.md "Phase 2 — Execute" / "Driver/operator inputs",
+        Per design_new.md "Per-train tick transaction" / "Driver/operator inputs",
         commands are drained in the order: power_on -> set_mode -> set_cab
         -> set_manual_mode_type -> set_handle / set_manual_power_percent ->
         activate_emergency_cmd -> release_emergency_cmd -> power_off.
@@ -308,7 +308,7 @@ class OperatorCommands:
         exists) also writes pending_path_cancel_request with initiator =
         "power_off" (inclusive-latch rule). The actual dispatcher cancellation,
         route teardown, and OFF transition happen in the later eligible
-        Phase 3 cleanup.
+        Action cleanup.
         """
         c = self._c
         train = c._get_train()
@@ -321,7 +321,7 @@ class OperatorCommands:
         # power_off while already OFF is a no-op (design_new.md:1783): the train
         # is already off, so do NOT arm the `power_off` latch. A stale latch
         # would survive a later `power_on_cmd()` and tear the freshly-powered
-        # train straight back to OFF in the next Phase-3 cleanup.
+        # train straight back to OFF in the next Action cleanup.
         if c.ops.state == TrainState.OFF:
             return CommandResult(True, "Power off (already off)")
 
@@ -333,7 +333,7 @@ class OperatorCommands:
     # Power-off request side effects
     # -------------------------------------------------------------------------
     #
-    # The four Phase-3 latches themselves live on
+    # The four Action latches themselves live on
     # `self._c.route_hooks.phase_latches` (see
     # `runtime_payloads.PhaseLatches`). Setting `power_off` also has the
     # cross-field side effect of clearing `ato_running`; that side effect is

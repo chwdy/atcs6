@@ -4,18 +4,18 @@ Route Executor
 Per design_new.md "Route And RouteExecutor" and "Planning Kernel" sections.
 
 RouteExecutor owns:
-  * Phase 1 planning (`tick_train_plan`) for one train: route-deviation
+  * Plan (`tick_train_plan`) for one train: route-deviation
     cleanup, dwell-complete timer check, covered-task index advance,
     dwell-entry, target resolution, and authority acquisition via
     PathDispatcher.
-  * Phase 3 callbacks invoked synchronously by PathDispatcher:
+  * Dispatcher callbacks invoked synchronously by PathDispatcher:
     `handle_train_advanced`, `handle_path_cancellation`, `handle_path_completion`.
   * Runnable-train ordering for the per-tick simulation loop.
   * Removal of route runs for the abort/power-off paths.
 
-RouteExecutor never calls `PathDispatcher.cancel_path(...)` directly. Phase 1
+RouteExecutor never calls `PathDispatcher.cancel_path(...)` directly. Plan
 that wants to cancel an active path latches `phase_latches.path_cancel_request`
-on the controller mailbox and waits for the Phase 3 cancel→callback→cleanup
+on the controller mailbox and waits for the Action cancel→callback→cleanup
 flow.
 """
 
@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Pending admin/system cancellation latches that gate Phase-1 authority
+# Pending admin/system cancellation latches that gate Plan authority
 # acquisition per design_new.md (Planning Kernel section). Both create and
 # extend branches require this set to be empty in active_conditions.
 _PENDING_CANCEL_CONDITIONS = frozenset(
@@ -94,7 +94,7 @@ class ArmedTaskProjection:
 class ResolvedNextTaskProjection:
     """Projection returned by `_find_next_task_target(train_id)`.
 
-    Read-only result. Phase 1's authority-acquisition step is the only writer
+    Read-only result. Plan's authority-acquisition step is the only writer
     of `task_runs[walk_position].resolved_target`; this helper itself never
     writes that field.
 
@@ -105,7 +105,7 @@ class ResolvedNextTaskProjection:
     `failure_reason` carries the resolver's diagnostic when
     `resolved_target is None` for a non-dwell task because every candidate
     block / platform was filtered out (disabled, manual without override,
-    every station platform unavailable). Phase 1 writes this string directly
+    every station platform unavailable). Plan writes this string directly
     as the `ErrorRecord` of one route-run error event (inlined in
     `tick_train_plan`) so the operator sees why the task is stalled instead
     of an empty diagnostic. `None` for dwell projections and for the same-tick exclude
@@ -162,7 +162,7 @@ class RouteExecutionState:
     task_runs: List[RouteTaskRun] = field(default_factory=list)
     # Composite run-instance number assigned by RouteExecutor (diagnostic only).
     run_number: int = 0
-    # v1 latch consumed by Phase-1 route-deviation cleanup. With
+    # v1 latch consumed by Plan route-deviation cleanup. With
     # `path_cancel_was_deviation` it drives the derived `display_state`
     # projection (DEVIATED / CANCELLED while True).
     path_cancelled: bool = False
@@ -171,12 +171,12 @@ class RouteExecutionState:
     # every other authority cancellation (operator cancel, revoke, EB,
     # power-off). Written by `handle_path_cancellation(...)` from its
     # `was_deviation` argument; cleared together with `path_cancelled` by
-    # Phase-1 deviation cleanup. Drives the `display_state`
+    # Plan deviation cleanup. Drives the `display_state`
     # DEVIATED-vs-CANCELLED split.
     path_cancel_was_deviation: bool = False
-    # Phase-1-maintained flag (NOT a latch): set when every task on a
+    # Plan-maintained flag (NOT a latch): set when every task on a
     # CIRCULAR / ROUND_TRIP walk is broken (target ID missing from the
-    # network), cleared by the next Phase 1 pass that finds a valid task.
+    # network), cleared by the next Plan pass that finds a valid task.
     # Drives the derived `display_state == "STALLED"` projection. Always
     # False for ONE_OFF runs (they finish instead). Per design_new.md
     # "Unreachable and broken task handling".
@@ -209,9 +209,9 @@ class RouteExecutionState:
     # seeded position `s` for NEAREST / SPECIFIC. Written once at allocation by
     # `RouteExecutor._seed_start_position(...)`. Read only by `is_starting`.
     start_walk_position: int = 0
-    # Idle-hold release counters (NOT latches), Phase-1-maintained by direct
+    # Idle-hold release counters (NOT latches), Plan-maintained by direct
     # write in the authority-acquisition step. `idle_hold_ticks` counts
-    # consecutive Phase-1 ticks on a stalled truncated best-effort hold;
+    # consecutive Plan ticks on a stalled truncated best-effort hold;
     # `release_cooldown_ticks` is the post-release acquisition-skip countdown.
     # Per design_new.md "Idle-hold maintenance and release" (Planning Kernel
     # step 66aa).
@@ -516,11 +516,11 @@ class RouteExecutor:
         # Held re-assignment for a same-route structural `Route.tasks` edit (per
         # design_new.md "Shared-route edit teardown"). The structural-edit
         # handler records `train_id -> route_id` here instead of re-adding to
-        # `Route.assigned_train_ids` up front, because the Phase-3 deactivate
+        # `Route.assigned_train_ids` up front, because the Action deactivate
         # consumer's `remove_train_route_run(...)` unassigns the train from the
         # run's `route_id` as part of the clear -- an up-front re-add would be
         # undone by that unassign. The deactivate consumer applies the held
-        # re-assignment AFTER that clear, so the next eligible Phase 1 sees the
+        # re-assignment AFTER that clear, so the next eligible Plan sees the
         # train assigned with no RUNNING run and allocates a fresh run. Consumed
         # only by the route_deactivate consumer; abort/power-off never record it.
         self._pending_reassign: Dict[str, str] = {}
@@ -579,7 +579,7 @@ class RouteExecutor:
         """Return the train's currently-RUNNING `RouteRun`, or ``None``.
 
         Per design_new.md: a derived read keyed on
-        ``current_route_status == RUNNING``. Phases 1, 2, 3, and route
+        ``current_route_status == RUNNING``. Observe, Plan, Action, and route
         callbacks all use this accessor (rather than reading the underlying
         dict slot directly) so a stale DEACTIVATED/FINISHED row in the
         registry is never observed as the active run.
@@ -606,7 +606,7 @@ class RouteExecutor:
           2. Otherwise scan `route_registry` for the first route whose
              `assigned_train_ids` contains the train. This covers the
              between-tick window where `Route.assign_train(train_id)` has
-             been called but Phase 1 has not yet allocated an exec_state.
+             been called but Plan has not yet allocated an exec_state.
         """
         state = self.execution_states.get(train_id)
         if state is not None:
@@ -914,7 +914,7 @@ class RouteExecutor:
     # ------------------------------------------------------------------
     # Per-tick coordination (design_new.md "Contention snapshot" +
     # "Meet coordination"). Built in the tick preamble after
-    # order_runnable_trains and before the first train's Phase 1.
+    # order_runnable_trains and before the first train's Plan.
     # ------------------------------------------------------------------
 
     def build_tick_coordination(self, ordered_train_ids: List[str]) -> None:
@@ -1125,7 +1125,7 @@ class RouteExecutor:
         Per design_new.md, this method does NOT iterate trains. The
         `SimulationController` outer loop owns per-train transactions and
         calls `RouteExecutor.tick_train_plan(train_id, delta_seconds)` once
-        for each runnable train as the entry point of Phase 1.
+        for each runnable train as the entry point of Plan.
         """
         return
 
@@ -1294,13 +1294,13 @@ class RouteExecutor:
         exec_state = self.execution_states.get(train_id)
         return train, route, exec_state
 
-    # ------------------------------------------------------------------ Phase 1
+    # ------------------------------------------------------------------ Plan
     def tick_train_plan(self, train_id: str, delta_seconds: float) -> None:
-        """Canonical Phase 1 entry point for one train.
+        """Canonical Plan entry point for one train.
 
         Per design_new.md "Planning Kernel" steps (1)-(7). Each step has its
         own gating predicate; steps 1-5 always run, steps 6-7 are gated by
-        the Phase-1 eligibility precondition.
+        the Plan eligibility precondition.
         """
         train = (
             self.network.trains.get(train_id)
@@ -1314,7 +1314,7 @@ class RouteExecutor:
         if controller is None:
             controller = self._get_controller(train)
 
-        # If controller is OFF, Phase 1 is skipped entirely.
+        # If controller is OFF, Plan is skipped entirely.
         if controller.ops.state == TrainState.OFF:
             return
 
@@ -1323,7 +1323,7 @@ class RouteExecutor:
         if route_id:
             route = self.route_registry.get(route_id)
 
-        # No route assignment → no Phase 1 work for this train.
+        # No route assignment → no Plan work for this train.
         if route is None or not getattr(route, "is_active", False):
             return
 
@@ -1331,7 +1331,7 @@ class RouteExecutor:
             route.assign_train(train_id)
         exec_state = self._ensure_run_for(train, route)
 
-        # Terminal runs do nothing in Phase 1.
+        # Terminal runs do nothing in Plan.
         if exec_state.current_route_status in (
             RouteRunStatus.FINISHED,
             RouteRunStatus.DEACTIVATED,
@@ -1340,7 +1340,7 @@ class RouteExecutor:
 
         now = self._now()
 
-        # Phase 1 kernel — step IDs trace back to design_new.md "Planning
+        # Plan kernel — step IDs trace back to design_new.md "Planning
         # Kernel" section. The `9c4f` (RouteRun reallocation) step is
         # performed earlier inside `_ensure_run_for(...)`; this method
         # picks up at `5fc7`.
@@ -1408,7 +1408,7 @@ class RouteExecutor:
             self._dwell_entry_step(
                 train, route, exec_state, controller, projection.walk_position
             )
-            # Phase 1 returns for this tick once dwell-entry decides — no path
+            # Plan returns for this tick once dwell-entry decides — no path
             # creation while dwell is pending or active.
             return
 
@@ -1439,7 +1439,7 @@ class RouteExecutor:
         # built toward — e.g. a StationTarget re-resolving to a different
         # platform — the already-acquired authority toward the old block is
         # potentially stale. Latch a `revoked` cancel and wait for the ordinary
-        # Phase 3 cancel / replan flow instead of extending toward a different
+        # Action cancel / replan flow instead of extending toward a different
         # block; the same RouteRun is kept (this is NOT a structural
         # Route.tasks edit). Normal waypoint-chaining advances to a fresh
         # walk-position whose stored `resolved_target` is still None, so it
@@ -1543,7 +1543,7 @@ class RouteExecutor:
                         projection.failure_reason,
                     )
                 break  # sentinel projection — no more candidates this tick
-            # Phase 1 step `66aa`: dispatch via PathDispatcher.create_path or
+            # Plan step `66aa`: dispatch via PathDispatcher.create_path or
             # extend_path (v1 signature). Both methods take train_id +
             # requested_destination_block_id + requested_destination_direction +
             # acquisition_mode and return a PathAcquisitionResult.
@@ -1565,7 +1565,7 @@ class RouteExecutor:
         # and release", step 66aa). A truncated best-effort hold that neither
         # grew this tick nor has the train moving accrues idle ticks; at the
         # threshold it latches the ordinary cancel and returns True (stop
-        # planning this tick — Phase 3 commits the release).
+        # planning this tick — Action commits the release).
         if self._maintain_idle_hold(train_id, controller, exec_state, auth_end_before):
             return
 
@@ -1609,7 +1609,7 @@ class RouteExecutor:
             return
 
         if route is not None and route.mode == RouteMode.ONE_OFF:
-            # No valid task left: skip the broken task; the next Phase 1 sees
+            # No valid task left: skip the broken task; the next Plan sees
             # the terminal walk and finishes the run (having served nothing).
             exec_state.no_reachable_task = False
             self._skip_broken_task(exec_state, route, failed_walk_position)
@@ -1704,7 +1704,7 @@ class RouteExecutor:
         `"route_run"` ref and a `"walk_position"` ref, so a run-level filter
         and a task-level filter both find it.
 
-        Repeats are suppressed by `NotificationCenter`, so Phase 1 may call
+        Repeats are suppressed by `NotificationCenter`, so Plan may call
         this on every eligible tick while a task stays blocked for the same
         reason.
         """
@@ -1749,7 +1749,7 @@ class RouteExecutor:
         blocked — one of the v1 error origins (`"planning_failed"`,
         `"task_skipped"`, `"run_stalled"`, `"wedge"`, `"meet_hold"`). Repeats
         with the same entity, operation, origin and payload are suppressed by
-        `NotificationCenter`, so Phase 1 may call this on every eligible tick.
+        `NotificationCenter`, so Plan may call this on every eligible tick.
         """
         sc = getattr(self, "simulation_controller", None)
         nc = getattr(sc, "notification_center", None) if sc is not None else None
@@ -1772,7 +1772,7 @@ class RouteExecutor:
                 pass
         logger.warning("route warning for %s (%s): %s", train_id, origin, reason)
 
-    # ----- Phase 1 sub-steps ------------------------------------------------
+    # ----- Plan sub-steps ---------------------------------------------------
     def _deviation_cleanup_eligible(self, controller: TrainController) -> bool:
         """Predicate for the route-deviation cleanup latch consumer.
 
@@ -1781,13 +1781,13 @@ class RouteExecutor:
         return bool(getattr(controller, "is_recovery_clean", False))
 
     def is_clean_for_create(self, train_id: str) -> bool:
-        """Canonical Phase-1 create-branch gate per design_new.md.
+        """Canonical Plan create-branch gate per design_new.md.
 
         Per the Planning Kernel section: true when the controller has reached
         recovery (``is_recovery_clean``), no pending admin/system cancellation
         latch is set (``PATH_CANCEL_PENDING``, ``ROUTE_ABORT_PENDING``,
         ``ROUTE_DEACTIVATE_PENDING`` all clear), and the route-run's deviation
-        latch (``path_cancelled``) is clear. Phase 1 invokes ``create_path``
+        latch (``path_cancelled``) is clear. Plan invokes ``create_path``
         only when this predicate is true.
         """
         controller = self._controller_by_id(train_id)
@@ -1805,12 +1805,12 @@ class RouteExecutor:
     def _eligible_for_authority_acquisition(
         self, controller: TrainController, exec_state: RouteExecutionState
     ) -> bool:
-        """Phase-1 eligibility precondition for create_path / extend_path.
+        """Plan eligibility precondition for create_path / extend_path.
 
         Per design_new.md (Planning Kernel section): the dispatch is
         two-branch. Extend is allowed when an active path exists AND none of
         the three pending admin/system cancellation latches are set (so
-        Phase 1 does not extend a path Phase 3 is about to cancel). Create
+        Plan does not extend a path Action is about to cancel). Create
         delegates to ``is_clean_for_create``.
         """
         if controller.active_conditions & _PENDING_CANCEL_CONDITIONS:
@@ -1835,7 +1835,7 @@ class RouteExecutor:
         controller: TrainController,
         now: float,
     ) -> None:
-        """Phase 1 step 2: finish a dwell whose timer has elapsed.
+        """Plan step 2: finish a dwell whose timer has elapsed.
 
         Per design_new.md lines 1826/1828 (EB-while-dwelling rows `0a8e`/`9f74`):
         EB does NOT freeze the dwell timer — `started_at` is the derived
@@ -1918,7 +1918,7 @@ class RouteExecutor:
         now: float,
         delta_seconds: float,
     ) -> bool:
-        """Phase-1 handling for a `run` task (design_new.md Planning Kernel
+        """Plan handling for a `run` task (design_new.md Planning Kernel
         step `6a0d`, "Run timer, service stop, and normal-progress authority
         release").
 
@@ -1967,7 +1967,7 @@ class RouteExecutor:
 
         # Window elapsed: bring the train to a smooth stop and release the
         # onward authority so nothing re-drives it; the cancel commits in the
-        # gated Phase 3 once the train is stopped.
+        # gated Action once the train is stopped.
         controller.begin_service_stop()
         if (
             self._get_active_path_id(train_id) is not None
@@ -2003,7 +2003,7 @@ class RouteExecutor:
         controller: TrainController,
         now: float,
     ) -> None:
-        """Phase 1 step 4: skip already-covered `waypoint` and same-block `stop` tasks.
+        """Plan step 4: skip already-covered `waypoint` and same-block `stop` tasks.
 
         For each next non-finished task:
         - `waypoint`: satisfied when the resolved target block is already inside
@@ -2123,7 +2123,7 @@ class RouteExecutor:
         controller: TrainController,
         walk_position: int,
     ) -> None:
-        """Phase 1 step `3a37`: enter dwell when the next task is `dwell`.
+        """Plan step `3a37`: enter dwell when the next task is `dwell`.
 
         Preconditions: predecessor task finished, controller is in READY,
         `received_path_plan is None`, and a cab is selected.
@@ -2233,16 +2233,16 @@ class RouteExecutor:
         controller: TrainController,
         projection: ResolvedNextTaskProjection,
     ) -> bool:
-        """Phase 1 step 7: create or extend authority for the resolved target.
+        """Plan step 7: create or extend authority for the resolved target.
 
         Returns True when authority was successfully acquired (create/extend
         succeeded and depart() was called), False otherwise. The return value
         is used by the fix #14 retry loop in tick_train_plan.
 
         On a successful create/extend, write
-        ``task_runs[projection.walk_position].resolved_target`` (Phase-1-only
+        ``task_runs[projection.walk_position].resolved_target`` (Plan-only
         writer) and call ``controller.depart()``. Per design_new.md
-        line 1078, departure is not a route-level policy in v1: Phase 1
+        line 1078, departure is not a route-level policy in v1: Plan
         always calls ``depart()`` after a successful create/extend.
         There is no ``departure_requested`` latch.
         """
@@ -2324,17 +2324,17 @@ class RouteExecutor:
             # need the train to turn around at the current authority end, since
             # extension is forward-only. That does not clear by waiting, so
             # retrying against the same path would spin until the train ran out
-            # its authority and stopped. Latch a cancellation so Phase 3 tears
+            # its authority and stopped. Latch a cancellation so Action tears
             # the stale path down once the train stops; the next eligible
-            # Phase 1 will see no active path and acquire via create_path from
+            # Plan will see no active path and acquire via create_path from
             # the train's current span instead.
             # Per the **Planning Kernel** section this is the failure kind that
             # "latches cancellation before a fresh create attempt", and per the
-            # latch-table rules this is the same pattern Phase 1 uses for any
+            # latch-table rules this is the same pattern Plan uses for any
             # "live path must be replaced" condition: write the latch, stop
-            # planning this tick, let Phase 3 commit. BLOCKED_BEFORE_TARGET is
+            # planning this tick, let Action commit. BLOCKED_BEFORE_TARGET is
             # deliberately not here — it is a temporary live conflict, and the
-            # path stays valid while Phase 1 retries.
+            # path stays valid while Plan retries.
             fkind = getattr(result, "failure_kind", None)
             if (
                 active_path_id is not None
@@ -2528,7 +2528,7 @@ class RouteExecutor:
         if projection.direction in ("forward", "reverse"):
             exec_state.direction = projection.direction
 
-        # Per design_new.md line 1078: Phase 1 always calls depart() after a
+        # Per design_new.md line 1078: Plan always calls depart() after a
         # successful create/extend.
         depart = getattr(controller, "depart", None)
         if callable(depart):
@@ -2538,7 +2538,7 @@ class RouteExecutor:
                 if isinstance(_dep_result, tuple):
                     pass  # (success, reason) — no action needed on success
             except Exception as exc:
-                # Phase 1 retries depart() on a later tick; surface the
+                # Plan retries depart() on a later tick; surface the
                 # raised reason via NotificationCenter so operators see
                 # non-acceptance without aborting the planning kernel.
                 train_id = getattr(train, "train_id", "?")
@@ -2587,7 +2587,7 @@ class RouteExecutor:
 
         Per design_new.md "Idle-hold maintenance and release" (Planning Kernel
         step 66aa). Returns True when it latched an idle-hold release (the caller
-        stops planning this tick; Phase 3 commits the cancel). A truncated
+        stops planning this tick; Action commits the cancel). A truncated
         best-effort authority — one whose live walk does not reach the requested
         target, per ``Path.reaches_target(...)`` — that neither grew this tick
         (the authority end is unchanged from ``auth_end_before``) nor has the
@@ -2621,8 +2621,8 @@ class RouteExecutor:
         # 1544): a stalled best-effort hold whose reserved-ahead corridor blocks
         # a strictly-higher-priority run is released NOW, not after the idle-hold
         # timeout — the higher-priority run is waiting on resources this run is
-        # sitting on. Same latch path as the timeout release (Phase 1 latches;
-        # Phase 3 commits the cancel once stopped), only sooner.
+        # sitting on. Same latch path as the timeout release (Plan latches;
+        # Action commits the cancel once stopped), only sooner.
         if self._contention_release_due(train_id):
             controller.route_hooks.phase_latches.set_path_cancel_request(
                 ErrorRecord(
@@ -2648,7 +2648,7 @@ class RouteExecutor:
         if exec_state.idle_hold_ticks < IDLE_HOLD_RELEASE_TICKS:
             return False
         # Stalled past the budget: release the held truncated authority the
-        # ordinary system-replan way (Phase 1 latches; Phase 3 commits the
+        # ordinary system-replan way (Plan latches; Action commits the
         # cancel once stopped) and start the cooldown so the freed resources
         # stay available for higher-priority runs.
         controller.route_hooks.phase_latches.set_path_cancel_request(
@@ -2665,7 +2665,7 @@ class RouteExecutor:
         return True
 
     def finish_route_run(self, train_id: str) -> None:
-        """Phase 1 terminal-walk handler.
+        """Plan terminal-walk handler.
 
         Per design_new.md ``current_route_status`` write contract:
           * sets ``RouteRun.current_route_status = FINISHED``
@@ -2710,14 +2710,14 @@ class RouteExecutor:
             del self.execution_states[train_id]
         self._historical_runs.append(exec_state)
 
-    # ------------------------------------------------------------------ Phase 3
+    # --------------------------------------------------- dispatcher callbacks
     def handle_train_advanced(
         self,
         train_id: str,
         path_id: str,
         resource_event: ResourceEvent,
     ) -> None:
-        """Phase-3 head-advance callback. Consumes at most one task per call.
+        """Observe head-advance callback. Consumes at most one task per call.
 
         Per design_new.md:
           * Switches are no-ops on the route side.
@@ -2774,7 +2774,7 @@ class RouteExecutor:
         was_deviation: bool = False,
         was_run_completion: bool = False,
     ) -> None:
-        """Phase-3 cancellation callback.
+        """Action cancellation callback.
 
         Per design_new.md "route path-event callback schema" the v1 callback
         signature is ``(train_id, path_id, error, was_deviation=False,
@@ -2823,7 +2823,7 @@ class RouteExecutor:
         requested_destination_direction: Optional[str] = None,
         event_time: Optional[float] = None,
     ) -> bool:
-        """Phase-3 completion callback.
+        """Observe completion callback.
 
         Per design_new.md "Active-path completion procedure":
           * walk task_runs from the next non-finished list position
@@ -2863,7 +2863,7 @@ class RouteExecutor:
             if task.task_kind != "stop":
                 # waypoint, run, or dwell — none is the stop-completion match
                 # target. waypoint matches happen via handle_train_advanced;
-                # run tasks are completed only by Phase 1 step 6a0d; neither
+                # run tasks are completed only by Plan step 6a0d; neither
                 # is ever finished by dispatcher path completion.
                 if task.task_kind in ("waypoint", "run"):
                     # Skip but don't break — there may be a stop after.
@@ -2929,7 +2929,7 @@ class RouteExecutor:
         # Finish the matched stop row — plus any intervening walk-positions the
         # cursor lagged on — through the canonical `advance_walk_position(...)`
         # writer. The intervening sweep is a safety net: a waypoint the train
-        # passed and then vacated is no longer in its span, so Phase 1's
+        # passed and then vacated is no longer in its span, so Plan's
         # covered-task advance (which keys on span membership) can no longer
         # finish it; finishing it here keeps the derived progress cursor from
         # stalling behind a vacated waypoint. Both the cursor and the match
@@ -2948,7 +2948,7 @@ class RouteExecutor:
                 continue
             # The matched stop (pos == match_pos) is always finished here. An
             # intervening lagged row is force-finished ONLY when it is a
-            # `waypoint` the train passed and vacated — the sole case Phase 1's
+            # `waypoint` the train passed and vacated — the sole case Plan's
             # span-keyed covered-task advance can no longer reach. A non-waypoint
             # intervening row is outside that safety net and must not be
             # force-finished (it would fabricate an arrival/`delay_class`).
@@ -2977,8 +2977,8 @@ class RouteExecutor:
             path_id=path_id,
             payload={"block_id": authority_end_block_id},
         )
-        # Phase 3 must NOT call enter_station_dwell — that fires from the next
-        # eligible Phase 1 dwell-entry step.
+        # Observe must NOT call enter_station_dwell — that fires from the next
+        # eligible Plan dwell-entry step.
         return True
 
     def _record_delay_class(
@@ -3087,7 +3087,7 @@ class RouteExecutor:
         """
         exec_state = self.execution_state_for(train_id)
         if exec_state is None:
-            # No active run to remove; some other Phase-3 consumer already
+            # No active run to remove; some other Action consumer already
             # ran or no run was ever assigned.
             return
 
@@ -3157,7 +3157,7 @@ class RouteExecutor:
 
         # This call is the consume-side emitter for whichever of
         # `phase_latches.route_abort` / `route_deactivate` drove the teardown
-        # (design_new.md "Latch consumption events"). The Phase-3 step that
+        # (design_new.md "Latch consumption events"). The Action step that
         # invoked it clears the field once this returns. `latch_event=True`
         # keeps the commit half of the write/commit pair out of the
         # unchanged-repeat suppression.
@@ -3181,7 +3181,7 @@ class RouteExecutor:
                 pass
 
     def record_pending_reassign(self, train_id: str, route_id: str) -> None:
-        """Hold a same-route re-assignment until the Phase-3 deactivate clear
+        """Hold a same-route re-assignment until the Action deactivate clear
         is done (per design_new.md "Shared-route edit teardown").
 
         Recorded by the structural `Route.tasks` edit handler instead of
@@ -3196,7 +3196,7 @@ class RouteExecutor:
         has been torn down and unassigned. Returns the re-assigned `route_id`,
         or `None` when nothing was held.
 
-        Called only by the Phase-3 `pending_route_deactivate` consumer, after
+        Called only by the Action `pending_route_deactivate` consumer, after
         `remove_train_route_run(train_id)` -- per design_new.md "Shared-route
         edit teardown". The abort and power-off consumers never record a held
         re-assignment, so they tear down without re-assigning.
@@ -3214,7 +3214,7 @@ class RouteExecutor:
         """Drop any held re-assignment for `train_id` WITHOUT applying it.
 
         Per design_new.md "Shared-route edit teardown" (line 1461): when an
-        earlier Phase-3 consumer (abort / power-off) or a natural finish ended
+        earlier Action consumer (abort / power-off) or a natural finish ended
         the run before the deactivate consumer ran, the operator/admin teardown
         wins — the held re-assignment is discarded so a powered-off or aborted
         train is never silently re-assigned to the edited route.
@@ -3300,7 +3300,7 @@ class RouteExecutor:
         authority's terminal block must never land on a pass-through waypoint
         target or a run's direction-seed target. Waypoints are consumed by
         head-entry on a still-live authority; run tasks are completed only by
-        Phase 1 step `6a0d`. Neither is ever finished by dispatcher path
+        Plan step `6a0d`. Neither is ever finished by dispatcher path
         completion.
         """
         exec_state = self.execution_states.get(train_id)

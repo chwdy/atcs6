@@ -278,7 +278,7 @@ class NotificationCenter:
     ) -> bool:
         """Emit on change, not per tick (design_new.md "Error events").
 
-        Phase 1 retries a blocked task on every eligible tick, so an error is
+        Plan retries a blocked task on every eligible tick, so an error is
         emitted when the condition first appears and not again while the same
         entity stays blocked for the same reason. This compares the incoming
         event against the most recent retained event with the same `entities`,

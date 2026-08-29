@@ -1032,7 +1032,7 @@ def register(app, state: AppState) -> None:
                     # Null where there is no verdict to report: a block with no
                     # detector has nothing to conclude from, and one bound to a
                     # block id the layout does not have is never read at all
-                    # (Step 0 walks `network.blocks`). Reporting either as
+                    # (the global detector read walks `network.blocks`). Reporting either as
                     # "clear" would hide a mis-wired binding behind a normal
                     # answer.
                     "occupied": (

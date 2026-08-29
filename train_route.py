@@ -122,7 +122,7 @@ class RouteStartMode(Enum):
     """Policy for which stop a fresh route run begins at.
 
     Per design_new.md "Run start-mode seeding" canonical home. Consulted once,
-    when Phase 1 allocates a fresh RouteRun; it seeds the run's starting
+    when Plan allocates a fresh RouteRun; it seeds the run's starting
     walk-position and is never re-read after that. This is why it is a
     route-level default plus a per-assignment input, not a live RouteRun
     override.
@@ -242,7 +242,7 @@ class RouteTask:
         adds the delay it was meant to absorb to every task after it.
 
         For `waypoint` / `stop` / `run` tasks, returns True — the caller
-        controls movement, and this method is consulted only by the Phase 1
+        controls movement, and this method is consulted only by the Plan
         dwell-complete check.
         """
         if self.task_kind != "dwell":
@@ -367,7 +367,7 @@ class RouteTaskRun:
     finished_at_operating: Optional[float] = None
     delay_class: Optional[Literal["early", "on_time", "late"]] = None
     # Stored simulated-time accumulator for a `task_kind == "run"` task's
-    # timer. Per design_new.md "RouteTaskRun schema": Phase 1 step `6a0d`
+    # timer. Per design_new.md "RouteTaskRun schema": Plan step `6a0d`
     # is its only writer. Meaningless for every other task_kind.
     run_elapsed_seconds: float = 0.0
 
@@ -436,7 +436,7 @@ class Route:
     # row already stores both stamps.
     timing_basis: Literal["operating", "realtime"] = "operating"
     # Start-mode default (per design_new.md "Run start-mode seeding"). Read once
-    # when Phase 1 allocates a fresh RouteRun to seed its starting walk-position;
+    # when Plan allocates a fresh RouteRun to seed its starting walk-position;
     # NOT a live RouteRun override (it has no meaning after allocation). A
     # per-assignment choice can override this for a single run. `start_task_index`
     # is the stop index used only when `start_mode == SPECIFIC`.
@@ -485,7 +485,7 @@ class Route:
         is supplied, walk every assigned train and call
         ``controller.route_hooks.phase_latches.set_route_deactivate(...)``, which writes
         the deactivate latch and (when an active path exists) fans out to
-        ``set_path_cancel_request(initiator="revoked")``. Phase 3 then commits
+        ``set_path_cancel_request(initiator="revoked")``. Action then commits
         the cancel and the route-run teardown.
 
         ``simulation_controller`` is optional so direct-pause callers (tests,

@@ -423,7 +423,7 @@ def setup_demo_train(
         and North Terminal, with 2 s dwells at each platform stop.
 
     The demo train is assigned to V2 by default; V1 stays registered but
-    unassigned. Phase 1 acquires the V2 path on the first powered tick.
+    unassigned. Plan acquires the V2 path on the first powered tick.
     """
     from train_route import (
         BlockTarget,
@@ -569,8 +569,8 @@ def setup_demo_train(
     sim_controller.route_executor.register_route(demo_route_v2)
     demo_route_v2.assign_train(demo_train.train_id)
 
-    # 7. Queue the power_on operator command. Phase 2's drain executes it on
-    #    the first tick; from tick 2 onward Phase 1 sees a powered-on
+    # 7. Queue the power_on operator command. Action's drain executes it on
+    #    the first tick; from tick 2 onward Plan sees a powered-on
     #    controller, acquires the path for DEMO_ROUTE_V2, and auto-departs.
     controller = sim_controller.get_or_create_controller(demo_train.train_id)
     controller.commands.enqueue_command("power_on")

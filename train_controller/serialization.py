@@ -116,7 +116,7 @@ def controller_to_dict(controller: "TrainController") -> Dict[str, Any]:
             else None
         ),
         # UI projection: True while an operator route teardown (abort or
-        # deactivate) is latched but not yet consumed in Phase 3. The layout
+        # deactivate) is latched but not yet consumed in Action. The layout
         # renderer tints the train light purple during this window. Excludes
         # power_off (ends in OFF, not a route teardown).
         "route_teardown_pending": (

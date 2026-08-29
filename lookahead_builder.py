@@ -157,7 +157,7 @@ class LookaheadBuilder:
                 # it, so the anchor reports `atc_limit = 0` with reason
                 # `deviation`. ATC brakes the train and the overspeed branch in
                 # step `826a` escalates a still-rolling train to EB; the gated
-                # Phase-3 explicit-cancel step commits the latch once stopped.
+                # Action explicit-cancel step commits the latch once stopped.
                 # The `no_authority` reason remains for a genuinely-absent plan
                 # (handled in the `not plan` branch above) and for any other
                 # head-off-path case with no deviation latch pending.

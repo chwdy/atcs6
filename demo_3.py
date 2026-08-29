@@ -393,7 +393,7 @@ def setup_demo_train(
         # Pre-create the per-train RouteExecutionState with task_runs
         # phase-shifted so this train's next planning task lands on the
         # dwell at its current station. `_sync_task_runs` will append the
-        # remaining task rows on the first Phase-1 tick, leaving the
+        # remaining task rows on the first Plan tick, leaving the
         # phase-shifted prefix alone.
         executor = sim_controller.route_executor
         run_count = executor._run_count_for_route.get(route.route_id, 0) + 1

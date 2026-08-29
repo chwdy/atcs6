@@ -2,7 +2,7 @@
 coordination").
 
 A meet is a global decision — which train takes a shared single-track section
-and where the other waits — that no single train's Phase 1 can make from its own
+and where the other waits — that no single train's Plan can make from its own
 view. `RouteExecutor` builds one meet assignment per tick in the preamble (after
 the contention snapshot), where the global view exists. The assignment is a
 deterministic function of `RouteRun.effective_priority` and the stable
@@ -43,7 +43,7 @@ from typing import Dict, List, Optional, Tuple
 class MeetCeiling:
     """A cap on how far a train may acquire authority this tick.
 
-    `block_id` is the ceiling block: Phase 1 passes it as the
+    `block_id` is the ceiling block: Plan passes it as the
     `acquisition_cap_block_id` so authority is acquired toward the real route
     target but stored no further than this block. `direction` is the
     block-relative `"forward"` / `"reverse"` the train traverses the ceiling

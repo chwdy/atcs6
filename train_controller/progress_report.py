@@ -1,4 +1,4 @@
-"""ProgressReportBuilder — turn a TrainPhysics span update into a Phase-3
+"""ProgressReportBuilder — turn a TrainPhysics span update into an Observe
 progress report for one TrainController.
 
 Extracted from train_controller/__init__.py with behavior unchanged. The
@@ -34,7 +34,7 @@ class ProgressReportBuilder:
         event_time: float,
         span_update: PhysicsSpanUpdate,
     ) -> None:
-        """Apply a TrainPhysics span_update and enqueue a Phase 3 progress report.
+        """Apply a TrainPhysics span_update and enqueue a progress report for Observe.
 
         Per design_new.md "Physical progress / deviation procedure" and
         "TrainController" sections:
@@ -42,11 +42,11 @@ class ProgressReportBuilder:
         2. Build a ControllerProgressReport from the tile delta (added/removed
            tiles -> entered/tail-vacated resource events).
         3. Append the report to ``self._c.physics_sync.queued_progress_reports``
-           for SimulationController to drain in Phase 3.
+           for SimulationController to drain in Observe.
 
         For powered-off transactions, the controller still applies span/speed
-        but must not enqueue dispatcher/route progress reports because Phase 3
-        is skipped. This method honors that rule: if power is off and the
+        but must not enqueue dispatcher/route progress reports because the
+        Observe commit is skipped. This method honors that rule: if power is off and the
         state is OFF, the queue write is skipped.
         """
         # 1. Storage update (canonical span + speed). The doc's TrainSpan is
@@ -82,14 +82,14 @@ class ProgressReportBuilder:
             # only TrainController.eb.release() drives the return to READY.
             self._c.transition_to_ready()
 
-        # 2/3. Build progress report from tile delta and enqueue for Phase 3.
+        # 2/3. Build progress report from tile delta and enqueue for Observe.
         if self._c.ops.state == TrainState.OFF:
             # Powered-off transactions append no dispatcher/route progress to the
-            # mailbox BEYOND the block observations folded in from the Step-0
-            # detected sets (design_new.md ":2181"). Those observations are the
+            # mailbox BEYOND the block observations folded in from the
+            # detector-read detected sets (design_new.md ":2181"). Those observations are the
             # only path by which a train that moves without power — pushed by
             # hand, or an unidentified train, which is always OFF — commits its block
-            # entries and vacates, and Phase 3 runs for exactly those ticks.
+            # entries and vacates, and the Observe commit runs for exactly those ticks.
             self._enqueue_detected_blocks_only_report(event_time)
             return
 
@@ -275,7 +275,7 @@ class ProgressReportBuilder:
         """Public entry to the detected-blocks-only report, for a caller that
         has no span update to apply.
 
-        The Phase-2 physics callback reaches the same builder through the
+        The Observe physics callback reaches the same builder through the
         powered-off branch of `on_physics_updated`. The stopped-simulation
         hardware poll has no callback at all — it integrates no motion — so it
         enqueues through here instead. Same report either way: whatever the
@@ -287,10 +287,10 @@ class ProgressReportBuilder:
     def _enqueue_detected_blocks_only_report(self, event_time: float) -> None:
         """Queue a report carrying nothing but this tick's detected block events.
 
-        The still-OFF form of the Phase-2 callback: no movement happened, so
+        The still-OFF form of the Observe physics callback: no movement happened, so
         there are no tile deltas, and a powered-off transaction carries no route
         progress — the block events go out with no `sequence_index` and no
-        deviation verdict. Enqueues nothing when Step 0 attributed no block change
+        deviation verdict. Enqueues nothing when the global detector read attributed no block change
         to this train.
         """
         ps = self._c.physics_sync

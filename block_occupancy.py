@@ -17,7 +17,7 @@ Layers (mirrors the TrackOutput pattern in block_power.py):
     confirmed transition to a train.
 
 Authority: the confirmed set is what Block.occupied_by follows. The confirmed
-entered/vacated observations are committed in Phase 3 through the existing
+entered/vacated observations are committed in Observe through the existing
 PathDispatcher.on_controller_progress flow (the controller re-sources its block
 events from the detector instead of from the precise tile diff). Switch
 occupancy is NOT detected here — switches keep commanded Switch.position
@@ -291,11 +291,11 @@ class BlockOccupancyDetector:
         A confirmed entry that matches no existing train belongs to an
         **unidentified train** (design_new.md "Attribution"), but creating one is not this pure
         attribution step's job: it writes no block state and registers no train.
-        The Step-0 preamble hands `unmatched_entries` to `UnidentifiedTrainTracker`,
+        The global detector read hands `unmatched_entries` to `UnidentifiedTrainTracker`,
         which resolves each block to an unidentified train `train_id` — new or continuing — and
         the result merges into `entered_by_train`. From that point the unidentified train is an
-        ordinary train, so every slice commits through its own Phase-3
-        transaction and nothing here needs a side channel into
+        ordinary train, so every slice commits through its own Observe
+        commit and nothing here needs a side channel into
         `Block.occupied_by`.
         """
         entered_by_train: Dict[str, Set[str]] = {}

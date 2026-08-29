@@ -366,7 +366,7 @@ def diagnose_stopped_train(state: AppState, train_id: str) -> dict:
 
     A train that will not move is the hardest thing in this app to diagnose,
     because each gate is individually reasonable and none of them says anything.
-    The route is assigned but Phase 1 never plans it because the train is `OFF`;
+    The route is assigned but Plan never plans it because the train is `OFF`;
     the path exists but ATO was never told to go; everything is green but the
     block has no track binding so the rail is dead. From the layout all of those
     look identical: a train that sits there.
@@ -632,9 +632,9 @@ def assign_route(
     """Assign, retarget, or clear a train's route.
 
     Per design_new.md "Operator retargeting / route swap" this writes the
-    Phase-3 route-abort latch and updates ``Route`` assignment, but never
+    Action route-abort latch and updates ``Route`` assignment, but never
     mutates ``RouteExecutor.execution_states`` or cancels the path inline --
-    those flow through Phase-3 cleanup, and Phase 1 of the next eligible
+    those flow through Action cleanup, and Plan of the next eligible
     tick allocates a fresh RouteRun against the newly assigned route.
 
     ``route_id`` None clears the current assignment. A non-None route_id
@@ -704,7 +704,7 @@ def assign_route(
     if not route:
         raise NotFoundError("Route not found")
 
-    # Reject a 0-task route up front: Phase 1 would otherwise allocate a
+    # Reject a 0-task route up front: Plan would otherwise allocate a
     # RouteRun, find no target for the empty walk, and immediately finish
     # the run (unassigning the train and, for ONE_OFF, deactivating the
     # route) -- a "success" that silently goes idle a few ticks later.
@@ -725,7 +725,7 @@ def assign_route(
         )
 
     if current_route_id:
-        # Retargeting: write the abort latch first so Phase 3 commits the
+        # Retargeting: write the abort latch first so Action commits the
         # cancellation through the canonical workflow.
         if controller is not None:
             controller.route_hooks.phase_latches.set_route_abort(

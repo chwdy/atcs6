@@ -148,7 +148,7 @@ def register(app, state: AppState) -> None:
                 return jsonify({"error": str(exc)}), 400
 
         # Per design_new.md line 1074, structural route edits should
-        # tear down active `RouteRun`s and let Phase 1 allocate fresh
+        # tear down active `RouteRun`s and let Plan allocate fresh
         # runs. The legacy in-place cursor clamp here was an admin
         # shortcut that is incompatible with the derived
         # `current_waypoint_index`. Operator/admin tooling that

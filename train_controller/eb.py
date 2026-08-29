@@ -92,7 +92,7 @@ class EBWorkflow:
         Per design_new.md line 1385: accepts only when ``state != OFF``,
         ``active == True``, ``is_stopped() == True``, the controller's own
         ``pending_path_cancel_request`` is None (the EB cancel latch has
-        been consumed by Phase 3), and the controller's own
+        been consumed by Action), and the controller's own
         ``received_path_plan`` is None (the pre-EB authority has been
         cleared by ``PathDispatcher``). Otherwise return success=False with
         controller state unchanged. On acceptance from
