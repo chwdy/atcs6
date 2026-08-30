@@ -1610,6 +1610,35 @@ class RouteExecutor:
             required_candidate_resource_keys=None,
         )
 
+    def waiting_for_block_id_for(self, train_id: str) -> Optional[str]:
+        """Route-supplied `waiting_for_block_id` for the composite read-model.
+
+        design_new.md "Data Flow To UI" / "Contention snapshot": the UI payload
+        composes this field here, not inside `get_active_path_progress(...)`. It
+        obtains `stored_resolved_target` from `find_armed_task(train_id)`,
+        resolves the run's effective acquisition mode and manual override, then
+        forwards the complete request to the canonical
+        `PathDispatcher.get_waiting_for_block_id(...)` projection with no meet
+        constraint (`acquisition_cap_block_id=None`,
+        `required_candidate_resource_keys=None`), matching the tick-start
+        contention view. Returns `None` when there is no dispatcher, no armed
+        task, or nothing blocking the forward suffix.
+        """
+        if self.path_dispatcher is None:
+            return None
+        armed = self.find_armed_task(train_id)
+        if armed is None:
+            return None
+        mode, manual_override = self._effective_acquisition_policy(train_id)
+        return self.path_dispatcher.get_waiting_for_block_id(
+            train_id,
+            armed.stored_resolved_target,
+            mode,
+            manual_override,
+            acquisition_cap_block_id=None,
+            required_candidate_resource_keys=None,
+        )
+
     def _effective_acquisition_policy(
         self, train_id: str
     ) -> Tuple["AcquisitionMode", bool]:
@@ -3286,12 +3315,26 @@ class RouteExecutor:
             if self.path_dispatcher is not None
             else None
         )
+        # The requested target is route-owned: read it from the armed task's
+        # stored `resolved_target`, not from Path (design_new.md "Contention
+        # snapshot"; Path stores no requested-target field).
+        armed = self.find_armed_task(train_id)
+        requested_target = (
+            armed.stored_resolved_target.requested_destination_block_id
+            if armed is not None and armed.stored_resolved_target is not None
+            else None
+        )
         # "Short of the target" is `reaches_target(...)`, never an equality test
         # against the authority end (design_new.md "Path field schema"): an
         # authority that legitimately runs past its target has reached it, and
         # holding it back for an idle-hold release would be wrong.
-        if path is None or path.reaches_target(path.requested_destination_block_id):
-            # Full authority or no live path → not a truncated best-effort hold.
+        if (
+            path is None
+            or requested_target is None
+            or path.reaches_target(requested_target)
+        ):
+            # Full authority, no live path, or no armed target → not a truncated
+            # best-effort hold.
             exec_state.idle_hold_ticks = 0
             return False
         grew = (

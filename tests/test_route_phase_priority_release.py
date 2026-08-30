@@ -125,11 +125,21 @@ class TestIdleHoldRelease:
                     assert pd.get_active_path(tid) is None
 
                 # Invariant: a full authority is NEVER counted as idle / released.
+                # "Full" is `reaches_target(...)` against the route-owned target
+                # (find_armed_task's resolved_target), matching the idle-hold
+                # guard; the requested target is not stored on Path.
                 ap = pd.get_active_path(tid)
+                armed = re.find_armed_task(tid)
+                requested_target = (
+                    armed.stored_resolved_target.requested_destination_block_id
+                    if armed is not None
+                    and armed.stored_resolved_target is not None
+                    else None
+                )
                 if (
                     ap is not None
-                    and ap.get_authority_end_block_id()
-                    == ap.requested_destination_block_id
+                    and requested_target is not None
+                    and ap.reaches_target(requested_target)
                 ):
                     assert rs.idle_hold_ticks == 0, (
                         f"{tid} holds a FULL authority but idle_hold_ticks="

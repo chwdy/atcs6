@@ -121,8 +121,6 @@ def make_synthetic_path(
         path_id=path_id or f"PATH_{train_id}_SYNTHETIC",
         status=PathStatus.ACTIVE,
         train_id=train_id,
-        requested_destination_block_id=block_id,
-        requested_destination_direction="forward",
         resource_sequence=[
             ResourceSequenceEntry(
                 sequence_index=0,

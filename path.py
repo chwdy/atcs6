@@ -7,9 +7,10 @@ successful PathDispatcher.create_path(...) and transitions to COMPLETED or
 CANCELLED. Resource geometry is stored once in resource_sequence (the
 single source of truth) plus a derived flat path_tiles geometry. There is
 no v0 block_sequence / start_block_id / end_block_id / current_block_index;
-authority extents are described by requested_destination_block_id +
-requested_destination_direction (the caller's target) and
-authority_end_block_id (the active-authority end).
+the live authority end is the derived authority_end_block_id (the last
+block resource in resource_sequence). The requested target the authority
+was acquired toward is route-owned (RouteRun.task_runs[i].resolved_target),
+not stored on Path.
 
 See also:
 - design_new.md "## Path And PathDispatcher" (Path field schema, path_tile
@@ -135,9 +136,10 @@ class Path:
     full authority geometry (blocks + switches in traversal order); the
     flat path_tiles list is the concatenation of the per-resource tile
     slices in sequence_index order. authority_end_block_id is the live
-    authority end and may be shorter than the caller's
-    requested_destination_block_id when best_effort acquisition truncated
-    the path.
+    authority end and may be shorter than the route's requested target
+    when best_effort acquisition truncated the path; that requested target
+    is route-owned (RouteRun.task_runs[i].resolved_target) and is not
+    stored on Path.
     """
 
     # Identity
@@ -149,13 +151,6 @@ class Path:
     # Train ownership (mandatory in v1; an authority always belongs to a
     # specific train).
     train_id: Optional[str] = None
-
-    # Caller-supplied target contract. requested_destination_direction is
-    # always the resolved block-relative direction ("forward" or
-    # "reverse"); RouteExecutor must already have resolved any "either" to
-    # one concrete direction before calling dispatcher.
-    requested_destination_block_id: str = ""
-    requested_destination_direction: str = ""
 
     # Geometry. resource_sequence is the single source of truth; the flat
     # tile list is derived by the `get_path_tiles()` method, which
@@ -299,8 +294,6 @@ class Path:
             "path_id": self.path_id,
             "status": self.status.value,
             "train_id": self.train_id,
-            "requested_destination_block_id": self.requested_destination_block_id,
-            "requested_destination_direction": self.requested_destination_direction,
             "authority_end_block_id": self.get_authority_end_block_id(),
             "resource_sequence": [e.to_dict() for e in self.resource_sequence],
             "path_tiles": [t.to_dict() for t in self.get_path_tiles()],
@@ -317,12 +310,6 @@ class Path:
             path_id=str(data["path_id"]),
             status=PathStatus(data.get("status", PathStatus.ACTIVE.value)),
             train_id=data.get("train_id"),
-            requested_destination_block_id=str(
-                data.get("requested_destination_block_id", "")
-            ),
-            requested_destination_direction=str(
-                data.get("requested_destination_direction", "")
-            ),
             # `authority_end_block_id` and `path_tiles` are both derived from
             # `resource_sequence`; their serialized values are ignored on read.
             resource_sequence=[

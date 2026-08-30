@@ -77,14 +77,14 @@ def test_create_path_caps_authority_and_never_completes():
         acquisition_cap_block_id="BLOCK_C",
     )
     assert result.success, result.reason
-    # Requested target is unchanged; authority is capped at the cap block.
+    # Requested target is unchanged (result echo); authority is capped at the
+    # cap block. The requested target is route-owned and not stored on Path.
     assert result.requested_destination_block_id == "BLOCK_E"
     assert result.reached_target is False
     assert result.appended_resource_count > 0
 
     path = dispatcher.get_path(result.path_id)
     assert path.get_authority_end_block_id() == "BLOCK_C"
-    assert path.requested_destination_block_id == "BLOCK_E"
 
     # The completion gate requires authority_end == requested. A capped authority
     # (BLOCK_C != BLOCK_E) can therefore never complete — the train holds at the
@@ -171,9 +171,11 @@ def test_extend_path_caps_ahead_of_authority_end():
     assert ext.success is True, ext.reason
     assert ext.appended_resource_count > 0
     assert ext.reached_target is False
+    # The requested target is kept (result echo); it is route-owned and not
+    # stored on Path.
+    assert ext.requested_destination_block_id == "BLOCK_E"
     path = dispatcher.get_path(path_id)
     assert path.get_authority_end_block_id() == "BLOCK_D"
-    assert path.requested_destination_block_id == "BLOCK_E"
 
 
 # --- create_path() / extend_path() return contract ---------------------------

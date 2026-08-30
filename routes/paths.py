@@ -185,23 +185,22 @@ def register(app, state: AppState) -> None:
     def _enrich_path_with_direction(payload: dict) -> dict:
         """Add `terminal_tile` + `terminal_heading` to a path payload.
 
-        The block-relative `requested_destination_direction` is resolved
-        through `BlockManager.direction_info` (per `design_new.md`
-        "Block model" — `Block.ordered_tiles` is the canonical geometry)
-        so the UI can render the decorated `F-(x,y)-E` label without a
-        second fetch. Read-only enrichment.
+        Both come straight from the path's own terminal frame — the last entry
+        in `path_tiles`, whose (x, y) is the tile where authority ends and whose
+        `exit_edge` is the compass heading out of it. The path stores its
+        acquired terminal geometry directly (design_new.md "Path field schema"),
+        so this label needs no requested-direction field on Path and no second
+        lookup. Read-only enrichment.
         """
-        block_id = payload.get("authority_end_block_id") or payload.get(
-            "requested_destination_block_id"
-        )
-        direction = payload.get("requested_destination_direction")
-        if not block_id or not direction:
+        tiles = payload.get("path_tiles") or []
+        if not tiles:
             payload["terminal_tile"] = None
             payload["terminal_heading"] = None
             return payload
-        info = state.network.block_manager.direction_info(block_id, direction)
-        payload["terminal_tile"] = info["terminal_tile"] if info else None
-        payload["terminal_heading"] = info["terminal_heading"] if info else None
+        last = tiles[-1]
+        heading = str(last.get("exit_edge") or "").upper()
+        payload["terminal_tile"] = [int(last["x"]), int(last["y"])]
+        payload["terminal_heading"] = heading or None
         return payload
 
     @app.route("/api/paths", methods=["GET"])

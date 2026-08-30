@@ -744,8 +744,9 @@ class Block(TrackResource):
         missing/unrecognized or the block lacks geometry to disambiguate.
 
         Used by `PathDispatcher.try_complete_active_path(...)` to verify
-        that the terminal authority traversal direction matches
-        `Path.requested_destination_direction` (block-relative).
+        that the terminal authority traversal direction matches the requested
+        terminal direction the run recorded (the run's `resolved_target`,
+        block-relative).
 
         Known limit: on a single-tile block whose rails meet at a corner, the
         forward exit is derived as the anchor's geometric opposite, which is the

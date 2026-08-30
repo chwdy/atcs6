@@ -72,13 +72,13 @@ class PathProjection:
         **received_path_plan schema** (design_new.md:1924): exactly
         ``path_id``, ``resource_sequence``, and ``authority_end_block_id``.
 
-        Dispatcher-only fields (``requested_destination_block_id`` /
-        ``requested_destination_direction`` / ``status`` /
-        ``current_resource_index`` / ``last_status_updated_time``) stay on
-        the ``Path`` record and are deliberately not exposed here — the
-        controller projection must not surface them (design_new.md:1924,
-        2187). ``resource_sequence`` uses each entry's own ``to_dict()`` so
-        the nested ``path_tiles`` keep the canonical entry schema.
+        Dispatcher-only fields (``status`` / ``current_resource_index`` /
+        ``last_status_updated_time``) stay on the ``Path`` record and are
+        deliberately not exposed here — the controller projection must not
+        surface them (design_new.md:1924, 2187). The requested target is
+        route-owned and is not on ``Path`` at all. ``resource_sequence`` uses
+        each entry's own ``to_dict()`` so the nested ``path_tiles`` keep the
+        canonical entry schema.
 
         Returns ``None`` when the train has no ``ACTIVE`` path.
         """

@@ -1129,8 +1129,6 @@ class PathDispatcher:
                     path_id=path_id,
                     train_id=train_id,
                     segment=truncated,
-                    requested_destination_block_id=requested_destination_block_id,
-                    requested_destination_direction=requested_destination_direction,
                     now=now,
                     ordered_walk=self._slice_ordered_walk(
                         ordered_walk, truncated.tiles
@@ -1187,8 +1185,6 @@ class PathDispatcher:
                     path_id=path_id,
                     train_id=train_id,
                     segment=truncated,
-                    requested_destination_block_id=requested_destination_block_id,
-                    requested_destination_direction=requested_destination_direction,
                     now=now,
                     ordered_walk=self._slice_ordered_walk(
                         ordered_walk, truncated.tiles
@@ -1216,8 +1212,6 @@ class PathDispatcher:
                 path_id=path_id,
                 train_id=train_id,
                 segment=segment,
-                requested_destination_block_id=requested_destination_block_id,
-                requested_destination_direction=requested_destination_direction,
                 now=now,
                 ordered_walk=ordered_walk,
             )
@@ -1355,17 +1349,18 @@ class PathDispatcher:
         # `try_complete_active_path(...)` checks that independently before it
         # commits completion.
         if path.reaches_target(requested_destination_block_id):
-            # Report the direction the live authority actually has, not the
-            # one the caller asked with. Nothing was appended, so the terminal
-            # frame is unchanged, and the caller records this pair as the match
-            # key for stop completion.
+            # Nothing was appended, so the terminal frame is unchanged. The
+            # returned pair echoes what Plan passed (design_new.md "Path
+            # extension", line 2243): the caller records it as the match key
+            # for stop completion, and try_complete_active_path(...) checks the
+            # actual terminal frame independently before it commits completion.
             return PathAcquisitionResult(
                 success=True,
                 appended_resource_count=0,
                 reached_target=True,
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
-                requested_destination_direction=path.requested_destination_direction,
+                requested_destination_direction=requested_destination_direction,
                 authority_end_block_id=path.get_authority_end_block_id(),
                 resource_sequence=list(path.resource_sequence),
                 reason=None,
@@ -1651,9 +1646,8 @@ class PathDispatcher:
             # path_tiles is a derived `@property` over resource_sequence; no
             # explicit rebuild is needed (and no stored copy exists to write).
             # authority_end_block_id is derived from resource_sequence[-1];
-            # the resource_sequence.extend(...) above advanced it.
-            path.requested_destination_block_id = requested_destination_block_id
-            path.requested_destination_direction = requested_destination_direction
+            # the resource_sequence.extend(...) above advanced it. The requested
+            # target is route-owned and not stored on Path.
             # No status transition here: the path is already ACTIVE (guaranteed
             # by the MISSING_OR_INACTIVE_PATH guard at the top of extend_path).
             # Per design_new.md, `last_status_updated_time` advances only on a
@@ -1692,22 +1686,21 @@ class PathDispatcher:
         # forward candidates above) and the only obstruction was an
         # occupancy/reservation/lock conflict, return
         # `success=True` with `appended_resource_count = 0` and
-        # `reached_target = False`. The stored requested target is updated to
-        # reflect this attempt; the `resource_sequence` is left untouched.
-        # Route executors use this outcome to keep retrying the same path_id
-        # rather than cancelling.
+        # `reached_target = False`. The requested target is route-owned and not
+        # stored on Path; the `resource_sequence` is left untouched. Route
+        # executors use this outcome to keep retrying the same path_id rather
+        # than cancelling.
         if (
             acquisition_mode == AcquisitionMode.BEST_EFFORT
             and had_occupancy_blocker
         ):
-            path.requested_destination_block_id = requested_destination_block_id
-            path.requested_destination_direction = requested_destination_direction
             # No status transition here: the path is already ACTIVE and stays
             # ACTIVE on a no-growth hold, so `last_status_updated_time` must
             # not be re-stamped (design_new.md: status transitions only).
-            # The "waiting on" block is not stored — `get_active_path_progress`
-            # recomputes it live (the `waiting_for_block_id` live-recompute rule
-            # in design_new.md "Data Flow To UI", API payload ownership).
+            # The "waiting on" block is not stored — the UI-payload assembly
+            # composes `waiting_for_block_id` live from the route-supplied
+            # `get_waiting_for_block_id(...)` call (the `waiting_for_block_id`
+            # live-recompute rule in design_new.md "Data Flow To UI").
             return PathAcquisitionResult(
                 success=True,
                 appended_resource_count=0,
@@ -1722,9 +1715,10 @@ class PathDispatcher:
 
         # Extend failed outright but the existing authority is untouched and
         # still ACTIVE. The blocking resource for the "Show stuck" overlay is
-        # not stored — `get_active_path_progress` recomputes it live (the
+        # not stored — the UI-payload assembly composes `waiting_for_block_id`
+        # live from the route-supplied `get_waiting_for_block_id(...)` call (the
         # `waiting_for_block_id` live-recompute rule in design_new.md "Data Flow
-        # To UI", API payload ownership).
+        # To UI").
         return self._reject(
             failure_kind=PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET,
             path_id=path_id,
@@ -3087,8 +3081,8 @@ class PathDispatcher:
         # direction is still well-defined — it's the opposite of how the
         # train entered this tile. `PathDispatcher.try_complete_active_path(...)`
         # consults this exit edge to verify the terminal authority direction
-        # matches `Path.requested_destination_direction`; leaving it empty
-        # would make completion impossible.
+        # matches the requested terminal direction the run recorded (the run's
+        # `resolved_target`); leaving it empty would make completion impossible.
         if i > 0:
             entry = self._tile_entry_edge(tiles, i)
             if entry is not None:
@@ -3100,8 +3094,6 @@ class PathDispatcher:
         path_id: str,
         train_id: str,
         segment: PathSegment,
-        requested_destination_block_id: str,
-        requested_destination_direction: str,
         now: float,
         ordered_walk: Optional[List[GraphWalkStep]] = None,
     ) -> Path:
@@ -3109,7 +3101,8 @@ class PathDispatcher:
 
         ``ordered_walk`` (sliced to ``segment.tiles`` by the caller) carries the
         per-step geometry used to build ``resource_sequence`` without re-deriving
-        edges from flat tiles.
+        edges from flat tiles. The requested target the segment was acquired
+        toward is route-owned and not stored on Path.
         """
         sequence = self._segment_to_resource_sequence(
             segment, base_index=0, skip_first_block=False, ordered_walk=ordered_walk
@@ -3121,8 +3114,6 @@ class PathDispatcher:
             path_id=path_id,
             status=PathStatus.ACTIVE,
             train_id=train_id,
-            requested_destination_block_id=requested_destination_block_id,
-            requested_destination_direction=requested_destination_direction,
             resource_sequence=sequence,
             current_resource_index=0,
             last_status_updated_time=now,
@@ -3808,7 +3799,17 @@ class PathDispatcher:
         """Read-only projection of dispatcher state for a single train.
 
         Used by the API/UI layer per design_new.md "Data Flow To UI". Returns
+        the five dispatcher-owned path fields (``path_id``, ``status``,
+        ``current_resource_index``, ``authority_end_block_id``, and
+        ``resource_sequence``); it does not read train/controller mirror fields.
         ``None`` when no active path exists for the train.
+
+        ``waiting_for_block_id`` is NOT part of this projection: it needs the
+        complete route-owned request (the run's ``resolved_target`` plus its
+        effective acquisition mode / manual override), so the UI-payload
+        assembly composes it there from the route-supplied
+        ``get_waiting_for_block_id(...)`` call (design_new.md "Data Flow To UI",
+        "Contention snapshot").
         """
         path = self.get_active_path(train_id)
         if path is None:
@@ -3818,25 +3819,6 @@ class PathDispatcher:
             "status": path.status.value,
             "current_resource_index": path.current_resource_index,
             "authority_end_block_id": path.get_authority_end_block_id(),
-            "requested_destination_block_id": path.requested_destination_block_id,
-            "requested_destination_direction": path.requested_destination_direction,
-            # Diagnostic for the "Show stuck" overlay: recomputed live on each
-            # read (the `waiting_for_block_id` live-recompute rule in
-            # design_new.md "Data Flow To UI") — the block owning the first forward
-            # resource that fails acquisition because of a live occupancy/
-            # reservation/lock conflict, or None when the authority reaches its
-            # target or no viable suffix exists. Projected from the canonical
-            # `get_waiting_conflict(...)` walk, passing the path's own stored
-            # target as the request (route-driven paths always run
-            # `manual_override=False`; `Path` does not store it, so False is the
-            # faithful value here).
-            "waiting_for_block_id": self.get_waiting_for_block_id(
-                path.train_id,
-                ResolvedRouteTarget(
-                    path.requested_destination_block_id,
-                    path.requested_destination_direction,
-                ),
-            ),
             "resource_sequence": [
                 {
                     "sequence_index": entry.sequence_index,

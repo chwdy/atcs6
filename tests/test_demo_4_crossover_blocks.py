@@ -315,7 +315,14 @@ def _t1_path_capture_window(
             "resource_sequence_len": 0,
         }
     auth_end = path.get_authority_end_block_id()
-    target = path.requested_destination_block_id
+    # The requested target is route-owned (RouteRun.task_runs[i].resolved_target),
+    # not stored on Path: read it from the armed task.
+    armed = sim_controller.route_executor.find_armed_task("T1")
+    target = (
+        armed.stored_resolved_target.requested_destination_block_id
+        if armed is not None and armed.stored_resolved_target is not None
+        else None
+    )
     # Map the stored Path back into the return-contract shape: the live walk
     # either reaches the requested target or is still short of it.
     return {

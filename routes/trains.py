@@ -78,6 +78,29 @@ def register(app, state: AppState) -> None:
                         train.train_id,
                         e,
                     )
+                # design_new.md "Data Flow To UI": `waiting_for_block_id` is
+                # composed here from the route-supplied
+                # `get_waiting_for_block_id(...)` call, not inside
+                # `get_active_path_progress(...)`.
+                if dispatcher_dict is not None:
+                    route_executor = getattr(
+                        state.sim_controller, "route_executor", None
+                    )
+                    try:
+                        dispatcher_dict["waiting_for_block_id"] = (
+                            route_executor.waiting_for_block_id_for(train.train_id)
+                            if route_executor is not None
+                            else None
+                        )
+                    except Exception as e:
+                        import logging
+
+                        logging.getLogger(__name__).debug(
+                            "Failed to compose waiting_for_block_id for train %s: %s",
+                            train.train_id,
+                            e,
+                        )
+                        dispatcher_dict["waiting_for_block_id"] = None
 
         return {
             "train": train.to_dict(network=network),

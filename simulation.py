@@ -2865,11 +2865,24 @@ def build_network_payload(
 
         if path_dispatcher is not None:
             try:
-                dispatcher_progress_by_train_id[train_id] = (
-                    path_dispatcher.get_active_path_progress(train_id)
-                )
+                progress = path_dispatcher.get_active_path_progress(train_id)
             except Exception as e:
-                dispatcher_progress_by_train_id[train_id] = None
+                progress = None
+            # design_new.md "Data Flow To UI": `waiting_for_block_id` is composed
+            # here from the route-supplied `get_waiting_for_block_id(...)` call,
+            # not inside `get_active_path_progress(...)`. It needs the run's
+            # `resolved_target` plus effective acquisition mode / manual override,
+            # which `RouteExecutor.waiting_for_block_id_for(...)` assembles.
+            if progress is not None:
+                try:
+                    progress["waiting_for_block_id"] = (
+                        route_executor.waiting_for_block_id_for(train_id)
+                        if route_executor is not None
+                        else None
+                    )
+                except Exception:
+                    progress["waiting_for_block_id"] = None
+            dispatcher_progress_by_train_id[train_id] = progress
         else:
             dispatcher_progress_by_train_id[train_id] = None
 

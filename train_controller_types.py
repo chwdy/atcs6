@@ -20,10 +20,10 @@ class ReceivedPathPlan:
 
     design_new.md "received_path_plan schema": the projection carries exactly
     `path_id`, `resource_sequence`, and `authority_end_block_id`. The
-    dispatcher-only fields on the `Path` record — `requested_destination_block_id`,
-    `requested_destination_direction`, `status`, `current_resource_index`,
-    `last_status_updated_time` — are deliberately absent, because "the controller
-    does not see those fields."
+    dispatcher-only fields on the `Path` record — `status`,
+    `current_resource_index`, `last_status_updated_time` — are deliberately
+    absent, because "the controller does not see those fields." The requested
+    target is route-owned and is not stored on `Path` at all.
 
     `resource_sequence` is held by reference, not copied: `PathDispatcher` owns
     the list, and this projection is rebuilt live on every read (cross-tick
