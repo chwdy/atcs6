@@ -600,12 +600,6 @@ class RouteExecutor:
         # Canonical Route registry (per design_new.md "Route And RouteExecutor").
         # Keyed by route_id. Mutated only via register_route / unregister_route.
         self.route_registry: Dict[str, "Route"] = {}
-        # Append-only, never-recycled registration index per route_id, used to
-        # compose the diagnostic RouteRun.run_number (design_new.md line 1309).
-        # A route removed and re-added keeps its original index, and the counter
-        # never decreases, so run_numbers stay unique across the registry's life.
-        self._route_registry_index: Dict[str, int] = {}
-        self._next_route_registry_index: int = 0
         # `execution_states` holds the currently-RUNNING run for each train
         # (keyed by train_id; one slot per train). Per design_new.md, a run is
         # not deleted on teardown — its state flips to FINISHED / DEACTIVATED
@@ -623,8 +617,14 @@ class RouteExecutor:
         # not used for lookups — those always go through simulation_controller
         # when one is present.
         self._shared_controllers = shared_controllers  # kept for test compat
-        # Per-route run-instance counter (1-based). diagnostic only.
-        self._run_count_for_route: Dict[str, int] = {}
+        # Opaque, globally-monotonic run-instance counter (design_new.md
+        # "Route-run state"). Starts at 1, supplies the current value, and
+        # increments after every allocation regardless of route. The resulting
+        # `RouteRun.run_number` is a unique history/API identity that carries no
+        # route index and must not be parsed for `route_id`; the immutable
+        # `RouteRun.route_id` field carries that relationship directly. Numbers
+        # are never recycled or recomputed during the process lifetime.
+        self._next_run_number: int = 1
         # Per-assignment one-shot start-mode input (per design_new.md "Run
         # start-mode seeding"). Keyed by train_id; populated by
         # `train_service.assign_route(...)` when the operator picks a start mode
@@ -736,11 +736,6 @@ class RouteExecutor:
     def register_route(self, route: "Route") -> None:
         """Register a Route in the canonical registry."""
         self.route_registry[route.route_id] = route
-        # Assign a stable append-only index on first registration only; a
-        # re-registered route_id keeps its original index (never recycled).
-        if route.route_id not in self._route_registry_index:
-            self._route_registry_index[route.route_id] = self._next_route_registry_index
-            self._next_route_registry_index += 1
 
     def unregister_route(self, route_id: str) -> Optional["Route"]:
         """Remove a Route from the registry; return the removed Route or None."""
@@ -950,8 +945,11 @@ class RouteExecutor:
     def history_for_train(self, train_id: str) -> List[RouteExecutionState]:
         """Return every `RouteRun` for `train_id`, sorted by `run_number`.
 
-        Per design_new.md (~line 1162): includes RUNNING, FINISHED, and
-        DEACTIVATED rows across all routes the train has been assigned to.
+        Per design_new.md "RouteExecutor.history_for_train": includes RUNNING,
+        FINISHED, and DEACTIVATED rows across all routes the train has been
+        assigned to. `run_number` is the global monotonic creation counter, so
+        ascending `run_number` is chronological creation order, not
+        route-index-major.
         """
         out: List[RouteExecutionState] = [
             r for r in self._historical_runs if r.train_id == train_id
@@ -1174,18 +1172,20 @@ class RouteExecutor:
         prev = exec_state.task_runs[row_pos - 1]
         return prev.finished_at if realtime else prev.finished_at_operating
 
-    def _compose_run_number(self, route_id: str, run_count: int) -> int:
-        """Compose the diagnostic ``RouteRun.run_number``.
+    def _allocate_run_number(self) -> int:
+        """Return the next globally-monotonic ``RouteRun.run_number``.
 
-        Per design_new.md line 1309: ``route_registry_index * 1_000_000 +
-        run_count``. ``route_registry_index`` is the route's append-only
-        registration order (assigned in ``register_route``, never recycled or
-        compacted on route removal), so the diagnostic run_number stays unique
-        across the registry's lifetime. Falls back to 0 when the route is not
-        yet registered.
+        Per design_new.md "Route-run state": ``_next_run_number`` starts at 1,
+        supplies the current value, and increments after every allocation
+        regardless of route. The result is an opaque history/API identity — it
+        carries no route index and must not be parsed for ``route_id`` (the
+        immutable ``RouteRun.route_id`` field carries that relationship
+        directly). Numbers are never recycled or recomputed during the process
+        lifetime.
         """
-        route_registry_index = self._route_registry_index.get(route_id, 0)
-        return route_registry_index * 1_000_000 + run_count
+        n = self._next_run_number
+        self._next_run_number += 1
+        return n
 
     def _get_active_path_id(self, train_id: str) -> Optional[str]:
         """Return the dispatcher's currently active path id for train_id."""
@@ -1799,14 +1799,12 @@ class RouteExecutor:
         is_fresh = exec_state is None or exec_state.route_id != route.route_id
         if is_fresh:
             now = self._now()
-            run_count = self._run_count_for_route.get(route.route_id, 0) + 1
-            self._run_count_for_route[route.route_id] = run_count
             exec_state = RouteExecutionState(
                 train_id=train.train_id,
                 route_id=route.route_id,
                 started_at=now,
                 started_at_operating=self._now_operating(),
-                run_number=self._compose_run_number(route.route_id, run_count),
+                run_number=self._allocate_run_number(),
             )
             self.execution_states[train.train_id] = exec_state
         # Ensure task_runs is sized to the current Route.tasks list.

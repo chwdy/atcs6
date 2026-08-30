@@ -680,13 +680,11 @@ def setup_demo_train(
         # phase-shifted so this train's next planning task lands on the
         # dwell at its current station.
         executor = sim_controller.route_executor
-        run_count = executor._run_count_for_route.get(route.route_id, 0) + 1
-        executor._run_count_for_route[route.route_id] = run_count
         exec_state = RouteExecutionState(
             train_id=train_id,
             route_id=route.route_id,
             started_at=now,
-            run_number=executor._compose_run_number(route.route_id, run_count),
+            run_number=executor._allocate_run_number(),
             current_route_status=RouteRunStatus.RUNNING,
         )
         for i in range(phase_idx):

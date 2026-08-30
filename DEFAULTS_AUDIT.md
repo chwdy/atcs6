@@ -49,7 +49,7 @@ Train config (separate, **m/s²**) [train.py:27-80](train.py:61): `TrainCar.max_
 
 ---
 
-> **Done (Phase 2):** Tiers 3/4/5/7 below are now live-tunable from the **Advanced** section of the Settings panel, backed by `runtime_config.RuntimeConfig` + `GET/PUT /api/settings`. The EB/warning overspeed thresholds (previously inline literals) are named (`OVERSPEED_EB_THRESHOLD_KMH` / `OVERSPEED_WARN_THRESHOLD_KMH`) and tunable too. Structural constants (`COPY_COUNT_BASE`, priority bounds) are intentionally not exposed.
+> **Done (Phase 2):** Tiers 3/4/5/7 below are now live-tunable from the **Advanced** section of the Settings panel, backed by `runtime_config.RuntimeConfig` + `GET/PUT /api/settings`. The EB/warning overspeed thresholds (previously inline literals) are named (`OVERSPEED_EB_THRESHOLD_KMH` / `OVERSPEED_WARN_THRESHOLD_KMH`) and tunable too. Structural constants (priority bounds) are intentionally not exposed.
 
 ## Tier 3 — ATC / ATO control tunables
 [train_controller/__init__.py:99-109](train_controller/__init__.py:99) & [atc.py:75-76](train_controller/atc.py:75): `ATC_SIGNAL_LOOKAHEAD_BLOCKS 3` · `ATC_MIN_CLEARANCE_CM 10.0` · `SPEED_TREND_EPSILON 0.1` · `ATO_SPEED_MARGIN_KMH 3.0`.
@@ -75,5 +75,5 @@ EB/warning thresholds are **inline literals, not named**: EB at `overspeed > 10`
 ---
 
 ## Tier 7 — Routing / dispatch
-`DEFAULT_PATH_PRIORITY 5` ([runtime_payloads.py:49](runtime_payloads.py:49)) · `MIN_PRIORITY 1` · `MAX_PRIORITY 10` · `COPY_COUNT_BASE 1_000_000` (constants.py).
+`DEFAULT_PATH_PRIORITY 5` ([runtime_payloads.py:49](runtime_payloads.py:49)) · `MIN_PRIORITY 1` · `MAX_PRIORITY 10`.
 `priority` defaults to `5` on deserialization in several places: [train.py:68](train.py:68), [train_route.py:371](train_route.py:371), [train_route.py:550](train_route.py:550), [route_executor.py:235](route_executor.py:235), [route_executor.py:672](route_executor.py:672).

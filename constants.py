@@ -34,11 +34,6 @@ FLANK_PROTECTION_DISTANCE_CM: float = 5.0
 # property.
 CAUTION_SPEED_LIMIT_KMH: float = 40.0
 
-# Run-number registry constant per design_new.md "Route-run state":
-# `run_number = route_registry_index * COPY_COUNT_BASE + run_count_for_route`.
-# 1_000_000 leaves room for ~1M runs per route before the next route slot.
-COPY_COUNT_BASE: int = 1_000_000
-
 # ATO horizon-sampling constant for the lookahead two-point sample. Used by
 # TrainController._ato_calculate_handle to project a future point at
 # `speed_cm_s * tick_delta * LOOKAHEAD_TICKS`.
