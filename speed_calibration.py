@@ -697,27 +697,30 @@ class SpeedCalibration:
             if entered:
                 self._step0_entries[train_id] = tuple(sorted(entered))
 
-    def tick_train(self, train_id: str) -> None:
-        """Advance this train's open auto pass by one observation.
+    def plan_tick(self, train_id: str) -> Optional[CalibrationCommand]:
+        """Build this tick's observation for the train's open auto pass, advance
+        the state machine, and return the leg-route command Plan step `c9e1`
+        carries out (design_new.md "Speed calibration", Where it runs).
 
-        Called by `SimulationController._act_train(train, delta_seconds)`
-        immediately before `TrainController.tick(...)` begins for the
-        calibration train (design_new.md "Speed calibration", Where it runs). It
-        arms a leg, evaluates step progress, updates the run state, and manages
-        the leg's authority and cab. It issues no power command: the step's
-        power is the run state the controller reads back through
-        `get_propulsion_override(...)` during the tick that follows this call, so
-        the pass drives without ever queuing an operator command.
+        Called from `RouteExecutor.tick_train_plan(...)` at step `c9e1`, before
+        the ordinary route steps. It arms a leg, evaluates step progress, and
+        updates the run state; it touches no route registry and issues no power
+        command. The returned `CalibrationCommand` carries the leg-route intents
+        (`arm_leg_to` / `deactivate_route`) and cab reversal for `RouteExecutor`
+        to perform. The step's power is the run state the controller reads back
+        through `get_propulsion_override(...)` during this tick's Action, so the
+        pass drives without ever queuing an operator command. Returns `None` when
+        no auto pass is open for the train or the pass wants nothing this tick.
         """
         sc = self._sc
         run = self.runs.get(train_id)
         if sc is None or run is None:
-            return
+            return None
         if run.mode != "auto" or not run.is_measuring:
-            return
+            return None
         controller = self._controller(train_id)
         if controller is None:
-            return
+            return None
         obs = CalibrationObservation(
             now=self._operating_time(),
             newly_confirmed=self._step0_entries.pop(train_id, ()),
@@ -728,9 +731,7 @@ class SpeedCalibration:
             ),
             path_present=controller.path_projection.received_path_plan is not None,
         )
-        command = self.advance(run, obs)
-        if command is not None:
-            self._apply(run, controller, command)
+        return self.advance(run, obs)
 
     def _apply(self, run: CalibrationRun, controller, command: CalibrationCommand) -> None:
         """Apply a pass command without queuing operator commands.

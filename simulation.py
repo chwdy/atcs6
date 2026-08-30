@@ -1346,13 +1346,11 @@ class SimulationController(SwitchOutputOwner):
         if controller.presence_unknown:
             return
 
-        # For the calibration train only, the speed-calibration pass advances
-        # immediately before TrainController.tick(...), updating the run state and
-        # managing the leg's authority and cab (design_new.md "Speed calibration",
-        # Where it runs). It queues no command: the step's power is read back off
-        # the run through get_propulsion_override(...) inside the tick that
-        # follows. A no-op for every other train.
-        self.speed_calibration.tick_train(train.train_id)
+        # The speed-calibration pass no longer advances here: it advances in Plan
+        # at step `c9e1` (RouteExecutor.tick_train_plan), where it arms and tears
+        # down each leg's one-off route (design_new.md "Speed calibration", Where
+        # it runs). Action only reads the step's power back off the run through
+        # get_propulsion_override(...) during the control decision below.
         # TrainController.tick(...) drains the queued operator commands, then —
         # through the after_command_drain callback, before its control decision —
         # performs the departure / station-entry transitions Plan requested
