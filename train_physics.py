@@ -243,7 +243,11 @@ class TrainPhysics:
 
         profile_id = train.speed_profile_id
         if profile_id and hasattr(self.network, "speed_profiles"):
-            profile = self.network.speed_profiles.get(profile_id)
+            # resolve(...) applies the model/instance overlay so a partial
+            # instance profile is never driven directly (design_new.md
+            # "SpeedProfile", Model profiles and instance profiles). For a model
+            # profile it returns the profile unchanged.
+            profile = self.network.speed_profiles.resolve(profile_id)
             if profile:
                 return profile
 

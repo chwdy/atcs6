@@ -13,6 +13,7 @@ profile link only; cumulative usage stays on the live `Train` and its counters
 (see "Maintenance counters").
 """
 
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -87,15 +88,17 @@ class TrainRoster:
 
     @staticmethod
     def match_profile_for_model(model: str, profiles) -> Optional[str]:
-        """The `profile_id` measured for this model, or None.
+        """The MODEL profile measured for this model, or None.
 
         Profiles are matched by model (design_new.md "Train Roster"): comparing
-        the two strings exactly, the profile carrying this model is the one a
-        new entry links, so a second locomotive of a model starts from the curve
-        the first one produced. When more than one profile carries the model the
-        most recently calibrated wins, and a profile with no `calibrated_at`
-        loses to any that has one — an unmeasured placeholder should never
-        outrank a real measurement.
+        the two strings exactly, the model profile carrying this model is the one
+        a new entry derives its instance from, so a second locomotive of a model
+        starts from the curve the first one produced. When more than one model
+        profile carries the model the most recently calibrated wins, and a model
+        profile with no `calibrated_at` loses to any that has one — an unmeasured
+        placeholder should never outrank a real measurement. Only model profiles
+        are candidates; an instance profile (`derived_from` set) leaves `model`
+        unset, so it never matches.
 
         `profiles` is any iterable of `SpeedProfile` records.
         """
@@ -103,7 +106,10 @@ class TrainRoster:
         if not wanted:
             return None
         matches = [
-            p for p in profiles if (getattr(p, "model", "") or "").strip() == wanted
+            p
+            for p in profiles
+            if getattr(p, "derived_from", None) is None
+            and (getattr(p, "model", "") or "").strip() == wanted
         ]
         if not matches:
             return None
@@ -112,18 +118,42 @@ class TrainRoster:
         matches.sort(key=lambda p: (getattr(p, "calibrated_at", None) or ""))
         return matches[-1].profile_id
 
-    def link_profile_by_model(self, entry: "RosterEntry", profiles) -> Optional[str]:
-        """Link `entry` to the profile measured for its model, if it names none.
+    def link_profile_by_model(self, entry: "RosterEntry", registry) -> Optional[str]:
+        """Link `entry` to a fresh instance profile, if it names none.
+
+        Profiles are matched by model (design_new.md "Train Roster"): the roster
+        finds the model profile measured for the entry's model, creates an empty
+        instance profile deriving from it, registers it, and points the entry at
+        that instance — so each entry owns its own record and calibrating one
+        locomotive never touches a sibling of the same model. When no model
+        profile carries the model, the entry keeps no link and placement seeds
+        the pair.
 
         The match is made once, at the moment the entry's model is written; the
         stored `speed_profile_id` is the link every later read follows, so a
-        placement resolves a profile by id and never by string.
+        placement resolves a profile by id and never by string. `registry` is the
+        `SpeedProfileRegistry` (it supplies both the candidates and the home for
+        the new instance).
         """
         if entry.speed_profile_id:
             return entry.speed_profile_id
-        matched = self.match_profile_for_model(entry.model, profiles)
-        if matched:
-            entry.speed_profile_id = matched
+        profiles = [
+            p
+            for p in (registry.get(pid) for pid in registry.list_profiles())
+            if p is not None
+        ]
+        model_profile_id = self.match_profile_for_model(entry.model, profiles)
+        if model_profile_id is None:
+            return entry.speed_profile_id
+        from speed_profile import make_instance_profile
+
+        instance = make_instance_profile(
+            model_profile_id,
+            profile_id=f"instance_{uuid.uuid4().hex[:8]}",
+            name=(entry.name or entry.model or "instance"),
+        )
+        registry.register(instance)
+        entry.speed_profile_id = instance.profile_id
         return entry.speed_profile_id
 
     def clear(self) -> None:

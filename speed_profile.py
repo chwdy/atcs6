@@ -69,25 +69,46 @@ class SpeedProfile:
 
     profile_id: str
     name: str
+    # The model profile this record overlays. None on a model profile (a full
+    # record describing a locomotive model); set to a model profile's id on an
+    # instance profile (one physical locomotive). It is the field that says
+    # which of the two kinds a record is (design_new.md "SpeedProfile", Model
+    # profiles and instance profiles). An instance profile carries only its own
+    # measured fields (`lighting_voltage`, `power_speed_curve`, `calibrated_at`)
+    # and reads every other field from the model profile it derives from;
+    # `SpeedProfileRegistry.resolve` is the one accessor that merges the two.
+    derived_from: Optional[str] = None
     # The locomotive model this profile describes, written the same way
     # `RosterEntry.model` writes it (design_new.md "SpeedProfile"). It is what
     # makes a measured curve reusable: `train_roster.match_profile_for_model`
-    # links a new roster entry to the profile already measured for its model,
-    # so a second locomotive of that model starts from a real curve instead of
-    # the seeded linear default. Blank on a profile seeded at train creation.
+    # links a new roster entry to the model profile already measured for its
+    # model, so a second locomotive of that model starts from a real curve
+    # instead of the seeded linear default. Carried by model profiles only; an
+    # instance leaves it unset and resolves it from its model. Blank on a model
+    # profile seeded at train creation.
     model: str = ""
     # Wall-clock ISO-8601 stamp of the last `power_speed_curve` write by a
     # speed-calibration commit; None while the curve is still the seeded linear
     # default. It is the one field that says whether a profile is measured or a
-    # placeholder, and it breaks ties when two profiles name one model.
+    # placeholder, and it breaks ties when two model profiles name one model. It
+    # is one of the three fields an instance profile may carry; None means
+    # "unset -> read from the model" on an instance.
     calibrated_at: Optional[str] = None
-    power_speed_curve: List[Tuple[float, float]] = field(
-        default_factory=lambda: [(0.0, 0.0), (100.0, 100.0)]
-    )
-    # Default left empty here and synthesized in __post_init__ as a linear ramp
-    # anchored to this profile's own `lighting_voltage` (0%) and `max_voltage`
-    # (100%), per design_new.md "SpeedProfile". With the default
+    # One of the three instance-eligible fields. None means "unset" here: on a
+    # MODEL profile __post_init__ fills the v1 linear default, so a model profile
+    # always ends up with a real curve (behaviour unchanged); on an INSTANCE
+    # profile None stays None and `SpeedProfileRegistry.resolve` reads the
+    # model's curve instead (design_new.md "SpeedProfile", Model profiles and
+    # instance profiles).
+    power_speed_curve: Optional[List[Tuple[float, float]]] = None
+    # Carried by model profiles only. On a model profile an empty value is
+    # synthesized in __post_init__ as a linear ramp anchored to this profile's
+    # own `lighting_voltage` (0%) and `max_voltage` (100%); with the default
     # lighting_voltage=1.5 / max_voltage=12.0 this is [(1.5, 0.0), (12.0, 100.0)].
+    # An instance profile stores none of its own: __post_init__ forces it empty,
+    # and the instance's resolved curve is the model's curve re-anchored at the
+    # instance's resolved `lighting_voltage` (design_new.md "SpeedProfile", Model
+    # profiles and instance profiles).
     voltage_power_curve: List[Tuple[float, float]] = field(default_factory=list)
 
     # Lit-but-stationary voltage; also the 0%-power anchor of
@@ -97,8 +118,10 @@ class SpeedProfile:
     # it reports ~0 mA and the block rests on its clear window until it times
     # out (see `hardware.interfaces.OccupancyDriver`, lighting zone). It must
     # stay below `DEFAULT_CURRENT_SENSE_MIN_DRIVE_V`, or a standby block reads
-    # as driven.
-    lighting_voltage: float = 1.5
+    # as driven. One of the three instance-eligible fields: None means "unset"
+    # (a MODEL profile fills the 1.5 V default in __post_init__; an INSTANCE
+    # profile leaves it None and resolves it from the model).
+    lighting_voltage: Optional[float] = None
     acceleration_rate: float = 10.0  # km/h per second
     deceleration_rate: float = 15.0  # km/h per second (service brake)
     emergency_brake_rate: float = 30.0  # km/h per second
@@ -127,25 +150,41 @@ class SpeedProfile:
     )
 
     def __post_init__(self) -> None:
-        """Synthesize the default voltage->power curve and sort all curves.
+        """Fill model-profile defaults and sort the curves.
 
-        When no `voltage_power_curve` is supplied, the v1 default is a linear
-        ramp from `lighting_voltage` (0%) to `max_voltage` (100%) per
-        design_new.md "SpeedProfile", so the default tracks this profile's own
-        voltage anchors instead of hardcoded constants.
+        A MODEL profile (`derived_from is None`) is a complete record: an unset
+        `lighting_voltage` or `power_speed_curve` is filled with the v1 default,
+        and an empty `voltage_power_curve` is synthesized as the linear ramp from
+        `lighting_voltage` (0%) to `max_voltage` (100%), so a model profile
+        behaves exactly as before.
+
+        An INSTANCE profile (`derived_from` set) carries only its own measured
+        fields; an unset one stays None ("read from the model" — design_new.md
+        "SpeedProfile", Model profiles and instance profiles). An instance stores
+        no `voltage_power_curve` of its own, so any supplied one is dropped and
+        the resolved curve is rebuilt by `SpeedProfileRegistry.resolve`.
         """
-        if not self.voltage_power_curve:
-            self.voltage_power_curve = [
-                (self.lighting_voltage, 0.0),
-                (self.max_voltage, 100.0),
-            ]
-        if self.power_speed_curve:
+        if self.derived_from is None:
+            if self.lighting_voltage is None:
+                self.lighting_voltage = 1.5
+            if self.power_speed_curve is None:
+                self.power_speed_curve = [(0.0, 0.0), (100.0, 100.0)]
+            if not self.voltage_power_curve:
+                self.voltage_power_curve = [
+                    (self.lighting_voltage, 0.0),
+                    (self.max_voltage, 100.0),
+                ]
+            self.voltage_power_curve = sorted(
+                self.voltage_power_curve, key=lambda x: x[0]
+            )
+        else:
+            # Instance profile: no stored voltage_power_curve, unset measured
+            # fields stay None.
+            self.voltage_power_curve = []
+        if self.power_speed_curve is not None:
             self.power_speed_curve = sorted(
                 self.power_speed_curve, key=lambda x: x[0]
             )
-        self.voltage_power_curve = sorted(
-            self.voltage_power_curve, key=lambda x: x[0]
-        )
 
     def power_percent_to_speed(self, percent: float) -> float:
         """Convert manual power percentage (0-100) to target speed (km/h).
@@ -282,9 +321,14 @@ class SpeedProfile:
         return {
             "profile_id": self.profile_id,
             "name": self.name,
+            "derived_from": self.derived_from,
             "model": self.model,
             "calibrated_at": self.calibrated_at,
-            "power_speed_curve": [[p, s] for p, s in self.power_speed_curve],
+            "power_speed_curve": (
+                None
+                if self.power_speed_curve is None
+                else [[p, s] for p, s in self.power_speed_curve]
+            ),
             "voltage_power_curve": [[v, p] for v, p in self.voltage_power_curve],
             "lighting_voltage": self.lighting_voltage,
             "max_voltage": self.max_voltage,
@@ -307,28 +351,35 @@ class SpeedProfile:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SpeedProfile":
         """Reconstruct from dictionary after deserialization."""
+        # None (or an absent key) is preserved as None here: __post_init__ fills
+        # the v1 default for a MODEL profile and leaves it None ("read from the
+        # model") for an INSTANCE profile.
         power_curve = data.get("power_speed_curve")
         if power_curve is None:
-            power_tuples = [(0.0, 0.0), (100.0, 100.0)]
+            power_tuples: Optional[List[Tuple[float, float]]] = None
         else:
             power_tuples = [(float(p), float(s)) for p, s in power_curve]
 
         voltage_power_raw = data.get("voltage_power_curve")
-        if voltage_power_raw is None:
-            # Leave empty so __post_init__ synthesizes the default ramp from the
-            # parsed lighting_voltage/max_voltage anchors below.
+        if not voltage_power_raw:
+            # Leave empty so __post_init__ synthesizes the default ramp for a
+            # model profile (or keeps it empty for an instance profile).
             voltage_power_tuples: List[Tuple[float, float]] = []
         else:
             voltage_power_tuples = [(float(v), float(p)) for v, p in voltage_power_raw]
 
+        lighting_raw = data.get("lighting_voltage")
+        lighting_voltage = None if lighting_raw is None else float(lighting_raw)
+
         return cls(
             profile_id=data.get("profile_id", ""),
             name=data.get("name", ""),
+            derived_from=data.get("derived_from") or None,
             model=str(data.get("model", "") or ""),
             calibrated_at=data.get("calibrated_at") or None,
             power_speed_curve=power_tuples,
             voltage_power_curve=voltage_power_tuples,
-            lighting_voltage=float(data.get("lighting_voltage", 1.5)),
+            lighting_voltage=lighting_voltage,
             acceleration_rate=float(data.get("acceleration_rate", 10.0)),
             deceleration_rate=float(data.get("deceleration_rate", 15.0)),
             emergency_brake_rate=float(data.get("emergency_brake_rate", 30.0)),
@@ -384,6 +435,136 @@ def make_default_speed_profile(train_id: str, max_speed_kmh: float) -> SpeedProf
     )
 
 
+def reanchor_voltage_power_curve(
+    curve: List[Tuple[float, float]], anchor: float, max_voltage: float
+) -> List[Tuple[float, float]]:
+    """A `voltage_power_curve` with its 0%-power point moved to `anchor`.
+
+    Drops every point at or below the new anchor (each names a voltage that does
+    not move this locomotive) and the old 0%-power anchor, then prepends
+    `(anchor, 0%)` (design_new.md "SpeedProfile", Model profiles and instance
+    profiles). This builds an instance profile's resolved curve from its model
+    profile's stored curve, and is a no-op when `anchor` already equals the
+    curve's bottom voltage.
+    """
+    kept = [
+        (float(v), float(p))
+        for v, p in (curve or [])
+        if float(v) > anchor and float(p) > 0.0
+    ]
+    if not kept:
+        kept = [(float(max_voltage), 100.0)]
+    return [(float(anchor), 0.0)] + sorted(kept)
+
+
+def make_instance_profile(
+    model_profile_id: str, *, profile_id: str, name: str = ""
+) -> SpeedProfile:
+    """An empty instance profile deriving from `model_profile_id`.
+
+    It carries none of its three measured fields yet (design_new.md
+    "SpeedProfile", Model profiles and instance profiles): every field resolves
+    from the model profile until **Speed calibration** or **Lighting-voltage
+    calibration** writes a measured value onto this instance.
+    """
+    return SpeedProfile(
+        profile_id=profile_id, name=name, derived_from=model_profile_id
+    )
+
+
+def seed_default_profile_pair(registry, train_id: str, max_speed_kmh) -> str:
+    """Register a default model profile plus an empty instance under it.
+
+    design_new.md "SpeedProfile": when placement seeds no profile,
+    `add_train(...)` creates a model profile whose `power_speed_curve` 100% point
+    is anchored to the train's `max_speed`, plus an empty instance deriving from
+    it, and the train names the instance. Registers both and returns the
+    instance's `profile_id`, so calibrating one locomotive never touches another
+    that shares its model curve.
+    """
+    model = make_default_speed_profile(train_id, max_speed_kmh)
+    instance = make_instance_profile(
+        model.profile_id,
+        profile_id=f"{model.profile_id}__instance",
+        name=f"{model.name} instance",
+    )
+    registry.register(model)
+    registry.register(instance)
+    return instance.profile_id
+
+
+def _overlay_instance_on_model(
+    model: SpeedProfile, instance: SpeedProfile
+) -> SpeedProfile:
+    """The complete profile an instance resolves to over its model profile.
+
+    design_new.md "SpeedProfile", Model profiles and instance profiles: the
+    instance's measured fields where it carries them, the model's values
+    everywhere else, and a `voltage_power_curve` rebuilt from the model's curve
+    re-anchored at the resolved `lighting_voltage`. The result carries the
+    instance's `profile_id` (so a train that names the instance still matches its
+    resolved profile) and reads as a flattened model profile.
+    """
+    lighting = (
+        instance.lighting_voltage
+        if instance.lighting_voltage is not None
+        else model.lighting_voltage
+    )
+    power_speed = (
+        instance.power_speed_curve
+        if instance.power_speed_curve is not None
+        else model.power_speed_curve
+    )
+    calibrated_at = (
+        instance.calibrated_at
+        if instance.calibrated_at is not None
+        else model.calibrated_at
+    )
+    voltage_power = reanchor_voltage_power_curve(
+        model.voltage_power_curve, float(lighting), float(model.max_voltage)
+    )
+    return SpeedProfile(
+        profile_id=instance.profile_id,
+        name=instance.name or model.name,
+        derived_from=None,
+        model=model.model,
+        calibrated_at=calibrated_at,
+        power_speed_curve=list(power_speed) if power_speed is not None else None,
+        voltage_power_curve=list(voltage_power),
+        lighting_voltage=float(lighting),
+        acceleration_rate=model.acceleration_rate,
+        deceleration_rate=model.deceleration_rate,
+        emergency_brake_rate=model.emergency_brake_rate,
+        friction_rate=model.friction_rate,
+        operational_decel_ratio=model.operational_decel_ratio,
+        air_resistance_enabled=model.air_resistance_enabled,
+        drag_coefficient=model.drag_coefficient,
+        reference_speed_kmh=model.reference_speed_kmh,
+        max_voltage=model.max_voltage,
+        power_multipliers=dict(model.power_multipliers),
+        brake_multipliers=dict(model.brake_multipliers),
+    )
+
+
+def _instance_without_model(instance: SpeedProfile) -> SpeedProfile:
+    """A usable profile for an instance whose model profile is missing.
+
+    design_new.md keeps every instance deriving from a live model, so this only
+    guards a corrupt load (a dangling `derived_from`). It fills the instance's
+    unset fields with the model-profile defaults so a consumer still gets a
+    complete, drivable record instead of a partial one.
+    """
+    return SpeedProfile(
+        profile_id=instance.profile_id,
+        name=instance.name,
+        derived_from=None,
+        model=instance.model,
+        calibrated_at=instance.calibrated_at,
+        power_speed_curve=instance.power_speed_curve,
+        lighting_voltage=instance.lighting_voltage,
+    )
+
+
 def resolve_memoized_default_profile(cache_holder, train) -> SpeedProfile:
     """Per-train default `SpeedProfile`, memoized on `cache_holder`.
 
@@ -413,6 +594,31 @@ class SpeedProfileRegistry:
 
     def get(self, profile_id: str) -> Optional[SpeedProfile]:
         return self._profiles.get(profile_id)
+
+    def resolve(self, profile_id: str) -> Optional[SpeedProfile]:
+        """Return a fully-filled `SpeedProfile` for `profile_id`.
+
+        For a model profile (`derived_from is None`) this is the profile itself,
+        unchanged. For an instance profile it is the overlay: the instance's
+        measured fields where the instance carries them, the model profile's
+        values everywhere else, and a `voltage_power_curve` rebuilt from the
+        model's curve re-anchored at the resolved `lighting_voltage`.
+
+        design_new.md "SpeedProfile", Model profiles and instance profiles: this
+        is the one accessor every consumer that drives a train reads through, so
+        a partial instance record is never consumed directly. `get(...)` still
+        returns the raw stored record, which the calibration and editor write
+        paths need.
+        """
+        profile = self._profiles.get(profile_id)
+        if profile is None:
+            return None
+        if profile.derived_from is None:
+            return profile
+        model = self._profiles.get(profile.derived_from)
+        if model is None:
+            return _instance_without_model(profile)
+        return _overlay_instance_on_model(model, profile)
 
     def list_profiles(self) -> List[str]:
         return list(self._profiles.keys())
