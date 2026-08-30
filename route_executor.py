@@ -643,6 +643,40 @@ class RouteExecutor:
         # train assigned with no RUNNING run and allocates a fresh run. Consumed
         # only by the route_deactivate consumer; abort/power-off never record it.
         self._pending_reassign: Dict[str, str] = {}
+        # Held route-assignment request for a train that still has a live
+        # RUNNING run (per design_new.md "Route assignment writers", lines
+        # 1530-1545). When an operator retargets, swaps, or unassigns a train
+        # whose run is still live, `request_route_assignment(...)` does NOT
+        # mutate either route's `assigned_train_ids` inline: it writes the abort
+        # + inclusive cancel latches and stashes the request here as
+        # `train_id -> {"requested_route_id": Optional[str], "start_override":
+        # Optional[dict]}`. The Action teardown then commits it inside
+        # `remove_train_route_run(...)` -- after the old run is archived and
+        # unassigned -- so no stored assignment ever points at the replacement
+        # route while the old run is still RUNNING. `requested_route_id is None`
+        # is a held unassign (the train ends up on no route). This is request
+        # state, NOT an assignment: `assigned_route_id_for(...)` never reports
+        # it. Distinct from `_pending_reassign`, the narrower same-route
+        # structural-edit re-add applied by the deactivate consumer.
+        self._pending_route_assignments: Dict[str, Dict[str, Any]] = {}
+        # Routes awaiting deferred deletion (per design_new.md "Route deletion
+        # waits for live teardown", lines 2098-2103). `DELETE /api/train-routes`
+        # never removes a route used by a live or pending run inline: it sets
+        # `Route.is_active = False`, records the id here, and fans out the
+        # per-train deactivate teardown. The registry retains the `Route` while
+        # any train remains assigned or any RUNNING run names it, so
+        # `get_route(...)` keeps resolving for every live run during Plan and
+        # Action. `finalize_pending_route_deletions()` -- called after each
+        # Action teardown and each natural finish -- archives + unregisters a
+        # pending route once nothing holds it.
+        self.pending_route_deletions: Set[str] = set()
+        # Immutable final route definitions kept after a deferred deletion
+        # archives them out of the active registry (per design_new.md line
+        # 2102), so historical `RouteRun.task_runs[*].task_index` and run-panel
+        # serialization can still resolve the task definitions they reference.
+        # `get_route(...)` falls back to this map when the active registry has
+        # no live copy. Keyed by route_id.
+        self._historical_routes: Dict[str, "Route"] = {}
 
         # Per-tick coordinator state (design_new.md "Contention snapshot" +
         # "Meet coordination"). Read-only tick-start views rebuilt every tick by
@@ -755,6 +789,118 @@ class RouteExecutor:
             if train_id in getattr(route, "assigned_train_ids", []):
                 return route_id
         return None
+
+    def request_route_assignment(
+        self,
+        train_id: str,
+        requested_route_id: Optional[str],
+        start_override: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Canonical assignment-request entry (design_new.md "Route assignment
+        writers", lines 1530-1545). Every HTTP/UI/admin assignment writer routes
+        through here instead of mutating `Route.assigned_train_ids` directly.
+
+        `requested_route_id is None` means unassign. `start_override`, when
+        supplied, is the per-assignment one-shot start-mode bundle
+        (`{"start_mode": RouteStartMode, "start_task_index": Optional[int]}`)
+        that seeds the next fresh run; `None` means "use the route default".
+
+        Three cases, keyed on whether a live RUNNING run exists:
+
+          * No RUNNING run -> commit immediately: clear older pending route/start
+            state, unassign the train from any old route, assign the requested
+            route when non-None, and stash the start override for the next fresh
+            run allocation.
+          * A RUNNING run exists and the request names that same route -> an
+            idempotent no-op; a supplied start override is dropped because the
+            run already consumed its start mode.
+          * A RUNNING run exists and the request names a different route (or
+            None) -> defer: write the abort + inclusive-cancel latches, clear
+            older pending state, and stash the request on
+            `_pending_route_assignments[train_id]` WITHOUT touching either
+            route's `assigned_train_ids`. The Action teardown commits it inside
+            `remove_train_route_run(...)`.
+
+        This method performs the mechanism only; the caller validates the route
+        (existence, non-empty tasks, conflict/force) before invoking it.
+        """
+        run = self.execution_state_for(train_id)
+
+        # A RUNNING run on the very route being (re-)requested: idempotent
+        # no-op. The run already consumed its start mode, so a supplied start
+        # override is dropped rather than applied.
+        if run is not None and requested_route_id == run.route_id:
+            return
+
+        # An explicit request supersedes any held same-route structural
+        # re-allocation: a stale `_pending_reassign` entry must not fire on a
+        # later deactivate of this train (design_new.md line 2097 / the explicit
+        # "Retargeting/swap uses the general held-assignment mechanism" rule).
+        self.discard_pending_reassign(train_id)
+
+        if run is None:
+            # Commit immediately -- no live run to tear down first.
+            self._pending_route_assignments.pop(train_id, None)
+            self.clear_pending_start_override(train_id)
+            old_route_id = self.assigned_route_id_for(train_id)
+            if old_route_id:
+                old_route = self.route_registry.get(old_route_id)
+                if old_route is not None:
+                    old_route.unassign_train(train_id)
+            if requested_route_id is not None:
+                new_route = self.route_registry.get(requested_route_id)
+                if new_route is not None:
+                    new_route.assign_train(train_id)
+                if start_override is not None:
+                    self._pending_start_overrides[train_id] = dict(start_override)
+            return
+
+        # A live run exists and the request names a different route (or None):
+        # defer. Write the abort + inclusive cancel so Action tears the old run
+        # down through the canonical workflow, then hold the request; do NOT
+        # mutate either route's `assigned_train_ids` yet.
+        controller = self._controller_by_id(train_id)
+        if controller is not None:
+            has_active_path = (
+                controller.path_projection.received_path_plan is not None
+            )
+            controller.route_hooks.phase_latches.set_route_abort(
+                reason=("unassign" if requested_route_id is None else "retarget"),
+                has_active_path=has_active_path,
+            )
+        # Clear any older held request/start state, THEN store the fresh one.
+        self._pending_route_assignments.pop(train_id, None)
+        self.clear_pending_start_override(train_id)
+        self._pending_route_assignments[train_id] = {
+            "requested_route_id": requested_route_id,
+            "start_override": None if start_override is None else dict(start_override),
+        }
+
+    def _commit_pending_route_assignment(self, train_id: str) -> None:
+        """Consume any held `_pending_route_assignments[train_id]` and apply its
+        requested replacement (design_new.md lines 1531 / 1860 / 1864).
+
+        Called by `remove_train_route_run(...)` as its last state mutation,
+        once the old run has been archived and unassigned. When the held
+        `requested_route_id` is non-None the train is assigned to that route and
+        the held start override moves to `_pending_start_overrides` for the next
+        fresh run; when it is None the train stays unassigned. A no-op when no
+        request is held.
+        """
+        pending = self._pending_route_assignments.pop(train_id, None)
+        if not pending:
+            return
+        requested_route_id = pending.get("requested_route_id")
+        if requested_route_id is None:
+            # Held unassign: the train stays on no route; drop the start
+            # override too (there is no run for it to seed).
+            return
+        route = self.route_registry.get(requested_route_id)
+        if route is not None:
+            route.assign_train(train_id)
+        start_override = pending.get("start_override")
+        if start_override is not None:
+            self._pending_start_overrides[train_id] = dict(start_override)
 
     def route_run_summary_for(self, train_id: str) -> Optional[Dict[str, Any]]:
         """Five-field summary of the train's currently-`RUNNING` `RouteRun`,
@@ -1523,8 +1669,18 @@ class RouteExecutor:
         """Resolve a shared `Route` from the registry. Used by
         `RouteExecutionState.effective_*` helpers so they can fall back to
         the live shared value when no per-run override is present.
+
+        Falls back to the archived `_historical_routes` copy when the active
+        registry has no live route (design_new.md line 2102): a route removed by
+        a deferred deletion must still resolve for historical-run serialization.
+        A live route is only ever archived once nothing holds it, so no live run
+        ever reaches the fallback -- Plan/Action always find their route in the
+        active registry.
         """
-        return self.route_registry.get(route_id)
+        route = self.route_registry.get(route_id)
+        if route is not None:
+            return route
+        return self._historical_routes.get(route_id)
 
     def set_run_override(
         self, train_id: str, field_name: str, value: Any
@@ -3281,6 +3437,11 @@ class RouteExecutor:
             simulation_controller = getattr(self, "simulation_controller", None)
             route.deactivate(simulation_controller)
 
+        # A natural finish may have removed this route's last assignment / live
+        # run, satisfying a deferred deletion that was waiting on it
+        # (design_new.md line 2102).
+        self.finalize_pending_route_deletions()
+
     def _archive_run(self, exec_state: RouteExecutionState) -> None:
         """Move a now-terminal `RouteRun` to `_historical_runs`.
 
@@ -3650,8 +3811,11 @@ class RouteExecutor:
         """Tear down a `RouteRun` for `pending_route_abort` /
         `pending_power_off` / `pending_route_deactivate`.
 
-        Per design_new.md (~line 1242): looks up the train's currently-RUNNING
-        `RouteRun` (no-op if none), then performs the canonical teardown:
+        Per design_new.md (lines 1860 / 1864): looks up the train's
+        currently-RUNNING `RouteRun`.
+
+        When a run exists it performs the canonical teardown, then commits any
+        held route-assignment replacement as the last operation:
 
           1. Force-clear any service-stop override through
              `TrainController.consume_service_stop(force=True)` so a run
@@ -3663,14 +3827,38 @@ class RouteExecutor:
           4. Set `current_route_status = DEACTIVATED` and archive the
              row as a historical run (visible to `history_for_train(...)`).
              The derived `execution_state_for(train_id)` no longer returns it.
+          5. Consume `_pending_route_assignments[train_id]` and apply its
+             requested replacement, if any (design_new.md line 1864). The
+             narrower same-route `_pending_reassign` entry is NOT applied here;
+             the deactivate consumer applies it after this method returns.
+
+        When NO run exists, it still removes any stored assignment and consumes
+        `_pending_route_assignments[train_id]` exactly as the commit contract
+        specifies (design_new.md line 1860) -- this covers a train assigned
+        before its first Plan allocation and an earlier teardown consumer in the
+        same Action pass.
+
+        Either way, `finalize_pending_route_deletions()` runs at the end so a
+        route awaiting deferred deletion is archived + unregistered as soon as
+        this teardown left it with no assignment and no live run.
 
         The originating cause is recorded only on the `path_cancellation` and
         `command_result` notifications, not on any field of the `RouteRun`.
         """
         exec_state = self.execution_state_for(train_id)
         if exec_state is None:
-            # No active run to remove; some other Action consumer already
-            # ran or no run was ever assigned.
+            # No active run to remove (a train assigned before its first Plan
+            # allocation, or an earlier teardown consumer already ran this
+            # pass). Per design_new.md line 1860 the method still removes any
+            # stored assignment, then commits any held replacement.
+            old_route_id = self.assigned_route_id_for(train_id)
+            if old_route_id:
+                old_route = self.route_registry.get(old_route_id)
+                if old_route is not None:
+                    old_route.unassign_train(train_id)
+            self._commit_pending_route_assignment(train_id)
+            # A deferred-deletion route may now have lost its last assignment.
+            self.finalize_pending_route_deletions()
             return
 
         controller = self._controller_by_id(train_id)
@@ -3700,6 +3888,17 @@ class RouteExecutor:
         exec_state.current_route_status = RouteRunStatus.DEACTIVATED
         self._archive_run(exec_state)
 
+        # Commit any held route-assignment replacement as the last state
+        # mutation, now that the old run is archived and unassigned
+        # (design_new.md line 1864). The narrower same-route `_pending_reassign`
+        # entry is applied separately by the deactivate consumer after this
+        # method returns.
+        self._commit_pending_route_assignment(train_id)
+
+        # The route just unassigned may have been awaiting deferred deletion and
+        # may now have no assignment and no live run.
+        self.finalize_pending_route_deletions()
+
         # This call is the consume-side emitter for whichever of
         # `phase_latches.route_abort` / `route_deactivate` drove the teardown
         # (design_new.md "Latch consumption events"). The Action step that
@@ -3724,6 +3923,56 @@ class RouteExecutor:
                 )
             except Exception:
                 pass
+
+    def finalize_pending_route_deletions(self) -> None:
+        """Archive + unregister any route whose deferred deletion is now
+        satisfied (design_new.md "Route deletion waits for live teardown",
+        line 2102).
+
+        Called after each Action teardown (`remove_train_route_run`) and each
+        natural finish (`finish_route_run`). For every route awaiting deletion,
+        remove it from the active registry ONLY when it has no assignments and
+        no live RUNNING run naming it. A pending route with a still-`RUNNING`
+        run, or a train still in `assigned_train_ids` (which covers the window
+        where a `route_deactivate` latch is armed but not yet consumed, since
+        the train is not unassigned until that consumer runs), stays retained so
+        Plan and Action keep resolving it through `get_route(...)`.
+
+        Before removal the immutable final definition moves to
+        `_historical_routes`, so historical `RouteRun.task_runs[*].task_index`
+        and run-panel serialization can still resolve the task definitions they
+        reference. Idempotent: a route no longer in the registry is simply
+        dropped from the pending set.
+        """
+        for route_id in list(self.pending_route_deletions):
+            route = self.route_registry.get(route_id)
+            if route is None:
+                # Already archived/removed; drop the stale pending marker.
+                self.pending_route_deletions.discard(route_id)
+                continue
+            has_assignments = bool(getattr(route, "assigned_train_ids", []))
+            has_live_run = any(
+                st.route_id == route_id
+                and st.current_route_status == RouteRunStatus.RUNNING
+                for st in self.execution_states.values()
+            )
+            if has_assignments or has_live_run:
+                continue
+            # Nothing holds it: archive the immutable final definition, then
+            # remove it from the active registry.
+            self._historical_routes[route_id] = route
+            self.unregister_route(route_id)
+            self.pending_route_deletions.discard(route_id)
+
+    def get_historical_route(self, route_id: str) -> Optional["Route"]:
+        """Return the archived final definition of a deleted route, or ``None``.
+
+        A route removed from the active registry by
+        `finalize_pending_route_deletions()` is retained here (design_new.md
+        line 2102). Used by the DELETE service for post-archival idempotency and
+        by `get_route(...)`'s historical fallback.
+        """
+        return self._historical_routes.get(route_id)
 
     def record_pending_reassign(self, train_id: str, route_id: str) -> None:
         """Hold a same-route re-assignment until the Action deactivate clear

@@ -23,7 +23,7 @@ an already-assigned route without ``force`` raises ``ConflictError``.
 from __future__ import annotations
 
 import functools
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from app_state import AppState
 from enums import CommandResult, Direction, HandlePosition, TrainState
@@ -661,44 +661,19 @@ def assign_route(
     route_executor = (
         state.sim_controller.route_executor if state.sim_controller else None
     )
-    # Clear any stale per-assignment start input before doing anything else, so
-    # an unassign — or a reassign to a different route — never reuses a choice
-    # made for an earlier assignment (per design_new.md "Run start-mode
-    # seeding").
-    if route_executor is not None:
-        route_executor.clear_pending_start_override(train_id)
-        # Also drop any held structural-edit re-assignment for this train: an
-        # explicit assign/retarget/unassign supersedes a pending same-route
-        # re-allocation, so it must not fire on a later deactivate of this train
-        # (per design_new.md "Shared-route edit teardown").
-        route_executor.discard_pending_reassign(train_id)
-    route_registry = route_executor.route_registry if route_executor else {}
-    current_route_id = (
-        route_executor.assigned_route_id_for(train_id) if route_executor else None
-    )
 
-    controller = _controller(state, train) if state.sim_controller else None
-
-    def _has_active_path() -> bool:
-        return (
-            controller is not None
-            and controller.path_projection.received_path_plan is not None
-        )
-
-    # Branch 1: unassign (route_id is None).
+    # Branch 1: unassign (route_id is None). The mechanism -- defer around a
+    # live run vs. unassign immediately, plus clearing stale pending start /
+    # re-assignment state -- is owned by `request_route_assignment(...)` (per
+    # design_new.md "Route assignment writers").
     if route_id is None:
-        if current_route_id:
-            if controller is not None:
-                controller.route_hooks.phase_latches.set_route_abort(
-                    reason="unassign",
-                    has_active_path=_has_active_path(),
-                )
-            current_route = route_registry.get(current_route_id)
-            if current_route:
-                current_route.unassign_train(train_id)
+        if route_executor is not None:
+            route_executor.request_route_assignment(train_id, None)
         return train
 
-    # Branch 2: assign / retarget (route_id provided).
+    # Branch 2: assign / retarget (route_id provided). Validation stays here;
+    # `request_route_assignment(...)` performs the assignment mechanism.
+    route_registry = route_executor.route_registry if route_executor else {}
     route = route_registry.get(route_id)
     if not route:
         raise NotFoundError("Route not found")
@@ -713,6 +688,10 @@ def assign_route(
             f"before assigning a train."
         )
 
+    current_route_id = (
+        route_executor.assigned_route_id_for(train_id) if route_executor else None
+    )
+
     # Same-route assign is an idempotent no-op.
     if current_route_id == route_id:
         return train
@@ -723,23 +702,11 @@ def assign_route(
             f"Use force=true to reassign."
         )
 
-    if current_route_id:
-        # Retargeting: write the abort latch first so Action commits the
-        # cancellation through the canonical workflow.
-        if controller is not None:
-            controller.route_hooks.phase_latches.set_route_abort(
-                reason="retarget",
-                has_active_path=_has_active_path(),
-            )
-        previous_route = route_registry.get(current_route_id)
-        if previous_route:
-            previous_route.unassign_train(train_id)
-
-    # Stash the per-assignment start-mode input (if any) for the next fresh
-    # RouteRun allocation. Only set on a genuine assign/retarget that reaches
-    # this point; the same-route no-op above returned early. Per design_new.md
-    # "Run start-mode seeding".
-    if route_executor is not None and start_mode is not None:
+    # Coerce the per-assignment start-mode input (if any) into the one-shot
+    # bundle carried alongside the request; `None` means "use the route
+    # default" (per design_new.md "Run start-mode seeding").
+    start_override: Optional[Dict[str, Any]] = None
+    if start_mode is not None:
         try:
             resolved_start_mode = RouteStartMode(start_mode)
         except ValueError:
@@ -750,11 +717,15 @@ def assign_route(
             )
         except (TypeError, ValueError):
             raise ValidationError("start_task_index must be an integer or null")
-        route_executor.set_pending_start_override(
-            train_id, resolved_start_mode, resolved_start_index
-        )
+        start_override = {
+            "start_mode": resolved_start_mode,
+            "start_task_index": resolved_start_index,
+        }
 
-    route.assign_train(train_id)
+    if route_executor is not None:
+        route_executor.request_route_assignment(
+            train_id, route_id, start_override=start_override
+        )
     return train
 
 

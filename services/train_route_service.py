@@ -434,28 +434,68 @@ def update_route(
 
 
 def delete_route(state: AppState, route_id: str) -> bool:
-    """Unassign + unregister a route. Returns True on success.
+    """Delete a route, deferring live teardown. Returns True on success.
+
+    Per design_new.md "Route deletion waits for live teardown" (lines
+    2098-2103): `DELETE /api/train-routes/<route_id>` never removes a route used
+    by a live or pending run inline. Instead it
+
+      1. rejects further assignment/activation by setting `Route.is_active =
+         False` and recording the id in `RouteExecutor.pending_route_deletions`;
+      2. for every assigned train, clears any held same-route re-assignment
+         (a route pending deletion is never re-applied by `_pending_reassign`)
+         and sets the per-train `route_deactivate` latch, letting the inclusive
+         cancel + Action deactivate consumer perform the ordinary authority and
+         run teardown;
+      3. leaves the `Route` in the active registry while any train remains
+         assigned or any RUNNING run names it, so `get_route(...)` keeps
+         resolving for every live run during Plan and Action; and
+      4. calls `finalize_pending_route_deletions()`, which archives the
+         immutable definition to `_historical_routes` and unregisters the route
+         only once nothing holds it. When the route has no assignment, live run,
+         or pending teardown at DELETE time, that finalization runs here and now.
+
+    Repeating DELETE while teardown is pending, or after the route has been
+    archived, is idempotent.
 
     Raises:
-        NotFoundError when the route does not exist.
+        NotFoundError when the route has never existed (a route already archived
+        by a completed deferred deletion returns True instead of raising).
     """
     registry = _registry(state)
+    executor = state.sim_controller.route_executor
+
     if route_id not in registry:
+        # Idempotent after archival: a route already removed by a completed
+        # deferred deletion returns True rather than 404.
+        if executor.get_historical_route(route_id) is not None:
+            return True
         raise NotFoundError(f"Route {route_id!r} not found")
 
     route = registry[route_id]
-    previously_assigned = list(route.assigned_train_ids)
-    for train_id in previously_assigned:
-        route.unassign_train(train_id)
+    # Reject further assignment/activation, and record the deferred-deletion
+    # intent. The registry retains the Route until nothing holds it.
+    route.is_active = False
+    executor.pending_route_deletions.add(route_id)
 
-    executor = state.sim_controller.route_executor
-    # Per design_new.md canonical teardown: each assigned train's RouteRun
-    # must go through finish_dwell() + DEACTIVATED + archive rather than a
-    # raw dict pop (fix #4).
-    for train_id in previously_assigned:
-        executor.remove_train_route_run(train_id)
+    # Fan out the per-train deactivate teardown; never unassign inline. Each
+    # assigned train's later Action deactivate consumer runs
+    # `remove_train_route_run(...)`, which archives + unassigns its run.
+    for train_id in list(route.assigned_train_ids):
+        executor.discard_pending_reassign(train_id)
+        controller = state.sim_controller.get_controller(train_id)
+        if controller is not None:
+            controller.route_hooks.phase_latches.set_route_deactivate(
+                reason=f"route_deleted:{route_id}",
+                has_active_path=(
+                    controller.path_projection.received_path_plan is not None
+                ),
+            )
 
-    executor.unregister_route(route_id)
+    # Archive + unregister now when nothing holds the route (no assignment, no
+    # live run); otherwise the later teardown consumers trigger the same
+    # finalization once they release it.
+    executor.finalize_pending_route_deletions()
     return True
 
 
