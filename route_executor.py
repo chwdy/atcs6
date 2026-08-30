@@ -30,7 +30,7 @@ from constants import (
     IDLE_HOLD_RELEASE_TICKS,
     WAYPOINT_LOOKAHEAD_BLOCKS,
 )
-from enums import ControllerCondition, Direction, TrainState
+from enums import AtcLimitReasonCode, ControllerCondition, Direction, TrainState
 from train_controller import TrainController, create_controller_for_train
 from train_route import (
     RouteMode,
@@ -109,6 +109,45 @@ class ContentionSnapshot:
 
     def __bool__(self) -> bool:
         return bool(self.edges or self.highest_waiter_by_block)
+
+
+# =============================================================================
+# Wedge report (design_new.md "Wedge detection")
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class Wedge:
+    """One deadlock — a set of trains that are each stopped with nowhere to go,
+    every member waiting for a resource another member holds, so none can move
+    (design_new.md "Wedge detection").
+
+    `train_ids` are the members, sorted, so the same wedge has the same identity
+    every tick. `block_ids` are the contested blocks the cycle runs through,
+    sorted — the `waiting_block_id`s of the wait-for edges that stay inside the
+    wedge. A one-train wedge has a single train whose own body holds the resource
+    its authority needs next (its wait-for edge points back at itself).
+    """
+
+    train_ids: Tuple[str, ...]
+    block_ids: Tuple[str, ...]
+
+
+@dataclass
+class WedgeReport:
+    """Per-tick view of the wedges present (design_new.md "Wedge detection").
+
+    Read-only coordinator state, like the contention snapshot: rebuilt every
+    tick from that snapshot's `edges` (restricted to trains that are stopped
+    with nowhere to go), retained across no ticks. It changes no runtime state
+    and carries no gating predicate, so it is not a latch and has no writer
+    helper. `wedges` is empty when nothing is deadlocked.
+    """
+
+    wedges: List[Wedge] = field(default_factory=list)
+
+    def __bool__(self) -> bool:
+        return bool(self.wedges)
 
 
 # =============================================================================
@@ -618,6 +657,12 @@ class RouteExecutor:
         #     reserve this tick and pinning which candidate it may acquire when a
         #     higher-priority train needs the same track.
         self.contention_snapshot: ContentionSnapshot = ContentionSnapshot()
+        #   wedge_report: the tick's WedgeReport — the set of deadlocks present,
+        #     each a set of trains that are each stopped with nowhere to go and
+        #     waiting on a resource another member holds. Built between the
+        #     contention snapshot and the meet assignment (design_new.md "Wedge
+        #     detection"). Read-only; not a latch.
+        self.wedge_report: WedgeReport = WedgeReport()
         self.meet_assignment: Dict[str, "MeetCeiling"] = {}
         # Trains for which meet coordination found no holding point on the last
         # pass, so it emitted the live `meet_hold` diagnostic and left the key
@@ -626,6 +671,11 @@ class RouteExecutor:
         # train that has dropped out of it (design_new.md "Error events",
         # Resolution and recurrence).
         self.meet_hold_train_ids: Set[str] = set()
+        # Condition keys for the wedges reported on the last pass, so the next
+        # pass can call `NotificationCenter.resolve_condition(...)` for every
+        # wedge that has cleared (design_new.md "Error events", Resolution and
+        # recurrence). One key per wedge, `"wedge:<sorted train ids>"`.
+        self.wedge_condition_keys: Set[str] = set()
 
         # Helper modules — lazy-init on first access. The actual logic lives
         # in `route_target_resolver.RouteTargetResolver` and
@@ -1045,12 +1095,15 @@ class RouteExecutor:
     def build_tick_coordination(self, ordered_train_ids: List[str]) -> None:
         """Rebuild the contention snapshot and meet assignment for this tick.
 
-        design_new.md "Contention snapshot" + "Meet coordination": both are
-        read-only tick-start views — recomputed from scratch every tick and
-        retained across none. The snapshot is built first; meet coordination
-        seeds its conflict detection from the snapshot's contending pairs.
+        design_new.md "Contention snapshot" + "Wedge detection" + "Meet
+        coordination": all three are read-only tick-start views — recomputed
+        from scratch every tick and retained across none. The order is the
+        doc's: the contention snapshot is built first; the wedge report reads
+        that snapshot's edges; meet coordination then seeds its conflict
+        detection from the same snapshot's contending pairs.
         """
         self.contention_snapshot = self._build_contention_snapshot(ordered_train_ids)
+        self.wedge_report = self._build_wedge_report(ordered_train_ids)
         self.meet_assignment = self._build_meet_assignment(ordered_train_ids)
 
     def _build_contention_snapshot(
@@ -1104,6 +1157,275 @@ class RouteExecutor:
         from meet_coordination import MeetCoordinator
 
         return MeetCoordinator(self).build(ordered_train_ids)
+
+    # ------------------------------------------------------------------
+    # Wedge detection (design_new.md "Wedge detection"). Built between the
+    # contention snapshot and the meet assignment, once per tick, reading
+    # tick-start committed state only.
+    # ------------------------------------------------------------------
+
+    def _build_wedge_report(self, ordered_train_ids: List[str]) -> WedgeReport:
+        """Find the deadlocks in this tick's wait-for graph and report them
+        (design_new.md "Wedge detection").
+
+        The graph is `contention_snapshot.edges`: a directed edge from a waiting
+        train to a train holding the resource it needs next. A wedge is a set of
+        trains where every member waits on another member and is waited on — a
+        cycle in that graph, including the one-train case where a train's edge
+        points back at itself. Only trains that are stopped with nowhere to go
+        take part, so the graph is restricted to edges whose waiter and holder
+        are both such trains: a train still rolling, or one with room to advance
+        under its own authority, is never a member.
+
+        Each wedge is emitted once through `NotificationCenter` and its key is
+        resolved when the wedge clears; the report itself changes no runtime
+        state (it gates no planning step, caps no acquisition, cancels no path).
+        """
+        participants = {
+            train_id
+            for train_id in ordered_train_ids
+            if self._is_wedge_participant(train_id)
+        }
+        wedges = self._find_wedges(self.contention_snapshot.edges, participants)
+        report = WedgeReport(wedges=wedges)
+        self._emit_wedge_events(wedges)
+        return report
+
+    def _is_wedge_participant(self, train_id: str) -> bool:
+        """True when `train_id` is stopped with nowhere to go — the wedge
+        membership predicate (design_new.md "Wedge detection").
+
+        Three conditions, all from tick-start controller state:
+        - it holds live authority (`received_path_plan is not None`); a train
+          with no authority holds nothing it acquired, so it cannot be wedged,
+          and why its task could not be served is reported elsewhere;
+        - `TrainController.is_stopped()` is true — a train still rolling is never
+          a member, because the resource it waits for may clear before it gets
+          there;
+        - it is standing at its live authority boundary with no clearance left
+          to advance: the lookahead's dominant restriction is the zero-clearance
+          hold against that authority, which reads as reason code
+          `AUTHORITY_STOP` on the leading speed curve. This is what excludes a
+          stopped train that still has room to roll forward under its own
+          authority.
+        """
+        controller = self._controller_by_id(train_id)
+        if controller is None:
+            return False
+        projection = getattr(controller, "path_projection", None)
+        if getattr(projection, "received_path_plan", None) is None:
+            return False
+        if not controller.is_stopped():
+            return False
+        try:
+            payload = controller.get_lookahead()
+        except Exception:
+            return False
+        curves = ((payload or {}).get("lookahead", {}) or {}).get("speed_curves") or []
+        if not curves:
+            return False
+        return (
+            curves[0].get("atc_limit_reason_code")
+            == AtcLimitReasonCode.AUTHORITY_STOP.value
+        )
+
+    @staticmethod
+    def _find_wedges(
+        edges: List[ContentionEdge], participants: Set[str]
+    ) -> List[Wedge]:
+        """Return the wedges in the wait-for graph (design_new.md "Wedge
+        detection").
+
+        Nodes are trains; a directed edge waiter -> holder means the waiter
+        cannot grow its authority because the holder is in the way. Only edges
+        whose waiter and holder are both in `participants` are kept, because
+        every member of a wedge must itself be stopped with nowhere to go. A
+        wedge is a strongly connected component that contains a cycle: two or
+        more trains that block each other in a ring, or one train whose own
+        edge points back at itself. Each wedge names its member trains (sorted)
+        and the contested blocks the cycle runs through — the `waiting_block_id`
+        of every kept edge that stays inside the component (sorted).
+        """
+        # Keep only edges internal to the participant set; record the blocks
+        # each ordered (waiter, holder) pair is contested on, and which trains
+        # hold the resource they themselves need next (the one-train wedge).
+        succ: Dict[str, Set[str]] = {}
+        pair_blocks: Dict[Tuple[str, str], Set[str]] = {}
+        self_loop: Set[str] = set()
+        for edge in edges:
+            waiter = edge.waiting_train_id
+            holder = edge.holding_train_id
+            if waiter not in participants or holder not in participants:
+                continue
+            pair_blocks.setdefault((waiter, holder), set()).add(edge.waiting_block_id)
+            if waiter == holder:
+                self_loop.add(waiter)
+                # Keep the node in the graph so it becomes its own component;
+                # its self-loop is not a cross-edge, so it stays out of `succ`'s
+                # neighbour sets and is recognized as a one-train wedge below.
+                succ.setdefault(waiter, set())
+                continue
+            succ.setdefault(waiter, set()).add(holder)
+            succ.setdefault(holder, set())
+
+        components = RouteExecutor._strongly_connected_components(succ)
+
+        wedges: List[Wedge] = []
+        for component in components:
+            is_wedge = len(component) > 1 or (
+                len(component) == 1 and next(iter(component)) in self_loop
+            )
+            if not is_wedge:
+                continue
+            blocks: Set[str] = set()
+            for (waiter, holder), block_ids in pair_blocks.items():
+                if waiter in component and holder in component:
+                    blocks |= block_ids
+            wedges.append(
+                Wedge(
+                    train_ids=tuple(sorted(component)),
+                    block_ids=tuple(sorted(blocks)),
+                )
+            )
+        # Deterministic order: by the member-train tuple.
+        wedges.sort(key=lambda w: w.train_ids)
+        return wedges
+
+    @staticmethod
+    def _strongly_connected_components(
+        succ: Dict[str, Set[str]]
+    ) -> List[Set[str]]:
+        """Tarjan's strongly-connected-components, iterative so a long blocking
+        chain cannot overflow the recursion stack. `succ` maps each node to its
+        out-neighbours; every node that appears (as key or neighbour) is
+        included in exactly one returned component."""
+        index_of: Dict[str, int] = {}
+        low_of: Dict[str, int] = {}
+        on_stack: Set[str] = set()
+        stack: List[str] = []
+        components: List[Set[str]] = []
+        counter = 0
+
+        nodes = set(succ.keys())
+        for neighbours in succ.values():
+            nodes |= neighbours
+
+        for root in nodes:
+            if root in index_of:
+                continue
+            # work stack of (node, iterator over its successors)
+            work: List[Tuple[str, Any]] = [(root, iter(sorted(succ.get(root, set()))))]
+            index_of[root] = low_of[root] = counter
+            counter += 1
+            stack.append(root)
+            on_stack.add(root)
+            while work:
+                node, it = work[-1]
+                advanced = False
+                for nxt in it:
+                    if nxt not in index_of:
+                        index_of[nxt] = low_of[nxt] = counter
+                        counter += 1
+                        stack.append(nxt)
+                        on_stack.add(nxt)
+                        work.append((nxt, iter(sorted(succ.get(nxt, set())))))
+                        advanced = True
+                        break
+                    if nxt in on_stack:
+                        low_of[node] = min(low_of[node], index_of[nxt])
+                if advanced:
+                    continue
+                # node fully explored — if it is a component root, pop one SCC
+                if low_of[node] == index_of[node]:
+                    component: Set[str] = set()
+                    while True:
+                        w = stack.pop()
+                        on_stack.discard(w)
+                        component.add(w)
+                        if w == node:
+                            break
+                    components.append(component)
+                work.pop()
+                if work:
+                    parent = work[-1][0]
+                    low_of[parent] = min(low_of[parent], low_of[node])
+        return components
+
+    def _emit_wedge_events(self, wedges: List[Wedge]) -> None:
+        """Emit one operator event per wedge and resolve the ones that cleared
+        (design_new.md "Wedge detection" + "Error events").
+
+        Each wedge carries a stable `condition_key` built from its sorted member
+        trains, so `NotificationCenter` drops the repeat while the same wedge
+        persists and appends a fresh event only when its payload changes (its
+        trains or contested blocks). A wedge present last pass but not this one
+        has its key resolved, so `latest_error_for(...)` stops naming it. The
+        event names the trains in the cycle and the blocks the cycle runs
+        through; it carries `operation = "build_wedge_report"`, `kind =
+        "warning"`, and `ErrorRecord.origin = "wedge"`.
+        """
+        active_now: Set[str] = set()
+        for wedge in wedges:
+            active_now.add(self._wedge_condition_key(wedge))
+        sc = getattr(self, "simulation_controller", None)
+        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        if nc is not None:
+            for wedge in wedges:
+                self._emit_one_wedge(nc, wedge)
+            for key in self.wedge_condition_keys - active_now:
+                try:
+                    nc.resolve_condition(key)
+                except Exception:
+                    pass
+        self.wedge_condition_keys = active_now
+
+    @staticmethod
+    def _wedge_condition_key(wedge: Wedge) -> str:
+        """The stable key naming this wedge's live condition — its sorted member
+        trains, so the same set of deadlocked trains keeps one key across ticks
+        and the emit and the resolve match."""
+        return "wedge:" + ",".join(wedge.train_ids)
+
+    def _emit_one_wedge(self, nc, wedge: Wedge) -> None:
+        """Emit the keyed warning for one wedge (design_new.md "Wedge
+        detection")."""
+        try:
+            from notification_center import block_ref as _bref, train_ref as _tref
+
+            trains = ", ".join(wedge.train_ids)
+            blocks = ", ".join(wedge.block_ids)
+            if len(wedge.train_ids) == 1:
+                message = (
+                    f"wedge: train {trains} is stopped holding the resource its "
+                    f"own authority needs next"
+                )
+                if blocks:
+                    message += f" (contested block: {blocks})"
+            else:
+                message = (
+                    f"wedge: trains {trains} are each stopped waiting on a "
+                    f"resource another holds, so none can move"
+                )
+                if blocks:
+                    message += f" (contested blocks: {blocks})"
+            entities = [_tref(t) for t in wedge.train_ids]
+            entities += [_bref(b) for b in wedge.block_ids]
+            nc.emit(
+                source="RouteExecutor",
+                operation="build_wedge_report",
+                kind=Kind.WARNING,
+                message=message,
+                entities=entities,
+                error=ErrorRecord(message, "wedge"),
+                payload={
+                    "train_ids": list(wedge.train_ids),
+                    "block_ids": list(wedge.block_ids),
+                },
+                event_time=self._now(),
+                condition_key=self._wedge_condition_key(wedge),
+            )
+        except Exception:
+            pass
 
     def _effective_priority_for(self, train_id: str) -> int:
         """`RouteRun.effective_priority` for a train, mirroring the rule
