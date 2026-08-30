@@ -22,7 +22,7 @@ flow.
 from dataclasses import dataclass, field
 import logging
 import time
-from typing import Any, ClassVar, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, ClassVar, Dict, Iterable, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from constants import (
     DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS,
@@ -588,6 +588,13 @@ class RouteExecutor:
         #     higher-priority train needs the same track.
         self.contention_snapshot: ContentionSnapshot = ContentionSnapshot()
         self.meet_assignment: Dict[str, "MeetCeiling"] = {}
+        # Trains for which meet coordination found no holding point on the last
+        # pass, so it emitted the live `meet_hold` diagnostic and left the key
+        # active. `MeetCoordinator` (rebuilt each tick) reconciles this set each
+        # pass and calls `NotificationCenter.resolve_condition(...)` for every
+        # train that has dropped out of it (design_new.md "Error events",
+        # Resolution and recurrence).
+        self.meet_hold_train_ids: Set[str] = set()
 
         # Helper modules — lazy-init on first access. The actual logic lives
         # in `route_target_resolver.RouteTargetResolver` and
@@ -1651,6 +1658,9 @@ class RouteExecutor:
                         projection.walk_position,
                         "planning_failed",
                         projection.failure_reason,
+                        condition_key=self._run_condition_key(
+                            exec_state.run_id, "planning_failed"
+                        ),
                     )
                 break  # sentinel projection — no more candidates this tick
             # Plan step `66aa`: dispatch via PathDispatcher.create_path or
@@ -1681,7 +1691,7 @@ class RouteExecutor:
 
         if any_success:
             # A valid task was served this tick → the walk is not all-broken.
-            exec_state.no_reachable_task = False
+            self._clear_no_reachable_task(exec_state)
             return
 
         # No live authority was created. Apply the broken-vs-unreachable policy
@@ -1708,20 +1718,20 @@ class RouteExecutor:
             # WAIT — leave the task armed. The diagnostic was already emitted by the
             # resolver sentinel branch or the acquisition step. The current task
             # is itself a valid (present) task, so the walk is not all-broken.
-            exec_state.no_reachable_task = False
+            self._clear_no_reachable_task(exec_state)
             return
 
         # Broken task (target missing from the network).
         if self._walk_has_valid_task(exec_state, route, failed_walk_position):
             # A valid task remains ahead → skip the broken one toward it.
-            exec_state.no_reachable_task = False
+            self._clear_no_reachable_task(exec_state)
             self._skip_broken_task(exec_state, route, failed_walk_position)
             return
 
         if route is not None and route.mode == RouteMode.ONE_OFF:
             # No valid task left: skip the broken task; the next Plan sees
             # the terminal walk and finishes the run (having served nothing).
-            exec_state.no_reachable_task = False
+            self._clear_no_reachable_task(exec_state)
             self._skip_broken_task(exec_state, route, failed_walk_position)
             return
 
@@ -1736,6 +1746,9 @@ class RouteExecutor:
                 (
                     "route run stalled: no reachable task "
                     "(every task target is missing)"
+                ),
+                condition_key=self._run_condition_key(
+                    exec_state.run_id, "run_stalled"
                 ),
             )
             exec_state.no_reachable_task = True
@@ -1802,9 +1815,44 @@ class RouteExecutor:
             f"task {walk_position} skipped: target missing from network",
         )
 
+    @staticmethod
+    def _run_condition_key(run_id: str, origin: str) -> str:
+        """The stable `condition_key` naming one live run-level error condition
+        (design_new.md "Error events", Suppression mechanism).
+
+        Scoped by the run and the error origin, so while a run's current task
+        stays blocked for the same reason the repeat is dropped, and a changed
+        reason (a different task or payload under the same origin) is appended
+        as the new current reason. The owning Plan step clears it through
+        `_resolve_run_condition(...)` the first tick the condition goes false.
+        """
+        return f"route_run:{run_id}:{origin}"
+
+    def _resolve_run_condition(self, exec_state, origin: str) -> None:
+        """Clear a run-level error condition the first tick its predicate goes
+        false (design_new.md "Error events", Resolution and recurrence).
+        Idempotent, so it is safe to call on every clean tick."""
+        sc = getattr(self, "simulation_controller", None)
+        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        if nc is None:
+            return
+        try:
+            nc.resolve_condition(self._run_condition_key(exec_state.run_id, origin))
+        except Exception:
+            pass
+
+    def _clear_no_reachable_task(self, exec_state) -> None:
+        """The run has a reachable task again: drop the stall flag and resolve
+        the stalled-run condition on this first transition to false, so the run
+        panel stops showing "stalled" and a later stall emits a fresh event
+        (design_new.md "Error events", Resolution and recurrence)."""
+        exec_state.no_reachable_task = False
+        self._resolve_run_condition(exec_state, "run_stalled")
+
     def _emit_run_error(
         self, exec_state, walk_position, origin: str, text: str,
         operation: str = "tick_train_plan",
+        condition_key: Optional[str] = None,
     ) -> None:
         """Emit a run/task error as an event (design_new.md "Error events").
 
@@ -1814,9 +1862,12 @@ class RouteExecutor:
         `"route_run"` ref and a `"walk_position"` ref, so a run-level filter
         and a task-level filter both find it.
 
-        Repeats are suppressed by `NotificationCenter`, so Plan may call
-        this on every eligible tick while a task stays blocked for the same
-        reason.
+        `condition_key`, when the caller is a live per-tick condition (blocked
+        planning, a stalled run), makes `NotificationCenter` drop the repeat
+        while the key stays active, so Plan may call this on every eligible
+        tick without filling the stream; the caller resolves that key when its
+        predicate goes false. A discrete one-shot diagnostic (a cancellation
+        reason, a broken-task skip) passes no key and is always appended.
         """
         sc = getattr(self, "simulation_controller", None)
         nc = getattr(sc, "notification_center", None) if sc is not None else None
@@ -1842,6 +1893,7 @@ class RouteExecutor:
                 entities=entities,
                 error=_ErrRec(text, origin),
                 event_time=self._now(),
+                condition_key=condition_key,
             )
         except Exception:
             pass
@@ -2487,15 +2539,21 @@ class RouteExecutor:
             self._sync_task_runs(route, exec_state)
             self._emit_run_error(
                 exec_state, row_idx, "planning_failed", reason_text,
+                condition_key=self._run_condition_key(
+                    exec_state.run_id, "planning_failed"
+                ),
             )
             return False
 
-        # Authority acquisition succeeded for this task. Nothing to clear:
-        # errors are events, not entity state, and the surfaces that show a
-        # reason gate on live state instead — the no-authority banner and the
-        # Quick Route toast are shown only while the controller payload carries
-        # no `received_path_plan`, so a reason from before the train acquired
-        # authority is never displayed (design_new.md "Error events").
+        # Authority acquisition succeeded for this task: the blocked-planning
+        # predicate is now false, so resolve its condition (design_new.md
+        # "Error events", Resolution and recurrence). This is the first
+        # transition to false — the run panel's `latest_run_error` read stops
+        # showing the prior blocked reason, and if planning blocks again later
+        # the now-inactive key lets the fresh event through. The no-authority
+        # banner and the Quick Route toast keep gating on live state (a
+        # `received_path_plan` on the controller payload) as before.
+        self._resolve_run_condition(exec_state, "planning_failed")
 
         # Fix (deviation guard): insert any start-block tiles that lie between
         # the train's current head tile and the path segment's first tile into

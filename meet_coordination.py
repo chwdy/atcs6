@@ -36,7 +36,7 @@ Scope of this implementation:
 """
 
 from dataclasses import dataclass, replace
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 
 # One pathfinder step's identity: (resource_type, resource_id, entry_edge,
@@ -83,31 +83,42 @@ class MeetCoordinator:
 
     def build(self, ordered_train_ids: List[str]) -> Dict[str, MeetCeiling]:
         """Return the meet assignment for this tick."""
+        # Trains this pass found no holding point at (the no-holding-point
+        # diagnostic is a live per-tick condition, so `_emit_no_holding_point`
+        # records the train here and the reconcile below resolves the ones that
+        # are no longer held).
+        self._no_holding_point_trains: Set[str] = set()
+        assignment: Dict[str, MeetCeiling] = {}
+
         snapshot = getattr(self._re, "contention_snapshot", None)
         edges = getattr(snapshot, "edges", None) if snapshot is not None else None
-        if not edges:
-            return {}
-        position = {tid: i for i, tid in enumerate(ordered_train_ids)}
-        assignment: Dict[str, MeetCeiling] = {}
-        seen_pairs: set = set()
-        route_cache: Dict[str, Optional[RouteBlocks]] = {}
-        keys_cache: Dict[str, Tuple[CandidateResourceKey, ...]] = {}
+        if edges:
+            position = {tid: i for i, tid in enumerate(ordered_train_ids)}
+            seen_pairs: set = set()
+            route_cache: Dict[str, Optional[RouteBlocks]] = {}
+            keys_cache: Dict[str, Tuple[CandidateResourceKey, ...]] = {}
 
-        # Each contention edge already names the holder (resolved from live state
-        # by get_waiting_conflict), so meet detection reads the pair straight off
-        # the edge rather than re-deriving a block's holder here.
-        for edge in edges:
-            waiter_id = edge.waiting_train_id
-            holder_id = edge.holding_train_id
-            if not holder_id or holder_id == waiter_id:
-                continue
-            pair_key = frozenset((waiter_id, holder_id))
-            if pair_key in seen_pairs:
-                continue
-            seen_pairs.add(pair_key)
-            self._assign_for_pair(
-                waiter_id, holder_id, position, assignment, route_cache, keys_cache
-            )
+            # Each contention edge already names the holder (resolved from live
+            # state by get_waiting_conflict), so meet detection reads the pair
+            # straight off the edge rather than re-deriving a block's holder.
+            for edge in edges:
+                waiter_id = edge.waiting_train_id
+                holder_id = edge.holding_train_id
+                if not holder_id or holder_id == waiter_id:
+                    continue
+                pair_key = frozenset((waiter_id, holder_id))
+                if pair_key in seen_pairs:
+                    continue
+                seen_pairs.add(pair_key)
+                self._assign_for_pair(
+                    waiter_id, holder_id, position, assignment, route_cache, keys_cache
+                )
+
+        # Resolve the no-holding-point condition for any train that had it last
+        # pass but does not this pass (design_new.md "Error events", Resolution
+        # and recurrence). Runs even with no edges, so contention clearing
+        # entirely still clears the diagnostics.
+        self._reconcile_no_holding_point()
         return assignment
 
     # -- per-pair ---------------------------------------------------------
@@ -338,9 +349,21 @@ class MeetCoordinator:
         # tie -> later in the runnable order is the lower one
         return a_id if position.get(a_id, 0) > position.get(b_id, 0) else b_id
 
+    @staticmethod
+    def _meet_hold_key(train_id: str) -> str:
+        """The stable `condition_key` naming this train's live no-holding-point
+        condition, shared by the emit and the resolve so the two match."""
+        return f"train:{train_id}:meet_hold"
+
     def _emit_no_holding_point(self, train_id: str) -> None:
         """One NotificationCenter diagnostic: the layout offers no holding place
-        for this train to meet at (design_new.md line 1555)."""
+        for this train to meet at (design_new.md line 1555).
+
+        This is a live per-tick condition — `assign_meets` runs every Plan pass —
+        so it carries a `condition_key`: `NotificationCenter` drops the repeat
+        while the condition persists, and `_reconcile_no_holding_point()`
+        resolves the key the first pass the train is no longer held."""
+        self._no_holding_point_trains.add(train_id)
         sc = getattr(self._re, "simulation_controller", None)
         nc = getattr(sc, "notification_center", None) if sc is not None else None
         if nc is None:
@@ -361,6 +384,29 @@ class MeetCoordinator:
                 error=ErrorRecord(
                     "no holding point before the contested zone", "meet_hold"
                 ),
+                condition_key=self._meet_hold_key(train_id),
             )
         except Exception:
             pass
+
+    def _reconcile_no_holding_point(self) -> None:
+        """Resolve the no-holding-point condition for every train that had it on
+        the previous pass but not this one (design_new.md "Error events",
+        Resolution and recurrence).
+
+        The active set of held trains lives on the `RouteExecutor`, not on this
+        coordinator, because a fresh `MeetCoordinator` is built each tick. A
+        train drops out of the set when it finds a holding point, gains an
+        alternative route, or leaves contention entirely — every one of those
+        is the condition's predicate going false."""
+        held_now = self._no_holding_point_trains
+        previous: Set[str] = getattr(self._re, "meet_hold_train_ids", set())
+        sc = getattr(self._re, "simulation_controller", None)
+        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        if nc is not None:
+            for train_id in previous - held_now:
+                try:
+                    nc.resolve_condition(self._meet_hold_key(train_id))
+                except Exception:
+                    pass
+        self._re.meet_hold_train_ids = set(held_now)

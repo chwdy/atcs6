@@ -10,7 +10,14 @@ frontend panels are out of this doc's scope).
 
 import pytest
 
-from notification_center import Kind, Notification, NotificationCenter, path_ref, train_ref
+from notification_center import (
+    Kind,
+    Notification,
+    NotificationCenter,
+    path_ref,
+    route_run_ref,
+    train_ref,
+)
 
 
 def test_notification_roundtrip():
@@ -330,8 +337,9 @@ def test_corrupt_event_log_line_does_not_block_boot(tmp_path):
 def test_an_unchanged_repeat_error_is_suppressed():
     """Emit on change, not per tick (design_new.md "Error events").
 
-    Phase 1 retries a blocked task every eligible tick, so the same entity
-    blocked for the same reason must not fill the stream.
+    Plan retries a blocked task every eligible tick, so the same entity
+    blocked for the same reason under the same `condition_key` must not fill
+    the stream: the second call is dropped while the key stays active.
     """
     from runtime_payloads import ErrorRecord
 
@@ -339,6 +347,7 @@ def test_an_unchanged_repeat_error_is_suppressed():
     args = dict(
         source="RouteExecutor", operation="tick_train_plan", kind=Kind.WARNING,
         message="blocked", entities=[train_ref("T1")],
+        condition_key="route_run:R1:planning_failed",
     )
 
     first = nc.emit(error=ErrorRecord("no path", "planning_failed"), **args)
@@ -353,9 +362,12 @@ def test_a_changed_reason_is_a_new_event():
     from runtime_payloads import ErrorRecord
 
     nc = NotificationCenter()
+    # One live condition (one `condition_key`); a changed fingerprint under it
+    # is appended and replaces the active value (design_new.md "Error events").
     args = dict(
         source="RouteExecutor", operation="tick_train_plan", kind=Kind.WARNING,
         message="blocked", entities=[train_ref("T1")],
+        condition_key="route_run:R1:planning_failed",
     )
 
     nc.emit(error=ErrorRecord("no path", "planning_failed"), **args)
@@ -387,6 +399,7 @@ def test_latest_error_for_answers_the_current_reason():
         source="RouteExecutor", operation="tick_train_plan", kind=Kind.WARNING,
         message="blocked", entities=[train_ref("T1")],
         error=ErrorRecord("no path", "planning_failed"),
+        condition_key="route_run:R1:planning_failed",
     )
     # Ordinary info traffic must not become the answer.
     nc.emit(
@@ -405,9 +418,27 @@ def test_latest_error_for_answers_the_current_reason():
     assert nc.latest_error_for("train", "T2") is None
 
 
+def test_latest_error_for_ignores_an_error_with_no_condition_key():
+    """`latest_error_for` combines the retained event row with the active-
+    condition map, so an error emitted with no `condition_key` is never a
+    current reason — it lives on only as history (design_new.md "Error
+    events", Reading the current reason)."""
+    from runtime_payloads import ErrorRecord
+
+    nc = NotificationCenter()
+    # No condition_key: always appended, but never active, so never current.
+    appended = nc.emit(
+        source="RouteExecutor", operation="handle_path_cancellation",
+        kind=Kind.WARNING, message="cancelled", entities=[train_ref("T1")],
+        error=ErrorRecord("operator cancelled", "operator_cancelled"),
+    )
+    assert appended is not None
+    assert nc.latest_error_for("train", "T1") is None
+
+
 def test_a_task_event_is_found_by_both_run_and_task_filters():
     """An event about a task names both refs, so a run-level filter and a
-    task-level filter both find it."""
+    task-level filter both find it while its condition is active."""
     from notification_center import route_run_ref, walk_position_ref
     from runtime_payloads import ErrorRecord
 
@@ -417,8 +448,113 @@ def test_a_task_event_is_found_by_both_run_and_task_filters():
         message="task blocked",
         entities=[route_run_ref("R1"), walk_position_ref("R1", 2)],
         error=ErrorRecord("target missing", "task_skipped"),
+        condition_key="route_run:R1:task_skipped",
     )
 
     assert nc.latest_error_for("route_run", "R1") is not None
     assert nc.latest_error_for("walk_position", "R1#2") is not None
     assert nc.latest_error_for("walk_position", "R1#3") is None
+
+
+# ---------------------------------------------------------------------------
+# condition_key lifecycle (design_new.md "Error events", Suppression mechanism
+# + Resolution and recurrence)
+# ---------------------------------------------------------------------------
+
+
+def _blocked_emit(nc, key, origin="planning_failed", payload=None):
+    from runtime_payloads import ErrorRecord
+
+    return nc.emit(
+        source="RouteExecutor", operation="tick_train_plan", kind=Kind.WARNING,
+        message="blocked", entities=[route_run_ref("R1")],
+        error=ErrorRecord("no path", origin), payload=payload,
+        condition_key=key,
+    )
+
+
+def test_same_condition_key_while_active_gives_one_live_event():
+    """(a) Emitting the same condition on every eligible tick, under the same
+    still-active `condition_key`, appends exactly one event."""
+    nc = NotificationCenter()
+    key = "route_run:R1:planning_failed"
+    results = [_blocked_emit(nc, key) for _ in range(5)]
+
+    assert results[0] is not None
+    assert all(r is None for r in results[1:]), "later repeats are dropped"
+    assert len(nc.peek_recent(50)) == 1
+
+
+def test_resolve_condition_then_re_emit_is_a_fresh_event():
+    """(b) After the owner resolves the key, the otherwise-identical condition
+    emits again — a fresh event with a new notification_id."""
+    nc = NotificationCenter()
+    key = "route_run:R1:planning_failed"
+
+    first = _blocked_emit(nc, key)
+    assert _blocked_emit(nc, key) is None  # suppressed while active
+
+    nc.resolve_condition(key)
+
+    second = _blocked_emit(nc, key)
+    assert second is not None
+    assert second.notification_id != first.notification_id
+    assert len(nc.peek_recent(50)) == 2
+
+
+def test_latest_error_for_tracks_active_and_clears_on_resolve():
+    """(c) `latest_error_for` returns the active-keyed error, and `None` once
+    its owner resolves the condition. The historical event is untouched."""
+    nc = NotificationCenter()
+    key = "route_run:R1:planning_failed"
+
+    _blocked_emit(nc, key)
+    found = nc.latest_error_for("route_run", "R1")
+    assert found is not None and found.error.origin == "planning_failed"
+
+    nc.resolve_condition(key)
+    assert nc.latest_error_for("route_run", "R1") is None
+    # Resolution does not delete or rewrite the historical event.
+    assert len(nc.peek_recent(50)) == 1
+    # Idempotent: resolving an inactive key is a no-op.
+    nc.resolve_condition(key)
+    assert nc.latest_error_for("route_run", "R1") is None
+
+
+def test_latch_event_with_error_is_never_suppressed():
+    """(d) A latch write/consume passes `latch_event=True`, so even carrying an
+    `ErrorRecord` under a condition key it is never dropped — the intent and
+    the commit must both show (design_new.md "Error events", Latch events are
+    exempt)."""
+    from runtime_payloads import ErrorRecord
+
+    nc = NotificationCenter()
+    args = dict(
+        source="TrainController", operation="set_path_cancel_request",
+        kind=Kind.WARNING, message="EB cancel", entities=[train_ref("T1")],
+        error=ErrorRecord("operator EB", "eb"), condition_key="train:T1:eb",
+        latch_event=True,
+    )
+    a = nc.emit(**args)
+    b = nc.emit(**args)
+    assert a is not None and b is not None
+    assert len(nc.peek_recent(50)) == 2
+    # A latch event never registers an active condition, so it is not a
+    # current reason for latest_error_for.
+    assert nc.latest_error_for("train", "T1") is None
+
+
+def test_changed_fingerprint_replaces_the_current_reason():
+    """A changed payload under the same key is appended and becomes the new
+    current reason (design_new.md "Error events": a meet ceiling moving to a
+    different block is a new event)."""
+    nc = NotificationCenter()
+    key = "route_run:R1:planning_failed"
+
+    _blocked_emit(nc, key, payload={"ceiling": "B2"})
+    assert nc.latest_error_for("route_run", "R1").payload == {"ceiling": "B2"}
+
+    moved = _blocked_emit(nc, key, payload={"ceiling": "B5"})
+    assert moved is not None
+    assert nc.latest_error_for("route_run", "R1").payload == {"ceiling": "B5"}
+    assert len(nc.peek_recent(50)) == 2

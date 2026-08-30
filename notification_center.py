@@ -197,6 +197,16 @@ class NotificationCenter:
         self._next_id: int = 1
         self._queue: List[Notification] = []
         self._archive: List[Notification] = []
+        # Active error conditions, keyed by the caller-supplied `condition_key`
+        # (design_new.md "Error events", Suppression mechanism). Each value is
+        # the event that is currently the live occurrence of that condition, so
+        # `emit(...)` can compare a fresh call's fingerprint against it and
+        # `latest_error_for(...)` can tell which retained events are still the
+        # current reason. The condition's owner clears its key through
+        # `resolve_condition(...)`. Runtime-only: it starts empty after a
+        # restart, so the first still-present condition in a new process emits
+        # once for that process.
+        self._active_conditions: Dict[str, Notification] = {}
         # Event-log disk persistence (design_new.md "Event log"): when a path is
         # set, every emitted notification is appended as one JSON line, so a
         # run's record outlives the session. The in-memory queue/archive are
@@ -216,9 +226,10 @@ class NotificationCenter:
         payload: Optional[Dict[str, Any]] = None,
         event_time: Optional[float] = None,
         latch_event: bool = False,
+        condition_key: Optional[str] = None,
     ) -> Optional[Notification]:
-        """Append one event and return it, or `None` when it was suppressed as
-        an unchanged repeat.
+        """Append one event and return it, or `None` when it was dropped as an
+        unchanged repeat of an already-active error condition.
 
         This is the one way an event enters the stream (design_new.md "Runtime
         notifications", The emit call).
@@ -239,17 +250,42 @@ class NotificationCenter:
                 playback-scaled value would not order against its siblings.
             latch_event: True from a latch writer helper or a latch's
                 consume-side emitter. It exempts the event from the
-                unchanged-repeat suppression below and is a control argument
+                active-condition suppression below and is a control argument
                 only — it is not part of the persisted Event schema and is
                 never stored. The point of the write/consume pair is to show
                 intent and commit separately (design_new.md "Error events",
                 Latch events are exempt), so dropping either one as a repeat
                 would hide the very thing the pair exists to show.
+            condition_key: Identifies one live suppressible error condition
+                (design_new.md "Error events", Suppression mechanism). A
+                control argument only — not part of the persisted Event schema
+                and never stored. When it is set on an event that carries an
+                `ErrorRecord` and is not a latch event, this event is that
+                condition's current occurrence: the call is dropped while the
+                key is already active with the same `entities`, `operation`,
+                `ErrorRecord.origin`, and `payload`, and a changed fingerprint
+                is appended and replaces the active value. The condition's owner
+                clears the key with `resolve_condition(...)` when its predicate
+                goes false, after which the otherwise-identical event emits
+                again. Events with `error is None`, latch events, and events
+                with no condition key are always appended.
         """
         refs = list(entities or [])
         data = dict(payload) if payload else {}
-        if not latch_event and self._is_unchanged_repeat(refs, operation, error, data):
-            return None
+
+        # Suppression applies only to an error-carrying, non-latch event that
+        # names a live condition (design_new.md "Error events", Suppression
+        # mechanism). Everything else — command results, error-free events,
+        # latch writes/consumptions, and un-keyed errors — is always appended.
+        suppressible = (
+            error is not None and not latch_event and condition_key is not None
+        )
+        if suppressible:
+            active = self._active_conditions.get(condition_key)
+            if active is not None and self._same_condition_fingerprint(
+                active, refs, operation, error, data
+            ):
+                return None
 
         n = Notification(
             notification_id=self._next_id,
@@ -265,46 +301,55 @@ class NotificationCenter:
         self._next_id += 1
         self._queue.append(n)
         self._archive.append(n)
+        if suppressible:
+            # Either the key was not active, or its fingerprint changed; this
+            # event is now the live occurrence of that condition.
+            self._active_conditions[condition_key] = n
         self._trim_archive()
         self._persist(n)
         return n
 
-    def _is_unchanged_repeat(
-        self,
+    @staticmethod
+    def _same_condition_fingerprint(
+        active: Notification,
         entities: List[EntityRef],
         operation: str,
         error: Optional[ErrorRecord],
         payload: Dict[str, Any],
     ) -> bool:
-        """Emit on change, not per tick (design_new.md "Error events").
+        """True when a fresh emit matches the active condition's fingerprint —
+        the same `entities`, `operation`, `ErrorRecord.origin`, and `payload`
+        (design_new.md "Error events", Suppression mechanism).
 
-        Plan retries a blocked task on every eligible tick, so an error is
-        emitted when the condition first appears and not again while the same
-        entity stays blocked for the same reason. This compares the incoming
-        event against the most recent retained event with the same `entities`,
-        `operation` and `origin`, and drops it when the `payload` also matches.
-        A changed reason — including a changed payload, such as a meet ceiling
-        moving to a different block — is a new event.
-
-        `NotificationCenter` owns this, which is why the rule needs no
-        per-caller state. Only diagnostic-carrying events are suppressed:
-        ordinary traffic that carries no `ErrorRecord` is never a "same reason"
-        repeat, and dropping it would lose real occurrences. Latch writes and
-        latch consumptions are exempt regardless — `emit(...)` skips this check
-        for a `latch_event=True` call.
+        A match means the condition has not changed since it was recorded, so
+        the fresh call is a repeat and is dropped. A changed origin or payload —
+        such as a meet ceiling moving to a different block — is a different
+        fingerprint, so the fresh call is appended and replaces the active
+        value.
         """
-        if error is None:
-            return False
-        origin = error.origin
-        for prior in reversed(self._archive):
-            if prior.operation != operation or prior.entities != entities:
-                continue
-            # The most recent event for this (entities, operation) decides.
-            prior_origin = prior.error.origin if prior.error is not None else None
-            if prior_origin != origin:
-                return False
-            return prior.payload == payload
-        return False
+        active_origin = active.error.origin if active.error is not None else None
+        incoming_origin = error.origin if error is not None else None
+        return (
+            active.operation == operation
+            and active.entities == entities
+            and active_origin == incoming_origin
+            and active.payload == payload
+        )
+
+    def resolve_condition(self, condition_key: str) -> None:
+        """Clear one active error condition (design_new.md "Error events",
+        Resolution and recurrence).
+
+        The component that owns the live predicate calls this on the first tick
+        the predicate goes false. It removes the active key and is idempotent —
+        resolving a key that is not active is a no-op. It does not delete or
+        rewrite the historical event that recorded the condition; that event
+        stays in the stream for historical viewers. Once the key is cleared, an
+        otherwise-identical event for that condition is appended again if the
+        condition later recurs, and `latest_error_for(...)` stops returning the
+        now-resolved occurrence.
+        """
+        self._active_conditions.pop(condition_key, None)
 
     def latest_error_for(
         self,
@@ -313,19 +358,34 @@ class NotificationCenter:
         operation: Optional[str] = None,
         origin: Optional[str] = None,
     ) -> Optional[Notification]:
-        """The most recent event for that entity carrying an `ErrorRecord` at a
-        `warning` or `error` level, narrowed by `operation` and `origin` when
-        given (design_new.md "Error events", Reading the current reason).
+        """The most recent retained `warning`/`error` event for that entity
+        whose condition is still active, narrowed by `operation` and `origin`
+        when given, or `None` (design_new.md "Error events", Reading the
+        current reason).
 
-        The `error is not None` test is what keeps ordinary `info` traffic and
-        levelled-but-diagnostic-free events out of the answer. This derived
-        read is how a surface answers "why is this train not moving" or "what
-        happened at this task".
+        This combines the retained event row with the runtime active-condition
+        map: an event is a candidate only while it is still the live occurrence
+        of an unresolved `condition_key`. It never returns a condition that its
+        owner has resolved, and it never returns an error that was emitted with
+        no condition key — those live on only as history, which the event-log
+        viewers read directly. After a restart the active map begins empty and
+        is repopulated as live predicates are re-evaluated, so a still-present
+        condition emits a fresh event and becomes current again.
 
-        Nothing marks an event resolved: a surface that must not show a stale
-        reason gates on live state instead.
+        The `error is not None` and `kind in ERROR_KINDS` tests keep ordinary
+        `info` traffic and level-but-diagnostic-free events out of the answer.
+        This derived read is how a surface answers "why is this train not
+        moving" or "what happened at this task".
         """
+        if not self._active_conditions:
+            return None
+        # The events that are currently the live occurrence of some condition.
+        # Identity, not equality: each suppressible emit registers exactly one
+        # distinct Notification under its key.
+        active_events = {id(n) for n in self._active_conditions.values()}
         for n in reversed(self._archive):
+            if id(n) not in active_events:
+                continue
             if n.error is None or n.kind not in ERROR_KINDS:
                 continue
             if not n.has_entity(entity_type, entity_id):
