@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, NamedTuple, Optional
 
 
-class TileEntry(NamedTuple):
+class SegmentTileEntry(NamedTuple):
     """One tile entry in `Segment.ordered_tiles`.
 
     Each entry carries `(x, y, entry_edge)`, where `entry_edge` is the external
@@ -53,10 +53,10 @@ class Segment:
     grade_percent: Optional[float] = None  # Track gradient as percent (+ uphill / - downhill)
     speed_limit_kmh: Optional[float] = None  # Speed limit for segment
 
-    # Canonical local traversal order. Each entry is a `TileEntry`
+    # Canonical local traversal order. Each entry is a `SegmentTileEntry`
     # (x, y, entry_edge); `ordered_tiles[0].entry_edge` is the forward-entry
     # anchor for the segment.
-    ordered_tiles: List[TileEntry] = field(default_factory=list)
+    ordered_tiles: List[SegmentTileEntry] = field(default_factory=list)
 
     # ========================================================================
     # Serialization
@@ -99,7 +99,7 @@ class Segment:
     def from_dict(cls, data: Dict[str, Any]) -> "Segment":
         """Reconstruct a segment from a layout snapshot."""
         raw_tiles = data.get("ordered_tiles") or []
-        ordered_tiles: List[TileEntry] = []
+        ordered_tiles: List[SegmentTileEntry] = []
         for entry in raw_tiles:
             if isinstance(entry, dict):
                 x = int(entry["x"])
@@ -109,7 +109,7 @@ class Segment:
                 x = int(entry[0])
                 y = int(entry[1])
                 edge = str(entry[2])
-            ordered_tiles.append(TileEntry(x=x, y=y, entry_edge=edge))
+            ordered_tiles.append(SegmentTileEntry(x=x, y=y, entry_edge=edge))
 
         if "length_cm" not in data:
             raise ValueError(

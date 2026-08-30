@@ -29,17 +29,17 @@ from typing import List, NamedTuple, Optional, Dict, Any, Sequence, Set, Tuple
 from enums import BlockState
 from entity_ids import segment_id_for_block
 from track_resource import TrackResource
-from segment import Segment, TileEntry
+from segment import Segment, SegmentTileEntry
 
 
 # Block-relative directions used in the static block-level travel policy.
 _BLOCK_RELATIVE_DIRECTIONS: Set[str] = {"forward", "reverse"}
 
 
-# `ordered_tiles` entries are `TileEntry` (x, y, entry_edge) records owned by
-# `Segment`. `BlockTileEntry` remains as an alias so existing importers keep
+# `ordered_tiles` entries are `SegmentTileEntry` (x, y, entry_edge) records owned
+# by `Segment`. `BlockTileEntry` remains as an alias so existing importers keep
 # working.
-BlockTileEntry = TileEntry
+BlockTileEntry = SegmentTileEntry
 
 
 class CautionState(NamedTuple):
@@ -117,7 +117,7 @@ class Block(TrackResource):
         manual: bool = False,
         current_voltage: float = 0.0,
         allowed_travel_directions: Optional[Set[str]] = None,
-        ordered_tiles: Optional[List[TileEntry]] = None,
+        ordered_tiles: Optional[List[SegmentTileEntry]] = None,
         segments: Optional[List[Segment]] = None,
         segment_id: Optional[str] = None,
     ) -> None:
@@ -215,19 +215,19 @@ class Block(TrackResource):
         return [s.segment_id for s in self.segments]
 
     @property
-    def ordered_tiles(self) -> List[TileEntry]:
+    def ordered_tiles(self) -> List[SegmentTileEntry]:
         """Canonical local traversal order across all member segments.
 
         Concatenates each segment's `ordered_tiles`; `ordered_tiles[0]` is the
         forward-entry anchor for the block.
         """
-        out: List[TileEntry] = []
+        out: List[SegmentTileEntry] = []
         for seg in self.segments:
             out.extend(seg.ordered_tiles)
         return out
 
     @ordered_tiles.setter
-    def ordered_tiles(self, value: List[TileEntry]) -> None:
+    def ordered_tiles(self, value: List[SegmentTileEntry]) -> None:
         self._geometry_write_target("ordered_tiles").ordered_tiles = list(value)
 
     @property
@@ -508,7 +508,7 @@ class Block(TrackResource):
             allowed = {str(d) for d in atd}
 
         raw_tiles = data.get("ordered_tiles") or []
-        ordered_tiles: List[TileEntry] = []
+        ordered_tiles: List[SegmentTileEntry] = []
         for entry in raw_tiles:
             if isinstance(entry, dict):
                 x = int(entry["x"])
@@ -518,7 +518,7 @@ class Block(TrackResource):
                 x = int(entry[0])
                 y = int(entry[1])
                 edge = str(entry[2])
-            ordered_tiles.append(TileEntry(x=x, y=y, entry_edge=edge))
+            ordered_tiles.append(SegmentTileEntry(x=x, y=y, entry_edge=edge))
 
         if "length_cm" not in data:
             raise ValueError(

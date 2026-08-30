@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, List, Optional, Set, Tuple
 from block import Block
 from entity_ids import block_id_for_segment, segment_id_for_block
 from railway_signal import SignalState, SignalType
-from segment import Segment, TileEntry
+from segment import Segment, SegmentTileEntry
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
@@ -56,7 +56,7 @@ class SegmentGeometryManager:
         and written back to itself, and the block's `ordered_tiles` read stays
         the concatenation of its members.
         """
-        from segment import TileEntry
+        from segment import SegmentTileEntry
 
         segment = self._n.get_segment(segment_id)
         if segment is None:
@@ -122,7 +122,7 @@ class SegmentGeometryManager:
                 edge_from_prev = self._edge_for_delta(dx, dy)
                 entry_edge = self._OPPOSITE_EDGE.get(edge_from_prev or "", "") or ""
             entries.append(
-                TileEntry(x=tile[0], y=tile[1], entry_edge=entry_edge)
+                SegmentTileEntry(x=tile[0], y=tile[1], entry_edge=entry_edge)
             )
         segment.ordered_tiles = entries
 
@@ -186,7 +186,7 @@ class SegmentGeometryManager:
                 )
                 entry_edge = self._OPPOSITE_EDGE.get(edge_from_prev or "", "") or ""
             entries.append(
-                TileEntry(x=tile[0], y=tile[1], entry_edge=entry_edge)
+                SegmentTileEntry(x=tile[0], y=tile[1], entry_edge=entry_edge)
             )
         segment.ordered_tiles = entries
         self._n.invalidate_pathfinding_cache()
@@ -1028,13 +1028,13 @@ class SegmentGeometryManager:
             inherited = parent_entry_by_tile.get(tile)
             if inherited:
                 entries.append(
-                    TileEntry(x=tile[0], y=tile[1], entry_edge=inherited)
+                    SegmentTileEntry(x=tile[0], y=tile[1], entry_edge=inherited)
                 )
             else:
                 # Fallback for tiles the parent didn't record (shouldn't
                 # happen, but stay safe).
                 entries.append(
-                    TileEntry(
+                    SegmentTileEntry(
                         x=tile[0],
                         y=tile[1],
                         entry_edge=self._external_entry_edge(tile, set(child_tiles)),
