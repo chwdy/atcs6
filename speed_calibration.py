@@ -811,16 +811,27 @@ class SpeedCalibration:
         drive, so the controller keeps its ordinary source. This is the whole of
         how a pass drives the train: it queues no operator commands.
 
-        A speed pass drives while it is measuring a leg — the current step's
-        percent while that leg is armed, crossing, and has its authority, and `0`
-        while the train is stopping at a leg's end, standing between steps, or
-        still acquiring the leg's route. Until the leg's `received_path_plan` is
-        present the pass selects zero power (design_new.md "Speed calibration",
-        Plan acquires leg authority all-or-nothing): a leg without authority could
-        not move anyway (the ATC limit is `0`), and holding the percent at `0`
-        until the route's path exists keeps the step timeout and the driven power
-        in step. A finished or failed pass returns None, handing the train back to
-        its ordinary manual source (which the abandonment/finish paths zeroed).
+        An auto-profiling pass drives while it is measuring a leg — the current
+        step's percent while that leg is armed, crossing, and has its authority,
+        and `0` while the train is stopping at a leg's end, standing between
+        steps, or still acquiring the leg's route. Until the leg's
+        `received_path_plan` is present the pass selects zero power (design_new.md
+        "Speed calibration", Plan acquires leg authority all-or-nothing): a leg
+        without authority could not move anyway (the ATC limit is `0`), and
+        holding the percent at `0` until the route's path exists keeps the step
+        timeout and the driven power in step. A finished or failed pass returns
+        None, handing the train back to its ordinary manual source (which the
+        abandonment/finish paths zeroed).
+
+        A manual-marking pass drives nothing: the operator runs the train at the
+        step's commanded percent and issues the `record` marks the pass times
+        (design_new.md "Speed calibration", Manual marking — "The operator drives
+        the shuttle in this mode"). The auto machinery that arms legs and grants
+        authority never runs for a manual pass, so it never reaches the driving
+        state; returning a `power_percent = 0` override here would replace the
+        operator's own manual power with zero and pin the train still. So a
+        measuring manual pass returns None — the same defer-to-the-operator answer
+        a finished pass gives — leaving the operator's manual source in control.
 
         Lighting-voltage calibration is the other user of this accessor and
         returns the `track_voltage` variant of the union: while a lighting run is
@@ -832,7 +843,9 @@ class SpeedCalibration:
         lighting run only when none is measuring.
         """
         run = self.runs.get(train_id)
-        if run is not None and run.is_measuring:
+        # Only an auto-profiling pass puts an override on the train; a manual
+        # pass defers to the operator's own manual power (see docstring).
+        if run is not None and run.is_measuring and run.mode == "auto":
             driving = run.phase == PHASE_LEG and run.leg_armed
             if driving and not self._leg_authority_present(train_id):
                 driving = False
