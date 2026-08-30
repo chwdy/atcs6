@@ -101,7 +101,7 @@ def register(app, state: AppState) -> None:
             {"status": "success", "message": f"Segment {segment_id} deleted"}
         )
 
-    @app.route("/api/segments/<segment_id>/reverse", methods=["POST"])
+    @app.route("/api/segments/<segment_id>/reverse-orientation", methods=["POST"])
     def reverse_segment(segment_id: str):
         """Flip a segment's stored tile order end-for-end.
 

@@ -496,13 +496,13 @@ class TestBlockSegmentGroupingRoutes:
     def test_reverse_segment_is_on_the_segment_axis(
         self, client, app_state, network_with_tracks
     ):
-        """POST /api/segments/<id>/reverse flips stored tile order — the
-        explicit geometry write grouping refuses to do implicitly."""
+        """POST /api/segments/<id>/reverse-orientation flips stored tile order —
+        the explicit geometry write grouping refuses to do implicitly."""
         network = app_state.network
         self._make_segments(network)
         before = [(e.x, e.y) for e in network.get_segment("SEG_A").ordered_tiles]
 
-        response = client.post("/api/segments/SEG_A/reverse")
+        response = client.post("/api/segments/SEG_A/reverse-orientation")
         assert response.status_code == 200
         assert response.get_json()["reversed"] is True
 
@@ -510,7 +510,7 @@ class TestBlockSegmentGroupingRoutes:
         assert after == list(reversed(before))
 
     def test_reverse_unknown_segment_404s(self, client, app_state, network_with_tracks):
-        assert client.post("/api/segments/NOPE/reverse").status_code == 404
+        assert client.post("/api/segments/NOPE/reverse-orientation").status_code == 404
 
     def test_add_segment_at_end(self, client, app_state, network_with_tracks):
         self._make_segments(app_state.network)
