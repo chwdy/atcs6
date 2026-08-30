@@ -1079,6 +1079,63 @@ def test_commission_reads_currents():
     sess.close()
 
 
+def test_commission_open_bounds_the_session_timeout():
+    """design_new.md "Hardware REST payload schemas": the commissioning `enter`
+    body carries `timeout_seconds` with `0 < timeout_seconds <=
+    COMMISSION_MAX_SESSION_SECONDS`. A window just under the ceiling opens the
+    session; one just over is rejected before the session opens — a too-long
+    window is refused, not silently cut."""
+    from constants import COMMISSION_MAX_SESSION_SECONDS
+    from hardware.commission import CommissionSession
+
+    cfg = _cfg(ChipConfig("sw1", "hc595", spi_select="cs0", chain_length=1))
+
+    # Just under the ceiling: accepted, the session opens.
+    ok = CommissionSession()
+    ok.open(
+        cfg,
+        open_device=lambda: FakeCh347Device(),
+        timeout_seconds=COMMISSION_MAX_SESSION_SECONDS - 1.0,
+    )
+    assert ok.status()["open"] is True
+    ok.close()
+
+    # Just over the ceiling: rejected, and no device was opened.
+    over = CommissionSession()
+    with pytest.raises(ValueError):
+        over.open(
+            cfg,
+            open_device=lambda: FakeCh347Device(),
+            timeout_seconds=COMMISSION_MAX_SESSION_SECONDS + 1.0,
+        )
+    assert over.status()["open"] is False
+
+
+def test_commission_pulse_bounds_the_pulse_width(monkeypatch):
+    """design_new.md "Hardware REST payload schemas": the commissioning `pulse`
+    "must be no greater than COMMISSION_MAX_PULSE_MS". A width just under the
+    ceiling drives the bit; one just over is rejected before any bit is driven."""
+    from constants import COMMISSION_MAX_PULSE_MS
+    from hardware import commission as commission_mod
+    from hardware.commission import CommissionSession
+
+    # The width is validated before the coil is driven, so stub the hold: the
+    # accepted case returns at once instead of sleeping out the full width.
+    monkeypatch.setattr(commission_mod, "sleep_holding", lambda chip, secs: None)
+
+    cfg = _cfg(ChipConfig("sw1", "hc595", spi_select="cs0", chain_length=3))
+    sess = CommissionSession()
+    sess.open(cfg, open_device=lambda: FakeCh347Device())
+
+    ceiling_s = COMMISSION_MAX_PULSE_MS / 1000.0
+    # Just under the ceiling: accepted (no raise).
+    sess.pulse_output("sw1", 1, pulse_s=ceiling_s - 0.001)
+    # Just over the ceiling: rejected before any bit is driven.
+    with pytest.raises(ValueError):
+        sess.pulse_output("sw1", 1, pulse_s=ceiling_s + 0.001)
+    sess.close()
+
+
 # --- loss-of-control watchdog ---------------------------------------------
 # design_new.md "Power -> Hardware interface boundary": a real output
 # implementation arms a watchdog that drops the outputs to the safe state when

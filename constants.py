@@ -172,6 +172,31 @@ DEFAULT_SEEDED_MAX_VOLTAGE_V: float = 12.0
 DEFAULT_SEEDED_LIGHTING_VOLTAGE_V: float = 1.5
 
 
+# Commissioning session bounds (design_new.md "Hardware REST payload schemas").
+# The commissioning `enter` body carries `timeout_seconds` with the doc's stated
+# bound `0 < timeout_seconds <= COMMISSION_MAX_SESSION_SECONDS`: it is the idle
+# window after which an abandoned session is reclaimed and its outputs dropped to
+# the safe state. This ceiling only rejects an absurd request; a real bench
+# session — a person wiring and poking at a rig — runs minutes, well under an
+# hour. The doc names the constant as the bound but gives no number, so this is a
+# defensible pick: generous for any genuine session, finite enough that a
+# forgotten one cannot request an unbounded hold on the controller. A session
+# opened with no `timeout_seconds` keeps the default idle window in
+# `hardware/commission.py` (IDLE_TIMEOUT_S).
+COMMISSION_MAX_SESSION_SECONDS: float = 3600.0
+
+# The commissioning `pulse` action drives one shift-out bit for a pulse width
+# (design_new.md: the pulse "must be no greater than COMMISSION_MAX_PULSE_MS").
+# The runtime throw is SWITCH_THROW_PULSE_S (10 ms) and a bench caller measuring
+# the bit on a meter widens it; this is the ceiling that widening may not cross.
+# It is set to the existing hardware pulse-hold ceiling — MAX_PORT_TEST_PULSE_S
+# (5.0 s) in hardware/catalog.py, expressed here in milliseconds — so the bound
+# the commissioning surface enforces is exactly the longest hold the port-test
+# path already permits, rather than a second, conflicting figure. The doc names
+# the constant as the bound but gives no number; this is the defensible pick.
+COMMISSION_MAX_PULSE_MS: float = 5000.0
+
+
 # Hard ceiling on a single per-tick sim delta. Normal operation — including a
 # few-times `simulation_speed` multiplier — stays well under this, so it is a
 # pass-through in the common case and the loop runs ONE update() per tick. It

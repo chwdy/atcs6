@@ -19,11 +19,14 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+from constants import COMMISSION_MAX_PULSE_MS, COMMISSION_MAX_SESSION_SECONDS
 from hardware.catalog import SWITCH_THROW_PULSE_S
 from hardware.chips.hc595 import sleep_holding
 from hardware.interfaces import build_chip
 
-# Reclaim a session left open by an abandoned client after this long idle.
+# Reclaim a session left open by an abandoned client after this long idle. This
+# is the default window; `open(timeout_seconds=...)` overrides it per session,
+# bounded by COMMISSION_MAX_SESSION_SECONDS (see open / _validate_timeout).
 IDLE_TIMEOUT_S = 30.0
 
 
@@ -44,12 +47,16 @@ class CommissionSession:
         # to this one: it is neither cleared on open nor closed on close.
         self._borrowed = False
         self._last = 0.0
+        # Idle window for this session; `open` resets it from its `timeout_seconds`
+        # argument, or to IDLE_TIMEOUT_S when the caller names none.
+        self._timeout_s = IDLE_TIMEOUT_S
 
     def open(
         self,
         cfg: Any,
         open_device: Optional[Callable[[], Any]] = None,
         device: Optional[Any] = None,
+        timeout_seconds: Optional[float] = None,
     ) -> None:
         """Open (or reclaim) the session for `cfg` and build its chip drivers.
 
@@ -64,9 +71,21 @@ class CommissionSession:
         driving a live layout, so dropping every bit would zero the track and
         release the PCA output-enable hold mid-session. The caller is
         responsible for serializing use against the tick.
+
+        `timeout_seconds` is the commissioning `enter` body's idle window
+        (design_new.md "Hardware REST payload schemas"), the time after which an
+        abandoned session is reclaimed and its outputs dropped. The doc bounds it
+        at `0 < timeout_seconds <= COMMISSION_MAX_SESSION_SECONDS`; a request
+        outside that is rejected here (a session too long is not silently
+        shortened). `None` keeps the default IDLE_TIMEOUT_S.
         """
         with self._lock:
+            # Reject a bad window before any side effect, then reclaim a prior
+            # abandoned session by its own (still-current) timeout, then adopt
+            # the new window for this session onward.
+            new_timeout = self._validate_timeout(timeout_seconds)
             self._expire_locked()
+            self._timeout_s = new_timeout
             if device is not None:
                 self._device = device
                 self._borrowed = True
@@ -156,7 +175,10 @@ class CommissionSession:
         there for a "watch the switch throw" test. A caller measuring the bit
         rather than watching the points (a meter on the pin) passes a longer
         width; the sleep re-latches inside the guard window so the hold survives,
-        and it is the caller's business that a coil can be on the other end.
+        and it is the caller's business that a coil can be on the other end. That
+        longer width may not cross COMMISSION_MAX_PULSE_MS (design_new.md: the
+        commissioning pulse "must be no greater than COMMISSION_MAX_PULSE_MS");
+        a request past the ceiling is rejected rather than driven.
 
         The Hardware Setup output sweep also runs through here rather than
         `set_output`, because a bit it walks across may be wired to a coil; it
@@ -164,6 +186,12 @@ class CommissionSession:
         in a `finally` so a failure leaves nothing driven."""
         with self._lock:
             self._require_open()
+            pulse_ms = float(pulse_s) * 1000.0
+            if pulse_ms > COMMISSION_MAX_PULSE_MS:
+                raise ValueError(
+                    f"pulse width {pulse_ms:g} ms exceeds "
+                    f"COMMISSION_MAX_PULSE_MS ({COMMISSION_MAX_PULSE_MS:g} ms)"
+                )
             chip = self._chips.get(chip_id)
             if chip is None:
                 raise KeyError(f"chip {chip_id!r} not in session")
@@ -244,8 +272,33 @@ class CommissionSession:
     def _touch(self) -> None:
         self._last = time.monotonic()
 
+    @staticmethod
+    def _validate_timeout(timeout_seconds: Optional[float]) -> float:
+        """Coerce and bound a requested session idle window.
+
+        `None` means the caller named no window, so the default IDLE_TIMEOUT_S
+        stands. Any named value must satisfy the doc's bound
+        `0 < timeout_seconds <= COMMISSION_MAX_SESSION_SECONDS`
+        (design_new.md "Hardware REST payload schemas"); anything else — a
+        non-number, zero-or-negative, or a value past the ceiling — is rejected
+        so the session is not opened with a nonsense or unbounded window."""
+        if timeout_seconds is None:
+            return IDLE_TIMEOUT_S
+        try:
+            seconds = float(timeout_seconds)
+        except (TypeError, ValueError):
+            raise ValueError(f"timeout_seconds must be a number, got {timeout_seconds!r}")
+        if seconds != seconds:  # NaN
+            raise ValueError("timeout_seconds must be a number, got NaN")
+        if seconds <= 0.0 or seconds > COMMISSION_MAX_SESSION_SECONDS:
+            raise ValueError(
+                f"timeout_seconds must be > 0 and <= "
+                f"{COMMISSION_MAX_SESSION_SECONDS} s, got {seconds}"
+            )
+        return seconds
+
     def _expire_locked(self) -> None:
-        if self._device is not None and (time.monotonic() - self._last) > IDLE_TIMEOUT_S:
+        if self._device is not None and (time.monotonic() - self._last) > self._timeout_s:
             self._close_locked()
 
     def _close_locked(self) -> None:
