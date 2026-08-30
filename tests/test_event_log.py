@@ -14,6 +14,7 @@ from notification_center import (
     Kind,
     Notification,
     NotificationCenter,
+    make_notification_emitter,
     path_ref,
     route_run_ref,
     train_ref,
@@ -102,12 +103,10 @@ def test_bootstrap_persists_operational_events(tmp_path):
     )
 
 
-class _SimWithNotifications:
-    """Minimal back-reference exposing only `notification_center`, which is
-    all `BlockManager._emit_event` resolves through."""
-
-    def __init__(self, nc):
-        self.notification_center = nc
+def _block_emitter(nc):
+    """The narrow notification callback a runtime BlockManager is handed,
+    bound to this test's NotificationCenter (design_new.md "BlockManager")."""
+    return make_notification_emitter(nc, "BlockManager")
 
 
 def test_block_manager_emits_block_entered_and_vacated():
@@ -121,7 +120,7 @@ def test_block_manager_emits_block_entered_and_vacated():
 
     nc = NotificationCenter()
     blocks = {"B1": Block("B1", ordered_tiles=[(0, 0, "W")])}
-    manager = BlockManager(blocks, simulation_controller=_SimWithNotifications(nc))
+    manager = BlockManager(blocks, notification_emitter=_block_emitter(nc))
 
     result = manager.occupy_blocks(["B1"], "T1")
     assert bool(result)
@@ -149,7 +148,7 @@ def test_block_reoccupy_does_not_re_emit_block_entered():
 
     nc = NotificationCenter()
     blocks = {"B1": Block("B1", ordered_tiles=[(0, 0, "W")])}
-    manager = BlockManager(blocks, simulation_controller=_SimWithNotifications(nc))
+    manager = BlockManager(blocks, notification_emitter=_block_emitter(nc))
 
     manager.occupy_blocks(["B1"], "T1")
     manager.occupy_blocks(["B1"], "T1")  # idempotent re-occupy

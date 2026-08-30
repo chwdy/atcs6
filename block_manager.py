@@ -18,11 +18,20 @@ State Descriptions:
     CAUTION: Train recently cleared but the safety margin must remain
 """
 
-import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional, Dict, List, Mapping, Set, Tuple, TYPE_CHECKING
+from typing import (
+    Any,
+    Callable,
+    Optional,
+    Dict,
+    List,
+    Mapping,
+    Set,
+    Tuple,
+    TYPE_CHECKING,
+)
 
 from block import Block, BlockState, CautionState
 from notification_center import Kind, block_ref, train_ref
@@ -90,26 +99,40 @@ class BlockManager:
     def __init__(
         self,
         blocks: Dict[str, Block],
-        simulation_controller: Optional[object] = None,
         network: Optional["RailwayNetwork"] = None,
+        *,
+        notification_emitter: Optional[Callable] = None,
+        fatal_conflict_reporter: Optional[Callable] = None,
     ):
         """Initialize BlockManager with existing blocks.
+
+        Per design_new.md "Block-manager model", the manager holds the network
+        and two narrow injected callbacks only; it never receives or looks up
+        `SimulationController`.
 
         Args:
             blocks: Dictionary mapping block_id to Block instances. Used as a
                 fallback registry when ``network`` is None.
-            simulation_controller: optional back-reference used only to report
-                fatal physical-entry conflicts via
-                `enter_failed_runtime(...)`. Wired by the runtime once the
-                controller is constructed; stays `None` in early bootstrap.
             network: optional `RailwayNetwork` reference. When provided, the
                 manager prefers `network.blocks` and `network.switches` over
                 the local fallback dict, and uses the shared topology graph
                 for directional caution reevaluation.
+            notification_emitter: optional narrow callback
+                `(operation, kind, message, entities, error=None, payload=None)`
+                that routes a manager-owned event into `NotificationCenter`.
+                The runtime wires it to `NotificationCenter.emit(...)` with the
+                source fixed to "BlockManager"; it stays `None` in early
+                bootstrap and isolated unit tests, where the emit is skipped.
+            fatal_conflict_reporter: optional callback taking one
+                `FatalPhysicalEntryConflict`, wired by the runtime to
+                `SimulationController.enter_failed_runtime(...)`. Stays `None`
+                in early bootstrap / isolated tests, where a conflict just
+                returns False without reporting.
         """
         self.blocks = blocks
-        self.simulation_controller = simulation_controller
         self.network = network
+        self.notification_emitter = notification_emitter
+        self.fatal_conflict_reporter = fatal_conflict_reporter
         self.history: deque = deque(maxlen=100)
         # Reverse index: train_id -> set of block ids it has reserved ahead.
         # Maintained at every reservation mutation in this class so TrainPhysics
@@ -321,11 +344,10 @@ class BlockManager:
     ) -> None:
         """Build a `FatalPhysicalEntryConflict` and forward it to the runtime.
 
-        Skips the call when no `simulation_controller` back-reference is
-        wired (early bootstrap / unit tests that exercise `BlockManager`
-        in isolation).
+        Skips the call when no `fatal_conflict_reporter` is wired (early
+        bootstrap / unit tests that exercise `BlockManager` in isolation).
         """
-        if self.simulation_controller is None:
+        if self.fatal_conflict_reporter is None:
             return
         payload = FatalPhysicalEntryConflict(
             resource_type="block",
@@ -335,7 +357,7 @@ class BlockManager:
             conflict_kind=conflict_kind,
         )
         try:
-            self.simulation_controller.enter_failed_runtime(payload)
+            self.fatal_conflict_reporter(payload)
         except Exception:
             # Receiver issues must not mask the underlying conflict.
             pass
@@ -378,17 +400,14 @@ class BlockManager:
         Per design_new.md, `NotificationCenter` is the only runtime sink;
         skipped no-op release paths surface their warnings as `warning`-level
         events naming the function that produced them, rather than
-        component-local logging. Skips the emit when no `simulation_controller` /
-        `notification_center` is wired (early bootstrap / isolated unit
-        tests); a receiver error must not mask the underlying operation.
+        component-local logging. Skips the emit when no `notification_emitter`
+        is wired (early bootstrap / isolated unit tests); a receiver error must
+        not mask the underlying operation.
         """
-        sc = self.simulation_controller
-        nc = getattr(sc, "notification_center", None) if sc is not None else None
-        if nc is None:
+        if self.notification_emitter is None:
             return
         try:
-            nc.emit(
-                source="BlockManager",
+            self.notification_emitter(
                 operation=operation,
                 kind=Kind.WARNING,
                 message=message,
@@ -396,7 +415,6 @@ class BlockManager:
                     ([train_ref(train_id)] if train_id else [])
                     + ([block_ref(block_id)] if block_id else [])
                 ),
-                event_time=time.time(),
             )
         except Exception:
             pass
@@ -410,22 +428,18 @@ class BlockManager:
         `NotificationCenter` (design_new.md "Event log": the log records
         `block_entered` / `block_vacated` among the operational kinds).
 
-        Best-effort, mirroring `_emit_diagnostic`: resolves the sink
-        defensively, no-ops when no `simulation_controller` /
-        `notification_center` is wired (early bootstrap / isolated unit
+        Best-effort, mirroring `_emit_diagnostic`: no-ops when no
+        `notification_emitter` is wired (early bootstrap / isolated unit
         tests), and never raises into the caller. `block_id` always rides on
         the payload; callers may add more fields (e.g. the vacate `exit_edge`).
         """
-        sc = self.simulation_controller
-        nc = getattr(sc, "notification_center", None) if sc is not None else None
-        if nc is None:
+        if self.notification_emitter is None:
             return
         body: Dict[str, Any] = {"block_id": block_id}
         if payload:
             body.update(payload)
         try:
-            nc.emit(
-                source="BlockManager",
+            self.notification_emitter(
                 operation=operation,
                 kind=Kind.INFO,
                 message=message,
@@ -433,7 +447,6 @@ class BlockManager:
                     ([train_ref(train_id)] if train_id else [])
                     + [block_ref(block_id)]
                 ),
-                event_time=time.time(),
                 payload=body,
             )
         except Exception:

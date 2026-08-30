@@ -126,7 +126,7 @@ def test_simulated_switch_output_safe_state_drops_throws():
 def test_request_position_change_emits_throw():
     net, sw = _standard_switch_network()
     net.switch_output_interface = SimulatedSwitchDriver()
-    mgr = SwitchManager(switches=net.switches, simulation_controller=None, network=net)
+    mgr = SwitchManager(switches=net.switches, network=net)
 
     ok, msg = mgr.request_position_change("SW_1_0", 1)
     assert ok, msg
@@ -149,7 +149,7 @@ def test_request_position_change_rejects_unissued_throw():
 
     net, sw = _standard_switch_network()
     net.switch_output_interface = RefusingInterface()
-    mgr = SwitchManager(switches=net.switches, simulation_controller=None, network=net)
+    mgr = SwitchManager(switches=net.switches, network=net)
 
     ok, reason = mgr.request_position_change("SW_1_0", 1)
     assert not ok
@@ -163,33 +163,30 @@ def test_an_unissued_throw_latches_a_hardware_failure():
         def set_throw(self, switch_id, target_state):
             return False
 
-    class Runtime(SwitchOutputHolder):
-        def __init__(self, iface):
-            self.switch_output_interface = iface
-            self.failure = None
-
-        def enter_hardware_failure(self, failure):
-            self.failure = failure
-
+    failures = []
     net, _sw = _standard_switch_network()
-    runtime = Runtime(RefusingInterface())
+    # The refusing output lives on the network, where SwitchManager resolves it;
+    # the hardware-failure latch is the injected narrow reporter.
+    net.switch_output_interface = RefusingInterface()
     mgr = SwitchManager(
-        switches=net.switches, simulation_controller=runtime, network=net
+        switches=net.switches,
+        network=net,
+        hardware_failure_reporter=failures.append,
     )
 
     ok, _reason = mgr.request_position_change("SW_1_0", 1)
 
     assert ok is False
-    assert isinstance(runtime.failure, HardwareFailure)
-    assert runtime.failure.component == "switch_output"
-    assert runtime.failure.resource_id == "SW_1_0"
+    assert isinstance(failures[0], HardwareFailure)
+    assert failures[0].component == "switch_output"
+    assert failures[0].resource_id == "SW_1_0"
 
 
 def test_request_position_change_no_interface_is_noop_success():
     """Without a SwitchOutput wired, the throw is a no-op."""
     net, sw = _standard_switch_network()
     # net.switch_output_interface stays None
-    mgr = SwitchManager(switches=net.switches, simulation_controller=None, network=net)
+    mgr = SwitchManager(switches=net.switches, network=net)
 
     ok, msg = mgr.request_position_change("SW_1_0", 1)
     assert ok, msg
@@ -211,7 +208,7 @@ def test_a_switch_never_thrown_is_driven_even_at_its_current_position():
     to reach the motor, or the app goes on trusting a guess."""
     net, sw = _standard_switch_network()
     net.switch_output_interface = SimulatedSwitchDriver()
-    mgr = SwitchManager(switches=net.switches, simulation_controller=None, network=net)
+    mgr = SwitchManager(switches=net.switches, network=net)
     assert int(sw.position) == 0
     assert net.switch_output_interface.get_last_throw("SW_1_0") is None
 
@@ -226,7 +223,7 @@ def test_recommanding_the_position_already_held_still_drives_the_coil():
     asking for the alignment the model already believes in must move the motor."""
     net, sw = _standard_switch_network()
     net.switch_output_interface = SimulatedSwitchDriver()
-    mgr = SwitchManager(switches=net.switches, simulation_controller=None, network=net)
+    mgr = SwitchManager(switches=net.switches, network=net)
     mgr.request_position_change("SW_1_0", 1)
 
     # Something drove the points elsewhere without telling the model — a bench
@@ -252,7 +249,7 @@ def test_a_throw_the_output_just_made_is_not_repeated():
 
     net, _sw = _standard_switch_network()
     net.switch_output_interface = CountingInterface()
-    mgr = SwitchManager(switches=net.switches, simulation_controller=None, network=net)
+    mgr = SwitchManager(switches=net.switches, network=net)
 
     mgr.request_position_change("SW_1_0", 1)
     mgr.request_position_change("SW_1_0", 1)

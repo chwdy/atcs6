@@ -13,7 +13,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from constants import NOTIFICATION_RETENTION_ROWS
 from runtime_payloads import ErrorRecord
@@ -565,3 +565,32 @@ class NotificationCenter:
     def __len__(self) -> int:
         """Number of notifications currently in the live (undrained) queue."""
         return len(self._queue)
+
+
+def make_notification_emitter(
+    notification_center: "NotificationCenter", source: str
+) -> Callable[..., Optional[Notification]]:
+    """Build the narrow notification callback a resource manager is handed.
+
+    `BlockManager` and `SwitchManager` hold only this callback, never
+    `NotificationCenter` or `SimulationController` (design_new.md
+    "BlockManager" / "SwitchManager"). The returned function takes
+    `(operation, kind, message, entities, error=None, payload=None)`, fixes the
+    emitting component's `source` name, and forwards the rest to
+    `NotificationCenter.emit(...)`, which samples `event_time` itself. The
+    runtime wiring passes one of these (with `source="BlockManager"` /
+    `"SwitchManager"`) in place of the old back-reference.
+    """
+
+    def emit(operation, kind, message, entities, error=None, payload=None):
+        return notification_center.emit(
+            source=source,
+            operation=operation,
+            kind=kind,
+            message=message,
+            entities=entities,
+            error=error,
+            payload=payload,
+        )
+
+    return emit

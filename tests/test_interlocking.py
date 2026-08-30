@@ -5,7 +5,6 @@ Run with: pytest tests/test_interlocking.py -v
 """
 
 import pytest
-from types import SimpleNamespace
 
 from track import Tile, TRACK_NS, TRACK_EW, TRACK_NE, TRACK_NW
 from network import RailwayNetwork
@@ -25,19 +24,15 @@ from path_utils import (
 def _stub_switch_manager(network=None):
     """Minimal stand-in for SwitchManager.request_position_change(...).
 
-    Provides the BlockManager notification side-effect that the production
-    `SwitchManager` performs after `Switch.apply_position_change(...)` succeeds.
+    The BlockManager notification side-effect the production `SwitchManager`
+    performs after `Switch.apply_position_change(...)` succeeds is resolved
+    live off `network.block_manager`; a network with no manager built (these
+    fixtures) makes the notify a harmless no-op.
     """
     from switch_manager import SwitchManager
 
-    block_manager = SimpleNamespace(on_switch_position_changed=lambda switch_id: None)
-    sim = SimpleNamespace(block_manager=block_manager, network=network)
     switches = network.switches if network is not None else {}
-    return SwitchManager(
-        switches=switches,
-        simulation_controller=sim,
-        network=network,
-    )
+    return SwitchManager(switches=switches, network=network)
 
 
 @pytest.fixture

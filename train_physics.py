@@ -1997,20 +1997,22 @@ class TrainPhysics:
 
     def _block_occupancy_detector(self):
         """The runtime's `BlockOccupancyDetector`, or None in an isolated unit
-        test. Reached through the `BlockManager` back-reference the network
-        already carries, the same way `_unidentified_tracker` reaches its tracker."""
-        manager = getattr(self.network, "block_manager", None)
-        sim = getattr(manager, "simulation_controller", None)
+        test. Reached through the controller's `SimulationController`
+        back-reference physics already uses elsewhere, the same way
+        `_unidentified_tracker` reaches its tracker. `BlockManager` no longer
+        carries a `SimulationController` (design_new.md "Block-manager model"),
+        so physics reaches the runtime through its own controller instead."""
+        sim = getattr(self.controller, "simulation_controller", None)
         return getattr(sim, "block_occupancy_detector", None)
 
     def _unidentified_tracker(self):
         """The runtime's `UnidentifiedTrainTracker`, or None in an isolated unit test.
 
-        Reached through the `BlockManager` back-reference the network already
-        carries, so physics keeps no `SimulationController` reference of its own.
+        Reached through the controller's `SimulationController` back-reference,
+        so physics keeps no `SimulationController` reference of its own and does
+        not depend on `BlockManager` carrying one.
         """
-        manager = getattr(self.network, "block_manager", None)
-        sim = getattr(manager, "simulation_controller", None)
+        sim = getattr(self.controller, "simulation_controller", None)
         return getattr(sim, "unidentified_trains", None)
 
     def _advance_head_to_next_tile(self, train: "Train") -> bool:

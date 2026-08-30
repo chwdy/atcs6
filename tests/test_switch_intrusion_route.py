@@ -8,8 +8,6 @@ present, so a train that locked route A but physically entered route B passed
 as a clean entry.
 """
 
-from types import SimpleNamespace
-
 from switch import Switch
 from switch_manager import SwitchManager
 from runtime_payloads import SwitchLockClaim, FatalConflictKind
@@ -17,7 +15,7 @@ from runtime_payloads import SwitchLockClaim, FatalConflictKind
 
 def _manager_with_locked_switch(locked_route):
     """A SwitchManager holding one switch with a main lock recorded for
-    `locked_route`, plus a sim stub that captures fatal-conflict payloads."""
+    `locked_route`, plus a fatal-conflict reporter that captures payloads."""
     switch = Switch(switch_id="SW_1", x=0, y=0)
     assert switch.acquire_lock(
         SwitchLockClaim(
@@ -32,14 +30,10 @@ def _manager_with_locked_switch(locked_route):
     assert switch.lock_routes.get(("P1", None)) == locked_route
 
     captured = []
-    sim = SimpleNamespace(
-        block_manager=SimpleNamespace(on_switch_position_changed=lambda s: None),
-        network=None,
-        path_dispatcher=None,
-        enter_failed_runtime=lambda payload: captured.append(payload),
-    )
     manager = SwitchManager(
-        switches={"SW_1": switch}, simulation_controller=sim, network=None
+        switches={"SW_1": switch},
+        network=None,
+        fatal_conflict_reporter=captured.append,
     )
     return manager, switch, captured
 
@@ -81,14 +75,10 @@ def test_entry_with_routeless_main_lock_is_granted():
     assert switch.lock_routes.get(("P1", None)) is None
 
     captured = []
-    sim = SimpleNamespace(
-        block_manager=SimpleNamespace(on_switch_position_changed=lambda s: None),
-        network=None,
-        path_dispatcher=None,
-        enter_failed_runtime=lambda payload: captured.append(payload),
-    )
     manager = SwitchManager(
-        switches={"SW_1": switch}, simulation_controller=sim, network=None
+        switches={"SW_1": switch},
+        network=None,
+        fatal_conflict_reporter=captured.append,
     )
 
     ok = manager.on_physical_entry("SW_1", "T1", "P1", frozenset({"N", "E"}))
