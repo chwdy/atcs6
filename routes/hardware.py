@@ -1098,6 +1098,9 @@ def register(app, state: AppState) -> None:
             "develop_active": True,
             "blocks": blocks,
             "switches": switches,
+            # Operator-facing injected faults (VirtualHardwareFaultRequest
+            # records); `faults` is the low-level transport view below it.
+            "injected_faults": device.virtual_fault_status(),
             "faults": device.fault_status(),
         })
 
@@ -1204,19 +1207,47 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/virtual-hardware/fault", methods=["PUT"])
     def virtual_hardware_set_fault():
+        """Inject or clear one VirtualHardwareFaultRequest below the real HAL
+        (design_new.md "Hardware REST payload schemas").
+
+        Body: `{action, target_kind, target_id, operation, fault}`. `action` is
+        `inject` or `clear`; `fault` is one of the 6 VirtualHardwareFaultKind
+        values, required for `inject` and absent for `clear`; an incompatible
+        (target_kind, fault) pair is rejected rather than translated.
+        """
+        from hardware.fake import validate_virtual_fault_request
+
         device = _require_fake()
         if device is None:
             return jsonify(_NOT_DEVELOP), 409
         data = request.get_json(silent=True) or {}
-        kind = data.get("kind")
-        if not kind:
-            return jsonify({"status": "error", "error": "kind is required"}), 400
+        action = data.get("action")
+        target_kind = data.get("target_kind")
+        target_id = data.get("target_id")
+        operation = data.get("operation")
+        fault = data.get("fault")
+        if not isinstance(target_id, str) or not target_id:
+            return jsonify(
+                {"status": "error", "error": "target_id is required"}
+            ), 400
+        err = validate_virtual_fault_request(action, target_kind, fault)
+        if err is not None:
+            return jsonify({"status": "error", "error": err}), 400
         try:
             with state.simulation_lock:
-                device.set_fault(str(kind), bool(data.get("enabled", True)))
+                if action == "inject":
+                    device.inject_virtual_fault(
+                        target_kind, target_id, operation, fault
+                    )
+                else:
+                    device.clear_virtual_fault(
+                        target_kind, target_id, operation
+                    )
         except ValueError as exc:
             return jsonify({"status": "error", "error": str(exc)}), 400
-        return jsonify({"ok": True, "faults": device.fault_status()})
+        return jsonify(
+            {"ok": True, "injected_faults": device.virtual_fault_status()}
+        )
 
     @app.route("/api/virtual-hardware/faults/clear", methods=["POST"])
     def virtual_hardware_clear_faults():
@@ -1224,8 +1255,11 @@ def register(app, state: AppState) -> None:
         if device is None:
             return jsonify(_NOT_DEVELOP), 409
         with state.simulation_lock:
+            device.clear_all_virtual_faults()
             device.clear_faults()
-        return jsonify({"ok": True, "faults": device.fault_status()})
+        return jsonify(
+            {"ok": True, "injected_faults": device.virtual_fault_status()}
+        )
 
     @app.route("/api/virtual-hardware/scenario", methods=["GET", "POST"])
     def virtual_hardware_scenario():

@@ -989,25 +989,86 @@ def test_commissioning_enter_reports_a_clean_safe_state(client):
 
 
 def test_virtual_hardware_fault_api_controls_the_live_fake(client):
+    """`PUT /api/virtual-hardware/fault` takes a VirtualHardwareFaultRequest
+    (design_new.md "Hardware REST payload schemas"): an operator-facing
+    VirtualHardwareFaultKind against a target reproduces on the live fake."""
     test_client, state = client
     _boot_develop_session(state)
 
     response = test_client.put(
         "/api/virtual-hardware/fault",
-        json={"kind": "i2c_write_error", "enabled": True},
+        json={
+            "action": "inject",
+            "target_kind": "transaction",
+            "target_id": "controller0",
+            "operation": "write",
+            "fault": "transaction_refusal",
+        },
     )
 
     assert response.status_code == 200
-    assert response.get_json()["faults"]["i2c_write_error"] is True
+    injected = response.get_json()["injected_faults"]
+    assert any(f["fault"] == "transaction_refusal" for f in injected)
+    # The injected operator fault reproduces on the transport: the same
+    # OSError the real occupancy/output pipeline turns into a hardware failure.
     device = hardware_config.get_session_device()
-    with pytest.raises(OSError, match="i2c_write_error"):
+    with pytest.raises(OSError):
         device.i2c_write(0x40, b"\x00")
     state_payload = test_client.get("/api/virtual-hardware").get_json()
     assert state_payload["virtual_hardware_active"] is True
-    assert state_payload["faults"]["i2c_write_error"] is True
+    assert any(
+        f["fault"] == "transaction_refusal"
+        for f in state_payload["injected_faults"]
+    )
 
     cleared = test_client.post("/api/virtual-hardware/faults/clear").get_json()
-    assert not any(cleared["faults"].values())
+    assert cleared["injected_faults"] == []
+    # After clear the transport recovers.
+    assert device.i2c_write(0x40, b"\x00") in (True, False)
+
+
+def test_virtual_hardware_fault_api_rejects_malformed_requests(client):
+    """Validation of the VirtualHardwareFaultRequest: fault is required for
+    inject and forbidden for clear, and an incompatible (target_kind, fault)
+    pair is rejected rather than translated (design_new.md 3353)."""
+    test_client, state = client
+    _boot_develop_session(state)
+
+    def put(body):
+        return test_client.put("/api/virtual-hardware/fault", json=body)
+
+    # inject with no fault -> 400
+    assert put({
+        "action": "inject", "target_kind": "chip", "target_id": "c0",
+    }).status_code == 400
+    # incompatible (chip cannot carry output_disagrees_with_command) -> 400
+    assert put({
+        "action": "inject", "target_kind": "chip", "target_id": "c0",
+        "fault": "output_disagrees_with_command",
+    }).status_code == 400
+    # unknown fault -> 400
+    assert put({
+        "action": "inject", "target_kind": "transaction", "target_id": "c0",
+        "fault": "made_up",
+    }).status_code == 400
+    # clear with a fault present -> 400
+    assert put({
+        "action": "clear", "target_kind": "chip", "target_id": "c0",
+        "fault": "device_disconnect",
+    }).status_code == 400
+    # missing target_id -> 400
+    assert put({
+        "action": "inject", "target_kind": "chip", "fault": "device_disconnect",
+    }).status_code == 400
+
+    # A well-formed inject then its clear both succeed.
+    assert put({
+        "action": "inject", "target_kind": "chip", "target_id": "c0",
+        "fault": "device_disconnect",
+    }).status_code == 200
+    assert put({
+        "action": "clear", "target_kind": "chip", "target_id": "c0",
+    }).status_code == 200
 
 
 def test_virtual_rig_api_places_and_removes_a_train_through_detectors(client):
