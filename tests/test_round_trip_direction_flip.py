@@ -83,12 +83,13 @@ def test_round_trip_bare_stop_apex_flips_direction_and_reflects():
     executor, exec_state, train, route = _apex_ready_round_trip()
     assert exec_state.direction == "forward"
 
+    # The apex stop is the lowest non-finished walk-position (list position 2);
+    # `try_complete_active_path` resolves it via `find_next_completion_task(...)`
+    # and hands that walk-position to the callback (design_new.md step `bc55`).
     ok = executor.handle_path_completion(
         train_id=train.train_id,
         path_id="P_APEX",
-        authority_end_block_id="BLK_C",
-        requested_destination_direction="forward",
-        event_time=30.0,
+        walk_position=2,
     )
 
     assert ok is True

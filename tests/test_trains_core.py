@@ -74,8 +74,9 @@ class TestSimulationController:
         `simulation.update()` run the canonical stop check, then assert the
         COMPLETED transition and the `handle_path_completion` effect (the
         route run finishes, so the train no longer has an assigned route).
-        This also covers the historical `handle_path_completion(event_time=...)`
-        keyword-signature regression, since that call now fires for real.
+        This also exercises the real `try_complete_active_path(...) ->
+        handle_path_completion(train_id, path_id, walk_position)` handoff, since
+        that call fires for real here (design_new.md step `bc55`).
         """
         # Single east-west line: STA_A(0,0) -- BLK_A -- STA_B(3,0) -- BLK_C -- STA_C(6,0).
         for x in range(7):

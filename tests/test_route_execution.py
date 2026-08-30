@@ -462,12 +462,14 @@ class TestRouteCallbacksWrapAround:
         first-wrap visit that shares `task_index = 0`)."""
         executor, exec_state, train, _route = wrap_around_scenario
 
+        # `try_complete_active_path` resolves the served stop's walk-position via
+        # `find_next_completion_task(...)` — here list position 2, the in-flight
+        # stop_A — and hands that to the callback; no block/direction re-match
+        # happens in the callback (design_new.md step `bc55`).
         ok = executor.handle_path_completion(
             train_id=train.train_id,
             path_id="P_X",
-            authority_end_block_id="BLK_A",
-            requested_destination_direction="forward",
-            event_time=30.0,
+            walk_position=2,
         )
 
         assert ok is True

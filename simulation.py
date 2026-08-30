@@ -2766,21 +2766,23 @@ class SimulationController(SwitchOutputOwner):
         self,
         train_id: str,
         path_id: str,
-        authority_end_block_id: str,
-        requested_destination_direction: str,
+        walk_position: int,
     ) -> None:
         """Forward a path-completion event to the RouteExecutor and emit a
         notification.
 
-        Carries no timestamp: per design_new.md "Time sampling" each writer
-        samples wall-clock time at its own write site, so `RouteExecutor` dates
-        `finished_at` itself and `emit(...)` dates the notification itself.
+        Per design_new.md step `bc55`, the served row is the `walk_position`
+        that `PathDispatcher.try_complete_active_path(...)` already resolved
+        through `find_next_completion_task(...)`; `RouteExecutor` finishes that
+        row through `RouteRun.advance_walk_position(...)`. Carries no timestamp:
+        per "Time sampling" each writer samples wall-clock time at its own write
+        site, so `RouteExecutor` dates `finished_at` itself and `emit(...)` dates
+        the notification itself.
         """
         self.route_executor.handle_path_completion(
             train_id,
             path_id,
-            authority_end_block_id,
-            requested_destination_direction,
+            walk_position,
         )
         self.notification_center.emit(
             source="SimulationController",
@@ -2789,8 +2791,7 @@ class SimulationController(SwitchOutputOwner):
             message=f"path {path_id} completed for {train_id}",
             entities=[train_ref(train_id), path_ref(path_id)],
             payload={
-                "authority_end_block_id": authority_end_block_id,
-                "requested_destination_direction": requested_destination_direction,
+                "walk_position": walk_position,
             },
         )
 

@@ -3382,55 +3382,13 @@ class PathDispatcher:
                 reason="authority end has not reached the served stop's target",
             )
 
-        # Per design_new.md "Active-path completion procedure": completion
-        # accepts only when the terminal authority traversal direction
-        # equals `Path.requested_destination_direction`. Compute the
-        # terminal direction from the final `resource_sequence` block entry
-        # against the block's `ordered_tiles` and compare.
-        requested_direction = (path.requested_destination_direction or "").strip().lower()
-        if requested_direction not in ("forward", "reverse"):
-            return PathCompletionResult(
-                success=False,
-                path_id=path_id,
-                new_status=path.status,
-                reason="path missing requested destination direction",
-            )
-        terminal_entry = path.resource_sequence[-1] if path.resource_sequence else None
-        terminal_block = self.network.blocks.get(path.get_authority_end_block_id())
-        if terminal_entry is None or terminal_block is None:
-            return PathCompletionResult(
-                success=False,
-                path_id=path_id,
-                new_status=path.status,
-                reason="terminal authority resource missing",
-            )
-        terminal_block_direction = terminal_block.block_direction_for_compass_exit(
-            terminal_entry.exit_edge
-        )
-        # Per the block-relative direction definition in design_new.md "Block",
-        # block-relative `"forward"` / `"reverse"`
-        # are defined against the increasing/decreasing direction of
-        # `Block.ordered_tiles`. A single-tile destination block has only
-        # one entry in `ordered_tiles`, so there is no increasing direction
-        # to anchor against and the pathfinder's terminal-direction derivation
-        # (`RailwayPathfinder._terminal_direction`) and the block's own
-        # `block_direction_for_compass_exit` use independent conventions that
-        # need not agree. The head-in-destination block + authority-end
-        # equality checks above already pin the physical arrival, so for
-        # single-tile destinations the direction match is skipped.
-        if (
-            terminal_block_direction != requested_direction
-            and len(terminal_block.ordered_tiles) > 1
-        ):
-            return PathCompletionResult(
-                success=False,
-                path_id=path_id,
-                new_status=path.status,
-                reason=(
-                    "terminal authority direction does not match requested "
-                    "destination direction"
-                ),
-            )
+        # Arrival direction is NOT re-checked here. Per design_new.md "Path
+        # field schema" (the Stop-arrival check bullet): "Arrival direction is
+        # guaranteed at acquisition instead of re-checked later" — candidate
+        # search already rejected any candidate whose terminal traversal did
+        # not satisfy the caller's `requested_destination_direction`, so a
+        # stored authority that reaches a target reaches it in a legal frame by
+        # construction. Direction is not among the Stop-arrival conditions.
 
         # Release reservations + switch locks via the ResourceCoordinator
         # (completed=True). Only the path's still-held future reservations are
@@ -3482,14 +3440,21 @@ class PathDispatcher:
         # direct RouteExecutor call only when no
         # SimulationController is wired (isolated unit tests) — there is no
         # NotificationCenter to emit through in that case.
+        #
+        # Per design_new.md step `bc55`: the callback "records the stop as
+        # finished through `RouteRun.advance_walk_position(walk_position)`" for
+        # the walk-position `find_next_completion_task(...)` already resolved
+        # above. It is handed that `walk_position`, not the authority-end block
+        # or the requested direction — the served row is already identified and
+        # its arrival frame was fixed at acquisition.
+        served_walk_position = projection.walk_position
         sc = self.simulation_controller
         sc_complete = getattr(sc, "handle_path_completion", None) if sc else None
         if callable(sc_complete):
             sc_complete(
                 train_id,
                 path_id,
-                path.get_authority_end_block_id(),
-                path.requested_destination_direction,
+                served_walk_position,
             )
         else:
             route_executor = self._get_route_executor()
@@ -3497,8 +3462,7 @@ class PathDispatcher:
                 route_executor.handle_path_completion(
                     train_id,
                     path_id,
-                    path.get_authority_end_block_id(),
-                    path.requested_destination_direction,
+                    served_walk_position,
                 )
 
         # Per design_new.md ~line 80: completed paths remain in
