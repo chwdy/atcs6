@@ -731,12 +731,13 @@ class RouteTargetResolver:
         Per design_new.md line 1247, a platform exposes its two platform-end
         blocks as `ordered_blocks[0]` and `ordered_blocks[-1]`. For a
         multi-block platform this picks the end whose graph walk from the
-        train's current start block is shorter, using the same shared
-        network-graph walk query (`PathDispatcher.find_paths(...)`, the
-        block-ID adapter over `RailwayPathfinder`) that
+        train's current start block wins the cross-query comparison, using the
+        same shared network-graph walk query that
         `PathDispatcher.create_path(...)` uses, ranked by the canonical
         candidate comparison defined in **`GraphWalkCandidate` payload**
-        (`tile_count`, then `walk_length_cm`), tie-broken to `ordered_blocks[0]`.
+        (`estimated_travel_seconds` first when the train carries a max speed,
+        then `tile_count`, then `walk_length_cm`), tie-broken to
+        `ordered_blocks[0]`.
 
         For a single-block platform both platform ends collapse to the same
         block, so only that one block participates and no graph walk is run —
@@ -817,9 +818,11 @@ class RouteTargetResolver:
         train's current block to `target_block_id`, or `None` when no walk
         reaches it.
 
-        Canonical "distance from the train head to a block" query, shared by
-        `_closer_platform_end` (nearer multi-block platform end) and
-        `nearest_start_stop_index` (NEAREST start-mode seeding). Uses the same
+        Canonical "distance from the train head to a block" query, used by
+        `nearest_start_stop_index` (NEAREST start-mode seeding), whose ranking
+        is track distance (never travel time). Multi-block platform-end
+        selection instead uses the travel-time-first
+        `_walk_cross_query_key_to_block(...)`. Uses the same
         `PathDispatcher.find_paths(...)` walk that `create_path(...)` uses;
         candidates come back pre-sorted in winning order, so `[0]` is the best
         walk.
@@ -859,33 +862,79 @@ class RouteTargetResolver:
         tiles = getattr(best, "tiles", None) or []
         return (len(tiles), float(getattr(best, "distance_cm", 0.0) or 0.0))
 
+    def _walk_cross_query_key_to_block(
+        self,
+        train: Optional["Train"],
+        target_block_id: str,
+        direction_constraint: Optional[str] = None,
+    ) -> Optional[Tuple[float, int, float]]:
+        """Best candidate's cross-query comparison key
+        `(estimated_travel_seconds, tile_count, walk_length_cm)` from the
+        train's current block to `target_block_id`, or `None` when no walk
+        reaches it.
+
+        The travel-time-first counterpart to `_walk_metric_to_block`, used by
+        `_closer_platform_end` so multi-block platform-end selection ranks by
+        estimated travel time first (the StationTarget platform-end cross-query
+        comparison in design_new.md **`GraphWalkCandidate` payload**). It reads
+        through `PathDispatcher.find_walk_candidates(...)` rather than
+        `find_paths(...)` because the estimate lives on the candidate, not on
+        the unwrapped `PathSegment`. `estimated_travel_seconds` is populated
+        when the train carries a max speed (threaded into the query as
+        `train_max_speed_kmh`); with no max speed it is `None`, so the key falls
+        through to the distance keys -- the same ordering `_walk_metric_to_block`
+        gives. Returns `None` on the same conditions as that helper (no train,
+        no dispatcher, no resolvable start block, or the target is unreachable).
+        """
+        if train is None:
+            return None
+        dispatcher = getattr(self._e, "path_dispatcher", None)
+        start_block_id = self._current_block_id(train)
+        if dispatcher is None or not start_block_id:
+            return None
+        train_id = getattr(train, "train_id", None)
+        try:
+            candidates = dispatcher.find_walk_candidates(
+                start_block_id,
+                target_block_id,
+                train_id=train_id,
+                direction_constraint=direction_constraint,
+            )
+        except Exception:
+            return None
+        if not candidates:
+            return None
+        return candidates[0].cross_query_key()
+
     def _closer_platform_end(
         self,
         train: Optional["Train"],
         end_a: str,
         end_b: str,
     ) -> Optional[str]:
-        """Pick the nearer of a multi-block platform's two end blocks.
+        """Pick the better of a multi-block platform's two end blocks.
 
-        Compares the graph-walk distance from the train's current block to each
-        end via the shared `_walk_metric_to_block(...)` query and returns the
-        end with the shorter walk (canonical metrics `(tile_count,
-        walk_length_cm)`). Ties — including both ends equidistant — resolve to
-        `end_a` (the platform's `ordered_blocks[0]`), matching the canonical
-        `end_a` dead-heat tie-break. Returns `None` when the comparison cannot
-        be evaluated (no train, no dispatcher, no resolvable start block, or
-        neither end is reachable); the caller then falls back to
+        Compares the graph walk from the train's current block to each end via
+        the shared `_walk_cross_query_key_to_block(...)` query and returns the
+        end whose best candidate wins the cross-query comparison
+        `(estimated_travel_seconds, tile_count, walk_length_cm)`: estimated
+        travel time first when the train carries a max speed, otherwise the
+        distance keys alone. Ties — including both ends equal — resolve to
+        `end_a` (the platform's `ordered_blocks[0]`), the platform-end-identity
+        tie-break for this cross-query site. Returns `None` when the comparison
+        cannot be evaluated (no train, no dispatcher, no resolvable start block,
+        or neither end is reachable); the caller then falls back to
         `ordered_blocks[0]`.
         """
-        key_a = self._walk_metric_to_block(train, end_a)
-        key_b = self._walk_metric_to_block(train, end_b)
+        key_a = self._walk_cross_query_key_to_block(train, end_a)
+        key_b = self._walk_cross_query_key_to_block(train, end_b)
         if key_a is None and key_b is None:
             return None
         if key_b is None:
             return end_a
         if key_a is None:
             return end_b
-        # Both reachable: shorter walk wins; exact tie -> end_a.
+        # Both reachable: the winning cross-query key wins; exact tie -> end_a.
         return end_b if key_b < key_a else end_a
 
     def _next_move_block_after_index(

@@ -152,14 +152,17 @@ class GraphWalkQuery:
 
     train_max_speed_kmh: Optional[float] = None
     """The routed train's maximum speed (km/h), or None when the caller has no
-    train context (geometry-only queries). When set, the pathfinder ranks
-    surviving candidates by estimated travel time -- the sum over the walk of
-    each segment's length divided by its effective speed (the posted
+    train context (geometry-only queries). When set, query_graph_walks computes
+    each surviving candidate's estimated travel time -- the sum over the walk of
+    each step's length divided by its effective speed (the posted
     ``Block.speed_limit_kmh`` capped at this max, or this max where no limit is
-    posted) -- so a faster route wins over an equal-or-shorter-distance slow
-    one. ``tile_count`` and ``walk_length_cm`` remain the tie-breakers. None
-    falls back to the distance-only ``GraphWalkCandidate.comparison_key()``
-    ordering, which every geometry-only caller keeps."""
+    posted) -- and stores it on the returned candidate as
+    ``GraphWalkCandidate.estimated_travel_seconds``. That becomes the first
+    comparison key, so a faster route wins over an equal-or-shorter-distance
+    slow one, with ``tile_count`` and ``walk_length_cm`` as the tie-breakers;
+    the same stored value lets a caller comparing candidates from two separate
+    queries rank on the same basis. None leaves ``estimated_travel_seconds``
+    None, so every geometry-only caller ranks on the distance keys alone."""
 
     train_max_slope_percent: Optional[float] = None
     """The routed train's maximum climbable gradient (percent grade), or None
@@ -185,26 +188,45 @@ class GraphWalkCandidate:
     shape and the canonical comparison ordering defined here so the two
     layers cannot drift on tie-break rules.
 
-    Comparison order (lowest wins):
-      1. `tile_count` — fewer tiles is better
-      2. `walk_length_cm` — shorter physical distance is better
-      3. `candidate_rank` — caller-provided secondary rank (lower is
-         better); used by route logic to honour explicit candidate
-         ordering such as "earlier in `Station.platform_ids`"
-      4. `end_a` dead-heat — when every prior key is exactly equal,
-         prefer the candidate whose start side is `end_a`. This is the
-         final deterministic tie-break.
+    Two comparison keys, both lowest-wins:
 
-    Use `comparison_key()` to obtain a sortable tuple matching this
-    order.
+    `comparison_key()` ranks candidates WITHIN one query:
+      1. `estimated_travel_seconds` — faster walk is better; present only when
+         the query carried the train's max speed. Absent (None) for
+         geometry-only queries, where it drops out and the ranking effectively
+         starts at `tile_count`. Every candidate from one query shares the same
+         populated/None state, so a single ranking never mixes the two.
+      2. `tile_count` — fewer tiles is better
+      3. `walk_length_cm` — shorter physical distance is better
+      4. `candidate_rank` — the stable per-query enumeration index; it is
+         unique per candidate within a query, so it is always decisive and the
+         within-query ranking never needs a further tie-break
+
+    `cross_query_key()` ranks a best candidate against the best of a SEPARATE
+    query using the first three keys only (`estimated_travel_seconds`,
+    `tile_count`, `walk_length_cm`). `candidate_rank` is dropped because it
+    carries no meaning across two queries. Each cross-query call site adds its
+    own final tie-break: the no-cab create_path both-ends compare prefers
+    `end_a` by iteration order; the StationTarget platform-end compare prefers
+    the earlier platform-end identity.
     """
 
     tile_count: int
     walk_length_cm: float
+    # First comparison key when populated. RailwayPathfinder.query_graph_walks
+    # sets it exactly when the originating GraphWalkQuery carried
+    # train_max_speed_kmh: the sum over the walk's steps of length divided by
+    # effective speed (the posted block limit capped at the train's max, or the
+    # train's max where no limit is posted). None for geometry-only queries.
+    # Stored on the returned candidate so callers comparing candidates from two
+    # separate queries share one ranking basis. See design_new.md
+    # "GraphWalkCandidate payload".
+    estimated_travel_seconds: Optional[float] = None
     candidate_rank: int = 0
-    # Which physical end of the train this candidate started from.
-    # `"end_a"` or `"end_b"`; the former wins all dead-heats per the
-    # canonical tie-break rule.
+    # Which physical end of the train this candidate started from
+    # (`"end_a"` or `"end_b"`). Not part of comparison_key()/cross_query_key();
+    # the no-cab create_path both-ends tie-break that prefers end_a is applied
+    # by iteration order at that call site, not through this field.
     end_a: Literal["end_a", "end_b"] = "end_a"
     # Optional payload carried alongside the comparison metrics. The
     # walk ordering helper consumes only the metric fields; downstream
@@ -238,17 +260,51 @@ class GraphWalkCandidate:
     # exit_edge metadata needed by dispatcher/controller projection helpers.
     terminal_frame: Optional[DirectedBlockFrame] = None
 
-    def comparison_key(self) -> Tuple[int, float, int, int]:
-        """Return the sortable tuple for canonical candidate comparison.
+    def _estimate_sort_value(self) -> float:
+        """`estimated_travel_seconds` as a sortable number, mapping an
+        unpopulated `None` to a constant so it drops out of the ordering.
 
-        `end_a` is encoded as `0` for end_a and `1` for end_b so end_a
-        wins all dead-heats per the design's tie-break rule.
+        The design skips the travel-time key when both compared candidates
+        carry `None` (geometry-only queries), and treats mixing a populated
+        estimate with an absent one as a caller error. Every candidate in any
+        one comparison — within a query, or between the same-shaped queries a
+        cross-query site compares — therefore maps to a real value together or
+        to this constant together, so the constant's magnitude never decides a
+        real comparison. `float("-inf")` is used only because no real
+        non-negative estimate can collide with it.
+        """
+        est = self.estimated_travel_seconds
+        return est if est is not None else float("-inf")
+
+    def comparison_key(self) -> Tuple[float, int, float, int]:
+        """Sortable tuple for ranking candidates WITHIN one query:
+        `(estimated_travel_seconds, tile_count, walk_length_cm, candidate_rank)`.
+
+        `estimated_travel_seconds` maps `None` to a constant (see
+        `_estimate_sort_value`) so geometry-only candidates rank on the
+        distance keys alone. `candidate_rank` is unique per candidate within a
+        query, so this key is always decisive.
         """
         return (
+            self._estimate_sort_value(),
             self.tile_count,
             self.walk_length_cm,
             self.candidate_rank,
-            0 if self.end_a == "end_a" else 1,
+        )
+
+    def cross_query_key(self) -> Tuple[float, int, float]:
+        """Sortable tuple for comparing best candidates from SEPARATE queries:
+        `(estimated_travel_seconds, tile_count, walk_length_cm)`.
+
+        This is `comparison_key()` without `candidate_rank`, which carries no
+        meaning across two independent queries. The two cross-query call sites
+        (no-cab create_path both-ends; StationTarget platform-end selection)
+        apply their own final tie-break on top of this key.
+        """
+        return (
+            self._estimate_sort_value(),
+            self.tile_count,
+            self.walk_length_cm,
         )
 
 
