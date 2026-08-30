@@ -22,6 +22,7 @@ ValidationError schemas are imported from runtime_payloads.py.
 """
 
 from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime
 import logging
 import time
@@ -37,7 +38,7 @@ from path import (
 )
 from enums import BlockState, direction_from_delta, OPPOSITE_DIRECTIONS
 from track import OPPOSITE_EDGE
-from runtime_payloads import AcquisitionMode, CancellationResult, ControllerProgressReport, ErrorRecord, PathAcquisitionFailureKind, PathAcquisitionResult, PathCompletionResult, PathSegment, ResourceEvent, RouteExecutorForPathDispatcher, ValidationError, ValidationErrorType, ValidationResult
+from runtime_payloads import AcquisitionMode, CancellationResult, ControllerProgressReport, ErrorRecord, PathAcquisitionFailureKind, PathAcquisitionResult, PathCompletionResult, PathSegment, ResolvedRouteTarget, ResourceEvent, RouteExecutorForPathDispatcher, ValidationError, ValidationErrorType, ValidationResult
 from block_manager import ReservedBlockTraversal
 from switch_manager import SwitchLockRequest
 from railway_pathfinder import RailwayPathfinder
@@ -46,6 +47,33 @@ from path_utils import GraphWalkCandidate, GraphWalkStep
 if TYPE_CHECKING:
     from network import RailwayNetwork
     from block import Block
+
+
+# The exact ordered candidate-frame key the tick-start meet calculation pins a
+# train to: one `(resource_type, resource_id, entry_edge, exit_edge)` tuple per
+# pathfinder step, in traversal order. `required_candidate_resource_keys` on
+# `create_path(...)` / `extend_path(...)` is a list of these.
+CandidateResourceKey = Tuple[str, str, str, str]
+
+
+@dataclass(frozen=True)
+class WaitingConflict:
+    """Why a blocked waiter cannot grow its authority next, and who is in the way.
+
+    Produced by `PathDispatcher.get_waiting_conflict(...)`. `waiting_block_id` is
+    the block the waiter holds at (the last block its authority reaches before
+    the obstruction). `failed_resource_type` / `failed_resource_id` name the
+    first forward resource its next acquisition step could not take — a block it
+    would enter, or a switch it would cross. `holding_train_ids` are the trains
+    live state says are in the way of that resource: the physical occupants if
+    any, otherwise the reservation / lock / protection owners. Duplicates are
+    removed; a same-train holder (the waiter blocking itself) is kept.
+    """
+
+    waiting_block_id: str
+    failed_resource_type: str  # "block" | "switch"
+    failed_resource_id: str
+    holding_train_ids: Tuple[str, ...] = ()
 
 
 class PathDispatcher:
@@ -795,6 +823,7 @@ class PathDispatcher:
         acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT,
         manual_override: bool = False,
         acquisition_cap_block_id: Optional[str] = None,
+        required_candidate_resource_keys: Optional[List[CandidateResourceKey]] = None,
     ) -> PathAcquisitionResult:
         """v1 create_path: build authority for a train to a destination block.
 
@@ -817,6 +846,15 @@ class PathDispatcher:
                 result carries `reached_target = False` (never `True`) — the
                 train holds at the cap without completing. The requested target
                 is unchanged.
+            required_candidate_resource_keys: Meet candidate-pinning per the
+                `Path API migration` and `Meet coordination` (design_new.md:1232,
+                :1261, :1939). Default None. When set, it is the exact ordered
+                `(resource_type, resource_id, entry_edge, exit_edge)` key list of
+                the candidate the tick-start meet calculation selected; dispatcher
+                filters the direction-compatible candidates to that one route
+                before applying acquisition rules, never falling through to
+                another candidate. A newly-invalid pin returns the ordinary
+                no-viable/blocked result for this tick.
 
         Returns:
             PathAcquisitionResult.
@@ -976,6 +1014,31 @@ class PathDispatcher:
                 ),
             )
         candidates = non_revisit_candidates
+
+        # Meet candidate-pinning (design_new.md:1261, :1939): when the tick-start
+        # meet calculation pinned this train to one route, keep only the
+        # direction-compatible candidate matching that exact ordered
+        # resource/frame key before choosing. A newly-invalid pin (the pinned
+        # route is no longer among the candidates) leaves nothing to acquire, so
+        # this call fails closed for the tick — it never falls through to a
+        # candidate meet coordination did not evaluate.
+        if required_candidate_resource_keys is not None:
+            candidates = [
+                cand for cand in candidates
+                if self._candidate_matches_pinned_keys(
+                    cand.ordered_walk, required_candidate_resource_keys
+                )
+            ]
+            if not candidates:
+                return self._reject(
+                    failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
+                    requested_destination_block_id=requested_destination_block_id,
+                    requested_destination_direction=requested_destination_direction,
+                    reason=(
+                        "pinned meet candidate is no longer viable "
+                        "(no matching direction-compatible walk this tick)"
+                    ),
+                )
 
         # create_path step 2 (design_new.md "Path And PathDispatcher") — dispatcher
         # selects EXACTLY ONE candidate
@@ -1212,6 +1275,7 @@ class PathDispatcher:
         acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT,
         manual_override: bool = False,
         acquisition_cap_block_id: Optional[str] = None,
+        required_candidate_resource_keys: Optional[List[CandidateResourceKey]] = None,
     ) -> PathAcquisitionResult:
         """v1 extend_path: append more authority to an existing ACTIVE path.
 
@@ -1228,6 +1292,14 @@ class PathDispatcher:
         resource lies beyond the cap, the extend appends nothing (a
         valid prefix held back by the cap) and the train holds there. The
         requested target is unchanged.
+
+        `required_candidate_resource_keys` (default None) applies the same exact
+        meet candidate-pinning `create_path(...)` does (design_new.md:1448): the
+        appended suffix must be the forward tail of the pinned candidate's
+        ordered `(resource_type, resource_id, entry_edge, exit_edge)` key list.
+        When the named candidate is no longer viable the extend returns the
+        ordinary blocked/no-growth result without falling through to another
+        candidate, leaving the existing path unchanged.
         """
         if requested_destination_direction not in ("forward", "reverse"):
             return self._reject(
@@ -1408,6 +1480,36 @@ class PathDispatcher:
                 ),
             )
         candidates = non_revisit_candidates
+
+        # Meet candidate-pinning (design_new.md:1448): keep only the forward
+        # suffix that continues the pinned candidate's route. When the pin no
+        # longer matches any forward continuation, do NOT fall through to another
+        # candidate and do NOT tear the path down — return the ordinary no-growth
+        # retry result (success, appended 0, reached_target False) and leave the
+        # existing live path unchanged, so the next tick can recompute the meet
+        # assignment. A stale pin thus fails closed for one tick only.
+        if required_candidate_resource_keys is not None:
+            candidates = [
+                cand for cand in candidates
+                if self._candidate_matches_pinned_keys(
+                    cand.ordered_walk, required_candidate_resource_keys
+                )
+            ]
+            if not candidates:
+                return PathAcquisitionResult(
+                    success=True,
+                    appended_resource_count=0,
+                    reached_target=False,
+                    path_id=path_id,
+                    requested_destination_block_id=requested_destination_block_id,
+                    requested_destination_direction=requested_destination_direction,
+                    authority_end_block_id=path.get_authority_end_block_id(),
+                    resource_sequence=list(path.resource_sequence),
+                    reason=(
+                        "pinned meet candidate is no longer viable; holding the "
+                        "existing authority for the next tick's meet assignment"
+                    ),
+                )
 
         # create_path step 2 / extend_path single-candidate rule (design_new.md
         # "Path And PathDispatcher") — like create_path, extend commits to
@@ -3407,99 +3509,269 @@ class PathDispatcher:
         path = self.get_active_path(train_id)
         return path.path_id if path else None
 
-    def get_waiting_for_block_id(self, train_id: str) -> Optional[str]:
-        """Public live recompute of this train's `waiting_for_block_id`.
-
-        The block on which the train's active path is currently blocked from
-        growing toward its requested target (design_new.md "Data Flow To UI"),
-        or ``None`` when it has no active path, has reached its target, or no
-        viable suffix exists. Used by the per-tick contention snapshot
+    def get_waiting_conflict(
+        self,
+        train_id: str,
+        stored_resolved_target: Optional[ResolvedRouteTarget],
+        acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT,
+        manual_override: bool = False,
+        acquisition_cap_block_id: Optional[str] = None,
+        required_candidate_resource_keys: Optional[List[CandidateResourceKey]] = None,
+    ) -> Optional[WaitingConflict]:
+        """Canonical forward-resource acquisition read for a blocked waiter
         (design_new.md "Contention snapshot").
+
+        Reruns the exact pathfinder / eligibility walk `extend_path(...)` would
+        run from the active path's current authority end toward
+        `stored_resolved_target`, finds the first forward resource that fails
+        acquisition because of a live occupancy / reservation / lock conflict,
+        and reports it together with the trains in the way. `acquisition_mode`,
+        `manual_override`, `acquisition_cap_block_id`, and
+        `required_candidate_resource_keys` are the same effective route policy
+        and tick-start meet constraints Plan would pass to `extend_path(...)`.
+
+        Read-only: candidate enumeration and `validate_path` touch no
+        path/block/switch state, so it is safe on every projection read
+        (best-effort retries change the blocker tick to tick, which is why it is
+        recomputed rather than retained). Returns None when the train has no
+        active path, no armed target, the authority already reaches the target,
+        no viable or pinned suffix exists, the suffix is currently acquirable
+        end to end, or the failure has no live train owner.
         """
+        if stored_resolved_target is None or not train_id:
+            return None
         path = self.get_active_path(train_id)
         if path is None:
             return None
-        return self._recompute_waiting_for_block_id(path)
-
-    def _recompute_waiting_for_block_id(self, path: Path) -> Optional[str]:
-        """Live recompute of ``waiting_for_block_id`` (the live-recompute rule
-        in design_new.md "Data Flow To UI", API payload ownership).
-
-        Never stored: re-runs the same shared pathfinder/eligibility walk
-        ``extend_path(...)`` uses toward the stored requested target and reports
-        the block owning the first forward resource that fails acquisition
-        because of a live occupancy/reservation/lock conflict. Returns ``None``
-        when the authority already reaches its target or no viable suffix
-        exists. Read-only: ``_find_walk_candidates`` and ``validate_path`` touch
-        no path/block/switch state, so this is safe to call on every projection
-        read (best-effort extension retries change the blocker tick to tick,
-        which is why it is recomputed rather than retained).
-        """
+        target = stored_resolved_target.requested_destination_block_id
         authority_end = path.get_authority_end_block_id()
-        target = path.requested_destination_block_id
         # Reached the requested target (or no target recorded): not waiting.
         if not target or authority_end == target:
             return None
-        train_id = path.train_id
-        if not train_id:
-            return None
 
         # Same pathfinder call extend_path makes from the current authority end.
-        # The route-driven extends this mirrors always run with
-        # manual_override=False (RouteExecutor never passes it, and `Path` does
-        # not store it), so False is the faithful value here. An operator path
-        # created through the REST surface with manual_override=True is not
-        # tracked on `Path`; recomputing its blocker under override is out of
-        # scope for this read.
-        manual_override = False
         candidates = self._find_walk_candidates(
-            authority_end,
-            target,
-            train_id,
-            manual_override=manual_override,
+            authority_end, target, train_id, manual_override=manual_override,
         )
-        if not candidates:
-            # No viable suffix toward the target.
-            return None
         forward_candidates = [
             cand
             for cand in candidates
             if self._segment_continues_forward(path, cand.walk)
         ]
+        # A pinned meet candidate narrows the list to exactly that route before
+        # anything else; when it is no longer present the train is not waiting on
+        # a live conflict this read can name (design_new.md "Meet coordination").
+        if required_candidate_resource_keys is not None:
+            forward_candidates = [
+                cand
+                for cand in forward_candidates
+                if self._candidate_matches_pinned_keys(
+                    cand.ordered_walk, required_candidate_resource_keys
+                )
+            ]
         if not forward_candidates:
+            # No viable suffix toward the target (or the pinned candidate is gone).
             return None
 
-        # Mirror extend_path's first-blocker derivation read-only: validate the
-        # best forward candidate against this path_id and report the first
-        # occupancy-class (occupied / reserved / switch-locked) conflict's block.
         segment = forward_candidates[0].walk
+        ordered_walk = forward_candidates[0].ordered_walk
+        # Honour a meet acquisition cap the same way create/extend do: never look
+        # past the cap block. When the cap sits at or before the current
+        # authority end, the train holds at the cap rather than waiting on a live
+        # conflict, so there is no conflict to report.
+        if acquisition_cap_block_id is not None:
+            cap_status, capped_segment, _capped_walk = self._truncate_segment_to_cap(
+                segment, ordered_walk, acquisition_cap_block_id, target,
+            )
+            if cap_status == "hold":
+                return None
+            if cap_status == "capped":
+                segment = capped_segment
+
+        # Mirror extend_path's first-blocker derivation read-only: validate the
+        # best forward candidate against this path_id and read off the first
+        # occupancy-class (occupied / reserved / switch-locked) conflict.
         validation = self.validate_path(
-            segment,
-            path.path_id,
-            train_id,
-            manual_override=manual_override,
+            segment, path.path_id, train_id, manual_override=manual_override,
         )
         if validation.valid:
             # Suffix is currently acquirable end-to-end — nothing blocking it.
             return None
+        return self._first_conflict_from_validation(segment, validation)
+
+    def get_waiting_for_block_id(
+        self,
+        train_id: str,
+        stored_resolved_target: Optional[ResolvedRouteTarget] = None,
+        acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT,
+        manual_override: bool = False,
+        acquisition_cap_block_id: Optional[str] = None,
+        required_candidate_resource_keys: Optional[List[CandidateResourceKey]] = None,
+    ) -> Optional[str]:
+        """Read-model projection of `waiting_block_id` from `get_waiting_conflict`.
+
+        Forwards the complete request and returns only the block the waiter is
+        stuck at (design_new.md "Contention snapshot", "Data Flow To UI"). Does
+        not rerun the walk itself — it is the one-field view of the full
+        `WaitingConflict` for the "show stuck" overlay.
+        """
+        conflict = self.get_waiting_conflict(
+            train_id,
+            stored_resolved_target,
+            acquisition_mode,
+            manual_override,
+            acquisition_cap_block_id,
+            required_candidate_resource_keys,
+        )
+        return conflict.waiting_block_id if conflict is not None else None
+
+    def _first_conflict_from_validation(
+        self, segment: PathSegment, validation: ValidationResult
+    ) -> Optional[WaitingConflict]:
+        """Build the `WaitingConflict` for the first occupancy-class error in a
+        validated suffix, or None when none has a live train owner."""
         for err in validation.errors:
             if not err.type.is_occupancy_class():
                 continue
             if err.block_id:
-                return err.block_id
-            # A SWITCH_LOCKED conflict records the failing switch as a tile
-            # position, not a block_id. Report the block the train holds at —
-            # the last acquirable block before that locked switch — so the lock
-            # conflict still surfaces in the "show stuck" overlay (design_new.md
-            # "Data Flow To UI"). `_position_to_block_index` is the same
-            # switch-position -> block resolution `_compute_truncate_hint` uses;
-            # it returns the acquirable-prefix length, so the held block is at
-            # index (length - 1).
+                # A block conflict: the occupied / reserved block ahead is both
+                # the failed resource and the block the waiter is stuck behind.
+                holders = self._block_conflict_holders(err)
+                if not holders:
+                    continue
+                return WaitingConflict(
+                    waiting_block_id=err.block_id,
+                    failed_resource_type="block",
+                    failed_resource_id=err.block_id,
+                    holding_train_ids=holders,
+                )
+            # A SWITCH_LOCKED / flank conflict records the failing switch as a
+            # tile position, not a block_id. The waiter is stuck at the last
+            # acquirable block before that locked switch (the same
+            # switch-position -> block resolution `_compute_truncate_hint` uses),
+            # while the failed resource is the switch itself.
             if err.position is not None:
+                held_block = None
                 prefix_len = self._position_to_block_index(segment, err.position)
                 if prefix_len and 0 < prefix_len <= len(segment.blocks):
-                    return segment.blocks[prefix_len - 1]
+                    held_block = segment.blocks[prefix_len - 1]
+                if held_block is None:
+                    continue
+                switch_id, holders = self._switch_conflict_holders(err)
+                if not holders:
+                    continue
+                return WaitingConflict(
+                    waiting_block_id=held_block,
+                    failed_resource_type="switch",
+                    failed_resource_id=switch_id,
+                    holding_train_ids=holders,
+                )
         return None
+
+    def _block_conflict_holders(self, err: ValidationError) -> Tuple[str, ...]:
+        """Trains in the way of a blocked block: the physical occupant if any,
+        otherwise the reservation owner. A same-train holder is kept."""
+        block = self.network.blocks.get(err.block_id)
+        occupant = err.occupied_by or (
+            getattr(block, "occupied_by", None) if block is not None else None
+        )
+        if occupant:
+            return (occupant,)
+        reserver = getattr(block, "reserved_for_train", None) if block is not None else None
+        if reserver:
+            return (reserver,)
+        return ()
+
+    def _switch_conflict_holders(
+        self, err: ValidationError
+    ) -> Tuple[str, Tuple[str, ...]]:
+        """Resolve `(switch_id, holder_train_ids)` for a switch-lock / flank
+        conflict at `err.position`: physical occupants first, otherwise every
+        lock and train-protection owner on that switch. Duplicates removed,
+        deterministic order (physical group then owner group, each sorted)."""
+        switch_id = ""
+        track = self.network.get_track(*err.position) if err.position else None
+        if track is not None:
+            switch_id = getattr(track, "switch_id", None) or ""
+        switch = None
+        if switch_id:
+            switch = getattr(self.network, "switches", {}).get(switch_id)
+        if switch is None:
+            # Fall back to the path-owner the validation error named.
+            owner = self._train_for_path(err.locked_by_path)
+            return switch_id, ((owner,) if owner else ())
+
+        physical = sorted({t for t in switch.route_owners.values() if t})
+        if physical:
+            return switch_id, tuple(physical)
+        owners = {t for (t, _state) in switch.locks.values() if t}
+        owners |= {
+            t for (t, _src, _state) in switch.train_protection_claims if t
+        }
+        return switch_id, tuple(sorted(owners))
+
+    def _train_for_path(self, path_id: Optional[str]) -> Optional[str]:
+        """The train that owns `path_id`, or None."""
+        if not path_id:
+            return None
+        path = self.paths.get(path_id)
+        return path.train_id if path is not None else None
+
+    @staticmethod
+    def _ordered_walk_keys(ordered_walk) -> List[CandidateResourceKey]:
+        """The `(resource_type, resource_id, entry_edge, exit_edge)` key of every
+        pathfinder step, in traversal order."""
+        keys: List[CandidateResourceKey] = []
+        for step in ordered_walk or []:
+            keys.append((
+                getattr(step, "resource_type", "") or "",
+                getattr(step, "resource_id", "") or "",
+                getattr(step, "entry_edge", "") or "",
+                getattr(step, "exit_edge", "") or "",
+            ))
+        return keys
+
+    @classmethod
+    def _candidate_matches_pinned_keys(
+        cls, ordered_walk, required_keys: Optional[List[CandidateResourceKey]]
+    ) -> bool:
+        """True when this acquisition's candidate is the exact route the meet
+        calc pinned (design_new.md "Meet coordination").
+
+        `required_keys` is the full head -> target key list the meet calc chose;
+        the candidate's own key list must appear as one contiguous run inside it,
+        anchored at the candidate's first step. On `create_path(...)` the
+        candidate is the whole head -> target route, so the run is the list
+        itself; on `extend_path(...)` it is a forward tail (authority-end ->
+        target), so the run is that tail of the same route. The tail's first step
+        is the anchor: its `entry_edge` is the walk's back-edge fallback and can
+        differ from the same tile's entry mid-route (a curved authority-end
+        tile), so the anchor matches on `(type, id, exit_edge)` and every step
+        after it on the full `(type, id, entry_edge, exit_edge)` frame — which is
+        what pins the traversal direction through the contested zone.
+        """
+        required = [tuple(k) for k in (required_keys or [])]
+        if not required:
+            return False
+        cand = cls._ordered_walk_keys(ordered_walk)
+        m, n = len(cand), len(required)
+        if m == 0 or m > n:
+            return False
+        for start in range(n - m + 1):
+            match = True
+            for j in range(m):
+                rk = required[start + j]
+                ck = cand[j]
+                if j == 0:
+                    if (ck[0], ck[1], ck[3]) != (rk[0], rk[1], rk[3]):
+                        match = False
+                        break
+                elif ck != rk:
+                    match = False
+                    break
+            if match:
+                return True
+        return False
 
     def get_active_path_progress(self, train_id: str) -> Optional[Dict[str, Any]]:
         """Read-only projection of dispatcher state for a single train.
@@ -3522,8 +3794,18 @@ class PathDispatcher:
             # design_new.md "Data Flow To UI") — the block owning the first forward
             # resource that fails acquisition because of a live occupancy/
             # reservation/lock conflict, or None when the authority reaches its
-            # target or no viable suffix exists.
-            "waiting_for_block_id": self._recompute_waiting_for_block_id(path),
+            # target or no viable suffix exists. Projected from the canonical
+            # `get_waiting_conflict(...)` walk, passing the path's own stored
+            # target as the request (route-driven paths always run
+            # `manual_override=False`; `Path` does not store it, so False is the
+            # faithful value here).
+            "waiting_for_block_id": self.get_waiting_for_block_id(
+                path.train_id,
+                ResolvedRouteTarget(
+                    path.requested_destination_block_id,
+                    path.requested_destination_direction,
+                ),
+            ),
             "resource_sequence": [
                 {
                     "sequence_index": entry.sequence_index,
