@@ -1489,6 +1489,21 @@ class RailwayNetwork(SwitchOutputOwner):
         """Forward to `BlockGroupingManager.segment_to_block_id(segment_id)`."""
         return self._get_block_grouping_manager().segment_to_block_id(segment_id)
 
+    def segment_to_platform_id(self, segment_id: str) -> Optional[str]:
+        """The concrete `Platform` that owns `segment_id`, or None.
+
+        The segment -> platform reverse index (design_new.md "Platform And
+        Station": `RailwayNetwork` owns the segment -> platform lookup, derived
+        from the `Platform.ordered_segments` ownership chain). A segment belongs
+        to at most one platform, so this returns the first platform whose
+        `ordered_segments` lists it. Derived live from each platform's tiles ->
+        segments, never from a stored back-reference on the segment.
+        """
+        for platform_id, platform in self.platforms.items():
+            if segment_id in platform.ordered_segments(self):
+                return platform_id
+        return None
+
     def add_segment_to_block(self, block_id: str, segment_id: str) -> bool:
         """Forward to `BlockGroupingManager.add_segment_to_block(...)`."""
         return self._get_block_grouping_manager().add_segment_to_block(

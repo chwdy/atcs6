@@ -359,3 +359,36 @@ class Platform:
             seen.add(block_id)
             result.append(block_id)
         return result
+
+    def ordered_segments(self, network: "RailwayNetwork") -> List[str]:
+        """Canonical ordered list of this platform's member segment IDs
+        (design_new.md "Platform And Station": `Platform.ordered_segments` is
+        "the canonical ordered physical extent of that concrete platform").
+
+        Segments are listed in the order they first appear when walking the
+        platform's `positions` (its tile order), with duplicates removed so each
+        member segment appears once. The two platform-end segments are therefore
+        `ordered_segments(network)[0]` and `[-1]`, and their owning blocks (found
+        through the segment -> block reverse index) are the candidate end blocks
+        route planning compares. Mirrors `ordered_blocks`, but keyed on the
+        finer geometry axis (segments) instead of blocks.
+
+        Each tile's segment is read live through the network's tile -> segment
+        reverse index (`RailwayNetwork.tile_to_segment_id`) rather than a stored
+        back-reference on the platform, so the list always reflects the current
+        geometry: a platform whose single segment was split into several
+        children by a mid-platform signal or tile edit reads here as the several
+        child segments, with no separate membership bookkeeping to keep in sync.
+        The network is passed in for the same reason `to_dict_with_orientation`
+        takes it — tile ownership is a network-owned index, not platform-local
+        state.
+        """
+        seen: Set[str] = set()
+        result: List[str] = []
+        for x, y in self.positions:
+            segment_id = network.tile_to_segment_id(x, y)
+            if segment_id is None or segment_id in seen:
+                continue
+            seen.add(segment_id)
+            result.append(segment_id)
+        return result

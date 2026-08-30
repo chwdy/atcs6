@@ -139,9 +139,10 @@ class SegmentGeometryManager:
 
         Each `entry_edge` is recomputed for the new direction. Returns False
         when the segment is unknown, has fewer than two tiles, or is not the
-        sole member of its owning `Block` (design_new.md "Segment",
-        `reverse_segment_orientation`: reversing one member of a multi-segment
-        block would corrupt the block's stored orientation).
+        sole member of BOTH its owning `Block` and any `Platform` that contains
+        it (design_new.md "Segment", `reverse_segment_orientation`: reversing one
+        member of a multi-segment block or platform would corrupt that parent's
+        stored orientation).
         """
         segment = self._n.get_segment(segment_id)
         if segment is None or len(segment.ordered_tiles) < 2:
@@ -150,13 +151,26 @@ class SegmentGeometryManager:
         # Reject unless the segment is the sole member of its owning Block: a
         # local reversal of one member would break the stored orientation the
         # rest of the block is grouped against (design_new.md "Segment",
-        # reverse_segment_orientation). The doc also requires sole membership of
-        # any containing Platform; that half awaits the Platform.ordered_segments
-        # membership model (gap D2).
+        # reverse_segment_orientation).
         block_id = self._n.segment_to_block_id(segment_id)
         if block_id is not None:
             block = self._n.blocks.get(block_id)
             if block is not None and len(block.segment_ids) > 1:
+                return False
+
+        # Reject likewise unless the segment is the sole member of any Platform
+        # that contains it (design_new.md "Segment", reverse_segment_orientation
+        # requires sole membership of BOTH the owning Block and any containing
+        # Platform). A multi-segment platform stores its segments in one ordered
+        # run, and reversing one member would break the order the others are
+        # ranked against for platform-end selection. Platform membership is read
+        # live through the tile -> segment -> platform chain, so a platform whose
+        # single segment was just split into several children is correctly seen
+        # as multi-segment here.
+        platform_id = self._n.segment_to_platform_id(segment_id)
+        if platform_id is not None:
+            platform = self._n.platforms.get(platform_id)
+            if platform is not None and len(platform.ordered_segments(self._n)) > 1:
                 return False
 
         tiles = [(e.x, e.y) for e in reversed(segment.ordered_tiles)]
