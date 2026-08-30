@@ -3,17 +3,20 @@
 design_new.md "Canonical Next-Target Selection": for a multi-block platform,
 the candidate end blocks
 are the first and last entries of `Platform.ordered_blocks`; the resolver picks
-the shortest successful candidate using the canonical candidate comparison
-(`tile_count`, then `walk_length_cm`, then `candidate_rank`, then `end_a`). For a
+the best successful candidate using the canonical cross-query comparison
+(`estimated_travel_seconds` first when the train carries a max speed, then
+`tile_count`, then `walk_length_cm`), tie-broken to `ordered_blocks[0]`. For a
 single-block platform both ends collapse to one block, so only that one block
 participates and behavior is unchanged.
 
 These tests drive `RouteTargetResolver.resolve_task_target_block_detailed(...)`
-directly over a stub executor. The stub dispatcher's `find_paths(...)` returns a
-canned candidate per `(start_block, end_block)` pair, standing in for the shared
-`RailwayPathfinder` graph walk that `PathDispatcher.create_path(...)` uses — the
-real ranking/geometry is covered elsewhere; here we only assert the resolver
-compares the two ends and chooses the nearer one.
+directly over a stub executor. The stub dispatcher's `find_walk_candidates(...)`
+returns a canned candidate per `(start_block, end_block)` pair, standing in for
+the shared `RailwayPathfinder` graph walk that `PathDispatcher.create_path(...)`
+uses — the real ranking/geometry is covered elsewhere; here the stub train
+carries no max speed, so `estimated_travel_seconds` is absent and the two ends
+compare on distance, and we only assert the resolver compares the two ends and
+chooses the nearer one.
 """
 
 from dataclasses import dataclass, field
@@ -91,9 +94,30 @@ class _StubSegment:
     distance_cm: float = 0.0
 
 
+@dataclass
+class _StubCandidate:
+    """Stand-in for `GraphWalkCandidate`. Wraps a `_StubSegment` and exposes the
+    `cross_query_key()` the resolver's platform-end comparison reads. The stub
+    train carries no max speed, so `estimated_travel_seconds` is None and the
+    key leads with the same `float("-inf")` sentinel the real candidate uses,
+    dropping travel time so the two ends compare on distance."""
+
+    walk: _StubSegment
+    estimated_travel_seconds: Optional[float] = None
+
+    def cross_query_key(self) -> Tuple[float, int, float]:
+        est = self.estimated_travel_seconds
+        return (
+            est if est is not None else float("-inf"),
+            len(self.walk.tiles),
+            float(self.walk.distance_cm),
+        )
+
+
 class _StubDispatcher:
-    """`find_paths(start, end, ...)` returns the canned candidate list for that
-    `(start_block, end_block)` pair, or `[]` when no walk was registered."""
+    """`find_walk_candidates(start, end, ...)` returns the canned candidate list
+    for that `(start_block, end_block)` pair, or `[]` when no walk was
+    registered; `find_paths(...)` unwraps the same list to its segments."""
 
     def __init__(
         self, walks: Dict[Tuple[str, str], List[_StubSegment]]
@@ -111,6 +135,20 @@ class _StubDispatcher:
     ) -> List[_StubSegment]:
         self.calls.append((start_block_id, end_block_id, direction_constraint))
         return list(self._walks.get((start_block_id, end_block_id), []))
+
+    def find_walk_candidates(
+        self,
+        start_block_id: str,
+        end_block_id: str,
+        train_id: Optional[str] = None,
+        direction_constraint: Optional[str] = None,
+        manual_override: bool = False,
+    ) -> List[_StubCandidate]:
+        self.calls.append((start_block_id, end_block_id, direction_constraint))
+        return [
+            _StubCandidate(walk=seg)
+            for seg in self._walks.get((start_block_id, end_block_id), [])
+        ]
 
 
 @dataclass

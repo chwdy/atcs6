@@ -256,9 +256,11 @@ class PathDispatcher:
 
         A cab-selected train walks from the head end implied by that cab
         (``head_block``). A cabless train compares both physical span ends
-        against the resolved target and starts from the end whose shortest
-        successful graph walk is shorter (canonical ``GraphWalkCandidate``
-        comparison; ``end_a`` wins exact ties). Each end uses the inward
+        against the resolved target and starts from the end whose best
+        successful graph walk wins the cross-query comparison
+        (``GraphWalkCandidate.cross_query_key()``: estimated travel time first
+        when the train's max speed is set, then ``tile_count``, then
+        ``walk_length_cm``; ``end_a`` wins exact ties). Each end uses the inward
         occupied block, which already skips a switch the physical end may sit
         on. Falls back to ``head_block`` whenever a second end cannot improve on
         it (cab selected, single-block span, target inside the span, or neither
@@ -296,7 +298,13 @@ class PathDispatcher:
             )
             if not candidates:
                 continue
-            key = candidates[0].comparison_key()
+            # Cross-query comparison of the two ends' separate best candidates:
+            # the first three keys only (estimated_travel_seconds, tile_count,
+            # walk_length_cm). candidate_rank is excluded because it carries no
+            # meaning across two queries. The end_a end is compared first and
+            # only replaced on a strictly smaller key, so an exact tie keeps
+            # end_a per the canonical tie-break.
+            key = candidates[0].cross_query_key()
             if best_key is None or key < best_key:
                 best_key = key
                 best_block = end_block
@@ -589,6 +597,31 @@ class PathDispatcher:
             )
             if isinstance(c.walk, PathSegment)
         ]
+
+    def find_walk_candidates(
+        self,
+        start_block_id: str,
+        end_block_id: str,
+        train_id: Optional[str] = None,
+        direction_constraint: Optional[str] = None,
+        manual_override: bool = False,
+    ) -> List[GraphWalkCandidate]:
+        """Return the ranked walk candidates between two blocks.
+
+        The candidate-returning counterpart to `find_paths(...)`, which unwraps
+        each candidate to its `.walk` PathSegment. A caller that must compare
+        candidates across two separate queries — e.g. `RouteExecutor`
+        platform-end selection — uses this so the comparison keys the candidate
+        carries (including `estimated_travel_seconds`, populated when the train
+        has a max speed) survive to the comparison. When `train_id` names a
+        train, its max-speed / curve-radius / slope / length capabilities are
+        resolved and passed to the query exactly as in `find_paths(...)`.
+        """
+        return self._find_walk_candidates(
+            start_block_id, end_block_id, train_id,
+            direction_constraint=direction_constraint,
+            manual_override=manual_override,
+        )
 
     def _find_walk_candidates(
         self,

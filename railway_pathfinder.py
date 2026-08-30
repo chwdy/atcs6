@@ -23,6 +23,7 @@ without re-walking the network.
 """
 
 from collections import deque
+from dataclasses import replace
 from typing import List, Optional, Set, Tuple, TYPE_CHECKING
 
 from track import OPPOSITE_EDGE
@@ -91,9 +92,10 @@ class RailwayPathfinder:
                 traversed direction are rejected.
 
         Returns:
-            List of ``GraphWalkCandidate`` sorted in winning order
-            (``tile_count`` ASC, ``walk_length_cm`` ASC,
-            ``candidate_rank`` ASC, ``end_a`` dead-heat). Empty when no
+            List of ``GraphWalkCandidate`` sorted in winning order by
+            ``GraphWalkCandidate.comparison_key()`` (estimated travel time ASC
+            when ``train_max_speed_kmh`` is supplied, then ``tile_count`` ASC,
+            ``walk_length_cm`` ASC, ``candidate_rank`` ASC). Empty when no
             walk satisfies every filter.
         """
         if start_block_id not in self.network.blocks:
@@ -158,7 +160,10 @@ class RailwayPathfinder:
 
         Returns:
             List of ``GraphWalkCandidate`` sorted by
-            ``(tile_count, walk_length_cm, candidate_rank)`` ascending.
+            ``GraphWalkCandidate.comparison_key()`` ascending:
+            ``(estimated_travel_seconds, tile_count, walk_length_cm,
+            candidate_rank)``, where ``estimated_travel_seconds`` is populated
+            only when ``request.train_max_speed_kmh`` is supplied.
         """
         start_block_id = request.start_locator.block_id
         end_block_id = request.end_locator.block_id
@@ -221,27 +226,42 @@ class RailwayPathfinder:
                 train_max_slope_percent=request.train_max_slope_percent,
             )
         ]
-        # When the caller supplies the train's max speed, rank by estimated
-        # travel time (posted block limits capped at that max) so a faster
-        # route wins over an equal-or-shorter-distance slow one; the distance
-        # keys stay as tie-breakers. Geometry-only callers (no max speed) keep
-        # the distance-only canonical ordering.
+        # When the caller supplies the train's max speed, compute each
+        # candidate's estimated travel time (posted block limits capped at that
+        # max) and store it on the candidate as `estimated_travel_seconds`, the
+        # first comparison key. A faster route then wins over an
+        # equal-or-shorter-distance slow one, and a caller comparing this
+        # candidate against one from a separate query reads the same stored
+        # value. Geometry-only callers (no max speed) leave the field None, so
+        # `comparison_key()` ranks on the distance keys alone.
+        #
+        # The estimate depends on the max speed, but the cached candidate list
+        # is a max-speed-independent per-(start, end) artifact shared across
+        # every query, so the estimate must never be written onto a cached
+        # candidate. `replace(...)` returns a fresh copy per surviving candidate
+        # to carry the per-query value, leaving the cached originals untouched.
         max_speed = request.train_max_speed_kmh
         if max_speed is not None and max_speed > 0:
-            surviving.sort(
-                key=lambda c: (
-                    self._candidate_travel_time(c, max_speed),
-                    *c.comparison_key(),
+            surviving = [
+                replace(
+                    c,
+                    estimated_travel_seconds=self._candidate_travel_time(
+                        c, max_speed
+                    ),
                 )
-            )
-        else:
-            surviving.sort(key=lambda c: c.comparison_key())
+                for c in surviving
+            ]
+        surviving.sort(key=lambda c: c.comparison_key())
         return surviving
 
     def _candidate_travel_time(
         self, candidate: GraphWalkCandidate, max_speed_kmh: float
     ) -> float:
         """Estimated traversal-time cost for a candidate (lower is faster).
+
+        ``query_graph_walks`` stores this value on the candidate as
+        ``estimated_travel_seconds`` (its first comparison key) whenever the
+        query carried the train's max speed.
 
         Sums each ordered-walk step's length divided by the effective speed
         there: the posted ``Block.speed_limit_kmh`` capped at the train's max
