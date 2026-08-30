@@ -69,13 +69,20 @@ def _run_laps(sim, dispatcher, dt):
             events.append(("create", kwargs["requested_destination_block_id"]))
         return result
 
-    def traced_complete(train_id, path_id, authority_end_block_id=None,
-                        requested_destination_direction=None, event_time=None):
-        events.append(("complete", authority_end_block_id))
-        return original_complete(
-            train_id, path_id, authority_end_block_id,
-            requested_destination_direction, event_time,
+    def traced_complete(train_id, path_id, walk_position):
+        # The callback no longer receives the authority-end block (design_new.md
+        # step `bc55` hands it the served walk-position). Trace the served block
+        # from the run's own copy of the target
+        # (`task_runs[walk_position].resolved_target`).
+        run = sim.route_executor.execution_state_for(train_id)
+        target = (
+            run.task_runs[walk_position].resolved_target
+            if run is not None and 0 <= walk_position < len(run.task_runs)
+            else None
         )
+        block = target.requested_destination_block_id if target is not None else None
+        events.append(("complete", block))
+        return original_complete(train_id, path_id, walk_position)
 
     dispatcher.create_path = traced_create
     sim.route_executor.handle_path_completion = traced_complete

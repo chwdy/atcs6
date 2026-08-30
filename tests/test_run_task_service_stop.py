@@ -208,47 +208,47 @@ def test_run_task_completes_only_after_stopped_with_authority_released():
     assert row.run_elapsed_seconds == 20.0  # unchanged by the final tick
 
 
-def test_handle_path_completion_never_fires_for_a_run_task():
-    """The H2 regression guard: even if a run task's live authority somehow
-    reached its own target (the scenario the terminal exclusion in
-    `create_path()` / `extend_path()` exists to prevent), dispatcher
-    completion must skip past it rather than raise
+def test_run_task_is_the_served_projection_and_never_completes_as_a_stop():
+    """The H2 regression guard, at its doc-correct home.
+
+    A `run` task's live authority must never be finished by dispatcher stop
+    completion. Under design_new.md's Stop-arrival check,
+    `PathDispatcher.try_complete_active_path(...)` resolves the served row
+    through `RouteExecutor.find_next_completion_task(...)` and accepts an arrival
+    ONLY when that row's `task_kind == "stop"`. `find_next_completion_task`
+    returns the lowest non-finished walk-position, so while the run task is
+    still in flight it — not any later stop — is the served projection, and its
+    `task_kind == "run"` makes the arrival predicate false. The run's authority
+    is released by Plan step `6a0d`, never completed here.
+
+    `handle_path_completion(...)` no longer searches `task_runs` for a matching
+    stop (it finishes exactly the resolved walk-position), so a healthy run can
+    neither be skipped into a later stop nor trip
     `SimulationController.enter_failed_runtime(...)`.
     """
     executor, exec_state, controller, train, route, _projection, _stub = (
         _run_task_ready(task_time=20.0)
     )
-    # Route out a trailing stop after the run task so the walk has something
-    # to legitimately match; confirms the skip-and-continue behavior, not
-    # just the absence of a crash.
-    stop_task = RouteTask(
-        task_kind="stop", task_location=BlockTarget(block_id="BLK_A")
-    )
-    route.tasks.append(stop_task)
-    stop_target = ResolvedRouteTarget(
-        requested_destination_block_id="BLK_A",
-        requested_destination_direction="forward",
+    # Append a trailing stop after the run so the walk has a real stop later:
+    # the served completion projection must still be the run, not that stop.
+    route.tasks.append(
+        RouteTask(task_kind="stop", task_location=BlockTarget(block_id="BLK_A"))
     )
     exec_state.task_runs.append(
-        RouteTaskRun(task_index=1, resolved_target=stop_target)
+        RouteTaskRun(
+            task_index=1,
+            resolved_target=ResolvedRouteTarget(
+                requested_destination_block_id="BLK_A",
+                requested_destination_direction="forward",
+            ),
+        )
     )
 
-    calls = []
-    sc_stub = type(
-        "StubSimController", (), {"enter_failed_runtime": lambda self, p: calls.append(p)}
-    )()
-    executor.simulation_controller = sc_stub
-
-    ok = executor.handle_path_completion(
-        train_id=train.train_id,
-        path_id="P_RUN",
-        authority_end_block_id="BLK_A",
-        requested_destination_direction="forward",
-        event_time=30.0,
-    )
-
-    assert calls == []  # enter_failed_runtime must never be called
-    assert ok is True
-    # Matched the stop, not the run. `advance_walk_position(...)` samples the
-    # clocks itself, so assert which row finished rather than pinning an instant.
-    assert exec_state.task_runs[1].finished_at is not None
+    # The lowest non-finished walk-position is the run task at position 0 — the
+    # served completion projection. Its task_kind is "run", which the
+    # Stop-arrival check rejects, so completion never fires for it and the later
+    # stop is never reached while the run is in flight.
+    projection = executor.find_next_completion_task(train.train_id)
+    assert projection is not None
+    assert projection.walk_position == 0
+    assert projection.task_kind == "run"

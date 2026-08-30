@@ -255,6 +255,41 @@ class TestRouteExecutor:
         assert state.path_cancelled is False
         assert state.task_runs == []
 
+    def test_run_numbers_are_globally_monotonic_across_routes(self, simple_network):
+        """`run_number` is a global monotonic counter starting at 1 that carries
+        no route index (design_new.md "Route-run state": `_next_run_number`
+        starts at 1 and increments after every allocation regardless of route).
+
+        Creating fresh runs interleaved across two different routes yields the
+        consecutive numbers 1, 2, 3, 4 — not a per-route base offset — so
+        `run_number` is an opaque identity that must not be parsed for
+        `route_id`. Under the superseded composite scheme the second route's
+        first run would have jumped to `1_000_001`.
+        """
+        executor = RouteExecutor(simple_network)
+        route_a = Route(route_id="ROUTE_A")
+        route_b = Route(route_id="ROUTE_B")
+        executor.register_route(route_a)
+        executor.register_route(route_b)
+
+        trains = [Train(train_id=f"T{i}") for i in range(1, 5)]
+        for t in trains:
+            simple_network.trains[t.train_id] = t
+
+        # Interleave routes A, B, B, A; run_number follows global creation order.
+        numbers = [
+            executor._ensure_run_for(trains[0], route_a).run_number,
+            executor._ensure_run_for(trains[1], route_b).run_number,
+            executor._ensure_run_for(trains[2], route_b).run_number,
+            executor._ensure_run_for(trains[3], route_a).run_number,
+        ]
+        assert numbers == [1, 2, 3, 4]
+
+        # The next raw allocation continues the same global sequence, and no
+        # number carries a per-route base (the largest stays small, not ~1e6).
+        assert executor._allocate_run_number() == 5
+        assert max(numbers) < 1_000_000
+
 
 class TestRouteExecutorCompatibilityBugFixes:
     """
@@ -427,12 +462,14 @@ class TestRouteCallbacksWrapAround:
         first-wrap visit that shares `task_index = 0`)."""
         executor, exec_state, train, _route = wrap_around_scenario
 
+        # `try_complete_active_path` resolves the served stop's walk-position via
+        # `find_next_completion_task(...)` — here list position 2, the in-flight
+        # stop_A — and hands that to the callback; no block/direction re-match
+        # happens in the callback (design_new.md step `bc55`).
         ok = executor.handle_path_completion(
             train_id=train.train_id,
             path_id="P_X",
-            authority_end_block_id="BLK_A",
-            requested_destination_direction="forward",
-            event_time=30.0,
+            walk_position=2,
         )
 
         assert ok is True

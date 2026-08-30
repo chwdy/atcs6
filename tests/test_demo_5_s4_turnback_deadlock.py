@@ -59,11 +59,9 @@ def _stage(assign_lead_route: bool):
         assert route is not None
         route.assign_train("LEAD")
         now = time.time()
-        rc = ex._run_count_for_route.get(route.route_id, 0) + 1
-        ex._run_count_for_route[route.route_id] = rc
         st = RouteExecutionState(
             train_id="LEAD", route_id=route.route_id, started_at=now,
-            run_number=ex._compose_run_number(route.route_id, rc),
+            run_number=ex._allocate_run_number(),
             current_route_status=RouteRunStatus.RUNNING,
         )
         for i in range(_S4_DWELL_PHASE_IDX):

@@ -40,7 +40,7 @@ from train_route import (
     RouteTaskRun,
 )
 from notification_center import Kind
-from runtime_payloads import AcquisitionMode, ErrorRecord, FatalConflictKind, FatalPhysicalEntryConflict, PathAcquisitionFailureKind, PathDispatcherForRouteExecutor, ResolvedRouteTarget, ResourceEvent, TargetResolutionFailureKind
+from runtime_payloads import AcquisitionMode, ErrorRecord, PathAcquisitionFailureKind, PathDispatcherForRouteExecutor, ResolvedRouteTarget, ResourceEvent, TargetResolutionFailureKind
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
@@ -600,12 +600,6 @@ class RouteExecutor:
         # Canonical Route registry (per design_new.md "Route And RouteExecutor").
         # Keyed by route_id. Mutated only via register_route / unregister_route.
         self.route_registry: Dict[str, "Route"] = {}
-        # Append-only, never-recycled registration index per route_id, used to
-        # compose the diagnostic RouteRun.run_number (design_new.md line 1309).
-        # A route removed and re-added keeps its original index, and the counter
-        # never decreases, so run_numbers stay unique across the registry's life.
-        self._route_registry_index: Dict[str, int] = {}
-        self._next_route_registry_index: int = 0
         # `execution_states` holds the currently-RUNNING run for each train
         # (keyed by train_id; one slot per train). Per design_new.md, a run is
         # not deleted on teardown — its state flips to FINISHED / DEACTIVATED
@@ -623,8 +617,14 @@ class RouteExecutor:
         # not used for lookups — those always go through simulation_controller
         # when one is present.
         self._shared_controllers = shared_controllers  # kept for test compat
-        # Per-route run-instance counter (1-based). diagnostic only.
-        self._run_count_for_route: Dict[str, int] = {}
+        # Opaque, globally-monotonic run-instance counter (design_new.md
+        # "Route-run state"). Starts at 1, supplies the current value, and
+        # increments after every allocation regardless of route. The resulting
+        # `RouteRun.run_number` is a unique history/API identity that carries no
+        # route index and must not be parsed for `route_id`; the immutable
+        # `RouteRun.route_id` field carries that relationship directly. Numbers
+        # are never recycled or recomputed during the process lifetime.
+        self._next_run_number: int = 1
         # Per-assignment one-shot start-mode input (per design_new.md "Run
         # start-mode seeding"). Keyed by train_id; populated by
         # `train_service.assign_route(...)` when the operator picks a start mode
@@ -736,11 +736,6 @@ class RouteExecutor:
     def register_route(self, route: "Route") -> None:
         """Register a Route in the canonical registry."""
         self.route_registry[route.route_id] = route
-        # Assign a stable append-only index on first registration only; a
-        # re-registered route_id keeps its original index (never recycled).
-        if route.route_id not in self._route_registry_index:
-            self._route_registry_index[route.route_id] = self._next_route_registry_index
-            self._next_route_registry_index += 1
 
     def unregister_route(self, route_id: str) -> Optional["Route"]:
         """Remove a Route from the registry; return the removed Route or None."""
@@ -950,8 +945,11 @@ class RouteExecutor:
     def history_for_train(self, train_id: str) -> List[RouteExecutionState]:
         """Return every `RouteRun` for `train_id`, sorted by `run_number`.
 
-        Per design_new.md (~line 1162): includes RUNNING, FINISHED, and
-        DEACTIVATED rows across all routes the train has been assigned to.
+        Per design_new.md "RouteExecutor.history_for_train": includes RUNNING,
+        FINISHED, and DEACTIVATED rows across all routes the train has been
+        assigned to. `run_number` is the global monotonic creation counter, so
+        ascending `run_number` is chronological creation order, not
+        route-index-major.
         """
         out: List[RouteExecutionState] = [
             r for r in self._historical_runs if r.train_id == train_id
@@ -1174,18 +1172,20 @@ class RouteExecutor:
         prev = exec_state.task_runs[row_pos - 1]
         return prev.finished_at if realtime else prev.finished_at_operating
 
-    def _compose_run_number(self, route_id: str, run_count: int) -> int:
-        """Compose the diagnostic ``RouteRun.run_number``.
+    def _allocate_run_number(self) -> int:
+        """Return the next globally-monotonic ``RouteRun.run_number``.
 
-        Per design_new.md line 1309: ``route_registry_index * 1_000_000 +
-        run_count``. ``route_registry_index`` is the route's append-only
-        registration order (assigned in ``register_route``, never recycled or
-        compacted on route removal), so the diagnostic run_number stays unique
-        across the registry's lifetime. Falls back to 0 when the route is not
-        yet registered.
+        Per design_new.md "Route-run state": ``_next_run_number`` starts at 1,
+        supplies the current value, and increments after every allocation
+        regardless of route. The result is an opaque history/API identity — it
+        carries no route index and must not be parsed for ``route_id`` (the
+        immutable ``RouteRun.route_id`` field carries that relationship
+        directly). Numbers are never recycled or recomputed during the process
+        lifetime.
         """
-        route_registry_index = self._route_registry_index.get(route_id, 0)
-        return route_registry_index * 1_000_000 + run_count
+        n = self._next_run_number
+        self._next_run_number += 1
+        return n
 
     def _get_active_path_id(self, train_id: str) -> Optional[str]:
         """Return the dispatcher's currently active path id for train_id."""
@@ -1799,14 +1799,12 @@ class RouteExecutor:
         is_fresh = exec_state is None or exec_state.route_id != route.route_id
         if is_fresh:
             now = self._now()
-            run_count = self._run_count_for_route.get(route.route_id, 0) + 1
-            self._run_count_for_route[route.route_id] = run_count
             exec_state = RouteExecutionState(
                 train_id=train.train_id,
                 route_id=route.route_id,
                 started_at=now,
                 started_at_operating=self._now_operating(),
-                run_number=self._compose_run_number(route.route_id, run_count),
+                run_number=self._allocate_run_number(),
             )
             self.execution_states[train.train_id] = exec_state
         # Ensure task_runs is sized to the current Route.tasks list.
@@ -3562,163 +3560,76 @@ class RouteExecutor:
         self,
         train_id: str,
         path_id: str,
-        authority_end_block_id: Optional[str] = None,
-        requested_destination_direction: Optional[str] = None,
-        event_time: Optional[float] = None,
+        walk_position: int,
     ) -> bool:
-        """Observe completion callback.
+        """Observe completion callback — step `bc55` (Finished-stop route commit).
 
-        Per design_new.md "Active-path completion procedure":
-          * walk task_runs from the next non-finished list position
-          * pick first non-finished `task_kind == "stop"` whose stored
-            resolved_target matches authority_end_block_id +
-            requested_destination_direction
-          * record finished_at, advance current_waypoint_index, write next
-            task's started_at if empty
-          * clear route-owned active-path correlation
+        Per design_new.md step `bc55` / line 2182: this records the served stop
+        as finished by finishing exactly `walk_position` through
+        `RouteRun.advance_walk_position(...)`, which samples and writes the row's
+        wall and operating finish fields locally; the derived
+        `current_waypoint_index` then advances to `walk_position`.
+
+        `PathDispatcher.try_complete_active_path(train_id)` has already resolved
+        the served row through `find_next_completion_task(...)` and its
+        Stop-arrival check has confirmed that row is a `stop` whose stored
+        `resolved_target` block equals the live authority end. This callback
+        therefore neither re-resolves nor re-matches the row, and it does NOT
+        re-check arrival direction — direction is guaranteed at acquisition, not
+        re-checked later (design_new.md "Path field schema", the Stop-arrival
+        check bullet). It does not call `TrainController.enter_station_dwell()`;
+        dwell entry belongs to the next eligible `tick_train_plan(...)`.
         """
-        # `event_time` no longer reaches the finish write: the completed row is
-        # stamped by `advance_walk_position(...)`, which samples both clocks
-        # itself so the wall and operating readings of one finish are taken at
-        # the same moment (design_new.md "`RouteRun.advance_walk_position`").
-        # The parameter stays for callers that pass their own sample.
-        del event_time
-
         train, route, exec_state = self._resolve_run_route(train_id)
         if train is None or route is None or exec_state is None:
             return False
 
-        # Walk `task_runs` by list position starting from the next
-        # non-finished entry. Per design_new.md line 1104 + line 1267,
-        # `walk_position` (list index) and `task_index` (Route.tasks index)
-        # decouple after `CIRCULAR` / `ROUND_TRIP` wrap-around, so the
-        # iteration must be over the un-finished list suffix — not over
-        # `range(next_planning_index, task_count)`, which would land on
-        # already-finished early rows once the walk has wrapped.
         self._sync_task_runs(route, exec_state)
-        start_pos = exec_state.next_planning_walk_position
-        match_pos: Optional[int] = None
-        for pos in range(start_pos, len(exec_state.task_runs)):
-            row = exec_state.task_runs[pos]
-            task = route.get_task_at(row.task_index)
-            if task is None:
-                continue
-            if task.task_kind != "stop":
-                # waypoint, run, or dwell — none is the stop-completion match
-                # target. waypoint matches happen via handle_train_advanced;
-                # run tasks are completed only by Plan step 6a0d; neither
-                # is ever finished by dispatcher path completion.
-                if task.task_kind in ("waypoint", "run"):
-                    # Skip but don't break — there may be a stop after.
-                    continue
-                # dwell — definitely break (must be served via finish_dwell).
-                break
-            # Match by resolved_target.
-            target = row.resolved_target
-            if target is None:
-                # design_new.md: `task_runs[i].resolved_target` is the
-                # authoritative match key, and re-resolving it at completion
-                # time is forbidden. Diagnose and skip this walk-position.
-                self._emit_route_warning(
-                    train_id,
-                    "planning_failed",
-                    f"handle_path_completion: task_runs[{pos}] has "
-                    f"resolved_target=None; skipping "
-                    f"(authority_end={authority_end_block_id}). Plan must "
-                    f"write resolved_target before the path completes.",
-                    operation="handle_path_completion",
-                )
-                continue
-            if (
-                authority_end_block_id
-                and target.requested_destination_block_id != authority_end_block_id
-            ):
-                continue
-            if (
-                requested_destination_direction
-                and target.requested_destination_direction
-                != requested_destination_direction
-            ):
-                continue
-            match_pos = pos
-            break
-
-        if match_pos is None:
-            # Per design_new.md line 1479: no matching stop task is a contract
-            # violation; raise a fatal diagnostic (fix #6).
-            sc = getattr(self, "simulation_controller", None)
-            if sc is not None:
-                sc.enter_failed_runtime(
-                    FatalPhysicalEntryConflict(
-                        resource_type="route_completion_mismatch",
-                        resource_id=authority_end_block_id or "unknown",
-                        incoming_train_id=train_id,
-                        prior_owner_train_id=None,
-                        conflict_kind=FatalConflictKind.RESERVED_FOR_OTHER_TRAIN,
-                        incoming_path_id=path_id,
-                    )
-                )
-            else:
-                logger.error(
-                    "handle_path_completion: no matching stop task for train %s "
-                    "(authority_end=%s, dir=%s); SimulationController unavailable "
-                    "so fatal diagnostic could not be raised.",
-                    train_id,
-                    authority_end_block_id,
-                    requested_destination_direction,
-                )
+        if not (0 <= walk_position < len(exec_state.task_runs)):
+            # The caller resolved `walk_position` from `find_next_completion_task`,
+            # so an out-of-range index is a broken invariant rather than a normal
+            # miss. Diagnose and refuse rather than finish a fabricated row.
+            self._emit_route_warning(
+                train_id,
+                "planning_failed",
+                f"handle_path_completion: walk_position {walk_position} out of "
+                f"range for {len(exec_state.task_runs)} task_runs; Plan must "
+                f"resolve the served stop before the path completes.",
+                operation="handle_path_completion",
+            )
             return False
 
-        # Finish the matched stop row — plus any intervening walk-positions the
-        # cursor lagged on — through the canonical `advance_walk_position(...)`
-        # writer. The intervening sweep is a safety net: a waypoint the train
-        # passed and then vacated is no longer in its span, so Plan's
-        # covered-task advance (which keys on span membership) can no longer
-        # finish it; finishing it here keeps the derived progress cursor from
-        # stalling behind a vacated waypoint. Both the cursor and the match
-        # index are list positions in `task_runs`, not `Route.tasks` indices, so
-        # this loop targets the current walk's rows even after CIRCULAR /
-        # ROUND_TRIP wrap-around.
-        matched_row_was_open = (
-            0 <= match_pos < len(exec_state.task_runs)
-            and exec_state.task_runs[match_pos].finished_at is None
-        )
-        for pos in range(start_pos, match_pos + 1):
-            if not (0 <= pos < len(exec_state.task_runs)):
-                continue
-            row = exec_state.task_runs[pos]
-            if row.finished_at is not None:
-                continue
-            # The matched stop (pos == match_pos) is always finished here. An
-            # intervening lagged row is force-finished ONLY when it is a
-            # `waypoint` the train passed and vacated — the sole case Plan's
-            # span-keyed covered-task advance can no longer reach. A non-waypoint
-            # intervening row is outside that safety net and must not be
-            # force-finished (it would fabricate an arrival/`delay_class`).
-            if pos != match_pos:
-                task = route.get_task_at(row.task_index)
-                if task is None or task.task_kind != "waypoint":
-                    continue
-            self.advance_walk_position(exec_state, route, pos)
-        # ROUND_TRIP / CIRCULAR walks reflect or wrap at route ends by
-        # flipping `RouteRun.direction` so the next `_append_next_walk_task`
-        # appends the reflected walk-position. Every other advance site
-        # (dwell-complete, head-advance, covered-task advance) pairs the
-        # `advance_walk_position(...)` writer with this flip; the
-        # dispatcher-stop-completion path must too, or a ROUND_TRIP whose
-        # forward apex is a bare `stop` with no trailing dwell oscillates at
-        # the apex instead of reflecting (design_new.md:1281-1288, 1312).
-        # Guarded on the matched row having been open so an idempotent
-        # re-entry cannot double-flip the direction.
+        row = exec_state.task_runs[walk_position]
+        # Idempotency: a re-delivered completion for an already-finished row must
+        # not double-advance the walk or double-flip ROUND_TRIP direction.
+        # `advance_walk_position(...)` no-ops on a finished row; the flip below is
+        # guarded the same way.
+        matched_row_was_open = row.finished_at is None
+        self.advance_walk_position(exec_state, route, walk_position)
+        # ROUND_TRIP / CIRCULAR walks reflect or wrap at route ends by flipping
+        # `RouteRun.direction` so the next `_append_next_walk_task` appends the
+        # reflected walk-position. Every other advance site (dwell-complete,
+        # head-advance, covered-task advance) pairs the `advance_walk_position(...)`
+        # writer with this flip; the dispatcher-stop-completion path must too, or
+        # a ROUND_TRIP whose forward apex is a bare `stop` with no trailing dwell
+        # oscillates at the apex instead of reflecting (design_new.md:1281-1288,
+        # 1312).
         if matched_row_was_open:
             self._advance_to_next_task(route, exec_state)
-        # design_new.md "Event log": the train reached its stop target.
+        # design_new.md "Event log": the train reached its stop target. The
+        # served block is the run's own copy of the target
+        # (`task_runs[walk_position].resolved_target`), never re-read off the
+        # dispatcher `Path`.
+        target = row.resolved_target
+        arrived_block = (
+            target.requested_destination_block_id if target is not None else None
+        )
         self._emit_event(
             "handle_path_completion",
-            f"{train_id} arrived at {authority_end_block_id}",
+            f"{train_id} arrived at {arrived_block}",
             train_id=train_id,
             path_id=path_id,
-            payload={"block_id": authority_end_block_id},
+            payload={"block_id": arrived_block},
         )
         # Observe must NOT call enter_station_dwell — that fires from the next
         # eligible Plan dwell-entry step.
