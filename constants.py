@@ -159,6 +159,18 @@ CALIBRATION_STEP_TIMEOUT_S: float = 30.0
 # pass is finding the last step before a creep starts.
 LIGHTING_VOLTAGE_STEP_V: float = 0.1
 
+# Seeded model-profile defaults (design_new.md "SpeedProfile", the `max_voltage`
+# and `lighting_voltage` field descriptions). A model `SpeedProfile` created at
+# train creation gets these two voltages until calibration or an imported roster
+# entry replaces them. `DEFAULT_SEEDED_MAX_VOLTAGE_V` is the top of the usable
+# `track_voltage` range for the first mapping stage; `DEFAULT_SEEDED_LIGHTING_
+# VOLTAGE_V` is the lit-but-stationary voltage and the 0%-power anchor, chosen
+# below the Hardware Setup default `current_sense_min_drive_v` (4.0 V) so a
+# freshly placed train satisfies "Occupancy source follows drive state" without
+# immediate recalibration.
+DEFAULT_SEEDED_MAX_VOLTAGE_V: float = 12.0
+DEFAULT_SEEDED_LIGHTING_VOLTAGE_V: float = 1.5
+
 
 # Hard ceiling on a single per-tick sim delta. Normal operation — including a
 # few-times `simulation_speed` multiplier — stays well under this, so it is a

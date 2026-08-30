@@ -16,6 +16,10 @@ The module also provides:
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Any, Optional
 
+from constants import (
+    DEFAULT_SEEDED_LIGHTING_VOLTAGE_V,
+    DEFAULT_SEEDED_MAX_VOLTAGE_V,
+)
 from enums import HandlePosition, POWER_MULTIPLIERS, BRAKE_MULTIPLIERS
 
 
@@ -135,7 +139,7 @@ class SpeedProfile:
     reference_speed_kmh: float = 100.0  # Speed at which drag = drag_coefficient km/h/s
     # Top of the usable track_voltage range for the first mapping stage
     # (design_new.md "SpeedProfile", `max_voltage` field)
-    max_voltage: float = 12.0
+    max_voltage: float = DEFAULT_SEEDED_MAX_VOLTAGE_V
     # Per-train notch mapping. Power notches scale `acceleration_rate`; brake
     # notches scale the operational decel rate (`deceleration_rate ×
     # operational_decel_ratio`). Different train models have different notch
@@ -166,7 +170,7 @@ class SpeedProfile:
         """
         if self.derived_from is None:
             if self.lighting_voltage is None:
-                self.lighting_voltage = 1.5
+                self.lighting_voltage = DEFAULT_SEEDED_LIGHTING_VOLTAGE_V
             if self.power_speed_curve is None:
                 self.power_speed_curve = [(0.0, 0.0), (100.0, 100.0)]
             if not self.voltage_power_curve:
@@ -388,7 +392,7 @@ class SpeedProfile:
             air_resistance_enabled=bool(data.get("air_resistance_enabled", True)),
             drag_coefficient=float(data.get("drag_coefficient", 0.001)),
             reference_speed_kmh=float(data.get("reference_speed_kmh", 100.0)),
-            max_voltage=float(data.get("max_voltage", 12.0)),
+            max_voltage=float(data.get("max_voltage", DEFAULT_SEEDED_MAX_VOLTAGE_V)),
             power_multipliers=_multipliers_from_raw(
                 data.get("power_multipliers"), POWER_MULTIPLIERS
             ),
@@ -401,7 +405,7 @@ class SpeedProfile:
 DEFAULT_SPEED_PROFILE = SpeedProfile(
     profile_id="default",
     name="Default HO Scale",
-    lighting_voltage=1.5,
+    lighting_voltage=DEFAULT_SEEDED_LIGHTING_VOLTAGE_V,
     acceleration_rate=10.0,
     deceleration_rate=15.0,
     emergency_brake_rate=30.0,
