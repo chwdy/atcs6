@@ -106,6 +106,17 @@ class CalibrationObservation:
     """`SimulationController.safe_state_generation`. A change means a session
     stop or another safe-state request occurred."""
 
+    path_present: bool = False
+    """Whether the leg's authority (the controller's `received_path_plan`)
+    currently exists. A leg arms by asking for a one-off route; the route's path
+    is built by the ordinary later Plan steps, so for a tick or two after arming
+    the authority is not there yet. Two things hang off this flag (design_new.md
+    "Speed calibration", Plan acquires leg authority all-or-nothing): the step
+    timeout does not start counting until the path is present, so a busy stretch
+    delays the leg instead of failing it; and once a leg has had its authority
+    and then loses it, the loss means the leg route completed through ordinary
+    stop completion — the train came to rest at the far outer block."""
+
 
 @dataclass(frozen=True)
 class CalibrationCommand:
@@ -113,19 +124,27 @@ class CalibrationCommand:
 
     `power_percent` is the run state the controller reads back through
     `get_propulsion_override(...)` and drives with; the pass never sends it as a
-    command. `reverse_cab` is applied through the ordinary stopped-only cab rule,
-    and `acquire_path_to` / `release_path` take and give back the leg's authority
-    through `PathDispatcher`. ATC, service-stop, and EB keep the same authority
-    over the pass that they hold over any manual command.
+    command. `reverse_cab` is applied through the ordinary stopped-only cab rule.
+    `arm_leg_to` and `deactivate_route` are the two authority intents Plan step
+    `c9e1` carries out on the pass's behalf (design_new.md "Speed calibration",
+    Each leg runs as its own one-off route): `RouteExecutor` builds and assigns a
+    one-off route for `arm_leg_to`, and tears the active leg route down for
+    `deactivate_route`. A leg that reaches the far block carries neither — it
+    finishes through ordinary stop completion. ATC, service-stop, and EB keep the
+    same authority over the pass that they hold over any manual command.
     """
 
     power_percent: Optional[float] = None
     reverse_cab: bool = False
-    release_path: bool = False
-    acquire_path_to: Optional[str] = None
-    """Block to acquire authority to before the power command lands. A leg
-    without a path could not move: with `received_path_plan is None` the ATC
-    limit is `0` (`no_authority`) and the safety-cap ordering clamps the
+    deactivate_route: bool = False
+    """Tear the active leg route down. Set on every leg-end that did NOT reach
+    the far block — a stall, an overrun, a never-arrives leg, or any pass
+    abandonment. A leg that reaches the far block sets nothing here: it finishes
+    through ordinary stop completion, which tears its route down for it."""
+    arm_leg_to: Optional[str] = None
+    """The far outer block to build this leg's one-off route to, before the power
+    command can move the train. A leg without a route has no authority, so the
+    ATC limit is `0` (`no_authority`) and the safety-cap ordering clamps the
     commanded percent to it."""
 
 
@@ -177,8 +196,14 @@ class CalibrationRun:
 
     phase: str = PHASE_LEG
     leg_armed: bool = False
-    """Whether this leg's path and power have been commanded. Every leg starts
-    unarmed, so one code path arms them all — including the pass's first."""
+    """Whether this leg's one-off route and power have been commanded. Every leg
+    starts unarmed, so one code path arms them all — including the pass's
+    first."""
+    leg_authority_seen: bool = False
+    """Whether this leg's authority has actually appeared yet (the controller's
+    `received_path_plan` was seen present since the leg armed). Reset every time
+    a leg arms. It tells "still acquiring the route" (never seen) apart from "the
+    leg route completed and gave the authority back" (seen, then gone)."""
     needs_reverse: bool = False
     """Whether arming this leg must flip the cab first. False for the opening
     leg and after a stall, where the train never turned around."""
@@ -187,14 +212,27 @@ class CalibrationRun:
     crossings: List[float] = field(default_factory=list)
     step_remeasured: bool = False
 
-    leg_started_at: float = 0.0
+    leg_started_at: Optional[float] = None
+    """When this leg's step timeout started counting — the tick its authority
+    first appeared, not the tick it armed. `None` until then, so the timeout does
+    not run while acquisition is still in progress (design_new.md "Speed
+    calibration", Plan acquires leg authority all-or-nothing)."""
     clock_started_at: Optional[float] = None
 
     safe_state_generation: int = 0
     failure_reason: str = ""
+    active_leg_route_id: Optional[str] = None
+    """The id of this leg's one-off route while it runs, from arming the leg to
+    the route being torn down (by ordinary stop completion on success, or by a
+    deactivate on any other leg-end). `None` between legs and once the pass ends.
+    `RouteExecutor` stores it here at Plan step `c9e1`; the pass reads it to know
+    a leg is armed and does not mutate route registries itself."""
     path_id: str = ""
-    """The leg's live authority, held from arming the leg to confirming its
-    stop. Empty between legs and once the pass ends."""
+    """Legacy leg-authority handle for the pre-route Action wiring
+    (`_acquire_path` / `_release_path`). Retained only while that wiring is being
+    migrated to the one-off-route lifecycle; once Plan step `c9e1` owns arming
+    (design_new.md "Speed calibration", Each leg runs as its own one-off route)
+    the pass no longer sets it, and it is removed with that wiring."""
 
     @property
     def crossings_target(self) -> int:
@@ -333,7 +371,6 @@ class SpeedCalibration:
             marker_spacing_cm=float(marker_spacing_cm or 0.0),
             heading_to=1 if int(heading_to) else 0,
             safe_state_generation=int(safe_state_generation),
-            leg_started_at=float(now),
         )
         self.runs[train.train_id] = run
         self._step0_entries.pop(train.train_id, None)
@@ -379,7 +416,7 @@ class SpeedCalibration:
         self._emit_command_result(
             run.train_id, operation="speed_calibration", success=False, reason=reason
         )
-        return CalibrationCommand(power_percent=0.0, release_path=True)
+        return CalibrationCommand(power_percent=0.0, deactivate_route=True)
 
     # -- the pass ---------------------------------------------------------
 
@@ -407,27 +444,37 @@ class SpeedCalibration:
         far_block = run.heading_toward_block_id
 
         if not run.leg_armed:
-            # Every leg is armed here, the opening one included: take authority
-            # to the far end, turn around if the last leg left the train facing
-            # the other way, and command this step's power.
+            # Every leg is armed here, the opening one included: ask for a one-off
+            # route to the far end, turn around if the last leg left the train
+            # facing the other way, and command this step's power.
             #
             # Orient from where the train actually stands. A leg runs toward the
-            # outer block it is *not* in, and asking for authority to the block
-            # the head already occupies is refused outright — so whenever the
-            # train is sitting in the block this leg was aiming at, the aim is
-            # what is stale, not the position.
+            # outer block it is *not* in, and a route to the block the head
+            # already occupies is refused outright — so whenever the train is
+            # sitting in the block this leg was aiming at, the aim is what is
+            # stale, not the position.
             if obs.head_block and far_block == obs.head_block:
                 run.heading_to = 1 - run.heading_to
                 run.needs_reverse = True
                 far_block = run.heading_toward_block_id
             run.leg_armed = True
-            run.leg_started_at = obs.now
+            run.leg_authority_seen = False
+            run.leg_started_at = None
             run.clock_started_at = None
             return CalibrationCommand(
                 power_percent=run.current_power,
                 reverse_cab=run.needs_reverse,
-                acquire_path_to=far_block,
+                arm_leg_to=far_block,
             )
+
+        # Nothing about this leg counts until its authority actually appears. The
+        # step timeout starts the tick the path first shows up, so a stretch that
+        # is busy when the leg arms delays it instead of failing it (design_new.md
+        # "Speed calibration", Plan acquires leg authority all-or-nothing).
+        if obs.path_present:
+            run.leg_authority_seen = True
+            if run.leg_started_at is None:
+                run.leg_started_at = obs.now
 
         for block_id in obs.newly_confirmed:
             if block_id not in stretch:
@@ -452,13 +499,32 @@ class SpeedCalibration:
                 cm_per_sec_to_kmh(run.block_length_cm / elapsed)
             )
             run.phase = PHASE_STOPPING
-            return CalibrationCommand(power_percent=0.0, release_path=True)
+            # The leg reached the far block, so it finishes through ordinary stop
+            # completion (Observe step `9d8b` completes the leg route). The pass
+            # commands a stop and issues no route op of its own — success carries
+            # no teardown (design_new.md "Speed calibration", A leg finishes
+            # through ordinary stop completion).
+            return CalibrationCommand(power_percent=0.0)
 
-        if obs.now - run.leg_started_at < CALIBRATION_STEP_TIMEOUT_S:
+        # The leg had its authority and then lost it without the far block ever
+        # confirming: ordinary stop completion tore the leg route down because
+        # the train came to rest at its authority end short of the far block.
+        # That is the same outcome as the step timing out, so resolve it the
+        # same way.
+        if run.leg_authority_seen and not obs.path_present:
+            return self._resolve_incomplete_leg(run, obs)
+
+        # The step timeout runs only once the leg's authority has appeared.
+        if run.leg_started_at is None or obs.now - run.leg_started_at < CALIBRATION_STEP_TIMEOUT_S:
             return None
+        return self._resolve_incomplete_leg(run, obs)
 
-        # A leg that runs out of time has done one of two different things, and
-        # they are not the same fault.
+    def _resolve_incomplete_leg(
+        self, run: CalibrationRun, obs: CalibrationObservation
+    ) -> Optional[CalibrationCommand]:
+        """Resolve a leg that ran out of authority or time without reaching the
+        far block. Two different faults share this exit, and they are not the
+        same thing."""
         if run.clock_started_at is None:
             # The locomotive never reached the measured block: the low steps may
             # not overcome its stiction at all. The flat bottom this leaves on
@@ -470,7 +536,8 @@ class SpeedCalibration:
         # the curve that the locomotive never held.
         return self.fail(
             run,
-            f"train entered {run.measured_block_id} but never reached {far_block}",
+            f"train entered {run.measured_block_id} but never reached "
+            f"{run.heading_toward_block_id}",
         )
 
     def _advance_stopping(
@@ -549,7 +616,9 @@ class SpeedCalibration:
             success=True,
             reason=f"measured {len(run.samples)} points — pick a profile to write",
         )
-        return CalibrationCommand(power_percent=0.0, release_path=True)
+        # The final leg reached the far block, so its route has already finished
+        # through ordinary stop completion. A finished sweep carries no route op.
+        return CalibrationCommand(power_percent=0.0)
 
     def _record_stall(
         self, run: CalibrationRun, obs: CalibrationObservation
@@ -568,10 +637,11 @@ class SpeedCalibration:
         if run.step_index >= len(run.power_steps):
             return self._finish_sweep(run)
         # The train is still standing where the leg began, facing the same way,
-        # so the next step re-arms in place without turning around.
+        # so the next step re-arms in place without turning around. The stalled
+        # leg's route never reached the far block, so it is torn down.
         run.leg_armed = False
         run.needs_reverse = False
-        return CalibrationCommand(power_percent=0.0, release_path=True)
+        return CalibrationCommand(power_percent=0.0, deactivate_route=True)
 
     def record(self, train_id: str, now: float) -> Optional[CalibrationRun]:
         """Manual marking: the operator marks one pass of a marker.
@@ -656,6 +726,7 @@ class SpeedCalibration:
             safe_state_generation=int(
                 getattr(sc, "safe_state_generation", 0) or 0
             ),
+            path_present=controller.path_projection.received_path_plan is not None,
         )
         command = self.advance(run, obs)
         if command is not None:
@@ -679,13 +750,13 @@ class SpeedCalibration:
         take the new leg's authority.
         """
         try:
-            if command.release_path:
+            if command.deactivate_route:
                 self._release_path(run)
             if command.reverse_cab:
                 cab = getattr(controller.commands, "cab", None)
                 controller.commands.set_cab("A" if cab == "B" else "B")
-            if command.acquire_path_to:
-                self._acquire_path(run, command.acquire_path_to)
+            if command.arm_leg_to:
+                self._acquire_path(run, command.arm_leg_to)
         except Exception:
             pass
 
