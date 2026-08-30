@@ -850,8 +850,8 @@ class PathDispatcher:
 
     def create_path(
         self,
-        train_id: str = "",
         requested_destination_block_id: str = "",
+        train_id: str = "",
         requested_destination_direction: str = "forward",
         acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT,
         manual_override: bool = False,
@@ -860,9 +860,12 @@ class PathDispatcher:
     ) -> PathAcquisitionResult:
         """v1 create_path: build authority for a train to a destination block.
 
+        Argument order is dest-first per design_new.md "Canonical write
+        interfaces"; every caller passes these by keyword.
+
         Args:
-            train_id: Train requesting authority. Required in v1.
             requested_destination_block_id: Caller's target block.
+            train_id: Train requesting authority. Required in v1.
             requested_destination_direction: "forward" or "reverse".
             acquisition_mode: ALL_OR_NOTHING or BEST_EFFORT.
             manual_override: Operator-override flag per the `disabled` and
@@ -1802,21 +1805,21 @@ class PathDispatcher:
         path = self.paths.get(path_id)
         if path is None:
             return CancellationResult(
-                success=False,
+                committed=False,
                 path_id=None,
                 new_status=None,
                 reason="path not found",
             )
         if path.status == PathStatus.COMPLETED:
             return CancellationResult(
-                success=False,
+                committed=False,
                 path_id=None,
                 new_status=None,
                 reason="already completed",
             )
         if path.status == PathStatus.CANCELLED:
             return CancellationResult(
-                success=False,
+                committed=False,
                 path_id=None,
                 new_status=None,
                 reason="already cancelled",
@@ -1916,7 +1919,7 @@ class PathDispatcher:
         # `received_path_plan` property returns None on its next read.
 
         return CancellationResult(
-            success=True,
+            committed=True,
             path_id=path_id,
             new_status=PathStatus.CANCELLED,
             # `reason` is optional plain-text diagnostic context on the result;

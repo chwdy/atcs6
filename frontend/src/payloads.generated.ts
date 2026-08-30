@@ -93,7 +93,7 @@ export interface PathAcquisitionResult {
 }
 
 export interface CancellationResult {
-  success: boolean;
+  committed: boolean;
   path_id: string | null;
   new_status: unknown;
   reason: string | null;

@@ -735,22 +735,24 @@ class PathAcquisitionResult:
 class CancellationResult:
     """Structured result for PathDispatcher.cancel_path(...).
 
-    Per design_new.md "cancel_path() return contract" (lines 925-934):
-    on success, `success=True`, `path_id` is required, `new_status` is
-    `PathStatus.CANCELLED`. On failure, `success=False`, `path_id=None`,
-    `new_status=None`, and `reason` is required. Callers must not branch
-    on the exact `reason` text; the canonical strings are "path not found",
-    "already completed", "already cancelled".
+    Per design_new.md "cancel_path() return contract": when the path was
+    ACTIVE, `committed=True`, `path_id` is required, `new_status` is
+    `PathStatus.CANCELLED`. On an idempotent no-op or a caller-contract miss,
+    `committed=False`, `path_id=None`, `new_status=None`, and `reason` is
+    required. Callers must not branch on the exact `reason` text; the canonical
+    strings are "path not found", "already completed", "already cancelled".
+    `committed` is whether this call performed the `ACTIVE -> CANCELLED`
+    transition (design_new.md "cancel_path() return contract").
     """
 
-    success: bool
+    committed: bool
     path_id: Optional[str] = None
     new_status: Any = None  # PathStatus from path.py; Any to avoid circular import.
     reason: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "success": self.success,
+            "committed": self.committed,
             "path_id": self.path_id,
             "new_status": (
                 self.new_status.value
