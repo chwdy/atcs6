@@ -227,12 +227,6 @@ class CalibrationRun:
     deactivate on any other leg-end). `None` between legs and once the pass ends.
     `RouteExecutor` stores it here at Plan step `c9e1`; the pass reads it to know
     a leg is armed and does not mutate route registries itself."""
-    path_id: str = ""
-    """Legacy leg-authority handle for the pre-route Action wiring
-    (`_acquire_path` / `_release_path`). Retained only while that wiring is being
-    migrated to the one-off-route lifecycle; once Plan step `c9e1` owns arming
-    (design_new.md "Speed calibration", Each leg runs as its own one-off route)
-    the pass no longer sets it, and it is removed with that wiring."""
 
     @property
     def crossings_target(self) -> int:
@@ -380,26 +374,51 @@ class SpeedCalibration:
         """Drop a pass without writing. The samples go with it.
 
         Operator Stop and a mid-run panel close are pass-abandonment cases, and
-        every one of those commands `power_percent = 0` and latches the ordinary
-        cancel for the still-live leg path in the same step (design_new.md
-        "Speed calibration", Pass-abandonment cases command a stop and release
-        the leg path). Dropping the run withdraws the propulsion override, so the
-        controller falls back to its ordinary manual source; zeroing that source
-        here is what brings the train to the stand the latched cancel's
-        `is_stopped()` gate waits on. Without it the train would run out its
-        remaining authority first.
+        every one of those commands `power_percent = 0` and tears the active leg
+        route down (design_new.md "Speed calibration", Pass-abandonment cases
+        command a stop and deactivate the leg route). Dropping the run withdraws
+        the propulsion override, so the controller falls back to its ordinary
+        manual source; zeroing that source here is what brings the train to a
+        stand. The route deactivate's inclusive latch cancels any still-live leg
+        path, and the Action consumer removes the RouteRun.
         """
         run = self.runs.pop(train_id, None)
         self._step0_entries.pop(train_id, None)
         if run is not None:
             self._stop_manual_traction(train_id)
-            self._release_path(run)
+            self._deactivate_leg_route(train_id, run)
             self._emit_command_result(
                 train_id,
                 operation="speed_calibration",
                 success=False,
                 reason=reason,
             )
+
+    def _deactivate_leg_route(self, train_id: str, run: CalibrationRun) -> None:
+        """Tear the active calibration leg route down through the ordinary
+        route-deactivate latch (design_new.md "Speed calibration", Pass-
+        abandonment cases; Leg completion and abandonment use ordinary route
+        flows). The Action consumer cancels any live leg path and removes the
+        RouteRun through the standard teardown order.
+
+        A no-op when no leg route is armed, when the runtime/controller is absent
+        (unit tests drive the state machine with no controller wired), or when a
+        teardown is already pending — an existing teardown is not duplicated
+        (design_new.md "Speed calibration", An existing teardown is not
+        duplicated).
+        """
+        if run.active_leg_route_id is None:
+            return
+        controller = self._controller(train_id)
+        if controller is None:
+            return
+        latches = controller.route_hooks.phase_latches
+        if latches.route_deactivate:
+            return
+        latches.set_route_deactivate(
+            reason="calibration pass abandoned",
+            has_active_path=controller.path_projection.received_path_plan is not None,
+        )
 
     def fail(self, run: CalibrationRun, reason: str) -> CalibrationCommand:
         """Abandon a pass, command `power_percent = 0`, and report the reason.
@@ -733,91 +752,6 @@ class SpeedCalibration:
         )
         return self.advance(run, obs)
 
-    def _apply(self, run: CalibrationRun, controller, command: CalibrationCommand) -> None:
-        """Apply a pass command without queuing operator commands.
-
-        design_new.md "Speed calibration" (Controller owns calibration output /
-        Where it runs): the pass never queues pretend operator commands. The
-        step's power is read straight off the run by the controller through
-        `get_propulsion_override(...)`, so this method issues no power command at
-        all — `command.power_percent` is the run state that read reflects, not a
-        thing to send. It only manages the leg's authority and, at a leg's end,
-        flips the cab through the ordinary stopped-only cab rule: the same
-        `set_cab(...)` an operator issues, called directly rather than queued in
-        the command inbox.
-
-        Order matters. Release the old authority first so the reversal is not
-        fighting stale authority pointing the other way, then flip the cab, then
-        take the new leg's authority.
-        """
-        try:
-            if command.deactivate_route:
-                self._release_path(run)
-            if command.reverse_cab:
-                cab = getattr(controller.commands, "cab", None)
-                controller.commands.set_cab("A" if cab == "B" else "B")
-            if command.arm_leg_to:
-                self._acquire_path(run, command.arm_leg_to)
-        except Exception:
-            pass
-
-    def _acquire_path(self, run: CalibrationRun, destination_block_id: str) -> None:
-        """Take authority to the leg's far end through the ordinary dispatcher.
-
-        A failed acquisition fails the pass rather than leaving the train to sit
-        under a zero no-authority cap: the stretch the operator picked is not
-        one this train can currently take.
-        """
-        dispatcher = getattr(self._sc, "path_dispatcher", None)
-        if dispatcher is None:
-            return
-        from runtime_payloads import AcquisitionMode
-
-        # All-or-nothing, because a best-effort acquisition that stops short
-        # would drive the locomotive to a short authority end somewhere inside
-        # the stretch and hold it there. The leg needs the whole stretch or it
-        # is not a leg, and saying so now beats timing out mid-crossing.
-        result = dispatcher.create_path(
-            train_id=run.train_id,
-            requested_destination_block_id=destination_block_id,
-            acquisition_mode=AcquisitionMode.ALL_OR_NOTHING,
-        )
-        path_id = getattr(result, "path_id", None)
-        if not path_id:
-            reason = getattr(result, "reason", "") or "no authority to the stretch end"
-            self.fail(run, f"could not take authority to {destination_block_id}: {reason}")
-            return
-        run.path_id = path_id
-
-    def _release_path(self, run: CalibrationRun) -> None:
-        """Give the leg's authority back once its stop is confirmed.
-
-        Through the ordinary cancel latch, not a direct dispatcher call: the
-        pass writes `set_path_cancel_request(...)` with
-        `error.origin = "calibration_leg_complete"` like every other
-        cancellation, and the Action explicit-cancel step `7b40` commits it
-        once the train has stopped (design_new.md "Speed calibration",
-        Releasing a leg's authority goes through the ordinary cancel latch).
-
-        An existing request is not duplicated: when an EB or a movement-derived
-        deviation latched the leg path first, that cancel tears the leg down and
-        the pass writes no second request.
-        """
-        if not run.path_id:
-            return
-        controller = self._controller(run.train_id)
-        if controller is None:
-            return
-        latches = controller.route_hooks.phase_latches
-        if latches.path_cancel_request is None:
-            from runtime_payloads import ErrorRecord as _ErrorRecord
-
-            latches.set_path_cancel_request(
-                _ErrorRecord("calibration leg ended", "calibration_leg_complete"),
-                "info",
-            )
-        run.path_id = ""
-
     @staticmethod
     def _head_block(controller) -> str:
         """The block the train's head is in.
@@ -838,6 +772,17 @@ class SpeedCalibration:
         if not controllers:
             return None
         return controllers.get(train_id)
+
+    def _leg_authority_present(self, train_id: str) -> bool:
+        """Whether the leg's authority (the controller's `received_path_plan`)
+        exists, so the pass may drive (design_new.md "Speed calibration", Plan
+        acquires leg authority all-or-nothing). True with no controller wired (the
+        unit tests drive the state machine directly), so those keep driving on
+        `leg_armed` alone."""
+        controller = self._controller(train_id)
+        if controller is None:
+            return True
+        return controller.path_projection.received_path_plan is not None
 
     def _operating_time(self) -> float:
         """`AppState.operating_time`, the clock every calibration interval is
@@ -867,11 +812,15 @@ class SpeedCalibration:
         how a pass drives the train: it queues no operator commands.
 
         A speed pass drives while it is measuring a leg — the current step's
-        percent while that leg is armed and crossing, and `0` while the train is
-        stopping at a leg's end or standing between steps, so a stale manual
-        percent can never leak through mid-pass. A finished or failed pass
-        returns None, handing the train back to its ordinary manual source (which
-        the abandonment/finish paths have already zeroed).
+        percent while that leg is armed, crossing, and has its authority, and `0`
+        while the train is stopping at a leg's end, standing between steps, or
+        still acquiring the leg's route. Until the leg's `received_path_plan` is
+        present the pass selects zero power (design_new.md "Speed calibration",
+        Plan acquires leg authority all-or-nothing): a leg without authority could
+        not move anyway (the ATC limit is `0`), and holding the percent at `0`
+        until the route's path exists keeps the step timeout and the driven power
+        in step. A finished or failed pass returns None, handing the train back to
+        its ordinary manual source (which the abandonment/finish paths zeroed).
 
         Lighting-voltage calibration is the other user of this accessor and
         returns the `track_voltage` variant of the union: while a lighting run is
@@ -885,6 +834,8 @@ class SpeedCalibration:
         run = self.runs.get(train_id)
         if run is not None and run.is_measuring:
             driving = run.phase == PHASE_LEG and run.leg_armed
+            if driving and not self._leg_authority_present(train_id):
+                driving = False
             value = run.current_power if driving else 0.0
             return CalibrationPropulsionOverride(
                 kind="power_percent", value=float(value)
