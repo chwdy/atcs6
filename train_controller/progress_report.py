@@ -56,31 +56,14 @@ class ProgressReportBuilder:
         self._c.physics_sync.current_span = span_update.new_span
         self._c.physics_sync.current_speed_kmh = float(span_update.current_speed_kmh)
 
-        # 1a. Reactive speed-based state evaluation (per design_new.md
-        # "Reactive speed-based state evaluation"). Fires synchronously after
-        # the new speed has been written and before building the progress
-        # report, so any READY <-> RUNNING_MOVING transition lands in the same
-        # tick that physics produced the speed change.
-        if self._c.ops.state == TrainState.READY and not self._c.is_stopped():
-            self._c.ops.state = TrainState.RUNNING_MOVING
-            if self._c.commands.control_mode == "ato" and self._c.path_projection.received_path_plan is not None:
-                # ato_go() is the canonical writer of ato_running = True.
-                # From RUNNING_MOVING it is an idempotent success that skips
-                # cab auto-selection.
-                self._c.ato.go()
-        elif (
-            self._c.ops.state == TrainState.RUNNING_MOVING
-            and self._c.is_stopped()
-            and self._c.path_projection.received_path_plan is None
-            and self._c.eb.active == False
-        ):
-            # No-authority braking completion: zero speed reached without
-            # live authority. transition_to_ready() clears ato_running and
-            # path-run bookkeeping in lockstep. Per design_new.md lines
-            # 1783/1788, this reactive path must NOT fire while EB is latched
-            # (eb.active == True): the controller stays in RUNNING_MOVING and
-            # only TrainController.eb.release() drives the return to READY.
-            self._c.transition_to_ready()
+        # 1a. Reactive condition evaluation (design_new.md "Reactive condition
+        # evaluation"). Fires synchronously after the new speed has been
+        # written and before building the progress report, so any motion-caused
+        # READY <-> RUNNING_MOVING / ato.running transition lands in the same
+        # Observe pass that produced the speed change. This is one of the two
+        # call sites of the single evaluator; TrainController.tick(...) calls it
+        # again after the command drain (Action step `71ee`).
+        self._c.ops.evaluate_reactive_conditions()
 
         # 2/3. Build progress report from tile delta and enqueue for Observe.
         if self._c.ops.state == TrainState.OFF:

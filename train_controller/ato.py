@@ -271,7 +271,11 @@ class ATOComputer:
         if c.commands.cab not in ("A", "B"):
             return CommandResult(False, "ATO requires a cab to be selected")
 
-        c.ops.state = TrainState.RUNNING_MOVING
+        # Move state through the single RUNNING_MOVING writer rather than
+        # assigning `state` here (design_new.md "TrainController.depart()
+        # canonical contract": ato.go() applies the transition through the
+        # Operational state machine).
+        c.ops.enter_running_moving()
         self.running = True
         return CommandResult(True, "ATO started")
 

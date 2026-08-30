@@ -691,6 +691,17 @@ class TrainController:
         if after_command_drain is not None:
             after_command_drain()
 
+        # design_new.md Action step `71ee`: run the reactive condition
+        # evaluation against the post-command, post-cancel, post-transition
+        # controller state. This is the second of the evaluator's two call
+        # sites (the first is inside on_physics_updated during Observe). Running
+        # it here makes a just-released EB condition and a just-cleared
+        # authority visible to the ordinary transition rules without waiting for
+        # the next movement calculation. It is idempotent and a no-op for an OFF
+        # or EB-held controller (neither transition's source state matches), so
+        # it is safe to run ahead of the power and EB checks below.
+        self.ops.evaluate_reactive_conditions()
+
         # ===== 0. POWER CHECK =====
         if not self.power_on:
             self.ops.state = TrainState.OFF
@@ -717,9 +728,10 @@ class TrainController:
             # eb_active. This early-exit holds until the operator releases.
             return
 
-        # Per design_new.md tick step `293e`, the reactive speed-based state
-        # evaluation is a no-op in `tick()` — it now fires synchronously
-        # inside `on_physics_updated()` after the new speed is written.
+        # The reactive condition evaluation already ran above (Action step
+        # `71ee`), right after the command drain and the early departure /
+        # cancellation consumers, and also fires each Observe pass inside
+        # on_physics_updated(). Nothing below re-runs it.
 
         # ===== 2. LOOKAHEAD (computed live; no caching) =====
         # Per design_new.md, lookahead is a pure derived value. We trigger one
@@ -841,11 +853,16 @@ class TrainController:
                 # ATO is running - calculate handle to reach target speed
                 self.ops.handle_position = self.ato.compute_handle(delta)
             else:
-                # ATO not running - brake to stop. Transition to the
-                # state-machine-derived stopped ready state once stopped.
-                # RUNNING_AT_STATION (dwell) is also a powered-stopped state
-                # and is owned by Plan's dwell-complete check; preserve it
-                # here so a single tick doesn't clobber dwell entry.
+                # ATO not running - brake to stop, then land the ended ATO run
+                # in the stopped standby state. This is the ATO-run-end path (an
+                # operator ATO-stop or any other clear of `ato.running`), which
+                # is a separate mechanism from the reactive condition evaluation:
+                # it lands in READY on run-end regardless of remaining authority,
+                # whereas the reactive RUNNING_MOVING -> READY transition only
+                # fires with no live authority. RUNNING_AT_STATION (dwell) is
+                # also a powered-stopped state and is owned by Plan's
+                # dwell-complete check; preserve it here so a single tick doesn't
+                # clobber dwell entry.
                 self.ops.handle_position = self.ato.calculate_braking_notch_for_speed(
                     self.physics_sync.current_speed_kmh, 0.0
                 )
@@ -2200,7 +2217,10 @@ class TrainController:
         if self._facing_direction() is None:
             return (False, "facing direction not set")
         if self.ops.state == TrainState.READY:
-            self.ops.state = TrainState.RUNNING_MOVING
+            # Manual depart moves state through the single RUNNING_MOVING
+            # writer directly, without going through ato.go() (design_new.md
+            # "TrainController.depart() canonical contract").
+            self.ops.enter_running_moving()
             self._emit_event("depart", f"{self.train_id} departed")
         return (True, None)
 
