@@ -126,7 +126,7 @@ def test_the_pass_is_refused_unless_the_train_is_manual_and_stopped(state):
         )
 
 
-def test_the_runtime_tick_arms_the_pass_and_commands_the_first_step(state):
+def test_the_runtime_tick_arms_the_pass_as_a_one_off_route(state):
     sim = state.sim_controller
     network = state.network
     train_id = _free_train(state)
@@ -138,15 +138,43 @@ def test_the_runtime_tick_arms_the_pass_and_commands_the_first_step(state):
 
     run = train_service.calibrate_train(state, train_id, measured_block_id=block_id)
     assert run.leg_armed is False
+    assert run.active_leg_route_id is None
     assert run.current_power == 10.0
 
-    # One tick arms the leg: the pass takes authority to the far outer block and
-    # sets the run state the controller reads back as the step's driven power.
+    # Which outer block this opening leg runs toward — the one the train is not
+    # standing in — is the far end the leg route's stop task targets.
+    outer, _length = train_service.resolve_calibration_stretch(state, block_id)
+    held = set(getattr(controller.get_current_span(), "occupied_blocks", []) or [])
+    far_block = next(b for b in outer if b not in held)
+
+    # One tick arms the leg at Plan step `c9e1`: it builds a one-off route to the
+    # far outer block, activates and assigns it, and the ordinary Plan steps
+    # allocate its run and create its path.
     sim.update(0.1)
     assert run.leg_armed is True
+    assert run.active_leg_route_id is not None
 
-    # And that power drove the train through the ordinary control-output path, so
-    # the train is not sitting under a zero no-authority cap with nothing driving.
+    from train_route import RouteMode
+
+    executor = sim.route_executor
+    leg_route = executor.route_registry.get(run.active_leg_route_id)
+    assert leg_route is not None
+    assert leg_route.mode == RouteMode.ONE_OFF
+    assert leg_route.is_active is True
+    assert train_id in leg_route.assigned_train_ids
+    assert leg_route.manual_override is False
+    # One task: a stop at the far outer block.
+    assert len(leg_route.tasks) == 1
+    assert leg_route.tasks[0].task_kind == "stop"
+    assert leg_route.tasks[0].task_location.block_id == far_block
+
+    # The leg has real authority (a path), and the step's power drives the train
+    # back through get_propulsion_override, not a zero no-authority cap.
+    assert sim.path_dispatcher.active_path_id_by_train(train_id) is not None
+    override = sim.speed_calibration.get_propulsion_override(train_id)
+    assert override is not None and override.kind == "power_percent"
+    assert override.value == run.current_power
+
     sim.update(0.1)
     assert run.phase != PHASE_FAILED or "authority" in run.failure_reason
 
@@ -170,7 +198,7 @@ def test_a_pass_writes_nothing_until_it_is_committed(state):
     assert profile.calibrated_at is None
 
 
-def test_cancelling_a_pass_releases_its_authority(state):
+def test_cancelling_a_pass_deactivates_its_leg_route(state):
     sim = state.sim_controller
     train_id = _free_train(state)
     block_id = _first_calibratable_block(state, train_id)
@@ -178,28 +206,88 @@ def test_cancelling_a_pass_releases_its_authority(state):
     _ready_manual_train(sim, state.network, train_id)
     sim.update(0.1)
     run = train_service.calibrate_train(state, train_id, measured_block_id=block_id)
-    sim.update(0.1)
-    held = run.path_id
+    sim.update(0.1)  # arm the leg as a one-off route
+    leg_route_id = run.active_leg_route_id
+    assert leg_route_id is not None
+    path_id = sim.path_dispatcher.active_path_id_by_train(train_id)
+    assert path_id is not None
 
     train_service.calibrate_cancel(state, train_id)
     assert train_service.calibrate_status(state, train_id) is None
-    if held:
-        # The release goes through the ordinary cancel latch, not a direct
-        # dispatcher call, so the path stays ACTIVE until the Phase-3
-        # explicit-cancel step commits it with the train stopped (design_new.md
-        # "Speed calibration", Releasing a leg's authority goes through the
-        # ordinary cancel latch).
-        controller = sim.controllers[train_id]
-        assert (
-            controller.route_hooks.phase_latches.path_cancel_request is not None
-        ), "cancelling the pass must latch the leg path's cancel"
-        # The cancel commands `power_percent = 0` but forces no stop, so the
-        # train runs out the authority it already holds and halts at its end
-        # (~13s here); the latch commits on the first Phase 3 after that.
-        for _ in range(400):
-            sim.update(0.1)
-            path = sim.path_dispatcher.paths.get(held)
-            if path is None or path.status.value != "active":
-                break
-        path = sim.path_dispatcher.paths.get(held)
-        assert path is None or path.status.value != "active"
+
+    # Cancelling abandons the pass and tears its leg route down through the
+    # ordinary route-deactivate latch, not a direct dispatcher call (design_new.md
+    # "Speed calibration", Pass-abandonment cases command a stop and deactivate
+    # the leg route). The inclusive latch also cancels the still-live leg path.
+    controller = sim.controllers[train_id]
+    assert controller.route_hooks.phase_latches.route_deactivate is True
+
+    # The Action deactivation consumer removes the run and unassigns the route;
+    # the path clears once the train has stopped (it commands `power_percent = 0`
+    # but forces no stop, so the train first runs the authority it holds out).
+    for _ in range(400):
+        sim.update(0.1)
+        path = sim.path_dispatcher.paths.get(path_id)
+        route = sim.route_executor.route_registry.get(leg_route_id)
+        path_gone = path is None or path.status.value != "active"
+        route_gone = route is None or train_id not in route.assigned_train_ids
+        if path_gone and route_gone:
+            break
+    path = sim.path_dispatcher.paths.get(path_id)
+    assert path is None or path.status.value != "active"
+    route = sim.route_executor.route_registry.get(leg_route_id)
+    assert route is None or train_id not in route.assigned_train_ids
+    assert sim.route_executor.execution_state_for(train_id) is None
+
+
+def test_a_calibration_leg_completes_through_ordinary_stop_completion(state):
+    """The `9d8b` gate, end to end: a calibration leg runs as a one-off route and
+    finishes through ordinary stop completion — Observe step `9d8b`
+    (`PathDispatcher.try_complete_active_path`) completes the leg route's path —
+    rather than through a latch-cancel. This is the mechanism the "success =
+    ordinary stop completion" model rests on (design_new.md "Speed calibration",
+    A leg finishes through ordinary stop completion), and it fires for a
+    manual-mode, override-driven train exactly as it does for an ATO one.
+
+    demo_6's reachable calibration stretches all have a far outer block shorter
+    than the stopping safety margin, so the train comes to rest at the leg
+    route's authority end without entering the far block; the leg route still
+    completes through `9d8b`, and the pass then fails "never reached" because no
+    crossing was timed. What this test pins is the completion mechanism, not the
+    measurement outcome — the far block being too short to enter is a property of
+    the demo layout, not of the leg-route lifecycle.
+    """
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    block_id = _first_calibratable_block(state, train_id)
+    profile = state.network.speed_profiles.get(
+        state.network.trains[train_id].speed_profile_id
+    )
+    curve_before = list(profile.power_speed_curve)
+
+    _ready_manual_train(sim, state.network, train_id)
+    sim.update(0.1)
+    run = train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+
+    armed_a_one_off_route = False
+    completed_via_stop_completion = False
+    for _ in range(500):
+        if run.active_leg_route_id:
+            armed_a_one_off_route = True
+        sim.update(0.1)
+        # A leg-route path that reached COMPLETED is the signature of `9d8b`
+        # completing it (a cancelled/abandoned path never reads COMPLETED).
+        for pid, path in sim.path_dispatcher.paths.items():
+            if pid.startswith(f"PATH_{train_id}") and path.status.value == "completed":
+                completed_via_stop_completion = True
+        if completed_via_stop_completion:
+            break
+
+    assert armed_a_one_off_route, "the pass must arm at least one one-off leg route"
+    assert completed_via_stop_completion, (
+        "a calibration leg route must finish through ordinary stop completion "
+        "(Observe step `9d8b`), not a latch-cancel"
+    )
+    # The pass writes nothing to the profile until an operator commits.
+    assert profile.power_speed_curve == curve_before
+    assert profile.calibrated_at is None

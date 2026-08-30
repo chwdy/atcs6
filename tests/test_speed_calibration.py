@@ -131,18 +131,26 @@ def test_the_pass_turns_the_train_around_at_each_end():
     assert run.heading_toward_block_id == "A"
     command = cal.advance(run, CalibrationObservation(now=clock))
     assert command.reverse_cab is True
-    assert command.acquire_path_to == "A"
+    assert command.arm_leg_to == "A"
 
 
-def test_a_leg_takes_authority_to_its_far_end_and_gives_it_back():
-    # A leg without a path could not move: no authority means atc_limit 0.
+def test_a_leg_arms_a_one_off_route_to_its_far_end_and_finishes_without_a_route_op():
+    # A leg without a route has no authority (atc_limit 0), so it arms a one-off
+    # route to the far end. Reaching the far block finishes the leg through
+    # ordinary stop completion, which tears the route down for it — so the
+    # success command carries no route op (design_new.md "Speed calibration",
+    # A leg finishes through ordinary stop completion).
     cal, run, _profile = _open_run()
     arm = cal.advance(run, CalibrationObservation(now=0.0))
-    assert arm.acquire_path_to == "C"
+    assert arm.arm_leg_to == "C"
     assert arm.power_percent == run.current_power
-    cal.advance(run, CalibrationObservation(now=1.0, newly_confirmed=("B",)))
-    stop = cal.advance(run, CalibrationObservation(now=3.0, newly_confirmed=("C",)))
-    assert stop.release_path is True
+    cal.advance(
+        run, CalibrationObservation(now=1.0, newly_confirmed=("B",), path_present=True)
+    )
+    stop = cal.advance(
+        run, CalibrationObservation(now=3.0, newly_confirmed=("C",), path_present=True)
+    )
+    assert stop.deactivate_route is False
     assert stop.power_percent == 0.0
 
 
@@ -176,14 +184,19 @@ def test_a_step_collects_two_crossings_per_round_trip():
 def test_a_step_that_does_not_move_the_train_records_zero():
     cal, run, _profile = _open_run()
     cal.advance(run, CalibrationObservation(now=0.0))  # arm
+    # The leg's authority appears, starting the step clock (design_new.md "Speed
+    # calibration": the timeout does not run until the path exists).
+    cal.advance(run, CalibrationObservation(now=0.0, path_present=True))
     command = cal.advance(
-        run, CalibrationObservation(now=CALIBRATION_STEP_TIMEOUT_S + 1.0)
+        run,
+        CalibrationObservation(now=CALIBRATION_STEP_TIMEOUT_S + 1.0, path_present=True),
     )
     assert run.samples[0].speed_kmh == 0.0
     assert run.step_index == 1
     # The train never left the outer block, so it is not turned around.
     assert run.needs_reverse is False
-    assert command.release_path is True
+    # A stalled leg never reached the far block, so its route is torn down.
+    assert command.deactivate_route is True
 
 
 def test_a_leg_that_starts_crossing_and_never_arrives_fails_the_pass():
@@ -191,10 +204,14 @@ def test_a_leg_that_starts_crossing_and_never_arrives_fails_the_pass():
     # would put a speed on the curve the locomotive never held.
     cal, run, _profile = _open_run()
     cal.advance(run, CalibrationObservation(now=0.0))  # arm
-    cal.advance(run, CalibrationObservation(now=1.0, newly_confirmed=("B",)))
+    cal.advance(
+        run, CalibrationObservation(now=1.0, newly_confirmed=("B",), path_present=True)
+    )
     cal.advance(
         run,
-        CalibrationObservation(now=1.0 + CALIBRATION_STEP_TIMEOUT_S + 1.0),
+        CalibrationObservation(
+            now=1.0 + CALIBRATION_STEP_TIMEOUT_S + 1.0, path_present=True
+        ),
     )
     assert run.phase == PHASE_FAILED
     assert "never reached" in run.failure_reason
@@ -207,8 +224,12 @@ def test_a_sweep_in_which_nothing_moved_fails_rather_than_storing_a_dead_curve()
     clock = 0.0
     for _ in range(len(run.power_steps)):
         cal.advance(run, CalibrationObservation(now=clock))  # arm
+        # authority appears, starting the step clock
+        cal.advance(run, CalibrationObservation(now=clock, path_present=True))
         clock += CALIBRATION_STEP_TIMEOUT_S + 1.0
-        cal.advance(run, CalibrationObservation(now=clock))  # times out
+        cal.advance(
+            run, CalibrationObservation(now=clock, path_present=True)
+        )  # times out
     assert run.phase == PHASE_FAILED
     assert "no step moved the train" in run.failure_reason
     assert profile.calibrated_at is None

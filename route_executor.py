@@ -819,6 +819,19 @@ class RouteExecutor:
         This method performs the mechanism only; the caller validates the route
         (existence, non-empty tasks, conflict/force) before invoking it.
         """
+        # External assignment waits for calibration teardown (design_new.md
+        # "Speed calibration", External assignment waits for calibration
+        # teardown). A request to assign a non-calibration route while a speed
+        # pass is open first abandons the pass — which tears its active leg route
+        # down through the ordinary route-deactivate latch — then holds the
+        # requested route so the Action deactivation consumer applies it after the
+        # leg route is gone. Because Plan has already run for this train this tick,
+        # the requested route cannot allocate or move until the next Plan pass.
+        if self._abandon_calibration_for_external_assignment(
+            train_id, requested_route_id, start_override
+        ):
+            return
+
         run = self.execution_state_for(train_id)
 
         # A RUNNING run on the very route being (re-)requested: idempotent
@@ -896,6 +909,56 @@ class RouteExecutor:
         start_override = pending.get("start_override")
         if start_override is not None:
             self._pending_start_overrides[train_id] = dict(start_override)
+
+    def _abandon_calibration_for_external_assignment(
+        self,
+        train_id: str,
+        requested_route_id: Optional[str],
+        start_override: Optional[Dict[str, Any]],
+    ) -> bool:
+        """Handle a non-calibration route requested while a speed-calibration
+        pass is open (design_new.md "Speed calibration", External assignment waits
+        for calibration teardown).
+
+        Abandons the pass — which tears its active leg route down through the
+        route-deactivate latch — and, when a leg route was armed, holds the
+        requested route so the Action deactivation consumer applies it after the
+        leg route is gone. Returns True when it took over the request (the caller
+        returns), False to fall through to the ordinary assignment flow.
+        """
+        if requested_route_id is None:
+            return False
+        sc = getattr(self, "simulation_controller", None)
+        calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
+        if calibration is None:
+            return False
+        cal_run = calibration.runs.get(train_id)
+        if cal_run is None:
+            return False
+        # The pass's own leg route arriving here would be pathological; leave it
+        # to the ordinary flow rather than abandoning the pass over it.
+        if requested_route_id == cal_run.active_leg_route_id:
+            return False
+
+        had_leg_route = cal_run.active_leg_route_id is not None
+        # Abandon the pass first. When a leg is armed, cancel() sets the
+        # route-deactivate latch for the active leg route.
+        calibration.cancel(train_id, reason="external route assignment requested")
+        if not had_leg_route:
+            # No leg route to tear down, so no RUNNING run to wait on: let the
+            # ordinary flow assign the requested route immediately.
+            return False
+
+        # Hold the requested route; the Action deactivation consumer
+        # (remove_train_route_run) applies it once the leg route is torn down.
+        self.discard_pending_reassign(train_id)
+        self._pending_route_assignments.pop(train_id, None)
+        self.clear_pending_start_override(train_id)
+        self._pending_route_assignments[train_id] = {
+            "requested_route_id": requested_route_id,
+            "start_override": None if start_override is None else dict(start_override),
+        }
+        return True
 
     def route_run_summary_for(self, train_id: str) -> Optional[Dict[str, Any]]:
         """Five-field summary of the train's currently-`RUNNING` `RouteRun`,
@@ -1982,6 +2045,113 @@ class RouteExecutor:
         exec_state = self.execution_states.get(train_id)
         return train, route, exec_state
 
+    # -------------------------------------------- speed-calibration leg (c9e1)
+    def _prepare_calibration_leg(self, train_id: str, controller) -> None:
+        """Plan step `c9e1`: advance the train's open speed-calibration pass and
+        carry out its leg-route intents (design_new.md "Speed calibration", Each
+        leg runs as its own one-off route).
+
+        The pass decides; `RouteExecutor` executes. This is the only place speed
+        calibration touches route registries: it reconciles the stored leg route
+        against the live run, lets the pass advance, then builds/assigns a one-off
+        route to arm a leg, tears the active leg route down to abandon one, and
+        reverses the cab between legs. A no-op for any train with no open auto
+        pass.
+        """
+        sc = getattr(self, "simulation_controller", None)
+        calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
+        if calibration is None:
+            return
+        run = calibration.runs.get(train_id)
+        if run is None or getattr(run, "mode", None) != "auto" or not run.is_measuring:
+            return
+
+        # Reconcile the stored leg route against the live run. When it is no
+        # longer this train's live RUNNING run — the leg finished through ordinary
+        # stop completion, or a deactivate tore it down — clear the stored id and
+        # sync `leg_armed`, so the pass may arm the next leg. A single-use leg
+        # route whose run is gone (archived) is dropped from the registry too, so
+        # leg routes do not accumulate across a pass.
+        if run.active_leg_route_id is not None:
+            exec_state = self.execution_state_for(train_id)
+            if exec_state is None or exec_state.route_id != run.active_leg_route_id:
+                finished_leg_route_id = run.active_leg_route_id
+                run.active_leg_route_id = None
+                if exec_state is None and str(finished_leg_route_id).startswith(
+                    "CAL_LEG_"
+                ):
+                    self.unregister_route(finished_leg_route_id)
+        run.leg_armed = run.active_leg_route_id is not None
+
+        command = calibration.plan_tick(train_id)
+        if command is None:
+            return
+
+        # A reversal flips the cab through the ordinary stopped-only cab command
+        # before the leg's path is acquired (design_new.md "Speed calibration"):
+        # the pass only reverses between legs, with the train stopped, so the
+        # stopped-only rule the command enforces holds.
+        if command.reverse_cab:
+            cab = getattr(controller.commands, "cab", None)
+            controller.commands.set_cab("A" if cab == "B" else "B")
+
+        if command.arm_leg_to:
+            self._arm_calibration_leg(train_id, controller, run, command.arm_leg_to)
+
+        if command.deactivate_route:
+            # Abandon this leg by tearing its route down (design_new.md "Speed
+            # calibration", Pass-abandonment cases). The inclusive latch cancels a
+            # still-live path in the same step; an already-completed leg (its path
+            # gone) needs no cancel.
+            controller.route_hooks.phase_latches.set_route_deactivate(
+                reason=f"calibration leg abandoned for {train_id}",
+                has_active_path=controller.path_projection.received_path_plan
+                is not None,
+            )
+
+    def _arm_calibration_leg(
+        self, train_id: str, controller, run, far_block_id: str
+    ) -> None:
+        """Build, activate, and assign the one-off route for a new leg, and store
+        its id on the run (design_new.md "Speed calibration", Each leg runs as its
+        own one-off route).
+
+        Arms only when no authority lingers: no stored leg route, no live path,
+        and no RUNNING run. Otherwise the previous leg's teardown has not
+        finished, so it waits and Plan retries next tick — the pass keeps
+        `leg_armed` in step with `active_leg_route_id`, so an un-honored arm is
+        re-offered.
+        """
+        if run.active_leg_route_id is not None:
+            return
+        if self._get_active_path_id(train_id) is not None:
+            return
+        if self.execution_state_for(train_id) is not None:
+            return
+
+        from train_route import Route, BlockTarget
+
+        seq = getattr(self, "_calibration_leg_seq", 0) + 1
+        self._calibration_leg_seq = seq
+        route_id = f"CAL_LEG_{train_id}_{seq}"
+        route = Route(
+            route_id=route_id,
+            name=f"speed-calibration leg {seq} for {train_id}",
+            mode=RouteMode.ONE_OFF,
+            acquisition_mode=AcquisitionMode.ALL_OR_NOTHING,
+            manual_override=False,
+            tasks=[
+                RouteTask(
+                    task_kind="stop",
+                    task_location=BlockTarget(block_id=far_block_id),
+                )
+            ],
+        )
+        self.register_route(route)
+        route.activate(self._now())
+        route.assign_train(train_id)
+        run.active_leg_route_id = route_id
+
     # ------------------------------------------------------------------ Plan
     def tick_train_plan(self, train_id: str, delta_seconds: float) -> None:
         """Canonical Plan entry point for one train.
@@ -2005,6 +2175,13 @@ class RouteExecutor:
         # If controller is OFF, Plan is skipped entirely.
         if controller.ops.state == TrainState.OFF:
             return
+
+        # ---------- c9e1: prepare the active speed-calibration leg -----------
+        # Runs before the assigned-route lookup because a new leg has no assigned
+        # route yet — this step is what creates and assigns it. A no-op for a
+        # train with no open speed-calibration pass (design_new.md "Speed
+        # calibration", Each leg runs as its own one-off route).
+        self._prepare_calibration_leg(train_id, controller)
 
         route_id = self.assigned_route_id_for(train_id)
         route = None
