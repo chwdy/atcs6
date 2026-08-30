@@ -63,6 +63,55 @@ _PENDING_CANCEL_CONDITIONS = frozenset(
 
 
 # =============================================================================
+# Contention snapshot (design_new.md "Contention snapshot")
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class ContentionEdge:
+    """One "train A is blocked by train B on this block" fact for a tick.
+
+    `waiting_train_id` cannot grow its authority past `waiting_block_id` because
+    `holding_train_id` is in the way of the first forward resource. There is one
+    edge per holder of each blocked waiter. `effective_priority` is the waiter's,
+    carried so the release rule and meet coordination read it without a re-lookup.
+    """
+
+    waiting_block_id: str
+    waiting_train_id: str
+    holding_train_id: str
+    effective_priority: int
+
+
+@dataclass(frozen=True)
+class ContentionWaiter:
+    """The single highest-priority waiter on a block, for the release-rule map."""
+
+    train_id: str
+    effective_priority: int
+
+
+@dataclass
+class ContentionSnapshot:
+    """Per-tick view of who is blocked behind whom (design_new.md "Contention
+    snapshot").
+
+    `edges` is the complete list, one per holder of each blocked waiter, in
+    runnable-order (waiter) then holder-order; wedge and meet detection read it.
+    `highest_waiter_by_block` keeps only the highest-priority waiter per block
+    (runnable order breaks ties); the contention-driven release rule reads it. A
+    block with no waiter has no map entry. Rebuilt every tick, retained across
+    none — not a latch.
+    """
+
+    edges: List[ContentionEdge] = field(default_factory=list)
+    highest_waiter_by_block: Dict[str, ContentionWaiter] = field(default_factory=dict)
+
+    def __bool__(self) -> bool:
+        return bool(self.edges or self.highest_waiter_by_block)
+
+
+# =============================================================================
 # Resolved-target schemas
 # =============================================================================
 # `ResolvedRouteTarget` is now imported from runtime_payloads (S5 migration).
@@ -530,11 +579,14 @@ class RouteExecutor:
         # `build_tick_coordination(...)` (after order_runnable_trains, before the
         # per-train loop); retained across no ticks, so they are not latches and
         # hold no Latch-Table entry.
-        #   contention_snapshot: block_id -> (train_id, effective_priority) of the
-        #     single highest-priority train blocked on (waiting_for) that block.
+        #   contention_snapshot: the tick's ContentionSnapshot — `edges` (one per
+        #     holder of each blocked waiter, for wedge/meet detection) plus
+        #     `highest_waiter_by_block` (the release rule's per-block highest
+        #     waiter). Built from the full PathDispatcher.get_waiting_conflict(...).
         #   meet_assignment: train_id -> MeetCeiling capping how far it may
-        #     reserve this tick when a higher-priority train needs the same track.
-        self.contention_snapshot: Dict[str, Tuple[str, int]] = {}
+        #     reserve this tick and pinning which candidate it may acquire when a
+        #     higher-priority train needs the same track.
+        self.contention_snapshot: ContentionSnapshot = ContentionSnapshot()
         self.meet_assignment: Dict[str, "MeetCeiling"] = {}
 
         # Helper modules — lazy-init on first access. The actual logic lives
@@ -930,25 +982,43 @@ class RouteExecutor:
 
     def _build_contention_snapshot(
         self, ordered_train_ids: List[str]
-    ) -> Dict[str, Tuple[str, int]]:
-        """`block_id -> (train_id, effective_priority)` for every block on which
-        some train is blocked from growing its authority, recording the single
-        highest-`effective_priority` waiter (ties broken by the stable
-        `order_runnable_trains` order). design_new.md "Contention snapshot".
+    ) -> ContentionSnapshot:
+        """Build the tick's `ContentionSnapshot` (design_new.md "Contention
+        snapshot").
+
+        For each train with an armed task, run the full
+        `PathDispatcher.get_waiting_conflict(...)` (with no meet constraint —
+        the snapshot measures the unconstrained live conflict meet coordination
+        must resolve) and emit one edge per holder. Edges come out in
+        runnable-order (the waiter loop) then holder-order (the conflict's holder
+        list). `highest_waiter_by_block` records the strictly-highest-priority
+        waiter per block, iterating edges in that same order so equal priority
+        keeps the earlier (stable `order_runnable_trains`) waiter.
         """
-        snapshot: Dict[str, Tuple[str, int]] = {}
+        edges: List[ContentionEdge] = []
         for train_id in ordered_train_ids:
-            blocked_on = self._waiting_for_block_id(train_id)
-            if not blocked_on:
+            conflict = self._waiting_conflict_for(train_id)
+            if conflict is None or not conflict.holding_train_ids:
                 continue
             eff_pri = self._effective_priority_for(train_id)
-            current = snapshot.get(blocked_on)
-            # Strictly-higher priority replaces; equal keeps the earlier (the
-            # stable order_runnable_trains tie-break, since we iterate in that
-            # order). So the entry is the highest-priority waiter on the block.
-            if current is None or eff_pri > current[1]:
-                snapshot[blocked_on] = (train_id, eff_pri)
-        return snapshot
+            for holder_id in conflict.holding_train_ids:
+                edges.append(
+                    ContentionEdge(
+                        waiting_block_id=conflict.waiting_block_id,
+                        waiting_train_id=train_id,
+                        holding_train_id=holder_id,
+                        effective_priority=eff_pri,
+                    )
+                )
+
+        highest: Dict[str, ContentionWaiter] = {}
+        for edge in edges:
+            current = highest.get(edge.waiting_block_id)
+            if current is None or edge.effective_priority > current.effective_priority:
+                highest[edge.waiting_block_id] = ContentionWaiter(
+                    edge.waiting_train_id, edge.effective_priority
+                )
+        return ContentionSnapshot(edges=edges, highest_waiter_by_block=highest)
 
     def _build_meet_assignment(
         self, ordered_train_ids: List[str]
@@ -975,12 +1045,47 @@ class RouteExecutor:
             return int(getattr(route, "priority", 5))
         return 5
 
-    def _waiting_for_block_id(self, train_id: str) -> Optional[str]:
-        """The block this train's active path is blocked on (the
-        `waiting_for_block_id` live recompute), or None."""
+    def _waiting_conflict_for(self, train_id: str):
+        """The `WaitingConflict` for this train's blocked active path, or None.
+
+        design_new.md "Contention snapshot": obtain `stored_resolved_target` from
+        `find_armed_task(train_id)`, resolve the run's effective acquisition mode
+        and manual override, and call the full
+        `PathDispatcher.get_waiting_conflict(...)` with no meet constraint
+        (`acquisition_cap_block_id=None`, `required_candidate_resource_keys=None`).
+        """
         if self.path_dispatcher is None:
             return None
-        return self.path_dispatcher.get_waiting_for_block_id(train_id)
+        armed = self.find_armed_task(train_id)
+        if armed is None:
+            return None
+        mode, manual_override = self._effective_acquisition_policy(train_id)
+        return self.path_dispatcher.get_waiting_conflict(
+            train_id,
+            armed.stored_resolved_target,
+            mode,
+            manual_override,
+            acquisition_cap_block_id=None,
+            required_candidate_resource_keys=None,
+        )
+
+    def _effective_acquisition_policy(
+        self, train_id: str
+    ) -> Tuple["AcquisitionMode", bool]:
+        """`(effective_acquisition_mode, manual_override)` for a train, resolving
+        the per-run override then the shared `Route` (design_new.md "RouteRun
+        overrides"), matching what Plan step `66aa` passes to the dispatcher."""
+        exec_state = self.execution_state_for(train_id)
+        route_id = self.assigned_route_id_for(train_id)
+        route = self.route_registry.get(route_id) if route_id else None
+        if exec_state is not None:
+            mode = exec_state.effective_acquisition_mode(
+                route=route, route_executor=self
+            )
+        else:
+            mode = AcquisitionMode.BEST_EFFORT
+        manual_override = bool(getattr(route, "manual_override", False)) if route else False
+        return mode, manual_override
 
     def _held_future_reservations(self, train_id: str) -> set:
         """Block ids this train holds as not-yet-entered future reservations
@@ -1003,9 +1108,14 @@ class RouteExecutor:
         if not self.contention_snapshot:
             return False
         my_pri = self._effective_priority_for(train_id)
+        highest = self.contention_snapshot.highest_waiter_by_block
         for block_id in self._held_future_reservations(train_id):
-            entry = self.contention_snapshot.get(block_id)
-            if entry is not None and entry[0] != train_id and entry[1] > my_pri:
+            entry = highest.get(block_id)
+            if (
+                entry is not None
+                and entry.train_id != train_id
+                and entry.effective_priority > my_pri
+            ):
                 return True
         return False
 
@@ -2262,20 +2372,28 @@ class RouteExecutor:
         target_block = projection.resolved_target.requested_destination_block_id
         target_dir = projection.resolved_target.requested_destination_direction
 
-        # Meet-coordination ceiling (design_new.md "Meet coordination" line 1558
-        # + "Acquisition-cap rule" line 1025): when this train carries a meet
-        # ceiling, keep the request at the real route target and pass the ceiling
-        # as the acquisition cap. The dispatcher acquires toward the real target
-        # but stores no authority past the cap, so `authority_end_block_id` lands
-        # on the ceiling while `requested_destination_block_id` (and the
-        # `task_runs[...].resolved_target` written on success below) stay the
-        # farther route target. The capped authority never completes, so the
-        # train holds at the ceiling. The first tick the train carries no
-        # ceiling, no cap is passed and the full route target is requested.
+        # Meet-coordination ceiling + candidate pin (design_new.md "Meet
+        # coordination" lines 1558/1565 + "Acquisition-cap rule" line 1025):
+        # when this train carries a meet entry, pass its `candidate_resource_keys`
+        # as `required_candidate_resource_keys` so the dispatcher acquires the
+        # exact route meet coordination evaluated, and — when the entry also caps
+        # short of the real route target — keep the request at that target and
+        # pass the ceiling as the acquisition cap. The dispatcher acquires toward
+        # the real target but stores no authority past the cap, so
+        # `authority_end_block_id` lands on the ceiling while
+        # `requested_destination_block_id` (and the `task_runs[...].resolved_target`
+        # written on success below) stay the farther route target. The capped
+        # authority never completes, so the train holds at the ceiling. A train
+        # outside a meet passes neither constraint and requests its route target
+        # normally.
         acquisition_cap_block_id: Optional[str] = None
+        required_candidate_resource_keys: Optional[List[Tuple[str, str, str, str]]] = None
         ceiling = self.meet_assignment.get(train.train_id)
-        if ceiling is not None and ceiling.block_id != target_block:
-            acquisition_cap_block_id = ceiling.block_id
+        if ceiling is not None:
+            if ceiling.candidate_resource_keys:
+                required_candidate_resource_keys = list(ceiling.candidate_resource_keys)
+            if ceiling.block_id and ceiling.block_id != target_block:
+                acquisition_cap_block_id = ceiling.block_id
 
         # Decide create vs extend by active authority presence.
         active_path_id = self._get_active_path_id(train.train_id)
@@ -2304,6 +2422,7 @@ class RouteExecutor:
                     acquisition_mode=acquisition_mode,
                     manual_override=manual_override,
                     acquisition_cap_block_id=acquisition_cap_block_id,
+                    required_candidate_resource_keys=required_candidate_resource_keys,
                 )
                 success = bool(getattr(result, "success", False))
             else:
@@ -2314,6 +2433,7 @@ class RouteExecutor:
                     acquisition_mode=acquisition_mode,
                     manual_override=manual_override,
                     acquisition_cap_block_id=acquisition_cap_block_id,
+                    required_candidate_resource_keys=required_candidate_resource_keys,
                 )
                 success = bool(getattr(result, "success", False))
         except Exception as exc:  # pragma: no cover — defensive

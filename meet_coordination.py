@@ -35,23 +35,33 @@ Scope of this implementation:
   since a passing loop means their reservations resolve onto distinct blocks.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Tuple
+
+
+# One pathfinder step's identity: (resource_type, resource_id, entry_edge,
+# exit_edge). The pinned candidate is the ordered tuple of these.
+CandidateResourceKey = Tuple[str, str, str, str]
 
 
 @dataclass(frozen=True)
 class MeetCeiling:
-    """A cap on how far a train may acquire authority this tick.
+    """A train's per-tick meet assignment: a candidate pin and an optional cap.
 
-    `block_id` is the ceiling block: Plan passes it as the
-    `acquisition_cap_block_id` so authority is acquired toward the real route
-    target but stored no further than this block. `direction` is the
-    block-relative `"forward"` / `"reverse"` the train traverses the ceiling
-    block in, so the capped terminal frame is unique.
+    `block_id` is the ceiling block, or `""` when the entry carries no ceiling:
+    Plan passes a real ceiling as the `acquisition_cap_block_id` so authority is
+    acquired toward the real route target but stored no further than this block.
+    `direction` is the block-relative `"forward"` / `"reverse"` the train
+    traverses the ceiling block in, so the capped terminal frame is unique.
+    `candidate_resource_keys` is the selected candidate's ordered
+    `(resource_type, resource_id, entry_edge, exit_edge)` list; Plan passes it as
+    `required_candidate_resource_keys` so the dispatcher acquires the same route
+    meet coordination evaluated instead of any equally-ranked alternative.
     """
 
     block_id: str
     direction: str
+    candidate_resource_keys: Tuple[CandidateResourceKey, ...] = ()
 
 
 # Ordered route as [(block_id, block_direction)], one entry per distinct block.
@@ -73,24 +83,30 @@ class MeetCoordinator:
 
     def build(self, ordered_train_ids: List[str]) -> Dict[str, MeetCeiling]:
         """Return the meet assignment for this tick."""
-        snapshot = getattr(self._re, "contention_snapshot", {}) or {}
-        if not snapshot:
+        snapshot = getattr(self._re, "contention_snapshot", None)
+        edges = getattr(snapshot, "edges", None) if snapshot is not None else None
+        if not edges:
             return {}
         position = {tid: i for i, tid in enumerate(ordered_train_ids)}
         assignment: Dict[str, MeetCeiling] = {}
         seen_pairs: set = set()
         route_cache: Dict[str, Optional[RouteBlocks]] = {}
+        keys_cache: Dict[str, Tuple[CandidateResourceKey, ...]] = {}
 
-        for block_id, (waiter_id, _pri) in snapshot.items():
-            holder_id = self._holder_of(block_id)
-            if holder_id is None or holder_id == waiter_id:
+        # Each contention edge already names the holder (resolved from live state
+        # by get_waiting_conflict), so meet detection reads the pair straight off
+        # the edge rather than re-deriving a block's holder here.
+        for edge in edges:
+            waiter_id = edge.waiting_train_id
+            holder_id = edge.holding_train_id
+            if not holder_id or holder_id == waiter_id:
                 continue
             pair_key = frozenset((waiter_id, holder_id))
             if pair_key in seen_pairs:
                 continue
             seen_pairs.add(pair_key)
             self._assign_for_pair(
-                waiter_id, holder_id, position, assignment, route_cache
+                waiter_id, holder_id, position, assignment, route_cache, keys_cache
             )
         return assignment
 
@@ -103,6 +119,7 @@ class MeetCoordinator:
         position: Dict[str, int],
         assignment: Dict[str, MeetCeiling],
         route_cache: Dict[str, Optional[RouteBlocks]],
+        keys_cache: Dict[str, Tuple[CandidateResourceKey, ...]],
     ) -> None:
         w_route = self._route_blocks(waiter_id, route_cache)
         h_route = self._route_blocks(holder_id, route_cache)
@@ -135,6 +152,14 @@ class MeetCoordinator:
             # and record one diagnostic (design_new.md line 1555).
             self._emit_no_holding_point(lo_id)
             return
+        # Pin the held train to the exact candidate route this assignment was
+        # computed on, so Plan acquires that route to the ceiling instead of an
+        # equally-ranked alternative (design_new.md "Meet coordination",
+        # candidate_resource_keys). The keys come from the same best candidate
+        # `_route_blocks` collapsed for the contested-zone math.
+        ceiling = replace(
+            ceiling, candidate_resource_keys=self._candidate_keys(lo_id, keys_cache)
+        )
         # First (most-restrictive) assignment per train wins; do not overwrite.
         assignment.setdefault(lo_id, ceiling)
 
@@ -195,6 +220,36 @@ class MeetCoordinator:
     ) -> List[RouteBlocks]:
         """Candidate routes (each [(block_id, direction)]) for the train's next
         target, best-first, from the shared pathfinder."""
+        out: List[RouteBlocks] = []
+        for cand in self._raw_candidates(train_id, max_candidates=max_candidates):
+            blocks = self._walk_to_route_blocks(getattr(cand, "ordered_walk", None))
+            if blocks:
+                out.append(blocks)
+        return out
+
+    def _candidate_keys(
+        self,
+        train_id: str,
+        cache: Dict[str, Tuple[CandidateResourceKey, ...]],
+    ) -> Tuple[CandidateResourceKey, ...]:
+        """The selected (best) candidate's ordered `(resource_type, resource_id,
+        entry_edge, exit_edge)` key list — the same route `_route_blocks`
+        collapsed for the zone math, but keeping switches and edge frames so the
+        dispatcher can pin its acquisition to it (design_new.md "Meet
+        coordination")."""
+        if train_id in cache:
+            return cache[train_id]
+        raw = self._raw_candidates(train_id, max_candidates=1)
+        keys: Tuple[CandidateResourceKey, ...] = ()
+        if raw:
+            keys = self._walk_to_resource_keys(getattr(raw[0], "ordered_walk", None))
+        cache[train_id] = keys
+        return keys
+
+    def _raw_candidates(self, train_id: str, *, max_candidates: int) -> List:
+        """Raw `GraphWalkCandidate`s for the train's next target, best-first,
+        from the shared pathfinder (the geometry the collapsed routes and the
+        pinned keys are both derived from)."""
         start = self._head_block(train_id)
         if not start:
             return []
@@ -221,12 +276,24 @@ class MeetCoordinator:
             )
         except Exception:
             return []
-        out: List[RouteBlocks] = []
-        for cand in candidates or []:
-            blocks = self._walk_to_route_blocks(getattr(cand, "ordered_walk", None))
-            if blocks:
-                out.append(blocks)
-        return out
+        return list(candidates or [])
+
+    @staticmethod
+    def _walk_to_resource_keys(ordered_walk) -> Tuple[CandidateResourceKey, ...]:
+        """Every pathfinder step's `(resource_type, resource_id, entry_edge,
+        exit_edge)` key, in traversal order (switches kept — they carry the
+        frame that pins a crossover/throat)."""
+        if not ordered_walk:
+            return ()
+        keys: List[CandidateResourceKey] = []
+        for step in ordered_walk:
+            keys.append((
+                getattr(step, "resource_type", "") or "",
+                getattr(step, "resource_id", "") or "",
+                getattr(step, "entry_edge", "") or "",
+                getattr(step, "exit_edge", "") or "",
+            ))
+        return tuple(keys)
 
     @staticmethod
     def _walk_to_route_blocks(ordered_walk) -> RouteBlocks:
@@ -258,17 +325,6 @@ class MeetCoordinator:
         return getattr(track, "block_id", None) if track else None
 
     # -- helpers ----------------------------------------------------------
-
-    def _holder_of(self, block_id: str) -> Optional[str]:
-        """The train holding ``block_id`` (occupied, else reserved-for)."""
-        block = (self._re.network.blocks.get(block_id)
-                 if self._re.network else None)
-        if block is None:
-            return None
-        occupied = getattr(block, "occupied_by", None)
-        if occupied:
-            return occupied
-        return getattr(block, "reserved_for_train", None)
 
     def _lower_priority(
         self, a_id: str, b_id: str, position: Dict[str, int]

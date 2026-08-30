@@ -9,7 +9,13 @@ single-track-meet integration runs through the live tick (`build_tick_coordinati
 
 from meet_coordination import MeetCeiling, MeetCoordinator
 from network import RailwayNetwork
-from route_executor import RouteExecutor
+from path_dispatcher import WaitingConflict
+from route_executor import (
+    ContentionEdge,
+    ContentionSnapshot,
+    ContentionWaiter,
+    RouteExecutor,
+)
 
 
 # --- contested-zone detection (pure) --------------------------------------
@@ -103,17 +109,48 @@ def _executor():
 
 def test_contention_snapshot_records_highest_priority_waiter():
     ex = _executor()
-    waiting = {"T1": "B_X", "T2": "B_X", "T3": None}
-    pris = {"T1": 5, "T2": 8, "T3": 5}
-    ex._waiting_for_block_id = lambda tid: waiting.get(tid)
+    # T1 and T2 are both blocked on B_X (held by H); T2 outranks T1. T3 is not
+    # blocked. The snapshot emits one edge per (waiter, holder) in runnable
+    # order, and highest_waiter_by_block keeps the strictly-highest waiter.
+    conflicts = {
+        "T1": WaitingConflict("B_X", "block", "B_X", ("H",)),
+        "T2": WaitingConflict("B_X", "block", "B_X", ("H",)),
+        "T3": None,
+    }
+    pris = {"T1": 5, "T2": 8, "T3": 5, "H": 9}
+    ex._waiting_conflict_for = lambda tid: conflicts.get(tid)
     ex._effective_priority_for = lambda tid: pris.get(tid, 5)
     snap = ex._build_contention_snapshot(["T1", "T2", "T3"])
-    assert snap == {"B_X": ("T2", 8)}
+    assert snap.edges == [
+        ContentionEdge("B_X", "T1", "H", 5),
+        ContentionEdge("B_X", "T2", "H", 8),
+    ]
+    assert snap.highest_waiter_by_block == {"B_X": ContentionWaiter("T2", 8)}
+
+
+def test_contention_snapshot_one_edge_per_holder():
+    ex = _executor()
+    # A single waiter blocked by two holders (e.g. two lock owners on a switch)
+    # yields one edge per holder; the map still records the single waiter.
+    ex._waiting_conflict_for = lambda tid: (
+        WaitingConflict("B_HELD", "switch", "SW1", ("HA", "HB"))
+        if tid == "T1"
+        else None
+    )
+    ex._effective_priority_for = lambda tid: 5
+    snap = ex._build_contention_snapshot(["T1"])
+    assert snap.edges == [
+        ContentionEdge("B_HELD", "T1", "HA", 5),
+        ContentionEdge("B_HELD", "T1", "HB", 5),
+    ]
+    assert snap.highest_waiter_by_block == {"B_HELD": ContentionWaiter("T1", 5)}
 
 
 def test_contention_release_due_for_higher_priority_waiter():
     ex = _executor()
-    ex.contention_snapshot = {"B_HELD": ("T_HI", 8)}
+    ex.contention_snapshot = ContentionSnapshot(
+        highest_waiter_by_block={"B_HELD": ContentionWaiter("T_HI", 8)}
+    )
     ex._effective_priority_for = lambda tid: {"T_LO": 5, "T_HI": 8}.get(tid, 5)
     ex._held_future_reservations = lambda tid: {"B_HELD"} if tid == "T_LO" else set()
     assert ex._contention_release_due("T_LO") is True
@@ -121,7 +158,9 @@ def test_contention_release_due_for_higher_priority_waiter():
 
 def test_contention_release_not_due_for_equal_priority():
     ex = _executor()
-    ex.contention_snapshot = {"B_HELD": ("T_EQ", 5)}
+    ex.contention_snapshot = ContentionSnapshot(
+        highest_waiter_by_block={"B_HELD": ContentionWaiter("T_EQ", 5)}
+    )
     ex._effective_priority_for = lambda tid: 5
     ex._held_future_reservations = lambda tid: {"B_HELD"}
     assert ex._contention_release_due("T_LO") is False
@@ -129,7 +168,79 @@ def test_contention_release_not_due_for_equal_priority():
 
 def test_contention_release_not_due_when_block_not_held():
     ex = _executor()
-    ex.contention_snapshot = {"B_OTHER": ("T_HI", 8)}
+    ex.contention_snapshot = ContentionSnapshot(
+        highest_waiter_by_block={"B_OTHER": ContentionWaiter("T_HI", 8)}
+    )
     ex._effective_priority_for = lambda tid: {"T_LO": 5, "T_HI": 8}.get(tid, 5)
     ex._held_future_reservations = lambda tid: {"B_HELD"}  # not B_OTHER
     assert ex._contention_release_due("T_LO") is False
+
+
+# --- build() attaches the pinned candidate keys to the ceiling ------------
+
+
+class _FakeCand:
+    def __init__(self, ordered_walk):
+        self.ordered_walk = ordered_walk
+
+
+class _FakeStep:
+    def __init__(self, resource_type, resource_id, block_direction, entry, exit_):
+        self.resource_type = resource_type
+        self.resource_id = resource_id
+        self.block_id = resource_id if resource_type == "block" else None
+        self.block_direction = block_direction
+        self.entry_edge = entry
+        self.exit_edge = exit_
+
+
+class _MeetBuildStub:
+    """Minimal executor surface for driving `MeetCoordinator.build(...)`."""
+
+    def __init__(self, snapshot, priorities):
+        self.network = _StubNet(
+            {
+                "HP": _StubBlock(True),   # holding point before the zone
+                "MID": _StubBlock(False),  # the contested single-track block
+                "X": _StubBlock(False),
+            }
+        )
+        self.contention_snapshot = snapshot
+        self._priorities = priorities
+        self.simulation_controller = None
+
+    def _effective_priority_for(self, tid):
+        return self._priorities.get(tid, 5)
+
+
+def test_build_pins_held_train_to_its_selected_candidate_keys():
+    """A single-track meet: LO (lower priority) is held at HP before the shared
+    MID block, and its MeetCeiling carries the ordered resource keys of the very
+    candidate the ceiling was computed on — so Plan can pin the acquisition."""
+    steps_lo = [
+        _FakeStep("block", "HP", "forward", "W", "E"),
+        _FakeStep("block", "MID", "forward", "W", "E"),
+    ]
+    steps_hi = [
+        _FakeStep("block", "X", "reverse", "E", "W"),
+        _FakeStep("block", "MID", "reverse", "E", "W"),
+    ]
+    snapshot = ContentionSnapshot(
+        edges=[ContentionEdge("MID", "HI", "LO", 8)]
+    )
+    stub = _MeetBuildStub(snapshot, {"LO": 5, "HI": 8})
+    mc = MeetCoordinator(stub)
+    raw = {"LO": [_FakeCand(steps_lo)], "HI": [_FakeCand(steps_hi)]}
+    mc._raw_candidates = lambda tid, *, max_candidates: raw.get(tid, [])
+
+    assignment = mc.build(["HI", "LO"])
+
+    assert set(assignment) == {"LO"}  # only the held (lower-priority) train
+    ceiling = assignment["LO"]
+    assert ceiling.block_id == "HP"
+    assert ceiling.direction == "forward"
+    # The pin is the held train's selected-candidate ordered key list.
+    assert ceiling.candidate_resource_keys == (
+        ("block", "HP", "W", "E"),
+        ("block", "MID", "W", "E"),
+    )
