@@ -106,8 +106,14 @@ class TestSimulationController:
 
         # A one-off route to the east terminal. Phase 1 (RouteExecutor) owns
         # creating the authority and departing the train; we only drive ticks.
+        # The terminal task is a `stop`, not a `waypoint`: per design_new.md's
+        # "Stop-arrival check" (step `8df5`) the `try_complete_active_path(...)`
+        # handshake this test exercises completes ONLY `stop` tasks. A terminal
+        # `waypoint` is consumed by head entry and its spent authority is
+        # released through the revoke-cancel flow (`Path.status -> CANCELLED`),
+        # never `COMPLETED` — so a `stop` is what drives this completion path.
         route = Route(route_id="ROUTE_AC", name="A to C", mode=RouteMode.ONE_OFF)
-        route.add_task(RouteTask(task_kind="waypoint", task_location="STA_C"))
+        route.add_task(RouteTask(task_kind="stop", task_location="STA_C"))
         route.assign_train("TRAIN_1")
         route.activate(simulation.simulation_time)
         simulation.route_executor.register_route(route)
@@ -169,6 +175,98 @@ class TestSimulationController:
             "SimulationController.handle_path_completion(...)."
         )
 
+    def test_terminal_waypoint_releases_its_path_without_orphaning(self, network):
+        """A terminal `waypoint` route releases its authority and finishes.
+
+        This pins the H1/H2 coupling. Per design_new.md's "Stop-arrival check"
+        (step `8df5`), `PathDispatcher.try_complete_active_path(...)` completes
+        ONLY `stop` tasks — so once completion is gated to stops, a one-off
+        route whose final task is a `waypoint` can no longer be released by that
+        handshake. A `waypoint` is consumed by head entry, which never releases
+        authority, so its live path would sit orphaned forever if nothing else
+        released it. The terminal-walk guard (design_new.md step `592a`) is what
+        releases it: reaching a terminal walk with a live path still held, Plan
+        latches a `revoked` cancel, Action cancels the path
+        (`Path.status -> CANCELLED`), and a later Plan runs
+        `finish_route_run(...)`. The path must end CANCELLED — never left ACTIVE
+        (that is the orphan H1 fixes) and never COMPLETED (completion is a
+        stop-only handshake).
+        """
+        # Same single east-west line as the completion test:
+        # STA_A(0,0) -- BLK_A -- STA_B(3,0) -- BLK_C -- STA_C(6,0).
+        for x in range(7):
+            network.add_track(Tile(x=x, y=0, track_bits=TRACK_EW))
+        network.add_station(0, 0, station_id="STA_A", name="A", length_cm=50.0, top_speed_kmh=80.0)
+        network.add_station(3, 0, station_id="STA_B", name="B", length_cm=50.0, top_speed_kmh=80.0)
+        network.add_station(6, 0, station_id="STA_C", name="C", length_cm=50.0, top_speed_kmh=80.0)
+        make_segment_block_with_tracks(network, "BLK_A", positions=[(1, 0), (2, 0)], name="A-B", length_cm=100.0
+        )
+        make_segment_block_with_tracks(network, "BLK_C", positions=[(4, 0), (5, 0)], name="B-C", length_cm=100.0
+        )
+        for block in network.blocks.values():
+            block.speed_limit_kmh = 80.0
+
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=20.0)
+        train = Train(train_id="TRAIN_1", consist=[car], max_speed=80.0)
+        network.add_train(train)
+        placed_span = network.place_train(train, 0, 0, Direction.EAST)
+
+        dispatcher = PathDispatcher(network)
+        simulation = SimulationController(network, dispatcher)
+        controller = simulation._get_or_create_controller(train)
+        controller.physics_sync.current_span = placed_span
+        controller.commands.power_on_cmd()
+        controller.commands.set_cab("A")
+
+        route = Route(route_id="ROUTE_AC_WP", name="A to C (waypoint)", mode=RouteMode.ONE_OFF)
+        route.add_task(RouteTask(task_kind="waypoint", task_location="STA_C"))
+        route.assign_train("TRAIN_1")
+        route.activate(simulation.simulation_time)
+        simulation.route_executor.register_route(route)
+        train.assigned_route_id = "ROUTE_AC_WP"
+
+        captured_path_id = None
+        moved = False
+        finished = False
+        for _ in range(1500):
+            simulation.update(0.1)
+            active = dispatcher.get_active_path("TRAIN_1")
+            if active is not None:
+                captured_path_id = active.path_id
+            if controller.physics_sync.current_speed_kmh > 1.0:
+                moved = True
+            # The run finishes once the terminal walk is reached with no live
+            # path: the assigned route reads None and no active path remains.
+            if (
+                captured_path_id is not None
+                and simulation.route_executor.assigned_route_id_for("TRAIN_1") is None
+                and dispatcher.get_active_path("TRAIN_1") is None
+            ):
+                finished = True
+                break
+
+        assert captured_path_id is not None, (
+            "RouteExecutor never created an active path for the train."
+        )
+        assert moved, "Train never departed; the journey did not run."
+        assert finished, (
+            "The terminal-waypoint run never finished — its path is likely "
+            f"orphaned (final status="
+            f"{getattr(dispatcher.get_path(captured_path_id), 'status', None)!r}, "
+            f"assigned={simulation.route_executor.assigned_route_id_for('TRAIN_1')!r})."
+        )
+
+        # The waypoint's authority was RELEASED via the revoke-cancel flow, so
+        # the path is CANCELLED — not still ACTIVE (the orphan H1 fixes) and not
+        # COMPLETED (completion is stop-only).
+        final_status = dispatcher.get_path(captured_path_id).status
+        assert final_status == PathStatus.CANCELLED, (
+            "expected the terminal waypoint's path to be CANCELLED (released via "
+            f"the revoke-cancel flow), got {final_status!r}."
+        )
+        assert final_status != PathStatus.ACTIVE, "the path is orphaned (still ACTIVE)."
+        assert simulation.route_executor.assigned_route_id_for("TRAIN_1") is None
+        assert controller.path_projection.received_path_plan is None
 
 
 class TestTrainPlacement:
