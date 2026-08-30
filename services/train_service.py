@@ -813,8 +813,19 @@ def release_emergency(state: AppState, train_id: str) -> CommandResult:
     design_new.md:239); EB is released only by ``eb.release()``, which is
     latch-gated (stopped, EB cancellation committed, authority cleared). This
     is the operator surface for the "Release Emergency" / Reset button.
+
+    ``eb.release()`` clears only ``eb.active``; per design_new.md the reactive
+    evaluator owns the ``RUNNING_MOVING -> READY`` move. This API is
+    synchronous (no tick runs between the POST and its response), so run
+    ``evaluate_reactive_conditions()`` here right after the release, exactly as
+    the tick's step-``71ee`` call would, so the READY transition commits within
+    this request. The evaluator is idempotent and a no-op when the release was
+    rejected (``eb.active`` still latched keeps transition 2 from firing).
     """
-    return _controller(state, require_train(state, train_id)).eb.release()
+    controller = _controller(state, require_train(state, train_id))
+    result = controller.eb.release()
+    controller.ops.evaluate_reactive_conditions()
+    return result
 
 
 @refuses_unidentified_trains()

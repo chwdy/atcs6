@@ -958,9 +958,27 @@ class TestTrainStateTransitions:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.READY
         )
+        # Every legal dwell entry has a selected cab (design_new.md step
+        # `d843`); Plan enforces it upstream, and enter_station_dwell()
+        # re-checks it defensively.
+        controller.commands.cab = "A"
         ok, reason = controller.enter_station_dwell()
         assert ok, reason
         assert controller.ops.state == TrainState.RUNNING_AT_STATION
+
+    def test_enter_station_dwell_rejected_when_cabless(self):
+        """enter_station_dwell() rejects a cabless entry, leaving state
+        unchanged (design_new.md step `d843`: the method rejects when
+        `controller.cab ∉ {"A", "B"}`, preserving the allowed
+        `(RUNNING_AT_STATION, cab)` invariant)."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.READY
+        )
+        assert controller.commands.cab is None
+        ok, reason = controller.enter_station_dwell()
+        assert ok is False
+        assert reason is not None and "cab" in reason.lower()
+        assert controller.ops.state == TrainState.READY
 
     def test_enter_station_dwell_rejected_from_running_moving(self):
         """enter_station_dwell() is rejected (state unchanged) when not in
@@ -1212,6 +1230,9 @@ class TestCompleteStateFlows:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING
         )
+        # Every legal dwell entry has a selected cab (design_new.md step
+        # `d843`); set one for the dwell-entry steps below.
+        controller.commands.cab = "A"
 
         # Stop completion lands the train in READY first (on_path_complete),
         # which is the only state dwell entry is valid from
@@ -1248,6 +1269,11 @@ class TestCompleteStateFlows:
 
         # Arriving at the station completes the path into READY first
         # (on_path_complete), the only state dwell entry is valid from.
+        # The dispatcher transitions Path.status away from ACTIVE before the
+        # completion callback runs, so the live-authority read is None by then
+        # (design_new.md step `09b0`); model that so the reactive evaluator the
+        # callback defers to observes no authority and moves to READY.
+        mock_dispatcher.get_active_path.return_value = None
         controller.on_path_complete()
         assert controller.ops.state == TrainState.READY
 
@@ -1398,6 +1424,28 @@ class TestHandleUnderEmergencyBrake:
 
         assert result.success is True
         assert controller.eb.active is False
+
+    def test_eb_release_defers_ready_to_reactive_evaluator(self):
+        """The fold: eb.release() clears only eb.active and does NOT write the
+        operational state. The reactive evaluator owns the
+        RUNNING_MOVING -> READY move (design_new.md "Reactive condition
+        evaluation"; the READY state row; EB-release notes at lines 1959,
+        2215)."""
+        train, controller, _ = create_test_train_with_controller(
+            state=TrainState.RUNNING_MOVING, current_speed=40.0
+        )
+        controller.eb.activate()  # no live authority -> clean latch
+        controller.physics_sync.current_speed_kmh = 0.0
+
+        result = controller.eb.release()
+        assert result.success is True
+        assert controller.eb.active is False
+        # eb.release() no longer writes state itself: still RUNNING_MOVING here.
+        assert controller.ops.state == TrainState.RUNNING_MOVING
+
+        # The evaluator performs the transition once eb.active is clear.
+        controller.ops.evaluate_reactive_conditions()
+        assert controller.ops.state == TrainState.READY
 
     def test_set_handle_accepted_under_eb_does_not_release(self):
         """set_handle(N) is accepted while EB is latched but does NOT release EB."""

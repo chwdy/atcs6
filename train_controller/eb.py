@@ -95,12 +95,23 @@ class EBWorkflow:
         been consumed by Action), and the controller's own
         ``received_path_plan`` is None (the pre-EB authority has been
         cleared by ``PathDispatcher``). Otherwise return success=False with
-        controller state unchanged. On acceptance from
-        ``RUNNING_AT_STATION`` (dwell EB cycle), state stays
-        ``RUNNING_AT_STATION`` and only ``active`` is cleared; dwell timing
-        is unaffected. Otherwise lands in the ``READY`` state (powered,
-        stopped, not dwelling — cab selection is preserved as an orthogonal
-        field).
+        controller state unchanged.
+
+        This method clears only ``active`` (and resets the handle to
+        neutral); it does NOT write the operational ``state``. Per
+        design_new.md (**Reactive condition evaluation**, the ``READY`` state
+        row, and the EB-interruption / EB-release notes at lines 1959 and
+        2215), the ``RUNNING_MOVING -> READY`` move is performed by
+        ``OperationalStateMachine.evaluate_reactive_conditions()`` once this
+        method has cleared ``active`` — the evaluator's transition 2 fires
+        because the train is stopped, has no live authority, and ``eb.active``
+        is now ``False``. Both of the evaluator's call sites pick a release up:
+        the tick's step-``71ee`` call (when a release is drained as an operator
+        command) and the ``release-emergency`` API route, which runs the
+        evaluator synchronously right after this method so the POST stays
+        synchronous. A release from ``RUNNING_AT_STATION`` (dwell EB cycle)
+        leaves the dwell state untouched, because ``RUNNING_AT_STATION`` is not
+        one of the evaluator's source states — so only ``active`` clears there.
         """
         c = self._c
         train = c._get_train()
@@ -142,10 +153,10 @@ class EBWorkflow:
         self.active = False
         c.ops.handle_position = HandlePosition.N
 
-        # Land in READY (powered, stopped, not dwelling), except during dwell
-        # (RUNNING_AT_STATION) where the dwell is preserved.
-        if c.ops.state != TrainState.RUNNING_AT_STATION:
-            c.ops.state = TrainState.READY
+        # The READY move is intentionally not written here: the reactive
+        # evaluator owns the RUNNING_MOVING -> READY transition (see the
+        # docstring). The tick's step-`71ee` call and the release-emergency API
+        # route each run it right after this method.
         from notification_center import Kind
 
         c._emit_event(

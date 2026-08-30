@@ -2367,11 +2367,20 @@ class TrainController:
         """Dwell-entry transition called by Plan dwell-entry step.
 
         Per design_new.md, RouteExecutor invokes this directly when its
-        preconditions are met. Acceptance preconditions (design_new.md:1901):
-        `state == READY` and `eb.active == False`. On acceptance, transitions
-        controller state to RUNNING_AT_STATION and clears ato_running because
-        dwell entry is a run-ending event. On rejection, leaves controller
-        state unchanged and emits a NotificationCenter diagnostic.
+        preconditions are met. Acceptance preconditions (design_new.md:1901,
+        and the dwell-entry step `d843`): `state == READY`, `eb.active ==
+        False`, and a selected cab (`commands.cab in {"A", "B"}`). On
+        acceptance, transitions controller state to RUNNING_AT_STATION and
+        clears ato_running because dwell entry is a run-ending event. On
+        rejection, leaves controller state unchanged and emits a
+        NotificationCenter diagnostic.
+
+        The cab guard (design_new.md step `d843`) rejects a cabless dwell
+        entry, preserving the allowed `(RUNNING_AT_STATION, cab)` invariant:
+        every legal dwell has a selected cab. Plan already requires
+        `controller.cab in {"A", "B"}` before it writes `station_entry_request`,
+        so this is a defensive check that keeps the method's own contract
+        self-enforcing regardless of caller.
 
         Returns:
             Tuple[bool, Optional[str]]: (True, None) on success;
@@ -2383,6 +2392,10 @@ class TrainController:
             return (False, reason)
         if self.eb.active:
             reason = "enter_station_dwell rejected: EB latched"
+            self._emit_dwell_diagnostic(reason)
+            return (False, reason)
+        if self.commands.cab not in ("A", "B"):
+            reason = "enter_station_dwell rejected: no cab selected"
             self._emit_dwell_diagnostic(reason)
             return (False, reason)
         self.ops.state = TrainState.RUNNING_AT_STATION
@@ -2422,13 +2435,27 @@ class TrainController:
     def on_path_complete(self) -> None:
         """Called by PathDispatcher.try_complete_active_path on accepted completion.
 
-        Per design_new.md: transition to READY. Does not clear
-        received_path_plan (the dispatcher has already transitioned
-        Path.status), does not enter dwell itself.
+        Per design_new.md the controller does NOT reach READY through a
+        dedicated completion state-write here. The dispatcher's terminal
+        teardown "makes no controller state-transition callback: the controller
+        reaches READY through its reactive stopped/no-authority rule when EB is
+        not latched, or remains held under EB until eb.release()" (step `09b0`,
+        design_new.md:486; the READY state row lists the evaluator applying the
+        stopped/no-authority rule "after authority release"). So this callback
+        ends the ATO run and defers the RUNNING_MOVING -> READY move to
+        OperationalStateMachine.evaluate_reactive_conditions().
+
+        The dispatcher has already transitioned Path.status away from ACTIVE, so
+        received_path_plan now reads None; the train is stopped at the authority
+        end in RUNNING_MOVING. The evaluator's transition 2 therefore fires here
+        in Observe (identical to the previous direct write in the normal case),
+        which also correctly leaves the controller held under EB when eb.active
+        is latched at completion, rather than forcing READY unconditionally.
+        Does not clear received_path_plan, does not enter dwell itself.
         """
         self.ato.running = False
         # path_backed_run_active is derived from path/route/destination context.
-        self.ops.state = TrainState.READY
+        self.ops.evaluate_reactive_conditions()
 
     def begin_service_stop(self) -> None:
         """Route-owned operational deceleration command (design_new.md

@@ -1026,6 +1026,37 @@ class TestTrainRoutes:
         assert "moving" in resp.get_json()["error"].lower()
         assert controller.eb.active is True
 
+    def test_release_emergency_lands_running_moving_in_ready_synchronously(
+        self, client, app_state, network_with_tracks
+    ):
+        """The POST is synchronous: a train EB'd to a stop from RUNNING_MOVING
+        with no live authority lands in READY within the POST.
+
+        eb.release() no longer writes the operational state; the route runs the
+        reactive evaluator right after it (design_new.md "Reactive condition
+        evaluation"), so the READY transition commits before the response
+        without waiting for the next tick.
+        """
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0, max_speed=100.0)
+        train = Train("TRAIN_003", consist=[car])
+        app_state.network.add_train(train)
+        app_state.network.place_train(train, 0, 0, Direction.EAST)
+
+        controller = app_state.sim_controller.get_or_create_controller("TRAIN_003")
+        controller.commands.power_on_cmd()
+        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.physics_sync.current_speed_kmh = 0.0
+        controller.eb.activate()  # stopped, no path -> clean latch
+        assert controller.eb.active is True
+        # EB activation does not move the operational state.
+        assert controller.ops.state == TrainState.RUNNING_MOVING
+
+        resp = client.post("/api/trains/TRAIN_003/release-emergency")
+        assert resp.status_code == 200
+        assert controller.eb.active is False
+        # Synchronous: the evaluator committed READY within the POST.
+        assert controller.ops.state == TrainState.READY
+
 # ============================================================================
 # Path Routes Tests (9 routes)
 # ============================================================================
