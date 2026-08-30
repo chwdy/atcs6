@@ -390,19 +390,19 @@ def register(app, state: AppState) -> None:
     def calibrate_commit(train_id):
         """Write a measured pass onto a profile.
 
-        Body: ``{"target": "replace"|"new", "name": str, "model": str}``.
-        ``replace`` writes the linked profile, so every locomotive of that model
-        gets the measurement; ``new`` forks a profile and relinks this train and
-        its roster entry to it (design_new.md "What commit writes").
+        Body: ``{"target": "locomotive"|"model"}``. ``locomotive`` (Save to this
+        locomotive) writes the two measured fields onto the instance profile this
+        train names, so only this locomotive changes; ``model`` (Promote to
+        model) writes them onto the model profile the instance derives from and
+        clears them from the instance, so every locomotive of that model gets the
+        measurement (design_new.md "What commit writes").
         """
         data = request.get_json(silent=True) or {}
         try:
             profile = train_service.calibrate_commit(
                 state,
                 train_id,
-                target=data.get("target", "replace"),
-                name=data.get("name", ""),
-                model=data.get("model", ""),
+                target=data.get("target", "locomotive"),
             )
         except NotFoundError as exc:
             return jsonify({"error": str(exc)}), 404

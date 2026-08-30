@@ -260,18 +260,21 @@ def test_measuring_every_step_does_not_commit():
     assert profile.calibrated_at is None
 
 
-def test_commit_writes_the_curve_model_and_stamp_and_nothing_else():
+def test_commit_writes_the_curve_and_stamp_and_nothing_else():
     cal, run, profile = _open_run()
     voltage_curve_before = list(profile.voltage_power_curve)
     accel_before = profile.acceleration_rate
+    model_before = profile.model
     _run_full_pass(cal, run)
-    curve = cal.commit("T1", profile, model="Kato EF66")
+    curve = cal.commit("T1", profile)
 
     assert profile.power_speed_curve == curve
-    assert profile.model == "Kato EF66"
     assert profile.calibrated_at is not None
+    # Commit writes power_speed_curve and calibrated_at only (design_new.md
+    # "What commit writes"): `model` is edited on the model profile, not here;
     # Lighting-voltage calibration is the one procedure that moves the first
-    # stage, and a motion rate describes behaviour rather than measured speed.
+    # stage; and a motion rate describes behaviour rather than measured speed.
+    assert profile.model == model_before
     assert profile.voltage_power_curve == voltage_curve_before
     assert profile.acceleration_rate == accel_before
     assert "T1" not in cal.runs

@@ -346,7 +346,8 @@ class UnidentifiedTrainTracker:
     def _create_unidentified(self, now: float) -> Train:
         """Build the unidentified train `Train`, its controller, and its physics instance.
 
-        Blank train configuration with the default `SpeedProfile`, which an unidentified train
+        Blank train configuration with the default `SpeedProfile` pair (a model
+        profile and the instance deriving from it), which an unidentified train
         never uses because it is never powered (design_new.md "SpeedProfile").
         """
         train_id = self._fresh_id()
@@ -354,11 +355,11 @@ class UnidentifiedTrainTracker:
 
         profiles = getattr(self._network, "speed_profiles", None)
         if profiles is not None:
-            from speed_profile import make_default_speed_profile
+            from speed_profile import seed_default_profile_pair
 
-            profile = make_default_speed_profile(train_id, train.max_speed)
-            profiles.register(profile)
-            train.speed_profile_id = profile.profile_id
+            train.speed_profile_id = seed_default_profile_pair(
+                profiles, train_id, train.max_speed
+            )
 
         self._network.add_train(train)
         self._sim.get_or_create_controller(train_id)

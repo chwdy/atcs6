@@ -28,7 +28,6 @@ from typing import Any, List, Optional, Tuple
 from app_state import AppState
 from enums import CommandResult, Direction, HandlePosition, TrainState
 from services.exceptions import ConflictError, NotFoundError, ValidationError
-from speed_profile import SpeedProfile
 from train import Train, TrainCar
 from train_route import RouteStartMode
 
@@ -1057,21 +1056,20 @@ def calibrate_commit(
     state: AppState,
     train_id: str,
     *,
-    target: str = "replace",
-    name: str = "",
-    model: str = "",
+    target: str = "locomotive",
+    **_ignored,
 ):
     """Write a measured pass onto a profile (design_new.md "What commit writes").
 
-    ``target="replace"`` writes onto the profile the calibrated train is linked
-    to, so every train and roster entry linked to it runs on the new curve —
-    that is what a profile shared across one model is for. ``target="new"``
-    creates a profile carrying the measured curve with every other field copied
-    from the one the pass ran against, and links the calibrated train and its
-    roster entry to it: the pass measured this locomotive, so the profile it
-    produced must be the one that drives it.
+    ``target="locomotive"`` (**Save to this locomotive**) writes the two measured
+    fields onto the instance profile the calibrated train names, so that one
+    locomotive runs on the new curve and no other changes. ``target="model"``
+    (**Promote to model**) writes them onto the model profile the instance
+    derives from and clears them from the instance in the same commit, so every
+    locomotive of that model whose instance leaves them unset runs on the new
+    curve, the calibrated one included. Returns the record actually written.
     """
-    train, profile, sim = _calibration_profile(state, train_id)
+    _train, profile, sim = _calibration_profile(state, train_id)
     run = sim.speed_calibration.runs.get(train_id)
     if run is None:
         raise NotFoundError("No calibration pass is open for this train")
@@ -1082,43 +1080,29 @@ def calibrate_commit(
         )
 
     with state.simulation_lock:
-        if target == "new":
-            written = _fork_profile(state, train, profile, name=name, model=model)
-        elif target == "replace":
-            written = profile
+        if target == "locomotive":
+            target_profile, clear_profile = profile, None
+        elif target == "model":
+            if profile.derived_from:
+                model_profile = state.network.speed_profiles.get(profile.derived_from)
+                if model_profile is None:
+                    raise ConflictError(
+                        "The model profile this locomotive derives from is missing"
+                    )
+                target_profile, clear_profile = model_profile, profile
+            else:
+                # The train already names a model profile directly, so promoting
+                # writes that record and there is no instance to clear.
+                target_profile, clear_profile = profile, None
         else:
-            raise ValidationError("target must be 'replace' or 'new'")
+            raise ValidationError("target must be 'locomotive' or 'model'")
         try:
             sim.speed_calibration.commit(
-                train_id, written, model=(model or None)
+                train_id, target_profile, clear_profile=clear_profile
             )
         except ValueError as exc:
             raise ConflictError(str(exc)) from exc
-    return written
-
-
-def _fork_profile(state: AppState, train, source, *, name: str, model: str):
-    """Clone `source` under a fresh id and link the train and its roster entry.
-
-    Linking is part of the commit, not a step the operator takes afterwards: a
-    new profile nothing named would be a measurement the layout never reads.
-    """
-    import uuid
-
-    data = source.to_dict()
-    data["profile_id"] = f"profile_{uuid.uuid4().hex[:8]}"
-    data["name"] = name or f"{source.name} (measured)"
-    data["model"] = model or source.model
-    clone = SpeedProfile.from_dict(data)
-    state.network.speed_profiles.register(clone)
-
-    train.speed_profile_id = clone.profile_id
-    roster = getattr(state.network, "train_roster", None)
-    entry_id = getattr(train, "roster_entry_id", None)
-    entry = roster.get_entry(entry_id) if (roster and entry_id) else None
-    if entry is not None:
-        entry.speed_profile_id = clone.profile_id
-    return clone
+    return target_profile
 
 
 # ------------------------------------------- lighting-voltage calibration ----
@@ -1163,7 +1147,11 @@ def start_lighting_calibration(state: AppState, train_id: str):
     until the locomotive creeps, steps back down one, and saves.
     """
     train, profile, sim = _lighting_calibration_target(state, train_id)
-    return sim.speed_calibration.start_lighting(train, profile)
+    # Seed the candidate and ceiling from the resolved profile (the model's
+    # values fill in where the instance carries none), while the run's write
+    # target stays the instance profile the train names.
+    resolved = state.network.speed_profiles.resolve(profile.profile_id)
+    return sim.speed_calibration.start_lighting(train, resolved or profile)
 
 
 def step_lighting_calibration(state: AppState, train_id: str, direction: int):

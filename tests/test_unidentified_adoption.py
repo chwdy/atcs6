@@ -517,11 +517,19 @@ def test_adoption_gives_the_train_its_own_profile_and_retires_the_unidentified_t
 
     train = adopt(sim, unidentified_id, "T1", max_speed_kmh=80.0)
 
-    assert train.speed_profile_id == "default_T1"
-    profile = network.speed_profiles.get("default_T1")
-    assert profile is not None
-    # Anchored to the real locomotive's max speed, not the blank unidentified train default.
-    assert profile.power_speed_curve[-1] == (100.0, 80.0)
+    # The adopted train names a fresh instance profile, deriving from a model
+    # profile seeded alongside it and anchored to the real locomotive's max
+    # speed, not the blank unidentified train default.
+    assert train.speed_profile_id == "default_T1__instance"
+    instance = network.speed_profiles.get("default_T1__instance")
+    assert instance is not None and instance.derived_from == "default_T1"
+    model = network.speed_profiles.get("default_T1")
+    assert model is not None
+    assert model.power_speed_curve[-1] == (100.0, 80.0)
+    # The profile the train drives on resolves to that curve.
+    resolved = network.speed_profiles.resolve(train.speed_profile_id)
+    assert resolved.power_speed_curve[-1] == (100.0, 80.0)
+    # The unidentified train's seeded pair is retired.
     assert network.speed_profiles.get(unidentified_profile_id) is None
 
 

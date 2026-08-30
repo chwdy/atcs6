@@ -104,7 +104,11 @@ def test_the_layout_survives_the_whole_round_trip():
     # `(state, cab)` pairs table (design_new.md "Controller state machine").
     assert sim.controllers["T1"].ops.state == TrainState.OFF
     assert sim.controllers["T1"].commands.cab is None
-    assert network.trains["T1"].speed_profile_id == "default_T1"
+    # add_train seeds a model+instance profile pair and the train names the
+    # instance (design_new.md "SpeedProfile", Model profiles and instance
+    # profiles); the link survives the round trip.
+    assert network.trains["T1"].speed_profile_id == "default_T1__instance"
+    assert network.speed_profiles.get("default_T1__instance").derived_from == "default_T1"
 
 
 def test_clearing_an_unhalted_runtime_is_refused():

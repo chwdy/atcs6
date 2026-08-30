@@ -630,3 +630,24 @@ class SpeedProfileRegistry:
             del self._profiles[profile_id]
             return True
         return False
+
+    def remove_pair(self, profile_id: str) -> bool:
+        """Remove `profile_id` and, when it is an instance, its now-orphaned model.
+
+        The model profile an instance derives from is removed only when no other
+        registered profile still derives from it, so a model shared by several
+        instances stays in place. Returns True when the named profile was
+        removed. Used when a train is retired (adoption replaces an unidentified
+        train's seeded pair — design_new.md "Train Entity").
+        """
+        profile = self._profiles.get(profile_id)
+        if profile is None:
+            return False
+        removed = self.remove(profile_id)
+        model_id = getattr(profile, "derived_from", None)
+        if model_id and not any(
+            getattr(p, "derived_from", None) == model_id
+            for p in self._profiles.values()
+        ):
+            self.remove(model_id)
+        return removed

@@ -755,18 +755,24 @@ class SpeedCalibration:
         return [(0.0, 0.0)] + [(s.power_percent, s.speed_kmh) for s in run.samples]
 
     def commit(
-        self, train_id: str, profile, *, model: Optional[str] = None
+        self, train_id: str, target_profile, *, clear_profile=None
     ) -> List[Tuple[float, float]]:
-        """Write the measured curve onto `profile` and close the run.
+        """Write the measured curve onto `target_profile` and close the run.
 
-        Writes three fields and no others: `power_speed_curve`, `model`, and
-        `calibrated_at`. It must not write `voltage_power_curve` —
-        **Lighting-voltage calibration** is the one procedure that moves that
-        curve's anchor — and it must not write a motion rate or a notch table.
+        Writes two fields and no others: `power_speed_curve` from the pass's
+        samples and `calibrated_at` from the wall clock (design_new.md "Speed
+        calibration", What commit writes). It must not write `voltage_power_curve`
+        — **Lighting-voltage calibration** is the one procedure that moves that
+        curve's anchor — and it must not write a motion rate, a notch table, or
+        `model`.
 
-        Which profile object arrives here is the operator's commit-target
-        choice, resolved by the caller: the train's linked profile for Replace,
-        or a fresh clone for Save as new.
+        Which records arrive here is the operator's commit-target choice,
+        resolved by the caller. `target_profile` is the record the two fields are
+        written onto: the train's own instance profile for **Save to this
+        locomotive**, or the model profile the instance derives from for
+        **Promote to model**. On promote, `clear_profile` is that instance, whose
+        two measured fields are cleared in the same commit so it falls back to
+        following the freshly-written model.
         """
         run = self.runs.get(train_id)
         if run is None:
@@ -784,19 +790,21 @@ class SpeedCalibration:
                 "Measured curve falls with power and could not be read backwards"
             )
 
-        profile.power_speed_curve = curve
-        if model is not None:
-            profile.model = str(model)
-        profile.calibrated_at = datetime.now(timezone.utc).isoformat(
-            timespec="seconds"
-        )
+        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        target_profile.power_speed_curve = curve
+        target_profile.calibrated_at = stamp
+        # Promote clears the instance's two measured fields so it goes back to
+        # following the model curve just written.
+        if clear_profile is not None and clear_profile is not target_profile:
+            clear_profile.power_speed_curve = None
+            clear_profile.calibrated_at = None
         self.runs.pop(train_id, None)
         self._step0_entries.pop(train_id, None)
         self._emit_command_result(
             train_id,
             operation="speed_calibration",
             success=True,
-            reason=f"wrote {len(run.samples)} measured points to {profile.profile_id}",
+            reason=f"wrote {len(run.samples)} measured points to {target_profile.profile_id}",
         )
         return curve
 
@@ -871,19 +879,25 @@ class SpeedCalibration:
         return run
 
     def commit_lighting(self, train_id: str, profile) -> Optional[float]:
-        """Write the candidate to `lighting_voltage` and close the run.
+        """Write the candidate to `lighting_voltage` on `profile` and close the run.
 
-        `lighting_voltage` is also the 0%-power point of `voltage_power_curve`,
-        so the commit moves that curve's bottom anchor with it. A stored point
-        at or below the new anchor is dropped: it names a voltage that does not
-        move this locomotive.
+        `profile` is the record the train names — its instance profile in the
+        ordinary case (design_new.md "Lighting-voltage calibration", What Save
+        writes). `lighting_voltage` is also the 0%-power point of
+        `voltage_power_curve`, so the anchor of the curve this train resolves
+        moves with the new value. An instance profile stores no
+        `voltage_power_curve` of its own, so the move shows up only in the curve
+        it resolves and the model profile's stored curve is untouched; a model
+        profile, which does store the curve, has its bottom anchor moved here,
+        dropping any point at or below the new anchor.
         """
         run = self.lighting_runs.get(train_id)
         if run is None:
             return None
-        value = _clamp(run.candidate_voltage, 0.0, self.lighting_ceiling(profile))
+        value = _clamp(run.candidate_voltage, 0.0, run.ceiling_voltage)
         profile.lighting_voltage = value
-        profile.voltage_power_curve = self._reanchored_curve(profile, value)
+        if getattr(profile, "derived_from", None) is None:
+            profile.voltage_power_curve = self._reanchored_curve(profile, value)
         self.lighting_runs.pop(train_id, None)
         self._emit_command_result(
             train_id,

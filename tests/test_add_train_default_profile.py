@@ -44,13 +44,17 @@ def test_add_train_seeds_profile_anchored_at_max_speed():
         length_cm=20.0,
     )
 
-    # The train points at a registered, per-train profile (not None, not shared).
+    # The train points at a registered, per-train instance profile (not None,
+    # not shared) that derives from a model profile seeded alongside it.
     assert train.speed_profile_id is not None
     assert train.speed_profile_id != "default"
-    profile = net.speed_profiles.get(train.speed_profile_id)
-    assert profile is not None
+    instance = net.speed_profiles.get(train.speed_profile_id)
+    assert instance is not None
+    assert instance.derived_from is not None
 
-    # 100% power anchors at the train's max_speed; the curve stays linear.
+    # The resolved profile anchors 100% power at the train's max_speed; the curve
+    # stays linear. (Consumers read a train's calibration through resolve.)
+    profile = net.speed_profiles.resolve(train.speed_profile_id)
     assert profile.power_percent_to_speed(100.0) == 60.0
     assert profile.power_percent_to_speed(50.0) == 30.0
     assert profile.power_percent_to_speed(0.0) == 0.0
@@ -84,8 +88,8 @@ def test_two_trains_get_distinct_profiles_for_distinct_max_speeds():
     )
 
     assert fast.speed_profile_id != slow.speed_profile_id
-    fast_profile = net.speed_profiles.get(fast.speed_profile_id)
-    slow_profile = net.speed_profiles.get(slow.speed_profile_id)
+    fast_profile = net.speed_profiles.resolve(fast.speed_profile_id)
+    slow_profile = net.speed_profiles.resolve(slow.speed_profile_id)
     assert fast_profile.power_percent_to_speed(100.0) == 120.0
     assert slow_profile.power_percent_to_speed(100.0) == 40.0
 

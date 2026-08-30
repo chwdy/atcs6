@@ -1907,21 +1907,22 @@ class SimulationController(SwitchOutputOwner):
                 ):
                     train.speed_profile_id = roster_entry.speed_profile_id
 
-        # Seed the train's default SpeedProfile so `power_percent` manual mode
-        # has a defined power->speed mapping anchored to THIS train's max_speed
-        # (design_new.md:2235, :2257, :2259): the default `power_speed_curve` is
-        # linear from 0% -> 0 km/h to 100% -> the train's configured max_speed.
-        # Without this the train shares the module-global DEFAULT_SPEED_PROFILE
-        # whose curve hardcodes 100% -> 100 km/h, which is wrong for any train
-        # whose max_speed != 100. Register it and point the train at it.
+        # Seed the train's default SpeedProfile pair so `power_percent` manual
+        # mode has a defined power->speed mapping anchored to THIS train's
+        # max_speed (design_new.md "SpeedProfile"): a model profile whose default
+        # `power_speed_curve` runs 0% -> 0 km/h to 100% -> the train's configured
+        # max_speed, plus an empty instance deriving from it, and the train names
+        # the instance. Without this the train would share the module-global
+        # DEFAULT_SPEED_PROFILE whose curve hardcodes 100% -> 100 km/h; naming an
+        # instance also keeps calibration off any other train's record.
         if train.speed_profile_id is None and hasattr(
             self.network, "speed_profiles"
         ):
-            from speed_profile import make_default_speed_profile
+            from speed_profile import seed_default_profile_pair
 
-            default_profile = make_default_speed_profile(train_id, max_speed_kmh)
-            self.network.speed_profiles.register(default_profile)
-            train.speed_profile_id = default_profile.profile_id
+            train.speed_profile_id = seed_default_profile_pair(
+                self.network.speed_profiles, train_id, max_speed_kmh
+            )
 
         # Register and place. place_train raises ValueError if the train does
         # not fit on available track.
@@ -2226,25 +2227,28 @@ class SimulationController(SwitchOutputOwner):
         self.unidentified_trains.forget(unidentified_train_id)
         self.get_or_create_physics(new_train_id)
 
-        # The unidentified train's default profile was anchored to a blank train's max_speed
-        # and named after the generated id, so it is retired in favour of one
-        # built for the real locomotive — unless the operator named an existing
-        # profile (or a roster entry did) to keep measured curves attached.
+        # The unidentified train's default profile pair was anchored to a blank
+        # train's max_speed and named after the generated id, so it is retired in
+        # favour of a pair built for the real locomotive — unless the operator
+        # named an existing instance profile (or a roster entry did) to keep
+        # measured curves attached (design_new.md "Train Entity", adoption).
         profiles = getattr(self.network, "speed_profiles", None)
         if speed_profile_id and profiles is not None and profiles.get(speed_profile_id):
             train.speed_profile_id = speed_profile_id
         elif profiles is not None:
-            from speed_profile import make_default_speed_profile
+            from speed_profile import seed_default_profile_pair
 
-            profile = make_default_speed_profile(new_train_id, max_speed_kmh)
-            profiles.register(profile)
-            train.speed_profile_id = profile.profile_id
+            train.speed_profile_id = seed_default_profile_pair(
+                profiles, new_train_id, max_speed_kmh
+            )
         if (
             profiles is not None
             and old_profile_id
             and old_profile_id != train.speed_profile_id
         ):
-            profiles.remove(old_profile_id)
+            # Retire the unidentified train's instance and the model it was the
+            # only deriver of; `remove_pair` keeps a shared model in place.
+            profiles.remove_pair(old_profile_id)
 
         # ---- Give back what it does not actually stand on. ------------------
         span_blocks = set(getattr(placed_span, "occupied_blocks", None) or [])
