@@ -19,9 +19,8 @@ release, and physical-entry handling. It mirrors `BlockManager`'s contract:
   skipped.
 """
 
-import time
 from dataclasses import dataclass, field
-from typing import Dict, List, NamedTuple, Optional, Set, TYPE_CHECKING
+from typing import Callable, Dict, List, NamedTuple, Optional, Set, TYPE_CHECKING
 
 from notification_center import Kind, switch_ref, train_ref
 from runtime_payloads import (
@@ -121,12 +120,49 @@ class SwitchManager:
     def __init__(
         self,
         switches: Dict[str, "Switch"],
-        simulation_controller: Optional[object] = None,
         network: Optional["RailwayNetwork"] = None,
+        *,
+        notification_emitter: Optional[Callable] = None,
+        fatal_conflict_reporter: Optional[Callable] = None,
+        environment_active_getter: Optional[Callable[[], bool]] = None,
+        active_path_getter: Optional[Callable[[str], object]] = None,
+        hardware_failure_reporter: Optional[Callable] = None,
     ):
+        """Per design_new.md "Switch-manager model", the manager holds the
+        network plus narrow injected callbacks only; it never receives or looks
+        up `SimulationController`.
+
+        Args:
+            switches: fallback switch registry, used when ``network`` is None.
+            network: optional `RailwayNetwork`; when wired the manager reads
+                ``network.switches``, ``network.block_manager``, and
+                ``network.switch_power_controller`` from it.
+            notification_emitter: narrow
+                `(operation, kind, message, entities, error=None, payload=None)`
+                callback routing a manager-owned event into `NotificationCenter`
+                (runtime-wired with source "SwitchManager"); `None` skips emit.
+            fatal_conflict_reporter: callback taking one
+                `FatalPhysicalEntryConflict`, runtime-wired to
+                `SimulationController.enter_failed_runtime(...)`.
+            environment_active_getter: callback returning whether an operating
+                environment is active; gates the operating throw in
+                `request_position_change(...)`. `None` means "not gated"
+                (the pre-runtime / editor default lets the throw proceed).
+            active_path_getter: callback taking a `train_id` and returning that
+                train's active `Path` (or `None`), used only to fill a fatal
+                switch-conflict payload's `incoming_path_id`.
+            hardware_failure_reporter: callback taking one `HardwareFailure`,
+                runtime-wired to
+                `SimulationController.enter_hardware_failure(...)`; latches an
+                unissued switch throw. `None` skips the latch.
+        """
         self.switches = switches
-        self.simulation_controller = simulation_controller
         self.network = network
+        self.notification_emitter = notification_emitter
+        self.fatal_conflict_reporter = fatal_conflict_reporter
+        self.environment_active_getter = environment_active_getter
+        self.active_path_getter = active_path_getter
+        self.hardware_failure_reporter = hardware_failure_reporter
 
     # ------------------------------------------------------------------
     # Registry accessor (prefer network over fallback dict)
@@ -562,8 +598,8 @@ class SwitchManager:
         if switch is None:
             return (False, f"Unknown switch {switch_id}")
         if (
-            self.simulation_controller is not None
-            and not getattr(self.simulation_controller, "environment_active", True)
+            self.environment_active_getter is not None
+            and not self.environment_active_getter()
         ):
             return (False, "selected operating environment is not active")
         return self._apply_alignment(
@@ -651,57 +687,50 @@ class SwitchManager:
         # design_new.md "Event log": a confirmed operator alignment CHANGE is a
         # SWITCH_THROWN event. A re-assert of the position already held is not
         # one — the log records alignment changes, and nothing changed.
-        if int(new_position) != old_position:
-            sc = self.simulation_controller
-            nc = getattr(sc, "notification_center", None) if sc is not None else None
-            if nc is not None:
-                from notification_center import Kind, switch_ref
-
-                nc.emit(
-                    source="SwitchManager",
-                    operation=operation,
-                    kind=Kind.INFO,
-                    message=(
-                        f"switch {switch_id} thrown to "
-                        f"{'DIVERGE' if int(new_position) else 'MAIN'}"
-                    ),
-                    entities=[switch_ref(switch_id)],
-                    event_time=time.time(),
-                    payload={
-                        "switch_id": switch_id,
-                        "from_position": old_position,
-                        "to_position": int(new_position),
-                    },
-                )
+        if (
+            int(new_position) != old_position
+            and self.notification_emitter is not None
+        ):
+            self.notification_emitter(
+                operation=operation,
+                kind=Kind.INFO,
+                message=(
+                    f"switch {switch_id} thrown to "
+                    f"{'DIVERGE' if int(new_position) else 'MAIN'}"
+                ),
+                entities=[switch_ref(switch_id)],
+                payload={
+                    "switch_id": switch_id,
+                    "from_position": old_position,
+                    "to_position": int(new_position),
+                },
+            )
         return (True, message)
 
     def _resolve_block_manager(self):
-        """Locate the BlockManager — preferred via SimulationController, with
-        a network fallback for editor/test setups that wired the manager
-        only on the network object."""
-        if self.simulation_controller is not None:
-            bm = getattr(self.simulation_controller, "block_manager", None)
-            if bm is not None:
-                return bm
+        """Locate the `BlockManager` off the owning `RailwayNetwork`.
+
+        `RailwayNetwork` is the canonical home of the block registry and its
+        manager (design_new.md "Switch-manager model" / "BlockManager"), so the
+        notify target is read live from ``network.block_manager`` rather than
+        held as a captured handle — the runtime rebinds it during
+        interface bind/release. Returns None in editor/unit setups with no
+        network wired (the notify is then a no-op)."""
         if self.network is not None:
             return getattr(self.network, "block_manager", None)
         return None
 
     def _resolve_switch_power_controller(self):
-        """Locate the `SwitchPowerController` — preferred via
-        SimulationController, with a network fallback, the same way this manager
-        reaches `BlockManager`. Returns None in editor/unit setups that never
-        wired one (the throw is then a no-op).
+        """Locate the `SwitchPowerController` live off the owning
+        `RailwayNetwork`, the same way this manager reaches `BlockManager`.
+        Reading ``network.switch_power_controller`` live (not a captured
+        handle) is required because the runtime swaps it on every interface
+        bind/release. Returns None in editor/unit setups that never wired one
+        (the throw is then a no-op).
 
         `SwitchManager` never reaches `SwitchOutput` itself: the controller is
         that interface's only caller (design_new.md "Power", Switch
         power-controller role)."""
-        if self.simulation_controller is not None:
-            controller = getattr(
-                self.simulation_controller, "switch_power_controller", None
-            )
-            if controller is not None:
-                return controller
         if self.network is not None:
             return getattr(self.network, "switch_power_controller", None)
         return None
@@ -769,13 +798,12 @@ class SwitchManager:
     def _latch_hardware_failure(
         self, switch_id: str, target_state: int, message: str
     ) -> None:
-        controller = self.simulation_controller
-        enter = getattr(controller, "enter_hardware_failure", None)
-        if not callable(enter):
+        reporter = self.hardware_failure_reporter
+        if reporter is None:
             return
         from runtime_payloads import HardwareFailure
 
-        enter(
+        reporter(
             HardwareFailure(
                 component="switch_output",
                 operation="set_throw",
@@ -795,15 +823,13 @@ class SwitchManager:
         `Switch` is a pure data entity with no runtime back-reference, so it
         returns its diagnostic strings and this manager emits them — keeping
         `NotificationCenter` the only runtime sink (design_new.md
-        "Runtime notifications"). Skipped when none is wired.
+        "Runtime notifications"). Skipped when no `notification_emitter` is
+        wired.
         """
-        sc = self.simulation_controller
-        nc = getattr(sc, "notification_center", None) if sc is not None else None
-        if nc is None:
+        if self.notification_emitter is None:
             return
         try:
-            nc.emit(
-                source="SwitchManager",
+            self.notification_emitter(
                 operation=operation,
                 kind=Kind.WARNING,
                 message=message,
@@ -821,16 +847,13 @@ class SwitchManager:
         Mirrors `BlockManager._emit_diagnostic`. The operator/API path surfaces
         the failure through its own `command_result` (from the `(False, reason)`
         return), so this direct emit is used by the dispatcher-acquisition path.
-        Skipped when no `notification_center` is wired; a receiver error must
+        Skipped when no `notification_emitter` is wired; a receiver error must
         not mask the underlying operation.
         """
-        sc = self.simulation_controller
-        nc = getattr(sc, "notification_center", None) if sc is not None else None
-        if nc is None:
+        if self.notification_emitter is None:
             return
         try:
-            nc.emit(
-                source="SwitchManager",
+            self.notification_emitter(
                 operation="_drive_throw",
                 kind=Kind.WARNING,
                 message=f"switch {switch_id} throw not issued: {reason}",
@@ -996,16 +1019,18 @@ class SwitchManager:
 
         Mirrors `BlockManager._report_fatal_conflict`. Receiver issues must
         not mask the underlying conflict, so this helper does not swallow
-        exceptions raised by the wired controller.
+        exceptions raised by the wired reporter.
+
+        `active_path_getter` supplies the incoming train's active `Path` so the
+        payload can carry `incoming_path_id`; it is `None` in setups that wired
+        the reporter but no path lookup, matching the old missing-dispatcher
+        case (`incoming_path_id = None`).
         """
-        if self.simulation_controller is None:
+        if self.fatal_conflict_reporter is None:
             return
         active_path = None
-        dispatcher = getattr(self.simulation_controller, "path_dispatcher", None)
-        if dispatcher is not None:
-            getter = getattr(dispatcher, "get_active_path", None)
-            if callable(getter):
-                active_path = getter(train_id)
+        if self.active_path_getter is not None:
+            active_path = self.active_path_getter(train_id)
         payload = FatalPhysicalEntryConflict(
             resource_type="switch",
             resource_id=switch_id,
@@ -1014,4 +1039,4 @@ class SwitchManager:
             conflict_kind=conflict_kind,
             incoming_path_id=active_path.path_id if active_path else None,
         )
-        self.simulation_controller.enter_failed_runtime(payload)
+        self.fatal_conflict_reporter(payload)

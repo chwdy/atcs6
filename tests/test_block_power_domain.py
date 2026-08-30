@@ -86,7 +86,7 @@ def test_second_train_in_same_segment_is_fatal_occupied_by_other_train():
     net = _line_network()
     bm = net.block_manager
     sim = _CapturingSim()
-    bm.simulation_controller = sim
+    bm.fatal_conflict_reporter = sim.enter_failed_runtime
 
     assert bm.occupy_block("BLK_A", "T1") is True
     assert bm.occupy_block("BLK_A", "T2") is False
@@ -107,7 +107,7 @@ def test_second_train_in_a_different_segment_of_the_same_block_is_fatal():
     net = _grouped_network()
     bm = net.block_manager
     sim = _CapturingSim()
-    bm.simulation_controller = sim
+    bm.fatal_conflict_reporter = sim.enter_failed_runtime
 
     # Both trains address the one block their segments belong to.
     assert net.segment_to_block_id("A") == net.segment_to_block_id("C") == "G"
@@ -125,7 +125,7 @@ def test_same_train_re_entry_is_idempotent_not_a_conflict():
     net = _grouped_network()
     bm = net.block_manager
     sim = _CapturingSim()
-    bm.simulation_controller = sim
+    bm.fatal_conflict_reporter = sim.enter_failed_runtime
     assert bm.occupy_block("G", "T1") is True
     assert bm.occupy_block("G", "T1") is True
     assert sim.failed == []
@@ -136,7 +136,7 @@ def test_separate_blocks_never_conflict():
     net = _line_network()
     bm = net.block_manager
     sim = _CapturingSim()
-    bm.simulation_controller = sim
+    bm.fatal_conflict_reporter = sim.enter_failed_runtime
     assert bm.occupy_block("BLK_A", "T1") is True
     assert bm.occupy_block("BLK_C", "T2") is True
     assert sim.failed == []

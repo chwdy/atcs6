@@ -648,7 +648,7 @@ class TestFatalConflict:
         blocks = {"B1": Block("B1", ordered_tiles=[(0, 0, "S")])}
         blocks["B1"].reserve_for_path("P1", "TRAIN_A", "forward")
         sim = _FakeSimulationController()
-        manager = BlockManager(blocks, simulation_controller=sim)
+        manager = BlockManager(blocks, fatal_conflict_reporter=sim.enter_failed_runtime)
 
         ok = manager.occupy_block("B1", "TRAIN_B")
         assert ok is False
@@ -668,7 +668,7 @@ class TestFatalConflict:
         blocks = {"B1": Block("B1")}
         blocks["B1"].occupied_by = "TRAIN_A"
         sim = _FakeSimulationController()
-        manager = BlockManager(blocks, simulation_controller=sim)
+        manager = BlockManager(blocks, fatal_conflict_reporter=sim.enter_failed_runtime)
 
         ok = manager.occupy_block("B1", "TRAIN_B")
         assert ok is False
@@ -684,7 +684,7 @@ class TestFatalConflict:
         blocks = {"B1": Block("B1")}
         blocks["B1"].disabled = True
         sim = _FakeSimulationController()
-        manager = BlockManager(blocks, simulation_controller=sim)
+        manager = BlockManager(blocks, fatal_conflict_reporter=sim.enter_failed_runtime)
 
         ok = manager.occupy_block("B1", "TRAIN_A")
         assert ok is False

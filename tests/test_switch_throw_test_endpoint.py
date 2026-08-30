@@ -70,8 +70,9 @@ def client():
     network.switch_manager = SwitchManager(switches=network.switches, network=network)
 
     path_dispatcher = PathDispatcher(network)
+    # SimulationController.__init__ injects the narrow callbacks (including the
+    # environment-active gate the tests below flip) onto this pre-built manager.
     sim_controller = SimulationController(network, path_dispatcher)
-    network.switch_manager.simulation_controller = sim_controller
     state = AppState(
         network=network,
         path_dispatcher=path_dispatcher,

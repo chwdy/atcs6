@@ -55,6 +55,7 @@ from notification_center import (
     Kind,
     NotificationCenter,
     block_ref,
+    make_notification_emitter,
     path_ref,
     switch_ref,
     train_ref,
@@ -348,12 +349,48 @@ class SimulationController(SwitchOutputOwner):
             if self.network is not None
             else None
         )
+        # Inject the narrow callbacks each manager needs in place of a whole
+        # SimulationController back-reference (design_new.md "BlockManager" /
+        # "Switch-manager model": a manager never receives or looks up
+        # SimulationController). The notification callback is bound to
+        # NotificationCenter with the manager's own source; the fatal callback
+        # to enter_failed_runtime(...). SwitchManager also gets three narrow
+        # handles the doc's list omits: the operating-environment gate, the
+        # active-path lookup for a fatal payload's incoming_path_id, and the
+        # hardware-failure latch for an unissued throw.
         if self.block_manager is not None:
-            self.block_manager.simulation_controller = self
             self.block_manager.network = self.network
+            self.block_manager.notification_emitter = make_notification_emitter(
+                self.notification_center, "BlockManager"
+            )
+            self.block_manager.fatal_conflict_reporter = self.enter_failed_runtime
         if self.switch_manager is not None:
-            self.switch_manager.simulation_controller = self
             self.switch_manager.network = self.network
+            self.switch_manager.notification_emitter = make_notification_emitter(
+                self.notification_center, "SwitchManager"
+            )
+            self.switch_manager.fatal_conflict_reporter = self.enter_failed_runtime
+            self.switch_manager.environment_active_getter = (
+                lambda: self.environment_active
+            )
+            self.switch_manager.active_path_getter = self._active_path_for_train
+            self.switch_manager.hardware_failure_reporter = (
+                self.enter_hardware_failure
+            )
+
+    def _active_path_for_train(self, train_id: str):
+        """Return `train_id`'s active `Path`, or `None`.
+
+        Handed to `SwitchManager` as its `active_path_getter` so it can fill a
+        fatal switch-conflict payload's `incoming_path_id` without holding a
+        SimulationController back-reference. Resolves the dispatcher live and
+        degrades to `None` when there is no dispatcher or no lookup, matching
+        the manager's old inline behaviour."""
+        dispatcher = self.path_dispatcher
+        if dispatcher is None:
+            return None
+        getter = getattr(dispatcher, "get_active_path", None)
+        return getter(train_id) if callable(getter) else None
 
     # =========================================================================
     # Top-level update loop (per design_new.md "Core Runtime Loop")
