@@ -1097,8 +1097,7 @@ export class TrainEditorHandler {
         if (path) {
           pathName = path.path_id || assignedPathId;
           // Get destination: prefer station name, fallback to block name
-          const destinationBlockId =
-            path.authority_end_block_id || path.requested_destination_block_id;
+          const destinationBlockId = path.authority_end_block_id;
           if (path.end_platform_id || path.end_station_id) {
             const destinationPlatformId = path.end_platform_id || path.end_station_id;
             const platform = await this.api.getPlatform(destinationPlatformId);

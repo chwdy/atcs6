@@ -562,7 +562,6 @@ export class PathEditorHandler {
         p.resource_sequence?.length || 0,
         p.train_id,
         p.authority_end_block_id,
-        p.requested_destination_block_id,
       ])
     );
   }
@@ -594,9 +593,13 @@ export class PathEditorHandler {
     const currentIndex = path.current_resource_index ?? 0;
     const progress = totalSteps > 0 ? Math.round((currentIndex / totalSteps) * 100) : 0;
     const statusText = path.status.toUpperCase();
-    const direction = path.requested_destination_direction || 'forward';
-    const destination =
-      path.authority_end_block_id || path.requested_destination_block_id || '—';
+    // A Path record no longer carries the requested destination/direction it
+    // was acquired toward — that target belongs to the route run (its served
+    // task's resolved_target), not the Path. With no run detail on hand, the
+    // block falls back to the live authority end and the direction to the
+    // neutral 'forward'.
+    const direction = 'forward';
+    const destination = path.authority_end_block_id || '—';
     const dirTile = path.terminal_tile || null;
     const dirHeading = path.terminal_heading || null;
     const directionLabel = formatBlockDirection(direction, dirTile, dirHeading);
@@ -769,9 +772,11 @@ export class PathEditorHandler {
     const totalSteps = resources.length;
     const currentIndex = path.current_resource_index ?? 0;
     const progress = totalSteps > 0 ? Math.round((currentIndex / totalSteps) * 100) : 0;
-    const direction = path.requested_destination_direction || 'forward';
-    const destination =
-      path.authority_end_block_id || path.requested_destination_block_id || '—';
+    // Requested destination/direction belong to the route run, not the Path
+    // payload (see `renderPathListItem`); fall back to the live authority end
+    // and the neutral 'forward'.
+    const direction = 'forward';
+    const destination = path.authority_end_block_id || '—';
     const detailDirTile = path.terminal_tile || null;
     const detailDirHeading = path.terminal_heading || null;
     const detailDirCompact = formatBlockDirection(direction, detailDirTile, detailDirHeading);
@@ -1120,7 +1125,11 @@ export class PathEditorHandler {
     try {
       setStatusState('Extend Path: Extending...');
 
-      const direction = this.extendPathState.selectedPath?.requested_destination_direction || 'forward';
+      // A retarget defaults the arrival direction to 'forward'. The direction
+      // the path was originally acquired toward belongs to the route run, not
+      // the Path payload, so there is no prior value to read here; the extend
+      // API applies this same default when the field is omitted.
+      const direction = 'forward';
       const result = await this.api.extendPath(this.extendPathState.selectedPathId, {
         requested_destination_block_id: newEndBlockId,
         requested_destination_direction: direction,
@@ -1151,7 +1160,7 @@ export class PathEditorHandler {
     const exitDirText = exitDir ? this.getDirectionName(exitDir) : 'Unknown';
     const reachableCount = this.extendPathState.reachableEndpoints.length;
 
-    const currentEnd = route.authority_end_block_id || route.requested_destination_block_id || '—';
+    const currentEnd = route.authority_end_block_id || '—';
 
     const content = `
                 <div class="extend-route-panel">
@@ -1247,8 +1256,7 @@ export class PathEditorHandler {
       }
 
       const pathToCancel = matchingPaths[0];
-      const destination =
-        pathToCancel.authority_end_block_id || pathToCancel.requested_destination_block_id || '—';
+      const destination = pathToCancel.authority_end_block_id || '—';
       const detail =
         `Destination: ${destination}` +
         (pathToCancel.train_id ? `\nTrain: ${pathToCancel.train_id}` : '');
