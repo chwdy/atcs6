@@ -35,6 +35,14 @@
 
 import { api } from '../lib/api';
 import { showToast } from '../lib/toast';
+import {
+  VIRTUAL_FAULT_PAIRS,
+  clearFaultBody,
+  describeFaultRecord,
+  faultPairLabel,
+  injectFaultBody,
+  type VirtualFaultRecord,
+} from '../lib/virtual-hardware-faults';
 import { FloatingWindow, windowManager, type WindowGeometry } from '../lib/window-manager';
 import {
     browserWindowPersistenceEnv,
@@ -80,6 +88,9 @@ export interface BenchSnapshot {
     virtual_hardware_active?: boolean;
     blocks?: Record<string, BenchBlock>;
     switches?: Record<string, BenchSwitch>;
+    /** Operator faults currently injected — the source of truth for the panel.
+     *  `faults` is the low-level transport view the device also reports. */
+    injected_faults?: VirtualFaultRecord[];
     faults?: Record<string, boolean>;
 }
 
@@ -260,21 +271,6 @@ const FILTER_OPTIONS: Array<{ label: string; value: BenchFilter }> = [
     { label: 'Occupied only', value: 'occupied' },
 ];
 
-/** The device faults the fake accepts, in the order they are worth reaching for:
- *  losing the bridge, then a failing transaction, then an output that reports
- *  success and does nothing. Mirrors FakeCh347Device.ALLOWED_FAULTS minus
- *  `open_error`, which only bites at session build and cannot be exercised from
- *  a panel that needs the session already up. */
-const FAULT_KINDS: Array<{ kind: string; label: string; title: string }> = [
-    { kind: 'disconnect', label: 'Disconnect', title: 'The controller drops off the bus — every transaction raises.' },
-    { kind: 'i2c_read_error', label: 'I²C read', title: 'Detector current reads fail (INA channels).' },
-    { kind: 'i2c_write_error', label: 'I²C write', title: 'Track PWM writes fail (PCA9685 channels).' },
-    { kind: 'shift_read_error', label: 'Shift read', title: "Detector bit reads fail ('165 chains)." },
-    { kind: 'shift_write_error', label: 'Shift write', title: "Switch coil writes fail ('595 chains)." },
-    { kind: 'stuck_i2c_output', label: 'Stuck PWM', title: 'PWM writes report success and change nothing — the silent failure.' },
-    { kind: 'stuck_shift_output', label: 'Stuck coil', title: 'Coil writes report success and change nothing — the silent failure.' },
-];
-
 function escapeHtml(value: unknown): string {
     if (value === null || value === undefined) return '';
     return String(value)
@@ -307,6 +303,12 @@ class VirtualBench {
     private _snapshot: BenchSnapshot | null = null;
     private _rig: BenchRigStatus | null = null;
     private _rigDraft = '';
+    // Fault-injection drafts: the target id every inject button names, plus an
+    // optional operation (read/write) for a transaction fault. `_faultsSig` is
+    // the last-rendered injected list, so the poll only rebuilds it on change.
+    private _faultTargetDraft = '';
+    private _faultOpDraft = '';
+    private _faultsSig = '';
     /** The saved Hardware Setup, needed as the payload for the test endpoints.
      *  Fetched on open rather than polled — it changes only in the setup modal. */
     private _config: any = null;
@@ -613,7 +615,8 @@ class VirtualBench {
             case 'rig-advance': return this._rigCommand('advance');
             case 'rig-stall': return this._rigCommand('stall', { stalled: !this._rig?.stalled });
             case 'rig-remove': return this._rigCommand('remove');
-            case 'fault': return this._setFault(id, btn.dataset.on !== '1');
+            case 'fault-inject': return this._injectFault(Number(btn.dataset.fp));
+            case 'fault-clear-one': return this._clearOneFault(Number(btn.dataset.fi));
             case 'fault-clear': return this._clearFaults();
             default: return;
         }
@@ -734,12 +737,41 @@ class VirtualBench {
         }
     }
 
-    private async _setFault(kind: string, enabled: boolean): Promise<void> {
+    /** Read the fault target id + optional operation off the inputs, tracking
+     *  them so they survive a surgical poll (like the rig draft). */
+    private _readFaultDraft(): { targetId: string; operation: string } {
+        const t = this._bodyEl.querySelector<HTMLInputElement>('[data-role="fault-target"]');
+        const o = this._bodyEl.querySelector<HTMLInputElement>('[data-role="fault-op"]');
+        this._faultTargetDraft = t?.value ?? this._faultTargetDraft;
+        this._faultOpDraft = o?.value ?? this._faultOpDraft;
+        return { targetId: this._faultTargetDraft, operation: this._faultOpDraft };
+    }
+
+    private async _injectFault(pairIndex: number): Promise<void> {
+        const pair = VIRTUAL_FAULT_PAIRS[pairIndex];
+        if (!pair) return;
+        const { targetId, operation } = this._readFaultDraft();
+        const body = injectFaultBody(pair, targetId, operation);
+        if (!body) {
+            showToast('Enter a target id before injecting a fault.', 'warning');
+            return;
+        }
         try {
-            await api.setVirtualHardwareFault(kind, enabled);
+            await api.setVirtualHardwareFault(body);
             await this._pollOnce(true);
         } catch (err: any) {
-            showToast(err?.message || `Could not inject ${kind}.`, 'error');
+            showToast(err?.message || `Could not inject ${pair.fault}.`, 'error');
+        }
+    }
+
+    private async _clearOneFault(index: number): Promise<void> {
+        const record = this._snapshot?.injected_faults?.[index];
+        if (!record) return;
+        try {
+            await api.setVirtualHardwareFault(clearFaultBody(record));
+            await this._pollOnce(true);
+        } catch (err: any) {
+            showToast(err?.message || 'Could not clear fault.', 'error');
         }
     }
 
@@ -831,9 +863,7 @@ class VirtualBench {
             text = 'This session is not running Virtual Hardware. Select it in Hardware Setup and activate.';
             tone = 'warn';
         } else {
-            const faults = Object.entries(this._snapshot?.faults || {})
-                .filter(([, on]) => on)
-                .map(([kind]) => kind.split('_').join(' '));
+            const faults = (this._snapshot?.injected_faults ?? []).map(describeFaultRecord);
             if (faults.length) {
                 text = `Injected: ${faults.join(', ')} — the rig is failing on purpose.`;
                 tone = 'danger';
@@ -1095,12 +1125,16 @@ class VirtualBench {
     }
 
     private _updateFaults(): void {
-        const faults = this._snapshot?.faults || {};
-        this._bodyEl.querySelectorAll<HTMLButtonElement>('[data-role="fault"]').forEach((btn) => {
-            const on = !!faults[btn.dataset.id || ''];
-            btn.classList.toggle('is-on', on);
-            btn.dataset.on = on ? '1' : '0';
-        });
+        // Only the injected list changes on a poll; the inject buttons and the
+        // target inputs are static. Rebuild the list only when it actually
+        // changed, so a Clear button under the pointer is not replaced mid-press.
+        const container = this._bodyEl.querySelector('[data-role="fault-injected"]');
+        if (!container) return;
+        const html = this._injectedHtml();
+        if (this._faultsSig !== html) {
+            container.innerHTML = html;
+            this._faultsSig = html;
+        }
     }
 
     /** The deliberately-disagree controls: set one source without the other.
@@ -1196,21 +1230,36 @@ class VirtualBench {
         </section>`;
     }
 
+    private _injectedHtml(): string {
+        const injected = this._snapshot?.injected_faults ?? [];
+        if (!injected.length) return '<span class="vb-section-note">none injected</span>';
+        return injected.map((r, i) =>
+            `<span class="vb-fault-active">${escapeHtml(describeFaultRecord(r))}
+                <button type="button" class="vb-btn" data-role="fault-clear-one" data-fi="${i}">Clear</button></span>`
+        ).join('');
+    }
+
     private _faultsHtml(): string {
-        const faults = this._snapshot?.faults || {};
-        const buttons = FAULT_KINDS.map(({ kind, label, title }) => {
-            const on = !!faults[kind];
-            return `<button type="button" class="vb-btn vb-fault${on ? ' is-on' : ''}"
-                data-role="fault" data-id="${escapeHtml(kind)}" data-on="${on ? '1' : '0'}"
-                title="${escapeHtml(title)}">${escapeHtml(label)}</button>`;
-        }).join('');
+        // One button per valid (target, fault) pair; each injects against the id
+        // in the target field. The injected list below is the live truth.
+        const buttons = VIRTUAL_FAULT_PAIRS.map((pair, i) =>
+            `<button type="button" class="vb-btn" data-role="fault-inject" data-fp="${i}"
+                >${escapeHtml(faultPairLabel(pair))}</button>`
+        ).join('');
         return `<section class="vb-section">
             <div class="vb-section-head">Device faults
                 <span class="vb-section-note">injected below the HAL — the app meets them exactly as it would a real failure</span>
             </div>
+            <div class="vb-strip">
+                <input type="text" class="vb-input vb-input-wide" data-role="fault-target"
+                    value="${escapeHtml(this._faultTargetDraft)}" placeholder="target id (e.g. IN1, SW_3)" />
+                <input type="text" class="vb-input" data-role="fault-op"
+                    value="${escapeHtml(this._faultOpDraft)}" placeholder="op: read/write (optional)" />
+            </div>
             <div class="vb-strip">${buttons}
                 <button type="button" class="vb-btn" data-role="fault-clear">Clear all</button>
             </div>
+            <div class="vb-strip" data-role="fault-injected">${this._injectedHtml()}</div>
         </section>`;
     }
 

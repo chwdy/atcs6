@@ -820,9 +820,10 @@ export class SpeedProfileEditorHandler {
   // design_new.md "Speed calibration". The pass times the locomotive across one
   // operator-named measured block and turns it around at each end itself, so a
   // plain length of track measures a locomotive with no loop to lap. It writes
-  // nothing until the operator picks a commit target: Replace gives every
-  // locomotive of the model the measurement, Save as new forks a profile for a
-  // locomotive that does not run like the rest of its model.
+  // nothing until the operator picks a commit target: Save to this locomotive
+  // writes the measurement onto this loco's instance profile alone, Promote to
+  // model writes it onto the model profile every locomotive of that model
+  // shares (and clears this loco's override).
 
   private _calPoll: number | null = null;
 
@@ -1085,53 +1086,44 @@ export class SpeedProfileEditorHandler {
     const points = (run.samples || [])
       .map((s: any) => `${s.power_percent}% → ${s.speed_kmh.toFixed(1)} km/h`)
       .join('<br>');
+    const modelName = (this._profile!.model || '').trim();
+    const modelLabel = modelName ? escapeAttr(modelName) : 'this model';
     body.innerHTML = `
       <div class="app-modal-message">Measured ${run.samples.length} points.</div>
       <div class="text-muted text-xs mb-8">${points}</div>
-      <div class="input-small-row mb-8">
-        <label class="input-small-label input-small-label-inline" for="sp-cal-model">Model</label>
-        <input type="text" id="sp-cal-model" class="input-small-field input-small-field-compact" value="${escapeAttr(this._profile!.model || '')}" placeholder="e.g. Kato EF66">
-      </div>
-      <div class="input-small-row mb-8">
-        <label class="input-small-label input-small-label-inline" for="sp-cal-name">New profile name</label>
-        <input type="text" id="sp-cal-name" class="input-small-field input-small-field-compact" placeholder="only used by Save as new">
-      </div>`;
+      <div class="text-muted text-xs mb-8">Save to this locomotive changes only this loco. Promote to model updates every locomotive of ${modelLabel} and clears this loco's own override.</div>`;
     footer.innerHTML = `
       <button class="btn btn-secondary btn-sm" id="sp-cal-discard">Discard</button>
-      <button class="btn btn-secondary btn-sm" id="sp-cal-new">Save as new profile</button>
-      <button class="btn btn-primary btn-sm" id="sp-cal-replace">Replace this profile</button>`;
+      <button class="btn btn-secondary btn-sm" id="sp-cal-model">Promote to model</button>
+      <button class="btn btn-primary btn-sm" id="sp-cal-locomotive">Save to this locomotive</button>`;
 
-    const modelEl = body.querySelector('#sp-cal-model') as HTMLInputElement;
-    const nameEl = body.querySelector('#sp-cal-name') as HTMLInputElement;
-
-    const commit = async (target: string) => {
+    const commit = async (target: 'locomotive' | 'model') => {
       let result: any;
       try {
-        result = await this.api.commitCalibration(train.id, {
-          target,
-          name: nameEl.value.trim(),
-          model: modelEl.value.trim(),
-        });
+        result = await this.api.commitCalibration(train.id, target);
       } catch (err: any) {
         showToast(err.message || 'Commit failed', 'error', 6000);
         return;
       }
       overlay.remove();
       showToast(
-        target === 'new' ? 'Saved as a new profile' : 'Profile updated',
+        target === 'model'
+          ? 'Promoted to the model profile'
+          : 'Saved to this locomotive',
         'success',
         4000
       );
-      // Save as new wrote a different profile and relinked the train to it, so
-      // open the one that was actually written rather than the one on screen.
+      // Promote to model wrote a different profile (the model's) and cleared
+      // this loco's override, so open the profile that was actually written
+      // rather than the one on screen.
       const written = result?.profile?.profile_id || this._profile!.profile_id;
       this.showProfileEditor(written);
     };
 
-    (footer.querySelector('#sp-cal-replace') as HTMLButtonElement).onclick = () =>
-      commit('replace');
-    (footer.querySelector('#sp-cal-new') as HTMLButtonElement).onclick = () =>
-      commit('new');
+    (footer.querySelector('#sp-cal-locomotive') as HTMLButtonElement).onclick = () =>
+      commit('locomotive');
+    (footer.querySelector('#sp-cal-model') as HTMLButtonElement).onclick = () =>
+      commit('model');
     (footer.querySelector('#sp-cal-discard') as HTMLButtonElement).onclick = async () => {
       await this.api.cancelCalibration(train.id).catch(() => {});
       overlay.remove();

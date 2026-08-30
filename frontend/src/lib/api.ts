@@ -11,6 +11,7 @@
 // Caller-supplied fetch options plus the custom `returnNullOn404` flag stripped
 // before the request reaches fetch().
 import type { LayoutDataClient, SimClient } from './layout-data-client';
+import type { VirtualFaultRequest } from './virtual-hardware-faults';
 
 interface RequestOptions {
   method?: string;
@@ -202,8 +203,8 @@ export class API implements LayoutDataClient, SimClient {
   // A pass measures a locomotive's power/speed response by timing it across an
   // operator-named measured block, turning it around at each end. It writes
   // nothing until `commitCalibration` — the operator picks whether the result
-  // replaces the linked profile (every locomotive of that model gets it) or
-  // forks a new one.
+  // writes onto this locomotive alone (its instance profile) or is promoted to
+  // the model profile every locomotive of that model shares.
 
   /** The two outer blocks a measured block resolves to, plus its length. Shown
    *  before Start so the operator sees which stretch the train will run. */
@@ -245,12 +246,16 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
-  /** `target` is 'replace' or 'new'; 'new' also relinks the train and its
-   *  roster entry to the profile it creates. */
-  async commitCalibration(trainId: string, body: Record<string, unknown>): Promise<any> {
+  /** Write the measured pass onto a profile. `target` picks which:
+   *  'locomotive' (Save to this locomotive) writes the two measured fields onto
+   *  this locomotive's instance profile, so only this loco changes; 'model'
+   *  (Promote to model) writes them onto the model profile the instance derives
+   *  from and clears the instance override, so every locomotive of that model
+   *  gets the measurement. */
+  async commitCalibration(trainId: string, target: 'locomotive' | 'model'): Promise<any> {
     return this._request(
       `/trains/${trainId}/calibrate/commit`,
-      { method: 'POST', body },
+      { method: 'POST', body: { target } },
       'commitCalibration'
     );
   }
@@ -811,10 +816,13 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
-  async setVirtualHardwareFault(kind: string, enabled: boolean): Promise<any> {
+  /** Inject or clear one operator fault below the real HAL. `request` is a
+   *  VirtualFaultRequest `{action, target_kind, target_id, operation?, fault?}`
+   *  — build it with `injectFaultBody` / `clearFaultBody`. */
+  async setVirtualHardwareFault(request: VirtualFaultRequest): Promise<any> {
     return this._request(
       '/virtual-hardware/fault',
-      { method: 'PUT', body: { kind, enabled } },
+      { method: 'PUT', body: request },
       'setVirtualHardwareFault'
     );
   }
@@ -1696,9 +1704,13 @@ export class API implements LayoutDataClient, SimClient {
    * stop. Callers should refresh from /api/paths or /api/network on the
    * next tick rather than mutating local state synchronously.
    *
-   * Paths with no assigned train still cancel synchronously and resolve
-   * with a CancellationResult (success, path_id, cancellation_kind,
-   * reason, released_block_ids, released_switch_ids, train_id, notes).
+   * A valid request always latches (v1 paths always carry a train), so the
+   * DELETE response is the queued acknowledgement the route builds itself —
+   * ``{success: true, status: "queued", path_id, train_id}`` — not a
+   * serialized CancellationResult. The ACTIVE->CANCELLED commit happens later
+   * in the tick; the internal CancellationResult's own outcome flag is
+   * ``committed`` (renamed from ``success``), but that object is never returned
+   * over HTTP, so callers here read the route's ``success`` field above.
    */
   async cancelPath(pathId: string): Promise<any> {
     return this._request(

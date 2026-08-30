@@ -27,6 +27,14 @@
  */
 import { api } from '../lib/api';
 import { showToast } from '../lib/toast';
+import {
+  VIRTUAL_FAULT_PAIRS,
+  clearFaultBody,
+  describeFaultRecord,
+  faultPairLabel,
+  injectFaultBody,
+  type VirtualFaultRecord,
+} from '../lib/virtual-hardware-faults';
 
 const BUS_ORDER = ['i2c', 'spi', 'gpio'] as const;
 const BUS_LABEL: Record<string, string> = { i2c: 'I²C', spi: 'SPI', gpio: 'GPIO' };
@@ -94,6 +102,9 @@ interface DevReadback {
     current_ma: number | null; volts: number | null; occupied: boolean | null;
   }>;
   switches?: Record<string, any>;
+  /** Operator faults currently injected (the source of truth for the panel).
+   *  `faults` below is the low-level transport view the device also reports. */
+  injected_faults?: VirtualFaultRecord[];
   faults?: Record<string, boolean>;
 }
 export interface DevRow {
@@ -171,6 +182,10 @@ let environmentInfo: EnvironmentInfo = {
 let activationReadiness: any = { ready: true, issues: [] };
 let virtualRig: any = null;
 let virtualRigBlocksDraft = '';
+// Drafts for the fault-injection controls: the target id every inject button
+// names, and an optional operation (read/write) for a transaction fault.
+let faultTargetDraft = '';
+let faultOperationDraft = '';
 let devPollTimer: any = null;
 
 // Layout coverage, refreshed with the config each time the modal opens.
@@ -994,15 +1009,25 @@ function devSectionHtml(): string {
       <span class="hw-stage-title">Virtual Hardware controls</span></div>
     <p class="hw-stage-desc">Drive the configured detector channels, place a virtual train, or inject a device fault. These controls exercise the same HAL and safety paths as Real Hardware.</p>`;
   const rows = devRows(devBindings, devReadback);
-  const faultKinds = [
-    'disconnect', 'i2c_write_error', 'i2c_read_error',
-    'shift_write_error', 'shift_read_error',
-    'stuck_i2c_output', 'stuck_shift_output',
-  ];
-  const faults = `<div class="hw-dev-rows"><div class="hw-dev-row"><span class="hw-dev-block">Faults</span><span class="hw-dev-read">${faultKinds.map((kind) => {
-    const active = !!devReadback?.faults?.[kind];
-    return `<button type="button" class="btn hw-btn-sm ${active ? 'btn-accent' : 'btn-secondary'}" data-hw="dev-fault" data-id="${kind}">${kind.split('_').join(' ')}</button>`;
-  }).join(' ')} <button type="button" class="btn hw-btn-sm btn-secondary" data-hw="dev-fault-clear">Clear all</button></span></div></div>`;
+  // Each button injects one valid (target, fault) pair against the id in the
+  // target field; the injected list below is the live source of truth.
+  const injectButtons = VIRTUAL_FAULT_PAIRS.map((pair, i) =>
+    `<button type="button" class="btn hw-btn-sm btn-secondary" data-hw="dev-fault-inject" data-fp="${i}">${esc(faultPairLabel(pair))}</button>`
+  ).join(' ');
+  const injected = devReadback?.injected_faults ?? [];
+  const injectedList = injected.length
+    ? injected.map((r, i) =>
+        `<span>${esc(describeFaultRecord(r))} <button type="button" class="btn hw-btn-sm btn-accent" data-hw="dev-fault-clear-one" data-fi="${i}">Clear</button></span>`
+      ).join(' ')
+    : '<span class="hw-dev-na">none injected</span>';
+  const faults = `<div class="hw-dev-rows">
+    <div class="hw-dev-row"><span class="hw-dev-block">Fault target</span><span class="hw-dev-read">
+      <input type="text" class="setting-input-compact" data-hw="dev-fault-target" value="${esc(faultTargetDraft)}" placeholder="target id (e.g. IN1, SW_3)" />
+      <input type="text" class="setting-input-compact" data-hw="dev-fault-op" value="${esc(faultOperationDraft)}" placeholder="op: read/write (optional)" /></span></div>
+    <div class="hw-dev-row"><span class="hw-dev-block">Inject fault</span><span class="hw-dev-read">${injectButtons}
+      <button type="button" class="btn hw-btn-sm btn-secondary" data-hw="dev-fault-clear">Clear all</button></span></div>
+    <div class="hw-dev-row"><span class="hw-dev-block">Injected</span><span class="hw-dev-read">${injectedList}</span></div>
+  </div>`;
   const rigStatus = virtualRig?.active
     ? `${virtualRig.block_id}${virtualRig.stalled ? ' · stalled' : ' · moving by steps'}`
     : 'no virtual train';
@@ -1427,7 +1452,8 @@ async function onClick(e: Event): Promise<void> {
     case 'activate': return void activateEnvironment();
     case 'dev-occ': return void toggleDevOccupancy(id);
     case 'dev-current': return void setDevCurrent(id);
-    case 'dev-fault': return void toggleDevFault(id);
+    case 'dev-fault-inject': return void injectDevFault(Number(target.dataset.fp));
+    case 'dev-fault-clear-one': return void clearOneDevFault(Number(target.dataset.fi));
     case 'dev-fault-clear': return void clearDevFaults();
     case 'dev-rig-start': return void commandVirtualRig('start');
     case 'dev-rig-advance': return void commandVirtualRig('advance');
@@ -1447,6 +1473,8 @@ function onChange(e: Event): void {
   else if (t.dataset.hw === 'addr') { setAddress(id, (t as HTMLInputElement).value); }
   else if (t.dataset.hw === 'ports') { setPorts(id, (t as HTMLInputElement).value); }
   else if (t.dataset.hw === 'dev-rig-blocks') { virtualRigBlocksDraft = (t as HTMLInputElement).value; }
+  else if (t.dataset.hw === 'dev-fault-target') { faultTargetDraft = (t as HTMLInputElement).value; }
+  else if (t.dataset.hw === 'dev-fault-op') { faultOperationDraft = (t as HTMLInputElement).value; }
   else if (t.dataset.hw === 'polarity') {
     setChip(id, (c) => { c.active_low = (t as HTMLInputElement).value === 'low'; });
   }
@@ -1598,13 +1626,30 @@ async function setDevCurrent(id: string): Promise<void> {
   }
 }
 
-async function toggleDevFault(kind: string): Promise<void> {
-  const enabled = !devReadback?.faults?.[kind];
+async function injectDevFault(pairIndex: number): Promise<void> {
+  const pair = VIRTUAL_FAULT_PAIRS[pairIndex];
+  if (!pair) return;
+  const body = injectFaultBody(pair, faultTargetDraft, faultOperationDraft);
+  if (!body) {
+    showToast('Enter a target id before injecting a fault.', 'warning', 3000);
+    return;
+  }
   try {
-    await api.setVirtualHardwareFault(kind, enabled);
+    await api.setVirtualHardwareFault(body);
     await pollDev();
   } catch (e: any) {
-    showToast(e?.message || 'Failed to set Virtual Hardware fault.', 'error', 3000);
+    showToast(e?.message || 'Failed to inject Virtual Hardware fault.', 'error', 3000);
+  }
+}
+
+async function clearOneDevFault(faultIndex: number): Promise<void> {
+  const record = devReadback?.injected_faults?.[faultIndex];
+  if (!record) return;
+  try {
+    await api.setVirtualHardwareFault(clearFaultBody(record));
+    await pollDev();
+  } catch (e: any) {
+    showToast(e?.message || 'Failed to clear Virtual Hardware fault.', 'error', 3000);
   }
 }
 
@@ -1651,7 +1696,10 @@ async function pollDev(): Promise<void> {
       virtualRig = rig?.scenario ?? null;
       // Don't clobber a current-mA field the user is editing.
       const active = document.activeElement as HTMLElement | null;
-      if (active?.getAttribute?.('data-hw') !== 'dev-current-in') render();
+      // Don't clobber a text field the user is mid-edit in (current mA, or a
+      // fault target / operation).
+      const editing = active?.getAttribute?.('data-hw');
+      if (editing !== 'dev-current-in' && editing !== 'dev-fault-target' && editing !== 'dev-fault-op') render();
     }
   } catch { /* transient */ }
 }
