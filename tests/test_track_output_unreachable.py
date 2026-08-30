@@ -14,7 +14,6 @@ and reports the refusal once per block.
 
 from block_power import BlockPowerController
 from enums import OperationMode
-from runtime_payloads import HardwareFailure
 from tests.test_unidentified_trains import build_sim
 
 
@@ -60,8 +59,10 @@ def test_a_refused_write_never_claims_the_block_is_energized():
     assert sim.hardware_failure is True
     assert sim.failed_runtime is False
     assert sim.runtime_halted is True
-    assert isinstance(sim.hardware_failure_payload, HardwareFailure)
-    assert sim.hardware_failure_payload.resource_id == "BLK_1"
+    # The failing block is named by the emitted event; the halt retains no payload.
+    hw_event = sim.notification_center.latest_by_operation("enter_hardware_failure")
+    assert hw_event is not None
+    assert hw_event.payload["resource_id"] == "BLK_1"
 
 
 def test_a_hardware_failure_cannot_be_cleared_in_place():
@@ -99,12 +100,45 @@ def test_a_hardware_failure_clears_once_the_environment_is_reactivated():
     sim.environment_activation_generation = (
         sim.hardware_failure_activation_generation + 1
     )
-    cleared = sim.clear_hardware_failure()
-
-    assert isinstance(cleared, HardwareFailure)
-    assert cleared.resource_id == "BLK_1"
+    # The clear returns nothing: the halt kept no payload to hand back.
+    assert sim.clear_hardware_failure() is None
     assert sim.hardware_failure is False
     assert sim.runtime_halted is False
+
+
+def test_the_halt_retains_only_the_generation_int_not_a_payload():
+    """Across ticks the halt keeps only `hardware_failure_activation_generation`;
+    its diagnostic lives in the event stream, and recovery still works
+    (design_new.md "Power", Hardware I/O failure — "It retains no ErrorRecord or
+    second diagnostic payload across ticks"; "Error events")."""
+    _network, sim, pc = power_controller({"BLK_1"})
+    sim.operation_mode = OperationMode.VIRTUAL_HARDWARE
+
+    assert pc.set_block_voltage("BLK_1", 10.0) is False
+
+    # No retained ErrorRecord payload or timestamp remains on the controller.
+    assert not hasattr(sim, "hardware_failure_payload")
+    assert not hasattr(sim, "hardware_failure_at")
+    # Only the generation int is retained, capturing the activation it failed
+    # against.
+    assert sim.hardware_failure is True
+    assert (
+        sim.hardware_failure_activation_generation
+        == sim.environment_activation_generation
+    )
+    # The diagnostic reached the one event stream instead.
+    hw_event = sim.notification_center.latest_by_operation("enter_hardware_failure")
+    assert hw_event is not None
+    assert hw_event.kind == "error"
+    assert hw_event.payload["resource_id"] == "BLK_1"
+
+    # Recovery still works: reactivate, then clear.
+    sim.environment_active = True
+    sim.environment_activation_generation = (
+        sim.hardware_failure_activation_generation + 1
+    )
+    assert sim.clear_hardware_failure() is None
+    assert sim.hardware_failure is False
 
 
 def test_a_landed_write_still_records_its_voltage():

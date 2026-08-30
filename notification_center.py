@@ -418,6 +418,21 @@ class NotificationCenter:
             out.append(n)
         return out
 
+    def latest_by_operation(self, operation: str) -> Optional[Notification]:
+        """The most recent retained event whose `operation` matches, or `None`.
+
+        A read over the one stream (design_new.md "Runtime notifications"). A
+        status surface that wants the current detail of a latched condition — the
+        hardware-failure halt banner reads the last `enter_hardware_failure`
+        event this way — filters the stream for the writer's own event instead of
+        reading a retained diagnostic field, so the controller keeps no second
+        copy of that detail. It acknowledges nothing and empties nothing.
+        """
+        for n in reversed(self._archive):
+            if n.operation == operation:
+                return n
+        return None
+
     def _trim_archive(self) -> None:
         """Keep the most recent `NOTIFICATION_RETENTION_ROWS` events and drop
         the oldest beyond that (design_new.md "Runtime notifications",

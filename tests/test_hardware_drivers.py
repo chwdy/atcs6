@@ -103,7 +103,6 @@ def test_virtual_device_can_inject_transport_and_stuck_output_faults():
 
 
 def test_virtual_transport_fault_enters_the_runtime_hardware_failure_path():
-    from runtime_payloads import HardwareFailure
     from tests.test_unidentified_trains import build_sim
 
     network, sim, _detector = build_sim()
@@ -125,7 +124,10 @@ def test_virtual_transport_fault_enters_the_runtime_hardware_failure_path():
 
     assert sim.power_controller.set_block_voltage("BLK_0", 8.0) is False
     assert sim.hardware_failure is True
-    assert isinstance(sim.hardware_failure_payload, HardwareFailure)
+    # The failure detail rides the event stream, not a retained field.
+    hw_event = sim.notification_center.latest_by_operation("enter_hardware_failure")
+    assert hw_event is not None
+    assert hw_event.payload["resource_id"] == "BLK_0"
     assert dev.duty_cycle(0x40, 0) == 0.0
 
 

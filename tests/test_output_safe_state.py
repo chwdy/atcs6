@@ -134,7 +134,10 @@ def test_an_unreachable_block_is_still_fatal():
     assert sim.power_controller.set_block_voltage("BLK_NOT_BOUND", 6.0) is False
 
     assert sim.hardware_failure is True
-    assert sim.hardware_failure_payload.resource_id == "BLK_NOT_BOUND"
+    # The unreachable block is named by the emitted event, not a retained field.
+    hw_event = sim.notification_center.latest_by_operation("enter_hardware_failure")
+    assert hw_event is not None
+    assert hw_event.payload["resource_id"] == "BLK_NOT_BOUND"
 
 
 def test_a_device_error_is_still_fatal():

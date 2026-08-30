@@ -168,8 +168,13 @@ class SimulationController(SwitchOutputOwner):
         # hardware failure revoked output permission, and only activation grants
         # that again, so reactivation is the whole of its recovery surface.
         self.hardware_failure: bool = False
-        self.hardware_failure_payload: Optional["HardwareFailure"] = None
-        self.hardware_failure_at: Optional[float] = None
+        # The halt retains only the bool latch above and the activation
+        # generation it failed against (`hardware_failure_activation_generation`,
+        # below). It keeps no ErrorRecord or timestamp: the diagnostic lives in
+        # the event stream, and every "what went wrong here" read filters that
+        # one stream (design_new.md "Error events"; "Power", Hardware I/O
+        # failure — "It retains no ErrorRecord or second diagnostic payload
+        # across ticks").
 
         # TrainController + TrainPhysics instances (shared across components)
         self.controllers: Dict[str, TrainController] = {}
@@ -2584,11 +2589,11 @@ class SimulationController(SwitchOutputOwner):
             logger.exception("hardware safe-state command failed")
         finally:
             self.hardware_failure = True
-            self.hardware_failure_payload = payload
-            self.hardware_failure_at = self.simulation_time
             # Record which activation generation this failure was raised
             # against, so a later reader can tell it apart from one latched
-            # before the most recent activation.
+            # before the most recent activation. This int is the only state the
+            # halt retains across ticks; the diagnostic detail (`payload`) is
+            # carried by the event emitted just below, not stored on `self`.
             self.hardware_failure_activation_generation = (
                 self.environment_activation_generation
             )
@@ -2621,7 +2626,7 @@ class SimulationController(SwitchOutputOwner):
             },
         )
 
-    def clear_hardware_failure(self) -> "HardwareFailure":
+    def clear_hardware_failure(self) -> None:
         """Release the hardware halt. The only writer of
         ``hardware_failure = False`` (design_new.md "Power", Hardware I/O
         failure).
@@ -2633,8 +2638,9 @@ class SimulationController(SwitchOutputOwner):
         nothing to clear in place, which is why
         :meth:`clear_failed_runtime` does not clear this flag.
 
-        Returns:
-            The failure payload that caused the halt.
+        Returns nothing: the halt retains no failure payload to hand back. Its
+        diagnostic was emitted once into the event stream when it latched, and
+        that is where any surface reads it (design_new.md "Error events").
 
         Raises:
             ValueError: If there is no hardware halt, or the environment has
@@ -2660,10 +2666,7 @@ class SimulationController(SwitchOutputOwner):
                 "repair the hardware, activate again, then clear"
             )
 
-        payload = self.hardware_failure_payload
         self.hardware_failure = False
-        self.hardware_failure_payload = None
-        self.hardware_failure_at = None
 
         self.notification_center.emit(
             source="SimulationController",
@@ -2672,19 +2675,8 @@ class SimulationController(SwitchOutputOwner):
             message=(
                 "hardware failure cleared after the environment was reactivated"
             ),
-            entities=(
-                [_hardware_entity_ref(payload)]
-                if payload is not None and _hardware_entity_ref(payload) is not None
-                else []
-            ),
             event_time=time.time(),
-            payload={
-                "component": payload.component if payload else None,
-                "operation": payload.operation if payload else None,
-                "resource_id": payload.resource_id if payload else None,
-            },
         )
-        return payload
 
     def clear_failed_runtime(self) -> FatalPhysicalEntryConflict:
         """Release the halt so the session can carry on, with every train off.
@@ -2940,28 +2932,43 @@ def build_network_payload(
     )
     # The hardware I/O halt is its own latch on the same gate, so the banner
     # asks "is the runtime halted" as the OR of the two and reads
-    # `failed_runtime_kind` to say which one it is.
-    hardware_failure = sim_controller.hardware_failure_payload
-    payload["hardware_failure"] = bool(sim_controller.hardware_failure)
+    # `failed_runtime_kind` to say which one it is. The latch itself retains only
+    # the bool; the diagnostic detail lives in the event stream, so the banner
+    # filters that stream for the last `enter_hardware_failure` event rather than
+    # reading a retained payload field (design_new.md "Error events"; "Power",
+    # Hardware I/O failure).
+    hw_halted = bool(sim_controller.hardware_failure)
+    hw_event = (
+        sim_controller.notification_center.latest_by_operation(
+            "enter_hardware_failure"
+        )
+        if hw_halted
+        else None
+    )
+    payload["hardware_failure"] = hw_halted
     payload["runtime_halted"] = bool(
         sim_controller.failed_runtime or sim_controller.hardware_failure
     )
     payload["failed_runtime_kind"] = (
         "hardware_failure"
-        if hardware_failure is not None
+        if hw_halted
         else "physical_entry_conflict" if fatal is not None else None
     )
-    payload["failed_runtime_hardware_failure"] = (
-        {
-            "component": hardware_failure.component,
-            "operation": hardware_failure.operation,
-            "resource_id": hardware_failure.resource_id,
-            "message": hardware_failure.message,
-            "halted_at_sim_time": sim_controller.hardware_failure_at,
+    if not hw_halted:
+        payload["failed_runtime_hardware_failure"] = None
+    elif hw_event is not None:
+        payload["failed_runtime_hardware_failure"] = {
+            "component": hw_event.payload.get("component"),
+            "operation": hw_event.payload.get("operation"),
+            "resource_id": hw_event.payload.get("resource_id"),
+            "message": hw_event.payload.get("message"),
             "requires_new_activation": True,
         }
-        if hardware_failure is not None
-        else None
-    )
+    else:
+        # Latched, but the event aged out of the archive: the halt is still real,
+        # so keep the banner's recovery instruction even without the detail.
+        payload["failed_runtime_hardware_failure"] = {
+            "requires_new_activation": True,
+        }
 
     return payload

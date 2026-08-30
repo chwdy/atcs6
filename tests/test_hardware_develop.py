@@ -748,9 +748,15 @@ def test_commissioning_enter_reports_a_rig_it_could_not_safe(client):
     failures = data["safe_state"]["failures"]
     assert {line.split(":")[0] for line in failures} == {"sw1", "pwm1"}
     assert all("disconnected" in line for line in failures)
-    # Latched as the fatal it is, through the one writer of that flag.
+    # Latched as the fatal it is, through the one writer of that flag. The halt
+    # keeps no diagnostic payload; the component that failed is carried by the
+    # event it emitted (design_new.md "Power", Hardware I/O failure).
     assert state.sim_controller.hardware_failure is True
-    assert state.sim_controller.hardware_failure_payload.component == "OutputSafety"
+    hw_event = state.sim_controller.notification_center.latest_by_operation(
+        "enter_hardware_failure"
+    )
+    assert hw_event is not None
+    assert hw_event.payload["component"] == "OutputSafety"
     assert state.sim_controller.environment_active is False
     # ...and commissioning still owns the device, which is the point.
     assert state.commissioning_active is True
