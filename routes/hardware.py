@@ -846,10 +846,14 @@ def register(app, state: AppState) -> None:
         try:
             # Borrow the running session's controller when there is one; a
             # second open of the same USB endpoint is refused by the driver.
+            # `timeout_seconds` is the commissioning `enter` body's idle window,
+            # bounded by COMMISSION_MAX_SESSION_SECONDS; an out-of-bound request
+            # raises and is reported below rather than opening the session.
             commission.get_session().open(
                 cfg,
                 open_device=_develop_opener(cfg),
                 device=hardware_config.get_live_device(),
+                timeout_seconds=data.get("timeout_seconds"),
             )
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)})
