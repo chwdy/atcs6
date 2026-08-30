@@ -86,6 +86,37 @@ def test_adoption_re_keys_the_train_across_every_registry():
     assert network.blocks["BLK_1"].occupied_by == "BR218"
 
 
+def test_rekey_rewrites_a_switch_route_owner_to_the_new_id():
+    """A switch records its occupant(s) in `route_owners` (route key -> train
+    id); `occupied_by` is a read-only projection over that map (design_new.md
+    "Switch entity"). An id-rename must rewrite the map so a switch the train
+    occupies ends up owned by the new id, leaving no stale old id behind.
+
+    The previous code read a non-existent `physical_occupants` attribute (always
+    `None`), so the map was never touched, and its sibling line tried to assign
+    the read-only `occupied_by` property — which raises `AttributeError` the
+    moment a switch is actually owned by the renamed id, as it is here.
+    """
+    from switch import Switch
+    from train import Train
+
+    network, sim, detector = build_sim()
+
+    # A train the runtime knows about, standing on a switch: the switch carries
+    # one route owned by that train's id.
+    network.trains["OLD"] = Train(train_id="OLD")
+    switch = Switch(switch_id="SW_1", x=0, y=0)
+    route = frozenset({"N", "S"})
+    switch.route_owners[route] = "OLD"
+    network.switches["SW_1"] = switch
+
+    sim._rekey_train("OLD", "NEW", held_blocks=[])
+
+    assert switch.route_owners[route] == "NEW"
+    assert "OLD" not in switch.route_owners.values()
+    assert network.trains["NEW"].train_id == "NEW"
+
+
 def test_the_adopted_train_keeps_standing_on_the_blocks_it_held():
     """The block must never go FREE in the handover — the locomotive is still
     on it, and the edge-triggered detector would never re-report it."""

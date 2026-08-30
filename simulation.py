@@ -181,8 +181,9 @@ class SimulationController(SwitchOutputOwner):
         self._detected_change_train_ids: Set[str] = set()
 
         # Wall time of the previous pass of the runtime loop, running or
-        # stopped. A stopped pass has no `delta_seconds` of its own, so this is
-        # what its `occupied_seconds` accrual measures against — see
+        # stopped. Every pass's `occupied_seconds` accrual measures the unscaled
+        # wall seconds against it — running and stopped alike, never the
+        # playback-scaled physics delta — see
         # `_accrue_block_occupied_seconds()`. `None` until the first pass.
         self._last_pass_wall_time: Optional[float] = None
 
@@ -490,7 +491,7 @@ class SimulationController(SwitchOutputOwner):
 
             self._settle_after_commits()
 
-            self._accrue_block_occupied_seconds(delta_seconds)
+            self._accrue_block_occupied_seconds()
 
             net.bump_lookahead_world_version()
         finally:
@@ -501,9 +502,7 @@ class SimulationController(SwitchOutputOwner):
         `AppState` wired. See `operating_clock` in `__init__`."""
         self._operating_time_local += max(delta_seconds, 0.0)
 
-    def _accrue_block_occupied_seconds(
-        self, delta_seconds: Optional[float]
-    ) -> None:
+    def _accrue_block_occupied_seconds(self) -> None:
         """Maintenance counter: add this pass's occupied time to every block a
         train is standing on (design_new.md "Maintenance counters").
 
@@ -512,21 +511,20 @@ class SimulationController(SwitchOutputOwner):
         tick and the stopped detector pass call it, immediately after the
         de-energize drain and the signal refresh.
 
-        A running pass hands it that pass's own `delta_seconds`. A stopped pass
-        hands it `None`, because nothing advances `simulation_time` while
-        stopped, and gets the wall seconds since the previous pass instead.
-        Every pass stamps the wall time, so the first stopped pass after a stop
-        measures from the last running tick rather than from whenever the
-        session was last stopped, and the first pass of all accrues nothing
-        because it has no interval behind it.
+        Both passes add the unscaled wall seconds elapsed since the previous
+        pass — never the playback-scaled `delta_seconds` physics and route
+        bookkeeping consume — because a block's physical wear tracks real
+        elapsed time regardless of playback speed. Every pass stamps the wall
+        time, so a pass always measures from the immediately preceding pass, and
+        the first pass of all accrues nothing because it has no interval behind
+        it.
         """
         now = time.time()
         previous = self._last_pass_wall_time
         self._last_pass_wall_time = now
-        if delta_seconds is None:
-            if previous is None:
-                return
-            delta_seconds = max(0.0, now - previous)
+        if previous is None:
+            return
+        delta_seconds = max(0.0, now - previous)
         if delta_seconds <= 0.0:
             return
         for block in self.network.blocks.values():
@@ -765,7 +763,7 @@ class SimulationController(SwitchOutputOwner):
 
             self.unidentified_trains.reconcile(self._unidentified_clock())
             self._settle_after_commits()
-            self._accrue_block_occupied_seconds(None)
+            self._accrue_block_occupied_seconds()
             net.bump_lookahead_world_version()
         finally:
             net._lookahead_memo_active = False
@@ -2468,15 +2466,16 @@ class SimulationController(SwitchOutputOwner):
                 block.occupied_by = new_train_id
 
         # Switches carry no detection, so an unidentified train never owns one; sweep anyway
-        # so the rename leaves no stale id behind if that ever changes.
+        # so the rename leaves no stale id behind if that ever changes. A switch
+        # records its occupant(s) in `route_owners` (route key -> train id);
+        # `occupied_by` is a read-only projection over that map, so rewrite the
+        # map itself rather than assigning the property.
         for switch in getattr(self.network, "switches", {}).values():
-            if getattr(switch, "occupied_by", None) == old_train_id:
-                switch.occupied_by = new_train_id
-            occupants = getattr(switch, "physical_occupants", None)
-            if isinstance(occupants, dict):
-                for route, owner in list(occupants.items()):
+            route_owners = getattr(switch, "route_owners", None)
+            if isinstance(route_owners, dict):
+                for route, owner in list(route_owners.items()):
                     if owner == old_train_id:
-                        occupants[route] = new_train_id
+                        route_owners[route] = new_train_id
 
         if old_train_id in self._detected_change_train_ids:
             self._detected_change_train_ids.discard(old_train_id)

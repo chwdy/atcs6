@@ -283,19 +283,64 @@ def test_a_flickering_code_reports_each_real_change():
 @pytest.mark.parametrize(
     "code,expected",
     [
-        ("deviation", "warning"),
-        ("no_authority", "warning"),
+        ("deviation", "info"),
+        ("no_authority", "info"),
         ("caution", "debug"),
         ("authority_stop", "debug"),
         ("speed_limit", "debug"),
     ],
 )
-def test_only_the_codes_that_hold_the_train_are_warnings(code, expected):
-    """The rest are ordinary driving restrictions a developer reads back rather
-    than faults, so they must not colour the stream as problems."""
+def test_holding_codes_are_info_and_the_rest_debug(code, expected):
+    """The two codes that hold the train at zero go out as `info` — an operator
+    wants them in the stream — and the rest as `debug` (design_new.md "A changed
+    reason code is an event", Kind selection). Neither is a `warning`, so this
+    event never colours the stream as a fault; the accompanying
+    `test_an_info_reason_code_change_never_surfaces_as_an_error` proves it stays
+    out of `latest_error_for`."""
     h = ReasonCodeHarness()
     h.emit_for(code)
     assert h.notifications.events[0]["kind"] == expected
+
+
+def test_an_info_reason_code_change_never_surfaces_as_an_error():
+    """design_new.md "A changed reason code is an event" (No `ErrorRecord`):
+    keeping the reason-code event below `warning`, and carrying no `ErrorRecord`,
+    keeps it out of `NotificationCenter.latest_error_for(...)`, so the
+    no-authority banner still answers with a real failure rather than this
+    routine limit event. Even emitted last, the `info` reason-code event must not
+    mask or replace the train's live failure."""
+    from notification_center import Kind, NotificationCenter, train_ref
+    from runtime_payloads import ErrorRecord
+
+    center = NotificationCenter()
+    tid = "TRAIN_A"
+
+    # A genuine, still-active failure for the train (surfaceable).
+    failure = center.emit(
+        source="RouteExecutor",
+        operation="plan_task",
+        kind=Kind.WARNING,
+        message="no path to target",
+        entities=[train_ref(tid)],
+        error=ErrorRecord("no path to target", "no_route_found"),
+        condition_key=f"{tid}:blocked",
+    )
+
+    # The reason-code change, shaped exactly as `_report_atc_reason_change`
+    # emits it: `info`, no `ErrorRecord`, no condition key — and emitted after
+    # the failure, so it is the newest event for the train.
+    center.emit(
+        source="TrainController",
+        operation="tick",
+        kind=Kind.INFO,
+        message="ATC limit reason none -> no_authority",
+        entities=[train_ref(tid)],
+        payload={"reason_code": "no_authority"},
+    )
+
+    surfaced = center.latest_error_for("train", tid)
+    assert surfaced is failure
+    assert surfaced.kind == "warning"
 
 
 def test_an_enum_code_is_reported_by_its_value():

@@ -336,7 +336,7 @@ class BlockPowerController:
             center.emit(
                 source="BlockPowerController",
                 operation="set_block_voltage",
-                kind=Kind.ERROR,
+                kind=Kind.WARNING,
                 message=(
                     f"block {block_id} was commanded {voltage:.2f}V but the "
                     f"output driver refused it: it has no track binding, or "

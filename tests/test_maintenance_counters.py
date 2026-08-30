@@ -112,3 +112,57 @@ def test_counters_accumulate_during_demo_run():
     assert any(
         b.occupied_seconds > 0.0 for b in network.blocks.values()
     ), "some block should accrue occupied_seconds"
+
+
+@pytest.mark.scene("demo_main")
+def test_occupied_seconds_tracks_wall_time_not_scaled_delta():
+    """design_new.md "Maintenance counters": `Block.occupied_seconds` measures
+    real elapsed wall time regardless of playback speed — never the
+    playback-scaled `delta_seconds` the physics and route bookkeeping consume. A
+    running pass at a non-1.0 playback scale hands `update()` a scaled delta that
+    differs from the wall interval, and the counter must follow the wall
+    interval, not the delta."""
+    from bootstrap import bootstrap_runtime
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        network, _, sim_controller, _ = bootstrap_runtime(
+            demo=True, setup_train=True
+        )
+
+    # A placed train occupies its starting block from the first pass, so a short
+    # warm-up is enough to get real occupancy committed (no motion required).
+    for _ in range(20):
+        sim_controller.update(0.3)
+    occupied_before = [
+        b for b in network.blocks.values() if b.occupied_by is not None
+    ]
+    assert occupied_before, "the demo train should occupy at least one block"
+
+    before = sum(b.occupied_seconds for b in network.blocks.values())
+
+    # Model slow playback: two full wall seconds elapsed while this tick advanced
+    # only a tiny slice of scaled sim time. Plant the wall interval on the
+    # previous-pass stamp, then run exactly one running pass with the small
+    # scaled delta.
+    wall_interval = 2.0
+    scaled_delta = 0.1
+    sim_controller._last_pass_wall_time -= wall_interval
+    sim_controller.update(scaled_delta)
+
+    accrued = sum(b.occupied_seconds for b in network.blocks.values()) - before
+
+    # Had the running pass used the scaled delta (the bug), the whole layout
+    # would add at most (blocks occupied during the pass) x scaled_delta. Allow
+    # a couple of blocks of slack for anything newly entered; the wall-based
+    # accrual clears that ceiling by a wide margin because it tracks the ~2.0s
+    # wall interval, not the 0.1s delta.
+    delta_based_ceiling = (len(occupied_before) + 2) * scaled_delta
+    assert accrued > delta_based_ceiling, (
+        f"occupied_seconds accrued {accrued:.3f}s; a scaled-delta accrual would "
+        f"be at most {delta_based_ceiling:.3f}s, so the pass is not tracking wall "
+        f"time"
+    )
+    assert accrued >= wall_interval - 0.3, (
+        f"occupied_seconds accrued {accrued:.3f}s; expected at least ~"
+        f"{wall_interval}s of wall time"
+    )

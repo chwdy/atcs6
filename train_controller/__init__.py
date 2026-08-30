@@ -93,10 +93,7 @@ _LOOKAHEAD_SHADOW = os.environ.get("ATCS_LOOKAHEAD_SHADOW") == "1"
 # The remaining tunables are local because they have no consumer outside
 # the controller.
 ATC_SIGNAL_LOOKAHEAD_BLOCKS = 3
-ATC_MIN_CLEARANCE_CM = 10.0
 ATC_NO_BLOCK_FALLBACK_CM = 100000.0
-
-SPEED_TREND_EPSILON = 0.1
 
 # Speed curve constants
 CURVE_SAMPLE_RESOLUTION_CM = (
@@ -568,10 +565,13 @@ class TrainController:
 
         Compared against the last code *emitted*, not the last tick's: a code
         that flickers between two values emits on each real change, and a steady
-        code emits nothing — the **Emit on change, not per tick** rule. `warning`
-        for the two codes that hold the train at zero, `debug` for the rest,
-        which are ordinary driving restrictions a developer reads back rather
-        than faults.
+        code emits nothing — the **Emit on change, not per tick** rule. `info`
+        for the two codes that hold the train at zero, because an operator wants
+        them in the stream, and `debug` for the rest, which are ordinary driving
+        restrictions a developer reads back rather than faults. Both stay below
+        `warning`, so this event never reaches `latest_error_for` — the
+        no-authority banner still answers with a real failure (design_new.md
+        "A changed reason code is an event", Kind selection).
         """
         code = self.atc._last_limit_reason_code
         code_str = code.value if hasattr(code, "value") else (str(code) if code else None)
@@ -595,7 +595,7 @@ class TrainController:
         self.notifications.emit(
             f"ATC limit reason {previous or 'none'} -> {code_str}",
             operation="tick",
-            kind=_Kind.WARNING if holding else _Kind.DEBUG,
+            kind=_Kind.INFO if holding else _Kind.DEBUG,
             payload={
                 "previous_reason_code": previous,
                 "reason_code": code_str,
@@ -661,7 +661,7 @@ class TrainController:
                     nc.emit(
                         source="TrainController",
                         operation="_drain_command_inbox",
-                        kind=_Kind.ERROR,
+                        kind=_Kind.WARNING,
                         message=f"command drain raised for {self.train_id}",
                         entities=[_tref(self.train_id)],
                         error=_ErrRec(str(exc), "command_drain_failed"),

@@ -1105,12 +1105,17 @@ class RailwayNetwork(SwitchOutputOwner):
         # Release every block this train physically occupies. Physical
         # occupancy lives on `Block.occupied_by` (design_new.md); there is no
         # `train.position` in v1, so the block-ownership state itself is the
-        # source of truth. Clear each owned block through the canonical writer.
-        for block_id, block in list(self.blocks.items()):
-            if getattr(block, "occupied_by", None) == train_id:
-                if self.block_manager:
-                    self.block_manager.clear_block(block_id)
-                else:
+        # source of truth. Removal has no detector observation to wait for, so
+        # it goes through the release-and-reevaluate path — there is no separate
+        # `clear_block()` step (design_new.md "Block occupancy"). That drops
+        # every block this train held and re-checks any downstream chain it was
+        # protecting, so a caution chain cannot stay in CAUTION forever once the
+        # train that held it behind is gone.
+        if self.block_manager:
+            self.block_manager.release_train_occupancy(train_id)
+        else:
+            for block_id, block in list(self.blocks.items()):
+                if getattr(block, "occupied_by", None) == train_id:
                     block.release()
 
         self.trains.pop(train_id, None)

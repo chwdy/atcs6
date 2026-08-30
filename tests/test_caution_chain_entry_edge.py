@@ -114,3 +114,39 @@ def test_release_train_occupancy_is_a_no_op_for_an_unknown_train():
 
     assert manager.release_train_occupancy("GHOST") == []
     assert net.blocks["A"].occupied_by == "T1"
+
+
+# ---------------------------------------------------------------------------
+# network.remove_train: removal re-evaluates caution, it does not just clear
+# ---------------------------------------------------------------------------
+
+
+def test_remove_train_clears_a_caution_chain_it_was_protecting():
+    """design_new.md "Block occupancy": there is no separate `clear_block()`
+    step — removing a train goes through the occupancy-release path that
+    re-evaluates caution, so a downstream chain the removed train held in CAUTION
+    cannot stay there forever once the train that held it behind is gone.
+
+    Before removal was wired to this path it cleared each occupied block with
+    `clear_block()`, which never re-evaluates caution: block A stayed in CAUTION
+    with no train left ahead to protect.
+    """
+    from train import Train
+
+    net, manager = _straight_chain_manager()
+    net.block_manager = manager
+
+    # T1 stands on B; A exits E into B and is in CAUTION protecting the space
+    # behind T1.
+    net.trains["T1"] = Train(train_id="T1")
+    net.blocks["B"].occupied_by = "T1"
+    net.blocks["A"].caution = CautionState(exit_edge="E")
+    assert net.blocks["A"].caution is not None
+
+    assert net.remove_train("T1") is True
+
+    # T1 and its occupancy are gone, and A comes back out of CAUTION because
+    # nothing is left ahead for it to protect.
+    assert "T1" not in net.trains
+    assert net.blocks["B"].occupied_by is None
+    assert net.blocks["A"].caution is None

@@ -130,6 +130,10 @@ def test_a_refused_write_is_reported_once_not_every_tick():
     assert len(notes) == 1
     assert notes[0].payload["block_id"] == "BLK_1"
     assert "no track binding" in notes[0].message
+    # A refused write is a recoverable output fault, not a fatal session entry:
+    # `error` is reserved for `enter_failed_runtime` / `enter_hardware_failure`
+    # (design_new.md "Error events"), so this reports as `warning`.
+    assert notes[0].kind == "warning"
 
 
 def test_the_halt_gate_refuses_ticks_while_a_hardware_failure_is_latched():

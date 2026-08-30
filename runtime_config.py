@@ -30,8 +30,6 @@ class RuntimeConfig:
     overspeed_warn_threshold_kmh: float = 5.0
     # --- ATC / ATO control (audit Tier 3) ---
     atc_signal_lookahead_blocks: int = 3
-    atc_min_clearance_cm: float = 10.0
-    speed_trend_epsilon: float = 0.1
     ato_speed_margin_kmh: float = 3.0
     ato_speed_tolerance_max_kmh: float = 2.0
     ato_speed_tolerance_min_kmh: float = 0.05
@@ -69,8 +67,6 @@ _TARGETS: Dict[str, List[Tuple[str, str]]] = {
         ("train_controller", "ATC_SIGNAL_LOOKAHEAD_BLOCKS"),
         ("train_controller.atc", "ATC_SIGNAL_LOOKAHEAD_BLOCKS"),
     ],
-    "atc_min_clearance_cm": [("train_controller", "ATC_MIN_CLEARANCE_CM")],
-    "speed_trend_epsilon": [("train_controller", "SPEED_TREND_EPSILON")],
     "ato_speed_margin_kmh": [("train_controller", "ATO_SPEED_MARGIN_KMH")],
     "ato_speed_tolerance_max_kmh": [("train_controller.ato", "ATO_SPEED_TOLERANCE_MAX")],
     "ato_speed_tolerance_min_kmh": [("train_controller.ato", "ATO_SPEED_TOLERANCE_MIN")],
