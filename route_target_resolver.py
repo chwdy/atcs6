@@ -16,7 +16,7 @@ loop can stay focused on state-machine transitions.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Iterable, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Tuple
 
 from train_route import (
     BlockTarget,
@@ -157,7 +157,7 @@ class RouteTargetResolver:
             )
 
         target_block, failure_reason = self.resolve_task_target_block_detailed(
-            task, train=train
+            task, train=train, exclude=exclude
         )
         if target_block is None:
             from runtime_payloads import TargetResolutionFailureKind
@@ -442,6 +442,7 @@ class RouteTargetResolver:
         self,
         task: "RouteTask",
         train: Optional["Train"] = None,
+        exclude: Optional[Iterable["ResolvedRouteTarget"]] = None,
     ) -> Tuple[Optional[str], Optional[str]]:
         """Resolve `task.task_location` to a concrete `block_id` and a
         diagnostic failure reason.
@@ -461,13 +462,21 @@ class RouteTargetResolver:
         `BlockTarget | PlatformTarget | StationTarget`; this method
         dispatches on the variant rather than probing in order.
 
-        For `StationTarget`, when `train` is supplied, prefer a platform
-        whose block is not currently occupied by *another* train — this
-        keeps multi-platform stations from funneling every train onto the
-        first platform in the group. Falls back to the first resolvable
-        platform when every candidate is occupied (the dispatcher will then
-        report the conflict via `PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET`,
-        same as today).
+        For `StationTarget`, the resolver merges platform-end candidates
+        across EVERY platform in `Station.platform_ids` and returns the
+        globally best one by the cross-query comparison — travel time first,
+        then tile count, then walk length — with ties broken by platform-end
+        identity (design_new.md line 1667; see
+        `_resolve_station_target_block`). It is not the first available
+        platform's end.
+
+        `exclude` names the `(block, direction)` pairs Plan already tried and
+        failed this same pass. Only the `StationTarget` branch reads it: their
+        blocks are skipped so Plan's same-pass retry loop walks down the sorted
+        candidate list to the next distinct pair instead of re-offering the
+        global best. `BlockTarget` / `PlatformTarget` resolve one fixed target,
+        so `exclude` is applied by `find_next_task_target`'s own post-resolution
+        check for them.
         """
         e = self._e
         loc = getattr(task, "task_location", None)
@@ -530,39 +539,14 @@ class RouteTargetResolver:
                 return None, f"Station {loc.station_id} is disabled"
             if getattr(station, "manual", False) and not manual_override:
                 return None, f"Station {loc.station_id} is set to manual"
-            platform_ids = getattr(station, "platform_ids", []) or []
-            platforms = getattr(e.network, "platforms", {}) or {}
-            this_train_id = getattr(train, "train_id", None) if train is not None else None
-
-            fallback: Optional[str] = None
-            for pid in platform_ids:
-                platform = platforms.get(pid)
-                if platform is None:
-                    continue
-                # Skip platforms that are themselves unavailable for routing.
-                # `manual` is relaxed under an operator route's manual_override.
-                if getattr(platform, "disabled", False) or (
-                    getattr(platform, "manual", False) and not manual_override
-                ):
-                    continue
-                bid = self.platform_block_id(pid, train=train)
-                if not bid or _block_unavailable_reason(bid) is not None:
-                    continue
-                if fallback is None:
-                    fallback = bid
-                block = blocks_registry.get(bid)
-                if block is None:
-                    continue
-                occupant = getattr(block, "occupied_by", None)
-                if occupant and occupant != this_train_id:
-                    continue  # held by another train; try the next platform
-                return bid, None
-            if fallback is not None:
-                return fallback, None
-            return (
-                None,
-                f"all platforms in station {loc.station_id} are disabled, "
-                f"manual, or otherwise unavailable",
+            return self._resolve_station_target_block(
+                station,
+                loc.station_id,
+                train,
+                manual_override,
+                blocks_registry,
+                _block_unavailable_reason,
+                exclude,
             )
 
         # `task_location` is guaranteed to be one of the three tagged-union
@@ -572,6 +556,146 @@ class RouteTargetResolver:
             f"task_location must be BlockTarget / PlatformTarget / StationTarget; "
             f"got {type(loc).__name__}"
         )
+
+    def _platform_end_blocks(self, platform: Any) -> List[str]:
+        """The platform's candidate end blocks (deduped): both ends of a
+        multi-block platform, or the single block both ends collapse to.
+
+        The two platform-end blocks are `Platform.ordered_blocks[0]` and
+        `Platform.ordered_blocks[-1]` (design_new.md "Platform And Station");
+        they collapse to one entry for a single-block platform, so only that
+        block participates. When `ordered_blocks` is empty (block assignments
+        not populated yet) this falls back to the first block found by walking
+        `positions`, mirroring `platform_block_id`'s tile-by-tile fallback so a
+        not-yet-assigned platform still resolves to something.
+        """
+        ordered = getattr(platform, "ordered_blocks", None)
+        if ordered:
+            end_a = ordered[0]
+            end_b = ordered[-1]
+            return [end_a] if end_a == end_b else [end_a, end_b]
+        network = self._e.network
+        for x, y in getattr(platform, "positions", []):
+            track = network.get_track(x, y)
+            if track and getattr(track, "block_id", None):
+                return [track.block_id]
+        return []
+
+    def _resolve_station_target_block(
+        self,
+        station: Any,
+        station_id: str,
+        train: Optional["Train"],
+        manual_override: bool,
+        blocks_registry: dict,
+        block_unavailable_reason,
+        exclude: Optional[Iterable["ResolvedRouteTarget"]],
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Resolve a `StationTarget` to one concrete platform-end block by
+        merging candidates across EVERY platform in `Station.platform_ids`.
+
+        This is cross-query comparison site 2 in design_new.md's
+        `GraphWalkCandidate` payload home (Planning-Kernel step `9c4f` target
+        resolution, design_new.md line 1667 / line 2818): query both ends of
+        every platform, merge all reachable platform-end candidates into one
+        list, and sort by the first three cross-query keys
+        `(estimated_travel_seconds, tile_count, walk_length_cm)` — estimated
+        travel time first when the run's train max speed is supplied (the query
+        carries `train_max_speed_kmh`, so the estimate is populated on the
+        candidate) — with ties broken by platform-end identity, the
+        deterministic iteration order over `Station.platform_ids` and then the
+        two ends of each platform, rather than by `candidate_rank`, which
+        carries no meaning across separate per-end queries.
+
+        The globally best reachable-and-available (not held by another train)
+        platform-end wins. Selection walks three ordered tiers in turn:
+
+          1. reachable and not held by another train, ranked by the cross-query
+             key then platform-end identity — the ordinary winner;
+          2. reachable but held by another train, same ranking — the fallback
+             so the dispatcher reports the block conflict via
+             `PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET`, exactly as the
+             first-platform resolver did before;
+          3. ends with no travel key — no train/dispatcher context (read-only
+             viability callers, early bootstrap) or an unreachable end — ranked
+             by identity alone, matching the old `platform_block_id` ->
+             `ordered_blocks[0]` fallback.
+
+        `exclude` names `(block, direction)` pairs Plan already tried and failed
+        this pass; their blocks are skipped so the same-pass retry walks down
+        the sorted list to the next distinct pair (design_new.md line 1667:
+        "try create_path once for each distinct resolved pair, stopping at the
+        first success"). When every candidate block is excluded, the global
+        best is returned so `find_next_task_target`'s own exclude check emits
+        the clean "no more candidates this tick" sentinel.
+        """
+        platforms = getattr(self._e.network, "platforms", {}) or {}
+        platform_ids = getattr(station, "platform_ids", []) or []
+        this_train_id = (
+            getattr(train, "train_id", None) if train is not None else None
+        )
+        excluded_blocks = {
+            ex.requested_destination_block_id for ex in (exclude or [])
+        }
+
+        CrossKey = Tuple[float, int, float]
+        Identity = Tuple[int, int]
+        available: List[Tuple[CrossKey, Identity, str]] = []
+        held: List[Tuple[CrossKey, Identity, str]] = []
+        no_context: List[Tuple[Identity, str]] = []
+
+        for pi, pid in enumerate(platform_ids):
+            platform = platforms.get(pid)
+            if platform is None:
+                continue
+            # Platform-level availability. `manual` is relaxed under an
+            # operator route's manual_override; `disabled` never is.
+            if getattr(platform, "disabled", False) or (
+                getattr(platform, "manual", False) and not manual_override
+            ):
+                continue
+            for ei, bid in enumerate(self._platform_end_blocks(platform)):
+                if not bid or block_unavailable_reason(bid) is not None:
+                    continue
+                identity = (pi, ei)
+                key = self._walk_cross_query_key_to_block(train, bid)
+                if key is None:
+                    # No reachable walk, or no train/dispatcher context. Ranked
+                    # by identity and used only when nothing reachable wins; an
+                    # unreachable end fails at create_path anyway, so its
+                    # occupancy is moot and not consulted here.
+                    no_context.append((identity, bid))
+                    continue
+                block = blocks_registry.get(bid)
+                occupant = getattr(block, "occupied_by", None) if block else None
+                if occupant and occupant != this_train_id:
+                    held.append((key, identity, bid))
+                else:
+                    available.append((key, identity, bid))
+
+        available.sort(key=lambda c: (c[0], c[1]))
+        held.sort(key=lambda c: (c[0], c[1]))
+        no_context.sort(key=lambda c: c[0])
+
+        ordered = (
+            [bid for _key, _id, bid in available]
+            + [bid for _key, _id, bid in held]
+            + [bid for _id, bid in no_context]
+        )
+        if not ordered:
+            return (
+                None,
+                f"all platforms in station {station_id} are disabled, "
+                f"manual, or otherwise unavailable",
+            )
+        for bid in ordered:
+            if bid not in excluded_blocks:
+                return bid, None
+        # Every candidate has already been tried and excluded this pass. Return
+        # the global best so `find_next_task_target`'s post-resolution exclude
+        # check produces the clean sentinel (resolved_target=None) instead of a
+        # spurious failure diagnostic.
+        return ordered[0], None
 
     # ------------------------------------------------------------------
     # Direction resolution ("either" → forward / reverse)
