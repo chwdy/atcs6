@@ -16,6 +16,7 @@ from enums import TrainState
 from hardware_config import DEFAULT_CURRENT_SENSE_MIN_DRIVE_V
 from speed_calibration import SpeedCalibration
 from speed_profile import make_default_speed_profile
+from train_controller_types import PHYSICS_KIND_HANDLE, PhysicsCommand
 from train_physics import TrainPhysics
 
 
@@ -140,7 +141,45 @@ def test_cancel_discards_the_candidate():
     assert profile.lighting_voltage == pytest.approx(before)
 
 
+# ---------------------------------------------- the shared drive accessor ---
+
+
+def test_get_propulsion_override_returns_the_lighting_track_voltage_arm():
+    """The candidate leaves `SpeedCalibration` through the shared
+    `get_propulsion_override(...)` accessor as the `track_voltage` variant of the
+    closed union (design_new.md "Lighting-voltage calibration", Where it lives).
+    This is the one channel the controller reads; physics no longer reaches into
+    the run registry, so this replaces the old `compute_track_voltage` registry
+    read as the assertion that a run drives its candidate."""
+    cal, _profile, _run = _open_run()
+    for _ in range(4):
+        cal.step_lighting("T1", 1)
+    candidate = cal.lighting_candidate_voltage("T1")
+
+    override = cal.get_propulsion_override("T1")
+    assert override is not None
+    assert override.kind == "track_voltage"
+    assert override.value == pytest.approx(candidate)
+
+
+def test_no_override_once_the_run_is_closed():
+    """Closing the run withdraws the override, so the controller falls back to
+    its ordinary voltage source (design_new.md "Lighting-voltage calibration",
+    Save and discard are the two operator-driven endings)."""
+    cal, _profile, _run = _open_run()
+    cal.step_lighting("T1", 1)
+    cal.cancel_lighting("T1")
+    assert cal.get_propulsion_override("T1") is None
+
+
 # ---------------------------------------------------------------- physics ---
+# Physics is an executor: it emits whatever voltage magnitude the controller
+# hands down on `PhysicsCommand.voltage_source_track_voltage`, and never reads
+# the calibration run registry itself (design_new.md "Lighting-voltage
+# calibration", Where it lives). These drive `compute_track_voltage` with a
+# hand-built command so each branch of its early voltage flow is testable on its
+# own; the real controller-published command is covered end-to-end by
+# `test_open_run_drives_its_candidate_through_the_real_controller` below.
 
 
 class _StubOps:
@@ -148,50 +187,56 @@ class _StubOps:
 
 
 class _StubController:
-    """Enough of a controller for `compute_track_voltage` — including the
-    `simulation_controller` back-reference physics reads the run through."""
+    """Enough of a controller for `compute_track_voltage`: the operational state
+    and the per-tick `PhysicsCommand` producer physics reads the voltage source
+    off of."""
 
-    def __init__(self, simulation_controller=None):
+    def __init__(self, command):
         self.state = TrainState.READY
         self.ops = _StubOps()
-        self.simulation_controller = simulation_controller
+        self._command = command
+
+    def produce_physics_command(self):
+        return self._command
 
 
-class _StubSim:
-    def __init__(self, calibration):
-        self.speed_calibration = calibration
-
-
-def test_open_run_drives_its_candidate_in_place_of_the_lit_voltage():
-    cal, profile, _run = _open_run()
-    physics = TrainPhysics(train_id="T1")
-    controller = _StubController(_StubSim(cal))
-
-    for _ in range(4):
-        cal.step_lighting("T1", 1)
-    candidate = cal.lighting_candidate_voltage("T1")
+def test_physics_emits_the_commands_track_voltage_in_place_of_the_lit_voltage():
+    """When the command carries a `voltage_source_track_voltage`, physics emits
+    exactly that magnitude in place of the stopped-but-lit value the READY state
+    would otherwise output."""
+    profile = make_default_speed_profile("T1", 100.0)
+    candidate = profile.lighting_voltage + 4 * LIGHTING_VOLTAGE_STEP_V
     assert candidate != pytest.approx(profile.lighting_voltage)
+    physics = TrainPhysics(train_id="T1")
+    controller = _StubController(
+        PhysicsCommand(
+            kind=PHYSICS_KIND_HANDLE, voltage_source_track_voltage=candidate
+        )
+    )
     assert physics.compute_track_voltage(controller, profile) == pytest.approx(candidate)
 
 
-def test_closing_the_run_returns_the_rail_to_the_stored_lit_voltage():
-    cal, profile, _run = _open_run()
+def test_physics_returns_the_stored_lit_voltage_when_no_override_is_on_the_command():
+    """With no track-voltage override on the command, a READY train emits its
+    stored lighting voltage — the ordinary path is untouched by the migration."""
+    profile = make_default_speed_profile("T1", 100.0)
     physics = TrainPhysics(train_id="T1")
-    controller = _StubController(_StubSim(cal))
-
-    cal.cancel_lighting("T1")
+    controller = _StubController(PhysicsCommand(kind=PHYSICS_KIND_HANDLE))
     assert physics.compute_track_voltage(controller, profile) == pytest.approx(
         profile.lighting_voltage
     )
 
 
-def test_a_powered_off_train_stays_dead_while_a_run_is_open():
-    cal, profile, _run = _open_run()
+def test_a_powered_off_train_stays_dead_even_with_a_track_voltage_override():
+    """OFF outputs 0 V before the command is even read, so a lingering override
+    can never light a powered-off train."""
+    profile = make_default_speed_profile("T1", 100.0)
     physics = TrainPhysics(train_id="T1")
-    controller = _StubController(_StubSim(cal))
+    controller = _StubController(
+        PhysicsCommand(kind=PHYSICS_KIND_HANDLE, voltage_source_track_voltage=3.0)
+    )
     controller.state = TrainState.OFF
     controller.ops.state = TrainState.OFF
-
     assert physics.compute_track_voltage(controller, profile) == 0.0
 
 
@@ -321,3 +366,45 @@ def test_service_save_writes_the_profile_and_closes_the_run(state_with_train):
         state_with_train.sim_controller.speed_calibration.lighting_candidate_voltage("TRAIN_A")
         is None
     )
+
+
+def test_open_run_drives_its_candidate_through_the_real_controller(state_with_train):
+    """End-to-end: an open run makes the real `TrainController.produce_physics_command`
+    publish the candidate on `voltage_source_track_voltage`, carrying no motion,
+    and `TrainPhysics.compute_track_voltage` emits exactly that magnitude — the
+    whole canonical drive path, with no registry read anywhere in it (design_new.md
+    "Lighting-voltage calibration", What the run drives / Where it lives)."""
+    train_service, controller = _ready_manual_with_cab(state_with_train)
+    sim = state_with_train.sim_controller
+    train = state_with_train.network.trains["TRAIN_A"]
+    profile = state_with_train.network.speed_profiles.get(train.speed_profile_id)
+
+    train_service.start_lighting_calibration(state_with_train, "TRAIN_A")
+    for _ in range(3):
+        train_service.step_lighting_calibration(state_with_train, "TRAIN_A", 1)
+    candidate = sim.speed_calibration.lighting_candidate_voltage("TRAIN_A")
+
+    command = controller.produce_physics_command()
+    assert command.voltage_source_track_voltage == pytest.approx(candidate)
+    # The candidate never feeds the speed solution, so the command commands no
+    # motion: it holds the ordinary handle-N traction while overriding voltage.
+    assert command.target_speed_kmh == 0.0
+
+    physics = sim._get_or_create_physics(train)
+    assert physics.compute_track_voltage(controller, profile) == pytest.approx(candidate)
+
+
+def test_a_route_assignment_ends_the_run_and_stops_the_override(state_with_train):
+    """A run ends the moment the train is assigned a route (design_new.md
+    "Lighting-voltage calibration", What the run drives); the controller then
+    publishes no track-voltage override, so voltage returns to the stored value."""
+    train_service, controller = _ready_manual_with_cab(state_with_train)
+    sim = state_with_train.sim_controller
+    calibration = sim.speed_calibration
+
+    train_service.start_lighting_calibration(state_with_train, "TRAIN_A")
+    assert calibration.get_propulsion_override("TRAIN_A") is not None
+
+    calibration.cancel_lighting("TRAIN_A")  # the run-ending the 26f5 re-eval performs
+    assert calibration.get_propulsion_override("TRAIN_A") is None
+    assert controller.produce_physics_command().voltage_source_track_voltage is None

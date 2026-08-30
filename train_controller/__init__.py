@@ -972,6 +972,23 @@ class TrainController:
                 handle=HandlePosition.EB,
                 voltage_source_speed_kmh=0.0,
             )
+        # design_new.md "Lighting-voltage calibration", What the run drives: an
+        # open lighting-voltage run substitutes an exact track-voltage magnitude
+        # for the ordinary manual-notch / manual-power / ATO traction request,
+        # read through the shared `SpeedCalibration.get_propulsion_override`
+        # accessor's `track_voltage` variant. It is reached only after pending
+        # power-off and EB (both returned above), so those outrank it. The
+        # candidate does not feed the speed solution — the command carries no
+        # motion (handle N), only the magnitude physics will emit — so it never
+        # moves the modelled train by itself.
+        lighting_track_voltage = self._lighting_track_voltage_override()
+        if lighting_track_voltage is not None:
+            return PhysicsCommand(
+                kind=PHYSICS_KIND_HANDLE,
+                handle=HandlePosition.N,
+                voltage_source_speed_kmh=0.0,
+                voltage_source_track_voltage=lighting_track_voltage,
+            )
         if (
             self.commands.control_mode == "manual"
             and self.manual.manual_mode_type == "power_percent"
@@ -1061,6 +1078,29 @@ class TrainController:
             return None
         override = calibration.get_propulsion_override(self.train_id)
         if override is None or getattr(override, "kind", None) != "power_percent":
+            return None
+        return float(getattr(override, "value", 0.0))
+
+    def _lighting_track_voltage_override(self) -> Optional[float]:
+        """The exact track-voltage magnitude an open lighting-voltage run drives
+        this tick, or None.
+
+        design_new.md "Lighting-voltage calibration", Where it lives: a lighting
+        run drives through the shared `SpeedCalibration.get_propulsion_override`
+        accessor's `track_voltage` variant, so neither the controller nor
+        `TrainPhysics` reaches into the run registry. Reached through the same
+        `simulation_controller` back-reference the speed-calibration override
+        read above already uses. Returns None off-run, when the runtime is absent
+        (unit-test controllers), or for the union's `power_percent` variant (a
+        speed pass, handled in the manual branch), so the ordinary voltage source
+        drives in every one of those cases.
+        """
+        sc = getattr(self, "simulation_controller", None)
+        calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
+        if calibration is None:
+            return None
+        override = calibration.get_propulsion_override(self.train_id)
+        if override is None or getattr(override, "kind", None) != "track_voltage":
             return None
         return float(getattr(override, "value", 0.0))
 

@@ -642,15 +642,23 @@ class TrainPhysics:
         if controller is None or operational_state == TrainState.OFF:
             return 0.0
 
-        # An open lighting-voltage run drives its candidate in place of the
-        # stopped-but-lit value this state would otherwise output, so each press
-        # of the panel's step control is answered by the locomotive itself
-        # (design_new.md "Lighting-voltage calibration", What the run drives).
-        # Nothing else about emission changes: the value is still a magnitude
-        # reaching this train's ordinary energized set, signed per block.
-        candidate = self._lighting_calibration_candidate(controller)
-        if candidate is not None:
-            return candidate
+        # Read the controller's per-tick command once. Physics is an executor:
+        # the controller decides the voltage source and hands it down here rather
+        # than physics inspecting mode fields or the calibration run registry.
+        command = self._read_physics_command(controller)
+
+        # An open lighting-voltage run publishes its candidate as an explicit
+        # track-voltage magnitude on the command, in place of the stopped-but-lit
+        # value this state would otherwise output, so each press of the panel's
+        # step control is answered by the locomotive itself (design_new.md
+        # "Lighting-voltage calibration", What the run drives). Nothing else about
+        # emission changes: the value is still a magnitude reaching this train's
+        # ordinary energized set, signed per block. The controller reads the
+        # validated accessor and hands the magnitude down; physics never reaches
+        # into the run registry (design_new.md "Lighting-voltage calibration",
+        # Where it lives).
+        if command.voltage_source_track_voltage is not None:
+            return float(command.voltage_source_track_voltage)
 
         lighting_voltage = (
             speed_profile.lighting_voltage if speed_profile is not None else 0.0
@@ -663,7 +671,6 @@ class TrainPhysics:
         # RUNNING_MOVING: the reference comes from the controller's
         # PhysicsCommand. EB collapses voltage_source_speed_kmh to 0.0 in
         # the producer, so no extra branch is needed here.
-        command = self._read_physics_command(controller)
         voltage_speed = float(command.voltage_source_speed_kmh)
         if speed_profile is not None:
             source_percent = command.voltage_source_power_percent
@@ -676,22 +683,6 @@ class TrainPhysics:
                 return speed_profile.power_to_voltage(float(source_percent))
             return speed_profile.speed_to_voltage_two_stage(voltage_speed)
         return self._linear_speed_to_voltage(voltage_speed)
-
-    def _lighting_calibration_candidate(
-        self, controller: Optional["TrainController"]
-    ) -> Optional[float]:
-        """The candidate voltage of an open lighting-voltage run, or None.
-
-        `SpeedCalibration` owns the run (design_new.md "Lighting-voltage
-        calibration", Where it lives); physics reaches it through the
-        controller's `simulation_controller` back-reference, the same channel
-        the controller uses for the notification center.
-        """
-        sc = getattr(controller, "simulation_controller", None)
-        calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
-        if calibration is None:
-            return None
-        return calibration.lighting_candidate_voltage(self.train_id)
 
     @staticmethod
     def _linear_speed_to_voltage(speed_kmh: float) -> float:

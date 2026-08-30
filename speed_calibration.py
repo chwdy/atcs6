@@ -140,8 +140,9 @@ class CalibrationPropulsionOverride:
       `power_speed_curve` and stays under the same ATC / service-stop / EB /
       pending-power-off / output-safe-state caps as any manual percent.
     - `kind == "track_voltage"`: a lighting-voltage run substitutes this exact
-      voltage magnitude. That arm is delivered when the lighting run moves off
-      its own `TrainPhysics` read; the speed pass never returns it.
+      voltage magnitude. The controller reads it here and hands it to physics on
+      `PhysicsCommand.voltage_source_track_voltage`, in place of the ordinary
+      stopped-but-lit / speed-derived voltage; the speed pass never returns it.
 
     The controller reads this through `SpeedCalibration.get_propulsion_override`.
     It is never copied into `manual.manual_power_percent`, `handle_position`, or
@@ -248,9 +249,10 @@ class LightingCalibrationRun:
     """Transient working record of one lighting-voltage run (in-memory only).
 
     Holds the candidate voltage the operator is stepping through and the
-    ceiling it may not pass. `TrainPhysics` reads the candidate while the run
-    is open and drives it onto the rails in place of the stopped-but-lit
-    voltage, so each step is answered by the locomotive itself.
+    ceiling it may not pass. While the run is open the controller drives the
+    candidate onto the rails through `get_propulsion_override(...)` and the
+    per-tick `PhysicsCommand`, in place of the stopped-but-lit voltage, so each
+    step is answered by the locomotive itself.
     """
 
     train_id: str
@@ -800,10 +802,13 @@ class SpeedCalibration:
         the abandonment/finish paths have already zeroed).
 
         Lighting-voltage calibration is the other user of this accessor and
-        returns the `track_voltage` variant of the union. That arm is delivered
-        when the lighting run moves off its own `TrainPhysics.compute_track_voltage`
-        read; until then this accessor returns None for a lighting run and that
-        read still drives it.
+        returns the `track_voltage` variant of the union: while a lighting run is
+        open, the controller drives its candidate as an exact voltage magnitude
+        through `PhysicsCommand`, so neither the controller nor `TrainPhysics`
+        reaches into the run registry (design_new.md "Lighting-voltage
+        calibration", Where it lives). The two runs are mutually exclusive by
+        their opening preconditions, so a speed pass is checked first and a
+        lighting run only when none is measuring.
         """
         run = self.runs.get(train_id)
         if run is not None and run.is_measuring:
@@ -811,6 +816,11 @@ class SpeedCalibration:
             value = run.current_power if driving else 0.0
             return CalibrationPropulsionOverride(
                 kind="power_percent", value=float(value)
+            )
+        lighting = self.lighting_runs.get(train_id)
+        if lighting is not None:
+            return CalibrationPropulsionOverride(
+                kind="track_voltage", value=float(lighting.candidate_voltage)
             )
         return None
 
@@ -1001,7 +1011,11 @@ class SpeedCalibration:
     def lighting_candidate_voltage(self, train_id: str) -> Optional[float]:
         """The open run's candidate voltage, or None when no run is open.
 
-        This is the read `TrainPhysics.compute_track_voltage(...)` makes.
+        The panel and service layer read this to show the candidate as the
+        operator steps it. The drive path no longer goes through here: while a
+        run is open the controller reads `get_propulsion_override(...)` and hands
+        the magnitude to physics on the command (design_new.md "Lighting-voltage
+        calibration", Where it lives).
         """
         run = self.lighting_runs.get(train_id)
         return None if run is None else run.candidate_voltage

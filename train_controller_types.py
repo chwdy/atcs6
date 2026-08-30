@@ -124,6 +124,14 @@ class PhysicsCommand:
     `power_percent` mode, no ATC clamp). Physics then maps it straight to
     `track_voltage` through `voltage_power_curve`; inverting
     `power_speed_curve` first would not round-trip on a calibrated curve.
+
+    `voltage_source_track_voltage` is set only while an open lighting-voltage
+    calibration run drives (design_new.md "Lighting-voltage calibration", What
+    the run drives). It is the exact voltage magnitude the emitter must put on
+    the rails this tick, in place of whatever the operational state would
+    otherwise output; physics returns it directly rather than deriving a
+    voltage from a speed or a percent. The command carries no motion (handle
+    `N`) alongside it, because the candidate never feeds the speed solution.
     """
 
     kind: str
@@ -131,3 +139,4 @@ class PhysicsCommand:
     target_speed_kmh: float = 0.0
     voltage_source_speed_kmh: float = 0.0
     voltage_source_power_percent: Optional[float] = None
+    voltage_source_track_voltage: Optional[float] = None
