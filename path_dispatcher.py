@@ -3343,12 +3343,43 @@ class PathDispatcher:
                 new_status=path.status,
                 reason="path missing authority end",
             )
-        if path.get_authority_end_block_id() != path.requested_destination_block_id:
+        # design_new.md "Stop-arrival check" (step `8df5`), conditions 1 and 2:
+        # resolve the served row through the route-owned completion projection
+        # and accept an arrival ONLY when the next physical task is a `stop`
+        # whose stored resolved-target block is the live authority's terminal
+        # block. A non-stop next task (`waypoint` / `run` / `dwell`) or a `None`
+        # projection makes the arrival predicate false, so this call never
+        # completes — nor releases — a path whose next task is not a stop. That
+        # gate is what lets a terminal `waypoint`'s spent authority be released
+        # by the route's revoke-cancel flow (design_new.md step `592a`) instead
+        # of by an accidental completion here. `try_complete_active_path` reads
+        # only `task_kind` and `stored_resolved_target` from the projection and
+        # never indexes `RouteRun.task_runs` or `Route.tasks`
+        # (design_new.md "CompletionTaskProjection schema").
+        route_executor = self._get_route_executor()
+        projection = (
+            route_executor.find_next_completion_task(train_id)
+            if route_executor is not None
+            else None
+        )
+        if projection is None or projection.task_kind != "stop":
             return PathCompletionResult(
                 success=False,
                 path_id=path_id,
                 new_status=path.status,
-                reason="authority end has not reached requested destination",
+                reason="next completion task is not a stop",
+            )
+        stored_target = projection.stored_resolved_target
+        if (
+            stored_target is None
+            or path.get_authority_end_block_id()
+            != stored_target.requested_destination_block_id
+        ):
+            return PathCompletionResult(
+                success=False,
+                path_id=path_id,
+                new_status=path.status,
+                reason="authority end has not reached the served stop's target",
             )
 
         # Per design_new.md "Active-path completion procedure": completion

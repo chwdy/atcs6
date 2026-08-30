@@ -140,6 +140,37 @@ class ArmedTaskProjection:
 
 
 @dataclass
+class CompletionTaskProjection:
+    """Projection returned by `RouteExecutor.find_next_completion_task(train_id)`.
+
+    The public read used only by `PathDispatcher.try_complete_active_path()` to
+    identify the next physical task eligible for stop completion (design_new.md
+    "CompletionTaskProjection schema"). It returns the lowest non-finished
+    walk-position without appending or resolving a new target, so
+    `PathDispatcher` reads only `task_kind` and `stored_resolved_target` and
+    never indexes route storage itself.
+
+    One of three named cursors (design_new.md "Separate cursor model"):
+    `_find_next_task_target(...)` resolves the next planning candidate, this
+    helper identifies the next physical task eligible for stop completion, and
+    `find_armed_task(...)` identifies the acquired authority target. Callers use
+    the projection matching their question rather than deriving a row through
+    raw index arithmetic.
+
+    `stored_resolved_target` is `Optional` here (unlike `ArmedTaskProjection`,
+    which requires a non-`None` target): the lowest non-finished row may be a
+    `dwell` (which carries no dispatcher target) or a not-yet-armed row, so its
+    stored `resolved_target` can be `None`. Per design_new.md it is exactly
+    `task_runs[walk_position].resolved_target`.
+    """
+
+    walk_position: int
+    task_index: int
+    task_kind: str  # "waypoint" | "stop" | "dwell" | "run"
+    stored_resolved_target: Optional[ResolvedRouteTarget]
+
+
+@dataclass
 class ResolvedNextTaskProjection:
     """Projection returned by `_find_next_task_target(train_id)`.
 
@@ -877,6 +908,41 @@ class RouteExecutor:
             )
         return None
 
+    def find_next_completion_task(
+        self, train_id: str
+    ) -> Optional["CompletionTaskProjection"]:
+        """The next physical task eligible for stop completion, or `None`.
+
+        Per design_new.md "CompletionTaskProjection schema": the public read used
+        only by `PathDispatcher.try_complete_active_path()`. It returns the
+        lowest non-finished walk-position of the train's `RUNNING` run, carrying
+        that row's `task_kind` and stored `resolved_target`, without appending or
+        resolving a new target. `PathDispatcher` reads only `task_kind` and
+        `stored_resolved_target` from it and never indexes route storage itself.
+
+        It returns `None` when the train has no `RUNNING` run (`execution_state_
+        for(...)` is `None`) or when every walk-position is already finished (a
+        terminal walk has no unfinished row). Unlike `find_armed_task(...)` it
+        does NOT require an active dispatcher path — the stop-arrival caller has
+        already confirmed the live path exists before it asks which row that
+        path is serving.
+        """
+        exec_state = self.execution_state_for(train_id)
+        if exec_state is None:
+            return None
+        route = self.route_registry.get(exec_state.route_id)
+        for pos, row in enumerate(exec_state.task_runs):
+            if row.finished_at is not None:
+                continue
+            task = route.get_task_at(row.task_index) if route is not None else None
+            return CompletionTaskProjection(
+                walk_position=pos,
+                task_index=row.task_index,
+                task_kind=getattr(task, "task_kind", "") if task is not None else "",
+                stored_resolved_target=row.resolved_target,
+            )
+        return None
+
     def _in_flight_row_pos_for_task(
         self, exec_state: RouteExecutionState, task_index: int
     ) -> int:
@@ -1484,8 +1550,9 @@ class RouteExecutor:
         # ---------- c481: helper lookup via _find_next_task_target -----------
         projection = self._find_next_task_target(train_id)
         if projection is None:
-            # Terminal walk for ONE_OFF; finalize the run directly.
-            self.finish_route_run(train_id)
+            # Terminal walk: finish the run, or defer to the revoke-cancel flow
+            # when a live path is still held (design_new.md step `592a`).
+            self._finish_or_defer_terminal_walk(train_id, controller)
             return
 
         # Broken-skip a dwell whose own `task_location` has left the network,
@@ -1505,7 +1572,7 @@ class RouteExecutor:
             self._skip_broken_task(exec_state, route, projection.walk_position)
             projection = self._find_next_task_target(train_id)
         if projection is None:
-            self.finish_route_run(train_id)
+            self._finish_or_defer_terminal_walk(train_id, controller)
             return
 
         # If next task is a dwell, skip directly to 3a37 (dwell-entry).
@@ -1517,7 +1584,7 @@ class RouteExecutor:
             # Re-resolve after a possible cursor change.
             projection = self._find_next_task_target(train_id)
             if projection is None:
-                self.finish_route_run(train_id)
+                self._finish_or_defer_terminal_walk(train_id, controller)
                 return
 
         # ---------- 3a37: dwell-entry transition -----------------------------
@@ -2806,6 +2873,46 @@ class RouteExecutor:
         exec_state.idle_hold_ticks = 0
         return True
 
+    def _finish_or_defer_terminal_walk(self, train_id: str, controller) -> None:
+        """Terminal-walk completion with the doc's live-path guard.
+
+        ``_find_next_task_target(train_id)`` has returned ``None``, so the
+        directed walk is terminal. Per design_new.md "Canonical Next-Target
+        Selection" (Terminal-walk rule) and step ``592a``:
+
+          * When a live dispatcher path still exists — reachable when the
+            last-armed task was a ``waypoint`` that head entry consumed without
+            releasing authority, or when every remaining task was broken-skipped
+            — do NOT finish the run yet. Latch the ordinary ``revoked`` cancel
+            (only when no cancel is already pending) so the Action cancel/replan
+            flow releases that stale authority, then return.
+            ``finish_route_run`` runs on the later pass this same check finds no
+            live path.
+          * Otherwise (no live path) call ``finish_route_run(train_id)``
+            directly.
+
+        Landing this guard is what releases a terminal ``waypoint``'s orphaned
+        path now that ``PathDispatcher.try_complete_active_path(...)`` completes
+        only ``stop`` tasks (design_new.md "Stop-arrival check"): the ungated
+        completion that used to spend that authority is gone, so a terminal walk
+        that still holds authority must hand the path to the cancel/replan flow
+        instead of archiving the run while its path is still live.
+        """
+        if self._get_active_path_id(train_id) is not None:
+            latches = controller.route_hooks.phase_latches
+            if latches.path_cancel_request is None:
+                latches.set_path_cancel_request(
+                    ErrorRecord(
+                        "terminal walk reached with authority still held for "
+                        f"{train_id}; cancelling the spent authority so the run "
+                        "finishes once no live path remains",
+                        "revoked",
+                    ),
+                    Kind.INFO,
+                )
+            return
+        self.finish_route_run(train_id)
+
     def finish_route_run(self, train_id: str) -> None:
         """Plan terminal-walk handler.
 
@@ -2820,6 +2927,17 @@ class RouteExecutor:
         exec_state = self.execution_state_for(train_id)
         if exec_state is None:
             return
+
+        # design_new.md ``current_route_status`` write contract, Plan
+        # terminal-walk row: clear a still-set ``path_cancelled`` /
+        # ``path_cancel_was_deviation``. The terminal-walk guard may have
+        # interposed a ``revoked`` cancel (a terminal ``waypoint`` whose head
+        # entry never released authority, or an all-broken skip) that step
+        # ``5fc7``'s ``is_recovery_clean`` gate has not yet consumed on this
+        # pass; the run is finishing regardless, so the diagnostic latch is
+        # retired here rather than carried onto the historical row.
+        exec_state.path_cancelled = False
+        exec_state.path_cancel_was_deviation = False
 
         route_id = exec_state.route_id
         route = self.route_registry.get(route_id)
