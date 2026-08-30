@@ -3,9 +3,10 @@
 design_new.md "Speed calibration", Where it runs. The unit tests drive the state
 machine with synthetic confirmations; this one proves the wiring around it — that
 `SimulationController.update(...)` ticks the pass, that the pass sees the block
-entries attribution credits to its train, that the commands it issues reach the
-controller through the ordinary Phase-2 drain, and that it takes real authority
-so ATC does not hold the train at a zero no-authority cap.
+entries attribution credits to its train, that the step's power the pass reads
+back through `get_propulsion_override(...)` drives the train through the ordinary
+control-output path, and that it takes real authority so ATC does not hold the
+train at a zero no-authority cap.
 """
 
 import contextlib
@@ -140,12 +141,12 @@ def test_the_runtime_tick_arms_the_pass_and_commands_the_first_step(state):
     assert run.current_power == 10.0
 
     # One tick arms the leg: the pass takes authority to the far outer block and
-    # commands the step's power through the ordinary manual command surface.
+    # sets the run state the controller reads back as the step's driven power.
     sim.update(0.1)
     assert run.leg_armed is True
 
-    # And the command reached the controller on the next drain, so the train is
-    # not sitting under a zero no-authority cap with nothing commanded.
+    # And that power drove the train through the ordinary control-output path, so
+    # the train is not sitting under a zero no-authority cap with nothing driving.
     sim.update(0.1)
     assert run.phase != PHASE_FAILED or "authority" in run.failure_reason
 

@@ -109,12 +109,14 @@ class CalibrationObservation:
 
 @dataclass(frozen=True)
 class CalibrationCommand:
-    """What the pass wants issued this tick.
+    """What the pass wants this tick, decided by `advance(...)`.
 
-    Applied by `SpeedCalibration.tick()` the way an operator driving in manual
-    mode would: authority through `PathDispatcher`, power and cab through the
-    ordinary Action manual command surface. ATC, service-stop, and EB keep the
-    same authority over the pass that they hold over any manual command.
+    `power_percent` is the run state the controller reads back through
+    `get_propulsion_override(...)` and drives with; the pass never sends it as a
+    command. `reverse_cab` is applied through the ordinary stopped-only cab rule,
+    and `acquire_path_to` / `release_path` take and give back the leg's authority
+    through `PathDispatcher`. ATC, service-stop, and EB keep the same authority
+    over the pass that they hold over any manual command.
     """
 
     power_percent: Optional[float] = None
@@ -125,6 +127,29 @@ class CalibrationCommand:
     without a path could not move: with `received_path_plan is None` the ATC
     limit is `0` (`no_authority`) and the safety-cap ordering clamps the
     commanded percent to it."""
+
+
+@dataclass(frozen=True)
+class CalibrationPropulsionOverride:
+    """The traction an open calibration pass drives with this tick, read by the
+    controller during Action (design_new.md "Speed calibration", Controller owns
+    calibration output). A closed two-variant union:
+
+    - `kind == "power_percent"`: the speed pass commands this `value` percent in
+      place of the ordinary manual power source. It maps through
+      `power_speed_curve` and stays under the same ATC / service-stop / EB /
+      pending-power-off / output-safe-state caps as any manual percent.
+    - `kind == "track_voltage"`: a lighting-voltage run substitutes this exact
+      voltage magnitude. That arm is delivered when the lighting run moves off
+      its own `TrainPhysics` read; the speed pass never returns it.
+
+    The controller reads this through `SpeedCalibration.get_propulsion_override`.
+    It is never copied into `manual.manual_power_percent`, `handle_position`, or
+    the operator-command inbox.
+    """
+
+    kind: str
+    value: float
 
 
 @dataclass
@@ -319,21 +344,16 @@ class SpeedCalibration:
         every one of those commands `power_percent = 0` and latches the ordinary
         cancel for the still-live leg path in the same step (design_new.md
         "Speed calibration", Pass-abandonment cases command a stop and release
-        the leg path). The power command is what brings the train to the stand
-        the latched cancel's `is_stopped()` gate waits on; without it the train
-        would run out its remaining authority first.
+        the leg path). Dropping the run withdraws the propulsion override, so the
+        controller falls back to its ordinary manual source; zeroing that source
+        here is what brings the train to the stand the latched cancel's
+        `is_stopped()` gate waits on. Without it the train would run out its
+        remaining authority first.
         """
         run = self.runs.pop(train_id, None)
         self._step0_entries.pop(train_id, None)
         if run is not None:
-            controller = self._controller(train_id)
-            if controller is not None:
-                try:
-                    controller.commands.enqueue_command(
-                        "set_manual_power_percent", {"power_percent": 0.0}
-                    )
-                except Exception:
-                    pass
+            self._stop_manual_traction(train_id)
             self._release_path(run)
             self._emit_command_result(
                 train_id,
@@ -350,6 +370,10 @@ class SpeedCalibration:
         """
         run.phase = PHASE_FAILED
         run.failure_reason = reason
+        # A failed pass no longer drives, so the override withdraws; zero the
+        # ordinary manual source the controller falls back to so the train
+        # coasts to a stand instead of resuming a stale percent.
+        self._stop_manual_traction(run.train_id)
         self._emit_command_result(
             run.train_id, operation="speed_calibration", success=False, reason=reason
         )
@@ -513,6 +537,10 @@ class SpeedCalibration:
                 "stretch is long enough for the consist and clear to run",
             )
         run.phase = PHASE_MEASURED
+        # The pass has stopped driving and is waiting for a commit target, so the
+        # override withdraws; zero the manual fallback so the standing train
+        # stays put until the operator picks a profile.
+        self._stop_manual_traction(run.train_id)
         self._emit_command_result(
             run.train_id,
             operation="speed_calibration",
@@ -598,16 +626,16 @@ class SpeedCalibration:
                 self._step0_entries[train_id] = tuple(sorted(entered))
 
     def tick_train(self, train_id: str) -> None:
-        """Step `c9e1` — advance this train's open auto pass.
+        """Advance this train's open auto pass by one observation.
 
         Called by `SimulationController._act_train(train, delta_seconds)`
         immediately before `TrainController.tick(...)` begins for the
-        calibration train, ahead of that same tick's operator-command
-        processing slot (design_new.md "Speed calibration", Where it runs), so
-        the command this step issues is already queued when that slot drains.
-
-        It arms a leg, evaluates step progress, and issues that step's
-        power/cab command through the ordinary manual-command surface.
+        calibration train (design_new.md "Speed calibration", Where it runs). It
+        arms a leg, evaluates step progress, updates the run state, and manages
+        the leg's authority and cab. It issues no power command: the step's
+        power is the run state the controller reads back through
+        `get_propulsion_override(...)` during the tick that follows this call, so
+        the pass drives without ever queuing an operator command.
         """
         sc = self._sc
         run = self.runs.get(train_id)
@@ -632,29 +660,30 @@ class SpeedCalibration:
             self._apply(run, controller, command)
 
     def _apply(self, run: CalibrationRun, controller, command: CalibrationCommand) -> None:
-        """Issue a pass command the way an operator driving manually would.
+        """Apply a pass command without queuing operator commands.
 
-        Order matters. The path is released first so the reversal is not fighting
-        stale authority pointing the other way, then the cab flips, then power
-        goes out; `set_cab(...)` runs before `set_manual_power_percent(...)` in
-        the canonical drain order, so queueing both in one tick lands them that
-        way round.
+        design_new.md "Speed calibration" (Controller owns calibration output /
+        Where it runs): the pass never queues pretend operator commands. The
+        step's power is read straight off the run by the controller through
+        `get_propulsion_override(...)`, so this method issues no power command at
+        all — `command.power_percent` is the run state that read reflects, not a
+        thing to send. It only manages the leg's authority and, at a leg's end,
+        flips the cab through the ordinary stopped-only cab rule: the same
+        `set_cab(...)` an operator issues, called directly rather than queued in
+        the command inbox.
+
+        Order matters. Release the old authority first so the reversal is not
+        fighting stale authority pointing the other way, then flip the cab, then
+        take the new leg's authority.
         """
         try:
             if command.release_path:
                 self._release_path(run)
             if command.reverse_cab:
                 cab = getattr(controller.commands, "cab", None)
-                controller.commands.enqueue_command(
-                    "set_cab", {"cab": "A" if cab == "B" else "B"}
-                )
+                controller.commands.set_cab("A" if cab == "B" else "B")
             if command.acquire_path_to:
                 self._acquire_path(run, command.acquire_path_to)
-            if command.power_percent is not None:
-                controller.commands.enqueue_command(
-                    "set_manual_power_percent",
-                    {"percent": int(round(command.power_percent))},
-                )
         except Exception:
             pass
 
@@ -747,6 +776,63 @@ class SpeedCalibration:
             except Exception:
                 return 0.0
         return 0.0
+
+    # -- propulsion override ----------------------------------------------
+
+    def get_propulsion_override(
+        self, train_id: str
+    ) -> Optional[CalibrationPropulsionOverride]:
+        """The traction an open calibration pass drives with this tick, or None.
+
+        design_new.md "Speed calibration" (Where it runs / Controller owns
+        calibration output): during Action, `TrainController.tick(...)` reads
+        this and drives the returned percent in place of the ordinary manual
+        power source, under every ordinary safety cap (ATC, service-stop, EB,
+        pending power-off, output safe state). It returns None when no pass may
+        drive, so the controller keeps its ordinary source. This is the whole of
+        how a pass drives the train: it queues no operator commands.
+
+        A speed pass drives while it is measuring a leg — the current step's
+        percent while that leg is armed and crossing, and `0` while the train is
+        stopping at a leg's end or standing between steps, so a stale manual
+        percent can never leak through mid-pass. A finished or failed pass
+        returns None, handing the train back to its ordinary manual source (which
+        the abandonment/finish paths have already zeroed).
+
+        Lighting-voltage calibration is the other user of this accessor and
+        returns the `track_voltage` variant of the union. That arm is delivered
+        when the lighting run moves off its own `TrainPhysics.compute_track_voltage`
+        read; until then this accessor returns None for a lighting run and that
+        read still drives it.
+        """
+        run = self.runs.get(train_id)
+        if run is not None and run.is_measuring:
+            driving = run.phase == PHASE_LEG and run.leg_armed
+            value = run.current_power if driving else 0.0
+            return CalibrationPropulsionOverride(
+                kind="power_percent", value=float(value)
+            )
+        return None
+
+    def _stop_manual_traction(self, train_id: str) -> None:
+        """Zero the controller's manual power percent as a pass ends.
+
+        While a pass drives, the propulsion override supersedes the manual power
+        source, so the pass never writes it. When the pass ends the override
+        withdraws and the controller falls back to that source; zeroing it here
+        is how a pass-abandonment or finish "commands `power_percent = 0`"
+        (design_new.md "Speed calibration") without queuing an operator command —
+        it is the ordinary safety reset the controller already applies under a
+        braking cap. A no-op when the runtime or controller is absent (the unit
+        tests drive the state machine with no controller wired).
+        """
+        controller = self._controller(train_id)
+        if controller is None:
+            return
+        try:
+            controller.manual.reset_power_percent_for_safety()
+        except Exception:
+            pass
 
     # -- commit -----------------------------------------------------------
 

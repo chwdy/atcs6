@@ -977,7 +977,21 @@ class TrainController:
             and self.manual.manual_mode_type == "power_percent"
         ):
             profile = self._get_speed_profile()
-            pct = float(self.manual.manual_power_percent or 0.0)
+            # design_new.md "Speed calibration", Controller owns calibration
+            # output: an open speed-calibration pass supplies the commanded
+            # percent through get_propulsion_override, replacing the ordinary
+            # manual power source. It reaches this branch already below EB and
+            # pending power-off (both returned earlier) and stays below the
+            # ATC / service-stop cap applied just below, and it is never copied
+            # into manual.manual_power_percent. A pass runs in manual
+            # power_percent submode, so it lands here.
+            calibration_pct = self._calibration_power_percent_override()
+            driven_by_calibration = calibration_pct is not None
+            pct = (
+                float(calibration_pct)
+                if driven_by_calibration
+                else float(self.manual.manual_power_percent or 0.0)
+            )
             target = profile.power_percent_to_speed(pct) if profile else 0.0
             # Per design_new.md "Canonical power-percent safety-cap ordering":
             # a service-stop or EB override supplies a zero cap; otherwise ATC
@@ -996,13 +1010,17 @@ class TrainController:
             voltage_pct: Optional[float] = pct if pct > 0.0 else None
             if target > cap:
                 # Per design_new.md: when the cap intervenes, the controller
-                # clamps the target to it and resets manual_power_percent for
-                # this tick (set-and-forget). A zero cap therefore holds the
-                # train at rest instead of letting the stored percent command
-                # motion.
+                # clamps the target to it. For an ordinary manual command it also
+                # resets manual_power_percent for this tick (set-and-forget); a
+                # calibration override is not a stored manual command — it is
+                # re-supplied each tick and never written into that field — so
+                # the field is left untouched when the pass drives. A zero cap
+                # therefore holds the train at rest instead of letting the
+                # stored percent command motion.
                 target = cap
-                self.manual.reset_power_percent_for_safety()
-                # The cap outranks the manual command, so the capped speed —
+                if not driven_by_calibration:
+                    self.manual.reset_power_percent_for_safety()
+                # The cap outranks the commanded percent, so the capped speed —
                 # not the discarded percent — is this tick's authoritative
                 # operating point, and voltage derives from it.
                 voltage_pct = None
@@ -1023,6 +1041,28 @@ class TrainController:
             handle=self.ops.handle_position,
             voltage_source_speed_kmh=voltage_speed,
         )
+
+    def _calibration_power_percent_override(self) -> Optional[float]:
+        """The percent an open speed-calibration pass commands this tick, or None.
+
+        design_new.md "Speed calibration", Controller owns calibration output: a
+        calibration pass drives through `SpeedCalibration.get_propulsion_override`
+        rather than by queuing operator commands. Reached through the
+        `simulation_controller` back-reference — the same channel the command-drain
+        error path and `TrainPhysics`'s lighting-voltage read already use. Returns
+        None off-pass, when the runtime is absent (unit-test controllers), or for
+        the union's `track_voltage` variant (a lighting run, which still drives
+        through its own physics read), so the ordinary manual source drives in
+        every one of those cases.
+        """
+        sc = getattr(self, "simulation_controller", None)
+        calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
+        if calibration is None:
+            return None
+        override = calibration.get_propulsion_override(self.train_id)
+        if override is None or getattr(override, "kind", None) != "power_percent":
+            return None
+        return float(getattr(override, "value", 0.0))
 
     # -------------------------------------------------------------------------
     # ATC (Automatic Train Control) Logic

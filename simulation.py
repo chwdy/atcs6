@@ -1306,10 +1306,12 @@ class SimulationController(SwitchOutputOwner):
         if controller.presence_unknown:
             return
 
-        # Step `c9e1`: for the calibration train only, the speed-calibration pass
-        # driver runs immediately before the command drain, so the power/cab
-        # command it issues is already queued when that drain runs (design_new.md
-        # "Speed calibration", Where it runs). A no-op for every other train.
+        # For the calibration train only, the speed-calibration pass advances
+        # immediately before TrainController.tick(...), updating the run state and
+        # managing the leg's authority and cab (design_new.md "Speed calibration",
+        # Where it runs). It queues no command: the step's power is read back off
+        # the run through get_propulsion_override(...) inside the tick that
+        # follows. A no-op for every other train.
         self.speed_calibration.tick_train(train.train_id)
         # TrainController.tick(...) drains the queued operator commands, then —
         # through the after_command_drain callback, before its control decision —
