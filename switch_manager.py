@@ -21,7 +21,7 @@ release, and physical-entry handling. It mirrors `BlockManager`'s contract:
 
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, TYPE_CHECKING
+from typing import Dict, List, NamedTuple, Optional, Set, TYPE_CHECKING
 
 from notification_center import Kind, switch_ref, train_ref
 from runtime_payloads import (
@@ -64,6 +64,23 @@ class SwitchLockRequest:
     route: Optional[frozenset] = None
 
 
+class SwitchClaimKey(NamedTuple):
+    """The exact stored identity of one switch lock claim (design_new.md
+    "SwitchManager").
+
+    `(holding_switch_id, path_id, source_switch_id)` — the switch the claim
+    sits on, the owning path, and the claim's source (`None` for a main claim,
+    the originating primary switch's id for a flank claim). This is the precise
+    key a failed-probe rollback releases, so it can drop exactly what a probe
+    newly acquired without touching a same-path claim keyed by a different
+    source that the path legitimately still holds.
+    """
+
+    holding_switch_id: str
+    path_id: str
+    source_switch_id: Optional[str]
+
+
 @dataclass
 class LockAcquireResult:
     """Result of an atomic `acquire_locks_for_segment(...)` call.
@@ -71,12 +88,18 @@ class LockAcquireResult:
     `success == True` means every requested lock was recorded. `success ==
     False` means the call rejected before any persistent state change; locks
     that succeeded earlier in the call are rolled back inside the method.
+
+    `inserted_claim_keys` lists exactly the claims THIS call newly inserted, in
+    insertion order (design_new.md "SwitchManager", Return contract). An
+    idempotently pre-existing claim — a re-touch of a lock the path already
+    holds — never enters the list, so a caller that rolls back a failed multi-
+    segment probe with these keys releases only what the probe added.
     """
 
     success: bool
     failed_switch_id: Optional[str] = None
     reason: Optional[str] = None
-    locked_switch_ids: List[str] = field(default_factory=list)
+    inserted_claim_keys: List[SwitchClaimKey] = field(default_factory=list)
 
 
 # ============================================================================
@@ -274,7 +297,10 @@ class SwitchManager:
                 inserted.append(req)
         return LockAcquireResult(
             success=True,
-            locked_switch_ids=[r.switch_id for r in recorded],
+            inserted_claim_keys=[
+                SwitchClaimKey(r.switch_id, path_id, r.source_switch_id)
+                for r in inserted
+            ],
         )
 
     def _expand_flank_requests(
@@ -392,21 +418,32 @@ class SwitchManager:
             released.append(switch.switch_id)
         return released
 
-    def release_path_locks_for_switches(
-        self, switch_ids: List[str], path_id: str
+    def rollback_inserted_claims(
+        self, path_id: str, inserted_claim_keys: List[SwitchClaimKey]
     ) -> List[str]:
-        """Release `path_id`'s locks scoped to the given switch_ids only."""
+        """Release exactly the listed claim keys — the sole switch release used
+        for a failed acquisition probe (design_new.md "SwitchManager").
+
+        Each key names one claim `(holding_switch_id, path_id, source_switch_id)`
+        that a probe newly inserted. This drops only those exact keys (and only
+        when the key's stored `path_id` matches `path_id`), so an idempotently
+        pre-existing main or flank claim the path already held — one the probe
+        merely re-touched, which never entered the journal — cannot be removed.
+        That is the difference from `release_segment_locks(...)`: this releases
+        the probe's own new holds, not the whole switch family.
+
+        Idempotent: `release_lock` no-ops on a missing key. Returns the holding
+        switch ids that had a claim removed.
+        """
         released: List[str] = []
-        for sid in switch_ids:
-            switch = self._switch_registry.get(sid)
+        for key in inserted_claim_keys:
+            if key.path_id != path_id:
+                continue
+            switch = self._switch_registry.get(key.holding_switch_id)
             if switch is None:
                 continue
-            keys = [k for k in list(switch.locks.keys()) if k[0] == path_id]
-            if not keys:
-                continue
-            for (_pid, source_id) in keys:
-                switch.release_lock(path_id, source_id)
-            released.append(sid)
+            if switch.release_lock(path_id, key.source_switch_id):
+                released.append(key.holding_switch_id)
         return released
 
     def release_segment_locks(
@@ -419,18 +456,20 @@ class SwitchManager:
         This is the precise inverse of the acquire-time expansion in
         `acquire_locks_for_segment(...)`: for each primary switch P, release
         P's own main claim `(path_id, None)` and every flank claim
-        `(path_id, P)` on P's `flank_protection` neighbours. Unlike
-        `release_path_locks_for_switches(...)`, which drops every `path_id`
-        key on each listed switch, this releases by exact `(path_id, source)`
-        key — so it can never drop a lock keyed by a different source (e.g. a
-        committed segment's flank lock that happens to sit on the same
-        neighbour). `release_lock` no-ops on a missing key, so a
+        `(path_id, P)` on P's `flank_protection` neighbours. It releases by
+        exact `(path_id, source)` key — so it can never drop a lock keyed by a
+        different source (e.g. a committed segment's flank lock that happens to
+        sit on the same neighbour). `release_lock` no-ops on a missing key, so a
         route-point-exempted neighbour (no flank lock placed) is harmless.
 
-        Used by segment rollback, where only the still-future holds this
-        failed segment placed must be released and the live path's committed
-        authority must be left untouched (the caller excludes committed
-        primaries from `primary_switch_ids`).
+        Used only when live authority is deliberately shortened (Observe
+        authority truncation), where whole no-longer-valid families must go:
+        the dropped primaries have left the authority, so their main claims and
+        the flank claims they placed have no validity. The caller passes only
+        the dropped primaries and excludes any still-committed ones. This is
+        NOT the failed-probe release — a probe that merely re-touched an
+        already-held switch must use `rollback_inserted_claims(...)`, which
+        drops only the probe's newly inserted keys rather than the whole family.
 
         Returns the switch_ids that had at least one lock removed.
         """

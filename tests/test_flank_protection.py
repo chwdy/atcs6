@@ -16,7 +16,7 @@ import pytest
 from track import Tile, TRACK_EW, TRACK_NW, TRACK_SE, TRACK_NS
 from network import RailwayNetwork
 from switch import Switch
-from switch_manager import SwitchLockRequest
+from switch_manager import SwitchClaimKey, SwitchLockRequest
 from constants import FLANK_PROTECTION_DISTANCE_CM
 
 
@@ -227,13 +227,14 @@ class TestRoutePointExemption:
 
 
 class TestSegmentRollbackReleasesFlankLocks:
-    """A segment rollback is scoped to the segment's primary switches, but the
-    acquire-time flank expansion also placed flank locks on NEIGHBOUR switches
-    that are not in that list. `SwitchManager.release_segment_locks(...)` must
-    drop those flank locks too, keyed by `(path_id, primary_id)` -- a coarse
-    path-wide release on the primary list alone would strand them. The release
-    is per-exact-key, so a lock keyed by a different source on the same
-    neighbour (e.g. a committed segment's flank lock) is left intact.
+    """Authority-tail release (`ResourceCoordinator.release_authority_tail`) is
+    scoped to the dropped primary switches, but the acquire-time flank expansion
+    also placed flank locks on NEIGHBOUR switches that are not in that list.
+    `SwitchManager.release_segment_locks(...)` must drop those flank locks too,
+    keyed by `(path_id, primary_id)` -- a coarse path-wide release on the
+    primary list alone would strand them. The release is per-exact-key, so a
+    lock keyed by a different source on the same neighbour (e.g. a committed
+    segment's flank lock) is left intact.
     """
 
     def test_rollback_releases_primary_and_flank_not_other_source(self):
@@ -257,9 +258,12 @@ class TestSegmentRollbackReleasesFlankLocks:
         # survive rollback (proves per-key release, not a coarse path_id sweep).
         xn.locks[("P", "SW_OTHER")] = ("T1", int(xn.position))
 
-        # The dispatcher passes ONLY the primary switch id; the flank neighbour
-        # SW_XOVER_N is not in the list.
-        coord.rollback_segment(block_ids=[], switch_ids=["SW_LEAD"], path_id="P")
+        # Authority truncation drops the whole family of the dropped primary;
+        # the dispatcher passes ONLY the primary switch id (the flank neighbour
+        # SW_XOVER_N is not in the list).
+        coord.release_authority_tail(
+            block_ids=[], main_switch_ids=["SW_LEAD"], path_id="P"
+        )
 
         assert ("P", None) not in lead.locks, "primary lock must be released"
         assert ("P", "SW_LEAD") not in xn.locks, (
@@ -290,6 +294,102 @@ class TestSegmentRollbackReleasesFlankLocks:
         assert released == []
         assert ("P", None) in lead.locks
         assert ("P", "SW_LEAD") in xn.locks
+
+
+class TestProbeRollbackReleasesOnlyNewlyAcquired:
+    """A failed acquisition probe must release only what THAT probe newly
+    acquired, never a switch the probe merely re-touched over crossover
+    topology and the path legitimately still holds (design_new.md
+    "Resource-coordinator model": `rollback_probe` vs `release_authority_tail`).
+
+    `SwitchManager.rollback_inserted_claims(...)` is the newly-acquired-only
+    release: it drops exactly the listed `SwitchClaimKey`s (and only when the
+    key's stored `path_id` matches), so a re-touched already-held claim — which
+    never enters the acquire journal — survives.
+    """
+
+    def test_acquire_journal_excludes_a_retouched_already_held_claim(self):
+        """The core over-release guard. A first acquire holds SW_LEAD's main +
+        flank. A second acquire on the SAME path re-touches them: its
+        `inserted_claim_keys` is EMPTY, so a probe rollback keyed by that
+        journal releases nothing and cannot drop the still-held claims."""
+        net = _demo5()
+        sm = net.switch_manager
+        coord = net.resource_coordinator
+        lead = net.switches["SW_LEAD"]
+        xn = net.switches["SW_XOVER_N"]
+
+        route = frozenset(list(net.get_track(lead.x, lead.y).edges)[:2])
+        req = SwitchLockRequest(
+            switch_id="SW_LEAD", locked_state=int(lead.position),
+            source_switch_id=None, route=route)
+        first = sm.acquire_locks_for_segment([req], "P", "T1")
+        assert first.success
+        # The first acquire newly inserted the main claim and the flank claim.
+        assert SwitchClaimKey("SW_LEAD", "P", None) in first.inserted_claim_keys
+        assert ("P", None) in lead.locks
+        assert ("P", "SW_LEAD") in xn.locks
+
+        # A second, identical acquire on the same path re-touches both claims
+        # (a crossover extend that re-walks an already-held switch). Neither is
+        # newly inserted, so the journal this probe would hand a rollback is
+        # empty.
+        second = sm.acquire_locks_for_segment([req], "P", "T1")
+        assert second.success
+        assert second.inserted_claim_keys == []
+
+        # Rolling the probe back with its (empty) journal releases nothing: the
+        # path keeps every lock it legitimately still holds. Whole-family
+        # release_segment_locks(["SW_LEAD"]) would instead have dropped them.
+        coord.rollback_probe(
+            block_ids=[],
+            inserted_switch_claim_keys=second.inserted_claim_keys,
+            path_id="P",
+        )
+        assert ("P", None) in lead.locks, "re-touched main claim must survive"
+        assert ("P", "SW_LEAD") in xn.locks, "re-touched flank claim must survive"
+
+    def test_rollback_inserted_claims_drops_only_listed_keys(self):
+        """Releasing a subset of the journal leaves the unlisted claims in
+        place — the newly-acquired-only contract at the manager level."""
+        net = _demo5()
+        sm = net.switch_manager
+        lead = net.switches["SW_LEAD"]
+        xn = net.switches["SW_XOVER_N"]
+
+        route = frozenset(list(net.get_track(lead.x, lead.y).edges)[:2])
+        req = SwitchLockRequest(
+            switch_id="SW_LEAD", locked_state=int(lead.position),
+            source_switch_id=None, route=route)
+        assert sm.acquire_locks_for_segment([req], "P", "T1").success
+
+        # Release ONLY the flank key; the main claim is not listed, so it stays.
+        released = sm.rollback_inserted_claims(
+            "P", [SwitchClaimKey("SW_XOVER_N", "P", "SW_LEAD")]
+        )
+        assert released == ["SW_XOVER_N"]
+        assert ("P", "SW_LEAD") not in xn.locks, "listed flank key released"
+        assert ("P", None) in lead.locks, "unlisted main claim untouched"
+
+    def test_rollback_inserted_claims_matches_path_id(self):
+        """A key whose stored `path_id` does not match releases nothing, so one
+        path's probe rollback can never touch another path's holds."""
+        net = _demo5()
+        sm = net.switch_manager
+        lead = net.switches["SW_LEAD"]
+
+        route = frozenset(list(net.get_track(lead.x, lead.y).edges)[:2])
+        req = SwitchLockRequest(
+            switch_id="SW_LEAD", locked_state=int(lead.position),
+            source_switch_id=None, route=route)
+        assert sm.acquire_locks_for_segment([req], "P", "T1").success
+
+        # A key naming path "P" handed to a rollback for path "OTHER" is skipped.
+        released = sm.rollback_inserted_claims(
+            "OTHER", [SwitchClaimKey("SW_LEAD", "P", None)]
+        )
+        assert released == []
+        assert ("P", None) in lead.locks
 
 
 class TestTailVacateReleasesFlankProtection:

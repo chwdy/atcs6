@@ -40,7 +40,7 @@ from enums import BlockState, direction_from_delta, OPPOSITE_DIRECTIONS
 from track import OPPOSITE_EDGE
 from runtime_payloads import AcquisitionMode, CancellationResult, ControllerProgressReport, ErrorRecord, PathAcquisitionFailureKind, PathAcquisitionResult, PathCompletionResult, PathSegment, ResolvedRouteTarget, ResourceEvent, RouteExecutorForPathDispatcher, ValidationError, ValidationErrorType, ValidationResult
 from block_manager import ReservedBlockTraversal
-from switch_manager import SwitchLockRequest
+from switch_manager import SwitchClaimKey, SwitchLockRequest
 from railway_pathfinder import RailwayPathfinder
 from path_utils import GraphWalkCandidate, GraphWalkStep
 
@@ -1154,7 +1154,12 @@ class PathDispatcher:
                 )
 
             # Acquire resources.
-            acquire_ok, fail_reason, fail_resource = self._acquire_segment_resources(
+            (
+                acquire_ok,
+                fail_reason,
+                fail_resource,
+                inserted_switch_claim_keys,
+            ) = self._acquire_segment_resources(
                 segment, path_id, train_id, requested_destination_direction,
                 manual_override=manual_override,
                 ordered_walk=ordered_walk,
@@ -1162,8 +1167,11 @@ class PathDispatcher:
             if not acquire_ok:
                 last_failed_resource_id = fail_resource
                 last_reason = fail_reason
-                # Roll back any partial acquisition we did on this segment.
-                self._rollback_segment(segment, path_id)
+                # Roll back only what this probe newly acquired (empty on a
+                # failed reserve — the coordinator already released its journal).
+                self._rollback_segment(
+                    segment, path_id, inserted_switch_claim_keys
+                )
                 if acquisition_mode == AcquisitionMode.ALL_OR_NOTHING:
                     continue
                 # BEST_EFFORT: try to acquire a truncated prefix of this segment.
@@ -1590,7 +1598,12 @@ class PathDispatcher:
                     continue
                 applied_segment = truncated
             else:
-                ok, fail_reason, fail_resource = self._acquire_segment_resources(
+                (
+                    ok,
+                    fail_reason,
+                    fail_resource,
+                    inserted_switch_claim_keys,
+                ) = self._acquire_segment_resources(
                     segment, path_id, train_id, requested_destination_direction,
                     manual_override=manual_override,
                     ordered_walk=ordered_walk,
@@ -1598,7 +1611,9 @@ class PathDispatcher:
                 if not ok:
                     last_resource = fail_resource
                     last_reason = fail_reason
-                    self._rollback_segment(segment, path_id)
+                    self._rollback_segment(
+                        segment, path_id, inserted_switch_claim_keys
+                    )
                     # Acquire-time failure on a validation-passing segment
                     # is an occupancy-class blocker (a race between
                     # validation and acquire); track it so the tail can
@@ -1942,7 +1957,9 @@ class PathDispatcher:
         ]
         coordinator = getattr(self.network, "resource_coordinator", None)
         if coordinator is not None:
-            coordinator.rollback_segment(
+            # Deliberate authority shortening: the dropped route points have
+            # left the authority, so their whole switch families are released.
+            coordinator.release_authority_tail(
                 dropped_blocks, dropped_switches, path_id
             )
         path.resource_sequence = path.resource_sequence[: keep_through + 1]
@@ -1989,7 +2006,7 @@ class PathDispatcher:
         direction: str,
         manual_override: bool = False,
         ordered_walk: Optional[List[GraphWalkStep]] = None,
-    ) -> Tuple[bool, str, Optional[str]]:
+    ) -> Tuple[bool, str, Optional[str], List[SwitchClaimKey]]:
         """Reserve all blocks + lock all switches in a PathSegment via the
         ResourceCoordinator facade.
 
@@ -1999,11 +2016,17 @@ class PathDispatcher:
         `ordered_walk` (sliced to ``segment.tiles`` by the caller) supplies the
         per-block traversal direction without re-deriving it from flat tiles.
 
-        Returns (success, failure_reason, failed_resource_id).
+        Returns (success, failure_reason, failed_resource_id,
+        inserted_switch_claim_keys). The claim keys are the exact switch holds
+        this call newly acquired; a caller that later rolls the segment back
+        hands them to `_rollback_segment(...)` so only the probe's own new holds
+        are released. On failure the list is empty — `reserve_segment(...)` has
+        already released its own journal — so a failed-probe rollback releases
+        nothing and cannot over-release a lock the path still holds.
         """
         coordinator = getattr(self.network, "resource_coordinator", None)
         if coordinator is None:
-            return (False, "no_resource_coordinator", None)
+            return (False, "no_resource_coordinator", None, [])
 
         # Compute traversal directions per block from the ordered walk (or, as
         # a fallback, from path tiles).
@@ -2055,9 +2078,10 @@ class PathDispatcher:
                 False,
                 result.reason or "reserve_failed",
                 result.failed_resource_id,
+                [],
             )
 
-        return (True, "", None)
+        return (True, "", None, list(result.inserted_switch_claim_keys))
 
     def _derive_switch_route(
         self,
@@ -2171,18 +2195,29 @@ class PathDispatcher:
             == path_id
         ]
 
-    def _rollback_segment(self, segment: PathSegment, path_id: str) -> None:
-        """Release any partial holds we may have placed on a segment via the
-        ResourceCoordinator facade.
+    def _rollback_segment(
+        self,
+        segment: PathSegment,
+        path_id: str,
+        inserted_switch_claim_keys: List[SwitchClaimKey],
+    ) -> None:
+        """Roll back a failed (or rejected) acquisition probe via the
+        ResourceCoordinator facade, releasing only what the probe newly placed.
+
+        `inserted_switch_claim_keys` are the exact switch holds this probe's
+        `_acquire_segment_resources(...)` reported acquiring; they go to
+        `ResourceCoordinator.rollback_probe(...)`, which releases only those
+        keys. A switch the probe merely re-touched over crossover topology — one
+        the path legitimately still holds — is never in the list, so it is left
+        intact. This is why the rollback uses the probe's own journal rather
+        than a whole-family `release_segment_locks(...)`: whole-family release
+        would drop a re-touched lock the path still holds. On a failed acquire
+        the list is empty (the coordinator already released its own journal), so
+        the switch side is a clean no-op.
 
         Only blocks this path still owns are handed to the coordinator (see
-        `_blocks_still_reserved_by`). Switch rollback is scoped to this
-        segment's primary switches and the flank locks they placed on
-        neighbours, via `SwitchManager.release_segment_locks(...)`.
-
-        Resources already committed to this path's live `resource_sequence` are
-        excluded: a failed acquire/extend rolls back only the holds it newly
-        placed, never the live path's existing authority. A blocked BEST_EFFORT
+        `_blocks_still_reserved_by`). Resources already committed to this path's
+        live `resource_sequence` are excluded: a blocked BEST_EFFORT
         `extend_path(...)` re-walks the seam block — the current authority-end,
         already reserved and already in `resource_sequence` — inside its
         extension segment; without this guard the rollback would release that
@@ -2190,9 +2225,9 @@ class PathDispatcher:
         not-yet-entered authority block unreserved. The completion/cancellation
         release rules in design_new.md "Path And PathDispatcher" require a
         blocked extend to keep the live path unchanged, and the dispatcher owns
-        the reservation for every not-yet-entered authority resource. For `create_path(...)` the path record is not yet in
-        `paths_by_id` when its acquire-failure rollback runs, so the exclusion
-        set is empty and the full segment is released as before.
+        the reservation for every not-yet-entered authority resource. For
+        `create_path(...)` the path record is not yet in `paths_by_id` when its
+        acquire-failure rollback runs, so the exclusion set is empty.
         """
         coordinator = getattr(self.network, "resource_coordinator", None)
         if coordinator is None:
@@ -2203,22 +2238,14 @@ class PathDispatcher:
             committed_resource_ids = {
                 entry.resource_id for entry in live_path.resource_sequence
             }
-        switch_ids: List[str] = []
-        for pos in segment.required_switches.keys():
-            switch_entity = self._resolve_switch_at_position(pos)
-            if switch_entity is None:
-                continue
-            if switch_entity.switch_id in committed_resource_ids:
-                continue
-            switch_ids.append(switch_entity.switch_id)
         block_ids = [
             bid
             for bid in self._blocks_still_reserved_by(segment.blocks, path_id)
             if bid not in committed_resource_ids
         ]
-        coordinator.rollback_segment(
+        coordinator.rollback_probe(
             block_ids=block_ids,
-            switch_ids=switch_ids,
+            inserted_switch_claim_keys=inserted_switch_claim_keys,
             path_id=path_id,
         )
 
@@ -2521,10 +2548,14 @@ class PathDispatcher:
                 required_switches=cutoff_switches,
                 blocks=prefix_blocks,
             )
-            ok, reason, _ = self._acquire_segment_resources(
-                truncated, path_id, train_id, direction,
-                manual_override=manual_override,
-                ordered_walk=self._slice_ordered_walk(ordered_walk, cutoff_tiles),
+            ok, reason, _, inserted_switch_claim_keys = (
+                self._acquire_segment_resources(
+                    truncated, path_id, train_id, direction,
+                    manual_override=manual_override,
+                    ordered_walk=self._slice_ordered_walk(
+                        ordered_walk, cutoff_tiles
+                    ),
+                )
             )
             if ok:
                 # Per the route-managed point-to-point planning rule in
@@ -2534,14 +2565,19 @@ class PathDispatcher:
                 # means no longer, past-the-target prefix was acquirable —
                 # roll back and fail (create_path's tail reports
                 # BLOCKED_BEFORE_TARGET) rather than land short of the target.
+                # This acquire succeeded, so the keys name real new holds; the
+                # probe rollback releases exactly them and never a re-touched
+                # lock the path already held.
                 if (
                     excluded_terminal_targets
                     and prefix_blocks[-1] in excluded_terminal_targets
                 ):
-                    self._rollback_segment(truncated, path_id)
+                    self._rollback_segment(
+                        truncated, path_id, inserted_switch_claim_keys
+                    )
                     return None
                 return truncated
-            self._rollback_segment(truncated, path_id)
+            self._rollback_segment(truncated, path_id, inserted_switch_claim_keys)
         return None
 
     def _prefix_terminal_is_eligible(

@@ -13,7 +13,12 @@ events arrive typed by that string from the controller progress report.
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
-from switch_manager import LockAcquireResult, SwitchLockRequest, SwitchManager
+from switch_manager import (
+    LockAcquireResult,
+    SwitchClaimKey,
+    SwitchLockRequest,
+    SwitchManager,
+)
 
 if TYPE_CHECKING:
     from block_manager import BlockManager, ReservedBlockTraversal
@@ -33,7 +38,10 @@ class SegmentReserveResult:
     failed_resource_id: Optional[str] = None
     reason: Optional[str] = None
     reserved_block_ids: List[str] = field(default_factory=list)
-    locked_switch_ids: List[str] = field(default_factory=list)
+    # Exact switch claim keys this call newly inserted (design_new.md
+    # "Resource-coordinator model", Return contract). On a failed return this is
+    # empty: the coordinator has already released its own journal.
+    inserted_switch_claim_keys: List[SwitchClaimKey] = field(default_factory=list)
 
 
 class ResourceCoordinator:
@@ -102,9 +110,10 @@ class ResourceCoordinator:
                     manual_override=manual_override,
                 )
             except Exception as exc:
-                # Roll back switch locks acquired in phase 1.
-                self.switch_manager.release_path_locks_for_switches(
-                    list(sr.locked_switch_ids), path_id
+                # Roll back only the switch claims THIS call newly inserted, so
+                # a re-touch of a lock the path already held is never dropped.
+                self.switch_manager.rollback_inserted_claims(
+                    path_id, list(sr.inserted_claim_keys)
                 )
                 return SegmentReserveResult(
                     success=False,
@@ -112,9 +121,9 @@ class ResourceCoordinator:
                     reason=str(exc),
                 )
             if not br.success:
-                # Roll back switch locks acquired in phase 1.
-                self.switch_manager.release_path_locks_for_switches(
-                    list(sr.locked_switch_ids), path_id
+                # Roll back only the switch claims THIS call newly inserted.
+                self.switch_manager.rollback_inserted_claims(
+                    path_id, list(sr.inserted_claim_keys)
                 )
                 return SegmentReserveResult(
                     success=False,
@@ -126,30 +135,68 @@ class ResourceCoordinator:
         return SegmentReserveResult(
             success=True,
             reserved_block_ids=list(future_block_ids),
-            locked_switch_ids=list(sr.locked_switch_ids),
+            inserted_switch_claim_keys=list(sr.inserted_claim_keys),
         )
 
-    def rollback_segment(
+    def rollback_probe(
         self,
         block_ids: List[str],
-        switch_ids: List[str],
+        inserted_switch_claim_keys: List[SwitchClaimKey],
         path_id: str,
     ) -> None:
-        """Release any partial holds placed on a segment that failed mid-flight.
+        """Release only what a failed multi-segment acquisition probe newly
+        acquired (design_new.md "Resource-coordinator model").
 
-        `switch_ids` are the segment's primary (main-usage) switches; the
-        switch release also drops the flank locks those primaries placed on
-        neighbours, keyed by `(path_id, primary_id)`, via
-        `SwitchManager.release_segment_locks(...)`. A coarse path-wide release
-        would miss flank neighbours (they are not in `switch_ids`).
+        `inserted_switch_claim_keys` are the exact claim keys this probe
+        inserted (from the `reserve_segment(...)` / `acquire_locks_for_segment`
+        return). The switch release goes through
+        `SwitchManager.rollback_inserted_claims(...)`, which drops only those
+        keys — so a switch the probe merely re-touched over crossover topology,
+        one the path legitimately still holds, is left intact. Block and switch
+        holds are released in reverse acquisition order (switches are acquired
+        first, so they release last).
+
+        This is deliberately NOT `release_authority_tail(...)`: a failed probe
+        removes only its own new holds, never a whole switch family.
         """
         if block_ids:
             self.block_manager.release_path_block_reservations(
                 list(block_ids), path_id, completed=False
             )
-        if switch_ids:
+        if inserted_switch_claim_keys:
+            self.switch_manager.rollback_inserted_claims(
+                path_id, list(reversed(list(inserted_switch_claim_keys)))
+            )
+
+    def release_authority_tail(
+        self,
+        block_ids: List[str],
+        main_switch_ids: List[str],
+        path_id: str,
+    ) -> None:
+        """Release a dropped tail when live authority is deliberately shortened
+        (design_new.md "Resource-coordinator model").
+
+        `main_switch_ids` are the dropped primary (main-usage) switches; the
+        switch release also drops the flank locks those primaries placed on
+        neighbours, keyed by `(path_id, primary_id)`, via
+        `SwitchManager.release_segment_locks(...)`. Whole-family release is
+        correct here: the truncation removes route points that have left the
+        authority, so every claim they anchor is no longer valid. A coarse
+        path-wide release would instead miss the flank neighbours (they are not
+        in `main_switch_ids`).
+
+        Separating this from `rollback_probe(...)` is required: truncation
+        removes whole no-longer-valid families, while a failed acquisition
+        removes only the keys that probe inserted.
+        """
+        if block_ids:
+            self.block_manager.release_path_block_reservations(
+                list(block_ids), path_id, completed=False
+            )
+        if main_switch_ids:
             self.switch_manager.release_segment_locks(
-                path_id, list(switch_ids)
+                path_id, list(main_switch_ids)
             )
 
     def release_path_resources(

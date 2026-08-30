@@ -10,6 +10,112 @@ this unchanged, so the whole real-mode stack is exercised without USB hardware.
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 
+# ---------------------------------------------------------------------------
+# Operator-facing virtual-hardware fault taxonomy
+# (design_new.md "Fault injection belongs to Virtual Hardware" and
+# "Hardware REST payload schemas").
+#
+# These are the injectable fault KINDS an operator names through
+# `PUT /api/virtual-hardware/fault`. They are a behavioral layer ABOVE this
+# fake device's own chip-transport fault vocabulary
+# (`FakeCh347Device.ALLOWED_FAULTS` — the i2c/shift/stuck names that device- and
+# driver-level tests inject directly). Injecting one operator kind reproduces it
+# on the transport, so the same hardware-failure lifecycle Real Hardware uses is
+# proven without physical equipment, while the low-level transport names stay
+# available for the driver tests that need them.
+# ---------------------------------------------------------------------------
+
+# The 6 canonical VirtualHardwareFaultKind values (design_new.md 3222 / 3353).
+VIRTUAL_HARDWARE_FAULT_KINDS = frozenset({
+    "transaction_refusal",
+    "timeout",
+    "device_disconnect",
+    "invalid_reading",
+    "input_hold_or_flicker",
+    "output_disagrees_with_command",
+})
+
+# The 5 VirtualHardwareFaultRequest.target_kind values (design_new.md 3353).
+VIRTUAL_HARDWARE_FAULT_TARGETS = frozenset({
+    "controller",
+    "chip",
+    "port",
+    "transaction",
+    "readback",
+})
+
+# Which fault kinds each target_kind may carry. An incompatible pair is rejected
+# rather than translated to another name (design_new.md 3353). Derived from the
+# canonical kinds' own parentheticals: invalid_reading is a readback fault,
+# input_hold_or_flicker an OccupancyInput port fault, output_disagrees_with_
+# command a TrackOutput readback/port fault, transaction_refusal / timeout are
+# transaction faults, and device_disconnect takes down a chip or the controller.
+FAULT_TARGET_COMPATIBILITY: Dict[str, frozenset] = {
+    "controller": frozenset({"device_disconnect"}),
+    "chip": frozenset({"device_disconnect"}),
+    "transaction": frozenset({"transaction_refusal", "timeout"}),
+    "port": frozenset({"input_hold_or_flicker", "output_disagrees_with_command"}),
+    "readback": frozenset({"invalid_reading", "output_disagrees_with_command"}),
+}
+
+# How each operator fault kind reproduces on this fake's chip transport. The
+# device raises / drops on these transport names, driving the same OSError /
+# ConnectionError the real occupancy and output pipelines already handle. The
+# two read-value faults (invalid_reading, input_hold_or_flicker) are modelled by
+# failing the read path, the observable outcome the failure lifecycle catches.
+_FAULT_TO_TRANSPORT_FAULTS: Dict[str, frozenset] = {
+    "device_disconnect": frozenset({"disconnect"}),
+    "transaction_refusal": frozenset({
+        "i2c_write_error",
+        "i2c_read_error",
+        "shift_write_error",
+        "shift_read_error",
+    }),
+    "timeout": frozenset({
+        "i2c_write_error",
+        "i2c_read_error",
+        "shift_write_error",
+        "shift_read_error",
+    }),
+    "invalid_reading": frozenset({"i2c_read_error", "shift_read_error"}),
+    "input_hold_or_flicker": frozenset({"shift_read_error"}),
+    "output_disagrees_with_command": frozenset({
+        "stuck_i2c_output",
+        "stuck_shift_output",
+    }),
+}
+
+
+def validate_virtual_fault_request(
+    action: Optional[str],
+    target_kind: Optional[str],
+    fault: Optional[str],
+) -> Optional[str]:
+    """Return an error string if a VirtualHardwareFaultRequest is malformed,
+    else None (design_new.md "Hardware REST payload schemas").
+
+    `fault` is required for `inject` and must be absent for `clear`; an
+    incompatible (target_kind, fault) pair is rejected, not translated.
+    """
+    if action not in ("inject", "clear"):
+        return f"action must be 'inject' or 'clear', got {action!r}"
+    if target_kind not in VIRTUAL_HARDWARE_FAULT_TARGETS:
+        return f"unknown target_kind {target_kind!r}"
+    if action == "clear":
+        if fault is not None:
+            return "fault must be null for a clear request"
+        return None
+    if fault is None:
+        return "fault is required for an inject request"
+    if fault not in VIRTUAL_HARDWARE_FAULT_KINDS:
+        return f"unknown fault {fault!r}"
+    if fault not in FAULT_TARGET_COMPATIBILITY.get(target_kind, frozenset()):
+        return (
+            f"fault {fault!r} is not compatible with target_kind {target_kind!r}"
+        )
+    return None
+
+
 class FakeCh347Device:
     def __init__(
         self,
@@ -31,6 +137,10 @@ class FakeCh347Device:
         # 16-bit register file per I2C address (INA3221 shunt/bus/config/id).
         self.registers: Dict[int, Dict[int, int]] = {}
         self.faults: set[str] = set()
+        # Operator-facing injected faults (VirtualHardwareFaultRequest records),
+        # distinct from the low-level transport `faults` above. Each entry is
+        # {target_kind, target_id, operation, fault}.
+        self.virtual_faults: List[Dict[str, Optional[str]]] = []
         self._on_reconnect: List[Callable[[], None]] = []
 
     # -- lifecycle -------------------------------------------------------
@@ -61,7 +171,7 @@ class FakeCh347Device:
     # -- I2C -------------------------------------------------------------
     def i2c_write(self, addr: int, data: bytes) -> bool:
         self._raise_if_fault("i2c_write_error")
-        if "stuck_i2c_output" in self.faults:
+        if "stuck_i2c_output" in self._active_transport_faults():
             return True
         if addr not in self.present:
             return False
@@ -107,7 +217,7 @@ class FakeCh347Device:
     # -- SPI shift registers --------------------------------------------
     def latch_out(self, data: bytes, select: str) -> None:
         self._raise_if_fault("shift_write_error")
-        if "stuck_shift_output" in self.faults:
+        if "stuck_shift_output" in self._active_transport_faults():
             return
         self.latched[select] = bytes(data)
 
@@ -117,6 +227,10 @@ class FakeCh347Device:
         return (raw + bytes(count))[:count]
 
     # -- deterministic fault injection ---------------------------------
+    # Low-level CHIP-TRANSPORT fault vocabulary. These are an implementation
+    # layer below the operator-facing VIRTUAL_HARDWARE_FAULT_KINDS (module top):
+    # device- and driver-level tests inject these names directly via
+    # `set_fault(...)`, and each operator fault reproduces on one or more of them.
     ALLOWED_FAULTS = frozenset({
         "disconnect",
         "open_error",
@@ -144,10 +258,89 @@ class FakeCh347Device:
         return {kind: kind in self.faults for kind in sorted(self.ALLOWED_FAULTS)}
 
     def _raise_if_fault(self, operation_fault: str) -> None:
-        if "disconnect" in self.faults:
+        active = self._active_transport_faults()
+        if "disconnect" in active:
             raise ConnectionError("virtual CH347 disconnected")
-        if operation_fault in self.faults:
+        if operation_fault in active:
             raise OSError(f"injected virtual-hardware fault: {operation_fault}")
+
+    # -- operator-facing virtual-hardware fault injection ---------------
+    # `PUT /api/virtual-hardware/fault` drives these (design_new.md
+    # "Hardware REST payload schemas"). They name one of the 6
+    # VIRTUAL_HARDWARE_FAULT_KINDS against a target and reproduce on the
+    # transport faults above.
+    def inject_virtual_fault(
+        self,
+        target_kind: str,
+        target_id: Optional[str],
+        operation: Optional[str],
+        fault: str,
+    ) -> None:
+        err = validate_virtual_fault_request("inject", target_kind, fault)
+        if err is not None:
+            raise ValueError(err)
+        record: Dict[str, Optional[str]] = {
+            "target_kind": target_kind,
+            "target_id": target_id,
+            "operation": operation,
+            "fault": fault,
+        }
+        if record not in self.virtual_faults:
+            self.virtual_faults.append(record)
+
+    def clear_virtual_fault(
+        self,
+        target_kind: str,
+        target_id: Optional[str],
+        operation: Optional[str] = None,
+        fault: Optional[str] = None,
+    ) -> None:
+        err = validate_virtual_fault_request("clear", target_kind, fault)
+        if err is not None:
+            raise ValueError(err)
+        self.virtual_faults = [
+            r
+            for r in self.virtual_faults
+            if not (
+                r["target_kind"] == target_kind
+                and r["target_id"] == target_id
+                and (operation is None or r["operation"] == operation)
+            )
+        ]
+
+    def clear_all_virtual_faults(self) -> None:
+        self.virtual_faults = []
+
+    def virtual_fault_status(self) -> List[Dict[str, Optional[str]]]:
+        return [dict(r) for r in self.virtual_faults]
+
+    @staticmethod
+    def _transport_for_record(record: Dict[str, Optional[str]]) -> set:
+        """The transport faults one injected operator fault implies. For a
+        transaction fault the request's `operation` narrows it to just the
+        read or the write side (design_new.md types `operation` on the
+        request); an absent operation means the whole transaction."""
+        fault = record["fault"]
+        transport = set(_FAULT_TO_TRANSPORT_FAULTS.get(fault or "", frozenset()))
+        if fault in ("transaction_refusal", "timeout"):
+            operation = record.get("operation")
+            if operation == "write":
+                return {t for t in transport if "write" in t}
+            if operation == "read":
+                return {t for t in transport if "read" in t}
+        return transport
+
+    def _operator_transport_faults(self) -> set:
+        """The transport faults the currently-injected operator faults imply."""
+        active: set = set()
+        for r in self.virtual_faults:
+            active |= self._transport_for_record(r)
+        return active
+
+    def _active_transport_faults(self) -> set:
+        """Transport faults in force now: directly-set ones plus those implied
+        by injected operator faults."""
+        return self.faults | self._operator_transport_faults()
 
     # -- test helpers ----------------------------------------------------
     def duty_cycle(self, addr: int, channel: int) -> float:
