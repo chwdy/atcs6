@@ -51,8 +51,7 @@ def test_every_mirror_target_resolves():
     it has to be caught here.
 
     A tunable whose consumer does not yet read a module global simply gets no
-    mirror for it (see `waypoint_lookahead_blocks`), rather than a mirror that
-    silently does nothing.
+    mirror for it, rather than a mirror that silently does nothing.
     """
     import importlib
 
@@ -86,6 +85,36 @@ def test_every_tunable_has_at_least_one_mirror():
     assert not unmirrored, (
         f"RuntimeConfig fields with no propagation target: {unmirrored}"
     )
+
+
+def test_waypoint_lookahead_blocks_put_reaches_route_executor_reader():
+    """A live PUT to `waypoint_lookahead_blocks` must reach the value the
+    step-`66aa` waypoint-lookahead arming actually reads.
+
+    `route_executor` imports `WAYPOINT_LOOKAHEAD_BLOCKS` as its own module
+    global and reads it in `_apply_waypoint_lookahead`; the settings API is
+    documented as live-tunable for this field (design_new.md **Tunable
+    fields**). Without the `route_executor` mirror the PUT rebinds only
+    `constants` and the reader keeps its stale import binding, so the knob is
+    inert. This pins that the effective reader value tracks the PUT.
+    """
+    import constants
+    import route_executor
+
+    # Default seed reaches both the constants home and the route_executor reader.
+    assert route_executor.WAYPOINT_LOOKAHEAD_BLOCKS == constants.WAYPOINT_LOOKAHEAD_BLOCKS
+
+    new_value = constants.WAYPOINT_LOOKAHEAD_BLOCKS + 5
+    rc.apply_updates({"waypoint_lookahead_blocks": str(new_value)})  # str -> int coercion
+
+    cfg = rc.get_runtime_config()
+    assert cfg.waypoint_lookahead_blocks == new_value
+    assert constants.WAYPOINT_LOOKAHEAD_BLOCKS == new_value
+    # The reader `_apply_waypoint_lookahead` uses is route_executor's own global.
+    assert route_executor.WAYPOINT_LOOKAHEAD_BLOCKS == new_value
+
+    rc.reset_to_defaults()
+    assert route_executor.WAYPOINT_LOOKAHEAD_BLOCKS == constants.WAYPOINT_LOOKAHEAD_BLOCKS
 
 
 def test_reset_restores_defaults_and_repropagates():

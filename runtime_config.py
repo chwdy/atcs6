@@ -105,11 +105,15 @@ _TARGETS: Dict[str, List[Tuple[str, str]]] = {
         ("constants", "IDLE_HOLD_COOLDOWN_TICKS"),
         ("route_executor", "IDLE_HOLD_COOLDOWN_TICKS"),
     ],
-    # No `route_executor` mirror: the doc's step `66aa` waypoint-lookahead
-    # arming is not implemented, so `route_executor` holds no module global to
-    # rebind. Add the mirror back in the same commit that implements the step —
-    # `test_every_mirror_target_resolves` fails on a target that does not exist.
-    "waypoint_lookahead_blocks": [("constants", "WAYPOINT_LOOKAHEAD_BLOCKS")],
+    # `route_executor` imports `WAYPOINT_LOOKAHEAD_BLOCKS` as its own module
+    # global and reads it in the step-`66aa` waypoint-lookahead arming
+    # (`_apply_waypoint_lookahead`), so a live PUT (design_new.md **Tunable
+    # fields**, `waypoint_lookahead_blocks`) must rebind that mirror too or the
+    # reader keeps the stale import binding.
+    "waypoint_lookahead_blocks": [
+        ("constants", "WAYPOINT_LOOKAHEAD_BLOCKS"),
+        ("route_executor", "WAYPOINT_LOOKAHEAD_BLOCKS"),
+    ],
     "delay_class_on_time_tolerance_seconds": [
         ("constants", "DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS"),
         ("route_executor", "DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS"),
