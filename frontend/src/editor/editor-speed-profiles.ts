@@ -1105,6 +1105,11 @@ export class SpeedProfileEditorHandler {
         showToast(err.message || 'Commit failed', 'error', 6000);
         return;
       }
+      // Clear the measured/outer-block highlight the reachable channel is
+      // holding (only the X-button close() did this), so committing doesn't
+      // leave stale blocks lit on the canvas after the modal closes.
+      this.editor.highlighter.clear('reachable');
+      this.editor.renderer?.requestRedraw();
       overlay.remove();
       showToast(
         target === 'model'
@@ -1126,6 +1131,10 @@ export class SpeedProfileEditorHandler {
       commit('model');
     (footer.querySelector('#sp-cal-discard') as HTMLButtonElement).onclick = async () => {
       await this.api.cancelCalibration(train.id).catch(() => {});
+      // Clear the reachable-channel highlight (as close() does) so discarding
+      // doesn't leave stale blocks lit on the canvas.
+      this.editor.highlighter.clear('reachable');
+      this.editor.renderer?.requestRedraw();
       overlay.remove();
     };
   }

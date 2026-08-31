@@ -102,8 +102,11 @@ def validate_virtual_fault_request(
     if target_kind not in VIRTUAL_HARDWARE_FAULT_TARGETS:
         return f"unknown target_kind {target_kind!r}"
     if action == "clear":
-        if fault is not None:
-            return "fault must be null for a clear request"
+        # A per-record clear may carry the record's `fault` kind so only that
+        # fault is removed; a broad clear omits it. Validate a present fault is a
+        # known kind (target compatibility is not required to REMOVE a record).
+        if fault is not None and fault not in VIRTUAL_HARDWARE_FAULT_KINDS:
+            return f"unknown fault {fault!r}"
         return None
     if fault is None:
         return "fault is required for an inject request"
@@ -305,6 +308,7 @@ class FakeCh347Device:
                 r["target_kind"] == target_kind
                 and r["target_id"] == target_id
                 and (operation is None or r["operation"] == operation)
+                and (fault is None or r["fault"] == fault)
             )
         ]
 

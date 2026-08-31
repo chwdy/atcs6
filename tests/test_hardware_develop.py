@@ -1029,8 +1029,10 @@ def test_virtual_hardware_fault_api_controls_the_live_fake(client):
 
 def test_virtual_hardware_fault_api_rejects_malformed_requests(client):
     """Validation of the VirtualHardwareFaultRequest: fault is required for
-    inject and forbidden for clear, and an incompatible (target_kind, fault)
-    pair is rejected rather than translated (design_new.md 3353)."""
+    inject and optional for clear (a valid fault narrows removal to that one
+    record; an unknown kind is still rejected), and an incompatible
+    (target_kind, fault) inject pair is rejected rather than translated
+    (design_new.md 3353)."""
     test_client, state = client
     _boot_develop_session(state)
 
@@ -1051,10 +1053,11 @@ def test_virtual_hardware_fault_api_rejects_malformed_requests(client):
         "action": "inject", "target_kind": "transaction", "target_id": "c0",
         "fault": "made_up",
     }).status_code == 400
-    # clear with a fault present -> 400
+    # clear with an UNKNOWN fault -> 400 (a valid fault is now allowed on a clear
+    # to remove only that one record; an unknown kind is still rejected).
     assert put({
         "action": "clear", "target_kind": "chip", "target_id": "c0",
-        "fault": "device_disconnect",
+        "fault": "made_up",
     }).status_code == 400
     # missing target_id -> 400
     assert put({

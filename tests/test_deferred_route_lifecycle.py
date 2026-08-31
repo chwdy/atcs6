@@ -302,6 +302,38 @@ def test_delete_route_with_assigned_but_unrun_train_finalizes_on_teardown(
     assert rex.get_historical_route("R") is route
 
 
+def test_delete_route_with_assigned_never_ticked_train_finalizes_now(
+    state_with_train,
+):
+    """A train assigned but never ticked has no controller (paused / just-loaded
+    / assigned through the API while paused), so there is no `route_deactivate`
+    latch to arm and no Action consumer that would ever unassign it. `delete_route`
+    must still remove the route: it unassigns the train inline through
+    `remove_train_route_run(...)` so `finalize_pending_route_deletions()` archives
+    the route in the same call. Regression: previously the no-controller train was
+    skipped, the train stayed in `assigned_train_ids`, and the route lingered
+    forever with `is_active=False` while DELETE returned True.
+    """
+    state, _train = state_with_train
+    route = _make_route(state, "R", "BLK_1")
+    rex = state.sim_controller.route_executor
+    route.assign_train("TRAIN_A")                            # assigned, no run
+    # Do NOT create a controller: the sim has never ticked this train.
+    assert state.sim_controller.get_controller("TRAIN_A") is None
+    assert rex.execution_state_for("TRAIN_A") is None
+
+    assert train_route_service.delete_route(state, "R") is True
+
+    # Finalized in the same call -- nothing held it once the train was unassigned.
+    assert "TRAIN_A" not in route.assigned_train_ids         # unassigned inline
+    assert "R" not in rex.route_registry                     # removed from active
+    assert "R" not in rex.pending_route_deletions            # nothing left pending
+    assert rex.get_historical_route("R") is route            # archived definition
+    assert rex.get_route("R") is route                       # resolves via fallback
+    # Re-delete is an idempotent success against the archived route.
+    assert train_route_service.delete_route(state, "R") is True
+
+
 def test_redelete_after_archival_is_idempotent(state_with_train):
     """Re-deleting a route already archived by a completed deferred deletion is
     a no-op success, not a 404 (design_new.md line 2103)."""

@@ -3728,7 +3728,8 @@ class PathDispatcher:
 
     def _block_conflict_holders(self, err: ValidationError) -> Tuple[str, ...]:
         """Trains in the way of a blocked block: the physical occupant if any,
-        otherwise the reservation owner. A same-train holder is kept."""
+        otherwise the reservation owner (`reserved_for_train`, or failing that
+        the reserving path's train). A same-train holder is kept."""
         block = self.network.blocks.get(err.block_id)
         occupant = err.occupied_by or (
             getattr(block, "occupied_by", None) if block is not None else None
@@ -3738,6 +3739,20 @@ class PathDispatcher:
         reserver = getattr(block, "reserved_for_train", None) if block is not None else None
         if reserver:
             return (reserver,)
+        # A block reserved by a path but not carrying a `reserved_for_train`
+        # owner still has a holder: the reserving path's train. A normal
+        # `reserve_for_path` sets both together, so resolve the path owner
+        # directly here to keep a reserved-by-path-only state surfacing as
+        # `waiting_for_block_id` / a contention edge (the old read reported the
+        # block unconditionally for any occupancy-class error).
+        reserving_path = (
+            getattr(block, "reserved_by_path", None) if block is not None else None
+        )
+        if reserving_path:
+            path = self.paths_by_id.get(reserving_path)
+            holder = path.train_id if path is not None else None
+            if holder:
+                return (holder,)
         return ()
 
     def _switch_conflict_holders(

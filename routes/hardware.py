@@ -1245,7 +1245,7 @@ def register(app, state: AppState) -> None:
                     )
                 else:
                     device.clear_virtual_fault(
-                        target_kind, target_id, operation
+                        target_kind, target_id, operation, fault
                     )
         except ValueError as exc:
             return jsonify({"status": "error", "error": str(exc)}), 400

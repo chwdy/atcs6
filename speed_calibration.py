@@ -480,9 +480,17 @@ class SpeedCalibration:
             run.leg_authority_seen = False
             run.leg_started_at = None
             run.clock_started_at = None
+            # The cab reversal is one-shot per arm: the Plan translation toggles
+            # the cab on each `reverse_cab=True`, so clear the flag once emitted.
+            # A refused-then-retried arm re-enters this branch (reconcile sets
+            # leg_armed=False while active_leg_route_id is None); without the
+            # clear the retry re-toggles, and an even number of toggles leaves a
+            # turn-around leg facing the wrong way.
+            reverse_cab = run.needs_reverse
+            run.needs_reverse = False
             return CalibrationCommand(
                 power_percent=run.current_power,
-                reverse_cab=run.needs_reverse,
+                reverse_cab=reverse_cab,
                 arm_leg_to=far_block,
             )
 
@@ -609,7 +617,9 @@ class SpeedCalibration:
             return self._finish_sweep(run)
         return None
 
-    def _finish_sweep(self, run: CalibrationRun) -> CalibrationCommand:
+    def _finish_sweep(
+        self, run: CalibrationRun, *, deactivate_route: bool = False
+    ) -> CalibrationCommand:
         """Close a sweep that has run every step.
 
         A sweep in which no step moved the locomotive is not a curve of a
@@ -635,9 +645,14 @@ class SpeedCalibration:
             success=True,
             reason=f"measured {len(run.samples)} points — pick a profile to write",
         )
-        # The final leg reached the far block, so its route has already finished
-        # through ordinary stop completion. A finished sweep carries no route op.
-        return CalibrationCommand(power_percent=0.0)
+        # A sweep reached here by ordinary stop completion (the final leg
+        # reached the far block) needs no route op — its route already finished.
+        # A sweep reached here from a last-step STALL still holds a RUNNING leg
+        # route (the stall kept authority), so that caller passes
+        # deactivate_route=True to tear it down.
+        return CalibrationCommand(
+            power_percent=0.0, deactivate_route=deactivate_route
+        )
 
     def _record_stall(
         self, run: CalibrationRun, obs: CalibrationObservation
@@ -654,7 +669,9 @@ class SpeedCalibration:
         )
         run.step_index += 1
         if run.step_index >= len(run.power_steps):
-            return self._finish_sweep(run)
+            # A last-step stall still holds the RUNNING leg route (a stall keeps
+            # authority), so tear it down here.
+            return self._finish_sweep(run, deactivate_route=True)
         # The train is still standing where the leg began, facing the same way,
         # so the next step re-arms in place without turning around. The stalled
         # leg's route never reached the far block, so it is torn down.

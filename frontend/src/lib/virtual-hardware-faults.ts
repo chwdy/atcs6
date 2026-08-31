@@ -118,19 +118,25 @@ export function injectFaultBody(
     action: 'inject',
     target_kind: pair.targetKind,
     target_id: id,
-    operation: op || null,
+    // `operation` narrows only a transaction fault to 'read'/'write'; on every
+    // other target it is meaningless, so never forward a stale shared-input op
+    // onto a non-transaction fault (it would mislabel the record and split one
+    // fault into two near-duplicate rows).
+    operation: pair.targetKind === 'transaction' ? op || null : null,
     fault: pair.fault,
   };
 }
 
-/** Build a clear request that removes one injected record. `fault` is omitted
- *  (the backend requires it absent for a clear); the record is matched on
- *  target_kind + target_id + operation. */
+/** Build a clear request that removes ONE injected record. It carries the
+ *  record's `fault` kind so the backend removes only that fault; without it a
+ *  null operation matches (and wildcard-deletes) every sibling fault sharing the
+ *  same (target_kind, target_id). */
 export function clearFaultBody(r: VirtualFaultRecord): VirtualFaultRequest {
   return {
     action: 'clear',
     target_kind: r.target_kind,
     target_id: r.target_id || '',
     operation: r.operation ?? null,
+    fault: r.fault,
   };
 }

@@ -443,10 +443,14 @@ def delete_route(state: AppState, route_id: str) -> bool:
       1. rejects further assignment/activation by setting `Route.is_active =
          False` and recording the id in `RouteExecutor.pending_route_deletions`;
       2. for every assigned train, clears any held same-route re-assignment
-         (a route pending deletion is never re-applied by `_pending_reassign`)
-         and sets the per-train `route_deactivate` latch, letting the inclusive
-         cancel + Action deactivate consumer perform the ordinary authority and
-         run teardown;
+         (a route pending deletion is never re-applied by `_pending_reassign`).
+         A train with a live controller then gets its per-train
+         `route_deactivate` latch set, letting the inclusive cancel + Action
+         deactivate consumer perform the ordinary authority and run teardown. A
+         train the sim has never ticked has no controller (paused, just-loaded,
+         or assigned while paused) and so no live run -- the Action consumer
+         would never run for it, so it is unassigned inline through
+         `remove_train_route_run(...)`, which nothing else would otherwise do;
       3. leaves the `Route` in the active registry while any train remains
          assigned or any RUNNING run names it, so `get_route(...)` keeps
          resolving for every live run during Plan and Action; and
@@ -491,6 +495,14 @@ def delete_route(state: AppState, route_id: str) -> bool:
                     controller.path_projection.received_path_plan is not None
                 ),
             )
+        else:
+            # No controller yet (train assigned before its first Plan
+            # allocation, a paused or just-loaded sim): no Action pass will ever
+            # consume a deactivate latch, so run the same teardown now. Its
+            # no-run branch removes the assignment, so `finalize_pending_route_
+            # deletions()` below can archive + unregister the route instead of
+            # stranding it in the active registry forever.
+            executor.remove_train_route_run(train_id)
 
     # Archive + unregister now when nothing holds the route (no assignment, no
     # live run); otherwise the later teardown consumers trigger the same

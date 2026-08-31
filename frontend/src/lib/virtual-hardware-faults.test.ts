@@ -53,6 +53,13 @@ describe('injectFaultBody', () => {
     expect(body).toMatchObject({ operation: null, fault: 'device_disconnect' });
   });
 
+  it('drops a stale operation on a non-transaction fault (op is transaction-only)', () => {
+    // The op input is shared across inject buttons; a controller disconnect must
+    // not carry a leftover 'write' from a prior transaction injection.
+    const body = injectFaultBody({ targetKind: 'controller', fault: 'device_disconnect' }, 'CTRL', 'write');
+    expect(body).toMatchObject({ operation: null, fault: 'device_disconnect' });
+  });
+
   it('trims the target id and returns null when it is blank', () => {
     expect(injectFaultBody({ targetKind: 'chip', fault: 'device_disconnect' }, '  IN2 ')?.target_id).toBe('IN2');
     expect(injectFaultBody({ targetKind: 'chip', fault: 'device_disconnect' }, '   ')).toBeNull();
@@ -61,15 +68,15 @@ describe('injectFaultBody', () => {
 });
 
 describe('clearFaultBody', () => {
-  it('builds a clear request that omits fault and echoes the record key', () => {
+  it('carries the record fault so a clear removes only that one record', () => {
     const body = clearFaultBody({ target_kind: 'transaction', target_id: 'IN1', operation: 'read', fault: 'refusal' });
     expect(body).toEqual({
       action: 'clear',
       target_kind: 'transaction',
       target_id: 'IN1',
       operation: 'read',
+      fault: 'refusal',
     });
-    expect('fault' in body).toBe(false);
   });
 
   it('keeps a null operation null', () => {

@@ -494,7 +494,12 @@ class SimulationController(SwitchOutputOwner):
                 # the runtime "at the moment of detection" (design_new.md `b9a2`):
                 # abort the rest of this tick so all state is left as it was for
                 # inspection until the operator releases the runtime failure.
-                if self.runtime_halted:
+                # A latched hardware_failure does NOT abort here: in Simulation
+                # mode the top-of-update gate lets the session run with it set
+                # (work in Simulation while repairing hardware), and in
+                # Virtual/Real mode that same gate already returned before the
+                # loop. failed_runtime is the only halt raisable mid-tick.
+                if self.failed_runtime:
                     return
             # Observe moved heads and committed occupancy — invalidate before Plan.
             net.bump_lookahead_world_version()
@@ -521,7 +526,10 @@ class SimulationController(SwitchOutputOwner):
                 # invalidate before the next train (and next tick) reads.
                 net.bump_lookahead_world_version()
 
-                if self.runtime_halted:
+                # Only a mid-tick failed_runtime aborts; a latched
+                # hardware_failure is runnable in Simulation (see the Observe
+                # guard above).
+                if self.failed_runtime:
                     return
 
             # Unidentified train identity follows connectivity, and only the committed

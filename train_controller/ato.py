@@ -226,10 +226,16 @@ class ATOComputer:
                 False, f"Train not in READY (is {c.ops.state.value})"
             )
 
-        # Reactive-transition entry: train is already moving under live
-        # authority with an ATC-accepted cab. Just write `running`;
-        # path_backed_run_active is derived.
+        # Reactive-transition entry: the evaluator has already moved state to
+        # RUNNING_MOVING. Arm ATO only when there is live authority to run on --
+        # ato.running is set only while `received_path_plan is not None`
+        # (design_new.md "ato_running meaning and lifecycle"). A cab-selected ATO
+        # train rolling with no path leaves running False, so the unconditional
+        # evaluator call stays a no-op without authority (substep 1b7a's level
+        # test keeps it cleared).
         if c.ops.state == TrainState.RUNNING_MOVING:
+            if c.path_projection.received_path_plan is None:
+                return CommandResult(False, "No live authority")
             self.running = True
             return CommandResult(True, "ATO armed (already moving)")
 
