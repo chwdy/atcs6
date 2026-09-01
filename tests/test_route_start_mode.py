@@ -584,19 +584,21 @@ def test_seed_nearest_no_reachable_stop_falls_back_to_first(monkeypatch):
 
 
 def test_round_trip_specific_apex_start_reflects_correctly():
-    """A SPECIFIC start at the apex (last task) of a ROUND_TRIP route keeps
-    direction 'forward' until the apex completes, then reflects to task_count-2
-    and flips to 'reverse' via the normal append/advance flow."""
+    """A SPECIFIC start at the apex (last task) of a ROUND_TRIP route: the apex
+    row visits forward, and completing it reflects to task_count-2 with the
+    appended row carrying `walk_direction == "reverse"` (design_new.md line
+    1857). `RouteRun.direction` is Plan-armed (line 1774) and is not flipped by
+    the append flow itself."""
     ex = _seed_executor()
     route = _route(mode=RouteMode.ROUND_TRIP, start_mode=RouteStartMode.SPECIFIC, idx=3, n=4)
     es = _seeded_run(ex, route)
     assert es.next_planning_index == 3 and es.direction == "forward"
 
-    # Mimic the real apex-completion flow (route_executor.py:1314-1316):
+    # Mimic the real apex-completion flow: finish the apex walk-position (3) and
+    # append the next row from it.
     es.task_runs[3].finished_at = 200.0
-    es._append_next_walk_task(route)
-    ex._advance_to_next_task(route, es)
+    es._append_next_walk_task(route, 3)
 
     assert es.task_runs[-1].task_index == 2  # reflected to task_count - 2
-    assert es.direction == "reverse"
+    assert es.task_runs[-1].walk_direction == "reverse"
     assert es.next_planning_index == 2

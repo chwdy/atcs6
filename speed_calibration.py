@@ -437,6 +437,26 @@ class SpeedCalibration:
         )
         return CalibrationCommand(power_percent=0.0, deactivate_route=True)
 
+    def abandon_speed_pass(self, train_id: str, reason: str) -> bool:
+        """Abandon an open auto speed-calibration pass because a braking override
+        (ATC / service-stop / EB) intervened during a measured crossing
+        (design_new.md "Speed calibration", A braking override voids the pass).
+
+        Marks the pass failed and reports the reason on the command-result
+        stream, leaving the profile's previous curve in place, and tears the leg
+        route down through the ordinary route-deactivate latch. Called by the
+        controller during Action (there is no Plan caller to apply `fail()`'s
+        returned deactivate command), so this method performs that teardown
+        itself. Idempotent: a pass that is finished, already failed, or not an
+        auto measuring pass is a no-op returning `False`.
+        """
+        run = self.runs.get(train_id)
+        if run is None or not run.is_measuring or run.mode != "auto":
+            return False
+        self.fail(run, reason)
+        self._deactivate_leg_route(train_id, run)
+        return True
+
     # -- the pass ---------------------------------------------------------
 
     def advance(

@@ -27,6 +27,7 @@ from typing import Dict, Set
 from block_occupancy import OccupancyInput
 from enums import Direction, HandlePosition, PathStatus, TrainState
 from network import RailwayNetwork
+from path import Path, ResourceSequenceEntry
 from path_dispatcher import PathDispatcher
 from simulation import SimulationController
 from track import TRACK_EW, Tile
@@ -237,4 +238,63 @@ def test_truncation_declines_when_no_authority_would_be_left():
     assert path.resource_sequence[path.current_resource_index].resource_id == "BLK_A"
 
     assert dispatcher.truncate_path_before_block(path_id, "BLK_A", "test") is False
+    assert path.get_authority_end_block_id() == "BLK_C"
+
+
+# ---------------------------------------------------------------------------
+# item-11 truncation-terminal rules (design_new.md line 1366)
+# ---------------------------------------------------------------------------
+
+
+def _straight_path_with_switches():
+    """A -[SW1]- B -[SW2]- C - D live path, train anchored in A
+    (current_resource_index 0), authority to D. B is one-way (a safe terminal);
+    C is two-way and entered straight off SW2 (a two-way-switch foul). Synthetic
+    switch entries suffice — the item-11 foul check reads the entry's
+    resource_type and the block's `excludes_opposing_traversal`, not real switch
+    tiles.
+    """
+    network = RailwayNetwork()
+    for x in range(8):
+        network.add_track(Tile(x, 0, track_bits=TRACK_EW))
+    make_segment_block_with_tracks(network, "BLK_A", positions=[(0, 0), (1, 0)], name="A", length_cm=200.0)
+    make_segment_block_with_tracks(network, "BLK_B", positions=[(2, 0), (3, 0)], name="B", length_cm=200.0)
+    make_segment_block_with_tracks(network, "BLK_C", positions=[(4, 0), (5, 0)], name="C", length_cm=200.0)
+    make_segment_block_with_tracks(network, "BLK_D", positions=[(6, 0), (7, 0)], name="D", length_cm=200.0)
+    # B one-way → excludes_opposing_traversal → a safe terminal.
+    network.blocks["BLK_B"].allowed_travel_directions = {Direction.EAST}
+    # C two-way (no direction restriction, not caution) → foulable off a switch.
+    network.blocks["BLK_C"].allowed_travel_directions = None
+    network.blocks["BLK_C"].caution = None
+
+    dispatcher = PathDispatcher(network)
+    entries = [
+        ResourceSequenceEntry(sequence_index=0, resource_type="block", resource_id="BLK_A", entry_edge="W", exit_edge="E"),
+        ResourceSequenceEntry(sequence_index=1, resource_type="switch", resource_id="SW1"),
+        ResourceSequenceEntry(sequence_index=2, resource_type="block", resource_id="BLK_B", entry_edge="W", exit_edge="E"),
+        ResourceSequenceEntry(sequence_index=3, resource_type="switch", resource_id="SW2"),
+        ResourceSequenceEntry(sequence_index=4, resource_type="block", resource_id="BLK_C", entry_edge="W", exit_edge="E"),
+        ResourceSequenceEntry(sequence_index=5, resource_type="block", resource_id="BLK_D", entry_edge="W", exit_edge="E"),
+    ]
+    path = Path(path_id="P1", status=PathStatus.ACTIVE, train_id="T1", resource_sequence=entries, current_resource_index=0)
+    dispatcher.paths["P1"] = path
+    return network, dispatcher, path
+
+
+def test_truncation_backs_off_a_two_way_switch_foul_terminal():
+    network, dispatcher, path = _straight_path_with_switches()
+    # The naive cut before the taken D is C, but C is a two-way block entered
+    # straight off a switch — an item-11 junction foul — so truncation backs off
+    # to B, the nearest legal (one-way) terminal (design_new.md line 1366).
+    assert dispatcher.truncate_path_before_block("P1", "BLK_D", "taken") is True
+    assert path.status == PathStatus.ACTIVE
+    assert path.get_authority_end_block_id() == "BLK_B"
+
+
+def test_truncation_keeps_a_holding_point_terminal_over_a_foul():
+    network, dispatcher, path = _straight_path_with_switches()
+    # A holding point is the operator's explicit safe wait place, so it overrides
+    # the two-way-switch foul (design_new.md item 11): the cut lands on C.
+    network.blocks["BLK_C"].is_holding_point = True
+    assert dispatcher.truncate_path_before_block("P1", "BLK_D", "taken") is True
     assert path.get_authority_end_block_id() == "BLK_C"

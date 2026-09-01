@@ -737,12 +737,14 @@ class CancellationResult:
 
     Per design_new.md "cancel_path() return contract": when the path was
     ACTIVE, `committed=True`, `path_id` is required, `new_status` is
-    `PathStatus.CANCELLED`. On an idempotent no-op or a caller-contract miss,
-    `committed=False`, `path_id=None`, `new_status=None`, and `reason` is
-    required. Callers must not branch on the exact `reason` text; the canonical
-    strings are "path not found", "already completed", "already cancelled".
-    `committed` is whether this call performed the `ACTIVE -> CANCELLED`
-    transition (design_new.md "cancel_path() return contract").
+    `PathStatus.CANCELLED`. On an idempotent no-op (the path was already
+    COMPLETED / CANCELLED), `committed=False`, `path_id=None`, and `new_status`
+    is that terminal status (never `None` — it is always terminal on return),
+    with `reason` the canonical string "already completed" / "already
+    cancelled". A caller-contract miss (a `path_id` absent from `paths_by_id`)
+    raises rather than returning a result (design_new.md line 1360). Callers
+    must not branch on the exact `reason` text. `committed` is whether this call
+    performed the `ACTIVE -> CANCELLED` transition.
     """
 
     committed: bool

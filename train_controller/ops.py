@@ -127,3 +127,27 @@ class OperationalStateMachine:
             and c.eb.active is False
         ):
             self.state = TrainState.READY
+
+    # ------------------------------------------------------------------
+    # Handle-position reset helpers (design_new.md "Module boundaries",
+    # "Two reset helpers, no overlap")
+    # ------------------------------------------------------------------
+
+    def reset_handle_to_neutral(self) -> None:
+        """Write the neutral notch — the non-driving neutral reset helper
+        (design_new.md line 2319). Called by `TrainController._apply_power_off_request()`,
+        `TrainController.commands.set_manual_mode_type()` when entering
+        `power_percent`, and `TrainController.complete_power_off()`.
+        """
+        self.handle_position = HandlePosition.N
+
+    def set_service_brake_to_zero(self) -> None:
+        """Write the ordinary service-brake-to-zero notch — the braking notch
+        that brings the current speed to a stop. The non-driving service-brake
+        reset helper, called only by tick step `b41e`'s route-owned service-stop
+        override (design_new.md line 2320).
+        """
+        c = self._c
+        self.handle_position = c.ato.calculate_braking_notch_for_speed(
+            c.physics_sync.current_speed_kmh, 0.0
+        )

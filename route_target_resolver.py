@@ -123,9 +123,16 @@ class RouteTargetResolver:
             else walk_position_override
         )
 
-        # Canonical direction store on RouteRun is the literal string;
-        # compute a local signed-int form for callers that still need it.
-        direction_str = exec_state.direction
+        # The visit direction is stored per-row on the target walk-position
+        # (design_new.md line 1836): `_find_next_task_target` reports the row's
+        # `walk_direction`, never the run-level `RouteRun.direction`. Fall back
+        # to the run-level direction only when the row does not exist yet (an
+        # empty walk before pre-allocation). A local signed-int form is computed
+        # for callers that still need it.
+        if 0 <= walk_position < len(exec_state.task_runs):
+            direction_str = exec_state.task_runs[walk_position].walk_direction
+        else:
+            direction_str = exec_state.direction
         signed_direction = 1 if direction_str == "forward" else -1
 
         if task.task_kind == "dwell":
@@ -315,7 +322,9 @@ class RouteTargetResolver:
         for _ in range(max(1, route.get_task_count())):
             if pos >= len(exec_state.task_runs):
                 before = len(exec_state.task_runs)
-                exec_state._append_next_walk_task(route)
+                # Continue the walk from the current tail (design_new.md
+                # "`RouteRun._append_next_walk_task(from_walk_position)`").
+                exec_state._append_next_walk_task(route, before - 1)
                 if len(exec_state.task_runs) == before:
                     return None      # terminal walk; nothing to look ahead to
             row = exec_state.task_runs[pos]
@@ -668,7 +677,18 @@ class RouteTargetResolver:
                     continue
                 block = blocks_registry.get(bid)
                 occupant = getattr(block, "occupied_by", None) if block else None
-                if occupant and occupant != this_train_id:
+                # design_new.md line 1670: a platform is unavailable when any
+                # linked block is held by another train's physical occupancy OR
+                # another train/path's live reservation. The current train's own
+                # occupancy / live authority never makes the platform unavailable
+                # to itself; `CAUTION` alone does not count as held.
+                reserver = (
+                    getattr(block, "reserved_for_train", None) if block else None
+                )
+                held_by_other = (occupant and occupant != this_train_id) or (
+                    reserver and reserver != this_train_id
+                )
+                if held_by_other:
                     held.append((key, identity, bid))
                 else:
                     available.append((key, identity, bid))

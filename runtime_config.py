@@ -18,6 +18,7 @@ priority bounds used in validation) are intentionally NOT exposed here.
 
 from dataclasses import asdict, dataclass, fields
 import importlib
+import math
 from typing import Any, Dict, List, Tuple
 
 import constants as C
@@ -125,6 +126,68 @@ _TARGETS: Dict[str, List[Tuple[str, str]]] = {
 }
 
 
+# --- Validation (design_new.md "Runtime settings", Validation) --------------
+# After type coercion, every numeric value must be finite and satisfy these
+# field rules; a value that fails is ignored exactly like a coercion failure,
+# while unrelated valid fields in the same request still apply.
+
+# Single-field lower bounds. `>= b` (inclusive) and `> b` (exclusive).
+_MIN_INCLUSIVE: Dict[str, float] = {
+    "overspeed_warn_threshold_kmh": 0.0,
+    "atc_signal_lookahead_blocks": 1,
+    "lookahead_sample_count": 1,
+    "idle_hold_release_ticks": 1,
+    "idle_hold_cooldown_ticks": 0,
+    "waypoint_lookahead_blocks": 0,
+    "notification_retention_rows": 1,
+    "ato_speed_margin_kmh": 0.0,
+    "lookahead_headroom": 0.0,
+    "brake_deadband_kmh": 0.0,
+    "track_end_safety_margin_cm": 0.0,
+    "platform_safety_margin_cm": 0.0,
+    "delay_class_on_time_tolerance_seconds": 0.0,
+}
+_MIN_EXCLUSIVE: Dict[str, float] = {
+    "ato_speed_tolerance_min_kmh": 0.0,
+    "ato_speed_tolerance_ratio": 0.0,
+    "stopped_speed_threshold_kmh": 0.0,
+    "min_lookahead_cm": 0.0,
+    "caution_speed_limit_kmh": 0.0,
+}
+# Relational rules, each `(high_field, low_field, strict)` requiring
+# `high {> | >=} low`, evaluated against the merged post-request pair. A request
+# that would violate one drops BOTH its writes for that pair.
+_RELATIONAL: List[Tuple[str, str, bool]] = [
+    ("overspeed_eb_threshold_kmh", "overspeed_warn_threshold_kmh", True),
+    ("ato_speed_tolerance_max_kmh", "ato_speed_tolerance_min_kmh", False),
+]
+
+
+def _passes_single_field_bound(field_name: str, value: Any) -> bool:
+    """Whether `value` satisfies `field_name`'s single-field bound (or has
+    none). Finiteness is checked separately by the caller."""
+    if field_name in _MIN_INCLUSIVE:
+        return value >= _MIN_INCLUSIVE[field_name]
+    if field_name in _MIN_EXCLUSIVE:
+        return value > _MIN_EXCLUSIVE[field_name]
+    return True
+
+
+def _drop_relational_violations(candidates: Dict[str, Any]) -> None:
+    """Drop both writes of any relational pair that the merged post-request
+    values would violate, in place. The merged value of a field absent from the
+    request is its current live value."""
+    for high, low, strict in _RELATIONAL:
+        if high not in candidates and low not in candidates:
+            continue
+        high_val = candidates.get(high, getattr(_config, high))
+        low_val = candidates.get(low, getattr(_config, low))
+        ok = high_val > low_val if strict else high_val >= low_val
+        if not ok:
+            candidates.pop(high, None)
+            candidates.pop(low, None)
+
+
 _config = RuntimeConfig()
 
 
@@ -152,16 +215,33 @@ def _propagate(field_name: str, value: Any) -> None:
 
 def apply_updates(updates: Dict[str, Any]) -> RuntimeConfig:
     """Apply a partial dict of field→value updates, coercing to each field's
-    type and propagating to consumer module globals. Unknown keys are ignored."""
+    type, validating per design_new.md "Runtime settings" (Validation), and
+    propagating surviving writes to consumer module globals.
+
+    Unknown keys and `null` values are ignored. After coercion each value must
+    be finite and satisfy its single-field bound; a failing value is dropped
+    exactly like a coercion failure while other fields in the same request still
+    apply. Relational rules (overspeed EB > warn; ATO tolerance max >= min) are
+    evaluated against the merged post-request pair, and a request that would
+    violate one drops both its writes for that pair.
+    """
     valid = {f.name for f in fields(RuntimeConfig)}
+    candidates: Dict[str, Any] = {}
     for key, raw in (updates or {}).items():
         if key not in valid or raw is None:
             continue
         coerce = type(getattr(_config, key))
         try:
             value = coerce(raw)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
+        if not math.isfinite(value):
+            continue
+        if not _passes_single_field_bound(key, value):
+            continue
+        candidates[key] = value
+    _drop_relational_violations(candidates)
+    for key, value in candidates.items():
         setattr(_config, key, value)
         _propagate(key, value)
     return _config

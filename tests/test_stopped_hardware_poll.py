@@ -224,11 +224,13 @@ def test_a_stopped_pass_does_not_consume_a_pending_latch():
 
 def test_the_resumed_pass_consumes_the_latch_the_stopped_pass_kept():
     """The latch keeps its payload across the stop and is consumed by the first
-    pass of the resumed session whose gate holds — it is deferred, not lost."""
+    pass of the resumed session whose gate holds — it is deferred, not lost. The
+    resumed Action pass consumes `pending_path_cancel_request` in the early slot,
+    before the control decision (design_new.md Action step `7b40`)."""
     sim, train, controller = _stopped_train_carrying_a_latch()
     sim._commit_train_observe(controller, train, observing_only=True)
 
-    sim._commit_train_act(controller, train)
+    sim._consume_early_action_latches(controller, train)
 
     assert controller.route_hooks.phase_latches.path_cancel_request is None
 

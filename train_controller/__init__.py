@@ -682,12 +682,13 @@ class TrainController:
         if not train:
             return
 
-        # design_new.md Action step `7b40`: immediately after the command drain,
-        # SimulationController's narrow callback consumes the departure /
-        # station-entry transition requests Plan wrote (calling
+        # design_new.md Action step `7b40` onward: immediately after the command
+        # drain, SimulationController's narrow callback consumes the stopped-gated
+        # `pending_path_cancel_request` (step `7b40`) and then performs the
+        # departure / station-entry transitions Plan wrote (calling
         # `TrainController.depart()` / `enter_station_dwell()`), so the control
-        # decision below evaluates the post-transition state. The callback
-        # exposes no dispatcher object to the controller.
+        # decision below evaluates the post-cancel, post-transition state. The
+        # callback exposes no dispatcher object to the controller.
         if after_command_drain is not None:
             after_command_drain()
 
@@ -829,7 +830,7 @@ class TrainController:
         # authority has been revoked mid-motion, clear ato_running before the
         # ATO/manual branch so the branch uses the correct run state.
         if self.ato.running and self.path_projection.received_path_plan is None:
-            self.ato.running = False
+            self.ato.stop()
 
         # Compute the effective_limit locally; consumers read this via the
         # `target_speed` property when needed.
@@ -888,18 +889,10 @@ class TrainController:
         # safety-cap ordering with a zero cap when service_stop_active is set.
         if self.ops.service_stop_active:
             if self.commands.control_mode == "ato":
-                self.ato.running = False
-                self.ops.handle_position = (
-                    self.ato.calculate_braking_notch_for_speed(
-                        self.physics_sync.current_speed_kmh, 0.0
-                    )
-                )
+                self.ato.stop()
+                self.ops.set_service_brake_to_zero()
             elif self.manual.manual_mode_type == "simulation":
-                self.ops.handle_position = (
-                    self.ato.calculate_braking_notch_for_speed(
-                        self.physics_sync.current_speed_kmh, 0.0
-                    )
-                )
+                self.ops.set_service_brake_to_zero()
 
         # ===== 7. EFFECTIVE LIMIT (target_speed property reads from lookahead) =====
         # Per design_new.md, target_speed and speed_limit_reason are derived
@@ -950,6 +943,11 @@ class TrainController:
           - everything else        → 0.0 (READY/AT_STATION/OFF use lighting
                                      or zero voltage and ignore this field)
         """
+        # design_new.md "Speed calibration" (A braking override voids the pass):
+        # ATC, service stopping, and EB outrank calibration output. When one
+        # applies during a measured crossing, abandon the pass before selecting
+        # output so a transient safety brake never corrupts the timed sample.
+        self._abandon_calibration_on_braking_override()
         if not self.power_on:
             # Per design_new.md line 1755: clear manual_power_percent on
             # power-off so the set-and-forget contract holds.
@@ -970,6 +968,22 @@ class TrainController:
             return PhysicsCommand(
                 kind=PHYSICS_KIND_EMERGENCY_BRAKE,
                 handle=HandlePosition.EB,
+                voltage_source_speed_kmh=0.0,
+            )
+        # design_new.md tick step `c2fe` — pending-power-off propulsion hold.
+        # When `phase_latches.power_off` is latched and EB is not (EB returned
+        # above), replace this tick's command with the neutral notch, overriding
+        # any ATO / manual command. This holds a still-powered rolling ghost train
+        # — whose Observe-set power-off latch is not stopped-gated and may persist
+        # across rolling ticks — at neutral every tick until the latch is
+        # consumed; it is a no-op for the stopped-only operator writer, which
+        # already neutralized once through `_apply_power_off_request()`.
+        if self.route_hooks.phase_latches.power_off:
+            self.ops.reset_handle_to_neutral()
+            self.manual.reset_power_percent_for_safety()
+            return PhysicsCommand(
+                kind=PHYSICS_KIND_HANDLE,
+                handle=HandlePosition.N,
                 voltage_source_speed_kmh=0.0,
             )
         # design_new.md "Lighting-voltage calibration", What the run drives: an
@@ -1058,6 +1072,42 @@ class TrainController:
             handle=self.ops.handle_position,
             voltage_source_speed_kmh=voltage_speed,
         )
+
+    def _abandon_calibration_on_braking_override(self) -> None:
+        """Void an open speed-calibration pass when ATC, service-stop, or EB
+        overrides it during a measured crossing (design_new.md "Speed
+        calibration", A braking override voids the pass).
+
+        ATC, service stopping, and EB outrank calibration output; a transient one
+        mid-crossing would corrupt the timed sample, so the pass is abandoned
+        (its previous curve left in place) and its reason reported before this
+        tick's output is selected. Only a pass actively driving a crossing is
+        abandoned.
+
+        EB and an externally-issued service stop always override — the pass
+        never issues either itself while driving. An ATC `CAUTION` restriction is
+        external too: the leg reserves its stretch clear, so a caution block
+        ahead is anomalous. `AUTHORITY_STOP` / `OBSTRUCTION` / `NO_AUTHORITY` are
+        the leg's own authority-end approach and lifecycle — the ordinary
+        end-of-leg deceleration (design_new.md: "not an invalidating override")
+        and the "ran out of authority" resolution — so they are excluded.
+        """
+        sc = getattr(self, "simulation_controller", None)
+        calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
+        if calibration is None:
+            return
+        driving_pct = self._calibration_power_percent_override()
+        if driving_pct is None or driving_pct <= 0.0:
+            return
+        if self.eb.active:
+            reason = "emergency brake during a measured crossing"
+        elif self.ops.service_stop_active:
+            reason = "service stop during a measured crossing"
+        elif self.atc._last_limit_reason_code == AtcLimitReasonCode.CAUTION:
+            reason = "CAUTION restriction during a measured crossing"
+        else:
+            return
+        calibration.abandon_speed_pass(self.train_id, reason)
 
     def _calibration_power_percent_override(self) -> Optional[float]:
         """The percent an open speed-calibration pass commands this tick, or None.
@@ -2230,7 +2280,7 @@ class TrainController:
         by `set_cab(...)` and `RouteExecutor` respectively.
         """
         self.ops.state = TrainState.READY
-        self.ato.running = False
+        self.ato.stop()
         # path_backed_run_active is derived from path/route/destination context.
 
     # -------------------------------------------------------------------------
@@ -2399,7 +2449,7 @@ class TrainController:
             self._emit_dwell_diagnostic(reason)
             return (False, reason)
         self.ops.state = TrainState.RUNNING_AT_STATION
-        self.ato.running = False
+        self.ato.stop()
         self._emit_event(
             "enter_station_dwell", f"{self.train_id} entered station dwell"
         )
@@ -2453,7 +2503,7 @@ class TrainController:
         is latched at completion, rather than forcing READY unconditionally.
         Does not clear received_path_plan, does not enter dwell itself.
         """
-        self.ato.running = False
+        self.ato.stop()
         # path_backed_run_active is derived from path/route/destination context.
         self.ops.evaluate_reactive_conditions()
 
@@ -2471,7 +2521,7 @@ class TrainController:
             return
         already = self.ops.service_stop_active
         self.ops.service_stop_active = True
-        self.ato.running = False
+        self.ato.stop()
         # Idempotent, so report only the transition — Plan step `6a0d` calls
         # this on every eligible tick while the run timer is elapsed.
         if not already:
@@ -2555,12 +2605,12 @@ class TrainController:
         """
         had_latch = self.route_hooks.phase_latches.power_off
         self.ops.state = TrainState.OFF
-        self.commands.cab = None
-        self.ops.handle_position = HandlePosition.N
+        self.commands.clear_cab()
+        self.ops.reset_handle_to_neutral()
         # design_new.md:1895 — clear the EB latch through the EB-owned helper so
         # the EB Workflow stays the single writer of `eb.active`.
         self.eb.clear()
-        self.ato.running = False
+        self.ato.stop()
         # Force-clear through the service-stop teardown path so an
         # interrupted run never leaves braking armed on a later route.
         self.consume_service_stop(force=True)

@@ -1361,13 +1361,17 @@ class SimulationController(SwitchOutputOwner):
         # get_propulsion_override(...) during the control decision below.
         # TrainController.tick(...) drains the queued operator commands, then —
         # through the after_command_drain callback, before its control decision —
-        # performs the departure / station-entry transitions Plan requested
-        # (design_new.md Action step `7b40`), then runs the control decision.
-        # TrainPhysics.apply_track_voltage() then sets the block track voltage
-        # that drives the next tick's Observe movement.
+        # consumes the stopped-gated `pending_path_cancel_request` (design_new.md
+        # Action step `7b40`) and then performs the departure / station-entry
+        # transitions Plan requested, and only then runs the control decision on
+        # that post-cancel, post-transition state. TrainPhysics.apply_track_voltage()
+        # then sets the block track voltage that drives the next tick's Observe
+        # movement.
         controller.tick(
             delta_seconds,
-            after_command_drain=lambda: self._consume_transition_requests(controller),
+            after_command_drain=lambda: self._consume_early_action_latches(
+                controller, train
+            ),
         )
         physics.apply_track_voltage()
 
@@ -1377,13 +1381,31 @@ class SimulationController(SwitchOutputOwner):
         # station_exit_request — a run removal in the teardown may have written it.
         self._consume_station_exit_request(controller)
 
-    def _consume_transition_requests(self, controller: TrainController) -> None:
-        """Action early slot (design_new.md step `7b40`): perform the depart and
-        station-entry transitions Plan requested, then clear each request.
+    def _consume_early_action_latches(
+        self, controller: TrainController, train: Train
+    ) -> None:
+        """Action early slot, run inside `TrainController.tick(...,
+        after_command_drain=...)` before the control decision.
 
-        Runs between the command drain and the control decision (via
-        `TrainController.tick(..., after_command_drain=...)`) so the control
-        decision evaluates the post-transition state. `depart()` and
+        Consumes the stopped-gated `pending_path_cancel_request` first
+        (design_new.md Action step `7b40`), then performs the departure /
+        station-entry transitions Plan requested. Running these before the
+        control decision means the decision evaluates the post-cancel,
+        post-transition state — a stopped train whose authority was revoked this
+        tick reaches the `READY` state and drops its output on this tick rather
+        than one tick later.
+        """
+        self._consume_pending_path_cancel_request(controller, train)
+        self._consume_transition_requests(controller)
+
+    def _consume_transition_requests(self, controller: TrainController) -> None:
+        """Perform the depart and station-entry transitions Plan requested, then
+        clear each request.
+
+        Runs in the Action early slot after the `pending_path_cancel_request`
+        consumer (step `7b40`), between the command drain and the control
+        decision (via `TrainController.tick(..., after_command_drain=...)`) so the
+        control decision evaluates the post-transition state. `depart()` and
         `enter_station_dwell()` self-gate on their own preconditions; a rejected
         request is cleared and Plan may write a fresh one on a later tick.
         """
@@ -1500,10 +1522,11 @@ class SimulationController(SwitchOutputOwner):
         """Action-stage teardown for one train: consume the teardown latches in
         canonical order, then re-evaluate the open lighting-voltage run.
 
-        The dispatcher cancel latch (`pending_path_cancel_request`) is the first
-        of these consumers; the later ones are route-abort, power-off, and
-        route-deactivate. Calculating movement and committing occupancy already
-        happened in Observe; Action only tears down.
+        The `pending_path_cancel_request` latch is consumed earlier, in the
+        Action early slot before the control decision (step `7b40`, see
+        `_consume_early_action_latches`); the teardown latches consumed here are
+        route-abort, power-off, and route-deactivate. Calculating movement and
+        committing occupancy already happened in Observe; Action only tears down.
 
         Skipped, except the persistent-state sync, for an OFF train the global
         detector read attributed no block change to — the command drain that just ran in
@@ -1517,8 +1540,9 @@ class SimulationController(SwitchOutputOwner):
             self._sync_persistent_train_state(train, controller)
             return
 
-        # Consume the teardown latches in canonical order.
-        self._consume_pending_path_cancel_request(controller, train)
+        # Consume the teardown latches in canonical order. The inclusive
+        # `pending_path_cancel_request` they share was already consumed in the
+        # Action early slot, before the control decision (step `7b40`).
         self._consume_pending_route_abort(controller, train)
         self._consume_pending_power_off(controller, train)
         self._consume_pending_route_deactivate(controller, train)
@@ -2862,7 +2886,7 @@ def build_network_payload(
 ) -> Dict[str, Any]:
     """Build network payload in the canonical sibling-payload shape.
 
-    Per design_new.md "Data Flow To UI" (~line 2309), live runtime data
+    Per design_new.md "Data Flow To UI", live runtime data
     is exposed as sibling maps alongside the persistent `trains` list,
     never merged into Train.to_dict() output:
 

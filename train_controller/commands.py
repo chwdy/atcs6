@@ -354,8 +354,8 @@ class OperatorCommands:
         when a live path exists, per design_new.md "Latch Table".
         """
         c = self._c
-        c.ato.running = False
-        c.ops.handle_position = HandlePosition.N
+        c.ato.stop()
+        c.ops.reset_handle_to_neutral()
         c.manual.reset_power_percent_for_safety()
         # Force-clear through the service-stop teardown path so a run
         # interrupted by power-off never leaves braking armed on a later
@@ -412,6 +412,27 @@ class OperatorCommands:
     # -------------------------------------------------------------------------
     # Cab & Mode Commands
     # -------------------------------------------------------------------------
+
+    def clear_cab(self) -> None:
+        """Cab-owned ungated clear used only by `TrainController.complete_power_off()`
+        during OFF cleanup: set `cab = None` with no precondition gate — distinct
+        from the precondition-gated `set_cab(...)`, not an operator command, and
+        never queued (design_new.md line 2284).
+
+        When the clear moves the head to the other physical end — a cab-`B`
+        train's head moves from `end_b` to `end_a` — it applies the Reversed-frame
+        re-expression per the TrainSpan schema, the same as any other cab writer
+        (design_new.md line 2454). The re-expression is a no-op when the head is
+        already `end_a` (cab `A` or already `None`) or the train has no span.
+        """
+        old_cab = self.cab
+        if old_cab is None:
+            return
+        old_head = "end_b" if old_cab == "B" else "end_a"
+        # `None` selects `end_a` as the head. Best-effort re-expression (a no-op
+        # when the head does not move); OFF cleanup clears the cab regardless.
+        self._c._reframe_span_for_head_change(old_head, "end_a")
+        self.cab = None
 
     def set_cab(self, cab: Optional[str], *, internal: bool = False) -> CommandResult:
         """
@@ -475,7 +496,7 @@ class OperatorCommands:
         # Per design_new.md: changing cab is part of the depart-acceptance
         # contract; it disengages any active ATO run. set_cab from
         # RUNNING_AT_STATION preserves the dwell state.
-        c.ato.running = False
+        c.ato.stop()
 
         prev_state = c.ops.state
         if prev_state != TrainState.RUNNING_AT_STATION:
@@ -512,7 +533,7 @@ class OperatorCommands:
 
         self.control_mode = mode
         # Per design_new.md, set_mode disengages any active ATO run.
-        c.ato.running = False
+        c.ato.stop()
         # Per design_new.md "Driver-control interlock": `manual_power_percent`
         # is set-and-forget, so a mode change must clear it. Otherwise a
         # percentage parked before the change becomes the train's command
@@ -551,7 +572,7 @@ class OperatorCommands:
 
         c.manual.manual_mode_type = mode_type
         if mode_type == "power_percent":
-            c.ops.handle_position = HandlePosition.N
+            c.ops.reset_handle_to_neutral()
         else:
             c.manual.reset_power_percent_for_safety()
 

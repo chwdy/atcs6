@@ -62,10 +62,12 @@ class TestIsStarting:
         # back to 0/1 (below start_walk_position), and finish them.
         rs.task_runs.append(RouteTaskRun(task_index=0, finished_at=2.0))  # wp 5
         rs.task_runs.append(RouteTaskRun(task_index=1, finished_at=3.0))  # wp 6
-        # current_waypoint_index (task_index space) is now 1 (< start 2) —
-        # the trap. is_starting must stay False because next_planning_walk_position
-        # (walk-position space) only advances.
-        assert rs.current_waypoint_index == 1
+        # current_waypoint_index is walk-position space (design_new.md line 1773):
+        # it reads 6 (the last finished walk-position), NOT the wrapped task_index
+        # 1. is_starting must stay False because next_planning_walk_position
+        # (also walk-position space) only advances — the task_index trap that a
+        # task_index-space cursor would fall into cannot arise.
+        assert rs.current_waypoint_index == 6
         assert rs.is_starting is False
 
 

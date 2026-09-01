@@ -279,7 +279,7 @@ class RouteExecutionState:
     # Per-run task table, parallel to Route.tasks. Allocated when the run is
     # created (or on first use) and grown lazily as Route.tasks gains entries.
     task_runs: List[RouteTaskRun] = field(default_factory=list)
-    # Composite run-instance number assigned by RouteExecutor (diagnostic only).
+    # Opaque global run-instance number assigned by RouteExecutor (diagnostic only).
     run_number: int = 0
     # v1 latch consumed by Plan route-deviation cleanup. With
     # `path_cancel_was_deviation` it drives the derived `display_state`
@@ -459,21 +459,21 @@ class RouteExecutionState:
         None`, or `None` when no task has finished yet.
 
         Per design_new.md "Route-run state" — `Optional[int]` (read-only
-        derived). Computed each access from `task_runs`; not a stored
-        field; no writers — the writers that record progress all set
-        `task_runs[i].finished_at`, and the cursor reflects that update on
-        the next read. Returns the underlying `task_index` of the last
-        finished entry (which differs from its position in `task_runs` for
-        `CIRCULAR` / `ROUND_TRIP` walks past `len(Route.tasks)`).
+        derived). This is the WALK-POSITION (the list index into `task_runs`),
+        not the underlying `task_index`; the two decouple after the first
+        `CIRCULAR` / `ROUND_TRIP` wrap. Computed each access from `task_runs`;
+        not a stored field; no writers — the writers that record progress all
+        set `task_runs[i].finished_at`, and the cursor reflects that update on
+        the next read.
 
         Consumers that want "next task to plan" should use
-        `next_planning_index` instead.
+        `next_planning_walk_position` / `next_planning_index` instead.
         """
-        last_finished_index: Optional[int] = None
-        for run in self.task_runs:
+        last_finished_pos: Optional[int] = None
+        for i, run in enumerate(self.task_runs):
             if run.finished_at is not None:
-                last_finished_index = run.task_index
-        return last_finished_index
+                last_finished_pos = i
+        return last_finished_pos
 
     @property
     def next_planning_index(self) -> int:
@@ -532,58 +532,105 @@ class RouteExecutionState:
         """
         return self.next_planning_walk_position <= self.start_walk_position
 
-    def _append_next_walk_task(self, route: "Route") -> None:
-        """Grow `task_runs` for the next walk-position when applicable.
+    def _append_next_walk_task(
+        self, route: "Route", from_walk_position: int
+    ) -> None:
+        """Grow `task_runs` by the next directed-walk row.
 
-        Per design_new.md (Canonical Walk-Append Rule, ~line 1226): callers
-        invoke this helper immediately after writing
-        ``task_runs[i].finished_at``. The helper is a no-op for ``ONE_OFF``
-        routes and inside the initial pre-allocation; it appends a fresh
-        ``RouteTaskRun`` only at wrap/reflection points for ``CIRCULAR`` /
-        ``ROUND_TRIP``.
+        Per design_new.md "`RouteRun._append_next_walk_task(from_walk_position)`".
+        Callers pass the walk-position the walk continues from: the just-finished
+        row (`advance_walk_position(...)`, Plan broken-task skip) or the current
+        tail (waypoint lookahead). The helper reads that row's stored
+        ``walk_direction`` and appends exactly one new row:
 
         - ``ONE_OFF``: never appends.
-        - ``CIRCULAR``: append ``task_index = (last.task_index + 1) % N``.
-        - ``ROUND_TRIP``: forward past the last task reflects to
-          ``task_count - 2`` (second-to-last); reverse past the first task
-          reflects to index ``1`` (second). The appended entry carries no
-          ``direction`` field; ``RouteRun.direction`` is updated by
-          ``_find_next_task_target(...)``.
+        - ``CIRCULAR``: append ``task_index = (from_row.task_index + 1) % N`` with
+          the same ``walk_direction`` (a circular walk never reflects).
+        - ``ROUND_TRIP``: reflect at task-GROUP boundaries. A task group is one
+          non-``dwell`` task followed by its contiguous ``dwell`` rows
+          (``Route.task_groups()``). While another row remains in the current
+          group, append that next row with the same direction. At a group
+          boundary, append the first row of the adjacent group in the current
+          direction. At an end group, reflect to the first row of the neighbour
+          group with the flipped direction. Rows keep their authored order inside
+          a group on both visits, and the end group is not repeated.
 
-        ``route`` may be ``None`` if the caller cannot resolve the shared
-        route definition; the helper then no-ops safely.
+        Never reads or writes ``RouteRun.direction`` (design_new.md line 1857):
+        the visit direction lives per-row in ``walk_direction``. Appends only one
+        row beyond the current tail, so a waypoint-lookahead row already appended
+        past ``from_walk_position`` is never duplicated. ``route`` may be ``None``
+        (unresolved shared route); the helper then no-ops safely.
         """
         if route is None or route.mode == RouteMode.ONE_OFF:
             return
-        if not self.task_runs:
+        if not (0 <= from_walk_position < len(self.task_runs)):
             return
-        last = self.task_runs[-1]
-        if last.finished_at is None:
-            return  # the latest walk-position is still in flight
+        # Grow by exactly one row beyond the current tail. When the walk was
+        # already grown past `from_walk_position` (a waypoint-lookahead row
+        # exists), that next row is already present, so this is a no-op.
+        if from_walk_position != len(self.task_runs) - 1:
+            return
         task_count = len(route.tasks)
         if task_count == 0:
             return
-        last_index = last.task_index
+        from_row = self.task_runs[from_walk_position]
+        from_index = from_row.task_index
+        direction = from_row.walk_direction
 
         if route.mode == RouteMode.CIRCULAR:
-            next_index = (last_index + 1) % task_count
-        elif route.mode == RouteMode.ROUND_TRIP:
-            # Local sign integer derived from the canonical string field.
-            sign = 1 if self.direction == "forward" else -1
-            if sign >= 0:
-                if last_index >= task_count - 1:
-                    next_index = max(0, task_count - 2)
-                else:
-                    next_index = last_index + 1
-            else:
-                if last_index <= 0:
-                    next_index = min(1, task_count - 1)
-                else:
-                    next_index = last_index - 1
-        else:
+            self.task_runs.append(
+                RouteTaskRun(
+                    task_index=(from_index + 1) % task_count,
+                    walk_direction=direction,
+                )
+            )
             return
 
-        self.task_runs.append(RouteTaskRun(task_index=next_index))
+        if route.mode != RouteMode.ROUND_TRIP:
+            return
+
+        # ROUND_TRIP: reflect task groups at the route ends.
+        groups = route.task_groups()
+        g_idx: Optional[int] = None
+        pos_in_group = 0
+        for gi, group in enumerate(groups):
+            if from_index in group:
+                g_idx = gi
+                pos_in_group = group.index(from_index)
+                break
+        if g_idx is None:
+            return
+        group = groups[g_idx]
+
+        if pos_in_group < len(group) - 1:
+            # Another row remains in this group: advance within it, same
+            # direction (dwell rows keep authored order on both visits).
+            next_index = group[pos_in_group + 1]
+            next_direction = direction
+        elif direction == "forward":
+            if g_idx < len(groups) - 1:
+                # Group boundary going forward: first row of the next group.
+                next_index = groups[g_idx + 1][0]
+                next_direction = "forward"
+            else:
+                # Forward end group: reflect to the preceding group, reverse.
+                neighbour = groups[g_idx - 1] if len(groups) >= 2 else group
+                next_index = neighbour[0]
+                next_direction = "reverse"
+        else:  # reverse
+            if g_idx > 0:
+                # Group boundary going reverse: first row of the previous group.
+                next_index = groups[g_idx - 1][0]
+                next_direction = "reverse"
+            else:
+                # Reverse end group: reflect to the second group, forward.
+                neighbour = groups[1] if len(groups) >= 2 else group
+                next_index = neighbour[0]
+                next_direction = "forward"
+
+        self.task_runs.append(
+            RouteTaskRun(task_index=next_index, walk_direction=next_direction)
+        )
 
 
 class RouteExecutor:
@@ -964,7 +1011,7 @@ class RouteExecutor:
         """Five-field summary of the train's currently-`RUNNING` `RouteRun`,
         or ``None`` when the train has no RUNNING run.
 
-        Per design_new.md "Data Flow To UI" (~line 2309), the composite
+        Per design_new.md "Data Flow To UI", the composite
         network/train snapshot exposes `route_runs_by_train_id` mapping
         `train_id -> {route_id, run_number, state, display_state, last_error}`
         for the RUNNING run, where `last_error` is the derived
@@ -2555,7 +2602,7 @@ class RouteExecutor:
         failed_row.finished_at = now
         failed_row.finished_at_operating = self._now_operating()
         try:
-            exec_state._append_next_walk_task(route)
+            exec_state._append_next_walk_task(route, walk_position)
         except Exception:
             pass
         self._emit_route_warning(
@@ -2813,9 +2860,6 @@ class RouteExecutor:
         # for dwell rows per `_record_delay_class`).
         self.advance_walk_position(exec_state, route, row_pos)
 
-        # Advance the per-run cursor based on the route mode.
-        self._advance_to_next_task(route, exec_state)
-
         # design_new.md step `70c3`: Plan writes `station_exit_request` after the
         # dwell row's `finished_at` write above; the Action station-exit consumer
         # calls `TrainController.finish_dwell()` and clears it.
@@ -2905,7 +2949,6 @@ class RouteExecutor:
         # armed on the next tick.
         controller.consume_service_stop()
         self.advance_walk_position(exec_state, route, walk_pos)
-        self._advance_to_next_task(route, exec_state)
         return True
 
     def _covered_task_index_advance(
@@ -3005,7 +3048,6 @@ class RouteExecutor:
             if row is None:
                 break
             self.advance_walk_position(exec_state, route, pos)
-            self._advance_to_next_task(route, exec_state)
 
     @staticmethod
     def _target_block_in_current_span(
@@ -3725,8 +3767,6 @@ class RouteExecutor:
         self._sync_task_runs(route, exec_state)
         self.advance_walk_position(exec_state, route, idx)
 
-        self._advance_to_next_task(route, exec_state)
-
     def handle_path_cancellation(
         self,
         train_id: str,
@@ -3820,22 +3860,12 @@ class RouteExecutor:
             return False
 
         row = exec_state.task_runs[walk_position]
-        # Idempotency: a re-delivered completion for an already-finished row must
-        # not double-advance the walk or double-flip ROUND_TRIP direction.
-        # `advance_walk_position(...)` no-ops on a finished row; the flip below is
-        # guarded the same way.
-        matched_row_was_open = row.finished_at is None
+        # Idempotency: `advance_walk_position(...)` no-ops on an already-finished
+        # row, so a re-delivered completion neither double-advances the walk nor
+        # double-appends. ROUND_TRIP reflection is carried by the appended row's
+        # stored `walk_direction` (design_new.md line 1857), not a
+        # `RouteRun.direction` flip here.
         self.advance_walk_position(exec_state, route, walk_position)
-        # ROUND_TRIP / CIRCULAR walks reflect or wrap at route ends by flipping
-        # `RouteRun.direction` so the next `_append_next_walk_task` appends the
-        # reflected walk-position. Every other advance site (dwell-complete,
-        # head-advance, covered-task advance) pairs the `advance_walk_position(...)`
-        # writer with this flip; the dispatcher-stop-completion path must too, or
-        # a ROUND_TRIP whose forward apex is a bare `stop` with no trailing dwell
-        # oscillates at the apex instead of reflecting (design_new.md:1281-1288,
-        # 1312).
-        if matched_row_was_open:
-            self._advance_to_next_task(route, exec_state)
         # design_new.md "Event log": the train reached its stop target. The
         # served block is the run's own copy of the target
         # (`task_runs[walk_position].resolved_target`), never re-read off the
@@ -3935,7 +3965,7 @@ class RouteExecutor:
         # measured across this row never mixes the two clocks.
         row.finished_at_operating = self._now_operating()
         self._record_delay_class(exec_state, route, walk_position, now)
-        exec_state._append_next_walk_task(route)
+        exec_state._append_next_walk_task(route, walk_position)
 
     # ------------------------------------------------------------------ removal
     def remove_train_route_run(self, train_id: str) -> None:
@@ -4277,51 +4307,6 @@ class RouteExecutor:
                         pairs.append((train, route))
 
         return pairs
-
-    def _advance_to_next_task(
-        self, route: "Route", exec_state: RouteExecutionState
-    ) -> bool:
-        """Maintain ``direction`` for ROUND_TRIP route reflections.
-
-        The cursor itself (``current_waypoint_index``) is now derived from
-        ``task_runs[*].finished_at`` (see ``RouteExecutionState`` property
-        docstring). Each ``finished_at`` write triggers
-        ``_append_next_walk_task(route)`` which appends the next
-        ``RouteTaskRun`` for ``CIRCULAR`` / ``ROUND_TRIP`` routes — that
-        append is what advances the derived cursor.
-
-        This helper retains a single responsibility: flip
-        ``RouteRun.direction`` at ROUND_TRIP boundaries so the next
-        ``_append_next_walk_task`` call appends the reflected walk-position.
-        Returns ``True`` if the walk can continue (more tasks ahead),
-        ``False`` for a terminal ONE_OFF walk.
-        """
-        task_count = route.get_task_count()
-        if task_count == 0:
-            return False
-
-        if route.mode == RouteMode.ONE_OFF:
-            # ONE_OFF terminates when the next planning index exhausts the
-            # task list. `current_waypoint_index` (last finished, may be
-            # None) is not the right cursor here.
-            return exec_state.next_planning_index < task_count
-
-        if route.mode == RouteMode.CIRCULAR:
-            return True
-
-        # ROUND_TRIP — flip the canonical direction string at boundaries.
-        # The derived cursor jumps to the reflected position once
-        # `_append_next_walk_task` appends the next entry with the new
-        # direction. Use the last-finished cursor (None before the first
-        # finish; treat that as -1 for the boundary comparison below).
-        cursor_opt = exec_state.current_waypoint_index
-        cursor = -1 if cursor_opt is None else cursor_opt
-        if cursor >= task_count - 1 and exec_state.direction == "forward":
-            exec_state.direction = "reverse"
-        elif cursor <= 0 and exec_state.direction == "reverse":
-            exec_state.direction = "forward"
-
-        return True
 
     # ------------------------------------------------------------------ network helpers
     def _is_train_at_block(self, train: "Train", block_id: str) -> bool:

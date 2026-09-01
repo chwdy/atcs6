@@ -354,6 +354,14 @@ class RouteTaskRun:
     """
 
     task_index: int
+    # Direction of this visit on the directed walk: "forward" | "reverse".
+    # Initial rows are "forward". `RouteRun._append_next_walk_task(...)` copies
+    # it while advancing within a task group and flips it only when a ROUND_TRIP
+    # walk reflects from one end group toward the next (design_new.md
+    # "RouteTaskRun schema", walk_direction). `RouteExecutor._find_next_task_target(...)`
+    # reports it in `ResolvedNextTaskProjection.direction`; no caller infers
+    # direction from increasing/decreasing raw task indices.
+    walk_direction: str = "forward"
     resolved_target: Optional["ResolvedRouteTarget"] = None
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
@@ -470,6 +478,24 @@ class Route:
         if 0 <= index < len(self.tasks):
             return self.tasks[index]
         return None
+
+    def task_groups(self) -> List[List[int]]:
+        """Divide `tasks` into ordered task groups for ROUND_TRIP reflection.
+
+        Per design_new.md "RouteRun._append_next_walk_task", a task group is
+        one non-`dwell` task followed by all of its contiguous `dwell` rows.
+        Returns the groups as ordered lists of `Route.tasks` indices; the
+        indices partition `range(len(tasks))` in order. A leading `dwell`
+        (a malformed authoring with no preceding stop) starts its own group so
+        this never drops a task.
+        """
+        groups: List[List[int]] = []
+        for i, task in enumerate(self.tasks):
+            if getattr(task, "task_kind", None) == "dwell" and groups:
+                groups[-1].append(i)
+            else:
+                groups.append([i])
+        return groups
 
     # ── Activation Methods ─────────────────────────────────────────
 

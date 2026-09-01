@@ -1786,9 +1786,16 @@ class PathDispatcher:
             latched payload's own level rather than a level derived here.
           * `deviation` and `run_complete` are the two structured, mutually
             exclusive classification booleans forwarded to the route callback.
-          * Failure reasons use the canonical strings ``"path not found"``,
-            ``"already completed"``, ``"already cancelled"``.
-          * On success the result carries ``new_status = PathStatus.CANCELLED``.
+          * A `path_id` absent from `paths_by_id` is a caller-contract
+            violation and raises (design_new.md line 1360), like the
+            ``deviation``+``run_complete`` and error-pairing violations above.
+          * An idempotent no-op (already ``COMPLETED`` / ``CANCELLED``) returns
+            ``committed = False`` with ``new_status`` set to that terminal
+            status and the canonical ``reason`` string (``"already completed"``
+            / ``"already cancelled"``); ``new_status`` is always terminal on
+            return.
+          * On success the result carries ``committed = True`` and
+            ``new_status = PathStatus.CANCELLED``.
         """
         if deviation and run_complete:
             raise ValueError(
@@ -1804,24 +1811,30 @@ class PathDispatcher:
             )
         path = self.paths.get(path_id)
         if path is None:
-            return CancellationResult(
-                committed=False,
-                path_id=None,
-                new_status=None,
-                reason="path not found",
+            # A `path_id` not present in `paths_by_id` is a caller-contract
+            # violation, not an outcome (design_new.md line 1360): `cancel_path`
+            # carries no `failure_kind` to report one, so it raises rather than
+            # returning a result. Callers resolve the id through
+            # `active_path_id_by_train(...)` first, so this never fires in v1.
+            raise ValueError(
+                f"cancel_path called with a path_id not present in "
+                f"paths_by_id: {path_id!r}"
             )
         if path.status == PathStatus.COMPLETED:
+            # Idempotent no-op: the path already released its future authority
+            # through normal completion on an earlier tick. `new_status` is
+            # always terminal on return (design_new.md line 1357-1358).
             return CancellationResult(
                 committed=False,
                 path_id=None,
-                new_status=None,
+                new_status=PathStatus.COMPLETED,
                 reason="already completed",
             )
         if path.status == PathStatus.CANCELLED:
             return CancellationResult(
                 committed=False,
                 path_id=None,
-                new_status=None,
+                new_status=PathStatus.CANCELLED,
                 reason="already cancelled",
             )
 
@@ -1968,14 +1981,45 @@ class PathDispatcher:
         if cut_index is None:
             return False
 
-        # The last block in front of the train and behind the stolen one becomes
-        # the new authority end. Everything from there on is dropped.
+        # Item-11 truncation-terminal rules (design_new.md line 1366): the cut
+        # lands at the furthest legal terminal at or behind the last block entry
+        # before the taken block, preferring a holding point and honoring the
+        # reversal-trap and junction-fouling exclusions and the never-terminate-
+        # on-a-waypoint/run-target rule. Walk block candidates furthest-forward
+        # first; the first eligible one is the new authority end.
+        route_executor = self._get_route_executor()
+        excluded_terminal_targets = (
+            route_executor.waypoint_and_run_target_blocks(path.train_id)
+            if route_executor is not None
+            and hasattr(route_executor, "waypoint_and_run_target_blocks")
+            else set()
+        )
         keep_through: Optional[int] = None
+        # `next_block_after_terminal` is the first block that would be dropped
+        # just after the candidate terminal — the reversal-trap check's "next
+        # block". For the furthest candidate that is the taken block itself.
+        next_block_after_terminal: Optional[str] = block_id
         for index in range(cut_index - 1, path.current_resource_index - 1, -1):
-            if path.resource_sequence[index].resource_type == "block":
+            entry = path.resource_sequence[index]
+            if entry.resource_type != "block":
+                continue
+            terminal_block_id = entry.resource_id
+            if terminal_block_id not in excluded_terminal_targets and (
+                self._resource_seq_terminal_is_eligible(
+                    path, index, next_block_after_terminal, excluded_terminal_targets
+                )
+            ):
                 keep_through = index
                 break
+            next_block_after_terminal = terminal_block_id
         if keep_through is None:
+            # No legal terminal remains at or behind the cut (the taken block is
+            # the first thing ahead, or every candidate is barred by an item-11
+            # exclusion). Release every reservation the path holds ahead of the
+            # train and return False; Observe then latches the ordinary cancel so
+            # the whole path comes down through Action (design_new.md line
+            # 1371-1375). `resource_sequence` is left unchanged.
+            self._release_authority_tail_ahead(path, path_id)
             return False
 
         dropped = path.resource_sequence[keep_through + 1 :]
@@ -2460,6 +2504,90 @@ class PathDispatcher:
             return False
         block = blocks.get(block_id)
         return bool(getattr(block, "is_holding_point", False))
+
+    def _resource_seq_terminal_fouls_switch(
+        self, path: "Path", terminal_seq_index: int, terminal_block_id: str
+    ) -> bool:
+        """Two-way-switch foul (design_new.md item 11) evaluated over a live
+        path's ``resource_sequence`` rather than a ``PathSegment``.
+
+        A block no opposing move can reach is safe to stop just inside, whether
+        it is one-way or in CAUTION behind a leader
+        (``Block.excludes_opposing_traversal``). Otherwise the terminal fouls the
+        junction when the path enters it directly off a switch — i.e. the
+        resource entry immediately before it in the sequence is a switch. This is
+        the ``resource_sequence`` companion to
+        ``_terminal_fouls_two_way_switch_block``.
+        """
+        block = self.network.blocks.get(terminal_block_id)
+        if block is None:
+            return False
+        if block.excludes_opposing_traversal():
+            return False
+        prev_index = terminal_seq_index - 1
+        return (
+            prev_index >= 0
+            and path.resource_sequence[prev_index].resource_type == "switch"
+        )
+
+    def _resource_seq_terminal_is_eligible(
+        self,
+        path: "Path",
+        terminal_seq_index: int,
+        next_block_after_terminal: Optional[str],
+        excluded_terminal_targets: Set[str],
+    ) -> bool:
+        """Whether a live path may be truncated to end on the block at
+        ``terminal_seq_index``, applying the item-11 truncation-terminal rules
+        (design_new.md line 1366). The ``resource_sequence`` mirror of
+        ``_prefix_terminal_is_eligible``:
+
+        - Reversal trap (absolute): the first dropped block ahead holds a stopped
+          train whose next route move would come back through this terminal.
+        - Two-way-switch foul: never park on a two-way block entered straight off
+          a switch — unless the terminal is an operator holding point that is not
+          itself a resolved waypoint / run target.
+        """
+        terminal_block_id = path.resource_sequence[terminal_seq_index].resource_id
+        if next_block_after_terminal is not None and (
+            self._terminal_traps_reversing_occupant(
+                next_block_id=next_block_after_terminal,
+                terminal_block_id=terminal_block_id,
+                train_id=path.train_id,
+            )
+        ):
+            return False
+        terminal_is_holding_point = (
+            self._block_is_holding_point(terminal_block_id)
+            and terminal_block_id not in excluded_terminal_targets
+        )
+        if not terminal_is_holding_point and self._resource_seq_terminal_fouls_switch(
+            path, terminal_seq_index, terminal_block_id
+        ):
+            return False
+        return True
+
+    def _release_authority_tail_ahead(self, path: "Path", path_id: str) -> None:
+        """Release every reservation the path holds ahead of the train — the
+        block reservations and the switch families past
+        ``current_resource_index`` — through
+        ``ResourceCoordinator.release_authority_tail(...)``. Used on a
+        ``truncate_path_before_block`` False return (design_new.md line 1374):
+        the path is about to be cancelled whole by Observe, so its future
+        authority is freed now while ``resource_sequence`` is left unchanged.
+        """
+        ahead = path.resource_sequence[path.current_resource_index + 1 :]
+        ahead_blocks = self._blocks_still_reserved_by(
+            [e.resource_id for e in ahead if e.resource_type == "block"], path_id
+        )
+        ahead_switches = [
+            e.resource_id for e in ahead if e.resource_type == "switch"
+        ]
+        coordinator = getattr(self.network, "resource_coordinator", None)
+        if coordinator is not None:
+            coordinator.release_authority_tail(
+                ahead_blocks, ahead_switches, path_id
+            )
 
     def _truncate_segment_to_cap(
         self,

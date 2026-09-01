@@ -136,9 +136,10 @@ class Block(TrackResource):
         # like every other wiring edit (design_new.md "Power", Rail polarity
         # lives on the rail binding).
 
-        # Maintenance counter: total simulated seconds a train has occupied this
-        # block. Written once per tick by SimulationController.update(...) and
-        # persisted with the layout (see design_new.md "Maintenance counters").
+        # Maintenance counter: total unscaled wall-clock seconds a train has
+        # occupied this block (accrued from time.time() deltas, not scaled by
+        # playback speed). Written once per tick by SimulationController.update(...)
+        # and persisted with the layout (see design_new.md "Maintenance counters").
         self.occupied_seconds = occupied_seconds
 
         # Underlying primitive state fields. `state` is a computed @property

@@ -363,3 +363,36 @@ def test_manual_marking_leaves_the_operators_manual_power_intact():
     auto_cal, _auto_run, _p2 = _open_run(mode="auto")
     auto_override = auto_cal.get_propulsion_override("T1")
     assert auto_override is not None and auto_override.kind == "power_percent"
+
+
+# --- braking-override abandonment (design_new.md "A braking override voids the pass") ---
+
+
+def test_braking_override_abandons_the_pass_and_keeps_the_curve():
+    """A braking override during a measured crossing abandons the pass, reports
+    the reason, and leaves the profile's previous curve in place (design_new.md
+    "Speed calibration", A braking override voids the pass)."""
+    cal, run, profile = _open_run()
+    curve_before = list(profile.power_speed_curve)
+    # Arm the leg and enter the measured block so a crossing is in progress.
+    cal.advance(run, CalibrationObservation(now=0.0))
+    cal.advance(run, CalibrationObservation(now=1.0, newly_confirmed=("B",)))
+    assert run.is_measuring
+
+    abandoned = cal.abandon_speed_pass("T1", "emergency brake during a measured crossing")
+    assert abandoned is True
+    assert run.phase == PHASE_FAILED
+    assert "emergency brake" in run.failure_reason
+    # A pass that does not measure every step writes nothing to the profile.
+    assert profile.power_speed_curve == curve_before
+
+    # Idempotent: a second abandon (or one on a finished/failed pass) is a no-op.
+    assert cal.abandon_speed_pass("T1", "again") is False
+
+
+def test_abandon_speed_pass_ignores_a_non_measuring_or_manual_pass():
+    # A manual pass drives nothing and is never abandoned by this path.
+    cal, _run, _profile = _open_run(mode="manual")
+    assert cal.abandon_speed_pass("T1", "override") is False
+    # No open run for a train at all -> no-op.
+    assert cal.abandon_speed_pass("T_NONE", "override") is False

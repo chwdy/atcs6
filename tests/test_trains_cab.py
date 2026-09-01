@@ -110,6 +110,37 @@ class TestCabSwitchEndPositionsBugFix:
         assert span.end_a.entry_edge == expected_new_entry_a
         assert span.end_b.entry_edge == expected_new_entry_b
 
+    def test_clear_cab_from_b_re_expresses_the_span_frame(self, network):
+        """`clear_cab()` (the B -> None power-off clear used by
+        `complete_power_off()`) moves the head from end_b to end_a, so it must
+        re-express both span end frames like any other cab writer (design_new.md
+        "Reversed-frame re-expression"). The direct `cab = None` write it replaced
+        skipped this, leaving the frame stale."""
+        train, controller = self._setup_two_tile_train(network)
+
+        controller.commands.set_cab("B")
+        span = controller.physics_sync.current_span
+        entry_a_at_b = span.end_a.entry_edge
+        entry_b_at_b = span.end_b.entry_edge
+
+        def _flip(tile, edge):
+            track = network.get_track(*tile)
+            if track:
+                exits = track.get_exits(edge, use_switch_state=True)
+                if exits:
+                    return exits[0]
+            return edge
+
+        expected_entry_a = _flip(span.end_a.tile, entry_a_at_b)
+        expected_entry_b = _flip(span.end_b.tile, entry_b_at_b)
+
+        controller.commands.clear_cab()
+
+        assert controller.commands.cab is None
+        span = controller.physics_sync.current_span
+        assert span.end_a.entry_edge == expected_entry_a
+        assert span.end_b.entry_edge == expected_entry_b
+
     def test_cab_switch_preserves_occupied_tiles_order(self, network):
         """occupied_tiles order stays the same - physical train didn't move."""
         train, controller = self._setup_two_tile_train(network)

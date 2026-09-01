@@ -80,7 +80,6 @@ class ReserveResult:
     success: bool
     failed_block_id: Optional[str] = None
     reason: Optional[str] = None
-    reserved_block_ids: List[str] = field(default_factory=list)
 
 
 # ============================================================================
@@ -785,10 +784,7 @@ class BlockManager:
                 train_id,
             )
 
-        return ReserveResult(
-            success=True,
-            reserved_block_ids=list(block_ids),
-        )
+        return ReserveResult(success=True)
 
     def matching_path_reservation_ids(
         self, block_ids: List[str], path_id: str
@@ -986,14 +982,12 @@ class BlockManager:
         live tile connectivity from the block's exit tile in
         ``block.caution.exit_edge`` through any intervening switch (using the
         current ``Switch.position``) until the next reachable block resource is
-        found. If that next reachable block is OCCUPIED by a train whose
-        current ``travel_direction`` is the same as ``block.caution.exit_edge``,
-        keep caution — the train ahead is still moving away in the protect
-        direction. If it is FREE/RESERVED/CAUTION, if no reachable block
-        exists at all, or if the OCCUPIED forward block holds a train whose
-        ``travel_direction`` is the opposite of ``block.caution.exit_edge``
-        (train has reversed its cab and is no longer moving away), clear
-        caution by writing ``block.caution = None``.
+        found. Occupancy alone decides: if that next reachable block is
+        OCCUPIED, keep caution — a train is still ahead in the protect
+        direction. If it is FREE/RESERVED/CAUTION, or no reachable block exists
+        at all, clear caution by writing ``block.caution = None``. No
+        ``travel_direction`` comparison is made; an OCCUPIED forward block keeps
+        caution regardless of the occupant's cab or direction.
 
         When the manager has no network back-reference (early bootstrap or
         unit tests), the only safe behaviour is to clear caution entries that
@@ -1089,10 +1083,11 @@ class BlockManager:
         is the edge through which this walk actually entered that block (per
         design_new.md line 842): for a straight adjacent block this is simply
         the side facing ``block``, but through switch tiles and curves it is the
-        entry edge the walk used as it crossed switch legs. The caller compares
-        the occupant train's ``travel_direction`` against this entry edge to
-        decide CAUTION -> FREE, so the walk must hand it back rather than letting
-        the caller fall back to the geometric opposite of ``direction``.
+        entry edge the walk used as it crossed switch legs. The reevaluator uses
+        it only as a validity signal — a ``None`` entry edge means the walk
+        reached no real block, so the caution clears — and then decides
+        CAUTION -> FREE from the next block's occupancy alone, reading no train,
+        controller, or ``travel_direction`` state.
 
         Walks tile connectivity through any intervening switch tiles using
         the current ``Switch.position``. Returns ``(None, None)`` if the walk

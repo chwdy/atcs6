@@ -8,13 +8,13 @@ release contract. Cross-sub-module state (``handle_position``,
 is reached through the controller back-reference ``self._c`` so this
 class stays a single-purpose owner of EB-specific state and behavior.
 
-The ATC overspeed escalation path (in ``produce_physics_command``) writes
-``self.eb.active = True`` directly alongside its other handle / ATO /
-latch writes; the escalation semantics differ from operator EB (no
-idempotency check, no ``RUNNING_AT_STATION`` guard) so it does not call
-``activate()``. That inline escalation is intentional and the rule
-"EB is the only writer of ``active``" still holds because both writers
-land on the same field on the same class.
+The ATC overspeed escalation path calls ``activate()`` from inside
+``TrainController.tick(...)`` rather than writing ``self.eb.active``
+directly, so it runs the same synchronous activation effects — including
+``consume_service_stop(...)`` — as an operator-issued EB. ``activate()``,
+``release()``, and ``clear()`` are the only three sites that assign
+``eb.active``; the ATC escalation call is the one caller of ``activate()``
+outside the operator-command drain.
 
 External callers access EB state and behavior as:
 
@@ -61,7 +61,7 @@ class EBWorkflow:
 
         self.active = True
         c.ops.handle_position = HandlePosition.EB
-        c.ato.running = False
+        c.ato.stop()
         # Force-clear through the service-stop teardown path so a run
         # interrupted by EB never leaves braking armed on a later route
         # (design_new.md "TrainController.begin_service_stop() /

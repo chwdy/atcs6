@@ -159,3 +159,79 @@ def test_notification_retention_is_tunable_and_bounds_the_archive():
 
     rc.reset_to_defaults()
     assert notification_center.NOTIFICATION_RETENTION_ROWS == 10000
+
+
+# ---------------------------------------------------------------------------
+# Validation (design_new.md "Runtime settings", Validation)
+# ---------------------------------------------------------------------------
+
+
+def test_non_finite_values_are_ignored():
+    cfg = rc.get_runtime_config()
+    defaults = rc.RuntimeConfig()
+    rc.apply_updates({"caution_speed_limit_kmh": float("inf")})
+    assert cfg.caution_speed_limit_kmh == defaults.caution_speed_limit_kmh
+    rc.apply_updates({"ato_speed_margin_kmh": float("nan")})
+    assert cfg.ato_speed_margin_kmh == defaults.ato_speed_margin_kmh
+
+
+def test_single_field_bound_violations_are_ignored():
+    cfg = rc.get_runtime_config()
+    defaults = rc.RuntimeConfig()
+    rc.apply_updates({"overspeed_warn_threshold_kmh": -1.0})  # must be >= 0
+    assert cfg.overspeed_warn_threshold_kmh == defaults.overspeed_warn_threshold_kmh
+    rc.apply_updates({"atc_signal_lookahead_blocks": 0})  # must be >= 1
+    assert cfg.atc_signal_lookahead_blocks == defaults.atc_signal_lookahead_blocks
+    rc.apply_updates({"stopped_speed_threshold_kmh": 0.0})  # must be > 0
+    assert cfg.stopped_speed_threshold_kmh == defaults.stopped_speed_threshold_kmh
+
+
+def test_other_fields_still_apply_when_one_is_dropped():
+    cfg = rc.get_runtime_config()
+    defaults = rc.RuntimeConfig()
+    rc.apply_updates(
+        {
+            "atc_signal_lookahead_blocks": 0,  # dropped (must be >= 1)
+            "brake_deadband_kmh": 0.7,  # valid, applies
+        }
+    )
+    assert cfg.atc_signal_lookahead_blocks == defaults.atc_signal_lookahead_blocks
+    assert cfg.brake_deadband_kmh == 0.7
+
+
+def test_overspeed_relation_drops_both_writes_against_merged_pair():
+    """EB must stay above warn. A request that would reverse the pair —
+    evaluated against the merged post-request values — drops both threshold
+    writes but leaves unrelated fields applied."""
+    cfg = rc.get_runtime_config()
+    defaults = rc.RuntimeConfig()  # eb 10, warn 5
+
+    # eb below the current warn: violates against the merged pair -> both dropped.
+    rc.apply_updates({"overspeed_eb_threshold_kmh": 1.0, "lookahead_headroom": 0.9})
+    assert cfg.overspeed_eb_threshold_kmh == defaults.overspeed_eb_threshold_kmh
+    assert cfg.lookahead_headroom == 0.9  # unrelated field applied
+
+    # Raising warn above the current eb (merged 10 vs 20) -> dropped.
+    rc.apply_updates({"overspeed_warn_threshold_kmh": 20.0})
+    assert cfg.overspeed_warn_threshold_kmh == defaults.overspeed_warn_threshold_kmh
+
+    # A consistent pair applies together.
+    rc.apply_updates(
+        {"overspeed_warn_threshold_kmh": 6.0, "overspeed_eb_threshold_kmh": 12.0}
+    )
+    assert cfg.overspeed_warn_threshold_kmh == 6.0
+    assert cfg.overspeed_eb_threshold_kmh == 12.0
+
+
+def test_ato_tolerance_relation_drops_both_when_reversed():
+    cfg = rc.get_runtime_config()
+    defaults = rc.RuntimeConfig()  # min 0.05, max 2.0
+    # max below current min (merged pair) -> both dropped.
+    rc.apply_updates({"ato_speed_tolerance_max_kmh": 0.01})
+    assert cfg.ato_speed_tolerance_max_kmh == defaults.ato_speed_tolerance_max_kmh
+    # A valid widening applies together.
+    rc.apply_updates(
+        {"ato_speed_tolerance_min_kmh": 0.1, "ato_speed_tolerance_max_kmh": 3.0}
+    )
+    assert cfg.ato_speed_tolerance_min_kmh == 0.1
+    assert cfg.ato_speed_tolerance_max_kmh == 3.0
