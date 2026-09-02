@@ -383,14 +383,21 @@ class Switch(TrackResource):
         # Physical occupancy by a conflicting route blocks new locks. With
         # route-keyed occupancy a different train can be on the switch
         # provided its route doesn't conflict with the claim's route.
-        if claim_route is not None:
+        if source_switch_id is not None:
+            # Flank-protection claim (route is None by contract): never refused
+            # by physical_occupants. Flank protection constrains the neighbour's
+            # state, not its occupancy, so a flank claim skips the route-conflict
+            # gate entirely (design_new.md "Switch entity", Occupancy). A flank
+            # claim that would still require a throw under occupancy is caught by
+            # the throw gate below.
+            pass
+        elif claim_route is not None:
             if self.has_conflicting_route(claim_route, train_id=train_id):
                 return False
-        else:
-            # No route on the claim → fall back to the old whole-switch
-            # rule: any other train's physical occupancy blocks.
-            if self.occupied_by is not None and self.occupied_by != train_id:
-                return False
+        elif self.occupied_by is not None and self.occupied_by != train_id:
+            # Legacy main claim with no route geometry → conservative
+            # whole-switch rule: any other train's physical occupancy blocks.
+            return False
 
         # If the requested state differs from the current physical state, a
         # switch throw is required; that is forbidden while the switch is

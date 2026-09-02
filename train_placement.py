@@ -204,7 +204,61 @@ class TrainPlacement:
                 if block:
                     block.occupy(train.train_id)
 
+        # Seed switch occupancy for every switch tile the placed span covers
+        # (design_new.md "Train Entity", Placement seeds switch occupancy too).
+        # A switch tile has no detector, so a body that covers it is protected
+        # only by its `Switch.physical_occupants` entry; without this seed a
+        # placed/restored/adopted train's switch could be thrown out from under
+        # it. The route is the `frozenset` of the two edges the span traverses
+        # through the tile, matching the shape `SwitchManager.on_physical_entry`
+        # records.
+        self._seed_switch_occupancy(
+            occupied_tiles_end_a_to_b,
+            head_outer_edge=exit_edge,
+            tail_outer_edge=tail_entry_edge,
+            train_id=train.train_id,
+        )
+
         return span
+
+    def _seed_switch_occupancy(
+        self,
+        ordered_tiles: List[Tuple[int, int]],
+        head_outer_edge: str,
+        tail_outer_edge: str,
+        train_id: str,
+    ) -> None:
+        """Record `Switch.physical_occupants` for each switch tile in the span.
+
+        `ordered_tiles` runs head (index 0) to tail. Each tile's route is the
+        pair of rail edges the span uses on it: the connection edges to its
+        in-span neighbours, plus the span-end outer edge for the head and tail
+        tiles. A switch tile with two derived edges is seeded via
+        `Switch.add_route_occupant`.
+        """
+        if not ordered_tiles:
+            return
+        tile_edges: Dict[Tuple[int, int], set] = {t: set() for t in ordered_tiles}
+        for i in range(len(ordered_tiles) - 1):
+            a = ordered_tiles[i]
+            b = ordered_tiles[i + 1]
+            pair = self._n.get_connection_edges(a, b)
+            if pair is not None:
+                tile_edges[a].add(pair[0])
+                tile_edges[b].add(pair[1])
+        # The head and tail tiles each carry one outward edge beyond the span.
+        tile_edges[ordered_tiles[0]].add(head_outer_edge)
+        tile_edges[ordered_tiles[-1]].add(tail_outer_edge)
+
+        switches = getattr(self._n, "switches", None) or {}
+        for (x, y), edges in tile_edges.items():
+            track = self._n.get_track(x, y)
+            switch_id = getattr(track, "switch_id", None) if track else None
+            if not switch_id or len(edges) < 2:
+                continue
+            switch = switches.get(switch_id)
+            if switch is not None:
+                switch.add_route_occupant(frozenset(edges), train_id)
 
     def _get_train_length_cm(self, train: "Train") -> float:
         """Get train length in cm."""

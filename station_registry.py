@@ -277,8 +277,16 @@ class StationRegistry:
 
     def delete_station(self, station_id: str) -> bool:
         """
-        Delete station and clear references from tracks.
-        Also deletes all blocks that are fully contained within this station.
+        Delete a platform, leaving its segments and blocks intact but
+        unplatformed.
+
+        Per design_new.md "Platform And Station" (Platform deletion leaves
+        segments unplatformed): deleting a `Platform` never deletes its
+        segments or their blocks. A grouping entity's deletion never deletes
+        the tiles or segments it grouped — the tiles are simply left with no
+        platform. So this only clears the platform association from each owned
+        tile (its `station_id` and the tile -> platform reverse index), drops
+        the platform entity, and removes it from any logical station group.
 
         Args:
             station_id: ID of station to delete
@@ -290,44 +298,6 @@ class StationRegistry:
             return False
 
         station = self._n.platforms[station_id]
-
-        # Collect all blocks that are fully within this station
-        # A block is "within the station" if ALL its tiles have station_id matching this station
-        blocks_to_delete = set()
-
-        # Check all blocks to see if they're fully within this station
-        for block_id in list(self._n.blocks.keys()):
-            block_positions = self._n.get_block_positions(block_id)
-            if not block_positions:
-                continue
-
-            # Check if ALL tiles in this block belong to this station
-            all_in_station = True
-            for bx, by in block_positions:
-                track = self._n.get_track(bx, by)
-                if not track or track.station_id != station_id:
-                    all_in_station = False
-                    break
-
-            if all_in_station:
-                blocks_to_delete.add(block_id)
-                print(
-                    f"[Station Delete] Block {block_id} is fully within station {station_id}, will be deleted"
-                )
-
-        # Delete all blocks that are fully within the station. Deleting the
-        # station removes its track, so this deletes each member segment's
-        # geometry rather than calling `delete_block`, which only dissolves the
-        # power grouping and re-homes the segments (design_new.md "Block
-        # grouping"). The block itself is dropped once its last member goes,
-        # through the Non-empty parent rule.
-        for block_id in blocks_to_delete:
-            block = self._n.blocks.get(block_id)
-            if block is None:
-                continue
-            for segment_id in list(block.segment_ids):
-                self._n.delete_segment(segment_id)
-            print(f"[Station Delete] Deleted block {block_id}")
 
         # Clear station_id from all tracks in this station and drop
         # the tile -> platform reverse index for each owned tile.

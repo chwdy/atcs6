@@ -510,18 +510,25 @@ class SwitchManager:
         Returns the switch_ids that had at least one lock removed.
         """
         released: List[str] = []
+        primary_set = set(primary_switch_ids)
         for pid in primary_switch_ids:
             primary = self._switch_registry.get(pid)
-            if primary is None:
-                continue
-            if primary.release_lock(path_id, None):
+            if primary is not None and primary.release_lock(path_id, None):
                 released.append(pid)
-            for neighbour_switch_id, _blocking_state in primary.flank_protection:
-                neighbour = self._switch_registry.get(neighbour_switch_id)
-                if neighbour is None:
-                    continue
-                if neighbour.release_lock(path_id, pid):
-                    released.append(neighbour_switch_id)
+        # Release every stored flank claim `(path_id, main_switch_id)` whose
+        # source is one of the dropped primaries, scanning the claims stored on
+        # every switch rather than any primary's current `flank_protection`
+        # list. Stored claim identity is authoritative; current flank geometry
+        # is not (design_new.md "SwitchManager"): `recompute_all_flank_
+        # protection()` can rewrite a primary's neighbour list between the
+        # claim's placement and this release, which would strand a claim on a
+        # since-dropped neighbour. This mirrors the tail-vacate scan.
+        for switch_id, switch in self._switch_registry.items():
+            locks = getattr(switch, "locks", None) or {}
+            for lock_path_id, source in list(locks.keys()):
+                if lock_path_id == path_id and source in primary_set:
+                    if switch.release_lock(path_id, source):
+                        released.append(switch_id)
         return released
 
     # ------------------------------------------------------------------
@@ -992,13 +999,17 @@ class SwitchManager:
         if primary_key in switch_entity.locks:
             switch_entity.release_lock(path_id, None)
 
-        for neighbour_switch_id, _blocking_state in list(
-            getattr(switch_entity, "flank_protection", []) or []
-        ):
-            neighbour = self._switch_registry.get(neighbour_switch_id)
-            if neighbour is None:
-                continue
-            flank_key = (path_id, switch_entity.switch_id)
+        # Convert every stored flank claim `(path_id, this_switch_id)` into
+        # train-owned protection by scanning the claims stored on every switch,
+        # not this switch's current `flank_protection` list. Stored claim
+        # identity is authoritative; current flank geometry is not
+        # (design_new.md "SwitchManager"): `recompute_all_flank_protection()`
+        # can rewrite the neighbour list between the flank lock's placement and
+        # this entry, which would leave a claim on a since-dropped neighbour
+        # unconverted — and so never released by the tail-vacate scan, which
+        # walks `train_protection_claims`. Mirrors `release_segment_locks`.
+        flank_key = (path_id, switch_entity.switch_id)
+        for neighbour in self._switch_registry.values():
             if flank_key not in neighbour.locks:
                 continue
             _claim_train_id, locked_state = neighbour.locks[flank_key]
