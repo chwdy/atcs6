@@ -321,6 +321,27 @@ class SwitchManager:
                     failed_switch_id=req.switch_id,
                     reason=f"throw_not_issued: {fail_reason}",
                 )
+            # design_new.md "Event log" / "Canonical Switch.position mutation
+            # workflow": the Plan acquisition-time throw emits one kind="info"
+            # event with operation="apply_position_change", entities naming the
+            # switch, and a message stating the new position, once per acquired
+            # switch (no operator command drives it). This is distinct from the
+            # operator/API "request_position_change" throw.
+            if self.notification_emitter is not None:
+                self.notification_emitter(
+                    operation="apply_position_change",
+                    kind=Kind.INFO,
+                    message=(
+                        f"switch {req.switch_id} thrown to "
+                        f"{'DIVERGE' if int(req.locked_state) else 'MAIN'}"
+                    ),
+                    entities=[switch_ref(req.switch_id)],
+                    payload={
+                        "switch_id": req.switch_id,
+                        "to_position": int(req.locked_state),
+                    },
+                )
+
             # Per design_new.md, `Switch.locks` is the canonical lock store.
             # `Tile` no longer exposes any lock surface; UI and API
             # readers resolve the owning `Switch` (via

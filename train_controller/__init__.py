@@ -2502,6 +2502,12 @@ class TrainController:
             self._emit_dwell_diagnostic(reason)
             return (False, reason)
         self.ops.state = TrainState.READY
+        # design_new.md "Event log": the log records "finished station dwell",
+        # emitted by TrainController.finish_dwell() — the mirror of the
+        # enter_station_dwell event above.
+        self._emit_event(
+            "finish_dwell", f"{self.train_id} finished station dwell"
+        )
         return (True, None)
 
     def on_path_complete(self) -> None:
