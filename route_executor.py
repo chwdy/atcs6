@@ -3215,6 +3215,38 @@ class RouteExecutor:
         target_block = projection.resolved_target.requested_destination_block_id
         target_dir = projection.resolved_target.requested_destination_direction
 
+        # Decide create vs extend by active authority presence.
+        active_path_id = self._get_active_path_id(train.train_id)
+
+        # An extend approaches the target from the live authority end, not the
+        # train's current block. When the armed task authored
+        # `task_direction == "either"`, `RouteTargetResolver.resolve_task_direction`
+        # resolved it from the current block by shortest walk, which on a
+        # CIRCULAR lap can name the block frame whose walk reverses at the
+        # authority end — candidate search then rejects it and the lap is
+        # cancelled and re-created at every seam instead of extending across it.
+        # Re-resolve to the frame that continues forward from the authority end
+        # (design_new.md "`create_path()` flow", direction-aware candidate
+        # search). An explicitly authored `"forward"` / `"reverse"` is never
+        # flipped: if it is incompatible with forward continuation the extend
+        # fails and replans, as before.
+        if active_path_id is not None:
+            armed_task = None
+            wp = projection.walk_position
+            if route is not None and 0 <= wp < len(exec_state.task_runs):
+                armed_task = route.get_task_at(
+                    exec_state.task_runs[wp].task_index
+                )
+            if (
+                armed_task is not None
+                and getattr(armed_task, "task_direction", None) == "either"
+            ):
+                forward_dir = self.path_dispatcher.forward_continuing_arrival_direction(
+                    active_path_id, target_block
+                )
+                if forward_dir is not None:
+                    target_dir = forward_dir
+
         # Meet-coordination ceiling + candidate pin (design_new.md "Meet
         # coordination" lines 1558/1565 + "Acquisition-cap rule" line 1025):
         # when this train carries a meet entry, pass its `candidate_resource_keys`
@@ -3237,9 +3269,6 @@ class RouteExecutor:
                 required_candidate_resource_keys = list(ceiling.candidate_resource_keys)
             if ceiling.block_id and ceiling.block_id != target_block:
                 acquisition_cap_block_id = ceiling.block_id
-
-        # Decide create vs extend by active authority presence.
-        active_path_id = self._get_active_path_id(train.train_id)
 
         # Resolve acquisition_mode: per-run override (if present) wins over
         # shared Route.acquisition_mode per design_new.md "RouteRun overrides"

@@ -45,6 +45,7 @@ import pytest
 
 from bootstrap import bootstrap_runtime
 from runtime_payloads import AcquisitionMode
+from notification_center import ErrorRecord
 
 
 pytestmark = pytest.mark.scene("demo_5")
@@ -103,7 +104,10 @@ def _lock_x1_diverge_via_train_a(dispatcher, network):
         # A path was created but it did not lock X1 in DIVERGE (e.g. it routed
         # the long way around): release it and try the other direction.
         if res.success and res.path_id:
-            dispatcher.cancel_path(res.path_id)
+            dispatcher.cancel_path(
+                res.path_id,
+                error=ErrorRecord("wrong-direction detour, retrying", "setup"),
+            )
     raise AssertionError("setup failed: could not lock SW_X1 in DIVERGE via train A")
 
 

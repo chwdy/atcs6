@@ -86,7 +86,7 @@ class TunnelWNScene:
             RouteTask(
                 task_kind="stop",
                 task_location=BlockTarget(block_id=self.north_block_id),
-                task_direction="forward",
+                task_direction="either",
             )
         )
         sim_controller.route_executor.register_route(route)

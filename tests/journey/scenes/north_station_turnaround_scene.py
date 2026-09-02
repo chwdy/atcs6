@@ -57,7 +57,7 @@ class NorthStationTurnaroundScene:
             RouteTask(
                 task_kind="stop",
                 task_location=PlatformTarget(platform_id=north_platform),
-                task_direction="forward",
+                task_direction="either",
             )
         )
         sim.route_executor.register_route(setup_route)
@@ -75,7 +75,7 @@ class NorthStationTurnaroundScene:
             RouteTask(
                 task_kind="stop",
                 task_location=PlatformTarget(platform_id=north_platform),
-                task_direction="forward",
+                task_direction="either",
             )
         )
         sim.route_executor.register_route(turnaround_route)

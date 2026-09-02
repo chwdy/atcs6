@@ -1388,8 +1388,15 @@ class TestATODirectionDetection:
         controller.commands.control_mode = "ato"
         controller.commands.cab = "A"
 
+        # BLK_FAR's internal order runs (1,2)->(3,1), so entering it from
+        # BLK_HEAD at (3,1) is a block-relative "reverse" arrival. Direction is
+        # now enforced at candidate search (design_new.md "`create_path()`
+        # flow"), so the request must name the direction the geometry provides;
+        # this test exercises authority-side cab selection, not direction.
         result = dispatcher.create_path(
-            train_id="T1", requested_destination_block_id="BLK_FAR"
+            train_id="T1",
+            requested_destination_block_id="BLK_FAR",
+            requested_destination_direction="reverse",
         )
         assert result.success, f"create_path failed: {result.reason}"
 

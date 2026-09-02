@@ -598,6 +598,57 @@ class PathDispatcher:
             if isinstance(c.walk, PathSegment)
         ]
 
+    def forward_continuing_arrival_direction(
+        self,
+        path_id: str,
+        target_block_id: str,
+        manual_override: bool = False,
+    ) -> Optional[str]:
+        """The block-relative arrival direction at `target_block_id` for the
+        walk that continues forward from this path's authority end, or `None`
+        when it cannot be decided.
+
+        A train extending its live authority is moving and cannot reverse
+        through its authority-end block, so when a waypoint is reachable in both
+        block frames at most one of them continues the train forward.
+        `RouteExecutor` uses this to resolve a waypoint authored
+        `task_direction == "either"` for an extend: resolving from the train's
+        current block by shortest walk (see
+        `RouteTargetResolver.resolve_task_direction`) can pick the frame whose
+        walk would reverse at the authority end, which candidate search then
+        rejects. Returns the unambiguous forward-continuing frame, or `None`
+        when both frames continue forward (either is fine — keep the caller's
+        resolution) or neither does (the extend fails legitimately downstream).
+        """
+        path = self.paths.get(path_id)
+        if path is None:
+            return None
+        authority_end = path.get_authority_end_block_id()
+        if not authority_end:
+            return None
+        forward_ok = False
+        reverse_ok = False
+        for direction in ("forward", "reverse"):
+            candidates = self.find_walk_candidates(
+                authority_end,
+                target_block_id,
+                path.train_id,
+                direction_constraint=direction,
+                manual_override=manual_override,
+            )
+            if any(
+                self._segment_continues_forward(path, c.walk) for c in candidates
+            ):
+                if direction == "forward":
+                    forward_ok = True
+                else:
+                    reverse_ok = True
+        if forward_ok and not reverse_ok:
+            return "forward"
+        if reverse_ok and not forward_ok:
+            return "reverse"
+        return None
+
     def find_walk_candidates(
         self,
         start_block_id: str,
@@ -1004,16 +1055,21 @@ class PathDispatcher:
         )
 
         # Find geometry candidates (shortest first). The pathfinder enforces
-        # `Block.allowed_travel_directions` over the whole walk; the caller's
-        # requested terminal direction is enforced downstream during
-        # acquisition and is intentionally not passed as a walk-search filter
-        # here because the terminal-direction check is not tunnel-aware (a
-        # tunnel hop has no meaningful tile delta to classify).
+        # `Block.allowed_travel_directions` over the whole walk and rejects any
+        # candidate whose terminal traversal does not satisfy the caller's
+        # `requested_destination_direction` (design_new.md "`create_path()`
+        # flow" step 2/6). Arrival direction is thereby guaranteed at
+        # acquisition and never re-checked at completion. A terminal block whose
+        # geometry cannot be classified (for example a single-tile tunnel
+        # terminal) yields `terminal_block_direction is None`, which the filter
+        # treats as allowed, so the constraint never spuriously rejects an
+        # undecidable terminal.
         candidates = self._find_walk_candidates(
             start_block_id_resolved,
             requested_destination_block_id,
             train_id,
             manual_override=manual_override,
+            direction_constraint=requested_destination_direction,
         )
         if not candidates:
             return self._reject(
@@ -1432,16 +1488,17 @@ class PathDispatcher:
 
         # Find extension geometry from current authority end (shortest first).
         # As in create_path, the pathfinder enforces
-        # `Block.allowed_travel_directions` over the whole walk; the caller's
-        # requested terminal direction is enforced downstream during
-        # acquisition, not as a walk-search filter (the terminal-direction
-        # check is not tunnel-aware).
+        # `Block.allowed_travel_directions` over the whole walk and rejects any
+        # candidate whose terminal traversal does not satisfy the caller's
+        # `requested_destination_direction`; an undecidable terminal
+        # (`terminal_block_direction is None`) is treated as allowed.
         start_block_id = path.get_authority_end_block_id()
         candidates = self._find_walk_candidates(
             start_block_id,
             requested_destination_block_id,
             train_id,
             manual_override=manual_override,
+            direction_constraint=requested_destination_direction,
         )
         if not candidates:
             return self._reject(
@@ -1489,17 +1546,17 @@ class PathDispatcher:
         # loops the network), BEST_EFFORT truncates that loop into a closed
         # prefix, and extend_path appends one full loop every Plan tick.
         #
-        # Blocks are tested against the live holdings (`_blocks_held_by`)
-        # rather than the whole history, so a lap can close over a block the
-        # train has already released. Switches are still tested against the
-        # full history: a path holds its switch locks for its entire lifetime
-        # (they are released together in `release_path_resources`), so a
-        # switch never leaves the held set while the path is ACTIVE.
+        # Both blocks and switches are tested against live holdings
+        # (`_blocks_held_by` / `_switches_held_by`), not the traversal history,
+        # per design_new.md "Path invariants" (What counts as held is the live
+        # claim, not the traversal record). Head entry consumes this path's main
+        # switch lock and switch tail vacate clears its train-owned protection,
+        # so a switch leaves the held set once the train has passed and vacated
+        # it — which is what lets a `CIRCULAR` suffix re-cross a switch to close
+        # its lap. A switch still carrying a live claim from this path stays in
+        # the set and correctly blocks a double claim.
         existing_path_blocks = self._blocks_held_by(path)
-        existing_path_switches = {
-            e.resource_id for e in path.resource_sequence
-            if e.resource_type == "switch"
-        }
+        existing_path_switches = self._switches_held_by(path)
         non_revisit_candidates = [
             cand for cand in candidates
             if not self._segment_would_revisit_resources(
@@ -1994,7 +2051,16 @@ class PathDispatcher:
             and hasattr(route_executor, "waypoint_and_run_target_blocks")
             else set()
         )
+        # Terminal-preference (design_new.md line 1368 / item 11, Holding-point
+        # preference): walk block candidates furthest-forward first and prefer
+        # the furthest-forward *holding point* that is a legal terminal over any
+        # longer non-holding-point terminal, exactly as best-effort truncation
+        # does. The reversal-trap exclusion and the never-terminate-on-a-
+        # waypoint/run-target rule stay absolute; a holding point waives only the
+        # junction-fouling exclusion. When no holding point qualifies, keep the
+        # longest terminal that also clears the two-way-switch foul.
         keep_through: Optional[int] = None
+        fallback_through: Optional[int] = None
         # `next_block_after_terminal` is the first block that would be dropped
         # just after the candidate terminal — the reversal-trap check's "next
         # block". For the furthest candidate that is the taken block itself.
@@ -2004,14 +2070,27 @@ class PathDispatcher:
             if entry.resource_type != "block":
                 continue
             terminal_block_id = entry.resource_id
-            if terminal_block_id not in excluded_terminal_targets and (
-                self._resource_seq_terminal_is_eligible(
-                    path, index, next_block_after_terminal, excluded_terminal_targets
+            trapped = next_block_after_terminal is not None and (
+                self._terminal_traps_reversing_occupant(
+                    next_block_id=next_block_after_terminal,
+                    terminal_block_id=terminal_block_id,
+                    train_id=path.train_id,
                 )
-            ):
+            )
+            next_block_after_terminal = terminal_block_id
+            if trapped or terminal_block_id in excluded_terminal_targets:
+                continue
+            if self._block_is_holding_point(terminal_block_id):
+                # Furthest-forward qualifying holding point wins (it overrides
+                # the junction-fouling exclusion).
                 keep_through = index
                 break
-            next_block_after_terminal = terminal_block_id
+            if fallback_through is None and not self._resource_seq_terminal_fouls_switch(
+                path, index, terminal_block_id
+            ):
+                fallback_through = index
+        if keep_through is None:
+            keep_through = fallback_through
         if keep_through is None:
             # No legal terminal remains at or behind the cut (the taken block is
             # the first thing ahead, or every candidate is barred by an item-11
@@ -2242,6 +2321,42 @@ class PathDispatcher:
                 held.add(block_id)
         return held
 
+    def _switches_held_by(self, path: "Path") -> Set[str]:
+        """The switches this path holds *right now*, by live claim.
+
+        Per design_new.md "Path invariants" (What counts as held is the live
+        claim, not the traversal record): a switch is held while a live claim on
+        it names this path — a `Switch.locks` entry keyed on this `path_id`, or a
+        `Switch.physical_occupants` (`route_owners`) / `train_protection_claims`
+        entry owned by this path's train. Head entry consumes this path's main
+        switch lock and converts flank locks to train-owned protection; switch
+        tail vacate removes both, after which the switch carries no claim from
+        this path and a lap may re-acquire it. Computing the repeated-resource
+        set from `resource_sequence` history instead would wrongly reject a
+        `CIRCULAR` suffix that re-crosses a switch the train has already
+        vacated.
+        """
+        path_id = path.path_id
+        train_id = path.train_id
+        held: Set[str] = set()
+        switches = getattr(self.network, "switches", None)
+        if not isinstance(switches, dict):
+            return held
+        for switch_id, switch in switches.items():
+            locks = getattr(switch, "locks", None) or {}
+            if any(key[0] == path_id for key in locks):
+                held.add(switch_id)
+                continue
+            if train_id:
+                owners = getattr(switch, "route_owners", None) or {}
+                if train_id in owners.values():
+                    held.add(switch_id)
+                    continue
+                protection = getattr(switch, "train_protection_claims", None) or []
+                if any(claim[0] == train_id for claim in protection):
+                    held.add(switch_id)
+        return held
+
     def _blocks_still_reserved_by(
         self, block_ids: List[str], path_id: str
     ) -> List[str]:
@@ -2436,10 +2551,18 @@ class PathDispatcher:
             return False
         occ_target = route_executor.find_next_move_target(occ)
         if not occ_target:
+            # The occupant has no scheduled next move to reverse through the
+            # terminal — a plain parked obstruction the follower waits behind,
+            # not a reversal trap.
             return False
         candidates = self._find_walk_candidates(next_block_id, occ_target, occ)
         if not candidates:
-            return False
+            # A next-move target was supplied but no candidate walk resolves it.
+            # Per design_new.md best-effort `create_path()` item 11 (the
+            # reversal-trap exclusion), an occupant whose exit cannot be
+            # resolved is treated as unresolved and is NOT exempt: we cannot
+            # prove it leaves forward, so the terminal is barred conservatively.
+            return True
         occ_blocks = candidates[0].walk.blocks
         try:
             i = occ_blocks.index(next_block_id)
@@ -2529,43 +2652,6 @@ class PathDispatcher:
             prev_index >= 0
             and path.resource_sequence[prev_index].resource_type == "switch"
         )
-
-    def _resource_seq_terminal_is_eligible(
-        self,
-        path: "Path",
-        terminal_seq_index: int,
-        next_block_after_terminal: Optional[str],
-        excluded_terminal_targets: Set[str],
-    ) -> bool:
-        """Whether a live path may be truncated to end on the block at
-        ``terminal_seq_index``, applying the item-11 truncation-terminal rules
-        (design_new.md line 1366). The ``resource_sequence`` mirror of
-        ``_prefix_terminal_is_eligible``:
-
-        - Reversal trap (absolute): the first dropped block ahead holds a stopped
-          train whose next route move would come back through this terminal.
-        - Two-way-switch foul: never park on a two-way block entered straight off
-          a switch — unless the terminal is an operator holding point that is not
-          itself a resolved waypoint / run target.
-        """
-        terminal_block_id = path.resource_sequence[terminal_seq_index].resource_id
-        if next_block_after_terminal is not None and (
-            self._terminal_traps_reversing_occupant(
-                next_block_id=next_block_after_terminal,
-                terminal_block_id=terminal_block_id,
-                train_id=path.train_id,
-            )
-        ):
-            return False
-        terminal_is_holding_point = (
-            self._block_is_holding_point(terminal_block_id)
-            and terminal_block_id not in excluded_terminal_targets
-        )
-        if not terminal_is_holding_point and self._resource_seq_terminal_fouls_switch(
-            path, terminal_seq_index, terminal_block_id
-        ):
-            return False
-        return True
 
     def _release_authority_tail_ahead(self, path: "Path", path_id: str) -> None:
         """Release every reservation the path holds ahead of the train — the
@@ -2687,26 +2773,82 @@ class PathDispatcher:
             and hasattr(route_executor, "waypoint_and_run_target_blocks")
             else set()
         )
+        # Terminal-preference (design_new.md "`create_path()` flow", item 11,
+        # Holding-point preference): scan the acquirable prefix furthest-forward
+        # first. The furthest-forward *holding point* that is a legal terminal
+        # wins over any longer non-holding-point prefix, because a holding point
+        # is the operator's explicit safe-wait place and overrides the
+        # junction-fouling back-off. The reversal-trap exclusion and the
+        # never-terminate-on-a-waypoint/run-target rule stay absolute for every
+        # terminal, holding points included. When no acquirable holding point
+        # qualifies, fall back to the longest acquirable prefix that also clears
+        # the two-way-switch foul.
+        #
+        # Acquisition is monotonic — a prefix of an acquirable walk is itself
+        # acquirable — so a probe that acquires the longest non-holding-point
+        # fallback guarantees any shorter holding point acquires too; the
+        # fallback is remembered by length and re-acquired only if no holding
+        # point is found.
+        fallback_block_count: Optional[int] = None
         for prefix_block_count in range(start, 1, -1):
-            prefix_blocks = segment.blocks[:prefix_block_count]
-            if not self._prefix_terminal_is_eligible(
-                segment, prefix_blocks, train_id, excluded_terminal_targets
+            terminal_block_id = segment.blocks[prefix_block_count - 1]
+            # When `start` was clamped up to the 2-block floor on a short
+            # segment, `prefix_block_count` can equal the block count; nothing
+            # is dropped ahead, so the reversal-trap / junction-fouling
+            # exclusions (which look at the first dropped block) do not apply.
+            drops_a_block = prefix_block_count < len(segment.blocks)
+            if drops_a_block:
+                next_block_id = segment.blocks[prefix_block_count]
+                if self._terminal_traps_reversing_occupant(
+                    next_block_id=next_block_id,
+                    terminal_block_id=terminal_block_id,
+                    train_id=train_id,
+                ):
+                    continue
+            if terminal_block_id in excluded_terminal_targets:
+                continue
+            is_holding_point = self._block_is_holding_point(terminal_block_id)
+            if (
+                drops_a_block
+                and not is_holding_point
+                and self._terminal_fouls_two_way_switch_block(
+                    segment, terminal_block_id
+                )
             ):
                 continue
-            cutoff_tiles = self._compute_prefix_cutoff_tiles(
-                segment, prefix_blocks
+            truncated, cutoff_tiles = self._make_prefix_segment(
+                segment, prefix_block_count
             )
-            cutoff_switches: Dict[Tuple[int, int], int] = {}
-            for pos, st in segment.required_switches.items():
-                if pos in cutoff_tiles:
-                    cutoff_switches[pos] = st
-            truncated = PathSegment(
-                tiles=cutoff_tiles,
-                distance_cm=0.0,  # not recomputed
-                required_switches=cutoff_switches,
-                blocks=prefix_blocks,
+            ok, _reason, _, inserted_switch_claim_keys = (
+                self._acquire_segment_resources(
+                    truncated, path_id, train_id, direction,
+                    manual_override=manual_override,
+                    ordered_walk=self._slice_ordered_walk(
+                        ordered_walk, cutoff_tiles
+                    ),
+                )
             )
-            ok, reason, _, inserted_switch_claim_keys = (
+            if not ok:
+                self._rollback_segment(
+                    truncated, path_id, inserted_switch_claim_keys
+                )
+                continue
+            if is_holding_point:
+                # Furthest-forward acquirable holding point — the preferred
+                # terminal; store it.
+                return truncated
+            # Longest acquirable non-holding-point terminal: remember it and
+            # keep scanning shorter for a holding point, which by monotonicity
+            # will also acquire if one exists.
+            self._rollback_segment(truncated, path_id, inserted_switch_claim_keys)
+            if fallback_block_count is None:
+                fallback_block_count = prefix_block_count
+
+        if fallback_block_count is not None:
+            truncated, cutoff_tiles = self._make_prefix_segment(
+                segment, fallback_block_count
+            )
+            ok, _reason, _, inserted_switch_claim_keys = (
                 self._acquire_segment_resources(
                     truncated, path_id, train_id, direction,
                     manual_override=manual_override,
@@ -2716,83 +2858,32 @@ class PathDispatcher:
                 )
             )
             if ok:
-                # Per the route-managed point-to-point planning rule in
-                # design_new.md "Path And PathDispatcher": never store an
-                # authority whose terminal block is a waypoint or run target.
-                # The loop is longest-first, so landing on one of these here
-                # means no longer, past-the-target prefix was acquirable —
-                # roll back and fail (create_path's tail reports
-                # BLOCKED_BEFORE_TARGET) rather than land short of the target.
-                # This acquire succeeded, so the keys name real new holds; the
-                # probe rollback releases exactly them and never a re-touched
-                # lock the path already held.
-                if (
-                    excluded_terminal_targets
-                    and prefix_blocks[-1] in excluded_terminal_targets
-                ):
-                    self._rollback_segment(
-                        truncated, path_id, inserted_switch_claim_keys
-                    )
-                    return None
                 return truncated
             self._rollback_segment(truncated, path_id, inserted_switch_claim_keys)
         return None
 
-    def _prefix_terminal_is_eligible(
-        self,
-        segment: PathSegment,
-        prefix_blocks: List[str],
-        train_id: str,
-        excluded_terminal_targets: Set[str],
-    ) -> bool:
-        """Whether a best-effort prefix may terminate on its last block.
-
-        Returns False when this prefix must be skipped in favour of a shorter
-        one. Two absolute exclusions apply, but only when a further block was
-        dropped — a full-length prefix drops nothing, so neither applies:
-
-        - Reversal trap (design_new.md best-effort ``create_path()``, item
-          11): the next, blocked block holds a stopped train whose next route
-          move would come back through this terminal, trapping both
-          nose-to-nose.
-        - Two-way-switch foul ("stay back one switch"): never park on a
-          TWO-WAY block entered straight off a switch — stopping there fouls
-          the junction and invites a head-on. A ONE-WAY block
-          (``allowed_travel_directions`` restricted to one direction) is
-          exempt; it is occupancy-independent, so unlike the reversal trap it
-          has no timing window.
-
-        A holding-point terminal is the operator's explicit safe-wait place,
-        so it overrides the two-way-switch foul — except a holding point that
-        is a resolved ``waypoint`` or ``run`` target, which falls through to
-        the ordinary back-off (the waypoint/run-target exclusion stays
-        absolute and is applied after acquisition).
-        """
-        prefix_block_count = len(prefix_blocks)
-        # `prefix_block_count` can equal the block count when `start` was
-        # clamped up to the 2-block floor on a short segment; nothing is
-        # dropped then, so the exclusions below do not apply.
-        if prefix_block_count >= len(segment.blocks):
-            return True
-        terminal_block_id = prefix_blocks[-1]
-        if self._terminal_traps_reversing_occupant(
-            next_block_id=segment.blocks[prefix_block_count],
-            terminal_block_id=terminal_block_id,
-            train_id=train_id,
-        ):
-            return False
-        terminal_is_holding_point = (
-            self._block_is_holding_point(terminal_block_id)
-            and terminal_block_id not in excluded_terminal_targets
+    def _make_prefix_segment(
+        self, segment: PathSegment, prefix_block_count: int
+    ) -> Tuple[PathSegment, List[Tuple[int, int]]]:
+        """Build the block-terminated prefix `PathSegment` of `segment` keeping
+        its first `prefix_block_count` blocks, and return it with its cutoff
+        tile list (for slicing the ordered walk)."""
+        prefix_blocks = segment.blocks[:prefix_block_count]
+        cutoff_tiles = self._compute_prefix_cutoff_tiles(segment, prefix_blocks)
+        cutoff_switches: Dict[Tuple[int, int], int] = {
+            pos: st
+            for pos, st in segment.required_switches.items()
+            if pos in cutoff_tiles
+        }
+        return (
+            PathSegment(
+                tiles=cutoff_tiles,
+                distance_cm=0.0,  # not recomputed
+                required_switches=cutoff_switches,
+                blocks=prefix_blocks,
+            ),
+            cutoff_tiles,
         )
-        if (
-            not terminal_is_holding_point
-            and self._terminal_fouls_two_way_switch_block(
-                segment, terminal_block_id
-            )
-        ):
-            return False
-        return True
 
     def _compute_prefix_cutoff_tiles(
         self, segment: PathSegment, prefix_blocks: List[str]

@@ -58,15 +58,22 @@ def _single_train_demo5(start_block, facing):
     return state
 
 
-def _quick_route(state, train_id, block_id, route_id):
-    """Replicate the editor's Quick Route three-call flow via the services."""
+def _quick_route(state, train_id, block_id, route_id, direction="forward"):
+    """Replicate the editor's Quick Route three-call flow via the services.
+
+    `direction` is the block-relative arrival frame; it must name the frame the
+    intended walk actually reaches `block_id` in, because candidate search now
+    enforces `requested_destination_direction` (design_new.md "`create_path()`
+    flow"). The return leg from the north platforms into PLT_S2_N through the
+    throat arrives "reverse".
+    """
     train_route_service.create_route(
         state, route_id=route_id, name=f"Quick: {train_id} -> {block_id}",
         mode="one_off",
         tasks=[{
             "task_kind": "stop",
             "task_location": {"block_id": block_id},
-            "task_direction": "forward",
+            "task_direction": direction,
         }],
         acquisition_mode="all_or_nothing",
     )
@@ -85,7 +92,7 @@ def test_quick_route_return_leg_through_throat_forms_and_arrives(dt, label):
     for _ in range(15):
         sim.update(dt)
 
-    _quick_route(state, "T3", "PLT_S2_N_BLOCK", "ROUTE_QR_RETURN")
+    _quick_route(state, "T3", "PLT_S2_N_BLOCK", "ROUTE_QR_RETURN", direction="reverse")
 
     path_formed_tick = None
     arrived = False
@@ -146,7 +153,7 @@ def test_quick_route_s2n_then_depot_3_arrives_without_eb():
     # --- leg 1: drive to S2_N (the throat-crossing return leg) ---
     for _ in range(15):
         sim.update(0.1)
-    _quick_route(state, "T3", "PLT_S2_N_BLOCK", "ROUTE_QR_LEG1")
+    _quick_route(state, "T3", "PLT_S2_N_BLOCK", "ROUTE_QR_LEG1", direction="reverse")
     reached_s2n = False
     for _ in range(700):
         sim.update(0.1)
@@ -161,7 +168,7 @@ def test_quick_route_s2n_then_depot_3_arrives_without_eb():
         sim.update(0.1)
 
     # --- leg 2: S2_N -> depot platform 3 (throat + lead + ladder hairpin) ---
-    _quick_route(state, "T3", "PLT_DEPOT_3_BLOCK", "ROUTE_QR_LEG2")
+    _quick_route(state, "T3", "PLT_DEPOT_3_BLOCK", "ROUTE_QR_LEG2", direction="reverse")
     reached_depot = False
     for t in range(1500):
         sim.update(0.1)
@@ -225,7 +232,7 @@ def test_best_effort_return_leg_truncated_at_b1_still_crosses_sw_lead():
         mode="one_off",
         tasks=[{"task_kind": "stop",
                 "task_location": {"block_id": "PLT_S2_N_BLOCK"},
-                "task_direction": "forward"}],
+                "task_direction": "reverse"}],
         acquisition_mode="best_effort",
     )
     train_route_service.activate_route(state, "ROUTE_QR_TRUNC")
@@ -314,7 +321,7 @@ def test_best_effort_return_leg_holds_at_b2_not_b1_when_throat_busy(dt, label):
         mode="one_off",
         tasks=[{"task_kind": "stop",
                 "task_location": {"block_id": "PLT_S2_N_BLOCK"},
-                "task_direction": "forward"}],
+                "task_direction": "reverse"}],
         acquisition_mode="best_effort",
     )
     train_route_service.activate_route(state, "ROUTE_QR_B2HOLD")
