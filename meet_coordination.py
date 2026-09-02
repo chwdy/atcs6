@@ -141,8 +141,22 @@ class MeetCoordinator:
         if not zone:
             return  # routes do not conflict on any shared block
 
-        # Lower-priority contender is held; higher-priority is admitted.
-        lo_id = self._lower_priority(waiter_id, holder_id, position)
+        # Existing-commitment rule (design_new.md:1945 / Stability :1953): a
+        # contender that already occupies or holds authority on any resource in
+        # the contested zone stays admitted and the opposing contender is held,
+        # regardless of priority — a priority edit cannot reverse authority or
+        # physical entry. Only when neither contender is committed does priority
+        # decide who is held.
+        w_committed = self._committed_in_zone(waiter_id, zone)
+        h_committed = self._committed_in_zone(holder_id, zone)
+        if w_committed and not h_committed:
+            lo_id = holder_id
+        elif h_committed and not w_committed:
+            lo_id = waiter_id
+        else:
+            # Neither (or both) committed: lower-priority contender is held;
+            # higher-priority is admitted.
+            lo_id = self._lower_priority(waiter_id, holder_id, position)
         lo_route = w_route if lo_id == waiter_id else h_route
         _z2, lo_near = self._contested_zone(
             lo_route, w_route if lo_id == holder_id else h_route
@@ -173,6 +187,28 @@ class MeetCoordinator:
         )
         # First (most-restrictive) assignment per train wins; do not overwrite.
         assignment.setdefault(lo_id, ceiling)
+
+    def _committed_in_zone(self, train_id: str, zone: set) -> bool:
+        """True when ``train_id`` already occupies or holds live authority on any
+        block in the contested ``zone`` (design_new.md:1945). Occupancy is read
+        from ``Block.occupied_by``; authority is a ``Block.reserved_by_path``
+        naming a path this train owns.
+        """
+        blocks = getattr(self._re.network, "blocks", {}) or {}
+        dispatcher = getattr(self._re, "path_dispatcher", None)
+        paths = getattr(dispatcher, "paths", {}) if dispatcher is not None else {}
+        for bid in zone:
+            block = blocks.get(bid)
+            if block is None:
+                continue
+            if getattr(block, "occupied_by", None) == train_id:
+                return True
+            reserved_by_path = getattr(block, "reserved_by_path", None)
+            if reserved_by_path is not None:
+                path = paths.get(reserved_by_path)
+                if path is not None and getattr(path, "train_id", None) == train_id:
+                    return True
+        return False
 
     # -- contested-zone detection ----------------------------------------
 
