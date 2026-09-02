@@ -2506,27 +2506,52 @@ class RouteExecutor:
             )
         except Exception:
             has_active_path = False
-        if has_active_path:
-            return
 
         if not initial_broken:
             # Unreachable task (target present but disabled / manual / blocked):
-            # WAIT — leave the task armed. The diagnostic was already emitted by the
-            # resolver sentinel branch or the acquisition step. The current task
-            # is itself a valid (present) task, so the walk is not all-broken.
+            # WAIT — leave the task armed. Never consulted while live authority
+            # exists, and with no path it still waits because the target may
+            # become usable. The current task is itself valid (present), so the
+            # walk is not all-broken. Diagnostic already emitted.
             self._clear_no_reachable_task(exec_state)
             return
 
-        # Broken task (target missing from the network).
+        # Broken task (target missing from the network). Per design_new.md
+        # "Unreachable and broken task handling", the broken-skip applies to
+        # every task_kind and runs inline whether or not live authority exists —
+        # a waypoint the head already consumed leaves its authority live, so a
+        # later broken task must still be skipped or the spent authority never
+        # comes down.
         if self._walk_has_valid_task(exec_state, route, failed_walk_position):
-            # A valid task remains ahead → skip the broken one toward it.
+            # A valid task remains ahead → skip the broken one toward it. The
+            # skip only advances the route cursor, so it is safe under a live
+            # path; the next Plan extends toward the valid task.
             self._clear_no_reachable_task(exec_state)
             self._skip_broken_task(exec_state, route, failed_walk_position)
             return
 
+        # No valid task anywhere on the walk. A live path (typically to a
+        # head-consumed waypoint whose authority was never released) must come
+        # down first: latch the ordinary cancel and defer the terminal/stall
+        # write to the later pass that finds no live path (design_new.md
+        # "Unreachable and broken task handling", no-valid-task rule). A cancel
+        # already latched is left as-is.
+        if has_active_path:
+            if controller.route_hooks.phase_latches.path_cancel_request is None:
+                controller.route_hooks.phase_latches.set_path_cancel_request(
+                    ErrorRecord(
+                        "route run has no reachable task (every task target is "
+                        "missing from the network); cancelling stale authority",
+                        "revoked",
+                    ),
+                    Kind.INFO,
+                )
+            return
+
         if route is not None and route.mode == RouteMode.ONE_OFF:
-            # No valid task left: skip the broken task; the next Plan sees
-            # the terminal walk and finishes the run (having served nothing).
+            # No valid task left and no live path: skip the broken task; the
+            # next Plan sees the terminal walk and finishes the run (having
+            # served nothing).
             self._clear_no_reachable_task(exec_state)
             self._skip_broken_task(exec_state, route, failed_walk_position)
             return
@@ -2977,10 +3002,22 @@ class RouteExecutor:
         """
         self._sync_task_runs(route, exec_state)
         task_count = route.get_task_count()
+        if task_count == 0:
+            return
         # Per design, the loop iterates the next un-finished planning index;
         # `current_waypoint_index` is the largest finished walk-position
         # (or None) and is not the right cursor here.
+        #
+        # `next_planning_index` is a `Route.tasks` index (always < task_count),
+        # so on a fully-covered CIRCULAR / ROUND_TRIP walk `_append_next_walk_
+        # task` keeps supplying an unfinished row and the condition never falls
+        # false on its own. The scan budget bounds the advance to one full
+        # `len(Route.tasks)` scan per Plan pass (design_new.md line 2011).
+        scanned = 0
         while exec_state.next_planning_index < task_count:
+            if scanned >= task_count:
+                break
+            scanned += 1
             idx = exec_state.next_planning_index
             task = route.get_task_at(idx)
             if task is None:
@@ -2994,6 +3031,23 @@ class RouteExecutor:
 
             target_block = self.resolve_task_target_block(task, train=train)
             if not target_block:
+                break
+
+            # The trailing unfinished `task_runs` row for this `task_index` —
+            # its walk-position. Resolved before the coverage decision so the
+            # post-wrap head condition below can read it. For CIRCULAR /
+            # ROUND_TRIP routes several rows can share one `task_index` once
+            # `_append_next_walk_task` has wrapped; walk from the trailing entry
+            # back and take the first unfinished one.
+            row = None
+            pos = None
+            for p in range(len(exec_state.task_runs) - 1, -1, -1):
+                r = exec_state.task_runs[p]
+                if r.task_index == idx and r.finished_at is None:
+                    row = r
+                    pos = p
+                    break
+            if row is None:
                 break
 
             if task.task_kind == "stop":
@@ -3028,25 +3082,21 @@ class RouteExecutor:
                 if not self._target_block_in_current_span(controller, target_block):
                     if not self._is_train_at_platform_for_task(train, task):
                         break
-
-            # Write finished_at on the matching task_runs row. The derived
-            # `current_waypoint_index` then naturally advances on the next
-            # loop iteration; `_append_next_walk_task` appends the next
-            # walk-position entry for CIRCULAR/ROUND_TRIP routes.
-            #
-            # For CIRCULAR / ROUND_TRIP routes, multiple `task_runs` list
-            # positions can share the same `task_index` value once
-            # `_append_next_walk_task` has wrapped around. Walk from the
-            # trailing entry backward and pick the first row matching
-            # this `idx` (task_index) with finished_at still None.
-            row = None
-            for pos in range(len(exec_state.task_runs) - 1, -1, -1):
-                r = exec_state.task_runs[pos]
-                if r.task_index == idx and r.finished_at is None:
-                    row = r
+                # A post-wrap row (walk_position >= len(Route.tasks)) needs more
+                # than span membership: the head must have moved on past the
+                # block (design_new.md line 1892). Otherwise a cyclic all-in-span
+                # waypoint walk would advance every row forever without the train
+                # ever leaving the covering position.
+                if pos >= task_count and self._is_train_at_block(
+                    train, target_block
+                ):
                     break
-            if row is None:
-                break
+
+            # Write finished_at on the matching task_runs row (its walk-position
+            # `pos`, resolved above). The derived `current_waypoint_index` then
+            # advances on the next loop iteration, and `_append_next_walk_task`
+            # appends the next walk-position entry for CIRCULAR / ROUND_TRIP
+            # routes.
             self.advance_walk_position(exec_state, route, pos)
 
     @staticmethod

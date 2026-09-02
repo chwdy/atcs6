@@ -18,6 +18,7 @@ The service owns:
 
 from __future__ import annotations
 
+import math
 import time
 import uuid
 from typing import Any, Dict, Iterable, List, Optional
@@ -98,11 +99,28 @@ def _coerce_route_task(item: Any) -> RouteTask:
     # creation path never infers a default kind. (RouteTask.from_dict stays
     # lenient for deserialization of already-validated persisted routes.)
     raw_kind = item.get("task_kind")
-    if raw_kind not in ("waypoint", "stop", "dwell"):
+    if raw_kind not in ("waypoint", "stop", "dwell", "run"):
         raise ValidationError(
             "task_kind is required and must be one of 'waypoint', 'stop', "
-            f"or 'dwell' (got {raw_kind!r})"
+            f"'dwell', or 'run' (got {raw_kind!r})"
         )
+    if raw_kind == "run":
+        # Per design_new.md line 1726: a run is a timed roll — it requires a
+        # finite task_time > 0 (the roll duration in simulated seconds) and must
+        # omit target_time (a departure timestamp, meaningless for a run).
+        task_time = item.get("task_time")
+        if (
+            not isinstance(task_time, (int, float))
+            or isinstance(task_time, bool)
+            or not math.isfinite(float(task_time))
+            or float(task_time) <= 0
+        ):
+            raise ValidationError(
+                "a run task requires a finite task_time > 0 (got "
+                f"{task_time!r})"
+            )
+        if item.get("target_time") is not None:
+            raise ValidationError("a run task must omit target_time")
     return RouteTask.from_dict(dict(item))
 
 
@@ -225,15 +243,23 @@ def create_route(
     for task in coerced_tasks:
         route.add_task(task)
 
-    for train_id in assigned_train_ids or ():
-        if train_id in state.network.trains:
-            _unassign_train_from_other_routes(state, route.route_id, train_id)
-            route.assign_train(train_id)
-
     if edit_fields_present:
         route.last_edited_at = time.time()
 
-    state.sim_controller.route_executor.register_route(route)
+    executor = state.sim_controller.route_executor
+    executor.register_route(route)
+
+    # Assignment goes through the canonical assignment writer, never a direct
+    # `Route.assigned_train_ids` mutation (design_new.md "Route assignment
+    # writers"). A train idle or with no live run is assigned immediately; a
+    # train with a live RUNNING run on another route is held in
+    # `_pending_route_assignments` and committed by Action after that run tears
+    # down, so the single-assignment invariant is never briefly violated. The
+    # route is registered first so the writer can resolve it.
+    for train_id in assigned_train_ids or ():
+        if train_id in state.network.trains:
+            executor.request_route_assignment(train_id, route.route_id)
+
     return route
 
 
@@ -280,6 +306,7 @@ def update_route(
     # teardown per design_new.md lines 1467-1469. Timing-only task edits are
     # not structural and do not tear down running runs.
     tasks_structural_edit = False
+    mode_structural_edit = False
     # Track which allowlisted fields changed so push policies can be
     # applied after all writes commit.
     changed_overridable: List[str] = []
@@ -306,7 +333,15 @@ def update_route(
         definition_edit_touched = True
 
     if mode is not None:
-        route.mode = _coerce_mode(mode)
+        # Route.mode is structural (design_new.md line 2095): it selects the
+        # CIRCULAR wrap / ROUND_TRIP reflection / ONE_OFF terminal behaviour
+        # that RouteRun._append_next_walk_task reads live on every append, so a
+        # live mode flip could put a running walk into a shape route validation
+        # would have rejected. An edit that actually changes the mode latches
+        # teardown alongside a tasks edit; re-writing the same mode does not.
+        new_mode = _coerce_mode(mode)
+        mode_structural_edit = new_mode != route.mode
+        route.mode = new_mode
         definition_edit_touched = True
 
     if new_tasks is not None:
@@ -387,13 +422,35 @@ def update_route(
         requested_train_ids = set(assigned_train_ids)
         current_train_ids = set(route.assigned_train_ids)
 
-        for train_id in current_train_ids - requested_train_ids:
-            route.unassign_train(train_id)
-
-        for train_id in requested_train_ids - current_train_ids:
-            if train_id in state.network.trains:
-                _unassign_train_from_other_routes(state, route.route_id, train_id)
-                route.assign_train(train_id)
+        # Route assignment/unassignment goes through the canonical assignment
+        # writer, never a direct `Route.assigned_train_ids` mutation
+        # (design_new.md "Route assignment writers"): a train with a live
+        # RUNNING run keeps that run until Action tears it down, and the
+        # replacement lives in `_pending_route_assignments` until then, so a
+        # running train is never left assigned to two routes at once.
+        sim_controller = getattr(state, "sim_controller", None)
+        executor = (
+            getattr(sim_controller, "route_executor", None)
+            if sim_controller is not None
+            else None
+        )
+        if executor is not None:
+            for train_id in current_train_ids - requested_train_ids:
+                executor.request_route_assignment(train_id, None)
+            for train_id in requested_train_ids - current_train_ids:
+                if train_id in state.network.trains:
+                    executor.request_route_assignment(train_id, route.route_id)
+        else:
+            # Editor-only mode (no runtime surface): fall back to the direct
+            # membership write, since there is no RouteRun to tear down.
+            for train_id in current_train_ids - requested_train_ids:
+                route.unassign_train(train_id)
+            for train_id in requested_train_ids - current_train_ids:
+                if train_id in state.network.trains:
+                    _unassign_train_from_other_routes(
+                        state, route.route_id, train_id
+                    )
+                    route.assign_train(train_id)
 
     # Per design_new.md "Shared-route edit teardown": a structural Route.tasks
     # edit tears down every assigned train's currently-RUNNING RouteRun (there is
@@ -407,11 +464,15 @@ def update_route(
     # the train assigned with no RUNNING run and allocates a fresh RouteRun
     # against the edited Route.tasks. Skipped in editor-only mode (no runtime
     # surface wired, so there is no RouteRun to tear down).
-    if tasks_structural_edit:
+    if tasks_structural_edit or mode_structural_edit:
         sim_controller = getattr(state, "sim_controller", None)
         if sim_controller is not None:
             route_executor = getattr(sim_controller, "route_executor", None)
-            teardown_reason = f"route_tasks_edited:{route.route_id}"
+            teardown_reason = (
+                f"route_tasks_edited:{route.route_id}"
+                if tasks_structural_edit
+                else f"route_mode_edited:{route.route_id}"
+            )
             for train_id in list(route.assigned_train_ids):
                 controller = sim_controller.get_controller(train_id)
                 if controller is None:
