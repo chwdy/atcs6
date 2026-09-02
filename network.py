@@ -1702,6 +1702,7 @@ class RailwayNetwork(SwitchOutputOwner):
             ],
             "station_groups": [s.to_dict() for s in self.station_groups.values()],
             "train_roster": self.train_roster.to_dict(),
+            "speed_profiles": self.speed_profiles.to_dict(),
             "switches": {
                 k: v.to_dict() for k, v in self.switches.items()
             },
@@ -1748,6 +1749,7 @@ class RailwayNetwork(SwitchOutputOwner):
             ],
             "station_groups": [s.to_dict() for s in self.station_groups.values()],
             "train_roster": self.train_roster.to_dict(),
+            "speed_profiles": self.speed_profiles.to_dict(),
             "switches": {
                 k: v.to_layout_dict() for k, v in self.switches.items()
             },
@@ -1822,6 +1824,14 @@ class RailwayNetwork(SwitchOutputOwner):
 
         # Rebuild the train roster (config; absent in legacy saves = empty).
         self.train_roster = TrainRoster.from_dict(data.get("train_roster", []))
+
+        # Rebuild the speed-profile registry (config; absent in legacy saves =
+        # default-only). Calibrated curves, lighting voltages, and every train/
+        # roster speed_profile_id link persist through this (design_new.md
+        # "SpeedProfile").
+        self.speed_profiles = SpeedProfileRegistry.from_dict(
+            data.get("speed_profiles")
+        )
 
         # Rebuild trains
         for train_data in data.get("trains", []):

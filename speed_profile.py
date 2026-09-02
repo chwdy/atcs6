@@ -635,6 +635,32 @@ class SpeedProfileRegistry:
             return True
         return False
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize every registered profile except the built-in ``default``.
+
+        Persisted with the layout (design_new.md "SpeedProfile": a measured
+        curve and lighting voltage stay with the locomotive across placements,
+        through ordinary `SpeedProfile` persistence). ``default`` is a code
+        constant that ``__init__`` always re-seeds, so it is not written — a
+        stale persisted copy must never shadow a changed constant on reload.
+        """
+        return {
+            profile_id: profile.to_dict()
+            for profile_id, profile in self._profiles.items()
+            if profile_id != "default"
+        }
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "SpeedProfileRegistry":
+        """Rebuild a registry from `to_dict(...)` output (or an absent/empty map
+        in a legacy save, which yields the default-only registry)."""
+        registry = cls()
+        for profile_id, profile_data in (data or {}).items():
+            if profile_id == "default":
+                continue
+            registry.register(SpeedProfile.from_dict(profile_data))
+        return registry
+
     def remove_pair(self, profile_id: str) -> bool:
         """Remove `profile_id` and, when it is an instance, its now-orphaned model.
 

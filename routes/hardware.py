@@ -1387,11 +1387,28 @@ def register(app, state: AppState) -> None:
         })
 
     def _readiness():
+        # Resolve every placed train's lighting_voltage so the evaluator can
+        # check it against current_sense_min_drive_v (design_new.md "Power":
+        # the shared readiness evaluator enforces that bound at activation).
+        lighting_voltages = {}
+        registry = getattr(state.network, "speed_profiles", None)
+        for train_id, train in state.network.trains.items():
+            profile_id = getattr(train, "speed_profile_id", None)
+            resolved = (
+                registry.resolve(profile_id)
+                if registry is not None and profile_id
+                else None
+            )
+            if resolved is not None:
+                lighting_voltages[train_id] = getattr(
+                    resolved, "lighting_voltage", None
+                )
         return hardware_config.activation_report(
             hardware_config.get_hardware_config(),
             operation_environment.get_selected(),
             state.network.blocks.keys(),
             state.network.switches.keys(),
+            lighting_voltages=lighting_voltages,
             )
 
     def _activate_locked(selected):
