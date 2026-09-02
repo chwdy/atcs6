@@ -136,16 +136,20 @@ def create_simulation_loop(state: AppState) -> Callable[[], None]:
                 last_update_time = current_time
 
                 if state.simulation_running:
-                    # Clamp the per-tick delta (see MAX_SIM_DELTA_SECONDS) so a
-                    # multi-second hitch can't integrate one giant jump that
-                    # spikes speed past max and trips a spurious overspeed EB.
-                    # Normal ticks (incl. a few-x speed multiplier) pass through
-                    # unchanged: one update() per tick.
-                    sim_delta = _clamp_sim_delta(
-                        delta_seconds, state.simulation_speed
-                    )
+                    # The operating clock advances by the uncapped wall x speed
+                    # delta (a faithful clock a schedule measures against); the
+                    # physics integrator uses the same delta CLAMPED to
+                    # MAX_SIM_DELTA_SECONDS so a multi-second hitch can't
+                    # integrate one giant jump that spikes speed past max and
+                    # trips a spurious overspeed EB (design_new.md "Clocks").
+                    # Normal ticks (incl. a few-x speed multiplier) leave the two
+                    # equal.
+                    operating_delta = max(delta_seconds, 0.0) * state.simulation_speed
+                    sim_delta = min(operating_delta, MAX_SIM_DELTA_SECONDS)
                     with state.simulation_lock:
-                        state.sim_controller.update(sim_delta)
+                        state.sim_controller.update(
+                            sim_delta, operating_delta_seconds=operating_delta
+                        )
                 elif _reads_hardware(state):
                     # Stopped, but the detectors have not stopped detecting.
                     # Occupancy is what the hardware says it is, so it is read

@@ -396,8 +396,19 @@ class SimulationController(SwitchOutputOwner):
     # Top-level update loop (per design_new.md "Core Runtime Loop")
     # =========================================================================
 
-    def update(self, delta_seconds: float) -> None:
+    def update(
+        self, delta_seconds: float, operating_delta_seconds: float | None = None
+    ) -> None:
         """Advance the simulation by one tick.
+
+        `delta_seconds` is the physics integration step: wall delta x
+        simulation_speed, capped per pass at `MAX_SIM_DELTA_SECONDS` so one
+        stalled pass cannot integrate a giant jump. `operating_delta_seconds`,
+        when given, is the UNCAPPED wall delta x simulation_speed used to
+        advance `AppState.operating_time` (design_new.md "Clocks"): the
+        operating clock is a faithful wall clock a schedule measures against, so
+        it is never capped. Callers that do not distinguish (tests, scenario
+        replay) omit it and the operating clock advances by `delta_seconds`.
 
         Per design_new.md per-train tick transaction (Observe, Plan, Action):
           1. Advance simulation_time.
@@ -417,8 +428,14 @@ class SimulationController(SwitchOutputOwner):
         # One running pass of the runtime loop; a stopped pass calls
         # `poll_hardware_occupancy()` instead and adds nothing, which is what
         # keeps an operator's stop from consuming a dwell (design_new.md
-        # "Clocks").
-        self.operating_clock_advance(delta_seconds)
+        # "Clocks"). The operating clock advances by the uncapped wall x speed
+        # delta when the caller supplies it, so a hitch or a high playback
+        # multiplier never makes a schedule measure short.
+        self.operating_clock_advance(
+            operating_delta_seconds
+            if operating_delta_seconds is not None
+            else delta_seconds
+        )
 
         # A fatal physical-entry conflict (`failed_runtime`) halts train ticks
         # (Observe/Plan/Action skipped) in every environment; its release path is

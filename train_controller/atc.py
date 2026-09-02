@@ -304,12 +304,27 @@ class ATCComputer:
         self.current_block_speed_limit: float = float("inf")
         self._last_limit_reason_code: Optional[AtcLimitReasonCode] = None
 
-        # Tunables. ``safety_margin_cm`` is the track-end / authority-end
-        # buffer; the smaller ``PLATFORM_SAFETY_MARGIN_CM`` is layered in
-        # by ``effective_safety_margin()`` when the destination is a
-        # station.
-        self.safety_margin_cm: float = TRACK_END_SAFETY_MARGIN_CM
-        self.signal_lookahead_blocks: int = ATC_SIGNAL_LOOKAHEAD_BLOCKS
+        # Tunables ``safety_margin_cm`` and ``signal_lookahead_blocks`` are
+        # exposed as live reads of this module's globals (see the properties
+        # below), not instance copies captured here.
+
+    @property
+    def safety_margin_cm(self) -> float:
+        """The track-end / authority-end buffer, read live from the module
+        global so a runtime ``PUT`` (which rebinds
+        ``train_controller.atc.TRACK_END_SAFETY_MARGIN_CM`` through
+        ``runtime_config._propagate``) takes effect for controllers that
+        already exist (design_new.md:3857/3888). The smaller
+        ``PLATFORM_SAFETY_MARGIN_CM`` is layered in by
+        ``effective_safety_margin()`` when the destination is a station.
+        """
+        return TRACK_END_SAFETY_MARGIN_CM
+
+    @property
+    def signal_lookahead_blocks(self) -> int:
+        """Signal-scan depth, read live from the module global for the same
+        reason as ``safety_margin_cm`` (design_new.md:3857/3908)."""
+        return ATC_SIGNAL_LOOKAHEAD_BLOCKS
 
     # ------------------------------------------------------------------
     # Clearance ahead

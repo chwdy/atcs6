@@ -137,13 +137,31 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": "RouteRun not found"}), 404
 
         def _elapsed_basis(run, pos: int):
-            """Elapsed seconds on the route's timing basis, or `None`."""
-            started = (
-                run.started_at_operating
-                if pos == 0
-                else run.task_runs[pos - 1].finished_at_operating
+            """Elapsed seconds on the route's timing basis, or `None`.
+
+            Mirrors the basis `RouteExecutor` graded `delay_class` on
+            (design_new.md:3566): a `realtime` route reads the wall anchors, an
+            `operating` route reads the operating clock. Reading this figure off
+            the operating clock for a `realtime` route made it disagree with the
+            `delay_class` it is supposed to explain.
+            """
+            realtime = (
+                getattr(target_route, "timing_basis", "operating") == "realtime"
             )
-            finished = run.task_runs[pos].finished_at_operating
+            if realtime:
+                started = (
+                    run.started_at
+                    if pos == 0
+                    else run.task_runs[pos - 1].finished_at
+                )
+                finished = run.task_runs[pos].finished_at
+            else:
+                started = (
+                    run.started_at_operating
+                    if pos == 0
+                    else run.task_runs[pos - 1].finished_at_operating
+                )
+                finished = run.task_runs[pos].finished_at_operating
             if started is None or finished is None:
                 return None
             return max(0.0, finished - started)
