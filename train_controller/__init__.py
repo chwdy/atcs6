@@ -778,18 +778,25 @@ class TrainController:
         # ===== 4. ATC ACTION =====
         overspeed = self.physics_sync.current_speed_kmh - self.atc.speed_limit
 
-        # Per design_new.md step `826a`: a rolling train with no path authority
-        # has nothing to brake against, so EB — not a service-brake notch — is
-        # the only stopping protocol. With no authority ATC sets atc_limit = 0,
-        # so any motion is overspeed at distance 0; we escalate here instead of
-        # letting the ATO/manual branches below pick a service notch (which
-        # would override the operator's handle with a confusing brake step).
-        no_authority_rolling = (
-            self.path_projection.received_path_plan is None
+        # Per design_new.md step `914f` / `826a`: a rolling train whose
+        # authority can no longer be used has nothing to brake against, so EB —
+        # not a service-brake notch — is the only stopping protocol. Both
+        # zero-limit reasons trigger this fail-safe override: `no_authority`
+        # (no live path at all) and `deviation` (the path is still ACTIVE but
+        # the head is unmappable, so the distance-0 limit is 0 with reason
+        # `deviation`). In either case any motion is overspeed at distance 0, so
+        # `not is_stopped()` escalates to EB regardless of the ordinary margin,
+        # rather than letting the ATO/manual branches pick a service notch that
+        # would override the operator's handle with a confusing brake step. All
+        # other reason codes use the ordinary overspeed margin above.
+        zero_limit_loss = (
+            self.atc.speed_limit <= 0.0
+            and self.atc._last_limit_reason_code
+            in (AtcLimitReasonCode.NO_AUTHORITY, AtcLimitReasonCode.DEVIATION)
             and not self.is_stopped()
         )
 
-        if overspeed > OVERSPEED_EB_THRESHOLD_KMH or no_authority_rolling:
+        if overspeed > OVERSPEED_EB_THRESHOLD_KMH or zero_limit_loss:
             # Raise EB through the canonical activation path (design_new.md "EB
             # has two trigger paths" / step `826a`): `eb.activate()` performs
             # every canonical EB effect — force handle to EB, clear `ato.running`,
@@ -801,7 +808,7 @@ class TrainController:
             self.notifications.emit(
                 "ATC triggered emergency brake: overspeed"
                 if overspeed > OVERSPEED_EB_THRESHOLD_KMH
-                else "No movement authority: emergency brake",
+                else "Unusable authority (zero limit): emergency brake",
                 operation="_run_atc",
                 error=_ErrorRecord(
                     "ATC escalated to emergency brake", "eb"
@@ -965,6 +972,21 @@ class TrainController:
             # **driver-control interlock** — which is what keeps a retained
             # percentage from driving the train the moment EB lifts. Clearing it
             # here instead would make that interlock unreachable.
+            if (
+                self.commands.control_mode == "manual"
+                and self.manual.manual_mode_type == "power_percent"
+            ):
+                # Manual `power_percent` is the momentum-free model: EB writes
+                # the capped zero speed THIS tick rather than decelerating at
+                # `emergency_brake_rate`, which does not apply there
+                # (design_new.md row `e67d` / Canonical power-percent safety-cap
+                # ordering).
+                return PhysicsCommand(
+                    kind=PHYSICS_KIND_TARGET_SPEED,
+                    handle=HandlePosition.EB,
+                    target_speed_kmh=0.0,
+                    voltage_source_speed_kmh=0.0,
+                )
             return PhysicsCommand(
                 kind=PHYSICS_KIND_EMERGENCY_BRAKE,
                 handle=HandlePosition.EB,

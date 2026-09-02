@@ -3426,26 +3426,31 @@ class PathDispatcher:
             # design_new.md fix #2: do NOT return here — fall through so that
             # tail_vacated_resources for already-occupied resources still fire.
 
-        # design_new.md step `640a` (line 427): apply ordinary active-path head
-        # progress and run the route head-advance callback for every entered
-        # block while the train has an active route run — INCLUDING entries in a
-        # `deviation == true` report and ticks where a cancel latch is pending.
-        # Only a fatal conflict (fix #3) skips this. A reported block that does
-        # not match the next task is a no-op on the route side; an entry the
-        # controller could not map (`sequence_index` is None) advances no path
-        # index but still fires the callback (handle_train_advanced no-ops when
-        # the block/direction does not match the next task).
-        if not fatal_in_this_report:
-            if active_path is not None:
-                for event in list(report.entered_resources or []):
-                    if event.sequence_index is not None:
-                        if event.sequence_index > active_path.current_resource_index:
-                            active_path.current_resource_index = event.sequence_index
-                    self._fire_route_advanced_callback(
-                        train_id=train_id,
-                        path_id=active_path.path_id,
-                        event=event,
-                    )
+        # design_new.md step `640a`: apply ordinary active-path head progress and
+        # run the route head-advance callback for entered blocks, but ONLY for a
+        # report that carries a movement-derived head mapping
+        # (`current_head_sequence_index is not None`) — including ticks where a
+        # cancel latch is pending. A detection-only report (Observe step `3e9b`,
+        # `current_head_sequence_index = None`) and a `deviation == true` report
+        # (head unmappable, also `None`) are the occupancy commit alone and
+        # suppress the callback, so a stopped pass or an OFF / hand-pushed
+        # detected entry cannot consume a waypoint task (design_new.md line 89 /
+        # 640a). A fatal conflict (fix #3) also skips this. Within a mapped
+        # report, a per-entry `sequence_index is None` advances no path index.
+        if (
+            not fatal_in_this_report
+            and report.current_head_sequence_index is not None
+            and active_path is not None
+        ):
+            for event in list(report.entered_resources or []):
+                if event.sequence_index is not None:
+                    if event.sequence_index > active_path.current_resource_index:
+                        active_path.current_resource_index = event.sequence_index
+                self._fire_route_advanced_callback(
+                    train_id=train_id,
+                    path_id=active_path.path_id,
+                    event=event,
+                )
 
         # design_new.md fix #3: skip tail-vacates on fatal conflict.
         if not fatal_in_this_report:
