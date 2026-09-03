@@ -151,7 +151,9 @@ class EBWorkflow:
             )
 
         self.active = False
-        c.ops.handle_position = HandlePosition.N
+        # Non-driving reset goes through the Operational-state helper, not a raw
+        # handle_position write (design_new.md Module boundaries rule 5).
+        c.ops.reset_handle_to_neutral()
 
         # The READY move is intentionally not written here: the reactive
         # evaluator owns the RUNNING_MOVING -> READY transition (see the

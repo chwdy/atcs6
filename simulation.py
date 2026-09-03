@@ -1395,7 +1395,7 @@ class SimulationController(SwitchOutputOwner):
         if notify:
             self.notification_center.emit(
                 source="SimulationController",
-                operation="_mark_presence_unknown",
+                operation="_release_lost_train",
                 kind=Kind.WARNING,
                 message=(
                     f"no occupancy detected under {train_id}; it was stopped "

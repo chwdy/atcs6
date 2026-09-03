@@ -824,7 +824,7 @@ class TrainController:
                 self._overspeed_warned = True
                 self.notifications.emit(
                     f"ATC overspeed warning: {overspeed:.1f} km/h over the limit",
-                    operation="_run_atc",
+                    operation="tick",
                 )
         else:
             self._overspeed_warned = False
@@ -2499,7 +2499,7 @@ class TrainController:
                 f"finish_dwell requires RUNNING_AT_STATION, state is "
                 f"{self.ops.state.value}"
             )
-            self._emit_dwell_diagnostic(reason)
+            self._emit_dwell_diagnostic(reason, operation="finish_dwell")
             return (False, reason)
         self.ops.state = TrainState.READY
         # design_new.md "Event log": the log records "finished station dwell",

@@ -224,9 +224,10 @@ class OperatorCommands:
                     kind,
                     exc_info=True,
                 )
-
-        if not result.success:
-            c.notifications.emit(result.message, operation=kind)
+        # The single command_result event above (operation=kind, kind=warning on
+        # rejection) is the canonical per-command notification; a rejected
+        # command does not additionally emit a second bare warning
+        # (design_new.md "Runtime notifications").
 
     # Inline executors — these contain the actual command bodies. The public
     # methods below (`power_on_cmd` etc.) call them after enqueuing so the
