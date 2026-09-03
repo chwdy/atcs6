@@ -160,6 +160,86 @@ class TestTrainRouteService:
             train_route_service.activate_route(state, "ROUTE_EMPTY")
 
 
+class TestRouteDefinitionValidation:
+    """design_new.md "Route-definition validation": the dwell-follow rule, the
+    CIRCULAR / ROUND_TRIP distinct-location guard, and the priority range are
+    enforced at create/update; non-dwell-exists and the terminal-task
+    requirement are enforced at activation (an incomplete draft may still be
+    saved)."""
+
+    def _stop(self, loc):
+        return {"task_kind": "stop", "task_location": loc}
+
+    def _dwell(self, loc):
+        return {"task_kind": "dwell", "task_location": loc, "task_time": 5.0}
+
+    def _waypoint(self, loc):
+        return {"task_kind": "waypoint", "task_location": loc}
+
+    def test_create_rejects_dwell_not_following_stop_or_run(self, state):
+        with pytest.raises(ValidationError, match="directly follow a stop or run"):
+            train_route_service.create_route(
+                state, route_id="R", mode="one_off",
+                tasks=[self._waypoint("A"), self._dwell("A")],
+            )
+
+    def test_create_rejects_dwell_at_different_location(self, state):
+        with pytest.raises(ValidationError, match="same task_location"):
+            train_route_service.create_route(
+                state, route_id="R", mode="one_off",
+                tasks=[self._stop("A"), self._dwell("B")],
+            )
+
+    def test_create_rejects_circular_with_one_location(self, state):
+        with pytest.raises(ValidationError, match="two non-dwell tasks"):
+            train_route_service.create_route(
+                state, route_id="R", mode="circular",
+                tasks=[self._stop("A"), self._stop("A")],
+            )
+
+    def test_create_rejects_round_trip_with_one_location(self, state):
+        with pytest.raises(ValidationError, match="two non-dwell tasks"):
+            train_route_service.create_route(
+                state, route_id="R", mode="round_trip",
+                tasks=[self._stop("A"), self._waypoint("A")],
+            )
+
+    def test_create_rejects_priority_out_of_range(self, state):
+        with pytest.raises(ValidationError, match="0..9"):
+            train_route_service.create_route(
+                state, route_id="R", mode="one_off",
+                tasks=[self._stop("A")], priority=15,
+            )
+
+    def test_create_accepts_valid_stop_dwell_and_distinct_circular(self, state):
+        # A terminal stop followed by a dwell at the same location is valid.
+        train_route_service.create_route(
+            state, route_id="R1", mode="one_off",
+            tasks=[self._stop("A"), self._dwell("A")],
+        )
+        # A CIRCULAR route with two distinct locations is valid.
+        train_route_service.create_route(
+            state, route_id="R2", mode="circular",
+            tasks=[self._stop("A"), self._stop("B")],
+        )
+
+    def test_create_allows_incomplete_draft(self, state):
+        # A waypoint-only ONE_OFF has no terminal stop/run, but that is an
+        # activation-time completeness check — the draft may still be created.
+        train_route_service.create_route(
+            state, route_id="R", mode="one_off",
+            tasks=[self._waypoint("A")],
+        )
+
+    def test_activate_rejects_non_circular_without_terminal_stop(self, state):
+        train_route_service.create_route(
+            state, route_id="R", mode="one_off",
+            tasks=[self._waypoint("A"), self._waypoint("B")],
+        )
+        with pytest.raises(ValidationError, match="end in a stop or run"):
+            train_route_service.activate_route(state, "R")
+
+
 # ------------------------------------------------- speed_profile_service ----
 
 

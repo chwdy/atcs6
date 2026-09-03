@@ -180,6 +180,90 @@ def _reject_leading_dwell(tasks) -> None:
         )
 
 
+def _validate_route_definition(tasks, mode, priority) -> None:
+    """Create/update-time structural validation (design_new.md
+    "Route-definition validation").
+
+    Takes the proposed `tasks` / `mode` / `priority` (not a live `Route`) so a
+    caller can validate an edit before committing it. Covers the rules the doc
+    puts at creation/update time: the priority range, the CIRCULAR / ROUND_TRIP
+    distinct-location guard, and the dwell-follow rule. It deliberately does NOT
+    check that a non-dwell task exists or that a non-circular route ends in a
+    stop/run — those are completeness checks the doc gates at activation
+    ("before a RouteRun may be created"), so an incomplete route may still be
+    saved as a draft. Per-task shape (`task_kind`, run `task_time` /
+    `target_time`) is validated by `_coerce_route_task`, and the leading-dwell
+    rule by `_reject_leading_dwell`.
+    """
+    if not 0 <= int(priority) <= 9:
+        raise ValidationError(
+            f"Route priority must be an integer in 0..9 (got {priority!r})."
+        )
+
+    tasks = list(tasks)
+    non_dwell = [t for t in tasks if t.task_kind != "dwell"]
+
+    # CIRCULAR / ROUND_TRIP need two distinct non-dwell locations to travel /
+    # reflect between (design_new.md, the CIRCULAR distinct-location rule and
+    # the ROUND_TRIP degenerate-route guard); a loop whose moves all name one
+    # location has nothing to travel between. Only checked once the route has
+    # non-dwell tasks — an empty draft defers to the activation-time
+    # non-dwell-exists check rather than being rejected as "one location".
+    if (
+        mode in (RouteMode.CIRCULAR, RouteMode.ROUND_TRIP)
+        and non_dwell
+        and len({t.task_location for t in non_dwell}) < 2
+    ):
+        raise ValidationError(
+            f"A {mode.value} route must contain at least two non-dwell tasks "
+            "whose task_location values differ."
+        )
+
+    # Every maximal run of dwell tasks must directly follow a stop or run at the
+    # same task_location (design_new.md, the dwell-follow rule): a waypoint never
+    # establishes a stopped, authority-free state to hold after.
+    for i, task in enumerate(tasks):
+        if task.task_kind != "dwell":
+            continue
+        j = i - 1
+        while j >= 0 and tasks[j].task_kind == "dwell":
+            j -= 1
+        if j < 0 or tasks[j].task_kind not in ("stop", "run"):
+            raise ValidationError(
+                "A dwell task must directly follow a stop or run task; a "
+                "waypoint never establishes a stopped state to hold after."
+            )
+        if tasks[j].task_location != task.task_location:
+            raise ValidationError(
+                "A dwell task must name the same task_location as the stop or "
+                "run task it follows."
+            )
+
+
+def _validate_route_activatable(tasks, mode, priority) -> None:
+    """Activation-time validation (design_new.md): the create/update definition
+    rules plus the completeness checks the doc gates at activation — a non-dwell
+    task must exist, and a non-circular route must end in a stop or run
+    (optionally followed by dwell tasks) so the run has a defined place to come
+    to rest."""
+    _validate_route_definition(tasks, mode, priority)
+
+    non_dwell = [t for t in tasks if t.task_kind != "dwell"]
+    if not non_dwell:
+        raise ValidationError(
+            "A route must contain at least one non-dwell task (waypoint, stop, "
+            "or run) before activation."
+        )
+    if mode != RouteMode.CIRCULAR and non_dwell[-1].task_kind not in (
+        "stop",
+        "run",
+    ):
+        raise ValidationError(
+            "A non-circular route must end in a stop or run task "
+            "(optionally followed by dwell tasks) before activation."
+        )
+
+
 def create_route(
     state: AppState,
     *,
@@ -243,6 +327,8 @@ def create_route(
     _reject_leading_dwell(coerced_tasks)
     for task in coerced_tasks:
         route.add_task(task)
+
+    _validate_route_definition(route.tasks, route.mode, route.priority)
 
     if edit_fields_present:
         route.last_edited_at = time.time()
@@ -328,6 +414,21 @@ def update_route(
                 )
             new_tasks.append(_coerce_route_task(task_data))
         _reject_leading_dwell(new_tasks)
+
+    # Validate the PROPOSED (tasks, mode, priority) before mutating the live
+    # route, so a rejected edit leaves the existing route unchanged
+    # (design_new.md "Route-definition validation" requires create/update to
+    # reject the same structural violations activation does).
+    proposed_tasks = new_tasks if tasks is not None else route.tasks
+    proposed_mode = _coerce_mode(mode) if mode is not None else route.mode
+    if priority is not None:
+        try:
+            proposed_priority = int(priority)
+        except (TypeError, ValueError):
+            raise ValidationError("priority must be an integer")
+    else:
+        proposed_priority = route.priority
+    _validate_route_definition(proposed_tasks, proposed_mode, proposed_priority)
 
     if name is not None:
         route.name = name
@@ -604,24 +705,7 @@ def activate_route(
     # task to "complete". A ONE_OFF / ROUND_TRIP route must still end at a task
     # that brings the train to rest: a `stop`, or a timed `run` (which ends at a
     # smooth ATC stop), optionally followed by dwell tasks.
-    non_dwell_tasks = [t for t in route.tasks if t.task_kind != "dwell"]
-    if not non_dwell_tasks:
-        raise ValidationError(
-            "A route must contain at least one non-dwell task (waypoint, stop, "
-            "or run) before activation."
-        )
-    if route.mode != RouteMode.CIRCULAR and non_dwell_tasks[-1].task_kind not in (
-        "stop",
-        "run",
-    ):
-        raise ValidationError(
-            "A non-circular route must end in a stop or run task "
-            "(optionally followed by dwell tasks) before activation."
-        )
-    if not 0 <= int(route.priority) <= 9:
-        raise ValidationError(
-            f"Route priority must be an integer in 0..9 (got {route.priority!r})."
-        )
+    _validate_route_activatable(route.tasks, route.mode, route.priority)
     if simulation_time is None:
         simulation_time = state.sim_controller.simulation_time
     route.activate(simulation_time)
