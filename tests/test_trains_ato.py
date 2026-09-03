@@ -317,6 +317,22 @@ class TestAtoDepartCallsAtoGo:
         network.place_train(train, 0, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
+        # ato.go() arms a run only with live authority (design_new.md
+        # "`ato.running` meaning and lifecycle"), so wire a one-block synthetic
+        # path covering the train's block.
+        from tests.train_test_helpers import (
+            attach_synthetic_path,
+            make_synthetic_path,
+        )
+
+        attach_synthetic_path(
+            controller,
+            make_synthetic_path(
+                train_id=train.train_id,
+                block_id="BLOCK_1",
+                block_tiles=[(0, 0), (1, 0)],
+            ),
+        )
         controller.commands.control_mode = "ato"
         controller.commands.cab = "A"
         controller.ops.state = TrainState.READY

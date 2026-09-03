@@ -277,6 +277,15 @@ class ATOComputer:
         if c.commands.cab not in ("A", "B"):
             return CommandResult(False, "ATO requires a cab to be selected")
 
+        # ato.go() arms an ATO run only when there is live authority to run on:
+        # it verifies `received_path_plan is not None` before setting
+        # `running = True` (design_new.md "`ato.running` meaning and lifecycle").
+        # Without a path there is nothing to drive, so arming the run would leave
+        # a running flag with no authority (the RUNNING_MOVING branch above
+        # already makes this same check).
+        if c.path_projection.received_path_plan is None:
+            return CommandResult(False, "No live authority to run on")
+
         # Move state through the single RUNNING_MOVING writer rather than
         # assigning `state` here (design_new.md "TrainController.depart()
         # canonical contract": ato.go() applies the transition through the
