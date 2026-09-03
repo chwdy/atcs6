@@ -941,6 +941,20 @@ def _require_calibration_ready(state: AppState, train_id: str, train, sim) -> No
         raise ConflictError(
             "Select a cab first — the pass reverses by writing the other end"
         )
+    # The train must have no assigned route to open a pass (design_new.md
+    # "Speed calibration", Opening a pass): `assigned_route_id_for(train_id) is
+    # None`, not merely no *running* route. A manual train holding an
+    # assigned-but-not-yet-running route would otherwise open a pass and then
+    # have that route contend with the pass's own leg route. Only the pass's
+    # own `CalibrationRun.active_leg_route_id` may be assigned after opening, so
+    # this is an open-only precondition (the during-pass record/commit commands
+    # legitimately run with the leg route assigned).
+    executor = getattr(sim, "route_executor", None)
+    if executor is not None and executor.assigned_route_id_for(train_id) is not None:
+        raise ConflictError(
+            "Unassign the train's route first — a calibration pass owns the "
+            "train's movement, and only its own leg route may be assigned"
+        )
     if sim.speed_calibration.lighting_runs.get(train_id) is not None:
         raise ConflictError("A lighting-voltage run is already open for this train")
     if sim.speed_calibration.runs.get(train_id) is not None:
