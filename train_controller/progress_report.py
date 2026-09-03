@@ -9,7 +9,7 @@ other controller sub-modules.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from enums import TrainState
 from runtime_payloads import (
@@ -84,23 +84,52 @@ class ProgressReportBuilder:
         # `received_path_plan.resource_sequence`; dispatcher must not search
         # by raw resource_id.
         plan = self._c.path_projection.received_path_plan
-        tile_xy_to_seq_index: Dict[Tuple[int, int], int] = {}
-        # block_id -> sequence_index / forward exit edge from the live plan, used
-        # to enrich the detector-sourced block events (design_new.md "Power ->
-        # Block occupancy detection") the same way tile traversals enrich switch
-        # events with their own sequence_index.
-        block_to_seq_index: Dict[str, int] = {}
+        # Head-mapping rule (design_new.md :581-591): one resource_id may appear
+        # at more than one sequence_index in a single live resource_sequence (a
+        # lapping path that takes authority back into a block it already passed
+        # and released). Collect ALL occurrences per tile / block so the head and
+        # every entered/vacated event resolve to the right occurrence against the
+        # controller's progress anchor, instead of a last-wins map that always
+        # returns the highest index and so mis-maps a duplicate's first visit.
+        tile_xy_to_seq_indices: Dict[Tuple[int, int], List[int]] = {}
+        # block_id -> sequence_indices / forward exit edge from the live plan,
+        # used to enrich the detector-sourced block events (design_new.md "Power
+        # -> Block occupancy detection") the same way tile traversals enrich
+        # switch events with their own sequence_index.
+        block_to_seq_indices: Dict[str, List[int]] = {}
         block_to_exit_edge: Dict[str, str] = {}
         if plan is not None:
             for entry in plan.resource_sequence:
                 for path_tile in entry.path_tiles:
-                    tile_xy_to_seq_index[(path_tile.x, path_tile.y)] = (
+                    tile_xy_to_seq_indices.setdefault(
+                        (path_tile.x, path_tile.y), []
+                    ).append(entry.sequence_index)
+                if getattr(entry, "resource_type", None) == "block":
+                    block_to_seq_indices.setdefault(entry.resource_id, []).append(
                         entry.sequence_index
                     )
-                if getattr(entry, "resource_type", None) == "block":
-                    block_to_seq_index[entry.resource_id] = entry.sequence_index
                     if entry.exit_edge:
                         block_to_exit_edge[entry.resource_id] = entry.exit_edge
+
+        # The progress anchor for THIS report is the last index reported for the
+        # current path_id (design_new.md "Head-mapping rule"): it resets to 0 on
+        # a path_id change and is 0 before the head has been reported. Resolve
+        # every occurrence list to the lowest index at or after it; when a
+        # resource's only occurrences lie behind the anchor, resolve to the
+        # nearest (highest) of them — a no-advance the monotonic
+        # Path.current_resource_index rule leaves unchanged, never a deviation.
+        ps_anchor = self._c.physics_sync
+        if plan is not None:
+            if ps_anchor.head_progress_anchor_path_id != plan.path_id:
+                ps_anchor.head_progress_anchor = 0
+                ps_anchor.head_progress_anchor_path_id = plan.path_id
+        anchor = ps_anchor.head_progress_anchor
+
+        def _resolve_index(indices: Optional[List[int]]) -> Optional[int]:
+            if not indices:
+                return None
+            at_or_after = [i for i in indices if i >= anchor]
+            return min(at_or_after) if at_or_after else max(indices)
 
         entered_resources: List[ResourceEvent] = []
         seen_entered: set = set()
@@ -122,7 +151,9 @@ class ProgressReportBuilder:
             seen_entered.add(key)
             entered_resources.append(
                 ResourceEvent(
-                    sequence_index=tile_xy_to_seq_index.get(tile.tile_xy),
+                    sequence_index=_resolve_index(
+                        tile_xy_to_seq_indices.get(tile.tile_xy)
+                    ),
                     resource_type=res_type,
                     resource_id=res_id,
                     exit_edge=None,
@@ -168,7 +199,9 @@ class ProgressReportBuilder:
             seen_vacated.add(key)
             tail_vacated_resources.append(
                 ResourceEvent(
-                    sequence_index=tile_xy_to_seq_index.get(tile.tile_xy),
+                    sequence_index=_resolve_index(
+                        tile_xy_to_seq_indices.get(tile.tile_xy)
+                    ),
                     resource_type=res_type,
                     resource_id=res_id,
                     exit_edge=None,
@@ -187,13 +220,13 @@ class ProgressReportBuilder:
             self._emit_detected_block_events(
                 entered_resources,
                 tail_vacated_resources,
-                block_to_seq_index,
+                lambda b: _resolve_index(block_to_seq_indices.get(b)),
                 block_to_exit_edge,
             )
 
-        # Deviation is one predicate: the head resource is not in
-        # `resource_sequence`. There is no second classification — a head tile
-        # that IS in the map cannot have an index past the map's own maximum.
+        # Deviation is one predicate: the head resource appears nowhere in
+        # `resource_sequence`. A head that resolves to an occurrence behind the
+        # anchor is a no-advance under the Head-mapping rule, not a deviation.
         deviation = False
         deviation_error = None
         current_head_sequence_index: Optional[int] = None
@@ -201,11 +234,14 @@ class ProgressReportBuilder:
         if plan is not None:
             # Look up the head tile in the sequence index map. current_span was
             # just written from span_update.new_span above, so the cab-derived
-            # head reflects this update.
+            # head reflects this update. `_resolve_index` picks the occurrence at
+            # or after the progress anchor per the Head-mapping rule.
             head_tile_xy = self._c._get_head_tile()
 
             if head_tile_xy is not None:
-                seq_idx = tile_xy_to_seq_index.get(head_tile_xy)
+                seq_idx = _resolve_index(
+                    tile_xy_to_seq_indices.get(head_tile_xy)
+                )
                 if seq_idx is None:
                     # The tile map missed, so ask the resource. The predicate is
                     # about the head's RESOURCE, not its tile (design_new.md:608
@@ -227,7 +263,7 @@ class ProgressReportBuilder:
                     # will take it out through.
                     head_block_id = self._c._get_current_block_id()
                     seq_idx = (
-                        block_to_seq_index.get(head_block_id)
+                        _resolve_index(block_to_seq_indices.get(head_block_id))
                         if head_block_id is not None
                         else None
                     )
@@ -242,6 +278,11 @@ class ProgressReportBuilder:
                     current_head_sequence_index = None
                 else:
                     current_head_sequence_index = seq_idx
+                    # Advance the progress anchor to the reported index. Monotonic:
+                    # a behind-anchor no-advance resolves to an index < anchor and
+                    # leaves the anchor unchanged, so resolution can never slip
+                    # back to an earlier occurrence on a later tick.
+                    ps_anchor.head_progress_anchor = max(anchor, seq_idx)
 
         report = ControllerProgressReport(
             train_id=self._c.train_id,
@@ -284,8 +325,10 @@ class ProgressReportBuilder:
 
         entered_resources: List[ResourceEvent] = []
         tail_vacated_resources: List[ResourceEvent] = []
+        # No live plan on the OFF path, so the block events carry no
+        # sequence_index (the resolver returns None for every block).
         self._emit_detected_block_events(
-            entered_resources, tail_vacated_resources, {}, {}
+            entered_resources, tail_vacated_resources, lambda b: None, {}
         )
         ps.queued_progress_reports.append(
             ControllerProgressReport(
@@ -302,7 +345,7 @@ class ProgressReportBuilder:
         self,
         entered_resources: List[ResourceEvent],
         tail_vacated_resources: List[ResourceEvent],
-        block_to_seq_index: Dict[str, int],
+        resolve_block_index: "Callable[[str], Optional[int]]",
         block_to_exit_edge: Dict[str, str],
     ) -> None:
         """Append this tick's detector-confirmed block entered/vacated events to
@@ -310,20 +353,22 @@ class ProgressReportBuilder:
         detection").
 
         Blocks are ordered by path sequence_index so a multi-block tick advances
-        route waypoints in order. The vacate exit edge comes from the precise
-        edge captured when the tail cleared the block (`pending_block_exit_edges`),
-        falling back to the plan's forward exit edge. Clears the per-tick slice
-        after draining it.
+        route waypoints in order; `resolve_block_index` maps a block to the
+        occurrence at or after the progress anchor per the Head-mapping rule (it
+        returns None on the powered-off path, which has no live plan). The vacate
+        exit edge comes from the precise edge captured when the tail cleared the
+        block (`pending_block_exit_edges`), falling back to the plan's forward
+        exit edge. Clears the per-tick slice after draining it.
         """
         ps = self._c.physics_sync
 
         for block_id in sorted(
             ps.pending_detected_entered_blocks,
-            key=lambda b: (block_to_seq_index.get(b, 0), b),
+            key=lambda b: (resolve_block_index(b) or 0, b),
         ):
             entered_resources.append(
                 ResourceEvent(
-                    sequence_index=block_to_seq_index.get(block_id),
+                    sequence_index=resolve_block_index(block_id),
                     resource_type="block",
                     resource_id=block_id,
                     exit_edge=None,
@@ -333,14 +378,14 @@ class ProgressReportBuilder:
 
         for block_id in sorted(
             ps.pending_detected_vacated_blocks,
-            key=lambda b: (block_to_seq_index.get(b, 0), b),
+            key=lambda b: (resolve_block_index(b) or 0, b),
         ):
             exit_edge = ps.pending_block_exit_edges.pop(block_id, None)
             if exit_edge is None:
                 exit_edge = block_to_exit_edge.get(block_id)
             tail_vacated_resources.append(
                 ResourceEvent(
-                    sequence_index=block_to_seq_index.get(block_id),
+                    sequence_index=resolve_block_index(block_id),
                     resource_type="block",
                     resource_id=block_id,
                     exit_edge=exit_edge,

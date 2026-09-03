@@ -42,6 +42,16 @@ class PhysicsSync:
         self.current_speed_kmh: float = 0.0
         self.queued_progress_reports: List[ControllerProgressReport] = []
 
+        # Head-mapping progress anchor (design_new.md "Head-mapping rule"): the
+        # last sequence_index this controller reported for the current
+        # received_path_plan.path_id. Head resolution picks the lowest matching
+        # sequence_index at or after this anchor, so a lapping path's first visit
+        # to a duplicated resource maps to its earlier occurrence rather than the
+        # later one. Resets to 0 whenever the path_id changes; 0 for a path whose
+        # head has not been reported yet.
+        self.head_progress_anchor: int = 0
+        self.head_progress_anchor_path_id: Optional[str] = None
+
         # Block occupancy detection (design_new.md "Power -> Block occupancy
         # detection"). The global current detector confirms block entry/exit at
         # the top of each tick and writes this train's attributed slice here;
