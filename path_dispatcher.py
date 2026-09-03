@@ -3828,7 +3828,11 @@ class PathDispatcher:
         target = stored_resolved_target.requested_destination_block_id
         authority_end = path.get_authority_end_block_id()
         # Reached the requested target (or no target recorded): not waiting.
-        if not target or authority_end == target:
+        # Whether a live authority reaches a target is `Path.reaches_target(...)`,
+        # never `authority_end == target` (design_new.md:1231/1921): a live
+        # authority can legitimately run past a waypoint target, and an
+        # authority-end equality test would miss that reached case.
+        if not target or path.reaches_target(target):
             return None
 
         # Same pathfinder call extend_path makes from the current authority end.
