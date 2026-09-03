@@ -2415,6 +2415,12 @@ class TrainController:
                 message=message,
                 entities=[_tref(self.train_id)],
                 event_time=self.commands._estimate_event_time(),
+                # A rejected dwell transition is still a latch-consume event (the
+                # Action consumer ran and cleared the request), so per the Latch
+                # consumption events table (design_new.md:156) it passes
+                # latch_event=True and is never dropped by the unchanged-repeat
+                # suppression.
+                latch_event=True,
             )
         except Exception:
             pass
@@ -2448,6 +2454,13 @@ class TrainController:
                 entities=entities,
                 event_time=self.commands._estimate_event_time(),
                 payload=payload or {},
+                # Every caller of `_emit_event` is a transition-consume event —
+                # the depart / enter_station_dwell / finish_dwell acceptance,
+                # each the Action consumer of departure_request /
+                # station_entry_request / station_exit_request — so per the Latch
+                # consumption events table (design_new.md:156) it passes
+                # latch_event=True and is never dropped by suppression.
+                latch_event=True,
             )
         except Exception:
             pass
