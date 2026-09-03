@@ -253,6 +253,15 @@ def test_lost_train_cancels_path_and_releases_every_reserved_block():
     for _ in range(sim.block_occupancy_detector.off_threshold + 1):
         sim._detect_block_occupancy()
 
+    # The rising edge raised the flag, froze the record, released its confirmed
+    # blocks, and wrote the power-off + inclusive-cancel latches in Observe; the
+    # path cancel and the controller OFF transition commit in Action, so a full
+    # tick lands the teardown (design_new.md "Action is the sole explicit-cancel
+    # and teardown committer").
+    assert controller.presence_unknown is True
+    assert controller.physics_sync.current_speed_kmh == 0.0
+    sim.update(0.1)
+
     assert controller.presence_unknown is True
     assert controller.ops.state == TrainState.OFF
     assert controller.physics_sync.current_speed_kmh == 0.0

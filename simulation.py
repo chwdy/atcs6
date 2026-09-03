@@ -531,8 +531,16 @@ class SimulationController(SwitchOutputOwner):
 
                 # Plan. Skip while the controller is OFF; the Action command
                 # drain must run first so that power_on_cmd() can be accepted.
+                # Also skip a ghost (presence_unknown): its teardown is in flight
+                # through the power-off + inclusive-cancel latches Observe wrote,
+                # and Action is the sole teardown committer — Plan must not plan
+                # or acquire for a record no occupancy backs (design_new.md
+                # "Power", Presence unknown).
                 controller = self._get_or_create_controller(train)
-                if controller.ops.state != TrainState.OFF:
+                if (
+                    controller.ops.state != TrainState.OFF
+                    and not controller.presence_unknown
+                ):
                     self.route_executor.tick_train_plan(train_id, delta_seconds)
                 # Plan may have reserved blocks, locked/aligned switches, or
                 # (re)built this train's path — invalidate before Action reads.
@@ -1247,34 +1255,32 @@ class SimulationController(SwitchOutputOwner):
 
         The calculated position is an estimate anchored to physical detection;
         with the anchor gone there is nothing to integrate forward and no
-        grounds to keep resources from other trains. So on the tick the flag
-        rises: the route run is torn down, the active path is cancelled (which
-        releases its reservations and switch locks), every block the train
-        still holds is released — each such block reads confirmed clear, which
-        is what raised the flag, so no detector state is contradicted — and the
-        controller is written straight to `OFF` at zero speed. The direct write
-        rather than `power_off_cmd()` for the same reasons `clear_failed_runtime`
-        uses one: that command is stopped-only against a possibly non-zero
-        frozen speed, and it defers to a later Action. The span stays as the
-        last estimate, so the question mark has a place on the layout; the
-        record itself is kept for the operator to remove.
-        """
-        route_executor = getattr(self, "route_executor", None)
-        if route_executor is not None:
-            route_executor.remove_train_route_run(train_id)
+        grounds to keep resources from other trains. Observe does the two things
+        it owns directly and defers the rest to Action, per the tick's single
+        teardown-committer rule (design_new.md "Observe's only cross-stage latch
+        fields", "Action is the sole explicit-cancel and teardown committer"):
 
-        dispatcher = self.path_dispatcher
-        if dispatcher is not None:
-            path_id = dispatcher.active_path_id_by_train(train_id)
-            if path_id:
-                dispatcher.cancel_path(
-                    path_id,
-                    error=ErrorRecord(
-                        "no occupancy backs this train's position",
-                        "presence_unknown",
-                    ),
-                    kind=Kind.WARNING,
-                )
+        - **Direct in Observe:** freeze the record inert (speed to zero, drop any
+          queued command / progress reports) so it neither integrates nor plans,
+          and release every block it still holds through
+          `BlockManager.release_train_occupancy(train_id)` — each such block
+          reads confirmed clear, which is what raised the flag, so no detector
+          state is contradicted, and the release queues those blocks for the
+          de-energize drain.
+        - **Latched for Action:** write the `power_off` latch and, when a live
+          path exists, its inclusive `path_cancel_request`, through the canonical
+          `_apply_power_off_request(...)` writer. Action then commits the whole
+          teardown the same way it commits any rolling-train cancellation: the
+          stopped-gated cancel releases the path's future reservations and switch
+          locks, the power-off consumer writes the controller `OFF` and removes
+          the route run, and the ghost's own Action voltage step de-energizes its
+          retained span. Freezing the speed to zero first is what lets the
+          stopped-gated cancel commit on this same tick.
+
+        The span stays as the last estimate, so the question mark has a place on
+        the layout; the record itself is kept for the operator to remove.
+        """
+        self._freeze_lost_train_controller(controller)
 
         # The canonical teardown for a train with no detector observation left
         # to wait for (design_new.md "BlockManager",
@@ -1288,7 +1294,24 @@ class SimulationController(SwitchOutputOwner):
                 if getattr(block, "occupied_by", None) == train_id:
                     block.release()
 
-        self._freeze_lost_train_controller(controller)
+        # Initiate the Action-committed teardown by writing the power-off latch
+        # (and its inclusive cancel when a live path exists). Skip the write once
+        # the record is already settled — OFF with no live authority — so a ghost
+        # that sits unknown for many ticks does not re-emit the intent every
+        # tick. A record re-powered or re-authorized by an API call between ticks
+        # is not settled, so its teardown is re-initiated and Action commits it.
+        dispatcher = self.path_dispatcher
+        has_active_path = (
+            dispatcher is not None
+            and dispatcher.active_path_id_by_train(train_id) is not None
+        )
+        already_settled = (
+            controller.ops.state == TrainState.OFF and not has_active_path
+        )
+        if not already_settled:
+            controller.commands._apply_power_off_request(
+                reason="no occupancy backs this train's position"
+            )
 
         if notify:
             self.notification_center.emit(
@@ -1307,19 +1330,26 @@ class SimulationController(SwitchOutputOwner):
     def _freeze_lost_train_controller(controller: TrainController) -> None:
         """Keep an unconfirmed identifier inert until detection returns.
 
-        Observe calls this on the rising edge after releasing resources, and the
-        per-train loop calls it again while ``presence_unknown`` remains true.
-        Reapplying it matters: a command accepted just before the detector read
-        must not revive a record that no longer represents a detected train.
+        Observe calls this on the rising edge and again every tick while
+        ``presence_unknown`` remains true. Reapplying it matters: a command
+        accepted just before the detector read must not revive a record that no
+        longer represents a detected train.
+
+        This is Observe-only containment — it neither writes `state` nor clears
+        the EB / ATO run flags. Those are the operational-state machine's and
+        the EB / ATO sub-modules' to write, and they are committed in Action
+        through `TrainController.complete_power_off()` when the Action power-off
+        consumer runs the latch Observe wrote (design_new.md Module boundaries
+        rules 1/2, "Action is the sole explicit-cancel and teardown committer").
+        Freezing the speed to zero here is a physics-sync write, not a state
+        write, and it is what lets the stopped-gated Action cancel commit on the
+        same tick the flag rose.
         """
         controller.commands.command_inbox.clear()
-        controller.ops.state = TrainState.OFF
         controller.ops.handle_position = HandlePosition.N
         controller.manual.reset_power_percent_for_safety()
         controller.physics_sync.current_speed_kmh = 0.0
         controller.physics_sync.queued_progress_reports.clear()
-        controller.eb.active = False
-        controller.ato.running = False
 
     # =========================================================================
     # Per-train three-phase transaction
@@ -1366,10 +1396,16 @@ class SimulationController(SwitchOutputOwner):
         controller = self._get_or_create_controller(train)
         physics = self._get_or_create_physics(train)
 
-        # A lost train (presence unknown) is frozen in Observe and takes no
-        # Action: no command drain, no control decision, no voltage.
-        if controller.presence_unknown:
-            return
+        # A ghost (presence_unknown) is frozen inert in Observe, but it still
+        # runs Action: Action is the sole teardown committer, so the power-off +
+        # inclusive-cancel latches Observe wrote are consumed here (the
+        # stopped-gated cancel releases the path's reservations and switch locks,
+        # the power-off consumer writes `OFF` and removes the route run), and the
+        # ghost's own voltage step de-energizes its retained span through the
+        # ordinary emission-set difference (design_new.md "Power", Presence
+        # unknown; "Action is the sole explicit-cancel and teardown committer").
+        # Propulsion stays neutral throughout because the power-off latch drives
+        # the c2fe neutral hold in the control decision.
 
         # The speed-calibration pass no longer advances here: it advances in Plan
         # at step `c9e1` (RouteExecutor.tick_train_plan), where it arms and tears
@@ -1550,9 +1586,16 @@ class SimulationController(SwitchOutputOwner):
         Action may have powered it on, in which case this runs (design_new.md
         ":2181").
         """
+        phase_latches = controller.route_hooks.phase_latches
+        teardown_pending = (
+            phase_latches.power_off
+            or phase_latches.route_abort
+            or phase_latches.route_deactivate
+        )
         if (
             controller.ops.state == TrainState.OFF
             and train.train_id not in self._detected_change_train_ids
+            and not teardown_pending
         ):
             self._sync_persistent_train_state(train, controller)
             return
