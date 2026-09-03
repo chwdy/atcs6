@@ -38,8 +38,8 @@ from hardware.chips.hc595 import HC595Chain
 from hardware.chips.ina219 import INA219
 from hardware.chips.ina3221 import INA3221
 from hardware.chips.pca9685 import PCA9685
-from hardware.safety import OutputSafety
-from hardware.watchdog import OutputWatchdog
+from hardware.safety import OutputSafety, SafeStateError
+from hardware.watchdog import OutputWatchdog, WatchdogTripRecord
 
 # A binding map: logical id -> (chip_id, port).
 BindingMap = Dict[str, Tuple[str, int]]
@@ -814,21 +814,41 @@ def build_real_interfaces(
     watchdog_targets: List[Any] = []
     watchdog: Optional[OutputWatchdog] = None
     if watchdog_timeout_s is not None and (track_chips or switch_chips):
+        trip_record = WatchdogTripRecord()
+
         def _drop_to_safe_state() -> None:
             # A stalled control loop is the case this exists for, so say so:
             # the rig went dead under a train and the operator is owed the
             # reason. The chips are safed through the shared object; each
-            # interface then clears its own observable command state.
+            # interface then clears its own observable command state. The
+            # daemon may not touch the model, so it only records the transport
+            # result in its thread-safe trip record; the runtime thread
+            # reconciles the recorded voltages and escalates a failed drop to
+            # hardware failure when it consumes that record on its next tick
+            # (design_new.md "Power", Loss-of-control watchdog).
             logging.getLogger(__name__).error(
                 "output watchdog: no output write landed for %.1fs — every "
                 "track voltage and point motor driven to its safe state",
                 watchdog_timeout_s,
             )
-            safety.enter_safe_state()
+            failed = False
+            try:
+                safety.enter_safe_state()
+            except SafeStateError:
+                failed = True
+            except Exception:  # noqa: BLE001 - any transport failure is a failed drop
+                failed = True
             for target in watchdog_targets:
-                target.enter_safe_state()
+                try:
+                    target.enter_safe_state()
+                except Exception:  # noqa: BLE001
+                    failed = True
+            trip_record.record(failed)
 
-        watchdog = OutputWatchdog(_drop_to_safe_state, timeout_s=watchdog_timeout_s)
+        watchdog = OutputWatchdog(
+            _drop_to_safe_state, timeout_s=watchdog_timeout_s
+        )
+        watchdog.trip_record = trip_record
 
     block_out = (
         TrackDriver(

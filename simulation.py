@@ -50,6 +50,7 @@ from switch_power import (
 )
 from block_occupancy import SimulatedOccupancyDriver, BlockOccupancyDetector
 from hardware.safety import SafeStateError
+from hardware.watchdog import WatchdogTripRecord
 from notification_center import (
     EntityRef,
     Kind,
@@ -301,6 +302,10 @@ class SimulationController(SwitchOutputOwner):
         # safe-state request abandons the pass instead of letting it measure
         # across the gap (design_new.md "Speed calibration").
         self.safe_state_generation: int = 0
+        # The Real Hardware loss-of-control watchdog's trip record, wired from
+        # the active block/switch output interface in `_bind_interfaces`. `None`
+        # in Simulation / Virtual Hardware, which start no watchdog.
+        self._watchdog_trip_record: Optional[WatchdogTripRecord] = None
 
         # Seam onto `AppState.simulation_running`, wired by `AppState` the same
         # way `operating_clock` is. `POST /api/simulation/control` writes the
@@ -436,6 +441,12 @@ class SimulationController(SwitchOutputOwner):
             if operating_delta_seconds is not None
             else delta_seconds
         )
+
+        # Consume a loss-of-control watchdog trip. This runs even behind the
+        # fatal gate below, because a failed safe-state drop must still escalate
+        # to hardware failure (design_new.md "Power", Trip-record consumption
+        # escalates a failed drop to hardware failure).
+        self._consume_watchdog_trip()
 
         # A fatal physical-entry conflict (`failed_runtime`) halts train ticks
         # (Observe/Plan/Action skipped) in every environment; its release path is
@@ -886,6 +897,61 @@ class SimulationController(SwitchOutputOwner):
             if self.power_controller is not None:
                 self.power_controller.reconcile_recorded_voltages()
 
+    def _consume_watchdog_trip(self) -> None:
+        """Consume a loss-of-control watchdog trip once, on the runtime thread.
+
+        The watchdog daemon dropped the physical outputs to the safe state
+        directly, below the model, and recorded only the transport result (it
+        may not touch model state). The runtime owns the model-side work here: it
+        advances `safe_state_generation` — the runtime wrapper the daemon
+        bypassed would have — reconciles every block's recorded `track_voltage`
+        to `0` so the model never keeps reporting a block energized past a
+        watchdog-driven drop, and, when the drop itself failed, escalates to
+        `hardware_failure`. A successful drop emits one warning and does not end
+        the session (design_new.md "Power", Loss-of-control watchdog).
+        """
+        trip_record = self._watchdog_trip_record
+        if trip_record is None:
+            return
+        failed = trip_record.consume()
+        if failed is None:
+            return
+        if failed:
+            # The drop itself failed — the rail may still be energized. Escalate
+            # to the fatal hardware failure; `enter_hardware_failure(...)` re-runs
+            # the runtime safe-state wrapper, which advances
+            # `safe_state_generation` and reconciles the recorded voltages, and
+            # latches the halt.
+            self.enter_hardware_failure(
+                HardwareFailure(
+                    component="output_watchdog",
+                    operation="enter_safe_state",
+                    message=(
+                        "loss-of-control watchdog could not complete the "
+                        "safe-state drop; the rail may still be energized"
+                    ),
+                )
+            )
+            return
+        # A successful drop protects the layout but does not end the session.
+        # The daemon dropped the outputs through the non-recording device write,
+        # so the runtime advances the generation that write bypassed, reconciles
+        # every block's recorded track voltage to zero, and emits one warning.
+        self.safe_state_generation += 1
+        if self.power_controller is not None:
+            self.power_controller.reconcile_recorded_voltages()
+        self.notification_center.emit(
+            source="SimulationController",
+            operation="_consume_watchdog_trip",
+            kind=Kind.WARNING,
+            message=(
+                "loss-of-control watchdog drove every output to the safe "
+                "state after the control loop stopped refreshing them"
+            ),
+            entities=[],
+            event_time=time.time(),
+        )
+
     def try_enter_safe_state(self) -> Optional[List[str]]:
         """`enter_safe_state()` for callers that must keep going when the rig
         cannot be commanded at all.
@@ -971,6 +1037,19 @@ class SimulationController(SwitchOutputOwner):
         interfaces` and `release_interfaces` own those, and they disagree about
         every one of them.
         """
+        # Wire the loss-of-control watchdog's trip record (Real Hardware only;
+        # the block and switch drivers share one watchdog). The runtime consumes
+        # it each tick in `_consume_watchdog_trip()`.
+        self._watchdog_trip_record = None
+        for iface in (block_output_interface, switch_output_interface):
+            watchdog = getattr(iface, "_watchdog", None) if iface is not None else None
+            trip_record = (
+                getattr(watchdog, "trip_record", None) if watchdog is not None else None
+            )
+            if trip_record is not None:
+                self._watchdog_trip_record = trip_record
+                break
+
         self.power_controller = (
             BlockPowerController(self.network, output_interface=block_output_interface)
             if block_output_interface is not None

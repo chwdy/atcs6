@@ -37,6 +37,43 @@ DEFAULT_WATCHDOG_TIMEOUT_S = 2.0
 _MAX_POLL_S = 0.25
 
 
+class WatchdogTripRecord:
+    """Thread-safe hand-off from the watchdog daemon thread to the runtime
+    thread (design_new.md "Power", Loss-of-control watchdog).
+
+    The daemon may not touch `SimulationController` or any model state, so when
+    it drops the outputs to the safe state it only records the transport result
+    here. The runtime thread consumes that record once on its next tick and does
+    the model-side work — reconciling the recorded block voltages to zero, and
+    escalating to `hardware_failure` when the drop itself failed.
+
+    `record(failed)` is idempotent-until-consumed: repeated trips before the
+    runtime consumes collapse into one pending trip, and once any of them failed
+    the pending trip stays a failure.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pending = False
+        self._failed = False
+
+    def record(self, failed: bool) -> None:
+        with self._lock:
+            self._pending = True
+            self._failed = self._failed or bool(failed)
+
+    def consume(self) -> Optional[bool]:
+        """Return `None` when no trip is pending, otherwise the `failed` flag of
+        the pending trip, clearing it so it is consumed exactly once."""
+        with self._lock:
+            if not self._pending:
+                return None
+            failed = self._failed
+            self._pending = False
+            self._failed = False
+            return failed
+
+
 class OutputWatchdog:
     """Fires `on_timeout` when the control loop stops refreshing the outputs.
 
@@ -53,6 +90,10 @@ class OutputWatchdog:
         name: str = "hw-output-watchdog",
     ) -> None:
         self._on_timeout = on_timeout
+        # The runtime thread reads this to consume a fired drop's transport
+        # result; the `on_timeout` callback records into it. `None` until the
+        # builder attaches one.
+        self.trip_record: Optional[WatchdogTripRecord] = None
         self._timeout_s = float(timeout_s)
         self._poll_s = min(self._timeout_s / 4.0, _MAX_POLL_S)
         self._lock = threading.Lock()
