@@ -989,7 +989,7 @@ class SpeedCalibration:
 
         The caller (the service layer) enforces the state gates first.
         """
-        ceiling = self.lighting_ceiling(profile)
+        ceiling = self.lighting_ceiling(profile, is_simulation=self._is_simulation())
         run = LightingCalibrationRun(
             train_id=train.train_id,
             profile_id=profile.profile_id,
@@ -1094,24 +1094,41 @@ class SpeedCalibration:
         return None if run is None else run.candidate_voltage
 
     @staticmethod
-    def lighting_ceiling(profile) -> float:
+    def lighting_ceiling(profile, is_simulation: bool = False) -> float:
         """The highest candidate a run may reach.
 
-        A candidate stays below the profile's `max_voltage` and below the
-        Hardware Setup's `current_sense_min_drive_v` — the second because
-        design_new.md "Power" requires that level to sit above the profile's
-        `lighting_voltage`, so a lit but motionless train lands in the lighting
-        zone instead of reading as driven. This pass is the one thing that
-        moves `lighting_voltage`, so it is where that bound is kept.
+        A candidate stays below the profile's `max_voltage`. In Virtual Hardware
+        and Real Hardware it also stays below the Hardware Setup's
+        `current_sense_min_drive_v`, because design_new.md "Power" requires that
+        level to sit above the profile's `lighting_voltage` so a lit but
+        motionless train lands in the lighting zone instead of reading as driven.
+
+        In Simulation (`is_simulation=True`) the `current_sense_min_drive_v`
+        bound is NOT evaluated, because Simulation never reads Hardware Setup
+        (design_new.md:3197, "Simulation is independent of Hardware Setup"); a
+        candidate saved there is bounded only by `max_voltage`. The readiness
+        evaluator under "Occupancy source follows drive state" re-checks the
+        stored value against `current_sense_min_drive_v` at hardware activation,
+        so a Simulation candidate that would fail the hardware bound is caught
+        then rather than over-capped at save time.
         """
         hi = float(getattr(profile, "max_voltage", 12.0))
-        try:
-            from hardware_config import get_hardware_config
+        if not is_simulation:
+            try:
+                from hardware_config import get_hardware_config
 
-            hi = min(hi, float(get_hardware_config().current_sense_min_drive_v))
-        except Exception:
-            pass
+                hi = min(hi, float(get_hardware_config().current_sense_min_drive_v))
+            except Exception:
+                pass
         return max(0.0, round(hi - LIGHTING_VOLTAGE_STEP_V, 3))
+
+    def _is_simulation(self) -> bool:
+        """True only when the active environment is Simulation, so lighting
+        calibration skips the Hardware-Setup `current_sense_min_drive_v` bound.
+        Unknown env (no simulation controller) keeps the bound conservatively."""
+        from enums import OperationMode
+
+        return getattr(self._sc, "operation_mode", None) is OperationMode.SIMULATION
 
     @staticmethod
     def _reanchored_curve(profile, anchor: float) -> List[Tuple[float, float]]:

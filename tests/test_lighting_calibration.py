@@ -78,6 +78,20 @@ def test_ceiling_follows_max_voltage_when_it_is_the_lower_bound():
     )
 
 
+def test_ceiling_ignores_current_sense_bound_in_simulation():
+    """In Simulation the current_sense_min_drive_v bound is not evaluated
+    (design_new.md:3197, "Simulation is independent of Hardware Setup"); the
+    candidate is bounded only by max_voltage, so a Simulation ceiling is not
+    over-capped by a Hardware-Setup value."""
+    profile = make_default_speed_profile("T1", 100.0)
+    # The default profile's max_voltage sits above current_sense_min_drive_v, so
+    # the hardware bound is normally the lower one.
+    hw_ceiling = SpeedCalibration.lighting_ceiling(profile, is_simulation=False)
+    sim_ceiling = SpeedCalibration.lighting_ceiling(profile, is_simulation=True)
+    assert sim_ceiling == pytest.approx(profile.max_voltage - LIGHTING_VOLTAGE_STEP_V)
+    assert sim_ceiling > hw_ceiling
+
+
 def test_stepping_without_an_open_run_is_a_no_op():
     cal = SpeedCalibration()
     assert cal.step_lighting("T1", 1) is None
