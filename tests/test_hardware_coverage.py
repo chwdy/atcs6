@@ -50,9 +50,13 @@ def _config(**overrides):
             {"chip_id": "pwm1", "kind": "pca9685", "i2c_address": "0x40"},
             {"chip_id": "sw1", "kind": "hc595", "spi_select": "cs0", "chain_length": 3},
             {"chip_id": "in1", "kind": "hc165", "spi_select": "cs1"},
+            {"chip_id": "cur1", "kind": "ina3221", "i2c_address": "0x41"},
         ],
         "block_track": {"B1": {"chip_id": "pwm1", "forward": 0, "reverse": 1}},
+        # Both occupancy sources are mandatory (design_new.md "Power"), so a
+        # fully-wired block carries a digital AND a current-sense binding.
         "block_occupancy": {"B1": {"chip_id": "in1", "port": 2}},
+        "block_occupancy_current": {"B1": {"chip_id": "cur1", "port": 0}},
         "switch_output": {"SW_A": {"chip_id": "sw1", "port_main": 5, "port_diverge": 6}},
     }
     payload.update(overrides)
@@ -87,9 +91,13 @@ def test_a_fully_wired_layout_is_complete():
     assert report["complete"] is True
 
 
-def test_either_occupancy_source_counts_as_detected():
-    """The driver falls back to whichever source a block has, so a block with
-    only a current-sense channel is detected and must not be reported as a gap."""
+def test_both_occupancy_sources_are_required_for_a_block_to_be_detected():
+    """Both occupancy sources are mandatory (design_new.md "Power", Both
+    occupancy sources are mandatory): a block bound in only one map is NOT
+    detected and is reported as a gap — the runtime never silently covers a
+    missing current binding with the digital detector. Here B1 has only the
+    digital binding and B2 only the current-sense binding, so both are unbound;
+    B3 (neither) is unbound too."""
     cfg = _config(
         chips=[
             {"chip_id": "in1", "kind": "hc165", "spi_select": "cs1"},
@@ -103,8 +111,8 @@ def test_either_occupancy_source_counts_as_detected():
 
     report = hardware_config.coverage_report(cfg, ["B1", "B2", "B3"], [])
 
-    assert report["blocks"]["occupancy"]["bound"] == ["B1", "B2"]
-    assert report["blocks"]["occupancy"]["unbound"] == ["B3"]
+    assert report["blocks"]["occupancy"]["bound"] == []
+    assert report["blocks"]["occupancy"]["unbound"] == ["B1", "B2", "B3"]
 
 
 def test_bindings_naming_absent_entities_are_reported_as_stale():
@@ -121,7 +129,12 @@ def test_bindings_naming_absent_entities_are_reported_as_stale():
 
 
 def test_an_empty_layout_is_complete_rather_than_a_pile_of_gaps():
-    cfg = _config(block_track={}, block_occupancy={}, switch_output={})
+    cfg = _config(
+        block_track={},
+        block_occupancy={},
+        block_occupancy_current={},
+        switch_output={},
+    )
 
     report = hardware_config.coverage_report(cfg, [], [])
 

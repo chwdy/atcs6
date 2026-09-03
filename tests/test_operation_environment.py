@@ -92,9 +92,13 @@ def test_complete_setup_is_ready_in_both_hardware_environments():
             {"chip_id": "pwm", "kind": "pca9685", "i2c_address": "0x40"},
             {"chip_id": "out", "kind": "hc595", "spi_select": "cs0"},
             {"chip_id": "in", "kind": "hc165", "spi_select": "cs1"},
+            {"chip_id": "cur", "kind": "ina3221", "i2c_address": "0x41"},
         ],
         "block_track": {"B1": {"chip_id": "pwm", "forward": 0, "reverse": 1}},
+        # Both occupancy sources are mandatory before activation (design_new.md
+        # "Power"): a complete block carries a digital AND a current binding.
         "block_occupancy": {"B1": {"chip_id": "in", "port": 0}},
+        "block_occupancy_current": {"B1": {"chip_id": "cur", "port": 0}},
     })
     virtual = hardware_config.activation_report(
         cfg, OperationMode.VIRTUAL_HARDWARE, ["B1"], []

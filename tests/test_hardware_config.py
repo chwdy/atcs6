@@ -900,7 +900,23 @@ def test_real_hardware_warns_that_outputs_latch_if_the_host_dies(client):
     """Safe state is a write, so a dead process writes nothing and the boards
     hold their last commanded value. Advisory, not a blocker: it is a property
     of every rig without an independent gate, which is every rig here."""
-    client.put("/api/hardware/config", json=_real_payload())
+    # Both occupancy sources are mandatory before activation (design_new.md
+    # "Power"), so a ready rig binds B1 in the digital AND the current map; the
+    # config is only stored for the readiness check, not device-initialized, so
+    # the extra ina3221 chip needs no fake backend.
+    client.put(
+        "/api/hardware/config",
+        json=_real_payload(
+            chips=[
+                {"chip_id": "pwm1", "kind": "pca9685", "i2c_address": "0x40"},
+                {"chip_id": "sw1", "kind": "hc595", "spi_select": "cs0",
+                 "chain_length": 3},
+                {"chip_id": "in1", "kind": "hc165", "spi_select": "cs1"},
+                {"chip_id": "cur1", "kind": "ina3221", "i2c_address": "0x41"},
+            ],
+            block_occupancy_current={"B1": {"chip_id": "cur1", "port": 0}},
+        ),
+    )
     cfg = hardware_config.get_hardware_config()
 
     virtual = hardware_config.activation_report(

@@ -995,13 +995,15 @@ def coverage_report(
     nothing, because a layout being wired up a block at a time is the normal way
     to arrive at a wired one.
 
-    A block counts as detected if EITHER occupancy source is bound — the digital
-    detector or the current-sense channel — since the driver falls back to
-    whichever it has.
+    A block counts as detected only when BOTH occupancy sources are bound — the
+    digital detector AND the current-sense channel. Both are mandatory for every
+    block before Virtual or Real Hardware may activate (design_new.md "Power",
+    Both occupancy sources are mandatory); a block bound in only one map is
+    incomplete, never silently covered by the other.
     """
     blocks = sorted(set(block_ids))
     switches = sorted(set(switch_ids))
-    detected = set(cfg.block_occupancy) | set(cfg.block_occupancy_current)
+    detected = set(cfg.block_occupancy) & set(cfg.block_occupancy_current)
 
     def split(ids: List[str], bound: Any) -> Dict[str, List[str]]:
         return {
@@ -1084,7 +1086,12 @@ def activation_report(
     if not cfg.chips:
         issue("no_chips", "Hardware Setup has no chips")
     missing_track = [block_id for block_id in blocks if block_id not in cfg.block_track]
-    detected = set(cfg.block_occupancy) | set(cfg.block_occupancy_current)
+    # Both occupancy sources are mandatory for every block (design_new.md
+    # "Power", Both occupancy sources are mandatory): a block missing EITHER the
+    # digital or the current-sense binding is not ready. A missing current
+    # binding is an activation blocker, never a silent fall-back to the digital
+    # detector.
+    detected = set(cfg.block_occupancy) & set(cfg.block_occupancy_current)
     missing_occupancy = [block_id for block_id in blocks if block_id not in detected]
     missing_switch = [switch_id for switch_id in switches if switch_id not in cfg.switch_output]
     # Every switch must name the block feeding its rails, and that block must be
