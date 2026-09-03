@@ -61,6 +61,15 @@ _PENDING_CANCEL_CONDITIONS = frozenset(
     }
 )
 
+# The four teardown latches that outrank normal Plan progress (design_new.md
+# "Teardown outranks normal progress", :1967): while any is set, steps
+# `70c3`/`6a0d`/`a5c6`/`3a37` make no write. This is the cancel set plus
+# `POWER_OFF_PENDING`; the acquisition-eligibility gate (steps `66aa`/`592a`)
+# uses only `_PENDING_CANCEL_CONDITIONS`.
+_TEARDOWN_CONDITIONS = _PENDING_CANCEL_CONDITIONS | frozenset(
+    {ControllerCondition.POWER_OFF_PENDING}
+)
+
 
 # =============================================================================
 # Contention snapshot (design_new.md "Contention snapshot")
@@ -2263,6 +2272,18 @@ class RouteExecutor:
             # Clear the latch and its classification together (design_new.md:1457).
             exec_state.path_cancelled = False
             exec_state.path_cancel_was_deviation = False
+
+        # ---------- Teardown outranks normal progress ------------------------
+        # design_new.md "Teardown outranks normal progress" (:1967): while any
+        # teardown latch (path_cancel_request / route_abort / power_off /
+        # route_deactivate) is set, steps `70c3`, `6a0d`, `a5c6`, and `3a37`
+        # make no timing, progress, dwell, departure, or authority write, and
+        # `c481` reads only far enough to see that no normal work may commit.
+        # Action owns the teardown, so Plan does no further progress this tick;
+        # step `5fc7` above already ran (it may still clear an older recovery
+        # latch under its own gate).
+        if controller.active_conditions & _TEARDOWN_CONDITIONS:
+            return
 
         # ---------- 70c3: dwell-complete timer check -------------------------
         # Per design_new.md lines 1826/1828 (EB-while-dwelling rows `0a8e`/`9f74`
