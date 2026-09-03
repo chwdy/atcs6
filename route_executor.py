@@ -2695,6 +2695,8 @@ class RouteExecutor:
         self, exec_state, walk_position, origin: str, text: str,
         operation: str = "tick_train_plan",
         condition_key: Optional[str] = None,
+        kind=None,
+        latch_event: bool = False,
     ) -> None:
         """Emit a run/task error as an event (design_new.md "Error events").
 
@@ -2730,12 +2732,13 @@ class RouteExecutor:
             nc.emit(
                 source="RouteExecutor",
                 operation=operation,
-                kind=_Kind.WARNING,
+                kind=kind if kind is not None else _Kind.WARNING,
                 message=text,
                 entities=entities,
                 error=_ErrRec(text, origin),
                 event_time=self._now(),
                 condition_key=condition_key,
+                latch_event=latch_event,
             )
         except Exception:
             pass
@@ -3917,8 +3920,15 @@ class RouteExecutor:
         # `current_route_status` does not transition.
         exec_state.path_cancelled = True
         exec_state.path_cancel_was_deviation = was_deviation
-        # The cancellation reason is emitted, not stored. `error.origin` is the
-        # writer-supplied label naming what ended the path.
+        # This is the `path_cancelled` latch write, so per the Writer-helper
+        # table (design_new.md) its own write-event `kind` is fixed at `"info"`
+        # and it passes `latch_event=True` (a latch write must never be dropped
+        # by the unchanged-repeat suppression). The severity of the cancellation
+        # rides on the separate `cancel_path` event, whose kind is the writer's.
+        # The `ErrorRecord` is kept on this event because it is the one that
+        # names the RouteRun, so the run panel's `latest_error_for(run_id)` still
+        # surfaces the cause (`error.origin`).
+        from notification_center import Kind as _Kind
         self._emit_run_error(
             exec_state,
             exec_state.current_waypoint_index,
@@ -3926,6 +3936,8 @@ class RouteExecutor:
             f"cancelled: {error.text}" if error is not None and error.text
             else "cancelled",
             operation="handle_path_cancellation",
+            kind=_Kind.INFO,
+            latch_event=True,
         )
 
     def handle_path_completion(
