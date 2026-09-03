@@ -2965,31 +2965,20 @@ class SimulationController(SwitchOutputOwner):
         path_id: str,
         walk_position: int,
     ) -> None:
-        """Forward a path-completion event to the RouteExecutor and emit a
-        notification.
+        """Forward a path-completion event to the RouteExecutor.
 
         Per design_new.md step `bc55`, the served row is the `walk_position`
         that `PathDispatcher.try_complete_active_path(...)` already resolved
         through `find_next_completion_task(...)`; `RouteExecutor` finishes that
-        row through `RouteRun.advance_walk_position(...)`. Carries no timestamp:
-        per "Time sampling" each writer samples wall-clock time at its own write
-        site, so `RouteExecutor` dates `finished_at` itself and `emit(...)` dates
-        the notification itself.
+        row through `RouteRun.advance_walk_position(...)`. The single
+        `handle_path_completion` event is emitted by
+        `RouteExecutor.handle_path_completion(...)` itself (design_new.md "Event
+        log", Emitter attribution), so this wrapper does not emit a second one.
         """
         self.route_executor.handle_path_completion(
             train_id,
             path_id,
             walk_position,
-        )
-        self.notification_center.emit(
-            source="SimulationController",
-            operation="handle_path_completion",
-            kind=Kind.INFO,
-            message=f"path {path_id} completed for {train_id}",
-            entities=[train_ref(train_id), path_ref(path_id)],
-            payload={
-                "walk_position": walk_position,
-            },
         )
 
     def handle_path_cancellation(

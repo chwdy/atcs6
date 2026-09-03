@@ -154,6 +154,22 @@ def delete_profile(state: AppState, profile_id: str) -> bool:
                 + ", ".join(trains_using)
             )
 
+        # A model profile may not be deleted while any registered instance
+        # profile still derives from it (design_new.md "SpeedProfile", Model
+        # profiles and instance profiles): those instances resolve their
+        # measured fields through the model, so removing it would strand them.
+        registry = state.speed_profile_registry
+        derived_instances = [
+            pid
+            for pid in registry.list_profiles()
+            if getattr(registry.get(pid), "derived_from", None) == profile_id
+        ]
+        if derived_instances:
+            raise ConflictError(
+                "Cannot delete model speed profile still derived from by "
+                "instances: " + ", ".join(sorted(derived_instances))
+            )
+
         if not state.speed_profile_registry.remove(profile_id):
             raise ServiceError(f"Failed to delete speed profile '{profile_id}'")
 

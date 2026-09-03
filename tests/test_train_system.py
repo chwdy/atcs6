@@ -253,7 +253,10 @@ class TestRoute:
         """Test route activation."""
         simple_route.activate(100.0)
         assert simple_route.is_active is True
-        assert simple_route.started_at == 100.0
+        # started_at is system-time Unix seconds (design_new.md "Route"), not the
+        # simulation clock, so the passed value is not the stamp.
+        assert simple_route.started_at is not None
+        assert simple_route.started_at > 1_000_000_000
 
         simple_route.deactivate()
         assert simple_route.is_active is False

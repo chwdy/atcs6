@@ -141,6 +141,45 @@ def register(app, state: AppState) -> None:
         action = data.get("action")
 
         if action == "start":
+            # Refused under a fatal halt (design_new.md "Runtime settings",
+            # POST /api/simulation/control): failed_runtime blocks start in every
+            # environment; a latched hardware_failure blocks start only when the
+            # active environment is hardware-backed — a Simulation environment
+            # starts despite it, per Simulation is independent of Hardware Setup.
+            from enums import OperationMode
+
+            sim = getattr(state, "sim_controller", None)
+            if sim is not None and sim.failed_runtime:
+                return (
+                    jsonify(
+                        {
+                            "status": "error",
+                            "message": (
+                                "cannot start while a fatal-conflict halt is "
+                                "set; clear it first"
+                            ),
+                        }
+                    ),
+                    409,
+                )
+            if (
+                sim is not None
+                and sim.hardware_failure
+                and sim.operation_mode is not OperationMode.SIMULATION
+            ):
+                return (
+                    jsonify(
+                        {
+                            "status": "error",
+                            "message": (
+                                "cannot start a hardware-backed environment "
+                                "while a hardware failure is latched; clear it "
+                                "first"
+                            ),
+                        }
+                    ),
+                    409,
+                )
             state.simulation_running = True
         elif action == "stop":
             state.simulation_running = False

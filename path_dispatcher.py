@@ -3705,7 +3705,7 @@ class PathDispatcher:
 
             _nc.emit(
                 source="PathDispatcher",
-                operation="release_path",
+                operation="try_complete_active_path",
                 kind=Kind.INFO,
                 message=f"path {path_id} completed for {train_id}",
                 entities=[train_ref(train_id), path_ref(path_id)],

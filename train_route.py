@@ -499,10 +499,17 @@ class Route:
 
     # ── Activation Methods ─────────────────────────────────────────
 
-    def activate(self, simulation_time: float) -> None:
-        """Activate the route for execution (per-run cursors are managed by RouteExecutor)."""
+    def activate(self, simulation_time: Optional[float] = None) -> None:
+        """Activate the route for execution (per-run cursors are managed by
+        RouteExecutor).
+
+        `started_at` is system-time Unix seconds — when the operator activated
+        the route in wall time (design_new.md "Route" field schema) — not the
+        simulation clock. The `simulation_time` argument is retained for
+        call-site compatibility and is not used for the timestamp.
+        """
         self.is_active = True
-        self.started_at = simulation_time
+        self.started_at = time.time()
 
     def deactivate(self, simulation_controller: Optional[Any] = None) -> None:
         """Deactivate the route.
