@@ -1783,10 +1783,13 @@ class PathDispatcher:
         # stored on Path; the `resource_sequence` is left untouched. Route
         # executors use this outcome to keep retrying the same path_id rather
         # than cancelling.
-        if (
-            acquisition_mode == AcquisitionMode.BEST_EFFORT
-            and had_occupancy_blocker
-        ):
+        if had_occupancy_blocker:
+            # Both acquisition modes take the no-growth hold when the only
+            # obstruction to extending is an occupancy/reservation/lock conflict:
+            # an all-or-nothing extend that cannot grow returns
+            # appended_resource_count = 0 / reached_target = False, NOT
+            # blocked_before_target (which only create_path returns)
+            # (design_new.md:1339/1462).
             # No status transition here: the path is already ACTIVE and stays
             # ACTIVE on a no-growth hold, so `last_status_updated_time` must
             # not be re-stamped (design_new.md: status transitions only).
@@ -1812,8 +1815,11 @@ class PathDispatcher:
         # live from the route-supplied `get_waiting_for_block_id(...)` call (the
         # `waiting_for_block_id` live-recompute rule in design_new.md "Data Flow
         # To UI").
+        # An extend that could not grow for a non-occupancy (structural) reason
+        # is no_viable_path, never blocked_before_target — that failure kind is
+        # create_path-only (design_new.md:1339).
         return self._reject(
-            failure_kind=PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET,
+            failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
             path_id=path_id,
             requested_destination_block_id=requested_destination_block_id,
             requested_destination_direction=requested_destination_direction,
@@ -2065,7 +2071,13 @@ class PathDispatcher:
         # just after the candidate terminal — the reversal-trap check's "next
         # block". For the furthest candidate that is the taken block itself.
         next_block_after_terminal: Optional[str] = block_id
-        for index in range(cut_index - 1, path.current_resource_index - 1, -1):
+        # Candidate terminals are strictly AHEAD of the train's head resource
+        # (current_resource_index), never the head block itself: ending authority
+        # at the head is zero forward authority, which the doc treats as "the
+        # taken block is the first thing ahead of the train, so there is no
+        # shorter authority to hold" -> return False / full cancel
+        # (design_new.md:1375). So the scan stops one short of the head.
+        for index in range(cut_index - 1, path.current_resource_index, -1):
             entry = path.resource_sequence[index]
             if entry.resource_type != "block":
                 continue
