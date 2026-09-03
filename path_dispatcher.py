@@ -1173,6 +1173,21 @@ class PathDispatcher:
                 last_reason = "held at meet ceiling (acquisition cap)"
                 continue
             if cap_status == "capped":
+                if acquisition_mode == AcquisitionMode.ALL_OR_NOTHING:
+                    # all_or_nothing + a meet cap short of the requested target
+                    # is a contradiction: the mode demands the full authority
+                    # and the cap forbids storing it (design_new.md
+                    # "Contradiction with all_or_nothing", :1252). create_path
+                    # must fail with blocked_before_target rather than store the
+                    # capped-short prefix. Skip this candidate (a candidate that
+                    # reaches the target without hitting the cap still succeeds);
+                    # if every candidate is capped the loop exhausts to the
+                    # blocked_before_target tail below.
+                    last_reason = (
+                        "all_or_nothing cannot store authority capped short of "
+                        "the requested target (meet ceiling)"
+                    )
+                    continue
                 segment = capped_segment
                 ordered_walk = capped_walk
 

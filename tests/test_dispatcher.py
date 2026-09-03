@@ -1821,6 +1821,78 @@ class TestBestEffortAcquisitionContract:
         )
 
 
+class TestAllOrNothingMeetCapContradiction:
+    """A meet acquisition cap short of the requested target is a contradiction
+    in ALL_OR_NOTHING mode: the mode demands the full authority while the cap
+    forbids storing it, so `create_path` must fail with `blocked_before_target`
+    and store nothing (design_new.md "Contradiction with all_or_nothing",
+    :1252). BEST_EFFORT stores the capped-short prefix and holds at the cap.
+    """
+
+    def _make_probe_train(self, network, dispatcher):
+        car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
+        train = Train(train_id="T_PROBE", consist=[car], max_speed=60.0)
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+        sim = SimulationController(network, dispatcher)
+        controller = sim._get_or_create_controller(train)
+        set_train_span(
+            controller,
+            (0, 0),
+            facing_direction=Direction.EAST,
+            occupied_blocks=["BLOCK_A"],
+        )
+        return train
+
+    def test_all_or_nothing_capped_short_fails_and_stores_nothing(
+        self, simple_linear_network, dispatcher,
+    ):
+        dispatcher.network = simple_linear_network
+        self._make_probe_train(simple_linear_network, dispatcher)
+
+        # Target BLOCK_C, but a meet cap at BLOCK_B (strictly short of C).
+        result = dispatcher.create_path(
+            train_id="T_PROBE",
+            requested_destination_block_id="BLOCK_C",
+            requested_destination_direction="forward",
+            acquisition_mode=AcquisitionMode.ALL_OR_NOTHING,
+            acquisition_cap_block_id="BLOCK_B",
+        )
+
+        assert result.success is False, (
+            "ALL_OR_NOTHING + a cap short of the target must fail, not store a "
+            f"capped-short authority. Got success with reason={result.reason!r}"
+        )
+        assert (
+            result.failure_kind == PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET
+        ), f"Expected BLOCKED_BEFORE_TARGET, got {result.failure_kind!r}"
+        assert dispatcher.active_path_id_by_train("T_PROBE") is None, (
+            "No authority may be stored on the all_or_nothing + cap contradiction"
+        )
+        assert simple_linear_network.blocks["BLOCK_B"].reserved_for_train is None
+
+    def test_best_effort_capped_short_still_stores_and_holds(
+        self, simple_linear_network, dispatcher,
+    ):
+        dispatcher.network = simple_linear_network
+        self._make_probe_train(simple_linear_network, dispatcher)
+
+        result = dispatcher.create_path(
+            train_id="T_PROBE",
+            requested_destination_block_id="BLOCK_C",
+            requested_destination_direction="forward",
+            acquisition_mode=AcquisitionMode.BEST_EFFORT,
+            acquisition_cap_block_id="BLOCK_B",
+        )
+
+        assert result.success is True
+        assert result.reached_target is False
+        assert result.authority_end_block_id == "BLOCK_B", (
+            "BEST_EFFORT stores authority up to the cap and holds there. "
+            f"Got authority_end={result.authority_end_block_id!r}"
+        )
+
+
 class TestSameBlockRejected:
     """`create_path(...)` must reject a same-block request with
     `invalid_request` (design_new.md create_path flow item 8, lines 982 and
