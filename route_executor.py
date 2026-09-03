@@ -2939,11 +2939,23 @@ class RouteExecutor:
         )
         train_id = train.train_id
 
-        run_row.run_elapsed_seconds = min(
-            run_row.run_elapsed_seconds + max(0.0, delta_seconds), run_time
-        )
+        # Accrue only while the direction-seed target resolves to a present
+        # usable target on this pass (design_new.md "`run` task lifecycle",
+        # Timer). A missing or currently unavailable seed
+        # (`projection.resolved_target is None`) pauses accrual for that pass
+        # and falls through to the ordinary broken/unreachable handling; the
+        # projection here comes from `_find_next_task_target(train_id)` with no
+        # exclude, so a `None` target is a genuine missing/unavailable seed, not
+        # the same-tick exclude sentinel. Completion of an already-elapsed run
+        # is not gated on the seed — once the window is spent the train service-
+        # stops and releases regardless.
+        if projection.resolved_target is not None:
+            run_row.run_elapsed_seconds = min(
+                run_row.run_elapsed_seconds + max(0.0, delta_seconds), run_time
+            )
 
-        # Still inside the run window → keep rolling toward the direction seed.
+        # Still inside the run window (or accrual paused on a missing seed) →
+        # keep rolling toward the direction seed / defer to broken-unreachable.
         if run_row.run_elapsed_seconds < run_time:
             return False
 
