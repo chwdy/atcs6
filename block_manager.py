@@ -840,8 +840,7 @@ class BlockManager:
             if block.reserved_by_path != path_id:
                 # Spec: emit a diagnostic, do not treat as a hard failure.
                 self._emit_diagnostic(
-                    f"release {block_id} but it's not reserved for {path_id} "
-                    f"(current owner: {block.reserved_by_path!r})",
+                    f"release {block_id} but it's not reserved for {path_id}",
                     operation="release_path_blocks",
                     block_id=block_id,
                 )
@@ -900,7 +899,7 @@ class BlockManager:
             other = block.occupied_by
             self._emit_diagnostic(
                 f"block {block_id} release for train {train_id} "
-                f"skipped: currently occupied by {other!r}",
+                f"skipped: currently occupied by {other}",
                 operation="on_block_tail_vacated",
                 block_id=block_id,
                 train_id=train_id,

@@ -206,13 +206,14 @@ def controller_from_dict(
     controller = TrainController(
         train_id=data["train_id"],
         network=network,
-        ato_running=data.get("ato_running", False),
-        # path_backed_run_active is now a derived @property; no
-        # constructor arg accepted. Any persisted value is ignored
-        # because the property recomputes from path/route context.
+        # `ato_running` and `path_backed_run_active` are not constructor args:
+        # `ato.running` lives on the ATO sub-module (restored below) and
+        # `path_backed_run_active` is a derived @property that recomputes from
+        # path/route context, so any persisted value is ignored.
     )
-    # `state` and `handle_position` live on the `OperationalStateMachine`
-    # sub-module; restore after construction.
+    # `state` / `handle_position` live on the `OperationalStateMachine` and
+    # `ato.running` on the ATO sub-module; restore after construction.
+    controller.ato.running = bool(data.get("ato_running", False))
     controller.ops.state = state
     controller.ops.handle_position = handle
     controller.ops.service_stop_active = data.get("service_stop_active", False)

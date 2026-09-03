@@ -504,12 +504,16 @@ class Switch(TrackResource):
                         f"owned routes {[sorted(r) for r in owned_routes]}; "
                         f"recovering by clearing owned entry"
                     )
-                # Clear exactly one owned entry. When the train owns
-                # multiple entries on this tile (rare but possible during
-                # certain scissors-crossover flows), this single tail-vacate
-                # only releases one; the next tail-vacate release will pick
-                # up the remaining entry on its own pass.
-                self.remove_route_occupant(owned_routes[0], train_id)
+                # Clear exactly one owned entry, chosen under the canonical
+                # route-key ordering (route frozensets compared as sorted edge
+                # tuples) per design_new.md "The route-drift fallback" (:1119),
+                # so the release is deterministic rather than dict-iteration
+                # order. When the train owns multiple entries on this tile (rare
+                # but possible during certain scissors-crossover flows), this
+                # single tail-vacate only releases one; the next tail-vacate
+                # release will pick up the remaining entry on its own pass.
+                first_owned = sorted(owned_routes, key=lambda r: sorted(r))[0]
+                self.remove_route_occupant(first_owned, train_id)
                 cleared = True
 
         if not cleared:

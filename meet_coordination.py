@@ -410,7 +410,7 @@ class MeetCoordinator:
 
             nc.emit(
                 source="RouteExecutor",
-                operation="assign_meets",
+                operation="compute_meet_assignment",
                 kind=Kind.WARNING,
                 message=(
                     "meet coordination: no holding point before the "
