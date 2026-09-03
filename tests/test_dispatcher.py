@@ -47,7 +47,11 @@ from block import Block
 from railway_platform import Platform
 from train import Train, TrainCar
 from train_span import SpanEndLocator, TrainSpan
-from tests.train_test_helpers import set_train_span
+from tests.train_test_helpers import (
+    set_train_span,
+    make_synthetic_path,
+    attach_synthetic_path,
+)
 from train_route import Route, RouteMode, RouteTask
 from enums import BlockState, Direction, TrainState, HandlePosition
 from simulation import SimulationController
@@ -1818,6 +1822,71 @@ class TestBestEffortAcquisitionContract:
         assert result.authority_end_block_id == "BLOCK_B", (
             f"Truncated authority must land at BLOCK_B (before the "
             f"contested switch). Got: {result.authority_end_block_id!r}"
+        )
+
+
+class TestStopArrivalHeadInTerminalBlock:
+    """Stop-arrival disjunct 4b (design_new.md step `8df5`): a train stopped
+    with its head physically in the authority-end (terminal) block completes
+    even when the distance-0 dominant restriction is NOT `AUTHORITY_STOP` — the
+    manual-stop-in-a-long-terminal-block case. Disjunct 4a covers the
+    complementary stopped-short-of-a-very-short-final-block case.
+    """
+
+    def _stopped_controller(self, network, authority_block, head_tile, occupied):
+        car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
+        train = Train(train_id="T_4B", consist=[car], max_speed=60.0)
+        network.add_train(train)
+        sim = SimulationController(network)
+        controller = sim._get_or_create_controller(train)
+        controller.commands.cab = "A"  # end_a is head
+        set_train_span(
+            controller,
+            head_tile,
+            facing_direction=Direction.EAST,
+            occupied_blocks=occupied,
+        )
+        controller.physics_sync.current_speed_kmh = 0.0  # stopped
+        controller.ops.state = TrainState.RUNNING_MOVING  # manual voluntary stop
+        # Authority terminates at `authority_block`.
+        path = make_synthetic_path(
+            train_id="T_4B",
+            block_id=authority_block,
+            block_tiles=[(3, 0)],
+        )
+        attach_synthetic_path(controller, path)
+        # Force disjunct 4a false: the distance-0 dominant restriction is NOT
+        # AUTHORITY_STOP, so only 4b can complete this stop.
+        controller._compute_canonical_lookahead = lambda: {
+            "lookahead": {
+                "speed_curves": [{"atc_limit_reason_code": "block_speed_limit"}]
+            }
+        }
+        return controller
+
+    def test_head_in_terminal_block_completes_without_authority_stop(
+        self, simple_linear_network
+    ):
+        # Head in BLOCK_C (the authority end); reason is not AUTHORITY_STOP.
+        controller = self._stopped_controller(
+            simple_linear_network, "BLOCK_C", (3, 0), ["BLOCK_C"]
+        )
+        assert controller.is_stopped_at_authority_end() is True, (
+            "Disjunct 4b: a train stopped with its head in the authority-end "
+            "block has arrived even when the dominant restriction is not "
+            "AUTHORITY_STOP (manual-stop-in-terminal-block case)"
+        )
+
+    def test_head_short_of_terminal_block_does_not_complete_on_4b(
+        self, simple_linear_network
+    ):
+        # Head in BLOCK_B, authority ends at BLOCK_C -> neither 4a nor 4b holds.
+        controller = self._stopped_controller(
+            simple_linear_network, "BLOCK_C", (1, 0), ["BLOCK_B"]
+        )
+        assert controller.is_stopped_at_authority_end() is False, (
+            "4b must require the head to be physically in the terminal block; a "
+            "train stopped short of it with no AUTHORITY_STOP has not arrived"
         )
 
 

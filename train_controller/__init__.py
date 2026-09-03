@@ -1977,15 +1977,23 @@ class TrainController:
         so the value reads a few km/h); the `AUTHORITY_STOP` reason code is the
         reachable expression of the same intent.
 
-        The gate therefore fires on `is_stopped()` + reason code
-        `AUTHORITY_STOP` and does NOT require the head to occupy the
-        authority-end block. Requiring head occupancy would strand a train that
-        stopped just short of a very short final block — it satisfies the
-        spec's second case yet would never complete. The dispatcher's
-        `try_complete_active_path(...)` separately verifies the live authority
-        actually reached the requested destination block (and, for multi-tile
-        blocks, its direction), so this controller-side gate only answers
-        "stopped at my current usable authority end?".
+        The gate fires on `is_stopped()` plus **either** of the step-`8df5`
+        arrival conditions:
+          - **4a** — the distance-0 lookahead's dominant restriction is the
+            authority-end stop (reason code `AUTHORITY_STOP`). This covers a
+            train braked to rest at the safety-margin boundary short of a very
+            short or zero-length final block; requiring head occupancy alone
+            would strand it, since it never enters that block.
+          - **4b** — the head is physically in the authority-end (terminal)
+            block. This covers a train held at rest inside its target block by
+            something other than the authority end, such as a manual driver's
+            voluntary stop under positive clearance (its dominant distance-0
+            restriction is then not `AUTHORITY_STOP`, so 4a alone would never
+            complete it).
+        The dispatcher's `try_complete_active_path(...)` separately verifies the
+        live authority's terminal block is the served stop's target, so this
+        controller-side gate only answers "stopped at my current usable
+        authority end?".
         """
         if not self.is_stopped():
             return False
@@ -1996,20 +2004,29 @@ class TrainController:
         plan = self.path_projection.received_path_plan
         if plan is None:
             return False
-        # The ATO curve has collapsed to the path-end stop at distance 0: the
-        # dominant restriction's reason code is AUTHORITY_STOP. This holds in
-        # both spec cases (head in the authority-end block, or stopped short of
-        # a very short final block by the safety margin), so no head-occupancy
-        # test is needed here — the dispatcher's try_complete_active_path
-        # verifies the authority actually reached the requested destination.
+        # 4a: the ATO curve has collapsed to the path-end stop at distance 0, so
+        # the dominant restriction's reason code is AUTHORITY_STOP.
         payload = self._compute_canonical_lookahead()
         curves = (payload or {}).get("lookahead", {}).get("speed_curves") or []
-        if not curves:
-            return False
-        return (
+        reason_4a = bool(curves) and (
             curves[0].get("atc_limit_reason_code")
             == AtcLimitReasonCode.AUTHORITY_STOP.value
         )
+        # 4b: the head is physically in the authority-end (terminal) block.
+        # Derive the head tile from (cab, span) via `_get_head_tile()` and map it
+        # to its block; the span's `occupied_blocks` ordering is not head-
+        # relative (it is geometric end_a->end_b, not cab-forward), so the head
+        # block must come from the head tile, not from an occupied_blocks end.
+        head_4b = False
+        authority_end_block = plan.authority_end_block_id
+        if authority_end_block and self.network is not None:
+            head_tile = self._get_head_tile()
+            if head_tile is not None:
+                head_block = self.network.tile_to_block_id(
+                    head_tile[0], head_tile[1]
+                )
+                head_4b = head_block == authority_end_block
+        return reason_4a or head_4b
 
     # -------------------------------------------------------------------------
     # Physics callback — span storage + progress enqueue (Observe; per design_new.md)
