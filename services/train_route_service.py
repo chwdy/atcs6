@@ -7,8 +7,9 @@ the same functions directly with structured kwargs.
 The service owns:
   * `route_id` allocation (when not supplied).
   * Mode-string canonicalization (incl. legacy "one_way"/"loop" aliases).
-  * `Route.last_edited_at` bookkeeping for the five definition-edit
-    fields that design_new.md "Route edit timestamps" tracks.
+  * `Route.last_edited_at` bookkeeping for the six definition-edit
+    fields (name/tasks/mode/priority/acquisition_mode/manual_override)
+    that design_new.md "Route edit timestamps" tracks.
   * Validation of `assigned_train_ids` (only existing trains are
     actually assigned -- unknown IDs are silently dropped, matching the
     pre-refactor behavior).
@@ -391,7 +392,7 @@ def update_route(
 
     # start_mode / start_task_index are definition edits but are NOT in the
     # last_edited_at bump-set (design_new.md "Route edit timestamps": the set is
-    # exactly name/tasks/mode/priority/acquisition_mode). They are also NOT
+    # exactly name/tasks/mode/priority/acquisition_mode/manual_override). They are also NOT
     # structural (no RouteRun teardown) and NOT live overrides (no push) — they
     # are consulted only when a fresh run is allocated, so an edit here changes
     # the default for future runs and leaves already-running runs alone. Per
