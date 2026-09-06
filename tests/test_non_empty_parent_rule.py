@@ -23,7 +23,7 @@ from app_state import AppState
 from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
-from services import platform_service
+from services import platform_service, track_service
 from simulation import SimulationController
 from track import Tile
 from tests.segment_test_helpers import make_segment_block_with_tracks
@@ -123,6 +123,35 @@ class TestPlatformMinimumOneTile:
         last = platform_service.remove_tile(app_state, "PLT", x=0, y=0)
         assert last["status"] == "deleted"
         assert "PLT" not in net.platforms
+
+    def test_emptying_segment_directly_deletes_platform(self, net):
+        # remove_tile_from_segment is the low-level path an edit takes when a
+        # platform tile stops being track (design_new.md "Auto-delete on
+        # last-child removal" names it explicitly). Emptying the segment must
+        # delete the platform built on it, not just its block.
+        net.add_platform(0, 0, platform_id="PLT", name="P")
+        assert "PLT" in net.platforms and "PLT_BLOCK" in net.blocks
+
+        net.remove_tile_from_segment(0, 0)
+
+        assert "PLT_BLOCK" not in net.blocks  # block auto-deleted
+        assert "PLT" not in net.platforms  # platform auto-deleted, not orphaned
+
+    def test_switch_bit_edit_on_platform_tile_deletes_platform(self, app_state):
+        # Turning a platform tile into a switch removes it from its segment
+        # (track_service.update_track), which empties the platform's only
+        # segment. The platform must be pruned in the same edit.
+        net = app_state.network
+        net.add_platform(0, 0, platform_id="PLT", name="P")
+        assert "PLT" in net.platforms
+
+        result = track_service.update_track(
+            app_state, x=0, y=0, data={"track_bits": 6}  # EW | NE -> switch
+        )
+
+        assert result["status"] == "updated"
+        assert net.get_track(0, 0).is_switch
+        assert "PLT" not in net.platforms  # not left orphaned by the switch edit
 
 
 # --------------------------------------------------------------------------- #

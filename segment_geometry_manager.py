@@ -598,6 +598,13 @@ class SegmentGeometryManager:
                 if signal.monitored_block_id == block_id:
                     signal.monitored_block_id = None
             del self._n.blocks[block_id]
+            # A segment has two parents; deleting the block covers one, and this
+            # covers the other (design_new.md "Segment's two-parent fan-out"): a
+            # platform built on the now-deleted block is dropped, and deleted if
+            # that leaves it with no geometry. Without this, emptying a platform
+            # tile's segment through remove_tile_from_segment (the switch-bit
+            # edit in track_service) would leave the platform stored empty.
+            self._n.prune_platforms_for_deleted_block(block_id)
 
         self._n.invalidate_pathfinding_cache()
         return True

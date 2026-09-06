@@ -1216,6 +1216,39 @@ class RailwayNetwork(SwitchOutputOwner):
         """Forward to `StationRegistry.delete_platform(platform_id)`."""
         return self._get_station_registry().delete_platform(platform_id)
 
+    def prune_platforms_for_deleted_block(self, block_id: str) -> None:
+        """Drop a now-deleted block from every platform, deleting any emptied.
+
+        The platform half of the Non-empty parent rule's segment fan-out
+        (design_new.md "Segment's two-parent fan-out"): when a segment's last
+        tile goes away its owning block is deleted, and any platform that was
+        built on that block must lose it too. This removes `block_id` from each
+        `Platform.block_assignments` and deletes a platform left with no
+        assigned block (which cascades up to an emptied `Station` group). It is
+        keyed on the block rather than the segment because by the time the block
+        is deleted the tiles' `segment_id`s are already cleared, so the
+        segment -> platform reverse index no longer resolves, while
+        `block_assignments` still names the owner. `delete_platform` is
+        idempotent, so a caller that already deleted the platform first (for
+        example `remove_track`) leaves nothing here to do.
+        """
+        emptied_platform_ids: List[str] = []
+        for platform in list(self.platforms.values()):
+            assignments = getattr(platform, "block_assignments", None)
+            if not assignments:
+                continue
+            stale_positions = [
+                pos for pos, bid in assignments.items() if bid == block_id
+            ]
+            if not stale_positions:
+                continue
+            for pos in stale_positions:
+                del assignments[pos]
+            if not platform.get_all_assigned_blocks():
+                emptied_platform_ids.append(platform.platform_id)
+        for platform_id in emptied_platform_ids:
+            self.delete_platform(platform_id)
+
     def extend_station(self, *args, **kwargs):
         """Forward to `StationRegistry.extend_station(...)`."""
         return self._get_station_registry().extend_station(*args, **kwargs)

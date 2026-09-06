@@ -459,23 +459,9 @@ def _platform_cascade_for_deleted_block(state: AppState, block_id: str) -> None:
 
     Drops `block_id` from any owning `Platform.block_assignments`; if that
     leaves a platform with no assigned blocks, deletes the platform too (which
-    cascades to an emptied logical `Station` group). Done at the service layer
-    because `Station` teardown itself calls `network.delete_block` for its
-    member blocks, and re-entering platform deletion there would double-delete
-    the platform.
+    cascades to an emptied logical `Station` group). The logic is the network's
+    `prune_platforms_for_deleted_block`, the one canonical home for the segment
+    fan-out's platform half, shared with the manager-level `delete_segment` so
+    every path that deletes a block prunes its platforms the same way.
     """
-    network = state.network
-    emptied_platform_ids: List[str] = []
-    for platform in list(network.platforms.values()):
-        assignments = getattr(platform, "block_assignments", None)
-        if not assignments:
-            continue
-        stale_positions = [pos for pos, bid in assignments.items() if bid == block_id]
-        if not stale_positions:
-            continue
-        for pos in stale_positions:
-            del assignments[pos]
-        if not platform.get_all_assigned_blocks():
-            emptied_platform_ids.append(platform.platform_id)
-    for platform_id in emptied_platform_ids:
-        network.delete_platform(platform_id)
+    state.network.prune_platforms_for_deleted_block(block_id)
