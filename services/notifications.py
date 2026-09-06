@@ -1,11 +1,12 @@
 """Shared `command_result` notification emit for service-layer commands.
 
 design_new.md "Runtime notifications" + the **Availability flag REST API
-surface** (line 658): every entity-flag PATCH endpoint surfaces its outcome as
-one canonical `command_result` event on `NotificationCenter` with payload
-`{command_id, command_name, <entity>_id, success, reason}`. This is the single
-emit helper those handlers route through so HTTP and non-HTTP callers alike
-observe the same event stream.
+surface**: every entity-flag PATCH endpoint surfaces its outcome as one
+canonical `command_result` event on `NotificationCenter` with the closed-core
+payload `{command_id, <entity>_id, success, reason}`; the command name rides the
+event's `operation` field, not the payload. This is the single emit helper those
+handlers route through so HTTP and non-HTTP callers alike observe the same event
+stream.
 """
 
 import uuid
@@ -54,7 +55,6 @@ def emit_command_result(
             ),
             payload={
                 "command_id": resolved_command_id,
-                "command_name": command_name,
                 entity_id_key: entity_id,
                 "success": success,
                 "reason": reason or "",

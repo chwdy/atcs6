@@ -1177,7 +1177,6 @@ class SpeedCalibration:
                 entities=[train_ref(train_id)],
                 payload={
                     "command_id": f"calibrate:{train_id}",
-                    "command_name": operation,
                     "train_id": train_id,
                     "success": success,
                     "reason": reason,

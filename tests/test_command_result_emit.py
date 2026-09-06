@@ -2,10 +2,11 @@
 
 design_new.md "Availability flag REST API surface": all four entity-flag PATCH
 endpoints (block / switch /
-platform / station) emit one `command_result` notification with payload
-`{command_id, command_name, <entity>_id, success, reason}`, on success and on
-the 409 admin-reject alike. This exercises the shared emit helper they route
-through (`services.notifications.emit_command_result`).
+platform / station) emit one `command_result` notification with the closed-core
+payload `{command_id, <entity>_id, success, reason}`, on success and on the 409
+admin-reject alike; the command name rides the event's `operation` field, not
+the payload. This exercises the shared emit helper they route through
+(`services.notifications.emit_command_result`).
 """
 
 from notification_center import NotificationCenter
@@ -40,9 +41,10 @@ def test_emit_success_payload_shape():
     events = _command_results(state)
     assert len(events) == 1
     assert events[0].source == "Block"
+    # The command name rides `operation`, not the payload (closed core only).
+    assert events[0].operation == "update_flags"
     assert events[0].payload == {
         "command_id": cid,
-        "command_name": "update_flags",
         "block_id": "BLK_1",
         "success": True,
         "reason": "",
