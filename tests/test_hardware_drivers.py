@@ -345,6 +345,31 @@ def test_track_voltage_bipolar_h_bridge(wired):
     assert blk.set_voltage("NOPE", 5.0) is False
 
 
+def test_block_voltage_readback_reads_bus_voltage_not_commanded():
+    """design_new.md "Power", the block-voltage read surface: the Real/Virtual
+    readback reads the block's bound current-sense channel bus voltage — the
+    actual rail voltage — never the commanded value. `get_actual_voltage` stays
+    the commanded value the occupancy drive-zone reads."""
+    dev = FakeCh347Device(present_addresses={0x40, 0x41})
+    specs = [
+        ChipConfig("pwm1", "pca9685", i2c_address=0x40),
+        ChipConfig("ina1", "ina3221", i2c_address=0x41),
+    ]
+    _inp, blk, _sw = build_real_interfaces(
+        dev, specs,
+        block_track={"B1": ("pwm1", 0, 1)},
+        block_occupancy={},
+        switch_output={},
+        block_occupancy_current={"B1": ("ina1", 0, 0.0, 0.01)},
+    )
+    blk.set_voltage("B1", 12.0)                     # commanded 12 V
+    dev.set_ina3221_bus_voltage(0x41, 1, 7.5)       # channel = port 0 + 1
+    assert blk.get_actual_voltage("B1") == 12.0     # commanded, unchanged
+    assert abs(blk.get_readback_voltage("B1") - 7.5) < 0.1  # bus readback, not commanded
+    # A block with no current-sense binding has no measurement facility.
+    assert blk.get_readback_voltage("NOPE") is None
+
+
 def test_reversed_polarity_swaps_the_two_rails():
     """The rail binding's `reversed` flag trades the block's two channels: a positive
     voltage drives the rail the binding calls `reverse`. The binding itself is

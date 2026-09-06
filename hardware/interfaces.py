@@ -166,6 +166,7 @@ class TrackDriver(TrackOutput):
         watchdog: Optional[OutputWatchdog] = None,
         polarity_of: Optional[Callable[[str], bool]] = None,
         safety: Optional[OutputSafety] = None,
+        readback_of: Optional[Callable[[str], Optional[float]]] = None,
     ) -> None:
         self._chips = chips_by_id
         self._bindings = bindings
@@ -173,6 +174,11 @@ class TrackDriver(TrackOutput):
         self._watchdog = watchdog
         self._polarity_of = polarity_of
         self._safety = safety
+        # Reads the block's bound current-sense channel bus voltage (the actual
+        # rail voltage), or None where the block has no such facility; raising on
+        # a failed transaction. `None` when the rig has no current-sense chips at
+        # all, so the readback simply reports no measurement.
+        self._readback_of = readback_of
 
     def set_voltage(self, block_id: str, voltage: float) -> bool:
         binding = self._bindings.get(block_id)
@@ -200,7 +206,21 @@ class TrackDriver(TrackOutput):
         return True
 
     def get_actual_voltage(self, block_id: str) -> float:
+        """The last voltage commanded for this block (its own output, read
+        back). The occupancy drive-zone logic reads this to decide whether a
+        block is being driven, so it must be the app's commanded value, not the
+        measured rail voltage — that is `get_readback_voltage(...)`."""
         return self._voltages.get(block_id, 0.0)
+
+    def get_readback_voltage(self, block_id: str) -> Optional[float]:
+        """Read the block's bound current-sense channel bus voltage — the actual
+        rail voltage — never the commanded value (design_new.md "Power", the
+        block-voltage read surface). Returns None where the block has no such
+        facility; a failed readback transaction raises so the diagnostic
+        consumer reports it."""
+        if self._readback_of is None:
+            return None
+        return self._readback_of(block_id)
 
     def get_all_voltages(self) -> Dict[str, float]:
         return dict(self._voltages)
@@ -850,6 +870,21 @@ def build_real_interfaces(
         )
         watchdog.trip_record = trip_record
 
+    def _block_bus_voltage_readback(block_id: str) -> Optional[float]:
+        """Real / Virtual Hardware block-voltage readback: the bus voltage on the
+        block's bound current-sense channel — the actual rail voltage
+        (design_new.md "Power", the block-voltage read surface). Returns None
+        where the block has no current-sense facility; a failed transaction
+        raises so the diagnostic consumer reports it as None plus a warning."""
+        binding = (block_occupancy_current or {}).get(block_id)
+        if binding is None:
+            return None
+        chip_id, port = binding[0], binding[1]
+        chip = current_chips.get(chip_id)
+        if chip is None:
+            return None
+        return float(chip.read_bus_voltage(port + 1))
+
     block_out = (
         TrackDriver(
             track_chips,
@@ -857,6 +892,7 @@ def build_real_interfaces(
             watchdog=watchdog,
             polarity_of=track_polarity_of,
             safety=safety,
+            readback_of=_block_bus_voltage_readback,
         )
         if track_chips
         else None

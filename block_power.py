@@ -56,19 +56,30 @@ class TrackOutput(ABC):
 
     @abstractmethod
     def get_actual_voltage(self, block_id: str) -> float:
-        """
-        Read actual voltage for a block.
+        """The last voltage this driver was commanded to output for a block.
 
-        For simulation, this returns the stored value.
-        For hardware, this could read from sensors.
-
-        Args:
-            block_id: Block identifier
-
-        Returns:
-            Current voltage for the block
+        This is the app's commanded value (its own output, read back), which the
+        occupancy drive-zone logic reads to decide whether a block is being
+        driven. It is NOT the measured rail voltage — that is
+        `get_readback_voltage(...)`.
         """
         pass
+
+    def get_readback_voltage(self, block_id: str) -> Optional[float]:
+        """Read back the actual voltage on a block (design_new.md "Power", the
+        block-voltage read surface).
+
+        Simulation returns the last value accepted by the happy-path model (so
+        the default here is `get_actual_voltage`). Virtual Hardware returns the
+        fake device's readback, and Real Hardware reads the block's bound
+        `block_occupancy_current` channel bus voltage where that chip provides
+        one — neither hardware-backed environment silently substitutes the
+        commanded value. Returns `None` where the rig has no measurement
+        facility, and raises on a failed readback transaction (the
+        `BlockPowerController.get_block_voltage(...)` consumer turns that into
+        `None` plus one warning event).
+        """
+        return self.get_actual_voltage(block_id)
 
     @abstractmethod
     def get_all_voltages(self) -> Dict[str, float]:
@@ -108,7 +119,8 @@ class SimulatedTrackDriver(TrackOutput):
         return True
 
     def get_actual_voltage(self, block_id: str) -> float:
-        """Get stored voltage value."""
+        """Simulation: the last value accepted by the happy-path model — both the
+        commanded value and the readback, since the model always agrees."""
         return self._voltages.get(block_id, 0.0)
 
     def get_all_voltages(self) -> Dict[str, float]:
@@ -362,17 +374,62 @@ class BlockPowerController:
                 block_id,
             )
 
-    def get_block_voltage(self, block_id: str) -> float:
-        """
-        Get current voltage for a block.
+    def get_block_voltage(self, block_id: str) -> Optional[float]:
+        """Diagnostic block-voltage read (design_new.md "Power", the block-voltage
+        read surface).
 
-        Args:
-            block_id: Block identifier
-
-        Returns:
-            Current voltage
+        Reads the actual voltage back from the output driver: the model value in
+        Simulation, the fake device's readback in Virtual Hardware, and the bus
+        voltage on the block's bound `block_occupancy_current` channel in Real
+        Hardware — never the commanded value silently substituted for a failed
+        read. Returns `None` where the rig has no measurement facility, and
+        `None` plus one `kind="warning"` event on a failed readback transaction.
+        This is a diagnostic read; it never enters the hardware-failure
+        lifecycle.
         """
-        return self.output_interface.get_actual_voltage(block_id)
+        try:
+            return self.output_interface.get_readback_voltage(block_id)
+        except Exception:
+            self._emit_readback_failure(block_id)
+            return None
+
+    def _emit_readback_failure(self, block_id: str) -> None:
+        """Report a failed block-voltage readback transaction (design_new.md
+        "Power", the block-voltage read surface). Diagnostic only — it never
+        enters the hardware-failure lifecycle."""
+        center = None
+        if self._sim_controller is not None:
+            center = getattr(self._sim_controller, "notification_center", None)
+        if center is None:
+            logger.warning(
+                "Block-voltage readback for block %s failed", block_id
+            )
+            return
+        try:
+            from notification_center import Kind, block_ref
+            from runtime_payloads import ErrorRecord
+
+            center.emit(
+                source="BlockPowerController",
+                operation="get_block_voltage",
+                kind=Kind.WARNING,
+                message=(
+                    f"block {block_id} voltage readback failed: the bound "
+                    f"current-sense channel did not answer. No voltage is "
+                    f"reported for it."
+                ),
+                entities=[block_ref(block_id)],
+                error=ErrorRecord(
+                    "block-voltage readback transaction failed",
+                    "block_voltage_readback_failed",
+                ),
+                event_time=time.time(),
+                payload={"block_id": block_id},
+            )
+        except Exception:
+            logger.warning(
+                "Block-voltage readback for block %s failed", block_id
+            )
 
     def get_all_voltages(self) -> Dict[str, float]:
         """
