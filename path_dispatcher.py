@@ -38,7 +38,7 @@ from path import (
 )
 from enums import BlockState, direction_from_delta, OPPOSITE_DIRECTIONS
 from track import OPPOSITE_EDGE
-from runtime_payloads import AcquisitionMode, CancellationResult, ControllerProgressReport, ErrorRecord, PathAcquisitionFailureKind, PathAcquisitionResult, PathCompletionResult, PathSegment, ResolvedRouteTarget, ResourceEvent, RouteExecutorForPathDispatcher, ValidationError, ValidationErrorType, ValidationResult
+from runtime_payloads import CancellationResult, ControllerProgressReport, ErrorRecord, PathAcquisitionFailureKind, PathAcquisitionResult, PathCompletionResult, PathSegment, ResolvedRouteTarget, ResourceEvent, RouteExecutorForPathDispatcher, ValidationError, ValidationErrorType, ValidationResult
 from block_manager import ReservedBlockTraversal
 from switch_manager import SwitchClaimKey, SwitchLockRequest
 from railway_pathfinder import RailwayPathfinder
@@ -82,9 +82,9 @@ class PathDispatcher:
 
     Public v1 API:
         create_path(train_id, requested_destination_block_id,
-                    requested_destination_direction, acquisition_mode)
+                    requested_destination_direction, acquisition_cap_block_id)
         extend_path(path_id, requested_destination_block_id,
-                    requested_destination_direction, acquisition_mode)
+                    requested_destination_direction, acquisition_cap_block_id)
         cancel_path(path_id, initiator, reason)
         on_controller_progress(report)
         try_complete_active_path(train_id)
@@ -97,12 +97,6 @@ class PathDispatcher:
         get_reachable_endpoints_for_extension(path_id, include_stations)
         validate_path(path_segment, path_id, train_id)
     """
-
-    # Per design_new.md "create_path() flow" (line 884), AcquisitionMode is
-    # documented as a `PathDispatcher`-owned enum. The implementation lives in
-    # `runtime_payloads.py` to avoid circular imports; this class attribute
-    # exposes the canonical `PathDispatcher.AcquisitionMode` name.
-    AcquisitionMode = AcquisitionMode
 
     def __init__(self, network: "RailwayNetwork"):
         self.network = network
@@ -812,7 +806,7 @@ class PathDispatcher:
             # Per design_new.md "Availability flags" canonical home, a
             # disabled switch behaves like missing track; per
             # ValidationErrorType.is_occupancy_class, SWITCH_DISABLED is not
-            # occupancy-class, so BEST_EFFORT will not retry around it and a
+            # occupancy-class, so incremental acquisition will not retry around it and a
             # RouteExecutor sees `no_viable_path` instead of a retry storm.
             if switch_entity is not None and getattr(switch_entity, "disabled", False):
                 errors.append(
@@ -904,7 +898,6 @@ class PathDispatcher:
         requested_destination_block_id: str = "",
         train_id: str = "",
         requested_destination_direction: str = "forward",
-        acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT,
         manual_override: bool = False,
         acquisition_cap_block_id: Optional[str] = None,
         required_candidate_resource_keys: Optional[List[CandidateResourceKey]] = None,
@@ -912,13 +905,16 @@ class PathDispatcher:
         """v1 create_path: build authority for a train to a destination block.
 
         Argument order is dest-first per design_new.md "Canonical write
-        interfaces"; every caller passes these by keyword.
+        interfaces"; every caller passes these by keyword. There is one
+        acquisition behavior and no acquisition-mode parameter (design_new.md
+        "One acquisition behavior"): it stores the furthest forward acquirable
+        block-terminated prefix toward the target, bounded by
+        `acquisition_cap_block_id`.
 
         Args:
             requested_destination_block_id: Caller's target block.
             train_id: Train requesting authority. Required in v1.
             requested_destination_direction: "forward" or "reverse".
-            acquisition_mode: ALL_OR_NOTHING or BEST_EFFORT.
             manual_override: Operator-override flag per the `disabled` and
                 `manual` availability flags canonical home in design_new.md
                 (under TrackResource). Default False (every automatic caller,
@@ -1135,19 +1131,19 @@ class PathDispatcher:
         # create_path step 2 (design_new.md "Path And PathDispatcher") — dispatcher
         # selects EXACTLY ONE candidate
         # (the shortest walk per the GraphWalkCandidate comparison) and applies
-        # acquisition_mode to that one candidate. It must NOT fall through to a
-        # second, longer candidate when the chosen one cannot be acquired or
-        # truncated; choosing a different route to the same resolved target is
-        # forbidden here (RouteExecutor owns trying a different resolved target
-        # later). Committing to the single best candidate is what makes a train
-        # wait at a contested switch instead of taking a map-long detour around
-        # it.
+        # the single acquisition behavior to that one candidate. It must NOT fall
+        # through to a second, longer candidate when the chosen one cannot be
+        # acquired or truncated; choosing a different route to the same resolved
+        # target is forbidden here (RouteExecutor owns trying a different resolved
+        # target later). Committing to the single best candidate is what makes a
+        # train wait at a contested switch instead of taking a map-long detour
+        # around it.
         candidates = candidates[:1]
 
         path_id = self._generate_path_id(train_id, requested_destination_block_id)
         now = self._now()
 
-        # Apply acquisition_mode to the single chosen candidate.
+        # Acquire the furthest storable prefix of the single chosen candidate.
         last_failed_resource_id: Optional[str] = None
         last_reason: str = ""
         had_structural_failure = False
@@ -1173,21 +1169,10 @@ class PathDispatcher:
                 last_reason = "held at meet ceiling (acquisition cap)"
                 continue
             if cap_status == "capped":
-                if acquisition_mode == AcquisitionMode.ALL_OR_NOTHING:
-                    # all_or_nothing + a meet cap short of the requested target
-                    # is a contradiction: the mode demands the full authority
-                    # and the cap forbids storing it (design_new.md
-                    # "Contradiction with all_or_nothing", :1252). create_path
-                    # must fail with blocked_before_target rather than store the
-                    # capped-short prefix. Skip this candidate (a candidate that
-                    # reaches the target without hitting the cap still succeeds);
-                    # if every candidate is capped the loop exhausts to the
-                    # blocked_before_target tail below.
-                    last_reason = (
-                        "all_or_nothing cannot store authority capped short of "
-                        "the requested target (meet ceiling)"
-                    )
-                    continue
+                # A cap short of the requested target stores the capped prefix and
+                # reports reached_target = False (design_new.md "Acquisition-cap
+                # rule"): there is one acquisition behavior, so the train holds at
+                # the cap rather than failing to acquire.
                 segment = capped_segment
                 ordered_walk = capped_walk
 
@@ -1217,11 +1202,8 @@ class PathDispatcher:
                     had_structural_failure = True
                     continue
 
-                if acquisition_mode == AcquisitionMode.ALL_OR_NOTHING:
-                    continue
-
-                # BEST_EFFORT + occupancy-only: truncate to the prefix
-                # before the first failing block, per design_new.md ":938".
+                # Occupancy-only conflict: truncate to the prefix before the
+                # first failing block (design_new.md "One acquisition behavior").
                 hint = self._compute_truncate_hint(segment, occupancy)
                 truncated = self._best_effort_truncate(
                     segment, path_id, train_id,
@@ -1277,9 +1259,8 @@ class PathDispatcher:
                 self._rollback_segment(
                     segment, path_id, inserted_switch_claim_keys
                 )
-                if acquisition_mode == AcquisitionMode.ALL_OR_NOTHING:
-                    continue
-                # BEST_EFFORT: try to acquire a truncated prefix of this segment.
+                # Acquire-time conflict: try a truncated prefix of this segment
+                # (design_new.md "One acquisition behavior").
                 truncated = self._best_effort_truncate(
                     segment, path_id, train_id, requested_destination_direction,
                     manual_override=manual_override,
@@ -1345,19 +1326,17 @@ class PathDispatcher:
                 reason=created_reason,
             )
 
-        # All candidates failed. In best_effort mode, when the train head
-        # currently sits on a switch resource we cannot store a block-
-        # terminated holding authority, so surface the head-on-switch case
-        # explicitly per design_new.md ":894". This only fires when the
-        # loop exhausted because of occupancy conflicts — a structural
-        # failure (e.g. disabled downstream block) is reported through the
-        # BLOCKED_BEFORE_TARGET tail instead.
+        # All candidates failed. When the train head currently sits on a switch
+        # resource we cannot store a block-terminated holding authority, so
+        # surface the head-on-switch case explicitly per design_new.md ":894".
+        # This only fires when the loop exhausted because of occupancy conflicts —
+        # a structural failure (e.g. disabled downstream block) is reported
+        # through the BLOCKED_BEFORE_TARGET tail instead.
         if (
-            acquisition_mode == AcquisitionMode.BEST_EFFORT
-            and not had_structural_failure
+            not had_structural_failure
             and self._train_head_is_on_switch(train)
         ):
-            head_switch_reason = "cannot create best-effort authority while head is on a switch"
+            head_switch_reason = "cannot create holding authority while head is on a switch"
             if last_failed_resource_id:
                 head_switch_reason += f" (blocked at {last_failed_resource_id})"
             return self._reject(
@@ -1381,7 +1360,6 @@ class PathDispatcher:
         path_id: str = "",
         requested_destination_block_id: str = "",
         requested_destination_direction: str = "forward",
-        acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT,
         manual_override: bool = False,
         acquisition_cap_block_id: Optional[str] = None,
         required_candidate_resource_keys: Optional[List[CandidateResourceKey]] = None,
@@ -1558,7 +1536,7 @@ class PathDispatcher:
         # path is still holding. Without them, find_ordered_walk can return a
         # candidate whose post-seam tile path re-enters a block the path
         # already holds (via the south tunnel, or any other connection that
-        # loops the network), BEST_EFFORT truncates that loop into a closed
+        # loops the network), incremental acquisition truncates that loop into a closed
         # prefix, and extend_path appends one full loop every Plan tick.
         #
         # Both blocks and switches are tested against live holdings
@@ -1683,12 +1661,10 @@ class PathDispatcher:
                 # design_new.md ":994". Track it so the tail can return
                 # `appended_resource_count = 0` if no candidate grows the path.
                 had_occupancy_blocker = True
-                if acquisition_mode == AcquisitionMode.ALL_OR_NOTHING:
-                    continue
 
-                # BEST_EFFORT + occupancy-only: truncate to the longest
-                # acquirable prefix of the extension segment, per
-                # design_new.md ":938" / ":994".
+                # Occupancy-only conflict: truncate to the longest acquirable
+                # prefix of the extension segment (design_new.md "One acquisition
+                # behavior").
                 hint = self._compute_truncate_hint(segment, occupancy)
                 truncated = self._best_effort_truncate(
                     segment, path_id, train_id,
@@ -1722,13 +1698,11 @@ class PathDispatcher:
                     # validation and acquire); track it so the tail can
                     # append nothing per the viable-but-unavailable rule.
                     had_occupancy_blocker = True
-                    if acquisition_mode == AcquisitionMode.ALL_OR_NOTHING:
-                        continue
                     # Forward manual_override per the operator-initiated
                     # `manual_override` rule in design_new.md (under the
                     # `disabled` and `manual` availability flags canonical
-                    # home); the three sibling _best_effort_truncate sites
-                    # in this file already do.
+                    # home); the sibling _best_effort_truncate sites in this file
+                    # already do.
                     truncated = self._best_effort_truncate(
                         segment, path_id, train_id,
                         requested_destination_direction,
@@ -1788,7 +1762,7 @@ class PathDispatcher:
         if last_resource and last_resource not in ext_reason:
             ext_reason = f"{ext_reason} (blocked at {last_resource})"
 
-        # Per design_new.md ":994" / ":997": when BEST_EFFORT extend cannot
+        # Per design_new.md ":994" / ":997": when incremental acquisition extend cannot
         # append any new resource but the existing path is still a legal
         # forward prefix to the requested target (`find_paths` returned
         # forward candidates above) and the only obstruction was an
@@ -1799,10 +1773,9 @@ class PathDispatcher:
         # executors use this outcome to keep retrying the same path_id rather
         # than cancelling.
         if had_occupancy_blocker:
-            # Both acquisition modes take the no-growth hold when the only
-            # obstruction to extending is an occupancy/reservation/lock conflict:
-            # an all-or-nothing extend that cannot grow returns
-            # appended_resource_count = 0 / reached_target = False, NOT
+            # Take the no-growth hold when the only obstruction to extending is
+            # an occupancy/reservation/lock conflict: an extend that cannot grow
+            # returns appended_resource_count = 0 / reached_target = False, NOT
             # blocked_before_target (which only create_path returns)
             # (design_new.md:1339/1462).
             # No status transition here: the path is already ACTIVE and stays
@@ -2383,7 +2356,7 @@ class PathDispatcher:
         `reserve_segment` rolls back its own switch locks on block failure), and
         head-entry consumes the reservation as the train physically enters
         (`reserved_by_path` cleared). Handing those blocks to the release call
-        anyway just fires the diagnostic — every Plan tick for a BEST_EFFORT
+        anyway just fires the diagnostic — every Plan tick for an incremental acquisition
         path that keeps retrying `extend_path(...)`, and once per block at
         completion/cancellation. Filtering here keeps the diagnostic meaningful
         for genuine cross-path mismatches while removing the routine churn.
@@ -2417,7 +2390,7 @@ class PathDispatcher:
 
         Only blocks this path still owns are handed to the coordinator (see
         `_blocks_still_reserved_by`). Resources already committed to this path's
-        live `resource_sequence` are excluded: a blocked BEST_EFFORT
+        live `resource_sequence` are excluded: a blocked incremental acquisition
         `extend_path(...)` re-walks the seam block — the current authority-end,
         already reserved and already in `resource_sequence` — inside its
         extension segment; without this guard the rollback would release that
@@ -2454,7 +2427,7 @@ class PathDispatcher:
         segment: PathSegment,
         errors: List[ValidationError],
     ) -> Optional[int]:
-        """Return the prefix length at which BEST_EFFORT should start the
+        """Return the prefix length at which incremental acquisition should start the
         backward walk, per design_new.md ":938".
 
         The index of the first failing occupancy-class block in
@@ -2467,7 +2440,7 @@ class PathDispatcher:
         the most recent block in `segment.blocks` whose ordered tiles
         appear before the failing switch position in `segment.tiles` and
         use that block's index. This avoids the previous O(N) backward
-        walk against a still-locked switch on every BEST_EFFORT dispatch
+        walk against a still-locked switch on every incremental acquisition dispatch
         tick.
         """
         candidate_indices: List[int] = []
@@ -2495,7 +2468,7 @@ class PathDispatcher:
 
         Used by `_compute_truncate_hint` when an occupancy-class error
         carries only a tile position (e.g. `SWITCH_LOCKED`) so the
-        BEST_EFFORT truncate can land on the block before the contested
+        incremental acquisition truncate can land on the block before the contested
         switch without walking the full prefix backwards.
 
         Returns None when the position is not in `segment.tiles` or when
@@ -3309,7 +3282,7 @@ class PathDispatcher:
         """Restrict ``ordered_walk`` to the steps whose tile is in ``tiles``,
         preserving order.
 
-        For a full segment this returns the whole list; for a BEST_EFFORT
+        For a full segment this returns the whole list; for an incremental acquisition
         truncated segment (whose tiles are a contiguous prefix of the walk) it
         returns the matching prefix. Returns None when there is no candidate
         geometry, so callers fall back to the flat-tile builder.
@@ -3824,7 +3797,6 @@ class PathDispatcher:
         self,
         train_id: str,
         stored_resolved_target: Optional[ResolvedRouteTarget],
-        acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT,
         manual_override: bool = False,
         acquisition_cap_block_id: Optional[str] = None,
         required_candidate_resource_keys: Optional[List[CandidateResourceKey]] = None,
@@ -3836,10 +3808,10 @@ class PathDispatcher:
         run from the active path's current authority end toward
         `stored_resolved_target`, finds the first forward resource that fails
         acquisition because of a live occupancy / reservation / lock conflict,
-        and reports it together with the trains in the way. `acquisition_mode`,
-        `manual_override`, `acquisition_cap_block_id`, and
-        `required_candidate_resource_keys` are the same effective route policy
-        and tick-start meet constraints Plan would pass to `extend_path(...)`.
+        and reports it together with the trains in the way. `manual_override`,
+        `acquisition_cap_block_id`, and `required_candidate_resource_keys` are the
+        same override and tick-start meet constraints Plan would pass to
+        `extend_path(...)`.
 
         Read-only: candidate enumeration and `validate_path` touch no
         path/block/switch state, so it is safe on every projection read
@@ -3918,7 +3890,6 @@ class PathDispatcher:
         self,
         train_id: str,
         stored_resolved_target: Optional[ResolvedRouteTarget] = None,
-        acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT,
         manual_override: bool = False,
         acquisition_cap_block_id: Optional[str] = None,
         required_candidate_resource_keys: Optional[List[CandidateResourceKey]] = None,
@@ -3933,7 +3904,6 @@ class PathDispatcher:
         conflict = self.get_waiting_conflict(
             train_id,
             stored_resolved_target,
-            acquisition_mode,
             manual_override,
             acquisition_cap_block_id,
             required_candidate_resource_keys,
@@ -4114,8 +4084,8 @@ class PathDispatcher:
 
         ``waiting_for_block_id`` is NOT part of this projection: it needs the
         complete route-owned request (the run's ``resolved_target`` plus its
-        effective acquisition mode / manual override), so the UI-payload
-        assembly composes it there from the route-supplied
+        manual override), so the UI-payload assembly composes it there from the
+        route-supplied
         ``get_waiting_for_block_id(...)`` call (design_new.md "Data Flow To UI",
         "Contention snapshot").
         """

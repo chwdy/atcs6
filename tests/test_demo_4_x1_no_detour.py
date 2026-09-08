@@ -44,7 +44,6 @@ import io
 import pytest
 
 from bootstrap import bootstrap_runtime
-from runtime_payloads import AcquisitionMode
 from notification_center import ErrorRecord
 
 
@@ -93,7 +92,6 @@ def _lock_x1_diverge_via_train_a(dispatcher, network):
             train_id="T1",
             requested_destination_block_id="BLK_X1_TO_S2_S",
             requested_destination_direction=dirc,
-            acquisition_mode=AcquisitionMode.BEST_EFFORT,
         )
         sw_x1 = network.switches.get(x1.switch_id) if x1.switch_id else None
         locked_diverge = sw_x1 is not None and any(
@@ -142,7 +140,6 @@ def test_parked_before_locked_crossover_does_not_detour():
         train_id="TB",
         requested_destination_block_id="PLT_S1_S_BLOCK",
         requested_destination_direction="reverse",
-        acquisition_mode=AcquisitionMode.BEST_EFFORT,
     )
 
     assert not _is_detour(res), (
@@ -168,7 +165,6 @@ def test_approaching_crossover_truncates_to_block_before_x1():
         train_id="T4",
         requested_destination_block_id="PLT_S1_S_BLOCK",
         requested_destination_direction="reverse",
-        acquisition_mode=AcquisitionMode.BEST_EFFORT,
     )
 
     assert res.success, f"expected truncated success, got {res.failure_kind}"
@@ -189,7 +185,6 @@ def test_extend_at_locked_crossover_blocks_no_growth():
         train_id="T4",
         requested_destination_block_id="PLT_S1_S_BLOCK",
         requested_destination_direction="reverse",
-        acquisition_mode=AcquisitionMode.BEST_EFFORT,
     )
     assert created.success and created.authority_end_block_id == "BLK_X1_TO_S2_N"
     seq_before = _seq_ids(created)
@@ -198,7 +193,6 @@ def test_extend_at_locked_crossover_blocks_no_growth():
         path_id=created.path_id,
         requested_destination_block_id="PLT_S1_S_BLOCK",
         requested_destination_direction="reverse",
-        acquisition_mode=AcquisitionMode.BEST_EFFORT,
     )
 
     assert not _is_detour(extended), (

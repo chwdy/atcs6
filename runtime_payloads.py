@@ -542,17 +542,6 @@ class PathCompletionResult:
 # =============================================================================
 
 
-class AcquisitionMode(Enum):
-    """How aggressively dispatcher reserves resources for a path.
-
-    ALL_OR_NOTHING: reserve every resource end-to-end or fail.
-    BEST_EFFORT: reserve as far as possible; truncate at first conflict.
-    """
-
-    ALL_OR_NOTHING = "all_or_nothing"
-    BEST_EFFORT = "best_effort"
-
-
 class PathAcquisitionFailureKind(Enum):
     """Failure kinds returned by create_path / extend_path.
 
@@ -888,7 +877,7 @@ class ValidationErrorType(Enum):
     FLANK_SWITCH_CONFLICT = "flank_switch_conflict"
 
     def is_occupancy_class(self) -> bool:
-        # Live-state conflicts that BEST_EFFORT truncates around per
+        # Live-state conflicts that acquisition truncates around per
         # design_new.md ":938" ("If a switch acquisition fails ... truncate
         # the candidate to the previous block before that failed switch")
         # and the block-conflict half of the same contract. `_best_effort_
@@ -981,8 +970,9 @@ class PathDispatcherForRouteExecutor(Protocol):
         train_id: str = "",
         requested_destination_block_id: str = "",
         requested_destination_direction: str = "forward",
-        acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT,
         manual_override: bool = False,
+        acquisition_cap_block_id: Optional[str] = None,
+        required_candidate_resource_keys: Optional[Any] = None,
     ) -> PathAcquisitionResult: ...
 
     def extend_path(
@@ -990,8 +980,9 @@ class PathDispatcherForRouteExecutor(Protocol):
         path_id: str = "",
         requested_destination_block_id: str = "",
         requested_destination_direction: str = "forward",
-        acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT,
         manual_override: bool = False,
+        acquisition_cap_block_id: Optional[str] = None,
+        required_candidate_resource_keys: Optional[Any] = None,
     ) -> PathAcquisitionResult: ...
 
 

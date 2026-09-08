@@ -81,7 +81,7 @@ Performance note (expected, accepted):
   per query than on demo_4's graph. The shared loop route uses
   `task_direction="either"`, so `route_target_resolver.resolve_task_direction`
   fires two such walks per task each time a (blocked) train re-plans. Under
-  the 4-train BEST_EFFORT daisy-chain — the same gridlock demo_4 has — this
+  the 4-train daisy-chain — the same gridlock demo_4 has — this
   is ~24 walks/tick, giving ~150-200 ms/tick. demo_4 runs the identical
   route and gridlocks the same way; its queries are just ~0.3 ms each so it
   is fast. The behaviour here is correct (trains circulate, no deadlock),
@@ -561,7 +561,6 @@ def setup_demo_train(
         PlatformTarget,
         StationTarget,
     )
-    from runtime_payloads import AcquisitionMode
     from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
 
     # ---- Shared route (CIRCULAR, 12 tasks: stop+dwell × 6) ----
@@ -569,7 +568,6 @@ def setup_demo_train(
         route_id="R_DEMO5_LOOP",
         name="Demo 5: Four-Station Loop",
         mode=RouteMode.CIRCULAR,
-        acquisition_mode=AcquisitionMode.BEST_EFFORT,
         is_active=True,
     )
     tasks = [
@@ -614,7 +612,6 @@ def setup_demo_train(
         route_id="R_DEMO5_S_LINE",
         name="Demo 5: S-Track 4-Stop",
         mode=RouteMode.CIRCULAR,
-        acquisition_mode=AcquisitionMode.BEST_EFFORT,
         is_active=True,
     )
     for plat in ("PLT_S1_S", "PLT_S2_S", "PLT_S3_S", "PLT_S4_S"):

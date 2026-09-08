@@ -15,7 +15,6 @@ from enums import Direction
 from network import RailwayNetwork
 from path_dispatcher import PathDispatcher, WaitingConflict
 from runtime_payloads import (
-    AcquisitionMode,
     PathAcquisitionFailureKind,
     ResolvedRouteTarget,
 )
@@ -190,7 +189,6 @@ def test_get_waiting_conflict_reports_block_holder():
     conflict = disp.get_waiting_conflict(
         "T1",
         ResolvedRouteTarget("BLOCK_E", "forward"),
-        AcquisitionMode.BEST_EFFORT,
         False,
     )
     assert conflict == WaitingConflict(
@@ -220,7 +218,6 @@ def test_get_waiting_conflict_none_when_pinned_candidate_gone():
     conflict = disp.get_waiting_conflict(
         "T1",
         ResolvedRouteTarget("BLOCK_E", "forward"),
-        AcquisitionMode.BEST_EFFORT,
         False,
         required_candidate_resource_keys=_BOGUS_PIN,
     )

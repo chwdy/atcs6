@@ -323,26 +323,12 @@ export class RouteRunEditorHandler {
   }
 
   /**
-   * Per design_new.md "RouteRun overrides": the three allowlisted policy
-   * fields (priority, acquisition_mode)
-   * may be overridden per-run.
+   * Per design_new.md "RouteRun overrides": the allowlisted policy fields
+   * (priority) may be overridden per-run.
    */
   renderOverridesSection(run: any): string {
     const overrides = run.overrides || {};
     const has = (k: string) => Object.prototype.hasOwnProperty.call(overrides, k);
-    const seg = (id: string, options: Array<{ value: string; label: string }>, current: string) => `
-            <div id="${id}" class="switch-group compact route-seg" role="radiogroup">
-                ${options
-                  .map(
-                    (o) => `
-                    <button type="button" class="switch-btn ${o.value === current ? 'active' : ''}"
-                            data-value="${o.value}" data-seg="${id}">${o.label}</button>
-                `
-                  )
-                  .join('')}
-            </div>
-        `;
-    const acqEff = run.effective_acquisition_mode || 'best_effort';
     const priEff = Number.isInteger(run.effective_priority) ? run.effective_priority : 5;
     const resetBtn = (field: string) => `
             <button type="button" class="btn btn-xs btn-secondary rr-override-reset-btn"
@@ -360,18 +346,6 @@ export class RouteRunEditorHandler {
                 </div>
 
                 <div class="route-header-row run-overrides-grid">
-                    <div class="route-header-col">
-                        <label class="property-label">Acquisition</label>
-                        ${seg(
-                          'rr-acq-seg',
-                          [
-                            { value: 'best_effort', label: 'Best effort' },
-                            { value: 'all_or_nothing', label: 'All or nothing' },
-                          ],
-                          acqEff
-                        )}
-                        ${has('acquisition_mode') ? resetBtn('acquisition_mode') : ''}
-                    </div>
                     <div class="route-header-col narrow">
                         <label class="property-label">Priority (0-9)</label>
                         <input type="number" id="rr-priority-input" class="property-input"
@@ -498,23 +472,6 @@ export class RouteRunEditorHandler {
           showToast(`Override failed: ${err.message || err}`, 'error', 4000);
         }
       };
-
-      const segFields: Record<string, string> = {
-        'rr-acq-seg': 'acquisition_mode',
-      };
-      Object.entries(segFields).forEach(([segId, field]) => {
-        document.querySelectorAll<HTMLElement>(`#${segId} .switch-btn`).forEach((btn) => {
-          btn.onclick = (e) => {
-            const target = e.currentTarget as HTMLElement;
-            if (target.classList.contains('active')) return;
-            const seg = target.parentElement;
-            seg
-              ?.querySelectorAll<HTMLElement>('.switch-btn')
-              .forEach((b) => b.classList.toggle('active', b === target));
-            saveOverride(field, target.dataset.value);
-          };
-        });
-      });
 
       const priorityInput = document.getElementById('rr-priority-input') as HTMLInputElement | null;
       if (priorityInput) {

@@ -3,7 +3,7 @@ Train Route Management
 
 Per design_new.md "Route And RouteExecutor" section. A Route is the shared
 travel plan — an ordered list of RouteTask entries (waypoint / stop / dwell)
-plus route-level policy (mode, priority, acquisition mode). Per-train
+plus route-level policy (mode, priority). Per-train
 mutable execution state lives separately in the route run
 (RouteExecutionState / RouteRun) owned by RouteExecutor.
 
@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Union
 
-from runtime_payloads import AcquisitionMode, ErrorRecord
+from runtime_payloads import ErrorRecord
 
 if TYPE_CHECKING:
     # Forward reference to ResolvedRouteTarget which lives in route_executor.py
@@ -396,9 +396,6 @@ class Route:
         is_active: Whether route is enabled for execution.
         started_at: System-time Unix seconds when route was activated.
         priority: Route-executor scheduling priority (0..9, default 5).
-        acquisition_mode: Default route path-acquisition policy
-            ("all_or_nothing" or "best_effort"). Default is ``best_effort``
-            per design_new.md line 1052.
         timing_basis: Which clock task durations measure against —
             ``"operating"`` (default) or ``"realtime"``.
         manual_override: Operator override for ``manual`` resources (default
@@ -423,7 +420,6 @@ class Route:
 
     # Route-level policy (v1)
     priority: int = 5
-    acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT
     # Operator override for `manual` resources (default False). Set True only on
     # operator-initiated routes (the Quick Route tool). RouteExecutor passes this
     # into every PathDispatcher.create_path / extend_path call for the run, and
@@ -452,8 +448,8 @@ class Route:
 
     # Edit timestamps (per design_new.md "Route edit timestamps"). `created_at`
     # is sampled once in `__post_init__`; `last_edited_at` is written by the
-    # POST/PUT route-definition handlers when name/tasks/mode/priority/
-    # acquisition_mode is mutated. Neither field
+    # POST/PUT route-definition handlers when name/tasks/mode/priority is
+    # mutated. Neither field
     # is touched by assign/unassign or activate/deactivate.
     created_at: float = 0.0
     last_edited_at: Optional[float] = None
@@ -570,7 +566,6 @@ class Route:
             "created_at": self.created_at,
             "last_edited_at": self.last_edited_at,
             "priority": self.priority,
-            "acquisition_mode": self.acquisition_mode.value,
             "manual_override": self.manual_override,
             "timing_basis": self.timing_basis,
             "start_mode": self.start_mode.value,
@@ -587,15 +582,6 @@ class Route:
             mode = RouteMode.ONE_OFF
 
         tasks = [RouteTask.from_dict(td) for td in data.get("tasks", [])]
-
-        raw_acq = data.get("acquisition_mode", AcquisitionMode.BEST_EFFORT)
-        if isinstance(raw_acq, AcquisitionMode):
-            acquisition_mode = raw_acq
-        else:
-            try:
-                acquisition_mode = AcquisitionMode(raw_acq)
-            except ValueError:
-                acquisition_mode = AcquisitionMode.BEST_EFFORT
 
         raw_start = data.get("start_mode", RouteStartMode.FIRST)
         if isinstance(raw_start, RouteStartMode):
@@ -621,7 +607,6 @@ class Route:
             is_active=bool(data.get("is_active", False)),
             started_at=data.get("started_at"),
             priority=int(data.get("priority", 5)),
-            acquisition_mode=acquisition_mode,  # type: ignore[arg-type]
             manual_override=bool(data.get("manual_override", False)),
             timing_basis=(
                 "realtime" if data.get("timing_basis") == "realtime" else "operating"

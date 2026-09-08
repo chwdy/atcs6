@@ -3005,8 +3005,8 @@ def build_network_payload(
             # design_new.md "Data Flow To UI": `waiting_for_block_id` is composed
             # here from the route-supplied `get_waiting_for_block_id(...)` call,
             # not inside `get_active_path_progress(...)`. It needs the run's
-            # `resolved_target` plus effective acquisition mode / manual override,
-            # which `RouteExecutor.waiting_for_block_id_for(...)` assembles.
+            # `resolved_target` plus manual override, which
+            # `RouteExecutor.waiting_for_block_id_for(...)` assembles.
             if progress is not None:
                 try:
                     progress["waiting_for_block_id"] = (

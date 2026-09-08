@@ -91,9 +91,6 @@ def _route_run_summary(route, run, executor=None) -> dict:
         "overrides": overrides_payload,
         "overrides_updated_at": run.overrides_updated_at,
         "effective_priority": run.effective_priority(route=route),
-        "effective_acquisition_mode": (
-            run.effective_acquisition_mode(route=route).value
-        ),
         # Per design_new.md "Run start-mode seeding": the resolved start mode
         # this run was seeded with (diagnostic; read-only — start mode is an
         # allocation-time input, not a live override).

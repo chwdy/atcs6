@@ -4,7 +4,6 @@ Path Management Routes - v1 wire format.
 JSON shape (request and response) uses the v1 Path field names directly:
 - requested_destination_block_id
 - requested_destination_direction ("forward" | "reverse")
-- acquisition_mode ("all_or_nothing" | "best_effort")
 - authority_end_block_id
 - resource_sequence
 
@@ -17,10 +16,7 @@ from flask import jsonify, request
 from app_state import AppState
 from path_utils import assign_complete_path_to_train, convert_tiles_to_train_path
 from notification_center import Kind
-from runtime_payloads import (
-    AcquisitionMode,
-    ErrorRecord,
-)
+from runtime_payloads import ErrorRecord
 from services import train_route_service, train_service
 from services.exceptions import NotFoundError, ValidationError, ConflictError
 
@@ -43,21 +39,10 @@ def register(app, state: AppState) -> None:
         coords = _path_tiles_to_coords(tiles)
         return convert_tiles_to_train_path(coords)
 
-    def _parse_acquisition_mode(raw):
-        if not raw:
-            return AcquisitionMode.BEST_EFFORT
-        if isinstance(raw, AcquisitionMode):
-            return raw
-        try:
-            return AcquisitionMode(raw)
-        except ValueError:
-            return AcquisitionMode.BEST_EFFORT
-
     def _assign_one_off_route(
         train_id,
         destination_block_id,
         destination_direction,
-        acquisition_mode,
         manual_override,
     ):
         """Build a one-off operator route toward `destination_block_id` and
@@ -83,7 +68,6 @@ def register(app, state: AppState) -> None:
                     "task_direction": destination_direction,
                 }
             ],
-            acquisition_mode=acquisition_mode.value,
             manual_override=manual_override,
         )
         train_route_service.activate_route(state, route.route_id)
@@ -100,8 +84,7 @@ def register(app, state: AppState) -> None:
         {
             "train_id": "TRAIN_001",
             "requested_destination_block_id": "BLK_002",
-            "requested_destination_direction": "forward",
-            "acquisition_mode": "all_or_nothing"
+            "requested_destination_direction": "forward"
         }
 
         Returns:
@@ -130,7 +113,6 @@ def register(app, state: AppState) -> None:
         requested_destination_direction = data.get(
             "requested_destination_direction", "forward"
         )
-        acquisition_mode = _parse_acquisition_mode(data.get("acquisition_mode"))
         # Operator override flag per design_new.md "Availability flag REST API
         # surface" canonical home (under TrackResource). When True, manual
         # blocks/switches participate in candidate search and acquisition.
@@ -161,7 +143,6 @@ def register(app, state: AppState) -> None:
                     train_id,
                     requested_destination_block_id,
                     requested_destination_direction,
-                    acquisition_mode,
                     manual_override,
                 )
             return (
@@ -319,8 +300,7 @@ def register(app, state: AppState) -> None:
         Request body (v1):
         {
             "requested_destination_block_id": "BLK_003",
-            "requested_destination_direction": "forward",
-            "acquisition_mode": "all_or_nothing"
+            "requested_destination_direction": "forward"
         }
 
         Returns:
@@ -348,7 +328,6 @@ def register(app, state: AppState) -> None:
         requested_destination_direction = data.get(
             "requested_destination_direction", "forward"
         )
-        acquisition_mode = _parse_acquisition_mode(data.get("acquisition_mode"))
         # Operator override flag per design_new.md "Availability flag REST API
         # surface" canonical home (under TrackResource).
         manual_override = bool(data.get("manual_override", False))
@@ -380,7 +359,6 @@ def register(app, state: AppState) -> None:
                     train_id,
                     requested_destination_block_id,
                     requested_destination_direction,
-                    acquisition_mode,
                     manual_override,
                 )
             return (

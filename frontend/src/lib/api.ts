@@ -1637,12 +1637,10 @@ export class API implements LayoutDataClient, SimClient {
     train_id,
     requested_destination_block_id,
     requested_destination_direction = 'forward',
-    acquisition_mode = 'all_or_nothing',
   }: {
     train_id?: string;
     requested_destination_block_id?: string;
     requested_destination_direction?: string;
-    acquisition_mode?: string;
   } = {}): Promise<any> {
     return this._request(
       '/paths',
@@ -1652,7 +1650,6 @@ export class API implements LayoutDataClient, SimClient {
           train_id,
           requested_destination_block_id,
           requested_destination_direction,
-          acquisition_mode,
         },
       },
       'createPath'
@@ -1716,11 +1713,9 @@ export class API implements LayoutDataClient, SimClient {
     {
       requested_destination_block_id,
       requested_destination_direction = 'forward',
-      acquisition_mode = 'all_or_nothing',
     }: {
       requested_destination_block_id?: string;
       requested_destination_direction?: string;
-      acquisition_mode?: string;
     } = {}
   ): Promise<any> {
     return this._request(
@@ -1730,7 +1725,6 @@ export class API implements LayoutDataClient, SimClient {
         body: {
           requested_destination_block_id,
           requested_destination_direction,
-          acquisition_mode,
         },
       },
       'extendPath'
@@ -1975,7 +1969,7 @@ export class API implements LayoutDataClient, SimClient {
    * Clear one per-run override on a currently RUNNING RouteRun. Restores
    * the shared-route value for that field via the effective_* helpers.
    *
-   * @param field - One of `priority` / `acquisition_mode`.
+   * @param field - The override field name (e.g. `priority`).
    */
   async clearRouteRunOverride(runNumber: number, field: string): Promise<any> {
     return this._request(

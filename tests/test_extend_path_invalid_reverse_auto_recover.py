@@ -15,7 +15,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from runtime_payloads import (
-    AcquisitionMode,
     PathAcquisitionFailureKind,
     PhaseLatches,
 )
@@ -92,7 +91,6 @@ def _emitted_errors(executor):
 
 def _make_exec_state():
     state = MagicMock(spec=RouteExecutionState)
-    state.effective_acquisition_mode = MagicMock(return_value=AcquisitionMode.BEST_EFFORT)
     state.task_runs = []
     state.train_id = "T3"
     state.run_id = "T3:R1:1"

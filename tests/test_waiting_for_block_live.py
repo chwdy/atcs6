@@ -62,9 +62,8 @@ def _route_backed(net, disp, target="BLOCK_E", direction="forward"):
     """A RouteExecutor carrying a RUNNING run whose armed task points at
     ``target``, so ``waiting_for_block_id_for("T1")`` has a route-owned
     ``resolved_target`` to forward — the same request the composite read-model
-    assembly builds. The run has no shared ``Route`` registered, so effective
-    acquisition mode falls back to BEST_EFFORT and manual_override to False,
-    matching a plain best-effort run.
+    assembly builds. The run has no shared ``Route`` registered, so
+    manual_override falls back to False, matching a plain run.
     """
     ex = RouteExecutor(net, path_dispatcher=disp)
     run = RouteExecutionState(train_id="T1", route_id="R1", started_at=0.0)

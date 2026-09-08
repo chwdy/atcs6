@@ -300,7 +300,6 @@ export class PathEditorHandler {
             task_direction: 'either',
           },
         ],
-        acquisition_mode: 'all_or_nothing',
         assigned_train_ids: [],
       });
       routeCreated = true;
@@ -1133,7 +1132,6 @@ export class PathEditorHandler {
       const result = await this.api.extendPath(this.extendPathState.selectedPathId, {
         requested_destination_block_id: newEndBlockId,
         requested_destination_direction: direction,
-        acquisition_mode: 'all_or_nothing',
       });
 
       if (result.success) {

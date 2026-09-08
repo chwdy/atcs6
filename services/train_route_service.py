@@ -7,8 +7,8 @@ the same functions directly with structured kwargs.
 The service owns:
   * `route_id` allocation (when not supplied).
   * Mode-string canonicalization (incl. legacy "one_way"/"loop" aliases).
-  * `Route.last_edited_at` bookkeeping for the six definition-edit
-    fields (name/tasks/mode/priority/acquisition_mode/manual_override)
+  * `Route.last_edited_at` bookkeeping for the definition-edit
+    fields (name/tasks/mode/priority/manual_override)
     that design_new.md "Route edit timestamps" tracks.
   * Validation of `assigned_train_ids` (only existing trains are
     actually assigned -- unknown IDs are silently dropped, matching the
@@ -25,7 +25,6 @@ import uuid
 from typing import Any, Dict, Iterable, List, Optional
 
 from app_state import AppState
-from runtime_payloads import AcquisitionMode
 from services.exceptions import NotFoundError, ValidationError
 from train_route import (
     Route,
@@ -45,7 +44,6 @@ EDIT_FIELDS = (
     "tasks",
     "mode",
     "priority",
-    "acquisition_mode",
     "manual_override",
 )
 
@@ -56,7 +54,6 @@ EDIT_FIELDS = (
 # RouteExecutor.apply_route_field_push helper.
 OVERRIDE_ALLOWLIST = (
     "priority",
-    "acquisition_mode",
 )
 
 
@@ -273,7 +270,6 @@ def create_route(
     tasks: Optional[Iterable[Any]] = None,
     assigned_train_ids: Optional[Iterable[str]] = None,
     priority: Optional[int] = None,
-    acquisition_mode: Optional[str] = None,
     manual_override: Optional[bool] = None,
     start_mode: Optional[str] = None,
     start_task_index: Optional[Any] = None,
@@ -289,11 +285,10 @@ def create_route(
         assigned_train_ids: Train ids to assign. Unknown ids are silently
             dropped (preserves pre-refactor HTTP behavior).
         priority: Optional integer priority override.
-        acquisition_mode: Optional acquisition-mode string.
         edit_fields_present: If supplied, controls whether
             last_edited_at is bumped. When None, the helper leaves the
             timestamp alone -- the route handler computes this from
-            whether any of the five edit fields appeared in the JSON.
+            whether any of the edit fields appeared in the JSON.
     """
     resolved_id = route_id or f"ROUTE-{uuid.uuid4().hex[:6].upper()}"
     resolved_mode = _coerce_mode(mode)
@@ -305,14 +300,6 @@ def create_route(
             route.priority = int(priority)
         except (TypeError, ValueError):
             raise ValidationError("priority must be an integer")
-
-    if acquisition_mode is not None:
-        try:
-            route.acquisition_mode = AcquisitionMode(acquisition_mode)
-        except ValueError:
-            raise ValidationError(
-                f"Invalid acquisition_mode {acquisition_mode!r}"
-            )
 
     if manual_override is not None:
         route.manual_override = bool(manual_override)
@@ -358,7 +345,6 @@ def update_route(
     mode: Optional[str] = None,
     tasks: Optional[Iterable[Any]] = None,
     priority: Optional[Any] = None,
-    acquisition_mode: Optional[str] = None,
     manual_override: Optional[Any] = None,
     start_mode: Optional[str] = None,
     start_task_index: Optional[Any] = None,
@@ -374,8 +360,8 @@ def update_route(
     assigned. Unknown trains are silently dropped.
 
     `push_policies` is an optional dict mapping allowlisted field names
-    (`"priority"`, `"acquisition_mode"`)
-    to `"force"` or `"soft"`. When omitted the default per design_new.md
+    (`"priority"`) to `"force"` or `"soft"`. When omitted the default per
+    design_new.md
     "RouteRun overrides" is `"soft"`. Force pushes clear the corresponding
     `RouteRun.overrides[field]` on every currently RUNNING run for this
     route. Soft pushes leave overrides intact.
@@ -473,16 +459,6 @@ def update_route(
         definition_edit_touched = True
         changed_overridable.append("priority")
 
-    if acquisition_mode is not None:
-        try:
-            route.acquisition_mode = AcquisitionMode(acquisition_mode)
-        except ValueError:
-            raise ValidationError(
-                f"Invalid acquisition_mode {acquisition_mode!r}"
-            )
-        definition_edit_touched = True
-        changed_overridable.append("acquisition_mode")
-
     if manual_override is not None:
         # Route-level operator override (design_new.md line 1208). Bumps
         # last_edited_at (it is in the EDIT_FIELDS set) but is NOT in
@@ -493,7 +469,7 @@ def update_route(
 
     # start_mode / start_task_index are definition edits but are NOT in the
     # last_edited_at bump-set (design_new.md "Route edit timestamps": the set is
-    # exactly name/tasks/mode/priority/acquisition_mode/manual_override). They are also NOT
+    # exactly name/tasks/mode/priority/manual_override). They are also NOT
     # structural (no RouteRun teardown) and NOT live overrides (no push) — they
     # are consulted only when a fresh run is allocated, so an edit here changes
     # the default for future runs and leaves already-running runs alone. Per

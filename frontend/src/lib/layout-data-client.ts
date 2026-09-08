@@ -165,7 +165,6 @@ export interface SimClient {
     train_id?: string;
     requested_destination_block_id?: string;
     requested_destination_direction?: string;
-    acquisition_mode?: string;
   }): Promise<any>;
   getPaths(filters?: { train_id?: string; block_id?: string; status?: string }): Promise<any>;
   getPath(pathId: string): Promise<any>;
@@ -175,7 +174,6 @@ export interface SimClient {
     opts?: {
       requested_destination_block_id?: string;
       requested_destination_direction?: string;
-      acquisition_mode?: string;
     }
   ): Promise<any>;
   getReachableEndpoints(blockId: string, includeStations?: boolean): Promise<any>;

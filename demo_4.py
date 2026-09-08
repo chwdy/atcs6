@@ -1,11 +1,10 @@
 """
-Demo 4: Four-Station NE-Zigzag Double-Track Loop (best-effort)
+Demo 4: Four-Station NE-Zigzag Double-Track Loop
 
-Uses `AcquisitionMode.BEST_EFFORT` for the shared route so the dispatcher
-reserves as much of the path as possible and truncates at the first
-conflict, rather than refusing to acquire unless the full path is
-available end-to-end. A pair of tunnels (S1↔S4 on each track) closes the
-NE corridor into a circular loop.
+The dispatcher reserves as much of the path as possible and truncates at
+the first conflict (the single acquisition behavior), rather than refusing
+to acquire unless the full path is available end-to-end. A pair of tunnels
+(S1↔S4 on each track) closes the NE corridor into a circular loop.
 
 Layout (rendered horizontally on the rotated screen):
 
@@ -302,7 +301,6 @@ def setup_demo_train(
         PlatformTarget,
         StationTarget,
     )
-    from runtime_payloads import AcquisitionMode
     from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
 
     # ---- Shared route (CIRCULAR, 12 tasks: stop+dwell × 6) ----
@@ -310,7 +308,6 @@ def setup_demo_train(
         route_id="R_DEMO4_LOOP",
         name="Demo 4: Four-Station Loop",
         mode=RouteMode.CIRCULAR,
-        acquisition_mode=AcquisitionMode.BEST_EFFORT,
         is_active=True,
     )
     tasks = [
@@ -355,7 +352,6 @@ def setup_demo_train(
         route_id="R_DEMO4_S_LINE",
         name="Demo 4: S-Track 4-Stop",
         mode=RouteMode.CIRCULAR,
-        acquisition_mode=AcquisitionMode.BEST_EFFORT,
         is_active=True,
     )
     for plat in ("PLT_S1_S", "PLT_S2_S", "PLT_S3_S", "PLT_S4_S"):

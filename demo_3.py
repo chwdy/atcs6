@@ -284,7 +284,6 @@ def setup_demo_train(
         PlatformTarget,
         StationTarget,
     )
-    from runtime_payloads import AcquisitionMode
     from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
 
     # ---- Shared route (CIRCULAR, 12 tasks: stop+dwell × 6) ----
@@ -292,7 +291,6 @@ def setup_demo_train(
         route_id="R_DEMO3_LOOP",
         name="Demo 3: Four-Station Loop",
         mode=RouteMode.CIRCULAR,
-        acquisition_mode=AcquisitionMode.ALL_OR_NOTHING,
         is_active=True,
     )
     tasks = [

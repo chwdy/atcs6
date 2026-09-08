@@ -40,7 +40,7 @@ from train_route import (
     RouteTaskRun,
 )
 from notification_center import Kind
-from runtime_payloads import AcquisitionMode, ErrorRecord, PathAcquisitionFailureKind, PathDispatcherForRouteExecutor, ResolvedRouteTarget, ResourceEvent, TargetResolutionFailureKind
+from runtime_payloads import ErrorRecord, PathAcquisitionFailureKind, PathDispatcherForRouteExecutor, ResolvedRouteTarget, ResourceEvent, TargetResolutionFailureKind
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
@@ -310,8 +310,7 @@ class RouteExecutionState:
 
     # Sparse per-run overrides of allowlisted route-level operational fields.
     # Per design_new.md "RouteRun overrides" canonical home: keys are field
-    # names from the v1 override allowlist
-    # (`"priority"`, `"acquisition_mode"`);
+    # names from the v1 override allowlist (`"priority"`);
     # a key being absent means "use the shared `Route` value for that field."
     # Reads go through the effective_* helpers below, which resolve the shared
     # Route live each access so later operator edits to either the run-level
@@ -359,7 +358,6 @@ class RouteExecutionState:
 
     OVERRIDE_ALLOWLIST: ClassVar[Tuple[str, ...]] = (
         "priority",
-        "acquisition_mode",
     )
 
     def _resolve_route(self, route_executor: Optional[object] = None) -> Optional["Route"]:
@@ -394,26 +392,6 @@ class RouteExecutionState:
         if resolved is not None:
             return int(getattr(resolved, "priority", 5))
         return 5
-
-    def effective_acquisition_mode(
-        self,
-        route: Optional["Route"] = None,
-        route_executor: Optional[object] = None,
-    ) -> AcquisitionMode:
-        """Per-run acquisition_mode: override if present, else shared Route's,
-        else BEST_EFFORT. See design_new.md "RouteRun overrides"."""
-        if "acquisition_mode" in self.overrides:
-            val = self.overrides["acquisition_mode"]
-            if isinstance(val, AcquisitionMode):
-                return val
-            try:
-                return AcquisitionMode(val)
-            except Exception:
-                return AcquisitionMode.BEST_EFFORT
-        resolved = route if route is not None else self._resolve_route(route_executor)
-        if resolved is not None:
-            return getattr(resolved, "acquisition_mode", AcquisitionMode.BEST_EFFORT)
-        return AcquisitionMode.BEST_EFFORT
 
     def task_started_at(self, i: int) -> Optional[float]:
         """Derived per design_new.md ``RouteTaskRun.started_at`` rule.
@@ -1715,9 +1693,8 @@ class RouteExecutor:
         """The `WaitingConflict` for this train's blocked active path, or None.
 
         design_new.md "Contention snapshot": obtain `stored_resolved_target` from
-        `find_armed_task(train_id)`, resolve the run's effective acquisition mode
-        and manual override, and call the full
-        `PathDispatcher.get_waiting_conflict(...)` with no meet constraint
+        `find_armed_task(train_id)`, resolve the run's manual override, and call
+        the full `PathDispatcher.get_waiting_conflict(...)` with no meet constraint
         (`acquisition_cap_block_id=None`, `required_candidate_resource_keys=None`).
         """
         if self.path_dispatcher is None:
@@ -1725,11 +1702,10 @@ class RouteExecutor:
         armed = self.find_armed_task(train_id)
         if armed is None:
             return None
-        mode, manual_override = self._effective_acquisition_policy(train_id)
+        manual_override = self._manual_override_for(train_id)
         return self.path_dispatcher.get_waiting_conflict(
             train_id,
             armed.stored_resolved_target,
-            mode,
             manual_override,
             acquisition_cap_block_id=None,
             required_candidate_resource_keys=None,
@@ -1741,8 +1717,8 @@ class RouteExecutor:
         design_new.md "Data Flow To UI" / "Contention snapshot": the UI payload
         composes this field here, not inside `get_active_path_progress(...)`. It
         obtains `stored_resolved_target` from `find_armed_task(train_id)`,
-        resolves the run's effective acquisition mode and manual override, then
-        forwards the complete request to the canonical
+        resolves the run's manual override, then forwards the complete request to
+        the canonical
         `PathDispatcher.get_waiting_for_block_id(...)` projection with no meet
         constraint (`acquisition_cap_block_id=None`,
         `required_candidate_resource_keys=None`), matching the tick-start
@@ -1754,33 +1730,22 @@ class RouteExecutor:
         armed = self.find_armed_task(train_id)
         if armed is None:
             return None
-        mode, manual_override = self._effective_acquisition_policy(train_id)
+        manual_override = self._manual_override_for(train_id)
         return self.path_dispatcher.get_waiting_for_block_id(
             train_id,
             armed.stored_resolved_target,
-            mode,
             manual_override,
             acquisition_cap_block_id=None,
             required_candidate_resource_keys=None,
         )
 
-    def _effective_acquisition_policy(
-        self, train_id: str
-    ) -> Tuple["AcquisitionMode", bool]:
-        """`(effective_acquisition_mode, manual_override)` for a train, resolving
-        the per-run override then the shared `Route` (design_new.md "RouteRun
-        overrides"), matching what Plan step `66aa` passes to the dispatcher."""
-        exec_state = self.execution_state_for(train_id)
+    def _manual_override_for(self, train_id: str) -> bool:
+        """The `manual_override` flag for a train, from its assigned shared
+        `Route` (design_new.md "manual_override propagation"), matching what Plan
+        step `66aa` passes to the dispatcher."""
         route_id = self.assigned_route_id_for(train_id)
         route = self.route_registry.get(route_id) if route_id else None
-        if exec_state is not None:
-            mode = exec_state.effective_acquisition_mode(
-                route=route, route_executor=self
-            )
-        else:
-            mode = AcquisitionMode.BEST_EFFORT
-        manual_override = bool(getattr(route, "manual_override", False)) if route else False
-        return mode, manual_override
+        return bool(getattr(route, "manual_override", False)) if route else False
 
     def _held_future_reservations(self, train_id: str) -> set:
         """Block ids this train holds as not-yet-entered future reservations
@@ -1842,8 +1807,8 @@ class RouteExecutor:
         """Set one allowlisted override on the train's currently RUNNING run.
 
         Per design_new.md "RouteRun overrides" canonical home: only the v1
-        allowlist (`priority`, `acquisition_mode`)
-        is accepted. Validation is per-field. Historical (FINISHED / DEACTIVATED)
+        allowlist (`priority`) is accepted. Validation is per-field.
+        Historical (FINISHED / DEACTIVATED)
         runs reject override edits because their snapshot is part of the
         historical record.
 
@@ -1864,14 +1829,6 @@ class RouteExecutor:
             if int_val < 0 or int_val > 9:
                 return (False, "priority must be in 0..9")
             run.overrides[field_name] = int_val
-        elif field_name == "acquisition_mode":
-            if isinstance(value, AcquisitionMode):
-                run.overrides[field_name] = value
-            else:
-                try:
-                    run.overrides[field_name] = AcquisitionMode(value)
-                except (TypeError, ValueError):
-                    return (False, f"acquisition_mode must be one of {[m.value for m in AcquisitionMode]}")
         run.overrides_updated_at = self._now()
         return (True, f"override {field_name} set on run {run.run_number}")
 
@@ -2205,7 +2162,6 @@ class RouteExecutor:
             route_id=route_id,
             name=f"speed-calibration leg {seq} for {train_id}",
             mode=RouteMode.ONE_OFF,
-            acquisition_mode=AcquisitionMode.ALL_OR_NOTHING,
             manual_override=False,
             tasks=[
                 RouteTask(
@@ -2531,7 +2487,7 @@ class RouteExecutor:
             # Plan step `66aa`: dispatch via PathDispatcher.create_path or
             # extend_path (v1 signature). Both methods take train_id +
             # requested_destination_block_id + requested_destination_direction +
-            # acquisition_mode and return a PathAcquisitionResult.
+            # acquisition_cap_block_id and return a PathAcquisitionResult.
             success = self._authority_acquisition_step(
                 train, route, exec_state, controller, projection
             )
@@ -3337,13 +3293,6 @@ class RouteExecutor:
             if ceiling.block_id and ceiling.block_id != target_block:
                 acquisition_cap_block_id = ceiling.block_id
 
-        # Resolve acquisition_mode: per-run override (if present) wins over
-        # shared Route.acquisition_mode per design_new.md "RouteRun overrides"
-        # canonical home.
-        acquisition_mode = exec_state.effective_acquisition_mode(
-            route=route, route_executor=self
-        )
-
         # design_new.md line 1208 / line 640: forward the assigned route's
         # operator override into the acquisition chain so an operator-initiated
         # route can serve `manual` resources. Route-level only (never a RouteRun
@@ -3358,7 +3307,6 @@ class RouteExecutor:
                     path_id=active_path_id,
                     requested_destination_block_id=target_block,
                     requested_destination_direction=target_dir,
-                    acquisition_mode=acquisition_mode,
                     manual_override=manual_override,
                     acquisition_cap_block_id=acquisition_cap_block_id,
                     required_candidate_resource_keys=required_candidate_resource_keys,
@@ -3369,7 +3317,6 @@ class RouteExecutor:
                     train_id=train.train_id,
                     requested_destination_block_id=target_block,
                     requested_destination_direction=target_dir,
-                    acquisition_mode=acquisition_mode,
                     manual_override=manual_override,
                     acquisition_cap_block_id=acquisition_cap_block_id,
                     required_candidate_resource_keys=required_candidate_resource_keys,

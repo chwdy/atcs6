@@ -3,8 +3,6 @@
 // Regenerate: conda run -n general python tools/gen_payload_types.py
 // Drift guard: tests/test_payload_types_sync.py fails if this is stale.
 
-export type AcquisitionMode = "all_or_nothing" | "best_effort";
-
 export type PathAcquisitionFailureKind = "no_viable_path" | "blocked_before_target" | "invalid_request" | "missing_or_inactive_path" | "train_already_has_active_path";
 
 export type TargetResolutionFailureKind = "missing_target" | "target_unavailable";

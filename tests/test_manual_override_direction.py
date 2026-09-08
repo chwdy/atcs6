@@ -22,10 +22,6 @@ the override relaxes the block's policy, not the caller's request.
 
 import pytest
 
-from runtime_payloads import (
-    AcquisitionMode,
-    PathAcquisitionFailureKind,
-)
 from block_manager import BlockManager, ReservedBlockTraversal
 from path_dispatcher import PathDispatcher
 from network import RailwayNetwork
@@ -105,7 +101,8 @@ def _place_probe_train(network, dispatcher):
 class TestCreatePathDirectionOverride:
     """`PathDispatcher.create_path(..., manual_override=True)` must accept a
     target whose direction is not in the block's allowed set. Without the
-    override, the same call must fail with `NO_VIABLE_PATH`.
+    override, the same call keeps the direction policy active, so the authority
+    is truncated short of the direction-blocked terminal instead of reaching it.
     """
 
     def test_override_true_succeeds_against_policy(
@@ -124,7 +121,6 @@ class TestCreatePathDirectionOverride:
             train_id="T_PROBE",
             requested_destination_block_id="BLOCK_C",
             requested_destination_direction="forward",
-            acquisition_mode=AcquisitionMode.ALL_OR_NOTHING,
             manual_override=True,
         )
 
@@ -139,19 +135,17 @@ class TestCreatePathDirectionOverride:
     def test_override_false_rejects_against_policy(
         self, linear_network, dispatcher
     ):
-        """Same setup as above without the override. `create_path` must
-        reject the request for the direction-policy reason.
+        """Same setup as above without the override. `create_path` must keep
+        the direction policy active, so the authority does not reach BLOCK_C.
 
         Per design_new.md "Resource acquisition" (reservation eligibility)
         and "`create_path()` flow" (pathfinder rejection),
         `manual_override == False` keeps the
-        `Block.allowed_travel_directions` filter active. The rejection may
-        surface as `NO_VIABLE_PATH` (pathfinder filtered the candidate) or
-        as `BLOCKED_BEFORE_TARGET` with reason `direction_not_allowed`
-        (reservation eligibility caught it — the case for a single-tile
-        terminal block, whose terminal direction the pathfinder cannot
-        pre-compute). Either is acceptable; what matters is that the
-        rejection is direction-driven.
+        `Block.allowed_travel_directions` filter active. With the single
+        (best-effort) acquisition behavior, the direction-blocked terminal is
+        not acquirable, so the authority is truncated short of it — the
+        request does not reach its target. Contrast
+        test_override_true_succeeds_against_policy, which DOES reach BLOCK_C.
         """
         _place_probe_train(linear_network, dispatcher)
         linear_network.blocks["BLOCK_C"].allowed_travel_directions = {"reverse"}
@@ -160,18 +154,14 @@ class TestCreatePathDirectionOverride:
             train_id="T_PROBE",
             requested_destination_block_id="BLOCK_C",
             requested_destination_direction="forward",
-            acquisition_mode=AcquisitionMode.ALL_OR_NOTHING,
             manual_override=False,
         )
 
-        assert not result.success
-        assert result.failure_kind in (
-            PathAcquisitionFailureKind.NO_VIABLE_PATH,
-            PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET,
-        )
-        assert "direction" in (result.reason or "").lower(), (
-            "Rejection must be direction-driven, not an unrelated failure. "
-            f"Got reason={result.reason!r}"
+        assert not result.reached_target
+        assert result.authority_end_block_id != "BLOCK_C", (
+            "Direction policy must keep the authority short of BLOCK_C without "
+            f"manual_override. Got authority_end_block_id="
+            f"{result.authority_end_block_id!r}, reason={result.reason!r}"
         )
 
     def test_default_call_still_enforces_direction(
@@ -180,7 +170,7 @@ class TestCreatePathDirectionOverride:
         """Belt-and-braces: omitting `manual_override` entirely (the
         automatic-caller shape per design_new.md "`disabled` and `manual`
         availability flags") must enforce the direction policy. Same
-        rejection surface as the explicit
+        truncated-short-of-BLOCK_C outcome as the explicit
         `manual_override=False` case above.
         """
         _place_probe_train(linear_network, dispatcher)
@@ -190,17 +180,13 @@ class TestCreatePathDirectionOverride:
             train_id="T_PROBE",
             requested_destination_block_id="BLOCK_C",
             requested_destination_direction="forward",
-            acquisition_mode=AcquisitionMode.ALL_OR_NOTHING,
         )
 
-        assert not result.success
-        assert result.failure_kind in (
-            PathAcquisitionFailureKind.NO_VIABLE_PATH,
-            PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET,
-        )
-        assert "direction" in (result.reason or "").lower(), (
-            "Rejection must be direction-driven, not an unrelated failure. "
-            f"Got reason={result.reason!r}"
+        assert not result.reached_target
+        assert result.authority_end_block_id != "BLOCK_C", (
+            "Direction policy must keep the authority short of BLOCK_C without "
+            f"manual_override. Got authority_end_block_id="
+            f"{result.authority_end_block_id!r}, reason={result.reason!r}"
         )
 
 

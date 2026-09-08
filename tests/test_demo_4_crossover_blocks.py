@@ -56,8 +56,6 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import pytest
 
-from runtime_payloads import AcquisitionMode
-
 from tests.journey.events import Event, Invariant, Journey
 from tests.journey.harness import JourneyHarness, Snapshot
 from tests.journey.scenes.demo_4_scene import Demo4Scene

@@ -34,8 +34,8 @@ def register(app, state: AppState) -> None:
         data = request.get_json() or {}
 
         # Per design_new.md "Route edit timestamps": bump last_edited_at if any
-        # of the five edit fields (name/tasks/mode/priority/acquisition_mode)
-        # was actually supplied. A bare create with only route_id leaves it None.
+        # of the edit fields (name/tasks/mode/priority) was actually supplied.
+        # A bare create with only route_id leaves it None.
         edit_fields_present = any(
             k in data for k in train_route_service.EDIT_FIELDS
         )
@@ -49,7 +49,6 @@ def register(app, state: AppState) -> None:
                 tasks=data.get("tasks", []),
                 assigned_train_ids=data.get("assigned_train_ids", []),
                 priority=data.get("priority"),
-                acquisition_mode=data.get("acquisition_mode"),
                 manual_override=data.get("manual_override"),
                 start_mode=data.get("start_mode"),
                 start_task_index=data.get("start_task_index"),
@@ -111,12 +110,9 @@ def register(app, state: AppState) -> None:
             return raw, "soft"
 
         priority_value, priority_push = _unpack("priority")
-        acq_value, acq_push = _unpack("acquisition_mode")
         push_policies = {}
         if "priority" in data:
             push_policies["priority"] = priority_push
-        if "acquisition_mode" in data:
-            push_policies["acquisition_mode"] = acq_push
 
         with state.simulation_lock:
             try:
@@ -127,7 +123,6 @@ def register(app, state: AppState) -> None:
                     mode=data["mode"] if "mode" in data else None,
                     tasks=data["tasks"] if "tasks" in data else None,
                     priority=priority_value if "priority" in data else None,
-                    acquisition_mode=acq_value if "acquisition_mode" in data else None,
                     manual_override=(
                         data["manual_override"] if "manual_override" in data else None
                     ),

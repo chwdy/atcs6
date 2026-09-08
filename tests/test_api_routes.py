@@ -1415,10 +1415,6 @@ class TestRouteRedesignApis:
         (one-off, single stop task) + POST /train-routes/<id>/activate
         + PUT /api/trains/<id>/assign-route — should cause Phase 1 to
         allocate a dispatcher path on a subsequent sim tick.
-
-        Also verifies that POST /api/train-routes accepts
-        ``acquisition_mode`` (the operator picks all_or_nothing for Quick
-        Route, taking full responsibility for the manual reposition).
         """
         self._place_powered_train_on_two_block_line(app_state)
         # Engage ATO: the planner grants authority only to a ready driving
@@ -1437,14 +1433,9 @@ class TestRouteRedesignApis:
                     "task_location": {"block_id": "BLK_B"},
                     "task_direction": "forward",
                 }],
-                "acquisition_mode": "all_or_nothing",
             },
         )
         assert create_resp.status_code == 200, create_resp.get_json()
-        assert (
-            create_resp.get_json()["route"]["acquisition_mode"]
-            == "all_or_nothing"
-        ), "POST /api/train-routes must pass acquisition_mode through to the service"
 
         activate_resp = client.post("/api/train-routes/ROUTE_QR_TEST/activate")
         assert activate_resp.status_code == 200, activate_resp.get_json()

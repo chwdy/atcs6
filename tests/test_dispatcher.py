@@ -25,7 +25,7 @@ from runtime_payloads import (
     ValidationResult,
     CancellationResult,
     DEFAULT_PATH_PRIORITY,
-    AcquisitionMode,
+    
     PathAcquisitionResult,
     PathAcquisitionFailureKind,
     SwitchLockClaim,
@@ -1654,7 +1654,6 @@ class TestBestEffortAcquisitionContract:
             train_id="T_PROBE",
             requested_destination_block_id="BLOCK_C",
             requested_destination_direction="forward",
-            acquisition_mode=AcquisitionMode.BEST_EFFORT,
         )
 
         assert result.success, (
@@ -1672,26 +1671,6 @@ class TestBestEffortAcquisitionContract:
         assert result.resource_sequence is not None
         assert len(result.resource_sequence) >= 1
 
-    def test_create_path_all_or_nothing_still_hard_rejects_on_occupied(
-        self, simple_linear_network, dispatcher,
-    ):
-        """The fix must NOT change ALL_OR_NOTHING semantics — an occupied
-        future block is still a hard reject in that mode.
-        """
-        dispatcher.network = simple_linear_network
-        self._make_probe_train(simple_linear_network, dispatcher)
-        simple_linear_network.blocks["BLOCK_C"].occupy("T_OTHER")
-
-        result = dispatcher.create_path(
-            train_id="T_PROBE",
-            requested_destination_block_id="BLOCK_C",
-            requested_destination_direction="forward",
-            acquisition_mode=AcquisitionMode.ALL_OR_NOTHING,
-        )
-
-        assert not result.success
-        assert result.failure_kind == PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET
-
     def test_create_path_best_effort_hard_rejects_on_disabled_block(
         self, simple_linear_network, dispatcher,
     ):
@@ -1706,7 +1685,6 @@ class TestBestEffortAcquisitionContract:
             train_id="T_PROBE",
             requested_destination_block_id="BLOCK_C",
             requested_destination_direction="forward",
-            acquisition_mode=AcquisitionMode.BEST_EFFORT,
         )
 
         assert not result.success, (
@@ -1737,7 +1715,6 @@ class TestBestEffortAcquisitionContract:
             train_id="T_PROBE",
             requested_destination_block_id="BLOCK_B",
             requested_destination_direction="forward",
-            acquisition_mode=AcquisitionMode.BEST_EFFORT,
         )
         assert first.success, f"setup failed: {first.reason}"
         path_id = first.path_id
@@ -1749,7 +1726,6 @@ class TestBestEffortAcquisitionContract:
             path_id=path_id,
             requested_destination_block_id="BLOCK_C",
             requested_destination_direction="forward",
-            acquisition_mode=AcquisitionMode.BEST_EFFORT,
         )
 
         # With BLOCK_C the only new block in the extension segment and it
@@ -1824,7 +1800,6 @@ class TestBestEffortAcquisitionContract:
             train_id="T_PROBE",
             requested_destination_block_id="BLOCK_C",
             requested_destination_direction="forward",
-            acquisition_mode=AcquisitionMode.BEST_EFFORT,
         )
 
         assert result.success, (
@@ -1905,12 +1880,11 @@ class TestStopArrivalHeadInTerminalBlock:
         )
 
 
-class TestAllOrNothingMeetCapContradiction:
-    """A meet acquisition cap short of the requested target is a contradiction
-    in ALL_OR_NOTHING mode: the mode demands the full authority while the cap
-    forbids storing it, so `create_path` must fail with `blocked_before_target`
-    and store nothing (design_new.md "Contradiction with all_or_nothing",
-    :1252). BEST_EFFORT stores the capped-short prefix and holds at the cap.
+class TestMeetCapShortOfTarget:
+    """A meet acquisition cap short of the requested target stores the
+    capped-short prefix and holds at the cap (design_new.md "Acquisition-cap
+    rule"): there is one acquisition behavior, so the train holds at the cap
+    rather than failing to acquire.
     """
 
     def _make_probe_train(self, network, dispatcher):
@@ -1928,33 +1902,6 @@ class TestAllOrNothingMeetCapContradiction:
         )
         return train
 
-    def test_all_or_nothing_capped_short_fails_and_stores_nothing(
-        self, simple_linear_network, dispatcher,
-    ):
-        dispatcher.network = simple_linear_network
-        self._make_probe_train(simple_linear_network, dispatcher)
-
-        # Target BLOCK_C, but a meet cap at BLOCK_B (strictly short of C).
-        result = dispatcher.create_path(
-            train_id="T_PROBE",
-            requested_destination_block_id="BLOCK_C",
-            requested_destination_direction="forward",
-            acquisition_mode=AcquisitionMode.ALL_OR_NOTHING,
-            acquisition_cap_block_id="BLOCK_B",
-        )
-
-        assert result.success is False, (
-            "ALL_OR_NOTHING + a cap short of the target must fail, not store a "
-            f"capped-short authority. Got success with reason={result.reason!r}"
-        )
-        assert (
-            result.failure_kind == PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET
-        ), f"Expected BLOCKED_BEFORE_TARGET, got {result.failure_kind!r}"
-        assert dispatcher.active_path_id_by_train("T_PROBE") is None, (
-            "No authority may be stored on the all_or_nothing + cap contradiction"
-        )
-        assert simple_linear_network.blocks["BLOCK_B"].reserved_for_train is None
-
     def test_best_effort_capped_short_still_stores_and_holds(
         self, simple_linear_network, dispatcher,
     ):
@@ -1965,7 +1912,6 @@ class TestAllOrNothingMeetCapContradiction:
             train_id="T_PROBE",
             requested_destination_block_id="BLOCK_C",
             requested_destination_direction="forward",
-            acquisition_mode=AcquisitionMode.BEST_EFFORT,
             acquisition_cap_block_id="BLOCK_B",
         )
 
@@ -2071,7 +2017,6 @@ class TestSameBlockRejected:
             train_id="T_SAME",
             requested_destination_block_id="BLOCK_B",
             requested_destination_direction="forward",
-            acquisition_mode=AcquisitionMode.BEST_EFFORT,
         )
         self._assert_same_block_rejected(result, dispatcher)
 
@@ -2094,7 +2039,6 @@ class TestSameBlockRejected:
             train_id="T_SAME",
             requested_destination_block_id="BLOCK_B",
             requested_destination_direction="reverse",
-            acquisition_mode=AcquisitionMode.BEST_EFFORT,
         )
         self._assert_same_block_rejected(result, dispatcher)
 
@@ -2122,7 +2066,6 @@ class TestSameBlockRejected:
             train_id="T_SAME",
             requested_destination_block_id="BLOCK_A",
             requested_destination_direction="forward",
-            acquisition_mode=AcquisitionMode.BEST_EFFORT,
         )
         self._assert_same_block_rejected(result, dispatcher)
 
@@ -2152,7 +2095,6 @@ class TestSameBlockRejected:
             train_id="T_SAME",
             requested_destination_block_id="BLOCK_A",
             requested_destination_direction="forward",
-            acquisition_mode=AcquisitionMode.BEST_EFFORT,
         )
         self._assert_same_block_rejected(result, dispatcher)
 
@@ -2175,7 +2117,6 @@ class TestSameBlockRejected:
             train_id="T_SAME",
             requested_destination_block_id="BLOCK_C",
             requested_destination_direction="forward",
-            acquisition_mode=AcquisitionMode.BEST_EFFORT,
         )
 
         assert result.success, (
@@ -2216,7 +2157,6 @@ class TestSameBlockRejected:
             train_id="T_SAME",
             requested_destination_block_id="BLOCK_A",
             requested_destination_direction="reverse",
-            acquisition_mode=AcquisitionMode.BEST_EFFORT,
         )
 
         # The head block is BLOCK_B, so the covered-stop rejection (keyed on the
@@ -2281,7 +2221,6 @@ class TestSameBlockRejected:
             train_id="T_SAME",
             requested_destination_block_id="BLOCK_A",
             requested_destination_direction="reverse",
-            acquisition_mode=AcquisitionMode.BEST_EFFORT,
         )
         assert result.success, (
             f"cabless turnaround to BLOCK_A must plan from the tail; got "

@@ -137,7 +137,7 @@ class Path:
     flat path_tiles list is the concatenation of the per-resource tile
     slices in sequence_index order. authority_end_block_id is the live
     authority end and may be shorter than the route's requested target
-    when best_effort acquisition truncated the path; that requested target
+    when acquisition truncated the path; that requested target
     is route-owned (RouteRun.task_runs[i].resolved_target) and is not
     stored on Path.
     """

@@ -818,7 +818,6 @@ export class RouteEditorHandler {
 
   renderRoutePolicyRow(route: any): string {
     const priority = Number.isInteger(route.priority) ? route.priority : 5;
-    const acq = route.acquisition_mode || 'best_effort';
     const seg = (id: string, options: Array<{ value: string; label: string }>, current: string) => {
       return `
                 <div id="${id}" class="switch-group compact route-seg" role="radiogroup">
@@ -844,19 +843,6 @@ export class RouteEditorHandler {
       );
     return `
             <div class="route-header-row route-policy-grid" data-route-policy-row>
-                <div class="route-header-col">
-                    <label class="property-label">Acquisition</label>
-                    ${seg(
-                      'route-acq-seg',
-                      [
-                        { value: 'best_effort', label: 'Best effort' },
-                        { value: 'all_or_nothing', label: 'All or nothing' },
-                      ],
-                      acq
-                    )}
-                    <div class="text-xxs text-muted mt-4">Push to runs:</div>
-                    ${pushSeg('route-acq-push-seg', 'soft')}
-                </div>
                 <div class="route-header-col">
                     <label class="property-label">Priority (0-9)</label>
                     <input type="number" id="route-priority-input" class="property-input"
@@ -1418,7 +1404,7 @@ export class RouteEditorHandler {
     });
 
     // Route-policy + per-field push segmented controls.
-    ['route-acq-seg', 'route-acq-push-seg', 'route-priority-push-seg'].forEach(
+    ['route-priority-push-seg'].forEach(
       (segId) => {
         document.querySelectorAll<HTMLElement>(`#${segId} .switch-btn`).forEach((btn) => {
           btn.onclick = (e) => {
@@ -2003,7 +1989,7 @@ export class RouteEditorHandler {
       });
     }
 
-    // Per design_new.md "RouteRun overrides": the three policy fields each
+    // Per design_new.md "RouteRun overrides": the policy fields each
     // carry their own push policy. Pack as `{value, push}`.
     const segValue = (segId: string) => {
       const seg = document.getElementById(segId);
@@ -2012,8 +1998,6 @@ export class RouteEditorHandler {
       return active ? active.dataset.value : null;
     };
 
-    const acqValue = segValue('route-acq-seg');
-    const acqPush = segValue('route-acq-push-seg') || 'soft';
     const priorityRaw = (document.getElementById('route-priority-input') as HTMLInputElement | null)?.value;
     const priorityPush = segValue('route-priority-push-seg') || 'soft';
 
@@ -2022,9 +2006,6 @@ export class RouteEditorHandler {
       mode: this.currentRoute.mode,
       tasks: tasks,
     };
-    if (acqValue) {
-      payload.acquisition_mode = { value: acqValue, push: acqPush };
-    }
     // Priority via the shared validator (helpers#validatePriorityInput).
     const priorityCheck = validatePriorityInput(priorityRaw);
     if (priorityCheck.kind === 'error') {

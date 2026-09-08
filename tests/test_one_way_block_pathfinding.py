@@ -28,7 +28,6 @@ import io
 import pytest
 
 from runtime_payloads import (
-    AcquisitionMode,
     PathAcquisitionFailureKind,
 )
 from bootstrap import bootstrap_runtime
@@ -152,7 +151,6 @@ def test_extend_path_fails_no_viable_path_not_blocked_no_growth():
         train_id=TRAIN,
         requested_destination_block_id="PLT_ML_10_A_BLOCK",
         requested_destination_direction=terminal_dir,
-        acquisition_mode=AcquisitionMode.ALL_OR_NOTHING,
     )
     assert created.success, (
         f"setup leg failed: {created.failure_kind!r} {created.reason!r}"
@@ -211,7 +209,6 @@ def test_manual_override_still_bypasses_one_way_policy():
         train_id=TRAIN,
         requested_destination_block_id=TARGET_WITH_ALTERNATIVE,
         requested_destination_direction="forward",
-        acquisition_mode=AcquisitionMode.ALL_OR_NOTHING,
         manual_override=True,
     )
     assert result.success, (

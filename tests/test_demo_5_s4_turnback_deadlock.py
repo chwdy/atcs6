@@ -24,7 +24,6 @@ import time
 import pytest
 
 from bootstrap import bootstrap_runtime
-from runtime_payloads import AcquisitionMode
 from route_executor import RouteExecutionState, RouteRunStatus
 from train_route import RouteTaskRun
 
@@ -85,7 +84,6 @@ def _follow_best_effort_to_s4(dispatcher):
         train_id="FOLLOW",
         requested_destination_block_id="PLT_S4_S_BLOCK",
         requested_destination_direction="forward",
-        acquisition_mode=AcquisitionMode.BEST_EFFORT,
     )
 
 
@@ -124,7 +122,6 @@ def test_reversing_occupant_blocks_follower_before_crossover():
             train_id="LEAD",
             requested_destination_block_id="PLT_S3_N_BLOCK",
             requested_destination_direction=d,
-            acquisition_mode=AcquisitionMode.BEST_EFFORT,
         ).success
         for d in ("forward", "reverse")
     )
