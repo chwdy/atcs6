@@ -971,6 +971,11 @@ class PathDispatcherForRouteExecutor(Protocol):
 
     def active_path_id_by_train(self, train_id: str) -> Optional[str]: ...
 
+    # Plan settlement stop-arrival (step `9d8b`): RouteExecutor calls this from
+    # the settlement half of tick_train_plan when the train is stopped at its
+    # authority end (design_new.md "Stop-arrival procedure").
+    def try_complete_active_path(self, train_id: str) -> "PathCompletionResult": ...
+
     def create_path(
         self,
         train_id: str = "",

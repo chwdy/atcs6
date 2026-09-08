@@ -3391,7 +3391,11 @@ class PathDispatcher:
     # ========================================================================
 
     def on_controller_progress(self, report: ControllerProgressReport) -> None:
-        """Observe progress consumer."""
+        """Observe progress consumer: commit occupancy (block entry / tail-vacate),
+        advance the path head index, and record each mapped head-entry on the
+        controller's `physics_sync.entered_blocks_this_tick` for Plan settlement.
+        Finishes no route task itself (design_new.md "Observe finishes no route
+        task"); the head-advance callback and stop-arrival run in Plan settlement."""
         if report is None:
             return
         train_id = report.train_id
@@ -3457,7 +3461,13 @@ class PathDispatcher:
                 if event.sequence_index is not None:
                     if event.sequence_index > active_path.current_resource_index:
                         active_path.current_resource_index = event.sequence_index
-                self._fire_route_advanced_callback(
+                # Observe applies the dispatcher-side head-index advance above
+                # but finishes no route task: it records the head-entry for this
+                # train's Plan settlement, which runs the route head-advance
+                # callback (design_new.md step `640a`; "Observe finishes no route
+                # task"). The route-side consumption is deferred to
+                # `RouteExecutor.tick_train_plan(...)` settlement.
+                self._record_head_entry_for_settlement(
                     train_id=train_id,
                     path_id=active_path.path_id,
                     event=event,
@@ -3508,26 +3518,34 @@ class PathDispatcher:
             route=route,
         )
 
-    def _fire_route_advanced_callback(
+    def _record_head_entry_for_settlement(
         self, train_id: str, path_id: str, event: ResourceEvent
     ) -> None:
-        route_executor = self._get_route_executor()
-        if route_executor is None:
-            return
-        # Populate the block-relative traversal_direction the head-advance
-        # callback matches a waypoint against (the head-advance waypoint-match
-        # rule — block AND direction — in design_new.md
-        # "PathDispatcher.on_controller_progress"). For a
-        # block resource it is computed by the canonical block-direction helper
-        # from the entered block's `resource_sequence` entry exit_edge against
-        # `Block.ordered_tiles`; for switches it stays None. The controller's
-        # ResourceEvent.exit_edge is None for entered blocks, so the direction
-        # is derived from the dispatcher-owned path geometry, not the event.
+        """Record one Observe head-entry for this train's Plan settlement.
+
+        Populate the block-relative traversal_direction the head-advance
+        callback matches a waypoint against (the head-advance waypoint-match
+        rule — block AND direction — in design_new.md
+        "PathDispatcher.on_controller_progress"). For a block resource it is
+        computed by the canonical block-direction helper from the entered block's
+        `resource_sequence` entry exit_edge against `Block.ordered_tiles`; for
+        switches it stays None. The controller's ResourceEvent.exit_edge is None
+        for entered blocks, so the direction is derived from the dispatcher-owned
+        path geometry, not the event.
+
+        Observe does not run the route callback (design_new.md "Observe finishes
+        no route task"): the `(path_id, event)` pair is appended to the
+        controller's `physics_sync.entered_blocks_this_tick`, and Plan settlement
+        replays `RouteExecutor.handle_train_advanced(...)` over it in order.
+        """
         if event.resource_type == "block" and event.traversal_direction is None:
             event.traversal_direction = self._block_traversal_direction(
                 path_id, event
             )
-        route_executor.handle_train_advanced(train_id, path_id, event)
+        controller = self._get_controller(train_id)
+        if controller is None:
+            return
+        controller.physics_sync.entered_blocks_this_tick.append((path_id, event))
 
     def _block_traversal_direction(
         self, path_id: str, event: ResourceEvent

@@ -1527,15 +1527,17 @@ class SimulationController(SwitchOutputOwner):
         self, controller: TrainController, train: Train, observing_only: bool = False
     ) -> None:
         """Observe-stage commit for one train: drain the progress mailbox to
-        write occupancy (step `3e9b`), then recognize a normal stop arrival
-        (step `9d8b`).
+        write occupancy and record this tick's head-entered blocks for Plan
+        settlement (step `3e9b`).
 
-        The occupancy commit and the stop-arrival check are Observe work
-        (design_new.md Observe, Plan, and Action Table, Observe row). The
-        stopped-simulation hardware poll runs only this commit — it has detector
-        observations to write but no planning or command execution first (see
-        `poll_hardware_occupancy`) — and passes `observing_only=True` to run step
-        `3e9b` and nothing after it.
+        The occupancy commit is Observe work (design_new.md Observe, Plan, and
+        Action Table, Observe row); Observe finishes no route task. The
+        head-advance consumption (step `640a`) and the stop-arrival check (step
+        `9d8b`) both run later, in the settlement half of
+        `RouteExecutor.tick_train_plan(...)`. The stopped-simulation hardware
+        poll runs only this commit — it has detector observations to write but no
+        planning or command execution first (see `poll_hardware_occupancy`) — and
+        passes `observing_only=True` to run step `3e9b` and nothing after it.
 
         If the controller is OFF and the global detector read attributed no block
         entry or vacate to this train this tick, there is no movement to commit and this is a
@@ -1545,12 +1547,14 @@ class SimulationController(SwitchOutputOwner):
         not control — still has its block entries and vacates committed, and this
         is the only path that commits them.
 
-        Why `observing_only` holds arrival back: a stop the train reached while
-        the session was stopped is a statement about live authority, which a
-        stopped session exercises none of (design_new.md "Running and stopped";
-        "Latch Table": "A stopped session consumes no latch"). Every latch keeps
-        its payload across the stop and is consumed by the first pass of the
-        resumed session whose gate holds.
+        A stop the train reached while the session was stopped is a statement
+        about live authority, which a stopped session exercises none of
+        (design_new.md "Running and stopped"; "Latch Table": "A stopped session
+        consumes no latch"). A stopped session runs only this Observe commit, not
+        Plan, so the stop-arrival check — now Plan-settlement work — simply does
+        not run until the session resumes; every latch keeps its payload across
+        the stop and is consumed by the first pass of the resumed session whose
+        gate holds. `observing_only` therefore returns right after step `3e9b`.
         """
         if (
             controller.ops.state == TrainState.OFF
@@ -1560,6 +1564,14 @@ class SimulationController(SwitchOutputOwner):
             return
 
         # 3e9b. Drain queued progress reports in FIFO order → occupancy commit.
+        # Reset this train's within-tick head-entry record first, then let the
+        # drain re-fill it: `on_controller_progress` commits occupancy and
+        # records each mapped head-entry on `entered_blocks_this_tick` for this
+        # train's Plan settlement, but finishes no route task here (design_new.md
+        # "Observe finishes no route task"). The head-advance consumption (step
+        # `640a`) and the stop-arrival check (step `9d8b`) both run later, in the
+        # settlement half of `RouteExecutor.tick_train_plan(...)`.
+        controller.physics_sync.entered_blocks_this_tick = []
         if self.path_dispatcher is not None:
             while controller.physics_sync.queued_progress_reports:
                 report = controller.physics_sync.queued_progress_reports.pop(0)
@@ -1568,18 +1580,6 @@ class SimulationController(SwitchOutputOwner):
         if observing_only:
             self._sync_persistent_train_state(train, controller)
             return
-
-        # 9d8b. Post-movement usable-authority stop check + path completion.
-        # A pending path-cancel outranks completion (design_new.md step `c6f1`):
-        # when `pending_path_cancel_request` is set (here, only by this same
-        # Observe pass's movement-derived deviation detection above), skip
-        # completion so Action commits the cancellation instead of finishing the
-        # stop.
-        if self.path_dispatcher is not None:
-            if controller.route_hooks.phase_latches.path_cancel_request is None:
-                if self.path_dispatcher.active_path_id_by_train(train.train_id) is not None:
-                    if controller.is_stopped_at_authority_end():
-                        self.path_dispatcher.try_complete_active_path(train.train_id)
 
         # Sync only persistent/configuration state back to Train. Live state
         # (target_speed, speed_limit_reason, controller state, current_speed)

@@ -550,7 +550,7 @@ class SpeedCalibration:
             )
             run.phase = PHASE_STOPPING
             # The leg reached the far block, so it finishes through ordinary stop
-            # completion (Observe step `9d8b` completes the leg route). The pass
+            # completion (Plan settlement step `9d8b` completes the leg route). The pass
             # commands a stop and issues no route op of its own — success carries
             # no teardown (design_new.md "Speed calibration", A leg finishes
             # through ordinary stop completion).

@@ -913,7 +913,7 @@ class TrainController:
         # case (RUNNING_MOVING -> READY once stopped with no live authority and
         # EB clear). Per design_new.md steps `89ba` / `32dd` / `90d3`, tick()
         # must not latch path completion or call route callbacks itself: all
-        # completion flows through Observe's try_complete_active_path(...). A
+        # completion flows through Plan settlement's try_complete_active_path(...). A
         # dwelling train is READY; Plan holds its onward authority, so nothing
         # here needs to distinguish it. Other states (READY, OFF) are handled by
         # commands.

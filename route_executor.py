@@ -2220,12 +2220,51 @@ class RouteExecutor:
         run.active_leg_route_id = route_id
 
     # ------------------------------------------------------------------ Plan
+    def _run_plan_settlement(
+        self, train_id: str, controller: "TrainController"
+    ) -> None:
+        """Plan settlement — the first half of a train's Plan pass, before the
+        planning half resolves and acquires the next target (design_new.md Plan
+        row steps `640a` / `9d8b`, and the **Stop-arrival procedure**).
+
+        Step `640a` — head-advance consumption. Replay the route head-advance
+        callback over the head-entries Observe recorded on
+        `physics_sync.entered_blocks_this_tick`, in the order recorded
+        (`sequence_index` order), each finishing at most one `waypoint` task via
+        `RouteExecutor.handle_train_advanced(...)`; then clear the record.
+        Observe itself finishes no route task.
+
+        Step `9d8b` — stop arrival. After the head-advance consumption, when an
+        active dispatcher path still exists and no path-cancel is pending (a
+        pending cancel — deviation or explicit — outranks arrival), and the train
+        is stopped at its authority end, call
+        `PathDispatcher.try_complete_active_path(train_id)` through the injected
+        dispatcher port. The train has already moved for this tick in Observe, so
+        this is where the route asks whether it is now standing at the stop it was
+        sent to.
+        """
+        entered = controller.physics_sync.entered_blocks_this_tick
+        if entered:
+            for path_id, event in entered:
+                self.handle_train_advanced(train_id, path_id, event)
+            controller.physics_sync.entered_blocks_this_tick = []
+
+        if self.path_dispatcher is None:
+            return
+        if controller.route_hooks.phase_latches.path_cancel_request is not None:
+            return
+        if self.path_dispatcher.active_path_id_by_train(train_id) is None:
+            return
+        if controller.is_stopped_at_authority_end():
+            self.path_dispatcher.try_complete_active_path(train_id)
+
     def tick_train_plan(self, train_id: str, delta_seconds: float) -> None:
         """Canonical Plan entry point for one train.
 
         Per design_new.md "Planning Kernel" steps (1)-(7). Each step has its
         own gating predicate; steps 1-5 always run, steps 6-7 are gated by
-        the Plan eligibility precondition.
+        the Plan eligibility precondition. The settlement half (steps `640a` /
+        `9d8b`) runs first, via `_run_plan_settlement(...)`.
         """
         train = (
             self.network.trains.get(train_id)
@@ -2269,6 +2308,16 @@ class RouteExecutor:
             RouteRunStatus.DEACTIVATED,
         ):
             return
+
+        # ---------- Plan settlement (steps 640a, 9d8b) -----------------------
+        # Consume the head-entered blocks Observe recorded and run the
+        # stop-arrival check BEFORE the planning half — and before the teardown
+        # early-return below: head-advance (640a) applies even under a pending
+        # cancel latch (design_new.md line 433), and stop-arrival (9d8b) guards
+        # itself on `path_cancel_request`. Finishing a stop and re-planning
+        # therefore happen in one Plan pass (design_new.md "Stop-arrival
+        # procedure").
+        self._run_plan_settlement(train_id, controller)
 
         now = self._now()
 
@@ -3764,7 +3813,9 @@ class RouteExecutor:
         path_id: str,
         resource_event: ResourceEvent,
     ) -> None:
-        """Observe head-advance callback. Consumes at most one task per call.
+        """Plan-settlement head-advance callback. Consumes at most one task per
+        call. Observe records the head-entry (design_new.md step `640a`); this
+        callback is replayed over that record in `_run_plan_settlement(...)`.
 
         Per design_new.md:
           * Switches are no-ops on the route side.

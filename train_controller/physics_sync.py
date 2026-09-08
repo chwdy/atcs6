@@ -25,9 +25,9 @@ External callers access live span and speed as:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
-from runtime_payloads import ControllerProgressReport
+from runtime_payloads import ControllerProgressReport, ResourceEvent
 
 if TYPE_CHECKING:
     from train_controller import TrainController
@@ -63,3 +63,14 @@ class PhysicsSync:
         # held until the debounced detector confirms the vacate so the caution
         # direction matches the physical exit edge.
         self.pending_block_exit_edges: Dict[str, str] = {}
+
+        # Within-tick record of the head-entered blocks Observe committed, held
+        # for this train's Plan settlement (design_new.md "Observe" /
+        # "Stop-arrival procedure", step `640a`). Observe's occupancy commit
+        # (`PathDispatcher.on_controller_progress`) advances the path head index
+        # and appends each mapped head-entry here as `(path_id, ResourceEvent)`;
+        # Plan settlement replays them through `RouteExecutor.handle_train_advanced(...)`
+        # in `sequence_index` order and then clears the list. Observe finishes no
+        # route task itself. Reset at the top of each tick's Observe drain so a
+        # train that never reaches Plan settlement leaks nothing across ticks.
+        self.entered_blocks_this_tick: List[Tuple[str, ResourceEvent]] = []
