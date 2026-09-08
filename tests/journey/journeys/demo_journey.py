@@ -160,10 +160,15 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
             ],
         ),
         Event(
-            name="E2_after_path_acquired_and_depart",
+            name="E2_after_path_acquired",
             trigger=at_tick(2),
             assertions=[
-                assert_state(TrainState.RUNNING_MOVING),
+                # Authority is acquired and the engaged ATO train is commanding
+                # power, but it has not physically moved yet, so it is still
+                # READY this tick. RUNNING_MOVING is movement-derived and lands
+                # on the next tick (asserted by E3_accelerating), since there is
+                # no depart handshake (design_new.md "ato.engaged").
+                assert_state(TrainState.READY),
                 assert_has_active_path(),
                 assert_active_path_target_is_east_terminal(),
                 assert_atc_reason_not_in(

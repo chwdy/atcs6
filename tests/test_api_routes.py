@@ -948,27 +948,6 @@ class TestTrainRoutes:
         # stopped) succeeds deterministically -- mirror of test_train_power_on.
         assert response.status_code == 200
 
-    def test_train_depart_rejection_returns_400(self, client, app_state):
-        """POST /depart must return 400 when the controller rejects depart.
-
-        Regression for the always-truthy bug: depart() returns a
-        (success, reason) tuple, and a bare `if tuple:` is always true, so
-        every rejection used to report a 200 success and the 400 branch was
-        dead code. A train with no active path is the simplest rejection
-        (`received_path_plan is None` -> (False, "no active path")). The
-        handler must surface that reason, not the generic fallback.
-        """
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=1000.0, max_speed=100.0)
-        train = Train("TRAIN_001", consist=[car])
-        app_state.network.add_train(train)
-
-        response = client.post("/api/trains/TRAIN_001/depart")
-        assert response.status_code == 400
-        error = response.get_json()["error"]
-        # The actual rejection reason propagates (not the "Cannot depart"
-        # fallback), proving the tuple is unpacked rather than tested for truth.
-        assert "no active path" in error.lower()
-
     def test_release_emergency_clears_eb_in_ato_mode(
         self, client, app_state, network_with_tracks
     ):

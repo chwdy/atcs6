@@ -1142,7 +1142,7 @@ export class TrainEditorHandler {
     // be gone (design_new.md "Power", Presence unknown). The span represents
     // nothing detected, so the panel says so and offers removal.
     const presenceUnknown = controller?.presence_unknown === true;
-    const atoRunning = controller?.ato_running ?? false;
+    const atoEngaged = controller?.ato_engaged ?? false;
     const handleClass = this.getHandleVisualClass(handlePosition);
     const obcStateClass = this.getObcStateClass(powerOn, emergencyActive);
     const manualModeType = controller?.manual_mode_type || 'simulation';
@@ -1240,7 +1240,7 @@ export class TrainEditorHandler {
                             ${copyIdButton(trainId, 'Train ID')}
                         </span>
                         <span class="tc-state-badge train-state-display ${trainStateClass}">${trainState.toUpperCase().replace('_', ' ')}</span>
-                        <span id="obc-ato-running-badge" class="tc-running-badge ${atoRunning ? '' : 'hidden'}">▶ ATO</span>
+                        <span id="obc-ato-running-badge" class="tc-running-badge ${atoEngaged ? '' : 'hidden'}">▶ ATO</span>
                         <span id="train-eb-badge" class="tc-eb-badge tc-status-emergency ${emergencyActive ? '' : 'hidden'}">EB ACTIVE</span>
                     </header>
                     <!-- Filled by _refreshWhyStopped: the first gate standing
@@ -1340,10 +1340,10 @@ export class TrainEditorHandler {
 
                     <div id="ato-controls" class="tc-branch tc-ato-display ${isATO ? '' : 'hidden'}">
                         <div class="tc-actions tc-ato-actions">
-                            <button id="train-ato-go-btn" class="tc-btn tc-btn-success tc-btn-hero" ${!powerOn || atoRunning ? 'disabled' : ''}>
+                            <button id="train-ato-go-btn" class="tc-btn tc-btn-success tc-btn-hero" ${!powerOn || atoEngaged ? 'disabled' : ''}>
                                 <span class="tc-btn-glyph">▶</span><span class="tc-btn-text">Go</span>
                             </button>
-                            <button id="train-ato-stop-btn" class="tc-btn tc-btn-danger tc-btn-hero" ${!atoRunning ? 'disabled' : ''}>
+                            <button id="train-ato-stop-btn" class="tc-btn tc-btn-danger tc-btn-hero" ${!atoEngaged ? 'disabled' : ''}>
                                 <span class="tc-btn-glyph">■</span><span class="tc-btn-text">Stop</span>
                             </button>
                         </div>
@@ -2006,7 +2006,7 @@ export class TrainEditorHandler {
     const gateKey = [
       controller.state,
       controller.cab,
-      controller.ato_running,
+      controller.ato_engaged,
       controller.handle_position,
       controller.assigned_path_id ?? controller.ato_path_id ?? null,
       (controller.current_speed || 0) > 0,
@@ -2020,7 +2020,7 @@ export class TrainEditorHandler {
     const powerOn = controller.power_on ?? false;
     const emergencyActive = controller.eb_active ?? false;
     const controlMode = controller.control_mode || 'ato';
-    const atoRunning = controller.ato_running ?? false;
+    const atoEngaged = controller.ato_engaged ?? false;
 
     // Update OBC status display
     const powerDisplay = document.querySelector('.obc-power-display');
@@ -2044,7 +2044,7 @@ export class TrainEditorHandler {
 
     const atoBadge = document.querySelector('#obc-ato-running-badge');
     if (atoBadge) {
-      if (atoRunning) {
+      if (atoEngaged) {
         atoBadge.textContent = '▶ ATO RUNNING';
         atoBadge.classList.remove('hidden');
         atoBadge.classList.add('badge', 'badge-success', 'text-xs');
@@ -2129,7 +2129,7 @@ export class TrainEditorHandler {
       const powerOn = controller.power_on ?? false;
       const controlMode = controller.control_mode || 'ato';
       const handlePosition = controller.handle_position || 'N';
-      const atoRunning = controller.ato_running ?? false;
+      const atoEngaged = controller.ato_engaged ?? false;
 
       if (powerDisplay) {
         powerDisplay.textContent = powerOn ? 'ON' : 'OFF';
@@ -2148,7 +2148,7 @@ export class TrainEditorHandler {
 
       const atoBadge = panel.querySelector('#obc-ato-running-badge');
       if (atoBadge) {
-        if (atoRunning) {
+        if (atoEngaged) {
           atoBadge.textContent = '▶ ATO RUNNING';
           atoBadge.classList.remove('hidden');
           atoBadge.classList.add('badge', 'badge-success', 'text-xs');
@@ -2324,7 +2324,7 @@ export class TrainEditorHandler {
       // ATO running badge restyle
       const atoBadgeEl = document.querySelector('#obc-ato-running-badge');
       if (atoBadgeEl) {
-        if (atoRunning) {
+        if (atoEngaged) {
           atoBadgeEl.textContent = '▶ ATO';
           atoBadgeEl.classList.remove('hidden', 'badge', 'badge-success', 'text-xs');
           atoBadgeEl.classList.add('tc-running-badge');

@@ -763,17 +763,6 @@ def set_cab(state: AppState, train_id: str, *, cab: Any) -> CommandResult:
     return _controller(state, require_train(state, train_id)).commands.set_cab(cab)
 
 
-@refuses_unidentified_trains(lambda message: (False, message))
-def depart(state: AppState, train_id: str) -> Tuple[bool, Optional[str]]:
-    """Depart-acceptance (READY -> RUNNING_MOVING).
-
-    Returns the controller's ``(success, reason)`` tuple unchanged.
-
-    Raises NotFoundError when the train does not exist.
-    """
-    return _controller(state, require_train(state, train_id)).depart()
-
-
 @refuses_unidentified_trains()
 def ato_go(state: AppState, train_id: str) -> CommandResult:
     """Engage ATO intent so the train drives toward its destination."""

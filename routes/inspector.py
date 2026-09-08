@@ -187,11 +187,6 @@ _LATCH_META: Dict[str, Dict[str, str]] = {
         "writer": "Observe — TrainController.on_physics_updated",
         "consumer": "Observe — PathDispatcher.on_controller_progress (drains list)",
     },
-    "departure_request": {
-        "path": "route_hooks.phase_latches.departure_request",
-        "writer": "Plan — after a successful create/extend",
-        "consumer": "Action — depart step (before the control decision)",
-    },
     "station_entry_request": {
         "path": "route_hooks.phase_latches.station_entry_request",
         "writer": "Plan — dwell-entry step",

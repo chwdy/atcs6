@@ -264,16 +264,15 @@ class PendingPathCancelRequest:
 
 @dataclass
 class PhaseLatches:
-    """Aggregate of the seven Action latches owned by `TrainController`.
+    """Aggregate of the six Action latches owned by `TrainController`.
 
     Per design_new.md (Latch Table) each latch shares the same lifecycle rule: a
     writer sets a latch and its named Action consumer consumes-and-clears it once
-    the consumer's gate passes. Three are transition requests Plan writes and the
-    Action transition consumers perform (`departure_request` ->
-    `TrainController.depart()`, `station_entry_request` ->
+    the consumer's gate passes. Two are transition requests Plan writes and the
+    Action transition consumers perform (`station_entry_request` ->
     `enter_station_dwell()`, `station_exit_request` -> `finish_dwell()`); the
     other four carry the teardown/cancel requests.
-    Bundling all seven fields plus their canonical writers / consumers into one
+    Bundling all six fields plus their canonical writers / consumers into one
     data class keeps the latch discipline in a single place.
 
     The leaf writer is `set_path_cancel_request(...)`; the three composite
@@ -290,8 +289,8 @@ class PhaseLatches:
     `TrainController.complete_power_off()`) per the Latch consumption events
     table.
 
-    The cross-field side effect of `power_off` (clearing
-    `TrainController.ato_running`) does NOT live here — that is a controller
+    The cross-field side effect of `power_off` (disengaging
+    `TrainController.ato.engaged`) does NOT live here — that is a controller
     concern and the caller wires it together with `set_power_off(...)`.
     """
 
@@ -303,7 +302,6 @@ class PhaseLatches:
     # Action transition consumers perform the matching `TrainController`
     # transition and clear the request in the same tick. Leaf bools, no
     # `pending_` shorthand, no fan-out.
-    departure_request: bool = False
     station_entry_request: bool = False
     station_exit_request: bool = False
 
@@ -491,16 +489,6 @@ class PhaseLatches:
             self.set_path_cancel_request(
                 ErrorRecord(reason, "revoked"), _KIND_INFO
             )
-
-    def set_departure_request(self) -> None:
-        """Leaf writer for `departure_request` (design_new.md Latch Table).
-
-        Plan writes this on every eligible pass with live authority for the
-        current target; the Action depart consumer calls
-        `TrainController.depart()`, records the result, and clears the request.
-        """
-        self.departure_request = True
-        self._emit("set_departure_request", "departure requested", kind=_KIND_INFO)
 
     def set_station_entry_request(self) -> None:
         """Leaf writer for `station_entry_request` (design_new.md Latch Table).

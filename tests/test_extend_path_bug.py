@@ -236,7 +236,8 @@ class TestExtendPathBug:
 
         controller.commands.power_on_cmd()
         controller.commands.set_cab("A")
-        controller.depart()
+        controller.ato.engage()
+        controller.ops.enter_running_moving()
 
         # Sync train state
         demo_train.state = controller.ops.state
@@ -320,7 +321,8 @@ class TestExtendPathBug:
 
         controller.commands.power_on_cmd()
         controller.commands.set_cab("A")
-        controller.depart()
+        controller.ato.engage()
+        controller.ops.enter_running_moving()
 
         # Simulate train moving to BLOCK_B (middle of route). The live span
         # lives on the controller; cab "A" (set above) makes end_a the head,

@@ -790,6 +790,7 @@ def setup_demo_train(
 
         controller = sim_controller.get_or_create_controller(train.train_id)
         controller.commands.enqueue_command("power_on")
+        controller.commands.enqueue_command("set_mode", {"mode": "ato"})
 
     print(f"  ✓ Registered route {route.route_id!r} with {len(route.tasks)} tasks")
     print(f"  ✓ Stabled 5 trains in the depot (phase-shifted): {[s[0] for s in train_specs]}")

@@ -1136,9 +1136,9 @@ def setup_demo_train(
             n_branch += 1
         else:
             n_main += 1
-        sim_controller.get_or_create_controller(train_id).commands.enqueue_command(
-            "power_on"
-        )
+        _ctrl = sim_controller.get_or_create_controller(train_id)
+        _ctrl.commands.enqueue_command("power_on")
+        _ctrl.commands.enqueue_command("set_mode", {"mode": "ato"})
 
     print(f"  Demo 6: {len(TRAINS)} trains placed; assigned {n_branch} to the "
           f"Branch route and {n_main} to the Main route, powered on.")

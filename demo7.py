@@ -359,9 +359,9 @@ def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
         ))
     sim_controller.route_executor.register_route(route)
     route.assign_train("T_LOOP")
-    sim_controller.get_or_create_controller("T_LOOP").commands.enqueue_command(
-        "power_on"
-    )
+    _loop_ctrl = sim_controller.get_or_create_controller("T_LOOP")
+    _loop_ctrl.commands.enqueue_command("power_on")
+    _loop_ctrl.commands.enqueue_command("set_mode", {"mode": "ato"})
 
     print(f"  Demo 7: 1 loco on a 4-block loop, mode={DEMO7_MODE!r}.")
     if DEMO7_MODE == "continuous":

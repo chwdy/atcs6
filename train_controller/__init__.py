@@ -685,10 +685,10 @@ class TrainController:
         # design_new.md Action step `7b40` onward: immediately after the command
         # drain, SimulationController's narrow callback consumes the stopped-gated
         # `pending_path_cancel_request` (step `7b40`) and then performs the
-        # departure / station-entry transitions Plan wrote (calling
-        # `TrainController.depart()` / `enter_station_dwell()`), so the control
-        # decision below evaluates the post-cancel, post-transition state. The
-        # callback exposes no dispatcher object to the controller.
+        # station-entry transition Plan wrote (calling
+        # `TrainController.enter_station_dwell()`), so the control decision below
+        # evaluates the post-cancel, post-transition state. The callback exposes
+        # no dispatcher object to the controller.
         if after_command_drain is not None:
             after_command_drain()
 
@@ -849,10 +849,13 @@ class TrainController:
         )
 
         if self.commands.control_mode == "ato":
-            # NOTE: We no longer auto-correct cab during tick().
-            # Previously, this would partially update cab (leading_end only) without
-            # flipping facing_direction and entry edges, causing state corruption.
-            # Cab alignment happens in ato.engage() when a path direction is known.
+            # Cab-alignment bridge: while the engaged train is stopped, align the
+            # cab to the live path direction so ATO drives the right way (the head
+            # is still cab-derived in this build; a wrong-direction cab reports a
+            # zero ATC limit). The full span reframe is safe because it runs only
+            # while stopped. Removed once the head is derived from live authority.
+            if self.ato.engaged:
+                self.ato.align_cab_to_path()
 
             # Drive while ATO intent is engaged; otherwise brake to a stand.
             if self.ato.engaged:
@@ -2324,73 +2327,6 @@ class TrainController:
     # Route Executor Commands (for RouteExecutor integration)
     # -------------------------------------------------------------------------
 
-    def depart(self) -> Tuple[bool, Optional[str]]:
-        """
-        Depart-acceptance entry point called by `RouteExecutor` when live
-        authority exists.
-
-        Per design_new.md line 1812 "TrainController.depart() canonical
-        contract", the accepted entry states are `{READY, RUNNING_MOVING}`:
-        the second case admits the reactive speed-based evaluation having
-        already advanced state ahead of this call. From RUNNING_MOVING the
-        call is an idempotent success that does not change state but still
-        applies side effects (in ATO, invokes `ato_go()` so `ato_running = True`
-        is written if the reactive transition has not already done so).
-
-        Returns:
-            Tuple[bool, Optional[str]]: (success, diagnostic_reason).
-            On success: (True, None). On rejection: (False, "<reason>").
-        """
-        # Per design_new.md line 1812: precondition checks before state guards.
-        if self.path_projection.received_path_plan is None:
-            return (False, "no active path")
-        if self.eb.active:
-            return (False, "EB active")
-        if self.route_hooks.phase_latches.power_off:
-            return (False, "pending power-off")
-
-        train = self._get_train()
-        if train is None:
-            return (False, "train not found")
-
-        if self.ops.state not in (TrainState.READY, TrainState.RUNNING_MOVING):
-            return (False, f"invalid state: {self.ops.state.value}")
-
-        # design_new.md "Event log": a TRAIN_DEPARTED event marks the
-        # READY -> RUNNING_MOVING transition only, not the idempotent re-calls
-        # depart() accepts while already moving.
-
-        _was_ready = self.ops.state == TrainState.READY
-
-        # ATO mode: engage ATO intent, then move state through the single
-        # RUNNING_MOVING writer for the READY entry.
-        if self.commands.control_mode == "ato":
-            result = self.ato.engage()
-            if result.success:
-                if _was_ready:
-                    self.ops.enter_running_moving()
-                    self._emit_event(
-                        "depart", f"{self.train_id} departed"
-                    )
-                return (True, None)
-            return (False, result.reason if hasattr(result, "reason") else "ato engage rejected")
-
-        # Manual mode: requires a cab and facing direction. From
-        # RUNNING_MOVING the call is an idempotent success.
-        # path_backed_run_active is now derived from path/route/destination
-        # context; no field write needed here.
-        if self.commands.cab not in ("A", "B"):
-            return (False, "no cab selected")
-        if self._facing_direction() is None:
-            return (False, "facing direction not set")
-        if self.ops.state == TrainState.READY:
-            # Manual depart moves state through the single RUNNING_MOVING
-            # writer directly, without going through ato.go() (design_new.md
-            # "TrainController.depart() canonical contract").
-            self.ops.enter_running_moving()
-            self._emit_event("depart", f"{self.train_id} departed")
-        return (True, None)
-
     def _emit_dwell_diagnostic(
         self, message: str, operation: str = "enter_station_dwell"
     ) -> None:
@@ -2453,11 +2389,10 @@ class TrainController:
                 event_time=self.commands._estimate_event_time(),
                 payload=payload or {},
                 # Every caller of `_emit_event` is a transition-consume event —
-                # the depart / enter_station_dwell / finish_dwell acceptance,
-                # each the Action consumer of departure_request /
-                # station_entry_request / station_exit_request — so per the Latch
-                # consumption events table (design_new.md:156) it passes
-                # latch_event=True and is never dropped by suppression.
+                # the enter_station_dwell / finish_dwell acceptance, each the
+                # Action consumer of station_entry_request / station_exit_request
+                # — so per the Latch consumption events table (design_new.md:156)
+                # it passes latch_event=True and is never dropped by suppression.
                 latch_event=True,
             )
         except Exception:

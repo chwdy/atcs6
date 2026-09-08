@@ -847,30 +847,6 @@ class TestTrainStateTransitions:
         assert controller.ops.state == TrainState.READY
         assert controller.commands.cab == "A"
 
-    def test_depart_transition(self):
-        """Test depart() transitions READY -> RUNNING_MOVING (manual mode)."""
-        from unittest.mock import MagicMock
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.READY
-        )
-        set_train_span(controller, (0, 0), facing_direction=Direction.NORTH)
-        # Use manual mode to test depart transition (not ATO auto-cab logic).
-        # Manual depart now requires a cab to be selected explicitly.
-        controller.commands.control_mode = "manual"
-        controller.commands.cab = "A"
-        # Per design_new.md "`TrainController.depart()` canonical contract":
-        # depart() requires an active path plan.
-        # Stub the path dispatcher to satisfy the received_path_plan precondition.
-        mock_plan = MagicMock()
-        mock_dispatcher = MagicMock()
-        mock_dispatcher.get_active_path.return_value = mock_plan
-        controller.path_dispatcher = mock_dispatcher
-        success, reason = controller.depart()
-        assert success is True
-        assert reason is None
-        assert controller.ops.state == TrainState.RUNNING_MOVING
-
-
     def test_path_backed_manual_run_still_completes_to_standby(self):
         """A path-backed run still completes to standby (READY) after ATO->manual.
 
@@ -908,46 +884,6 @@ class TestTrainStateTransitions:
 
         assert controller.ops.state == TrainState.READY
         assert controller.path_projection.path_backed_run_active is False
-
-    def test_depart_fails_without_direction(self):
-        """Test depart() fails without facing direction."""
-        from unittest.mock import MagicMock
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.READY
-        )
-        # Per design_new.md "`TrainController.depart()` canonical contract":
-        # depart() requires an active path plan
-        # before checking other preconditions (direction, state).
-        mock_plan = MagicMock()
-        mock_dispatcher = MagicMock()
-        mock_dispatcher.get_active_path.return_value = mock_plan
-        controller.path_dispatcher = mock_dispatcher
-        controller.commands.control_mode = "manual"
-        controller.commands.cab = "A"
-        # No span seeded -> controller has no facing direction.
-        controller.physics_sync.current_span = None
-        success, reason = controller.depart()
-        assert success is False
-        assert reason is not None
-
-    def test_depart_fails_from_wrong_state(self):
-        """Test depart() fails from non-READY/RUNNING_MOVING state (e.g. AT_STATION)."""
-        from unittest.mock import MagicMock
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.RUNNING_AT_STATION
-        )
-        # Per design_new.md "`TrainController.depart()` canonical contract":
-        # depart() requires an active path plan.
-        mock_plan = MagicMock()
-        mock_dispatcher = MagicMock()
-        mock_dispatcher.get_active_path.return_value = mock_plan
-        controller.path_dispatcher = mock_dispatcher
-        set_train_span(controller, (0, 0), facing_direction=Direction.NORTH)
-        success, reason = controller.depart()
-        assert success is False
-        assert reason is not None
-
-
 
     def test_enter_station_dwell_transition(self):
         """enter_station_dwell() transitions READY -> RUNNING_AT_STATION.
@@ -1210,17 +1146,10 @@ class TestCompleteStateFlows:
         assert controller.commands.set_cab("A").success is True
         assert controller.ops.state == TrainState.READY
 
-        # Depart (manual mode to bypass ATO auto-cab selection).
-        # Per design_new.md "`TrainController.depart()` canonical contract":
-        # depart() now returns (bool, Optional[str]).
-        from unittest.mock import MagicMock
+        # Start moving (manual mode to bypass ATO auto-cab selection). Manual
+        # trains have no depart handshake; put the train in the moving state.
         controller.commands.control_mode = "manual"
-        mock_plan = MagicMock()
-        mock_dispatcher = MagicMock()
-        mock_dispatcher.get_active_path.return_value = mock_plan
-        controller.path_dispatcher = mock_dispatcher
-        success, _ = controller.depart()
-        assert success is True
+        controller.ops.enter_running_moving()
         assert controller.ops.state == TrainState.RUNNING_MOVING
 
     def test_running_to_station_to_complete_flow(self):
@@ -1257,26 +1186,18 @@ class TestCompleteStateFlows:
         # Need to set controller state too for proper flow
         from unittest.mock import MagicMock
         set_train_span(controller, (0, 0), facing_direction=Direction.NORTH)
-        # Use manual mode to test depart (not ATO auto-cab logic). Manual
-        # depart now requires a cab to be selected explicitly.
+        # Use manual mode (not ATO auto-cab logic). Manual trains have no depart
+        # handshake; put the train in the moving state directly.
         controller.commands.control_mode = "manual"
         controller.commands.cab = "A"
-        # Per design_new.md "`TrainController.depart()` canonical contract":
-        # depart() requires an active path plan.
-        mock_plan = MagicMock()
-        mock_dispatcher = MagicMock()
-        mock_dispatcher.get_active_path.return_value = mock_plan
-        controller.path_dispatcher = mock_dispatcher
-        controller.depart()
+        controller.ops.enter_running_moving()
         assert controller.ops.state == TrainState.RUNNING_MOVING
 
         # Arriving at the station completes the path into READY first
-        # (on_path_complete), the only state dwell entry is valid from.
-        # The dispatcher transitions Path.status away from ACTIVE before the
-        # completion callback runs, so the live-authority read is None by then
-        # (design_new.md step `09b0`); model that so the reactive evaluator the
-        # callback defers to observes no authority and moves to READY.
-        mock_dispatcher.get_active_path.return_value = None
+        # (on_path_complete), the only state dwell entry is valid from. With no
+        # dispatcher wired, the live-authority read is already None, so the
+        # reactive evaluator the callback defers to observes no authority and
+        # moves to READY (design_new.md step `09b0`).
         controller.on_path_complete()
         assert controller.ops.state == TrainState.READY
 

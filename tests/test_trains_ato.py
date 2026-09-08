@@ -223,46 +223,6 @@ class TestAtoDepartCallsAtoGo:
         controller.physics_sync.current_speed_kmh = 30.0
         return train, controller
 
-    def test_depart_calls_ato_go_in_ato_mode(self, network):
-        """
-        depart() should call ato_go() when in ATO mode.
-        This is like RouteExecutor pressing the Go button.
-        """
-        track = Tile(x=0, y=0, track_bits=TRACK_EW)
-        next_track = Tile(x=1, y=0, track_bits=TRACK_EW)
-        network.add_track(track)
-        network.add_track(next_track)
-        make_segment_block_with_tracks(network, "BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
-
-        car = TrainCar("DEPART_ATO", "LOCOMOTIVE", length_cm=40.0)
-        train = Train(train_id="DEPART_ATO", consist=[car])
-        network.add_train(train)
-        network.place_train(train, 0, 0, Direction.EAST)
-
-        controller = create_controller_for_train(train.train_id, network)
-        controller.commands.control_mode = "ato"
-        controller.commands.cab = "A"
-        controller.ops.state = TrainState.READY
-        controller.ato.engaged = False
-
-
-        # depart() is called by RouteExecutor.
-        # Per design_new.md "`TrainController.depart()` canonical contract":
-        # depart() requires an active path plan.
-        from unittest.mock import MagicMock
-        mock_plan = MagicMock()
-        mock_dispatcher = MagicMock()
-        mock_dispatcher.get_active_path.return_value = mock_plan
-        controller.path_dispatcher = mock_dispatcher
-        # depart() now returns (bool, Optional[str]) per design_new.md
-        # "`TrainController.depart()` canonical contract".
-        success, reason = controller.depart()
-        assert success is True
-
-        # In ATO mode, depart() calls ato_go(), so ato_running should be True
-        assert controller.ato.engaged is True
-        assert controller.ops.state == TrainState.RUNNING_MOVING
-
     def test_ato_stop_sets_ato_running_false(self, network):
         """
         ato_stop() simply sets ato_running=False.

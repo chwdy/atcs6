@@ -92,7 +92,9 @@ def rolling_train_with_authority_to_c(network):
     controller.ops.state = TrainState.READY
     controller.commands.control_mode = "manual"
     controller.commands.cab = "A"
-    assert controller.depart()[0]
+    # Manual trains have no depart handshake; the driver drives. Put the train
+    # in the moving state and give it a handle.
+    controller.ops.enter_running_moving()
     assert controller.commands.set_handle(HandlePosition.P4).success
 
     sim.block_occupancy_detector.input_interface = FakeDetectorInput(

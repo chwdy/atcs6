@@ -316,28 +316,6 @@ def register(app, state: AppState) -> None:
             return jsonify({"status": "success", **_train_to_dict(train, state.network)})
         return jsonify({"error": result.message}), 400
 
-    @app.route("/api/trains/<train_id>/depart", methods=["POST"])
-    def train_depart(train_id):
-        """Depart-acceptance command for the controller.
-
-        Per design_new.md, dwell exit is route-driven via
-        ``RouteExecutor.tick_train_plan(...) -> finish_dwell()``; the API
-        path only invokes the canonical ``TrainController.depart()`` for the
-        ``READY`` -> ``RUNNING_MOVING`` transition.
-        """
-        train = train_service.get_train(state, train_id)
-        if not train:
-            return jsonify({"error": "Train not found"}), 404
-
-        # depart() returns a (success, reason) tuple; unpack it and branch on
-        # the boolean. A bare `if tuple:` is always truthy, which would report
-        # every rejection (no active path, EB active, pending power-off,
-        # invalid state) as a 200 success.
-        success, reason = train_service.depart(state, train_id)
-        if success:
-            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
-        return jsonify({"error": reason or "Cannot depart"}), 400
-
     # ============================================================================
     # Emergency and Stop Control
     # ============================================================================

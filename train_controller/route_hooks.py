@@ -27,7 +27,6 @@ surface:
   - ``controller.enter_station_dwell()``
   - ``controller.finish_dwell()``
   - ``controller.on_path_complete()``
-  - ``controller.depart()``
 
 Those façade methods delegate to RouteHooks (or write through to other
 sub-modules) when latch writes are needed.

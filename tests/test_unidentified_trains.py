@@ -474,11 +474,6 @@ def test_every_operator_command_is_refused_for_an_unidentified_train():
         assert result.success is False
         assert "unidentified train" in result.message.lower()
 
-    # depart returns the controller's (success, reason) tuple.
-    success, reason = train_service.depart(state, unidentified_id)
-    assert success is False
-    assert "unidentified train" in reason.lower()
-
     # The controller never saw any of it.
     assert sim.controllers[unidentified_id].commands.cab is None
     assert sim.controllers[unidentified_id].ops.state.name == "OFF"

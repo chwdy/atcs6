@@ -139,12 +139,12 @@ def _seed_rolling_train_on_live_path(
     assert result.success, f"create_path failed: {getattr(result, 'reason', None)}"
 
     # Bring the train under control with real forward authority: manual mode,
-    # cab A, READY -> depart() transitions to RUNNING_MOVING with travel EAST.
+    # cab A, moving EAST. Manual trains have no depart handshake; put the train
+    # in the moving state directly.
     controller.ops.state = TrainState.READY
     controller.commands.control_mode = "manual"
     controller.commands.cab = "A"
-    ok, reason = controller.depart()
-    assert ok, f"depart() failed: {reason}"
+    controller.ops.enter_running_moving()
     assert controller.ops.state == TrainState.RUNNING_MOVING
 
     return sim, dispatcher, controller, train, result.path_id

@@ -224,28 +224,42 @@ class ATOComputer:
         if not c.power_on:
             return CommandResult(False, "Power is off")
 
-        # Refresh the destination snapshot so the head/cab alignment used by
-        # the driving rule reflects the current path.
+        # Refresh the destination snapshot and align the cab to any live path
+        # direction so the driving rule can run immediately when authority
+        # already exists.
         self.info = self.compute_info()
-
-        # Cab auto-alignment bridge: the head is still selected through the cab
-        # in this build; align it to the live path direction when one is known
-        # so the ATO driving rule can run. (This alignment is removed once the
-        # head is derived from live authority.)
-        if self.info and self.info.required_cab:
-            required_cab = self.info.required_cab
-            if c.commands.cab != required_cab and c.is_stopped():
-                old_cab = c.commands.cab
-                result = c.commands.set_cab(required_cab, internal=True)
-                if result.success:
-                    c.notifications.emit(
-                        f"ATO auto-{'selected' if old_cab is None else 'switched'} cab to {required_cab} for path direction",
-                        operation="ato_engage",
-                        kind=_Kind.INFO,
-                    )
+        self.align_cab_to_path()
 
         self.engaged = True
         return CommandResult(True, "ATO engaged")
+
+    def align_cab_to_path(self) -> None:
+        """Align the cab to the live path's required direction (cab bridge).
+
+        The head is still selected through the cab in this build, so ATO drives
+        the wrong way (ATC reports WRONG_DIRECTION_CAB, a zero limit) whenever
+        the cab points away from the acquired authority. Operator intent
+        (set_mode("ato")) is set before a path exists, so the alignment cannot
+        happen once at engage time; the ATO driving rule calls this every tick
+        the engaged train is stopped, and it re-aligns the cab through the full
+        span reframe of ``set_cab(..., internal=True)``. Doing it only while the
+        train is stopped keeps the reframe safe. (This whole bridge is removed
+        once the head is derived from live authority.)
+        """
+        c = self._c
+        if not c.is_stopped():
+            return
+        required_cab = c.cab_policy.required_cab_for_path()
+        if required_cab is None or c.commands.cab == required_cab:
+            return
+        old_cab = c.commands.cab
+        result = c.commands.set_cab(required_cab, internal=True)
+        if result.success:
+            c.notifications.emit(
+                f"ATO auto-{'selected' if old_cab is None else 'switched'} cab to {required_cab} for path direction",
+                operation="ato_align_cab",
+                kind=_Kind.INFO,
+            )
 
     def disengage(self) -> CommandResult:
         """Clear the operator's ATO intent (``engaged = False``).

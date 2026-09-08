@@ -159,18 +159,19 @@ def test_bootstrap_writes_current_span_before_first_tick():
 
 
 def test_bootstrap_queues_power_on_for_first_tick_drain():
-    """Bootstrap must enqueue power_on; Phase 2 drains it. ato_go is left to
-    Phase 1's auto-depart once authority is granted."""
+    """Bootstrap must enqueue the operator start-up: power_on then set_mode(ato)
+    to engage. Phase 2 drains both; an engaged ATO train then drives once Phase 1
+    grants authority (design_new.md "ato.engaged")."""
     with contextlib.redirect_stdout(io.StringIO()):
         network, _, sim_controller, _ = bootstrap_runtime(demo=True, setup_train=True)
 
     controller = sim_controller.get_or_create_controller("DEMO_TRAIN")
 
-    # Before first tick: power_on queued, controller still OFF, cab pre-set by
-    # add_train's `initial_cab="A"` placement input.
+    # Before first tick: power_on + set_mode queued, controller still OFF, cab
+    # pre-set by add_train's `initial_cab="A"` placement input.
     queued_kinds = [cmd.kind for cmd in controller.commands.command_inbox]
-    assert queued_kinds == ["power_on"], (
-        f"Expected queued [power_on]; got {queued_kinds}"
+    assert queued_kinds == ["power_on", "set_mode"], (
+        f"Expected queued [power_on, set_mode]; got {queued_kinds}"
     )
     assert controller.ops.state == TrainState.OFF
     assert controller.commands.cab == "A"

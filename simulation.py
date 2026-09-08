@@ -1531,27 +1531,17 @@ class SimulationController(SwitchOutputOwner):
         self._consume_transition_requests(controller)
 
     def _consume_transition_requests(self, controller: TrainController) -> None:
-        """Perform the depart and station-entry transitions Plan requested, then
-        clear each request.
+        """Perform the station-entry transition Plan requested, then clear the
+        request.
 
         Runs in the Action early slot after the `pending_path_cancel_request`
         consumer (step `7b40`), between the command drain and the control
         decision (via `TrainController.tick(..., after_command_drain=...)`) so the
-        control decision evaluates the post-transition state. `depart()` and
-        `enter_station_dwell()` self-gate on their own preconditions; a rejected
+        control decision evaluates the post-transition state.
+        `enter_station_dwell()` self-gates on its own preconditions; a rejected
         request is cleared and Plan may write a fresh one on a later tick.
         """
         latches = controller.route_hooks.phase_latches
-        if latches.departure_request:
-            try:
-                controller.depart()
-            except Exception:
-                logger.warning(
-                    "depart() raised for %s; will retry",
-                    controller.train_id,
-                    exc_info=True,
-                )
-            latches.departure_request = False
         if latches.station_entry_request:
             try:
                 controller.enter_station_dwell()

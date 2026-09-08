@@ -3279,15 +3279,15 @@ class RouteExecutor:
         """Plan step 7: create or extend authority for the resolved target.
 
         Returns True when authority was successfully acquired (create/extend
-        succeeded and depart() was called), False otherwise. The return value
-        is used by the fix #14 retry loop in tick_train_plan.
+        succeeded), False otherwise. The return value is used by the fix #14
+        retry loop in tick_train_plan.
 
         On a successful create/extend, write
         ``task_runs[projection.walk_position].resolved_target`` (Plan-only
-        writer) and call ``controller.depart()``. Per design_new.md
-        line 1078, departure is not a route-level policy in v1: Plan
-        always calls ``depart()`` after a successful create/extend.
-        There is no ``departure_requested`` latch.
+        writer). There is no departure handshake (design_new.md "ato.engaged"):
+        an engaged ATO train, or a manual train with a command, drives on its
+        own once authority exists, and the reactive rule moves it
+        READY -> RUNNING_MOVING from the observed motion.
         """
         if self.path_dispatcher is None:
             return False
@@ -3616,12 +3616,10 @@ class RouteExecutor:
         if projection.direction in ("forward", "reverse"):
             exec_state.direction = projection.direction
 
-        # design_new.md "Plan departure-request writes": Plan writes
-        # `departure_request` after a successful create/extend; the Action depart
-        # consumer calls `TrainController.depart()`, records its result, and
-        # clears the request. If depart rejects, Plan writes a fresh request on a
-        # later eligible tick — Plan never calls `depart()` itself.
-        controller.route_hooks.phase_latches.set_departure_request()
+        # design_new.md "ato.engaged": there is no departure handshake. Once
+        # authority is acquired, an engaged ATO train (or a manual train with a
+        # command) drives on its own through the Action driving rule, and the
+        # reactive rule moves READY -> RUNNING_MOVING from the observed motion.
         return True
 
     def _maintain_idle_hold(

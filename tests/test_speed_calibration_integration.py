@@ -64,6 +64,10 @@ def _free_train(state):
 def _ready_manual_train(sim, network, train_id):
     """Put a placed train under manual power-percent control, stopped."""
     controller = sim.get_or_create_controller(train_id)
+    # Drop the scene's queued start-up commands (power_on + set_mode("ato")):
+    # they would otherwise drain on a later tick and flip the train back to ATO,
+    # which calibration refuses. This helper sets power and mode directly.
+    controller.commands.command_inbox.clear()
     controller.commands.power_on_cmd()
     controller.commands.set_mode("manual")
     controller.commands.set_manual_mode_type("power_percent")

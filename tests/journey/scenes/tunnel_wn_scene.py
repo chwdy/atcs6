@@ -94,6 +94,7 @@ class TunnelWNScene:
 
         controller = sim_controller.get_or_create_controller(self.train_id)
         controller.commands.enqueue_command("power_on")
+        controller.commands.enqueue_command("set_mode", {"mode": "ato"})
 
         return SceneFixture(
             network=network,
