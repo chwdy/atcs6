@@ -67,8 +67,6 @@ export interface PhaseLatches {
   route_abort: boolean;
   power_off: boolean;
   route_deactivate: boolean;
-  station_entry_request: boolean;
-  station_exit_request: boolean;
 }
 
 export interface PathCompletionResult {

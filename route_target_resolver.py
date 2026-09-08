@@ -140,8 +140,8 @@ class RouteTargetResolver:
             # dwell whose `task_location` ID has left the network is BROKEN like
             # any other task: `missing_target` "applies to all task kinds,
             # including `dwell`" (design_new.md "RouteTaskRun schema"). Without
-            # this, Plan would enter RUNNING_AT_STATION and hold on the timer
-            # of a station that no longer exists, instead of skipping it.
+            # this, Plan would hold on the dwell timer of a station that no
+            # longer exists, instead of skipping it.
             if not self.task_target_present(task):
                 from runtime_payloads import TargetResolutionFailureKind
 

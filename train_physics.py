@@ -623,7 +623,7 @@ class TrainPhysics:
 
         Per design_new.md "Voltage behavior" and "Power-controller role",
         `track_voltage` is per-tick derived state owned by `TrainPhysics`.
-        Operational state (OFF / READY / RUNNING_AT_STATION / RUNNING_MOVING)
+        Operational state (OFF / READY / RUNNING_MOVING)
         selects the voltage shape; for RUNNING_MOVING the speed scalar is
         published by the controller as `PhysicsCommand.voltage_source_speed_kmh`
         so physics never inspects manual-mode fields directly.
@@ -635,7 +635,7 @@ class TrainPhysics:
         # Read the operational state through `controller.state`, which is a
         # property proxying `ops.state` (TrainController has no stored top-level
         # `state`). Per design_new.md "SpeedProfile", the stopped-but-lit states
-        # (READY / RUNNING_AT_STATION) output `lighting_voltage`.
+        # (READY) output `lighting_voltage`.
         operational_state = (
             getattr(controller, "state", None) if controller is not None else None
         )
@@ -664,8 +664,8 @@ class TrainPhysics:
             speed_profile.lighting_voltage if speed_profile is not None else 0.0
         )
 
-        # Stopped lit states: lighting voltage scalar.
-        if operational_state in (TrainState.READY, TrainState.RUNNING_AT_STATION):
+        # Stopped lit state: lighting voltage scalar. A dwelling train is READY.
+        if operational_state == TrainState.READY:
             return lighting_voltage
 
         # RUNNING_MOVING: the reference comes from the controller's

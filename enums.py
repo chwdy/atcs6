@@ -127,23 +127,21 @@ class TrainState(Enum):
     """
     Train power and operational states.
 
-    Per design_new.md, the operational state set in v1 is:
+    Per design_new.md, the operational state set in v1 is exactly three:
     - OFF: power off
-    - READY: powered, stopped, not dwelling, regardless of cab selection
-    - RUNNING_MOVING: depart accepted; physically moving or stopped at zero
-      ATC clearance under the same active authority
-    - RUNNING_AT_STATION: route-managed dwell at a confirmed stop task
+    - READY: powered and stopped (including a train dwelling at a stop, which
+      is not a separate state — the planner withholds its onward authority)
+    - RUNNING_MOVING: physically moving, or stopped at zero ATC clearance under
+      the same active authority
 
-    Manual driving is a control mode (control_mode == "manual"), not a
-    separate operational state; a stopped manual train sits in READY just
-    like an ATO train. Cab selection is an orthogonal field — see the
-    Allowed (state, cab) pairs table in design_new.md.
+    READY <-> RUNNING_MOVING is movement-derived. Manual driving is a control
+    mode (control_mode == "manual"), not a separate operational state; a
+    stopped manual train sits in READY just like an ATO train.
     """
 
     OFF = "off"
     READY = "ready"
     RUNNING_MOVING = "running_moving"
-    RUNNING_AT_STATION = "running_at_station"
 
 
 class ControllerCondition(Enum):

@@ -172,11 +172,9 @@ class OperatorCommands:
                 result = self._execute_set_handle(payload, event_time)
             elif kind == "set_manual_power_percent":
                 result = self._execute_set_manual_power_percent(payload, event_time)
-            # ato_go / ato_stop are not operator commands; they are internal
-            # helpers invoked directly by depart() and by the reactive
-            # transition in on_physics_updated. They do not appear in the
-            # canonical drain order. Any leftover bucket of them gets caught
-            # by the "unknown kind" notification in _drain_command_inbox.
+            # ATO engage/disengage are not operator commands; set_mode is the
+            # operator surface for ATO intent, and it engages/disengages
+            # directly. They do not appear in the canonical drain order.
         except Exception as exc:
             c.notifications.emit(
                 f"Command {kind} raised: {exc}",
@@ -337,7 +335,7 @@ class OperatorCommands:
     # The four Action latches themselves live on
     # `self._c.route_hooks.phase_latches` (see
     # `runtime_payloads.PhaseLatches`). Setting `power_off` also has the
-    # cross-field side effect of clearing `ato_running`; that side effect is
+    # cross-field side effect of clearing `ato.engaged`; that side effect is
     # bundled into `_apply_power_off_request(...)` so every power-off code
     # path stays consistent.
 
@@ -345,7 +343,7 @@ class OperatorCommands:
         """Set the `power_off` latch and disengage any active ATO run.
 
         Wraps `phase_latches.set_power_off(...)` together with the
-        controller-local side effects of clearing `ato_running`, force-
+        controller-local side effects of clearing `ato.engaged`, force-
         clearing any service-stop override, and neutralizing propulsion:
         `handle_position` goes to neutral and `manual.manual_power_percent`
         is zeroed, so the rest of this tick's `TrainController.tick(...)`
@@ -444,15 +442,13 @@ class OperatorCommands:
           (``control_mode == "manual"``). In ATO the system aligns the cab
           itself, so an operator-issued ``set_cab`` is rejected.
         - Train must be stopped (speed = 0)
-        - From any state other than RUNNING_AT_STATION, setting the cab (to
-          'A', 'B', or None) transitions to READY. From RUNNING_AT_STATION the
-          dwell state is preserved (and `set_cab(None)` is rejected outright).
+        - Setting the cab (to 'A', 'B', or None) leaves a stopped train in READY.
         - Switching from A to B (or vice versa) flips facing_direction
 
-        ``internal=True`` is the ATO auto-cab-selection path: the controller
-        aligns the cab to the live path direction during ``depart()``. It
-        bypasses the manual-mode gate (the system, not the operator, is
-        selecting the cab) but keeps every other rule (stopped, frame flip).
+        ``internal=True`` is the ATO auto-cab-alignment path: the controller
+        aligns the cab to the live path direction while the engaged train is
+        stopped. It bypasses the manual-mode gate (the system, not the operator,
+        is selecting the cab) but keeps every other rule (stopped, frame flip).
         """
         c = self._c
         train = c._get_train()
@@ -472,16 +468,9 @@ class OperatorCommands:
         old_cab = self.cab
 
         # Per design_new.md: same-cab no-op success — does not change state,
-        # does not disengage ato_running, no notification.
+        # does not disengage ATO intent, no notification.
         if cab == old_cab:
             return CommandResult(True, f"Cab already {cab}")
-
-        # Per design_new.md line 1630 + Allowed (state, cab) pairs table
-        # (line 1589): `(RUNNING_AT_STATION, None)` is not a legal pair.
-        # Reject `set_cab(None)` from RUNNING_AT_STATION; the operator must
-        # finish dwell or pick a concrete cab letter instead.
-        if cab is None and c.ops.state == TrainState.RUNNING_AT_STATION:
-            return CommandResult(False, "cannot deselect cab while dwelling")
 
         old_head = "end_b" if old_cab == "B" else "end_a"
         new_head = "end_b" if cab == "B" else "end_a"
@@ -496,12 +485,8 @@ class OperatorCommands:
 
         # Aligning the cab does not touch ATO intent: `engaged` is cleared only
         # by EB activation, power-off, and set_mode("manual") (design_new.md
-        # "ato.engaged"). set_cab from RUNNING_AT_STATION preserves the dwell
-        # state.
-
-        prev_state = c.ops.state
-        if prev_state != TrainState.RUNNING_AT_STATION:
-            c.ops.state = TrainState.READY
+        # "ato.engaged").
+        c.ops.state = TrainState.READY
 
         return CommandResult(True, f"Cab set to {cab}")
 
@@ -510,16 +495,14 @@ class OperatorCommands:
         Set control mode (ATO or Manual).
 
         Per design_new.md, manual is a control mode, not a separate
-        operational state. Stopped manual trains sit in READY just
-        like ATO trains. From RUNNING_AT_STATION, the dwell state is
-        preserved; only the side effects (ato_running cleared) apply.
+        operational state. Stopped manual trains sit in READY just like ATO
+        trains.
 
         Rules:
         - Train must be stopped
-        - 'ato' / 'manual' both leave a stopped train in READY, unless coming
-          from RUNNING_AT_STATION which is preserved.
-        - The retained `manual.manual_power_percent` is cleared, per
-          design_new.md "Driver-control interlock".
+        - 'ato' / 'manual' both leave a stopped train in READY.
+        - set_mode("ato") engages ATO intent; set_mode("manual") disengages it.
+        - The retained `manual.manual_power_percent` is cleared.
         """
         c = self._c
         train = c._get_train()
@@ -546,9 +529,8 @@ class OperatorCommands:
         # become the train's command after it with no fresh driver input.
         c.manual.reset_power_percent_for_safety()
 
-        # Preserve dwell state if currently dwelling; otherwise land in READY.
-        if c.ops.state != TrainState.RUNNING_AT_STATION:
-            c.ops.state = TrainState.READY
+        # A stopped train lands in READY.
+        c.ops.state = TrainState.READY
         return CommandResult(True, f"Mode set to {mode}")
 
     def set_manual_mode_type(self, mode_type: str) -> CommandResult:

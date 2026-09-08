@@ -20,24 +20,11 @@ Findings as of the audit:
       OCCUPIED → FREE while train is on (5,0). Same root cause as F1.
       (Covered by tests/test_demo_train_journey_strict.py.)
 
-  F3  Phase-ownership violation: `TrainController.tick()` (Phase 2)
-      writes `state = RUNNING_AT_STATION` from its at-station check.
-      design_new.md "Phase structure" says only Phase 1
-      (`enter_station_dwell()`)
-      may make that transition.
-
-  F4  Path-completion gate never fires: because F3 closes the state==
-      RUNNING_MOVING gate inside `is_stopped_at_authority_end()` BEFORE
-      Phase 3's post-physics stop check runs, `try_complete_active_path()`
-      never executes. The active path therefore stays `ACTIVE` for the
-      entire run.
-
-  F5  One-tick `RUNNING_AT_STATION` + ACTIVE path window: at the tick
-      Phase 2 transitions to RUNNING_AT_STATION, Phase 3 hasn't run yet,
-      so the snapshot violates the design invariant "RUNNING_AT_STATION
-      ⇒ received_path_plan is None" (design_new.md "Controller state
-      machine" / the
-      `at_station_implies_no_path` invariant in `tests/journey/`).
+  F4  Path-completion gate fires on arrival: once the train is fully
+      stopped at the usable end of its authority, the stop-arrival check
+      calls `try_complete_active_path()` and the path becomes `COMPLETED`.
+      A dwell after the stop is not a controller state (the train stays
+      READY), so nothing closes the completion gate.
 
   F6  Route run never gets removed for normal completion: because F4
       prevents `try_complete_active_path()` → `handle_path_completion()`
@@ -101,66 +88,18 @@ def _run_demo_until_stopped(max_ticks: int = 2000, dt: float = 0.1):
 
 
 # --------------------------------------------------------------------------- #
-# F3: Phase 2 writes RUNNING_AT_STATION (contract: only Phase 1 enter_station_dwell)
-# --------------------------------------------------------------------------- #
-
-
-def test_F3_phase2_does_not_write_running_at_station_state():
-    """`TrainController.tick()` is Phase 2. Per design_new.md "Phase
-    structure", only `RouteExecutor` (Phase 1) may transition the controller
-    into `RUNNING_AT_STATION`, via `TrainController.enter_station_dwell()`.
-
-    The current implementation writes `self.state = RUNNING_AT_STATION`
-    directly inside Phase 2's `TrainController.tick()` whenever the
-    train's at-station check passes. This test enables a one-tick guard
-    around `Phase 2 → Phase 3 → Phase 1` and verifies the controller's
-    state field is not written by Phase 2.
-
-    We can't intercept the field write without monkey-patching, so we
-    check the consequence: after a single tick where the train is stopped
-    AT a route station, the dispatcher's path completion handshake should
-    have fired and the path should be COMPLETED. With the current
-    implementation it stays ACTIVE forever because the state field has
-    been clobbered by Phase 2 before Phase 3 reads it.
-    """
-    network, sim_controller, controller, _ = _run_demo_until_stopped()
-    dispatcher = sim_controller.path_dispatcher
-    active = dispatcher.get_active_path("DEMO_TRAIN")
-    # Phase-2 transition to RUNNING_AT_STATION is the *cause*; the *effect*
-    # we can assert directly is "after the train fully stopped at the
-    # terminal, the dispatcher path must not still be ACTIVE."
-    if active is None:
-        return  # OK — would mean the path completed normally
-    raise AssertionError(
-        f"After the train stopped at the East Terminal, the dispatcher "
-        f"path {active.path_id!r} is still ACTIVE "
-        f"({active.status.value!r}). Phase 3's post-physics stop check "
-        f"depends on `controller.ops.state == RUNNING_MOVING` "
-        f"(train_controller.py:1756); Phase 2 already transitioned the "
-        f"state to {controller.ops.state.value!r} before Phase 3 runs, so "
-        f"`try_complete_active_path()` never fires. Fix site: remove the "
-        f"`self.state = RUNNING_AT_STATION` write at "
-        f"train_controller.py:826-835 and let Phase 1 "
-        f"`enter_station_dwell()` own the transition."
-    )
-
-
-# --------------------------------------------------------------------------- #
-# F4: path-completion never fires (consequence test, distinct contract refs)
+# F4: path-completion fires on arrival at a terminal
 # --------------------------------------------------------------------------- #
 
 
 def test_F4_path_completes_on_arrival_at_terminal():
     """design_new.md "Active-path completion procedure" steps `8df5`/`bc55`
     /`790a`/`09b0`: once the train is fully stopped at the usable end of
-    the live authority, Phase 3 must call
+    the live authority, the stop-arrival check must call
     `PathDispatcher.try_complete_active_path(train_id)`, the path's status
     must transition to `COMPLETED`, and `received_path_plan` must return
-    `None` thereafter.
-
-    Currently the active path stays `ACTIVE` forever because the
-    Phase-2-owned RUNNING_AT_STATION write closes the state gate before
-    Phase 3 reaches the completion check (see test_F3 above).
+    `None` thereafter. A dwell after the stop is not a controller state (the
+    train stays READY), so nothing closes the completion gate.
     """
     _, sim_controller, controller, _ = _run_demo_until_stopped()
     dispatcher = sim_controller.path_dispatcher
@@ -177,51 +116,6 @@ def test_F4_path_completes_on_arrival_at_terminal():
         f"completion (design_new.md step `09b0`), got "
         f"{controller.path_projection.received_path_plan!r}."
     )
-
-
-# --------------------------------------------------------------------------- #
-# F5: one-tick (RUNNING_AT_STATION, active path) window
-# --------------------------------------------------------------------------- #
-
-
-def test_F5_at_station_implies_no_active_path():
-    """design_new.md "Controller state machine" (and the existing
-    `at_station_implies_no_path` invariant in tests/journey/invariants.py)
-    requires: `state == RUNNING_AT_STATION` implies
-    `received_path_plan is None`.
-
-    The current implementation violates this for at least one tick — the
-    tick where Phase 2's at-station check flips the state but Phase 3
-    has not yet completed the path. We drive the demo to that tick and
-    catch the violation.
-    """
-    with contextlib.redirect_stdout(io.StringIO()):
-        network, _path, sim_controller, _persistence = bootstrap_runtime(
-            demo=True, setup_train=True
-        )
-    train_id = "DEMO_TRAIN"
-    controller = sim_controller.get_or_create_controller(train_id)
-    dispatcher = sim_controller.path_dispatcher
-    dt = 0.1
-    violation = None
-    for tick in range(1, 2001):
-        sim_controller.update(dt)
-        if controller.ops.state == TrainState.RUNNING_AT_STATION:
-            active = dispatcher.get_active_path(train_id)
-            if active is not None:
-                violation = (tick, active.path_id, active.status.value)
-                break
-        if tick > 200 and controller.physics_sync.current_speed_kmh <= 0.05 and controller.ops.state == TrainState.READY:
-            # Past the stop without ever observing the bug
-            break
-    if violation is not None:
-        tick, pid, status = violation
-        raise AssertionError(
-            f"tick={tick}: controller.ops.state == RUNNING_AT_STATION while "
-            f"active path {pid!r} is still {status!r}. Per design_new.md, "
-            f"this combination must not be observable from outside a "
-            f"single Phase-3 commit window."
-        )
 
 
 # --------------------------------------------------------------------------- #

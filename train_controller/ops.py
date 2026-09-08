@@ -3,7 +3,7 @@ Operational State Machine sub-module of ``TrainController``.
 
 Per design_new.md "TrainController" sub-module decomposition: this
 sub-module owns the canonical operational state (``state``: ``OFF`` /
-``READY`` / ``RUNNING_MOVING`` / ``RUNNING_AT_STATION``), the current
+``READY`` / ``RUNNING_MOVING``), the current
 handle position, and the diagnostic ``handle_reason`` string.
 
 External callers access operational state as:
@@ -102,8 +102,8 @@ class OperationalStateMachine:
         ``TrainController.eb.release()`` clears that latch and the post-command
         call here then performs the move. This writes only ``state``; ATO
         intent is unaffected by movement or authority loss (design_new.md
-        "ato.engaged"). RUNNING_AT_STATION is not a source state here and is
-        left untouched.
+        "ato.engaged"). A dwelling train is READY, held there by the planner
+        withholding onward authority.
         """
         c = self._c
         if (

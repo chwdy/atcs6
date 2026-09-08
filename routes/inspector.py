@@ -187,16 +187,6 @@ _LATCH_META: Dict[str, Dict[str, str]] = {
         "writer": "Observe — TrainController.on_physics_updated",
         "consumer": "Observe — PathDispatcher.on_controller_progress (drains list)",
     },
-    "station_entry_request": {
-        "path": "route_hooks.phase_latches.station_entry_request",
-        "writer": "Plan — dwell-entry step",
-        "consumer": "Action — enter_station_dwell step (before the control decision)",
-    },
-    "station_exit_request": {
-        "path": "route_hooks.phase_latches.station_exit_request",
-        "writer": "Plan dwell-complete / Action teardown (run removal)",
-        "consumer": "Action — finish_dwell step (after the teardown latches)",
-    },
     "pending_path_cancel_request": {
         "path": "route_hooks.phase_latches.path_cancel_request",
         "writer": "Plan reconcile / Action cmd-drain or ATC / API handler",

@@ -264,15 +264,12 @@ class PendingPathCancelRequest:
 
 @dataclass
 class PhaseLatches:
-    """Aggregate of the six Action latches owned by `TrainController`.
+    """Aggregate of the four Action latches owned by `TrainController`.
 
     Per design_new.md (Latch Table) each latch shares the same lifecycle rule: a
     writer sets a latch and its named Action consumer consumes-and-clears it once
-    the consumer's gate passes. Two are transition requests Plan writes and the
-    Action transition consumers perform (`station_entry_request` ->
-    `enter_station_dwell()`, `station_exit_request` -> `finish_dwell()`); the
-    other four carry the teardown/cancel requests.
-    Bundling all six fields plus their canonical writers / consumers into one
+    the consumer's gate passes. All four carry the teardown/cancel requests.
+    Bundling all four fields plus their canonical writers / consumers into one
     data class keeps the latch discipline in a single place.
 
     The leaf writer is `set_path_cancel_request(...)`; the three composite
@@ -298,12 +295,6 @@ class PhaseLatches:
     route_abort: bool = False
     power_off: bool = False
     route_deactivate: bool = False
-    # Transition requests (design_new.md Latch Table): Plan writes these; the
-    # Action transition consumers perform the matching `TrainController`
-    # transition and clear the request in the same tick. Leaf bools, no
-    # `pending_` shorthand, no fan-out.
-    station_entry_request: bool = False
-    station_exit_request: bool = False
 
     #: Emit hook onto the one `NotificationCenter` stream, attached by
     #: `RouteHooks` to `controller.notifications.emit`. Injected rather than
@@ -489,31 +480,6 @@ class PhaseLatches:
             self.set_path_cancel_request(
                 ErrorRecord(reason, "revoked"), _KIND_INFO
             )
-
-    def set_station_entry_request(self) -> None:
-        """Leaf writer for `station_entry_request` (design_new.md Latch Table).
-
-        Plan writes this at the dwell-entry step (after writing the dwell row's
-        `started_at`); the Action consumer calls
-        `TrainController.enter_station_dwell()` and clears the request.
-        """
-        self.station_entry_request = True
-        self._emit(
-            "set_station_entry_request", "station entry requested", kind=_KIND_INFO
-        )
-
-    def set_station_exit_request(self) -> None:
-        """Leaf writer for `station_exit_request` (design_new.md Latch Table).
-
-        Plan's dwell-complete step — or an Action teardown consumer that removes
-        a run while `RUNNING_AT_STATION` — writes this; the Action station-exit
-        consumer calls `TrainController.finish_dwell()` (or its named no-op clear
-        when not dwelling) and clears the request.
-        """
-        self.station_exit_request = True
-        self._emit(
-            "set_station_exit_request", "station exit requested", kind=_KIND_INFO
-        )
 
     # ------------------------------------------------------------------
     # Read predicates

@@ -885,59 +885,6 @@ class TestTrainStateTransitions:
         assert controller.ops.state == TrainState.READY
         assert controller.path_projection.path_backed_run_active is False
 
-    def test_enter_station_dwell_transition(self):
-        """enter_station_dwell() transitions READY -> RUNNING_AT_STATION.
-
-        Per design_new.md "Controller state machine", dwell entry is valid
-        only from the
-        dispatcher-completed READY state: stop completion lands the train in
-        READY (on_path_complete), and the next Phase-1 dwell-entry step calls
-        enter_station_dwell() from there.
-        """
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.READY
-        )
-        # Every legal dwell entry has a selected cab (design_new.md step
-        # `d843`); Plan enforces it upstream, and enter_station_dwell()
-        # re-checks it defensively.
-        controller.commands.cab = "A"
-        ok, reason = controller.enter_station_dwell()
-        assert ok, reason
-        assert controller.ops.state == TrainState.RUNNING_AT_STATION
-
-    def test_enter_station_dwell_rejected_when_cabless(self):
-        """enter_station_dwell() rejects a cabless entry, leaving state
-        unchanged (design_new.md step `d843`: the method rejects when
-        `controller.cab ∉ {"A", "B"}`, preserving the allowed
-        `(RUNNING_AT_STATION, cab)` invariant)."""
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.READY
-        )
-        assert controller.commands.cab is None
-        ok, reason = controller.enter_station_dwell()
-        assert ok is False
-        assert reason is not None and "cab" in reason.lower()
-        assert controller.ops.state == TrainState.READY
-
-    def test_enter_station_dwell_rejected_from_running_moving(self):
-        """enter_station_dwell() is rejected (state unchanged) when not in
-        READY — the documented acceptance precondition
-        (design_new.md "Controller state machine")."""
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.RUNNING_MOVING
-        )
-        ok, reason = controller.enter_station_dwell()
-        assert not ok
-        assert controller.ops.state == TrainState.RUNNING_MOVING
-
-    def test_finish_dwell_transition(self):
-        """finish_dwell() transitions RUNNING_AT_STATION -> READY."""
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.RUNNING_AT_STATION
-        )
-        controller.finish_dwell()
-        assert controller.ops.state == TrainState.READY
-
     def test_emergency_stop_cmd_from_running(self):
         """Test activate_emergency_cmd() from RUNNING_MOVING."""
         train, controller, network = create_test_train_with_controller(
@@ -1084,18 +1031,18 @@ class TestStateBasedVoltageOutput:
         voltage = controller._calculate_voltage_for_train(train, profile)
         assert voltage == 2.5
 
-    def test_voltage_for_running_at_station_state(self):
-        """Test voltage is lighting voltage for RUNNING_AT_STATION state."""
+    def test_voltage_for_dwelling_ready_state(self):
+        """Voltage is lighting voltage for a stopped/dwelling train (READY)."""
         from block_power import BlockPowerController
         from speed_profile import SpeedProfile
         from train import Train
 
         train = Train(train_id="T001")
         controller = BlockPowerController(
-            _sim_controller=self._make_sim(TrainState.RUNNING_AT_STATION)
+            _sim_controller=self._make_sim(TrainState.READY)
         )
         # Lighting voltage is a per-train property on the SpeedProfile; the
-        # controller emits it for RUNNING_AT_STATION.
+        # controller emits it for a stopped train (a dwelling train is READY).
         profile = SpeedProfile(
             profile_id="t", name="T",
             lighting_voltage=2.0,
@@ -1162,29 +1109,15 @@ class TestCompleteStateFlows:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING
         )
-        # Every legal dwell entry has a selected cab (design_new.md step
-        # `d843`); set one for the dwell-entry steps below.
         controller.commands.cab = "A"
 
-        # Stop completion lands the train in READY first (on_path_complete),
-        # which is the only state dwell entry is valid from
-        # (design_new.md "Controller state machine").
+        # Stop completion lands the train in READY (on_path_complete). A dwell
+        # after a stop is not a controller state — the train stays READY while
+        # the planner withholds onward authority (design_new.md "ato.engaged").
         controller.on_path_complete()
         assert controller.ops.state == TrainState.READY
 
-        # Phase-1 dwell entry transitions READY -> RUNNING_AT_STATION.
-        ok, reason = controller.enter_station_dwell()
-        assert ok, reason
-        assert controller.ops.state == TrainState.RUNNING_AT_STATION
-
-        # Phase-1 dwell complete transitions back to READY.
-        ok, reason = controller.finish_dwell()
-        assert ok, reason
-        assert controller.ops.state == TrainState.READY
-
-        # Simulate moving and arriving at final station
-        # Need to set controller state too for proper flow
-        from unittest.mock import MagicMock
+        # Simulate moving and arriving at a final station.
         set_train_span(controller, (0, 0), facing_direction=Direction.NORTH)
         # Use manual mode (not ATO auto-cab logic). Manual trains have no depart
         # handshake; put the train in the moving state directly.
@@ -1193,22 +1126,10 @@ class TestCompleteStateFlows:
         controller.ops.enter_running_moving()
         assert controller.ops.state == TrainState.RUNNING_MOVING
 
-        # Arriving at the station completes the path into READY first
-        # (on_path_complete), the only state dwell entry is valid from. With no
-        # dispatcher wired, the live-authority read is already None, so the
-        # reactive evaluator the callback defers to observes no authority and
-        # moves to READY (design_new.md step `09b0`).
+        # Arriving completes the path into READY. With no dispatcher wired, the
+        # live-authority read is already None, so the reactive evaluator moves
+        # to READY (design_new.md step `09b0`), and the train stays READY.
         controller.on_path_complete()
-        assert controller.ops.state == TrainState.READY
-
-        ok, reason = controller.enter_station_dwell()
-        assert ok, reason
-        assert controller.ops.state == TrainState.RUNNING_AT_STATION
-
-        # Route complete (controller-side state transition only; route
-        # teardown is owned by RouteExecutor in v1).
-        ok, reason = controller.finish_dwell()
-        assert ok, reason
         assert controller.ops.state == TrainState.READY
 
 

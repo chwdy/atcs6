@@ -1,8 +1,8 @@
 """Invariant factories for journey runs.
 
 Invariants run on every tick. They guard the protocol-level rules from
-design_new.md (allowed `(state, cab)` pairs, RUNNING_AT_STATION ⇒ no path,
-no_overspeed, span ⇔ resource consistency).
+design_new.md (allowed `(state, cab)` pairs, no_overspeed, span ⇔ resource
+consistency).
 """
 
 from typing import Callable, Dict, Set
@@ -89,11 +89,10 @@ def state_cab_pair_valid() -> Invariant:
         OFF                 → cab is None or pre-armed by bootstrap
         READY               → cab in {None, "A", "B"}
         RUNNING_MOVING      → cab in {"A", "B"}
-        RUNNING_AT_STATION  → cab in {"A", "B"}
 
     Bootstrap is allowed to pre-set cab while OFF (verified by
     test_bootstrap_queues_power_on_for_first_tick_drain). We therefore allow
-    OFF + any cab; the harder invariant is that RUNNING_* always has a cab.
+    OFF + any cab; the harder invariant is that RUNNING_MOVING always has a cab.
     """
 
     def check(s: Snapshot) -> None:
@@ -102,25 +101,12 @@ def state_cab_pair_valid() -> Invariant:
         if s.state == TrainState.READY:
             assert s.cab in (None, "A", "B"), f"READY with cab={s.cab!r}"
             return
-        # RUNNING_MOVING or RUNNING_AT_STATION
+        # RUNNING_MOVING
         assert s.cab in ("A", "B"), (
             f"{s.state.value} requires cab in (A,B), got {s.cab!r}"
         )
 
     return Invariant(name="state_cab_pair_valid", check=check)
-
-
-def at_station_implies_no_path() -> Invariant:
-    """Per design_new.md "Controller state machine" — RUNNING_AT_STATION ⇒
-    received_path_plan is None."""
-
-    def check(s: Snapshot) -> None:
-        if s.state == TrainState.RUNNING_AT_STATION:
-            assert s.active_path_id is None, (
-                f"RUNNING_AT_STATION with active_path={s.active_path_id!r}"
-            )
-
-    return Invariant(name="at_station_implies_no_path", check=check)
 
 
 def ato_engaged_implies_powered() -> Invariant:

@@ -344,10 +344,10 @@ class RouteTaskRun:
     resolved dispatcher target, delay classification, and error context.
 
     `started_at` is stored on a `dwell` row and derived on every other row.
-    `RouteExecutor` step `3a37` samples and writes the pair
-    (`started_at` / `started_at_operating`) immediately before it calls
-    `TrainController.enter_station_dwell()`, and the dwell timer reads the
-    dwell row's own stored value — not its predecessor's `finished_at`. For
+    The `RouteExecutor` dwell step samples and writes the pair
+    (`started_at` / `started_at_operating`) on the first pass the walk reaches
+    the dwell, and the dwell timer reads the dwell row's own stored value — not
+    its predecessor's `finished_at`. For
     every other row it is a read-only derivation with no writers: read it via
     `RouteExecutionState.task_started_at(i)`, which returns `RouteRun.started_at`
     for i==0 and `task_runs[i-1].finished_at` otherwise.

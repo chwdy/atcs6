@@ -4,7 +4,7 @@ EB Workflow sub-module of ``TrainController``.
 Per design_new.md "TrainController" sub-module decomposition: the EB
 Workflow owns the ``active`` latch and the operator-EB activation /
 release contract. Cross-sub-module state (``handle_position``,
-``ato_running``, ``phase_latches``, ``state``, ``received_path_plan``)
+``ato.engaged``, ``phase_latches``, ``state``, ``received_path_plan``)
 is reached through the controller back-reference ``self._c`` so this
 class stays a single-purpose owner of EB-specific state and behavior.
 
@@ -48,11 +48,10 @@ class EBWorkflow:
         (idempotent rejection of a duplicate activation). Valid in any motion
         state, any operational state including OFF, with or without a cab,
         with or without an active path. On acceptance: set ``active = True``,
-        force handle to EB, clear ``ato_running``, and (when an active path
-        exists) write ``pending_path_cancel_request(EB)``. Exception while
-        ``state == RUNNING_AT_STATION``: the controller is dwelling and has
-        no active path, so no ``pending_path_cancel_request`` is written;
-        state and dwell timer are preserved.
+        force handle to EB, disengage ATO (``ato.engaged = False``), and (when
+        an active path exists) write ``pending_path_cancel_request(EB)``. A
+        dwelling train is READY with no active path, so it writes no cancel and
+        its dwell timer keeps counting.
         """
         if self.active:
             return CommandResult(False, "Emergency brake already active")
@@ -68,12 +67,11 @@ class EBWorkflow:
         # consume_service_stop()").
         c.consume_service_stop(force=True)
 
-        if (
-            c.ops.state != TrainState.RUNNING_AT_STATION
-            and c.path_projection.received_path_plan is not None
-        ):
+        if c.path_projection.received_path_plan is not None:
             # A safety action that recovers, so `"warning"` — never `"error"`,
             # which design_new.md reserves for the two fatal session entries.
+            # A dwelling train is READY with no live authority, so this is never
+            # taken while dwelling.
             c.route_hooks.phase_latches.set_path_cancel_request(
                 ErrorRecord("operator EB", "eb"), "warning"
             )
@@ -109,9 +107,8 @@ class EBWorkflow:
         the tick's step-``71ee`` call (when a release is drained as an operator
         command) and the ``release-emergency`` API route, which runs the
         evaluator synchronously right after this method so the POST stays
-        synchronous. A release from ``RUNNING_AT_STATION`` (dwell EB cycle)
-        leaves the dwell state untouched, because ``RUNNING_AT_STATION`` is not
-        one of the evaluator's source states — so only ``active`` clears there.
+        synchronous. A dwelling train is READY, so a release while dwelling
+        clears only ``active`` and the train keeps holding at the stop.
         """
         c = self._c
         train = c._get_train()

@@ -682,13 +682,11 @@ class TrainController:
         if not train:
             return
 
-        # design_new.md Action step `7b40` onward: immediately after the command
-        # drain, SimulationController's narrow callback consumes the stopped-gated
-        # `pending_path_cancel_request` (step `7b40`) and then performs the
-        # station-entry transition Plan wrote (calling
-        # `TrainController.enter_station_dwell()`), so the control decision below
-        # evaluates the post-cancel, post-transition state. The callback exposes
-        # no dispatcher object to the controller.
+        # design_new.md Action step `7b40`: immediately after the command drain,
+        # SimulationController's narrow callback consumes the stopped-gated
+        # `pending_path_cancel_request`, so the control decision below evaluates
+        # the post-cancel state. The callback exposes no dispatcher object to the
+        # controller.
         if after_command_drain is not None:
             after_command_drain()
 
@@ -868,16 +866,12 @@ class TrainController:
                 # state. An ATO-mode controller reads `engaged == False` only
                 # after an EB trip that has been released (release does not
                 # re-engage) or before the operator's first set_mode("ato"); it
-                # holds stopped until the operator re-engages. RUNNING_AT_STATION
-                # (dwell) is also a powered-stopped state and is owned by Plan's
-                # dwell-complete check; preserve it here so a single tick doesn't
-                # clobber dwell entry.
+                # holds stopped until the operator re-engages.
                 self.ops.handle_position = self.ato.calculate_braking_notch_for_speed(
                     self.physics_sync.current_speed_kmh, 0.0
                 )
                 if self.physics_sync.current_speed_kmh <= STOPPED_SPEED_THRESHOLD_KMH:
-                    if self.ops.state != TrainState.RUNNING_AT_STATION:
-                        self.transition_to_ready()
+                    self.transition_to_ready()
                     self.ops.handle_position = HandlePosition.N
         else:
             # Manual mode - ATC still enforces braking if overspeed
@@ -908,26 +902,17 @@ class TrainController:
         # `path_backed_run_active` is now a derived `@property`; no write here.
 
         # ===== 8. STATE TRANSITIONS =====
-        # While RUNNING_MOVING, Action (tick()) makes no state transition here:
-        #
-        # - Only RouteExecutor (Plan) writes RUNNING_AT_STATION, via
-        #   TrainController.enter_station_dwell() (design_new.md "Per-train tick
-        #   transaction"). Action must not transition to RUNNING_AT_STATION
-        #   here, even when the stopped train sits in a scheduled-stop station
-        #   block — the path-completion gate is_stopped_at_authority_end()
-        #   requires state == RUNNING_MOVING, and try_complete_active_path(...)
-        #   is Observe's, running outside tick(). Dwell
-        #   entry happens on the next eligible Plan tick once the dispatcher
-        #   has completed the path and recorded the stop's finished_at.
-        # - A train at zero ATC clearance with live authority stays in
-        #   RUNNING_MOVING with current_speed_kmh == 0. The reactive speed-based
-        #   evaluation in on_physics_updated() handles the no-authority no-speed
-        #   case (RUNNING_MOVING -> READY once stopped with no live authority and
-        #   EB clear). Per design_new.md steps `89ba` / `32dd` / `90d3`, tick()
-        #   must not latch path completion or call route callbacks itself: all
-        #   completion flows through Observe's try_complete_active_path(...).
-        #
-        # Other states (READY, RUNNING_AT_STATION, OFF) handled by commands.
+        # While RUNNING_MOVING, Action (tick()) makes no state transition here.
+        # A train at zero ATC clearance with live authority stays in
+        # RUNNING_MOVING with current_speed_kmh == 0. The reactive speed-based
+        # evaluation in on_physics_updated() handles the no-authority no-speed
+        # case (RUNNING_MOVING -> READY once stopped with no live authority and
+        # EB clear). Per design_new.md steps `89ba` / `32dd` / `90d3`, tick()
+        # must not latch path completion or call route callbacks itself: all
+        # completion flows through Observe's try_complete_active_path(...). A
+        # dwelling train is READY; Plan holds its onward authority, so nothing
+        # here needs to distinguish it. Other states (READY, OFF) are handled by
+        # commands.
 
     def produce_physics_command(self) -> PhysicsCommand:
         """Compute the per-tick command physics will execute.
@@ -2327,38 +2312,6 @@ class TrainController:
     # Route Executor Commands (for RouteExecutor integration)
     # -------------------------------------------------------------------------
 
-    def _emit_dwell_diagnostic(
-        self, message: str, operation: str = "enter_station_dwell"
-    ) -> None:
-        """Emit a dwell-transition rejection diagnostic through
-        NotificationCenter (design_new.md: rejected dwell transitions leave
-        state unchanged and emit a diagnostic). Best-effort: resolves the sink
-        defensively and no-ops when no NotificationCenter is wired (isolated
-        unit-test controllers), and never raises into the caller."""
-        try:
-            sc = getattr(self, "simulation_controller", None)
-            nc = getattr(sc, "notification_center", None) if sc is not None else None
-            if nc is None:
-                return
-            from notification_center import Kind as _Kind, train_ref as _tref
-
-            nc.emit(
-                source="TrainController",
-                operation=operation,
-                kind=_Kind.WARNING,
-                message=message,
-                entities=[_tref(self.train_id)],
-                event_time=self.commands._estimate_event_time(),
-                # A rejected dwell transition is still a latch-consume event (the
-                # Action consumer ran and cleared the request), so per the Latch
-                # consumption events table (design_new.md:156) it passes
-                # latch_event=True and is never dropped by the unchanged-repeat
-                # suppression.
-                latch_event=True,
-            )
-        except Exception:
-            pass
-
     def _emit_event(
         self, operation: str, message: str, payload=None, kind=None, path_id=None
     ) -> None:
@@ -2388,89 +2341,13 @@ class TrainController:
                 entities=entities,
                 event_time=self.commands._estimate_event_time(),
                 payload=payload or {},
-                # Every caller of `_emit_event` is a transition-consume event —
-                # the enter_station_dwell / finish_dwell acceptance, each the
-                # Action consumer of station_entry_request / station_exit_request
-                # — so per the Latch consumption events table (design_new.md:156)
-                # it passes latch_event=True and is never dropped by suppression.
+                # `_emit_event` callers are latch-consume / event-log events, so
+                # per the Latch consumption events table (design_new.md:156) it
+                # passes latch_event=True and is never dropped by suppression.
                 latch_event=True,
             )
         except Exception:
             pass
-
-    def enter_station_dwell(self) -> Tuple[bool, Optional[str]]:
-        """Dwell-entry transition called by Plan dwell-entry step.
-
-        Per design_new.md, RouteExecutor invokes this directly when its
-        preconditions are met. Acceptance preconditions (design_new.md:1901,
-        and the dwell-entry step `d843`): `state == READY`, `eb.active ==
-        False`, and a selected cab (`commands.cab in {"A", "B"}`). On
-        acceptance, transitions controller state to RUNNING_AT_STATION and
-        clears ato_running because dwell entry is a run-ending event. On
-        rejection, leaves controller state unchanged and emits a
-        NotificationCenter diagnostic.
-
-        The cab guard (design_new.md step `d843`) rejects a cabless dwell
-        entry, preserving the allowed `(RUNNING_AT_STATION, cab)` invariant:
-        every legal dwell has a selected cab. Plan already requires
-        `controller.cab in {"A", "B"}` before it writes `station_entry_request`,
-        so this is a defensive check that keeps the method's own contract
-        self-enforcing regardless of caller.
-
-        Returns:
-            Tuple[bool, Optional[str]]: (True, None) on success;
-            (False, reason) on rejection.
-        """
-        if self.ops.state != TrainState.READY:
-            reason = f"enter_station_dwell requires READY, state is {self.ops.state.value}"
-            self._emit_dwell_diagnostic(reason)
-            return (False, reason)
-        if self.eb.active:
-            reason = "enter_station_dwell rejected: EB latched"
-            self._emit_dwell_diagnostic(reason)
-            return (False, reason)
-        if self.commands.cab not in ("A", "B"):
-            reason = "enter_station_dwell rejected: no cab selected"
-            self._emit_dwell_diagnostic(reason)
-            return (False, reason)
-        self.ops.state = TrainState.RUNNING_AT_STATION
-        self._emit_event(
-            "enter_station_dwell", f"{self.train_id} entered station dwell"
-        )
-        return (True, None)
-
-    def finish_dwell(self) -> Tuple[bool, Optional[str]]:
-        """Dwell-end transition called by Plan dwell-complete step.
-
-        Acceptance precondition (design_new.md:1902): `state ==
-        RUNNING_AT_STATION`. EB latch state is NOT a precondition — the
-        Action teardown caller `RouteExecutor.remove_train_route_run(...)`
-        may invoke this with `eb.active == True` (the OFF cleanup that
-        follows clears the latch). On acceptance, lands in READY (powered,
-        stopped, not dwelling — cab selection is preserved as an orthogonal
-        field); does not clear received_path_plan and does not start
-        movement. On rejection, leaves controller state unchanged and emits a
-        NotificationCenter diagnostic.
-
-        Returns:
-            Tuple[bool, Optional[str]]: (True, None) on success;
-            (False, reason) on rejection.
-        """
-        if self.ops.state != TrainState.RUNNING_AT_STATION:
-            reason = (
-                f"finish_dwell requires RUNNING_AT_STATION, state is "
-                f"{self.ops.state.value}"
-            )
-            self._emit_dwell_diagnostic(reason, operation="finish_dwell")
-            return (False, reason)
-        self.ops.state = TrainState.READY
-        # design_new.md "Event log": the log records "finished station dwell",
-        # emitted by TrainController.finish_dwell() — the mirror of the
-        # enter_station_dwell event above.
-        self._emit_event(
-            "finish_dwell", f"{self.train_id} finished station dwell"
-        )
-        return (True, None)
 
     def on_path_complete(self) -> None:
         """Called by PathDispatcher.try_complete_active_path on accepted completion.

@@ -109,11 +109,7 @@ def test_bootstrap_demo_train_respects_east_terminal_speed_limit_at_3x():
         if (
             tick > 30
             and controller.physics_sync.current_speed_kmh <= 0.5
-            and controller.ops.state
-            in (
-                TrainState.READY,
-                TrainState.RUNNING_AT_STATION,
-            )
+            and controller.ops.state == TrainState.READY
         ):
             break
 

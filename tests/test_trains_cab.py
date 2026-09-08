@@ -478,29 +478,6 @@ class TestSetCabDoubleFlipBugFix:
             "Direction should not change on failed set_cab"
         )
 
-    def test_set_cab_none_rejected_in_running_at_station(self, network):
-        """`set_cab(None)` from RUNNING_AT_STATION must reject.
-
-        Per design_new.md "Controller state machine",
-        `(RUNNING_AT_STATION, None)` is not a legal pair. Deselecting cab
-        while dwelling must return success=False with an explanatory
-        diagnostic and leave both `cab` and `state` unchanged.
-        """
-        train, controller = self._setup_multi_tile_train(network)
-
-        # Place the train in RUNNING_AT_STATION (dwell). is_stopped() is
-        # true because current_speed_kmh defaults to 0.0.
-        controller.ops.state = TrainState.RUNNING_AT_STATION
-
-        result = controller.commands.set_cab(None)
-
-        assert result.success is False
-        assert "dwell" in (result.message or "").lower()
-        assert controller.commands.cab == "A", "cab must be preserved on rejection"
-        assert controller.ops.state == TrainState.RUNNING_AT_STATION, (
-            "state must be preserved on rejection"
-        )
-
     def test_entry_edges_flip_with_direction(self, network):
         """Entry edges and distances also flip correctly alongside direction."""
         train, controller = self._setup_multi_tile_train(network)

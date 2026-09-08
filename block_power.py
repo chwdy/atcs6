@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 MAX_TRACK_VOLTAGE = 12.0
 # Lighting voltage is a per-train property: it lives on the train's
 # `SpeedProfile.lighting_voltage` and is emitted by `TrainPhysics.
-# compute_track_voltage` for READY / RUNNING_AT_STATION. The block power
+#`compute_track_voltage` for READY. The block power
 # controller does not hold its own lighting-voltage default.
 
 if TYPE_CHECKING:

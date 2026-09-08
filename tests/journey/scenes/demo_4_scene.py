@@ -14,7 +14,7 @@ rather than simulation time, but the journey harness advances *simulated*
 time only (each `sim_controller.update(dt)` adds `dt` to sim_time but
 microseconds to wall-clock). The demo's 2-second dwell-completion timer
 therefore never elapses in a normal test run, so the four trains stay
-permanently in `RUNNING_AT_STATION` and the crossovers never see traffic.
+permanently dwelling (READY) and the crossovers never see traffic.
 To exercise the crossovers within a test window, this scene back-dates
 the bootstrap's prefilled `task_runs[*].finished_at` by 10 minutes so
 every dwell timer is already elapsed at tick 0 — the trains depart on
@@ -50,7 +50,7 @@ class Demo4Scene:
         # Back-date every train's prefilled task-run stamps by 10 minutes so
         # the demo's 2-second dwell timer is already elapsed when the harness
         # starts ticking. Without this every train stays in
-        # RUNNING_AT_STATION forever within the test budget.
+        # dwelling (READY) forever within the test budget.
         #
         # Both clocks are back-dated: a dwell holding for `task_time` measures
         # against the route's timing basis, which defaults to the operating

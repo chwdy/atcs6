@@ -2285,18 +2285,6 @@ class RouteExecutor:
         if controller.active_conditions & _TEARDOWN_CONDITIONS:
             return
 
-        # ---------- 70c3: dwell-complete timer check -------------------------
-        # Per design_new.md lines 1826/1828 (EB-while-dwelling rows `0a8e`/`9f74`
-        # and the EB-while-dwelling suppression rule): the dwell timer itself is
-        # NOT frozen by EB — it is the derived `task_started_at(...)` value,
-        # which `eb.activate()` never touches, so it keeps counting toward
-        # `should_depart`. What is suppressed is dwell COMPLETION: finish_dwell /
-        # depart must not fire while `eb.active == True` (you must not depart a
-        # train under EB). Completion is served only once `eb.release()` clears
-        # the latch.
-        if controller.ops.state == TrainState.RUNNING_AT_STATION and not controller.eb.active:
-            self._dwell_complete_check(train, route, exec_state, controller, now)
-
         # ---------- c481: helper lookup via _find_next_task_target -----------
         projection = self._find_next_task_target(train_id)
         if projection is None:
@@ -2325,7 +2313,7 @@ class RouteExecutor:
             self._finish_or_defer_terminal_walk(train_id, controller)
             return
 
-        # If next task is a dwell, skip directly to 3a37 (dwell-entry).
+        # If next task is a dwell, skip directly to the dwell step.
         if projection.task_kind != "dwell":
             # ---------- a5c6: covered-task index advance ---------------------
             self._covered_task_index_advance(
@@ -2337,14 +2325,22 @@ class RouteExecutor:
                 self._finish_or_defer_terminal_walk(train_id, controller)
                 return
 
-        # ---------- 3a37: dwell-entry transition -----------------------------
+        # ---------- dwell: withhold onward authority until departure time ----
+        # A dwell is not a controller state (design_new.md "ato.engaged"): the
+        # train sits in READY while Plan holds onward authority, until the dwell
+        # timer elapses. When it does, the walk advances past the dwell and the
+        # pass continues so onward authority is acquired this same tick.
         if projection.task_kind == "dwell":
-            self._dwell_entry_step(
-                train, route, exec_state, controller, projection.walk_position
-            )
-            # Plan returns for this tick once dwell-entry decides — no path
-            # creation while dwell is pending or active.
-            return
+            if not self._dwell_step(train, route, exec_state, controller, now):
+                # Still dwelling: no path creation while the timer runs.
+                return
+            projection = self._find_next_task_target(train_id)
+            if projection is None:
+                self._finish_or_defer_terminal_walk(train_id, controller)
+                return
+            if projection.task_kind == "dwell":
+                # A back-to-back dwell holds this tick; the next pass handles it.
+                return
 
         # ---------- run: timed roll, then a smooth ATC stop ------------------
         # A `run` task keeps the train rolling for `task_time` seconds and then
@@ -2834,85 +2830,79 @@ class RouteExecutor:
             return False
         return self.is_clean_for_create(train_id)
 
-    def _dwell_complete_check(
+    def _dwell_step(
         self,
         train: "Train",
         route: "Route",
         exec_state: RouteExecutionState,
         controller: TrainController,
         now: float,
-    ) -> None:
-        """Plan step 2: finish a dwell whose timer has elapsed.
+    ) -> bool:
+        """Plan dwell step: hold onward authority while the train dwells, until
+        the dwell's departure time. Returns True when the dwell is satisfied and
+        the walk has advanced past it (the pass should acquire onward authority
+        now); False while the train is still dwelling (Plan returns for this
+        tick).
 
-        Per design_new.md lines 1826/1828 (EB-while-dwelling rows `0a8e`/`9f74`):
-        EB does NOT freeze the dwell timer — `started_at` is the derived
-        `task_started_at(...)` value, which `eb.activate()` never touches, so the
-        timer keeps counting. What EB suppresses is dwell COMPLETION: while
-        `eb.active == True` this step returns immediately so finish_dwell / depart
-        do not fire (a train must not depart under EB); completion resumes only
-        once `eb.release()` clears the latch.
+        A dwell is not a controller state (design_new.md "ato.engaged"): the
+        train sits in READY, stopped at its arrival authority end, and Plan
+        simply does not acquire onward authority until the dwell timer elapses.
 
-        Per design_new.md, on completion this step writes
-        `task_runs[task_index].finished_at = now`, advances
-        `current_waypoint_index`, and calls `controller.finish_dwell()`.
-        The next task's `started_at` is derived (read via
-        `RouteExecutionState.task_started_at(i)`) — it just falls out of the
-        finished_at write per the canonical rule, so there is no separate
-        write step.
+        Samples the dwell row's paired `started_at` / `started_at_operating` on
+        the first pass so the hold is measured from when the train reached the
+        dwell, not from its predecessor's `finished_at`. EB suppresses
+        DEPARTURE, not the timer: `started_at` is untouched by EB, so the timer
+        keeps counting, but the walk does not advance while `eb.active` (a train
+        must not depart under EB); departure resumes once `eb.release()` clears
+        the latch.
         """
-        # EB suppresses dwell COMPLETION, not the timer (design_new.md lines
-        # 1826/1828): the timer is the derived `started_at`, untouched by EB, so
-        # it keeps counting; finish_dwell / depart only fire once EB is released.
-        if controller.eb.active:
-            return
-
-        # Per design, `current_waypoint_index` is the largest finished
-        # walk-position; the dwell task currently in flight is the next
-        # planning index.
+        # `current_waypoint_index` is the largest finished walk-position; the
+        # dwell task currently in flight is the next planning index.
         task_index = exec_state.next_planning_index
         task = route.get_task_at(task_index) if hasattr(route, "get_task_at") else None
         if task is None or task.task_kind != "dwell":
-            return
+            return False
 
-        # Lazy-allocate task_runs row.
+        # Lazy-allocate task_runs row. Locate the in-flight row for this
+        # `task_index`: after CIRCULAR / ROUND_TRIP wraparound multiple list
+        # positions can share the same task_index — the in-flight one is the
+        # latest entry whose finished_at is still None.
         self._sync_task_runs(route, exec_state)
-        # Locate the in-flight row for this `task_index`. For initial
-        # walk-positions the list index matches the task_index, but after
-        # CIRCULAR / ROUND_TRIP wraparound multiple list positions can
-        # share the same task_index — the in-flight one is the latest
-        # entry whose finished_at is still None. Walk from the trailing
-        # entry backward and pick the first match.
         row_pos = self._in_flight_row_pos_for_task(exec_state, task_index)
         if row_pos < 0:
-            return
+            return False
         row = exec_state.task_runs[row_pos]
-        # A dwell row stores its OWN start, written by step `3a37` immediately
-        # before it entered dwell (design_new.md "RouteTaskRun schema"): the
-        # hold is measured from the moment the train entered dwell, never from
-        # its predecessor's `finished_at`. Read it on the route's own basis so
-        # the duration never subtracts a wall instant from an operating one.
+
+        # Sample the dwell row's start on the first pass, so the hold is measured
+        # from the moment the train reached the dwell.
+        if row.started_at is None:
+            row.started_at = self._now()
+            row.started_at_operating = self._now_operating()
+
+        # EB suppresses departure, not the timer.
+        if controller.eb.active:
+            return False
+
+        # Read the row's start on the route's own basis so the duration never
+        # subtracts a wall instant from an operating one.
         realtime = getattr(route, "timing_basis", "operating") == "realtime"
         dwell_started_at_basis = (
             row.started_at if realtime else row.started_at_operating
         )
         if dwell_started_at_basis is None:
-            # Dwell entry has not stamped the row yet, so no hold has begun.
-            return
+            return False
 
         if not task.should_depart(
             now, self._now_basis(route), dwell_started_at_basis
         ):
-            return
+            return False
 
-        # Mark the dwell row finished and advance through the canonical
-        # finished_at + delay_class + walk-append writer (delay_class no-ops
-        # for dwell rows per `_record_delay_class`).
+        # Dwell satisfied: mark the dwell row finished and advance through the
+        # canonical finished_at + delay_class + walk-append writer (delay_class
+        # no-ops for dwell rows per `_record_delay_class`). No controller state
+        # transition — the train was READY throughout and stays READY.
         self.advance_walk_position(exec_state, route, row_pos)
-
-        # design_new.md step `70c3`: Plan writes `station_exit_request` after the
-        # dwell row's `finished_at` write above; the Action station-exit consumer
-        # calls `TrainController.finish_dwell()` and clears it.
-        controller.route_hooks.phase_latches.set_station_exit_request()
+        return True
 
     def _run_task_step(
         self,
@@ -3155,55 +3145,6 @@ class RouteExecutor:
         if span is None:
             return False
         return block_id in (getattr(span, "occupied_blocks", None) or [])
-
-    def _dwell_entry_step(
-        self,
-        train: "Train",
-        route: "Route",
-        exec_state: RouteExecutionState,
-        controller: TrainController,
-        walk_position: int,
-    ) -> None:
-        """Plan step `3a37`: enter dwell when the next task is `dwell`.
-
-        Preconditions: predecessor task finished, controller is in READY,
-        `received_path_plan is None`, and a cab is selected.
-
-        This step samples and writes the dwell row's paired
-        `started_at` / `started_at_operating` immediately before calling
-        `TrainController.enter_station_dwell()` (design_new.md "RouteTaskRun
-        schema", the `started_at` row). The dwell timer then reads the dwell
-        row's own stored value rather than its predecessor's `finished_at`:
-        the hold is measured from the moment the train actually entered dwell,
-        not from whenever the stop before it finished. The controller call
-        performs the state transition only and never reads or writes `RouteRun`.
-        """
-        if controller.ops.state == TrainState.RUNNING_AT_STATION:
-            return
-        # Per design_new.md, the dwell-entry gate is `is_recovery_clean`.
-        if not getattr(controller, "is_recovery_clean", False):
-            return
-        # Step `3a37` lists a selected cab among the dwell-entry preconditions
-        # alongside `is_recovery_clean`.
-        if getattr(controller.commands, "cab", None) not in ("A", "B"):
-            return
-
-        # The caller passes the walk position the projection named, so index the
-        # row directly. `_dwell_complete_check` finds the same row from the other
-        # side — the latest unfinished row carrying this dwell's `task_index`,
-        # which on the current walk is exactly this position — so the stamp and
-        # the timer always agree, including after a CIRCULAR wrap appends a
-        # second row for the same task.
-        if 0 <= walk_position < len(exec_state.task_runs):
-            row = exec_state.task_runs[walk_position]
-            if row.started_at is None:
-                row.started_at = self._now()
-                row.started_at_operating = self._now_operating()
-
-        # design_new.md step `3a37`: Plan writes `station_entry_request` after
-        # sampling the dwell row's `started_at` above; the Action station-entry
-        # consumer calls `TrainController.enter_station_dwell()` and clears it.
-        controller.route_hooks.phase_latches.set_station_entry_request()
 
     def _apply_waypoint_lookahead(
         self,
@@ -3959,8 +3900,9 @@ class RouteExecutor:
         therefore neither re-resolves nor re-matches the row, and it does NOT
         re-check arrival direction — direction is guaranteed at acquisition, not
         re-checked later (design_new.md "Path field schema", the Stop-arrival
-        check bullet). It does not call `TrainController.enter_station_dwell()`;
-        dwell entry belongs to the next eligible `tick_train_plan(...)`.
+        check bullet). A dwell after this stop is handled by the next eligible
+        `tick_train_plan(...)`, which holds onward authority while the train
+        sits in READY.
         """
         train, route, exec_state = self._resolve_run_route(train_id)
         if train is None or route is None or exec_state is None:
@@ -4003,8 +3945,8 @@ class RouteExecutor:
             path_id=path_id,
             payload={"block_id": arrived_block},
         )
-        # Observe must NOT call enter_station_dwell — that fires from the next
-        # eligible Plan dwell-entry step.
+        # A dwell after this stop is handled by the next eligible Plan dwell
+        # step, which holds onward authority; the train stays READY.
         return True
 
     def _record_delay_class(
@@ -4104,9 +4046,7 @@ class RouteExecutor:
              `TrainController.consume_service_stop(force=True)` so a run
              interrupted by this teardown never leaves braking armed on a
              later route.
-          2. If the controller is in `RUNNING_AT_STATION`, call
-             `TrainController.finish_dwell()` to exit dwell into READY first.
-          3. Call `Route.unassign_train(train_id)` on the run's `route_id`.
+          2. Call `Route.unassign_train(train_id)` on the run's `route_id`.
           4. Set `current_route_status = DEACTIVATED` and archive the
              row as a historical run (visible to `history_for_train(...)`).
              The derived `execution_state_for(train_id)` no longer returns it.
@@ -4151,15 +4091,8 @@ class RouteExecutor:
             # later route (design_new.md "TrainController.begin_service_stop()
             # / consume_service_stop()").
             controller.consume_service_stop(force=True)
-        if (
-            controller is not None
-            and controller.ops.state == TrainState.RUNNING_AT_STATION
-        ):
-            # design_new.md: a teardown that removes a run while the controller is
-            # dwelling writes `station_exit_request`; the later Action station-exit
-            # consumer (step `bf3d`) calls `TrainController.finish_dwell()` to exit
-            # dwell into READY in the same Action pass.
-            controller.route_hooks.phase_latches.set_station_exit_request()
+        # A dwelling train is READY (dwell is not a controller state), so there
+        # is no dwell to exit before teardown.
 
         route_id = exec_state.route_id
         if route_id:

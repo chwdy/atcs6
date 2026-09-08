@@ -4,12 +4,10 @@ Route Hooks sub-module of ``TrainController``.
 Per design_new.md "TrainController" sub-module decomposition: Route
 Hooks owns the four Action latch fields (``path_cancel_request``,
 ``route_abort``, ``power_off``, ``route_deactivate``) bundled under
-``PhaseLatches``. The orchestrator entry points
-``enter_station_dwell()``, ``finish_dwell()``, and
-``on_path_complete()`` stay flat on the façade because they are direct
-external callbacks (from ``RouteExecutor`` / ``PathDispatcher``), but
-their bodies live alongside the latch helpers here when they need to
-write latch state.
+``PhaseLatches``. The orchestrator entry point ``on_path_complete()``
+stays flat on the façade because it is a direct external callback (from
+``PathDispatcher``), but its body lives alongside the latch helpers here
+when it needs to write latch state.
 
 External callers access route-hook state and the latch surface as:
 
@@ -21,11 +19,9 @@ External callers access route-hook state and the latch surface as:
   - ``controller.route_hooks.phase_latches.path_cancel_request``
     (Optional[payload]) etc. — read-only field access
 
-The façade keeps the orchestrator method names as the public callback
+The façade keeps the orchestrator method name as the public callback
 surface:
 
-  - ``controller.enter_station_dwell()``
-  - ``controller.finish_dwell()``
   - ``controller.on_path_complete()``
 
 Those façade methods delegate to RouteHooks (or write through to other

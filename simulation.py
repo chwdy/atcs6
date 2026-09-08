@@ -1509,71 +1509,19 @@ class SimulationController(SwitchOutputOwner):
 
         self._commit_train_act(controller, train)
 
-        # design_new.md Action step `bf3d`: after the teardown latches, consume
-        # station_exit_request — a run removal in the teardown may have written it.
-        self._consume_station_exit_request(controller)
-
     def _consume_early_action_latches(
         self, controller: TrainController, train: Train
     ) -> None:
         """Action early slot, run inside `TrainController.tick(...,
         after_command_drain=...)` before the control decision.
 
-        Consumes the stopped-gated `pending_path_cancel_request` first
-        (design_new.md Action step `7b40`), then performs the departure /
-        station-entry transitions Plan requested. Running these before the
-        control decision means the decision evaluates the post-cancel,
-        post-transition state — a stopped train whose authority was revoked this
-        tick reaches the `READY` state and drops its output on this tick rather
-        than one tick later.
+        Consumes the stopped-gated `pending_path_cancel_request` (design_new.md
+        Action step `7b40`) before the control decision, so the decision
+        evaluates the post-cancel state — a stopped train whose authority was
+        revoked this tick reaches `READY` and drops its output on this tick
+        rather than one tick later.
         """
         self._consume_pending_path_cancel_request(controller, train)
-        self._consume_transition_requests(controller)
-
-    def _consume_transition_requests(self, controller: TrainController) -> None:
-        """Perform the station-entry transition Plan requested, then clear the
-        request.
-
-        Runs in the Action early slot after the `pending_path_cancel_request`
-        consumer (step `7b40`), between the command drain and the control
-        decision (via `TrainController.tick(..., after_command_drain=...)`) so the
-        control decision evaluates the post-transition state.
-        `enter_station_dwell()` self-gates on its own preconditions; a rejected
-        request is cleared and Plan may write a fresh one on a later tick.
-        """
-        latches = controller.route_hooks.phase_latches
-        if latches.station_entry_request:
-            try:
-                controller.enter_station_dwell()
-            except Exception:
-                logger.warning(
-                    "enter_station_dwell() raised for %s; will retry",
-                    controller.train_id,
-                    exc_info=True,
-                )
-            latches.station_entry_request = False
-
-    def _consume_station_exit_request(self, controller: TrainController) -> None:
-        """Action step `bf3d`: perform the dwell-exit transition Plan (or a
-        teardown consumer) requested through `station_exit_request`.
-
-        When the controller is `RUNNING_AT_STATION`, call `finish_dwell()`;
-        otherwise the request is a no-op clear (the run was already torn down and
-        there is no dwell to leave). Either way, clear the request.
-        """
-        latches = controller.route_hooks.phase_latches
-        if not latches.station_exit_request:
-            return
-        if controller.ops.state == TrainState.RUNNING_AT_STATION:
-            try:
-                controller.finish_dwell()
-            except Exception:
-                logger.warning(
-                    "finish_dwell() raised for %s",
-                    controller.train_id,
-                    exc_info=True,
-                )
-        latches.station_exit_request = False
 
     def _commit_train_observe(
         self, controller: TrainController, train: Train, observing_only: bool = False
@@ -1913,7 +1861,7 @@ class SimulationController(SwitchOutputOwner):
             # NotificationCenter and other simulation services.
             controller.simulation_controller = self
             # Per design_new.md ~line 1292, live operational state
-            # (`state`, `active_cab`, `ato_running`, `control_mode`) lives
+            # (`state`, `active_cab`, `ato.engaged`, `control_mode`) lives
             # exclusively on the controller; we no longer inherit it from
             # `Train`. Tests and demo bootstrap that need pre-armed state
             # configure it on the controller directly after this call.

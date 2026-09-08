@@ -327,24 +327,12 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
             name="E16_post_stop_state_ok",
             # Wait until the train has been at speed≈0 for 30 consecutive
             # ticks, so the controller's state machine has settled past the
-            # transient final-deceleration tick. Verify it landed in a safe
-            # terminal state (READY or RUNNING_AT_STATION dwell), the cab is
-            # still set, EB is clear, ATO is not running, and no Phase-3
-            # latches are armed.
+            # transient final-deceleration tick. Verify it landed in READY (a
+            # dwelling train is READY — dwell is not a controller state), the
+            # cab is still set, EB is clear, and no Phase-3 latches are armed.
             trigger=train_stopped_for(settle_ticks=30, after_tick=50),
             assertions=[
-                # Allow either operational state — the system enters dwell
-                # then can fall back to READY when the dwell timer ends.
-                lambda s: (
-                    None
-                    if s.state in (TrainState.READY, TrainState.RUNNING_AT_STATION)
-                    else (_ for _ in ()).throw(
-                        AssertionError(
-                            f"after stop expected state in (READY, "
-                            f"RUNNING_AT_STATION), got {s.state.value}"
-                        )
-                    )
-                ),
+                assert_state(TrainState.READY),
                 assert_eb(False),
                 assert_cab("A"),
                 # ATO intent stays engaged through a scheduled stop (design_new.md
@@ -375,15 +363,6 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
                 assert_reached_b6_braking,
             ],
         ),
-        # NOTE: Two additional events were planned but are NOT included
-        # because they expose current system divergences from design_new.md
-        # rather than user-facing demo correctness:
-        #   - "path completed" — `is_stopped_at_authority_end()` requires
-        #     state == RUNNING_MOVING, but the system transitions to
-        #     RUNNING_AT_STATION (then READY) before the gate is checked, so
-        #     the path stays active forever in the current implementation.
-        #   - "route run removed" — depends on the same path-completion path.
-        # Both can be added once the underlying behaviour is tightened.
     ]
 
     # ----- Continuous invariants ----------------------------------------- #
@@ -397,11 +376,7 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
     #       BlockManager registry mid-traversal; some early blocks
     #       (e.g. BLOCK_MAIN_WEST) stay `occupied_by` after the train has
     #       fully passed them.
-    #   - at_station_implies_no_path:
-    #       Phase 1 dwell entry runs before the Phase 3 path completion
-    #       check, so for one tick `state == RUNNING_AT_STATION` while the
-    #       path is still active.
-    # All three remain importable from `tests.journey.invariants` for future
+    # These remain importable from `tests.journey.invariants` for future
     # "strict mode" runs once the underlying behavior is tightened.
     invariants = [
         no_overspeed(epsilon=0.5),

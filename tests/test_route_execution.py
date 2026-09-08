@@ -664,8 +664,8 @@ class TestBrokenDwellHandling:
 
     design_new.md "RouteTaskRun schema": `missing_target` "applies to all task
     kinds, including `dwell`". Phase Table step `c481` broken-skips such a dwell
-    and re-runs the lookup. Without this the train enters RUNNING_AT_STATION and
-    holds on the timer of a station that no longer exists.
+    and re-runs the lookup. Without this the train holds on the dwell timer of a
+    station that no longer exists.
     """
 
     def _executor_with_dwell(self, extra_tasks=()):
@@ -732,9 +732,8 @@ class TestBrokenDwellHandling:
         del network.platforms["PLT_A"]
         executor.tick_train_plan("T_DWELL", 0.1)
 
-        # The broken dwell row is finished (skipped), carries its diagnostic, and
-        # the controller never entered a station dwell.
+        # The broken dwell row is finished (skipped) and carries its diagnostic,
+        # so the train never holds on the dwell timer of a missing station.
         assert exec_state.task_runs[0].finished_at is not None
         # The diagnostic rides an event, not the task row.
         assert not hasattr(exec_state.task_runs[0], "last_error")
-        assert controller.state != TrainState.RUNNING_AT_STATION

@@ -16,7 +16,6 @@ from typing import Optional
 from flask import jsonify, request
 
 from app_state import AppState
-from enums import TrainState
 from services import NotFoundError, ValidationError
 from services import train_route_service
 from train_route import RouteTask
@@ -224,8 +223,14 @@ def register(app, state: AppState) -> None:
 
                     controller = state.sim_controller.controllers.get(train_id)
                     if controller is not None:
-                        status["at_platform"] = (
-                            controller.ops.state == TrainState.RUNNING_AT_STATION
+                        # A dwelling train is READY (dwell is not a controller
+                        # state): it is "at platform" when its current task is a
+                        # dwell and it is stopped there.
+                        _dwell_task = route.get_task_at(next_idx)
+                        status["at_platform"] = bool(
+                            _dwell_task is not None
+                            and _dwell_task.task_kind == "dwell"
+                            and controller.is_stopped()
                         )
 
                     task = route.get_task_at(next_idx)
