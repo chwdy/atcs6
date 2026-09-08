@@ -3,18 +3,18 @@ Operator Command Surface sub-module of ``TrainController``.
 
 Per design_new.md "TrainController" sub-module decomposition: the
 Operator command surface owns the operator-side configuration state
-(``cab`` selection, ``control_mode``), the per-tick command inbox /
-canonical drain order, and the operator-facing setter / queue
-methods themselves.
+(``control_mode``), the per-tick command inbox / canonical drain order,
+and the operator-facing setter / queue methods themselves. There is no
+operator cab: the head end is derived from the live authority
+(design_new.md "Authority-side head derivation").
 
 External callers access operator-command state and behavior as:
 
-  - ``controller.commands.cab`` (``'A'`` / ``'B'`` / ``None``)
   - ``controller.commands.control_mode`` (``'ato'`` / ``'manual'``)
   - ``controller.commands.command_inbox`` (list of pending ``Command``s)
   - ``controller.commands.drain_order`` (canonical FIFO drain order)
   - ``controller.commands.power_on_cmd()``
-  - ``controller.commands.set_cab(cab)`` / ``set_mode(mode)``
+  - ``controller.commands.set_mode(mode)``
   - ``controller.commands.set_manual_mode_type(mode_type)``
   - ``controller.commands.set_handle(position)``
   - ``controller.commands.set_manual_power_percent(percent)``
@@ -49,8 +49,9 @@ class OperatorCommands:
     def __init__(self, controller: "TrainController") -> None:
         self._c = controller
 
-        # Operator cab/mode selection.
-        self.cab: Any = None  # 'A', 'B', or None
+        # Operator mode selection. There is no operator cab: the head end is
+        # derived from the live authority (design_new.md "Authority-side head
+        # derivation"), so no cab is stored or selected here.
         self.control_mode: str = "ato"  # 'ato' or 'manual'
 
         # Per design_new.md "Command queue + drain": operator commands
@@ -60,7 +61,6 @@ class OperatorCommands:
         self.drain_order: tuple = (
             "power_on",
             "set_mode",
-            "set_cab",
             "set_manual_mode_type",
             "set_handle",
             "set_manual_power_percent",
@@ -109,7 +109,7 @@ class OperatorCommands:
         """Drain the command inbox in canonical kind order, FIFO within each.
 
         Per design_new.md "Per-train tick transaction" / "Driver/operator inputs",
-        commands are drained in the order: power_on -> set_mode -> set_cab
+        commands are drained in the order: power_on -> set_mode
         -> set_manual_mode_type -> set_handle / set_manual_power_percent ->
         activate_emergency_cmd -> release_emergency_cmd -> power_off.
         `ato_go` / `ato_stop` are internal helpers and are not part of the
@@ -162,8 +162,6 @@ class OperatorCommands:
                 result = self._execute_activate_emergency_cmd(payload, event_time)
             elif kind == "release_emergency_cmd":
                 result = self._execute_release_emergency_cmd(payload, event_time)
-            elif kind == "set_cab":
-                result = self._execute_set_cab(payload, event_time)
             elif kind == "set_mode":
                 result = self._execute_set_mode(payload, event_time)
             elif kind == "set_manual_mode_type":
@@ -257,9 +255,6 @@ class OperatorCommands:
     def _execute_release_emergency_cmd(self, payload, event_time) -> CommandResult:
         return self._c.eb.release()
 
-    def _execute_set_cab(self, payload, event_time) -> CommandResult:
-        return self.set_cab(payload.get("cab"))
-
     def _execute_set_mode(self, payload, event_time) -> CommandResult:
         return self.set_mode(payload.get("mode"))
 
@@ -281,8 +276,7 @@ class OperatorCommands:
         Turn on train power.
 
         Per design_new.md: valid only when state == OFF. On accept, transitions
-        to READY regardless of cab selection (cab is orthogonal in the v1 state
-        machine).
+        to READY.
         """
         c = self._c
         train = c._get_train()
@@ -388,103 +382,25 @@ class OperatorCommands:
             return c.eb.activate()
 
         # Per design_new.md line 1757: set_handle() accepts only when
-        # control_mode == manual, manual_mode_type == simulation, and a cab is
-        # selected; it is rejected in the power_percent submode (that submode is
-        # driven by set_manual_power_percent()). The EB activation above is the
-        # one always-available exception and returns before this gate.
+        # control_mode == manual and manual_mode_type == simulation; it is
+        # rejected in the power_percent submode (that submode is driven by
+        # set_manual_power_percent()). The EB activation above is the one
+        # always-available exception and returns before this gate. There is no
+        # cab gate — the head end is derived from the live authority
+        # (design_new.md "Authority-side head derivation").
         if self.control_mode != "manual":
             return CommandResult(False, "Handle input requires manual mode")
         if c.manual.manual_mode_type != "simulation":
             return CommandResult(
                 False, "Handle input requires the manual 'simulation' submode"
             )
-        if self.cab is None:
-            return CommandResult(False, "Handle input requires a selected cab")
 
         c.ops.handle_position = position
         return CommandResult(True, f"Handle set to {position.value}")
 
     # -------------------------------------------------------------------------
-    # Cab & Mode Commands
+    # Mode Commands
     # -------------------------------------------------------------------------
-
-    def clear_cab(self) -> None:
-        """Cab-owned ungated clear used only by `TrainController.complete_power_off()`
-        during OFF cleanup: set `cab = None` with no precondition gate — distinct
-        from the precondition-gated `set_cab(...)`, not an operator command, and
-        never queued (design_new.md line 2284).
-
-        When the clear moves the head to the other physical end — a cab-`B`
-        train's head moves from `end_b` to `end_a` — it applies the Reversed-frame
-        re-expression per the TrainSpan schema, the same as any other cab writer
-        (design_new.md line 2454). The re-expression is a no-op when the head is
-        already `end_a` (cab `A` or already `None`) or the train has no span.
-        """
-        old_cab = self.cab
-        if old_cab is None:
-            return
-        old_head = "end_b" if old_cab == "B" else "end_a"
-        # `None` selects `end_a` as the head. Best-effort re-expression (a no-op
-        # when the head does not move); OFF cleanup clears the cab regardless.
-        self._c._reframe_span_for_head_change(old_head, "end_a")
-        self.cab = None
-
-    def set_cab(self, cab: Optional[str], *, internal: bool = False) -> CommandResult:
-        """
-        Set active cab. Flips facing_direction when switching cabs.
-
-        Rules:
-        - Operator cab selection is only available in manual mode
-          (``control_mode == "manual"``). In ATO the system aligns the cab
-          itself, so an operator-issued ``set_cab`` is rejected.
-        - Train must be stopped (speed = 0)
-        - Setting the cab (to 'A', 'B', or None) leaves a stopped train in READY.
-        - Switching from A to B (or vice versa) flips facing_direction
-
-        ``internal=True`` is the ATO auto-cab-alignment path: the controller
-        aligns the cab to the live path direction while the engaged train is
-        stopped. It bypasses the manual-mode gate (the system, not the operator,
-        is selecting the cab) but keeps every other rule (stopped, frame flip).
-        """
-        c = self._c
-        train = c._get_train()
-        if train is None:
-            return CommandResult(False, "Train not found")
-
-        if not c.is_stopped():
-            return CommandResult(False, "Cannot switch cab while moving")
-
-        # Operator cab selection is manual-only; ATO aligns the cab itself
-        # via the internal=True path during depart().
-        if not internal and self.control_mode != "manual":
-            return CommandResult(
-                False, "cab selection is only available in manual mode"
-            )
-
-        old_cab = self.cab
-
-        # Per design_new.md: same-cab no-op success — does not change state,
-        # does not disengage ATO intent, no notification.
-        if cab == old_cab:
-            return CommandResult(True, f"Cab already {cab}")
-
-        old_head = "end_b" if old_cab == "B" else "end_a"
-        new_head = "end_b" if cab == "B" else "end_a"
-        reframe_error = c._reframe_span_for_head_change(old_head, new_head)
-        if reframe_error is not None:
-            return CommandResult(False, reframe_error)
-
-        # Commit the cab only after both span locators have been successfully
-        # re-expressed.  The head selector and its geometry therefore change as
-        # one operation and can never disagree in the renderer or physics.
-        self.cab = cab
-
-        # Aligning the cab does not touch ATO intent: `engaged` is cleared only
-        # by EB activation, power-off, and set_mode("manual") (design_new.md
-        # "ato.engaged").
-        c.ops.state = TrainState.READY
-
-        return CommandResult(True, f"Cab set to {cab}")
 
     def set_mode(self, mode: str) -> CommandResult:
         """
@@ -536,8 +452,8 @@ class OperatorCommands:
         Per design_new.md, valid only while the train is stopped, powered,
         and control_mode == manual. Side effects: entering 'power_percent'
         resets handle_position to neutral; entering 'simulation' resets
-        manual_power_percent to 0. Preserves cab selection and
-        received_path_plan; does not start movement.
+        manual_power_percent to 0. Preserves received_path_plan; does not
+        start movement.
         """
         c = self._c
         train = c._get_train()
@@ -565,11 +481,12 @@ class OperatorCommands:
         Set manual power-percent command (0..100).
 
         Per design_new.md: accepted only while manual mode is active,
-        manual_mode_type == power_percent, the train is powered, and a cab is
-        selected. It is accepted while EB is latched too, but ATC/EB override
-        the stored value (forcing 0) and this command never clears
-        ``eb.active``. The command does not start movement by itself; it just
-        writes the controller-owned field.
+        manual_mode_type == power_percent, and the train is powered. It is
+        accepted while EB is latched too, but ATC/EB override the stored value
+        (forcing 0) and this command never clears ``eb.active``. The command
+        does not start movement by itself; it just writes the controller-owned
+        field. There is no cab gate — the head end is derived from the live
+        authority (design_new.md "Authority-side head derivation").
         """
         c = self._c
         if not c.power_on:
@@ -578,8 +495,6 @@ class OperatorCommands:
             return CommandResult(False, "Not in manual mode")
         if c.manual.manual_mode_type != "power_percent":
             return CommandResult(False, "Manual mode type is not power_percent")
-        if self.cab not in ("A", "B"):
-            return CommandResult(False, "No cab selected")
 
         try:
             value = int(percent)

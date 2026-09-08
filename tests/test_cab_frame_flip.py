@@ -1,11 +1,12 @@
-"""set_cab re-expresses the span frame whenever the HEAD END changes.
+"""`_apply_head_frame` re-expresses the span frame whenever the HEAD END changes.
 
-The cab is the head selector (`"B"` -> end_b, anything else -> end_a), and the
-span's two end locators are expressed in the head-forward travel frame. So the
-frame must flip exactly when the head end changes — which includes `None -> B`
-and `B -> None`, not just `A <-> B`. A frame left un-flipped there put the head
-marker pointing into the body on the layout and made physics advance the head
-opposite to the direction the cab commands.
+The head end is now derived from the live authority (design_new.md
+"Authority-side head derivation"); there is no operator cab. The single writer
+of the framed head is `TrainController._apply_head_frame("end_a"/"end_b")`, and
+the span's two end locators are expressed in the head-forward travel frame. So
+the frame must flip exactly when the head end changes. A frame left un-flipped
+there put the head marker pointing into the body on the layout and made physics
+advance the head opposite to the head end the authority requires.
 """
 
 from block import Block
@@ -48,12 +49,12 @@ def _frame(span):
     }
 
 
-def test_none_to_b_flips_the_frame():
+def test_end_a_to_end_b_flips_the_frame():
     c = _train_on_line()
     span = c.physics_sync.current_span
     assert _frame(span) == {"a": ("W", 100.0), "b": ("W", 60.0)}
 
-    assert c.commands.set_cab("B").success
+    assert c._apply_head_frame("end_b") is None
 
     # Head is end_b now and the whole frame is west-forward: entry edges
     # flipped, distances re-measured from the other side of each tile.
@@ -61,33 +62,33 @@ def test_none_to_b_flips_the_frame():
     assert c._facing_direction() == Direction.WEST
 
 
-def test_none_to_a_is_a_no_op_on_the_frame():
+def test_end_a_is_a_no_op_on_the_frame():
     c = _train_on_line()
     span = c.physics_sync.current_span
     before = _frame(span)
 
-    assert c.commands.set_cab("A").success
+    assert c._apply_head_frame("end_a") is None
 
     assert _frame(span) == before
     assert c._facing_direction() == Direction.EAST
 
 
-def test_b_to_none_flips_back():
+def test_reset_to_default_flips_back():
     c = _train_on_line()
     span = c.physics_sync.current_span
-    assert c.commands.set_cab("B").success
-    assert c.commands.set_cab(None).success
+    assert c._apply_head_frame("end_b") is None
+    c._reset_head_frame_to_default()
 
     # Head defaults back to end_a, and the frame follows it back east-forward.
     assert _frame(span) == {"a": ("W", 100.0), "b": ("W", 60.0)}
     assert c._facing_direction() == Direction.EAST
 
 
-def test_a_to_b_still_flips():
+def test_end_a_to_end_b_still_flips_after_a_redundant_end_a():
     c = _train_on_line()
     span = c.physics_sync.current_span
-    assert c.commands.set_cab("A").success
-    assert c.commands.set_cab("B").success
+    assert c._apply_head_frame("end_a") is None
+    assert c._apply_head_frame("end_b") is None
 
     assert _frame(span) == {"a": ("E", 0.0), "b": ("E", 40.0)}
     assert c._facing_direction() == Direction.WEST
@@ -97,21 +98,21 @@ def test_round_trip_restores_the_placed_frame():
     c = _train_on_line()
     span = c.physics_sync.current_span
     placed = _frame(span)
-    for cab in ("B", "A", None, "B", None, "A"):
-        assert c.commands.set_cab(cab).success
+    for end in ("end_b", "end_a", "end_a", "end_b", "end_a", "end_a"):
+        assert c._apply_head_frame(end) is None
     assert _frame(span) == placed
     assert c._facing_direction() == Direction.EAST
 
 
-def test_failed_reframe_changes_neither_cab_nor_span():
+def test_failed_reframe_changes_neither_framed_head_nor_span():
     """A malformed endpoint cannot leave the head selector half-switched."""
     c = _train_on_line()
     span = c.physics_sync.current_span
     before = _frame(span)
     span.end_b.entry_edge = "N"  # TRACK_EW has no traversal entering from N.
 
-    result = c.commands.set_cab("B")
+    result = c._apply_head_frame("end_b")
 
-    assert result.success is False
-    assert c.commands.cab is None
+    assert result is not None
+    assert c._framed_head_end == "end_a"
     assert _frame(span) == {**before, "b": ("N", before["b"][1])}

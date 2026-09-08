@@ -296,27 +296,6 @@ def register(app, state: AppState) -> None:
         return jsonify({"error": result.message}), 400
 
     # ============================================================================
-    # Train Cab and Movement Control
-    # ============================================================================
-
-    @app.route("/api/trains/<train_id>/set-cab", methods=["POST"])
-    def train_set_cab(train_id):
-        """Set active cab (A, B, or None/off) and manage state transitions."""
-        train = train_service.get_train(state, train_id)
-        if not train:
-            return jsonify({"error": "Train not found"}), 404
-
-        data = request.json or {}
-        try:
-            result = train_service.set_cab(state, train_id, cab=data.get("cab"))
-        except ValidationError as exc:
-            return jsonify({"error": str(exc)}), 400
-
-        if result.success:
-            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
-        return jsonify({"error": result.message}), 400
-
-    # ============================================================================
     # Emergency and Stop Control
     # ============================================================================
 

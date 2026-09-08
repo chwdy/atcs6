@@ -154,7 +154,7 @@ def test_an_unidentified_train_is_never_powered_and_never_driven_by_the_app():
 
     controller = sim.controllers[unidentified_id]
     assert controller.physics_sync.current_speed_kmh == 0.0
-    assert controller.commands.cab is None
+    assert controller._framed_head_end == "end_a"
     # No route and no path: its Phase 1 is a no-op.
     assert sim.route_executor.assigned_route_id_for(unidentified_id) is None
     assert sim.path_dispatcher.active_path_id_by_train(unidentified_id) is None
@@ -459,7 +459,6 @@ def test_every_operator_command_is_refused_for_an_unidentified_train():
     for call in (
         lambda: train_service.power_on(state, unidentified_id),
         lambda: train_service.power_off(state, unidentified_id),
-        lambda: train_service.set_cab(state, unidentified_id, cab="A"),
         lambda: train_service.ato_go(state, unidentified_id),
         lambda: train_service.ato_stop(state, unidentified_id),
         lambda: train_service.set_handle(state, unidentified_id, position="P1"),
@@ -475,7 +474,7 @@ def test_every_operator_command_is_refused_for_an_unidentified_train():
         assert "unidentified train" in result.message.lower()
 
     # The controller never saw any of it.
-    assert sim.controllers[unidentified_id].commands.cab is None
+    assert sim.controllers[unidentified_id]._framed_head_end == "end_a"
     assert sim.controllers[unidentified_id].ops.state.name == "OFF"
 
 

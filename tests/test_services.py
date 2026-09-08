@@ -528,10 +528,6 @@ class TestTrainService:
         train_service.assign_route(state, "TRAIN_A", route_id="R2", force=True)
         assert executor.assigned_route_id_for("TRAIN_A") == "R2"
 
-    def test_set_cab_invalid_raises_validation(self, state_with_train):
-        with pytest.raises(ValidationError):
-            train_service.set_cab(state_with_train, "TRAIN_A", cab="Z")
-
     def test_set_mode_invalid_raises_validation(self, state_with_train):
         with pytest.raises(ValidationError):
             train_service.set_mode(state_with_train, "TRAIN_A", mode="bogus")

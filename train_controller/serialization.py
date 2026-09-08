@@ -38,12 +38,15 @@ def controller_to_dict(controller: "TrainController") -> Dict[str, Any]:
         "train_id": controller.train_id,
         "power_on": controller.power_on,
         "eb_active": controller.eb.active,
-        "cab": controller.commands.cab,
+        # `cab` on the wire is the physical end the span is framed head-forward
+        # for ("A" == end_a, "B" == end_b); there is no operator cab (design_new.md
+        # "Authority-side head derivation").
+        "cab": ("B" if controller._framed_head_end == "end_b" else "A"),
         "control_mode": controller.commands.control_mode,
         "manual_mode_type": controller.manual.manual_mode_type,
         "manual_power_percent": controller.manual.manual_power_percent,
         "travel_direction": controller.travel_direction,
-        # Train facing (a `Direction` name) derived from (cab, current_span);
+        # Train facing (a `Direction` name) derived from the authority-framed span;
         # replaces the removed `Train.facing_direction` on the wire so the
         # client reads facing from the controller payload.
         "facing_direction": (lambda d: d.name if d is not None else None)(
@@ -167,13 +170,14 @@ def _span_to_dict(controller: "TrainController") -> Optional[Dict[str, Any]]:
         },
         "occupied_tiles": [list(t) for t in span.occupied_tiles],
         "occupied_blocks": list(span.occupied_blocks),
-        # leading_end is the cab-derived head end ("a"/"b"), or None when no
-        # cab is selected (a no-cab train has no designated head; the span
-        # itself carries no head/tail label per the design_new.md TrainSpan
-        # schema). Clients render dual end-markers when it is null.
+        # leading_end is the authority-framed head end ("a"/"b"), or None when
+        # there is no live authority (with `received_path_plan is None` the train
+        # has no committed forward direction; the span itself carries no head/tail
+        # label per the design_new.md TrainSpan schema). Clients render dual
+        # end-markers when it is null.
         "leading_end": (
             None
-            if controller.commands.cab is None
+            if controller.path_projection.received_path_plan is None
             else ("a" if controller._head_end_label() == "end_a" else "b")
         ),
     }
@@ -222,6 +226,10 @@ def controller_from_dict(
     controller.manual.manual_power_percent = int(
         data.get("manual_power_percent", 0) or 0
     )
-    controller.commands.cab = data.get("cab")
+    # Restore which physical end the span is framed head-forward for. The saved
+    # span locators are already in that frame, so set the label directly without
+    # re-expressing (design_new.md "Authority-side head derivation"; there is no
+    # operator cab).
+    controller._framed_head_end = "end_b" if data.get("cab") == "B" else "end_a"
     controller.commands.control_mode = data.get("control_mode", "ato")
     return controller

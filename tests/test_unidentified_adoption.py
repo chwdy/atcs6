@@ -514,13 +514,14 @@ def test_an_adopted_train_accepts_operator_commands_an_unidentified_train_refuse
     unidentified_id = an_unidentified_on(sim, detector)
     controller = sim.controllers[unidentified_id]
 
-    # As an unidentified train: no cab, and the service layer refuses to drive it.
-    assert controller.commands.cab is None
+    # As an unidentified train: framed on the default end, and the service layer
+    # refuses to drive it.
+    assert controller._framed_head_end == "end_a"
 
     adopt(sim, unidentified_id, cab="A")
 
     controller = sim.controllers["T1"]
-    assert controller.commands.cab == "A"
+    assert controller._framed_head_end == "end_a"
     assert controller.commands.power_on_cmd().success is True
     assert controller.ops.state is not TrainState.OFF
 
@@ -825,4 +826,4 @@ def test_the_service_layer_adopts_through_the_runtime():
     assert train.train_id == "T1"
     assert train.is_unidentified is False
     assert train.car_number == "Pendolino"
-    assert sim.controllers["T1"].commands.cab == "B"
+    assert sim.controllers["T1"]._framed_head_end == "end_b"

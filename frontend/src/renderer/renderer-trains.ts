@@ -424,14 +424,15 @@ export class RendererTrainHandler {
     const occupiedTiles = span.occupiedTiles || [];
     if (occupiedTiles.length === 0) return;
 
-    // cab is null when the train has no cab selected; we still draw
-    // both endpoints, but as squares rather than head triangle.
-    const hasLeadingEnd = trainSnap.cab === 'A' || trainSnap.cab === 'B';
+    // leading_end is null when the train has no committed travel direction
+    // (no live authority); we still draw both endpoints, but as squares
+    // rather than a head triangle. It is 'a'/'b' once a head is committed.
+    const leadingEnd = span.leadingEnd;
+    const hasLeadingEnd = leadingEnd === 'a' || leadingEnd === 'b';
 
     // Resolve which end is head vs tail. occupiedTiles is ordered
     // end_a → end_b (see network.py). leadingEnd ('a' or 'b') tells us
     // which endpoint is the head.
-    const leadingEnd = span.leadingEnd;
     const headFromA = leadingEnd === 'a';
     const headEndpoint = headFromA ? span.endA : span.endB;
     const tailEndpoint = headFromA ? span.endB : span.endA;

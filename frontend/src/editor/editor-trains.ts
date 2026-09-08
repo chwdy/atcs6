@@ -1324,14 +1324,6 @@ export class TrainEditorHandler {
                                 <button type="button" id="train-mode-manual-btn" class="tc-seg-btn switch-btn ${isManual ? 'active' : ''}" ${!canSwitchModes ? 'disabled' : ''}>Manual</button>
                             </div>
                         </div>
-                        <div class="tc-row tc-row-cab">
-                            <span class="tc-row-label">Cab</span>
-                            <div class="tc-segment" role="group">
-                                <button type="button" id="train-cab-a-btn" class="tc-seg-btn switch-btn ${controller?.cab === 'A' ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>A</button>
-                                <button type="button" id="train-cab-off-btn" class="tc-seg-btn switch-btn ${!controller?.cab ? 'active' : ''}" ${!powerOn || !isStopped || !controller?.cab ? 'disabled' : ''}>Off</button>
-                                <button type="button" id="train-cab-b-btn" class="tc-seg-btn switch-btn ${controller?.cab === 'B' ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>B</button>
-                            </div>
-                        </div>
                     </div>
                     <div class="tc-nav-row">
                         <button id="train-monitor-btn" type="button" class="tc-btn tc-btn-ghost tc-nav-btn">Monitor →</button>
@@ -1389,7 +1381,7 @@ export class TrainEditorHandler {
                             <div class="tc-power-bar">
                                 <div class="tc-power-fill" id="train-power-percent-fill" style="width: ${manualPowerPercent}%"></div>
                             </div>
-                            <div class="tc-power-hint">Direct throttle command (0–100). Set Cab + Travel direction first.</div>
+                            <div class="tc-power-hint">Direct throttle command (0–100). Set a travel direction first.</div>
                         </div>
                     </div>
 
@@ -1656,23 +1648,6 @@ export class TrainEditorHandler {
 
     if (powerOffBtn) {
       powerOffBtn.onclick = () => executeAction('Power Off', () => api.trainPowerOff(trainId));
-    }
-
-    // ── CAB CONTROLS ──
-    const cabABtn = document.getElementById('train-cab-a-btn') as HTMLButtonElement | null;
-    const cabBBtn = document.getElementById('train-cab-b-btn') as HTMLButtonElement | null;
-    const cabOffBtn = document.getElementById('train-cab-off-btn') as HTMLButtonElement | null;
-
-    if (cabABtn) {
-      cabABtn.onclick = () => executeAction('Set Cab A', () => api.trainSetCab(trainId, 'A'));
-    }
-
-    if (cabBBtn) {
-      cabBBtn.onclick = () => executeAction('Set Cab B', () => api.trainSetCab(trainId, 'B'));
-    }
-
-    if (cabOffBtn) {
-      cabOffBtn.onclick = () => executeAction('Cab Off', () => api.trainSetCab(trainId, null));
     }
 
     // ── MODE CONTROLS (ATO / Manual) ──

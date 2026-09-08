@@ -46,7 +46,7 @@ _TRAIN_CONFIG_FIELDS: List[str] = [
 
 _CONTROLLER_STORED_FIELDS: List[str] = [
     "ops.state",
-    "commands.cab",
+    "_framed_head_end",
     "physics_sync.current_span",
     "physics_sync.current_speed_kmh",
     "eb.active",
@@ -141,18 +141,17 @@ _DERIVED_DOC: Dict[str, Dict[str, Any]] = {
         ),
     },
     "travel_direction": {
-        "computed_from": ["cab", "current_span"],
+        "computed_from": ["received_path_plan", "current_span"],
         "formula_doc": (
-            "train_controller/__init__.py:472 / design_new.md ~L1311 — cab "
-            "end = head; direction is from the opposite physical end through "
-            "the cab end into the next span resource ahead. Returns None when "
-            "no cab is selected."
+            "train_controller/__init__.py:472 / design_new.md ~L2283 — the "
+            "authority-facing physical end is the head; direction is from the "
+            "opposite end through the head end into the next span resource "
+            "ahead. Returns None when received_path_plan is None."
         ),
     },
     "lookahead": {
         "computed_from": [
             "current_span",
-            "cab",
             "received_path_plan",
             "network",
             "signals",

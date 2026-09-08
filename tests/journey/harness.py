@@ -226,7 +226,7 @@ def _capture_snapshot(
         sim_time=sim.simulation_time,
         fixture=fixture,
         state=controller.ops.state,
-        cab=controller.commands.cab,
+        cab=("B" if controller._framed_head_end == "end_b" else "A"),
         speed_kmh=float(controller.physics_sync.current_speed_kmh),
         eb_active=bool(controller.eb.active),
         ato_engaged=bool(controller.ato.engaged),

@@ -138,7 +138,7 @@ def test_lookahead_reflects_new_path_immediately():
     set_train_span(
         controller, (0, 0), facing_direction=Direction.EAST, occupied_blocks=["BLK_A"]
     )
-    controller.commands.cab = "A"
+    controller._apply_head_frame("end_a")
 
     # Snapshot initial lookahead (no path).
     initial = controller.lookahead

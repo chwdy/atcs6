@@ -70,7 +70,7 @@ def _apex_ready_round_trip():
     executor.register_route(route)
 
     controller = executor._get_controller(train)
-    controller.commands.cab = "A"
+    controller._apply_head_frame("end_a")
     set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
 
     def _target(block_id):

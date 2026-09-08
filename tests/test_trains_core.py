@@ -103,10 +103,10 @@ class TestSimulationController:
         # production; this test places via network.place_train directly).
         controller.physics_sync.current_span = placed_span
         controller.commands.power_on_cmd()
-        # Operator start-up: pick the cab in manual (cab selection is manual-only),
-        # then switch to ATO, which engages the run (design_new.md "ato.engaged").
+        # Operator start-up: frame the head end, then switch to ATO, which
+        # engages the run (design_new.md "ato.engaged").
         controller.commands.control_mode = "manual"
-        controller.commands.set_cab("A")
+        controller._apply_head_frame("end_a")
         controller.commands.set_mode("ato")
 
         # A one-off route to the east terminal. Phase 1 (RouteExecutor) owns
@@ -221,10 +221,10 @@ class TestSimulationController:
         controller = simulation._get_or_create_controller(train)
         controller.physics_sync.current_span = placed_span
         controller.commands.power_on_cmd()
-        # Operator start-up: pick the cab in manual (cab selection is manual-only),
-        # then switch to ATO, which engages the run (design_new.md "ato.engaged").
+        # Operator start-up: frame the head end, then switch to ATO, which
+        # engages the run (design_new.md "ato.engaged").
         controller.commands.control_mode = "manual"
-        controller.commands.set_cab("A")
+        controller._apply_head_frame("end_a")
         controller.commands.set_mode("ato")
 
         route = Route(route_id="ROUTE_AC_WP", name="A to C (waypoint)", mode=RouteMode.ONE_OFF)

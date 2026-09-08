@@ -5,13 +5,13 @@ Definition:
 This module provides the TrainController class which is the single authority for
 train operational state and control decisions. It merges the functionality of:
 
-- OnboardComputer: Power, cab, mode, handle state, command validation
+- OnboardComputer: Power, mode, handle state, command validation
 - TrainATC: Clearance calculation, speed limits, braking curves
 
-TrainController is the "cab computer" that:
+TrainController is the onboard control computer that:
 - Controls power on/off and emergency stop
 - Stores the current control mode (ATO vs Manual)
-- Knows which cab is active and the travel direction
+- Derives the travel direction from the live authority (there is no operator cab)
 - Manages the throttle/brake handle position
 - Calculates safe speed limits based on clearance ahead (ATC)
 - In ATO mode, automatically drives toward destination
@@ -153,10 +153,9 @@ class TrainController:
 
     TrainController is the single authority for:
     - Power state and emergency stop
-    - Active cab selection
     - Throttle/brake handle position
     - Control mode (ATO/Manual)
-    - Travel direction
+    - Travel direction (derived from the live authority; no operator cab)
     - ATC speed limit calculation
     - ATO automatic driving decisions
     - Command validation
@@ -212,11 +211,13 @@ class TrainController:
     # the one `NotificationCenter` stream, filtered by this train's entity ref.
 
     # -------------------------------------------------------------------------
-    # Cab & Mode State
+    # Mode State
     # -------------------------------------------------------------------------
-    # `cab` and `control_mode` live on the `OperatorCommands` sub-module
-    # at `self.commands`. External readers use `controller.commands.cab`
-    # and `controller.commands.control_mode`.
+    # `control_mode` lives on the `OperatorCommands` sub-module at
+    # `self.commands`. External readers use `controller.commands.control_mode`.
+    # There is no operator cab: the head end is derived from the live authority
+    # (design_new.md "Authority-side head derivation") and framed as
+    # `controller._framed_head_end`.
     # `manual_mode_type` lives on the `ManualDriving` sub-module at
     # `self.manual` in `__post_init__`. External readers use
     # `controller.manual.manual_mode_type`.
@@ -289,10 +290,10 @@ class TrainController:
     # Operator Command Inbox (per design_new.md "Command queue + drain")
     # -------------------------------------------------------------------------
     # Operator commands enter the controller via the public command methods
-    # (power_on_cmd, set_cab, set_mode, etc.). Each command is enqueued into
+    # (power_on_cmd, set_mode, etc.). Each command is enqueued into
     # `command_inbox` and then drained by `_drain_command_inbox(...)` at the
     # very top of `tick(...)`. Commands are processed in the canonical kind
-    # order (power_on -> set_mode -> set_cab -> set_manual_mode_type ->
+    # order (power_on -> set_mode -> set_manual_mode_type ->
     # set_handle/set_manual_power_percent -> activate_emergency_cmd ->
     # release_emergency_cmd -> power_off), with FIFO order within each kind
     # bucket.
@@ -374,6 +375,14 @@ class TrainController:
         self.ops = OperationalStateMachine(self)
         self.progress_report = ProgressReportBuilder(self)
         self.cab_policy = CabFlipPolicy(self)
+
+        # Which physical span end ("end_a"/"end_b") the span is currently framed
+        # with as the head. The span keeps its `end_a`-head framing default until
+        # a new authority moves the derived head to the other end, when the
+        # driving tick re-expresses the frame (design_new.md "Authority-side head
+        # derivation" / "Reversed-frame re-expression"). Bookkeeping only; the
+        # head itself is derived from the live authority.
+        self._framed_head_end: str = "end_a"
 
         # Per-tick memo for `_get_effective_path_tiles()` — see that method.
         # Keyed on the active path's tile-list content so it self-invalidates
@@ -461,26 +470,32 @@ class TrainController:
 
     @property
     def travel_direction(self) -> Optional[str]:
-        """Read-only derived value computed each read from (self.commands.cab, self.physics_sync.current_span).
+        """Read-only derived value computed each read from
+        (received_path_plan, current_span) per design_new.md:2283.
 
-        Per design_new.md: the cab's physical end is the head, and travel_direction
-        is the network-frame direction pointing from the opposite physical end
-        through the cab end and onward. When no next span resource exists ahead,
-        it is the direction outward through the cab edge of the cab end's tile.
-        Returns None when no cab is selected.
+        The head is the physical span end that faces into the live authority
+        (**Authority-side head derivation**); travel_direction is the
+        network-frame direction pointing from the opposite physical end through
+        the head end and onward. When no next span resource exists ahead, it is
+        the direction outward through the head end's tile edge.
+
+        Returns None when there is no live authority (`received_path_plan is
+        None`): with no authority there is no defined direction of travel, and
+        the span keeps its `end_a`-head framing default. There is no operator
+        cab — reversing means a new authority the other way.
 
         Resolution order:
         1. From `current_span` (canonical) when wired — the direction from the
-           tail-side end to the head-side end (head derived from the cab via
-           `_head_span_locator`), or for single-tile spans the outward
+           tail-side end to the head-side end (head derived from the authority
+           via `_head_span_locator`), or for single-tile spans the outward
            direction through the head's exit edge.
-        2. None when there is no live span or no cab is selected.
+        2. None when there is no live authority or no live span.
         """
-        if self.commands.cab is None:
+        if self.path_projection.received_path_plan is None:
             return None
 
-        # Canonical path: derive the head/tail side from (cab, current_span)
-        # and read the network-frame direction from tail tile -> head tile.
+        # Canonical path: derive the head/tail side from the authority-framed
+        # span and read the network-frame direction from tail tile -> head tile.
         head = self._head_span_locator()
         if head is not None:
             tail = self._tail_span_locator()
@@ -632,7 +647,7 @@ class TrainController:
             delta: Time elapsed since last tick (seconds)
         """
         # ===== 0. DRAIN OPERATOR COMMAND INBOX =====
-        # Process any commands enqueued by power_on_cmd / set_cab / etc. in the
+        # Process any commands enqueued by power_on_cmd / set_mode / etc. in the
         # canonical drain order before running the rest of the tick. Without
         # this, queued commands would never take effect.
         try:
@@ -747,34 +762,30 @@ class TrainController:
         live_lookahead = self._calculate_lookahead()
 
         # ===== 3. ATC INFO COLLECTION =====
-        if self.commands.cab is None:
-            self.atc.speed_limit = 0.0
-            self.atc._last_limit_reason_code = AtcLimitReasonCode.NO_CAB
-        elif self._is_cab_wrong_direction():
-            self.atc.speed_limit = 0.0
-            self.atc._last_limit_reason_code = AtcLimitReasonCode.WRONG_DIRECTION_CAB
-        else:
-            # Get block speed limit for current block
-            self.atc.current_block_speed_limit = self._get_current_block_speed_limit()
+        # The head is derived from the live authority, so there is no cabless or
+        # wrong-direction-cab zero-limit case (design_new.md "Authority-side head
+        # derivation"): the ATC limit comes straight from the canonical anchor.
+        # Get block speed limit for current block
+        self.atc.current_block_speed_limit = self._get_current_block_speed_limit()
 
-            # `clearance_ahead_cm` is still published for diagnostics and as
-            # the no-curve fallback inside `_distance_zero_atc_anchor()`;
-            # refresh it first so that fallback reads a current value.
-            self.atc.clearance_ahead_cm = self.atc.clearance_ahead()
-            # Publish the ATC limit + reason from the canonical lookahead's
-            # distance-0 anchor (single source of truth). Per design_new.md,
-            # lookahead is the pure derived authority value: its `speed_curves`
-            # walk the path's tile geometry, so they measure real forward
-            # clearance even where a block's `length_cm` metadata is 0. The
-            # older block-walk clearance (`clearance_ahead()`, which sums
-            # `length_cm`) under-counted authority through zero-length blocks
-            # and published a phantom-low limit that braked the train and
-            # tripped a spurious overspeed EB; the curve anchor has no such
-            # failure mode, and its `atc_limit_reason_code` is the canonical
-            # reason the monitor/journey-harness already read.
-            self.atc.speed_limit, self.atc._last_limit_reason_code = (
-                self._distance_zero_atc_anchor()
-            )
+        # `clearance_ahead_cm` is still published for diagnostics and as
+        # the no-curve fallback inside `_distance_zero_atc_anchor()`;
+        # refresh it first so that fallback reads a current value.
+        self.atc.clearance_ahead_cm = self.atc.clearance_ahead()
+        # Publish the ATC limit + reason from the canonical lookahead's
+        # distance-0 anchor (single source of truth). Per design_new.md,
+        # lookahead is the pure derived authority value: its `speed_curves`
+        # walk the path's tile geometry, so they measure real forward
+        # clearance even where a block's `length_cm` metadata is 0. The
+        # older block-walk clearance (`clearance_ahead()`, which sums
+        # `length_cm`) under-counted authority through zero-length blocks
+        # and published a phantom-low limit that braked the train and
+        # tripped a spurious overspeed EB; the curve anchor has no such
+        # failure mode, and its `atc_limit_reason_code` is the canonical
+        # reason the monitor/journey-harness already read.
+        self.atc.speed_limit, self.atc._last_limit_reason_code = (
+            self._distance_zero_atc_anchor()
+        )
 
         # Placed after every branch above has settled the code, so no branch is
         # missed: the reason code answers "why is this train limited right now",
@@ -844,6 +855,12 @@ class TrainController:
         # stand and resumes on its own when authority returns, so nothing is
         # cleared here.
 
+        # Re-express the span frame to the authority-derived head before the
+        # driving decision reads it, so a new authority the other way (a
+        # turnaround) points the train the right way this tick. Only fires while
+        # stopped, so it is safe in both modes.
+        self._reframe_span_to_authority_head()
+
         # Compute the effective_limit locally; consumers read this via the
         # `target_speed` property when needed.
         effective_limit = min(
@@ -853,13 +870,9 @@ class TrainController:
         )
 
         if self.commands.control_mode == "ato":
-            # Cab-alignment bridge: while the engaged train is stopped, align the
-            # cab to the live path direction so ATO drives the right way (the head
-            # is still cab-derived in this build; a wrong-direction cab reports a
-            # zero ATC limit). The full span reframe is safe because it runs only
-            # while stopped. Removed once the head is derived from live authority.
-            if self.ato.engaged:
-                self.ato.align_cab_to_path()
+            # The head end is derived from the live authority (design_new.md
+            # "Authority-side head derivation"), so ATO always drives toward the
+            # authority end — no cab to align.
 
             # Drive while ATO intent is engaged; otherwise brake to a stand.
             if self.ato.engaged:
@@ -1436,23 +1449,6 @@ class TrainController:
 
         return positions
 
-    def _is_cab_wrong_direction(self) -> bool:
-        """Return True when the active cab points away from active authority.
-
-        v1 only flags wrong-direction cab when there is active path authority
-        (no active authority falls under the `no_authority` reason instead).
-        Compares the current cab's required-cab projection from the active
-        path with the active cab and returns True on mismatch.
-        """
-        if self.commands.cab not in ("A", "B"):
-            return False
-        if self.path_projection.received_path_plan is None:
-            return False
-        required = self.cab_policy.required_cab_for_path()
-        if required is None:
-            return False
-        return required != self.commands.cab
-
     def _get_current_block_id(self) -> Optional[str]:
         """Get the block ID where the train's head is located."""
         head_tile = self._get_head_tile()
@@ -1465,27 +1461,90 @@ class TrainController:
 
         return None
 
-    # --- Cab-derived head/tail/orientation helpers ---------------------------
-    # Per design_new.md: head/tail and travel_direction derive from
-    # (cab, current_span). Cab "A" -> end_a, cab "B" -> end_b; head defaults to
-    # end_a when no cab is selected (matching the placement default). `end_a` /
-    # `end_b` on the span are cab-independent physical ends and never carry
-    # head/tail labels themselves.
+    # --- Authority-framed head/tail/orientation helpers ----------------------
+    # Per design_new.md "Authority-side head derivation": head/tail and
+    # travel_direction derive from (`_framed_head_end`, current_span). The framed
+    # head follows the live authority, defaulting to end_a with no authority
+    # (matching the placement default). `end_a` / `end_b` on the span are
+    # frame-independent physical ends and never carry head/tail labels themselves.
 
     def _head_end_label(self) -> str:
-        """Which physical span end ("end_a"/"end_b") is the head for the
-        selected cab. Cab "B" -> end_b; cab "A" or None -> end_a."""
-        return "end_b" if self.commands.cab == "B" else "end_a"
+        """Which physical span end ("end_a"/"end_b") the span is currently framed
+        with as the head. Kept in sync with the authority-derived head by the
+        driving tick's reframe (design_new.md "Authority-side head derivation");
+        span re-framing is driven by a live authority, so a train that loses its
+        authority keeps the framing it last had until a new authority moves it
+        (power-off resets it to the ``end_a`` default). There is no operator cab:
+        direction comes from the authority the route granted."""
+        return self._framed_head_end
+
+    def _apply_head_frame(self, end: str) -> Optional[str]:
+        """Frame the span head-forward for physical end ``end`` ("end_a"/"end_b").
+
+        The single writer of ``_framed_head_end``: it re-expresses both span end
+        locators into the new head-forward frame (design_new.md "Reversed-frame
+        re-expression") and, only if that succeeds, records the new framed head.
+        A no-op returning ``None`` when the frame is already ``end``. Returns a
+        user-facing reason (and leaves the frame untouched) when the span cannot
+        be re-expressed. Callers: placement, the between-legs calibration
+        reversal, the authority-driven reframe, and OFF-cleanup reset."""
+        if end == self._framed_head_end:
+            return None
+        reframe_error = self._reframe_span_for_head_change(self._framed_head_end, end)
+        if reframe_error is None:
+            self._framed_head_end = end
+        return reframe_error
+
+    def _reframe_span_to_authority_head(self) -> None:
+        """Re-express the span's end frames when a new authority has moved the
+        derived head to the other physical end (design_new.md "Reversed-frame
+        re-expression"). Runs only while the train is stopped, so re-expressing
+        the two end locators can never disagree with a rolling frame. A no-op
+        when the framed head already matches the authority head or there is no
+        live authority to move it."""
+        if not self.is_stopped():
+            return
+        self._apply_head_frame(self._authority_head_end())
+
+    def _reset_head_frame_to_default(self) -> None:
+        """Reset the span framing to its ``end_a`` head default, re-expressing the
+        two end locators when the head moves off ``end_b`` (design_new.md
+        "Reversed-frame re-expression"). Called by `complete_power_off()` during
+        OFF cleanup: with power off there is no live authority, so the head is
+        the ``end_a`` default. A no-op when the frame is already ``end_a`` or the
+        span cannot be re-expressed."""
+        self._apply_head_frame("end_a")
+
+    def _authority_head_end(self) -> str:
+        """The physical span end ("end_a"/"end_b") that faces into the live
+        authority (design_new.md "Authority-side head derivation"): the end whose
+        resource sits later in ``received_path_plan.resource_sequence``, with the
+        track-connectivity / path-direction geometry resolving a train whose span
+        covers one resource. Returns the currently-framed head when there is no
+        live authority or the geometry cannot separate the ends, so the frame is
+        left unchanged then: span re-framing is driven by a live authority
+        (design_new.md "Span re-framing" — it happens on the first tick the
+        controller drives with a given authority), and a train that loses its
+        authority keeps the framing it last had until a new authority moves it."""
+        if self.path_projection.received_path_plan is None:
+            return self._framed_head_end
+        side = self.cab_policy.required_cab_for_path()
+        if side == "B":
+            return "end_b"
+        if side == "A":
+            return "end_a"
+        return self._framed_head_end
 
     def _reframe_span_for_head_change(
         self, old_head: str, new_head: str
     ) -> Optional[str]:
         """Atomically re-express both span locators when the head end changes.
 
-        A cab change does not move the physical train, but it reverses the
-        head-forward traversal frame used by each ``SpanEndLocator``.  Compute
-        both replacements before writing either one so a malformed endpoint
-        can never leave the cab and span describing opposite directions.
+        Moving the head to the other span end does not move the physical train,
+        but it reverses the head-forward traversal frame used by each
+        ``SpanEndLocator``.  Compute both replacements before writing either one
+        so a malformed endpoint can never leave the head frame and span
+        describing opposite directions.
 
         Returns ``None`` on success, otherwise a user-facing reason.  On
         failure the span is untouched.
@@ -1496,18 +1555,18 @@ class TrainController:
         if span is None:
             return None
         if self.network is None:
-            return "Cannot switch cab without network geometry"
+            return "Cannot re-frame the span head without network geometry"
 
         replacements = []
         for label, end in (("end_a", span.end_a), ("end_b", span.end_b)):
             if not end.tile or not end.entry_edge:
-                return f"Cannot switch cab: {label} has no traversal frame"
+                return f"Cannot re-frame the span head: {label} has no traversal frame"
             track = self.network.get_track(*end.tile)
             if track is None:
-                return f"Cannot switch cab: {label} is not on track"
+                return f"Cannot re-frame the span head: {label} is not on track"
             exits = track.get_exits(end.entry_edge, use_switch_state=True)
             if not exits:
-                return f"Cannot switch cab: {label} has no reverse traversal"
+                return f"Cannot re-frame the span head: {label} has no reverse traversal"
             tile_length = self.network._get_tile_length_cm(
                 end.tile[0], end.tile[1]
             )
@@ -1579,10 +1638,10 @@ class TrainController:
         return edge_to_dir.get(head_entry.upper())
 
     def _facing_direction(self) -> Optional[Direction]:
-        """Train facing direction (a `Direction`) derived from
-        (cab, current_span). Replaces the removed `Train.facing_direction`. Not
-        cab-gated: head defaults to end_a when no cab. Returns None when there
-        is no live span."""
+        """Train facing direction (a `Direction`) derived from the
+        authority-side head and `current_span`. Replaces the removed
+        `Train.facing_direction`. Head defaults to end_a with no live authority.
+        Returns None when there is no live span."""
         return self._orientation_for_head_end(self._head_end_label())
 
     def get_span_end_exits(self) -> List[Tuple[Tuple[int, int], str]]:
@@ -1655,14 +1714,14 @@ class TrainController:
         return straight_edge
 
     def _get_head_tile(self) -> Optional[Tuple[int, int]]:
-        """Head tile, derived from (cab, current_span), or None when no span."""
+        """Head tile, derived from the authority-framed span, or None when no span."""
         loc = self._head_span_locator()
         if loc is not None and loc.tile is not None:
             return (loc.tile[0], loc.tile[1])
         return None
 
     def _get_head_distance_cm(self) -> float:
-        """Head in-tile distance, derived from (cab, current_span)."""
+        """Head in-tile distance, derived from the authority-framed span."""
         loc = self._head_span_locator()
         if loc is not None:
             return float(loc.distance_cm)
@@ -1699,7 +1758,7 @@ class TrainController:
         return None
 
     def _get_head_entry_edge(self) -> Optional[str]:
-        """Head tile entry edge, derived from (cab, current_span)."""
+        """Head tile entry edge, derived from the authority-framed span."""
         loc = self._head_span_locator()
         if loc is not None:
             return loc.entry_edge
@@ -2244,7 +2303,7 @@ class TrainController:
     # stream. It holds no queue: operator-facing per-train reads are filters
     # over that stream (design_new.md "Runtime notifications").
 
-    # Operator commands (power_on_cmd, power_off_cmd, set_cab, set_mode,
+    # Operator commands (power_on_cmd, power_off_cmd, set_mode,
     # set_handle, set_manual_mode_type, set_manual_power_percent, enqueue_command)
     # and the per-tick command inbox / drain live on the `OperatorCommands`
     # sub-module attached as `self.commands`. External callers use
@@ -2262,10 +2321,10 @@ class TrainController:
     def transition_to_ready(self) -> None:
         """Transition to the READY state (powered, stopped, not dwelling).
 
-        Per design_new.md, READY is the unified powered-stopped state
-        regardless of cab selection. Cab selection and route assignment are
-        orthogonal fields and are not cleared here; their lifecycle is owned
-        by `set_cab(...)` and `RouteExecutor` respectively.
+        Per design_new.md, READY is the unified powered-stopped state. The span
+        head frame and route assignment are orthogonal and are not cleared here;
+        the head frame follows the live authority (design_new.md "Authority-side
+        head derivation") and route assignment is owned by `RouteExecutor`.
         """
         self.ops.state = TrainState.READY
         # Reaching READY at a stand does not clear ATO intent (design_new.md
@@ -2347,8 +2406,9 @@ class TrainController:
         the Power-off procedure). It is the only ``OFF``-writing site besides the
         startup default, so the Operational state machine stays the single writer
         of ``state``. Callable only while ``power_off`` is latched; on commit it
-        transitions ``state`` to ``OFF``, clears the active cab selection, clears
-        ``eb.active``, disengages ATO (``ato.engaged = False``), and consumes ``pending_power_off``.
+        transitions ``state`` to ``OFF``, resets the span framing to its ``end_a``
+        head default, clears ``eb.active``, disengages ATO (``ato.engaged =
+        False``), and consumes ``pending_power_off``.
 
         Per design_new.md "Latch Table" (Clear/consume access) this method is
         the one place `phase_latches.power_off` is cleared — not the Action
@@ -2366,7 +2426,7 @@ class TrainController:
         """
         had_latch = self.route_hooks.phase_latches.power_off
         self.ops.state = TrainState.OFF
-        self.commands.clear_cab()
+        self._reset_head_frame_to_default()
         self.ops.reset_handle_to_neutral()
         # design_new.md:1895 — clear the EB latch through the EB-owned helper so
         # the EB Workflow stays the single writer of `eb.active`.
@@ -2586,7 +2646,7 @@ class TrainController:
             getattr(net, "_lookahead_world_version", 0),
             self._get_head_tile(),
             self._get_head_distance_cm(),
-            self.commands.cab,
+            self._framed_head_end,
             self.eb.active,
         )
 

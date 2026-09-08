@@ -15,8 +15,9 @@ cancels in the difference. B's two neighbours are A and C: the run-up at one end
 and the stopping room at the other, and which is which flips each leg.
 
 The pass turns the train around at each end itself — power to 0, wait for the
-canonical stopped predicate, `set_cab(...)` the other end, re-command the step —
-so a plain length of track can measure a locomotive with no loop to lap. Each
+canonical stopped predicate, re-frame the span to its other head end, re-command
+the step — so a plain length of track can measure a locomotive with no loop to
+lap. Each
 step runs `CALIBRATION_ROUND_TRIPS` round trips and averages twice that many
 crossings, half in each direction: a stretch is rarely dead level, and equal
 counts each way cancel the grade.
@@ -205,8 +206,9 @@ class CalibrationRun:
     a leg arms. It tells "still acquiring the route" (never seen) apart from "the
     leg route completed and gave the authority back" (seen, then gone)."""
     needs_reverse: bool = False
-    """Whether arming this leg must flip the cab first. False for the opening
-    leg and after a stall, where the train never turned around."""
+    """Whether arming this leg must re-frame the span to its other head end
+    first. False for the opening leg and after a stall, where the train never
+    turned around."""
     step_index: int = 0
     samples: List[CalibrationSample] = field(default_factory=list)
     crossings: List[float] = field(default_factory=list)
@@ -309,9 +311,9 @@ class SpeedCalibration:
     """Runs calibration passes and commits the measured curves.
 
     Holds the active `CalibrationRun` per train. The opening preconditions
-    (placed, manual `power_percent`, `READY` and stopped, cab selected, no ATO
-    route, no lighting run open) are enforced by the caller — the service layer
-    — before `start`.
+    (placed, manual `power_percent`, `READY` and stopped, no ATO route, no
+    lighting run open) are enforced by the caller — the service layer — before
+    `start`.
     """
 
     def __init__(self, simulation_controller=None) -> None:
@@ -500,8 +502,9 @@ class SpeedCalibration:
             run.leg_authority_seen = False
             run.leg_started_at = None
             run.clock_started_at = None
-            # The cab reversal is one-shot per arm: the Plan translation toggles
-            # the cab on each `reverse_cab=True`, so clear the flag once emitted.
+            # The head-frame reversal is one-shot per arm: the Plan translation
+            # re-frames the span on each `reverse_cab=True`, so clear the flag
+            # once emitted.
             # A refused-then-retried arm re-enters this branch (reconcile sets
             # leg_armed=False while active_leg_route_id is None); without the
             # clear the retry re-toggles, and an even number of toggles leaves a
@@ -598,8 +601,8 @@ class SpeedCalibration:
                 return outcome
         # Whatever happened to the step, the train is standing at one end of the
         # stretch and the next leg runs back the other way. Leave it unarmed:
-        # the next tick's leg branch takes the path, flips the cab, and powers
-        # up, which is the one place any leg starts.
+        # the next tick's leg branch takes the path, re-frames the span head, and
+        # powers up, which is the one place any leg starts.
         run.heading_to = 1 - run.heading_to
         run.phase = PHASE_LEG
         run.leg_armed = False
@@ -762,7 +765,7 @@ class SpeedCalibration:
         the ordinary route steps. It arms a leg, evaluates step progress, and
         updates the run state; it touches no route registry and issues no power
         command. The returned `CalibrationCommand` carries the leg-route intents
-        (`arm_leg_to` / `deactivate_route`) and cab reversal for `RouteExecutor`
+        (`arm_leg_to` / `deactivate_route`) and head-frame reversal for `RouteExecutor`
         to perform. The step's power is the run state the controller reads back
         through `get_propulsion_override(...)` during this tick's Action, so the
         pass drives without ever queuing an operator command. Returns `None` when
@@ -793,15 +796,17 @@ class SpeedCalibration:
     def _head_block(controller) -> str:
         """The block the train's head is in.
 
-        `TrainSpan.occupied_blocks` is ordered `end_a` to `end_b`, and the cab
-        names which physical end is the head — cab `B` puts it at `end_b`, so
-        that end's block is the last entry rather than the first.
+        `TrainSpan.occupied_blocks` is ordered `end_a` to `end_b`, and the framed
+        head end names which physical end is the head (design_new.md
+        "Authority-side head derivation") — a span framed at `end_b` puts the head
+        there, so that end's block is the last entry rather than the first.
         """
         span = controller.get_current_span()
         blocks = list(getattr(span, "occupied_blocks", ()) or ())
         if not blocks:
             return ""
-        return blocks[-1] if getattr(controller.commands, "cab", None) == "B" else blocks[0]
+        framed_head = getattr(controller, "_framed_head_end", "end_a")
+        return blocks[-1] if framed_head == "end_b" else blocks[0]
 
     def _controller(self, train_id: str):
         sc = self._sc
@@ -1006,10 +1011,11 @@ class SpeedCalibration:
 
         A run ends the moment any of these holds, not only on Save or
         panel-close: the train leaves `READY`, leaves `manual` control mode,
-        loses its cab, is powered off, or has EB activated (design_new.md
-        "Lighting-voltage calibration", What the run drives). Being assigned a
-        route ends it too; that check is the caller's, because the route
-        assignment lives on `RouteExecutor` rather than the controller.
+        is powered off, or has EB activated (design_new.md "Lighting-voltage
+        calibration", What the run drives). Being assigned a route ends it too;
+        that check is the caller's, because the route assignment lives on
+        `RouteExecutor` rather than the controller. There is no cab condition —
+        the head end is derived from the authority.
 
         Returns True when no run is open, so a caller with nothing to
         re-evaluate takes no action.
@@ -1023,8 +1029,6 @@ class SpeedCalibration:
         if controller.ops.state != TrainState.READY:
             return False
         if getattr(controller.commands, "control_mode", None) != "manual":
-            return False
-        if getattr(controller.commands, "cab", None) not in ("A", "B"):
             return False
         if controller.eb.active:
             return False

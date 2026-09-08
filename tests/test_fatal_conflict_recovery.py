@@ -99,11 +99,10 @@ def test_the_layout_survives_the_whole_round_trip():
     sim.clear_failed_runtime()
 
     assert sorted(network.trains) == ["T1"]
-    # Clearing the halt reaches `OFF` through `complete_power_off()`, so the cab
-    # is cleared with it: `(OFF, None)` is the only legal pair in the Allowed
-    # `(state, cab)` pairs table (design_new.md "Controller state machine").
+    # Clearing the halt reaches `OFF` through `complete_power_off()`, which resets
+    # the framed head end back to its default.
     assert sim.controllers["T1"].ops.state == TrainState.OFF
-    assert sim.controllers["T1"].commands.cab is None
+    assert sim.controllers["T1"]._framed_head_end == "end_a"
     # add_train seeds a model+instance profile pair and the train names the
     # instance (design_new.md "SpeedProfile", Model profiles and instance
     # profiles); the link survives the round trip.

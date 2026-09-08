@@ -301,7 +301,7 @@ class TestTrainPhase1:
         network.add_train(train)
         controller = create_controller_for_train(train.train_id, network)
         set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         controller.ops.state = TrainState.OFF
         return train, controller
 
@@ -835,18 +835,6 @@ class TestTrainStateTransitions:
         assert result.success is False
         assert controller.ops.state == TrainState.RUNNING_MOVING
 
-    def test_set_cab_transition(self):
-        """set_cab(\"A\") leaves the controller in READY with cab selected."""
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.READY
-        )
-        set_train_span(controller, (0, 0), facing_direction=Direction.NORTH)
-        controller.commands.control_mode = "manual"  # cab selection is manual-only
-        result = controller.commands.set_cab("A")
-        assert result.success is True
-        assert controller.ops.state == TrainState.READY
-        assert controller.commands.cab == "A"
-
     def test_path_backed_manual_run_still_completes_to_standby(self):
         """A path-backed run still completes to standby (READY) after ATO->manual.
 
@@ -863,7 +851,7 @@ class TestTrainStateTransitions:
         train.state = TrainState.RUNNING_MOVING
         controller.ops.state = TrainState.RUNNING_MOVING
         controller.commands.control_mode = "manual"
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         # `path_backed_run_active` is a derived projection (per design_new.md
         # ~line 161, no controller-owned setter); the assertion below confirms
         # the projection reads False when no path/route/destination context
@@ -933,7 +921,7 @@ class TestTrainStateTransitions:
         )
         controller.commands.power_on_cmd()
         controller.commands.set_mode("manual")
-        controller.commands.set_cab("A")
+        controller._apply_head_frame("end_a")
         controller.commands.set_manual_mode_type("power_percent")
         assert controller.commands.set_manual_power_percent(60).success is True
         assert controller.manual.manual_power_percent == 60
@@ -1088,9 +1076,9 @@ class TestCompleteStateFlows:
         assert result.success is True
         assert controller.ops.state == TrainState.READY
 
-        # Select cab (manual mode: cab selection is manual-only); stays READY.
+        # Frame the head end (manual mode); stays READY.
         controller.commands.control_mode = "manual"
-        assert controller.commands.set_cab("A").success is True
+        assert controller._apply_head_frame("end_a") is None
         assert controller.ops.state == TrainState.READY
 
         # Start moving (manual mode to bypass ATO auto-cab selection). Manual
@@ -1109,7 +1097,7 @@ class TestCompleteStateFlows:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING
         )
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
 
         # Stop completion lands the train in READY (on_path_complete). A dwell
         # after a stop is not a controller state — the train stays READY while
@@ -1122,7 +1110,7 @@ class TestCompleteStateFlows:
         # Use manual mode (not ATO auto-cab logic). Manual trains have no depart
         # handshake; put the train in the moving state directly.
         controller.commands.control_mode = "manual"
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         controller.ops.enter_running_moving()
         assert controller.ops.state == TrainState.RUNNING_MOVING
 
@@ -1273,7 +1261,7 @@ class TestHandleUnderEmergencyBrake:
         # command contracts"); put the
         # controller in manual mode with a cab so the lever input is accepted.
         controller.commands.control_mode = "manual"
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
 
         result = controller.eb.activate()
         assert result.success is True
@@ -1295,7 +1283,7 @@ class TestHandleUnderEmergencyBrake:
         # set_handle is a manual-mode command (design_new.md "Power/cab/mode
         # command contracts").
         controller.commands.control_mode = "manual"
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
 
         result = controller.eb.activate()
         assert result.success is True
@@ -1313,7 +1301,7 @@ class TestHandleUnderEmergencyBrake:
         # set_handle is a manual-mode command (design_new.md "Power/cab/mode
         # command contracts").
         controller.commands.control_mode = "manual"
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
 
         result = controller.eb.activate()
         assert result.success is True

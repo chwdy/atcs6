@@ -143,7 +143,7 @@ def _seed_rolling_train_on_live_path(
     # in the moving state directly.
     controller.ops.state = TrainState.READY
     controller.commands.control_mode = "manual"
-    controller.commands.cab = "A"
+    controller._apply_head_frame("end_a")
     controller.ops.enter_running_moving()
     assert controller.ops.state == TrainState.RUNNING_MOVING
 

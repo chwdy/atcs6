@@ -235,7 +235,7 @@ class TestExtendPathBug:
         controller = sim_controller
 
         controller.commands.power_on_cmd()
-        controller.commands.set_cab("A")
+        controller._apply_head_frame("end_a")
         controller.ato.engage()
         controller.ops.enter_running_moving()
 
@@ -320,13 +320,13 @@ class TestExtendPathBug:
         controller = sim_controller
 
         controller.commands.power_on_cmd()
-        controller.commands.set_cab("A")
+        controller._apply_head_frame("end_a")
         controller.ato.engage()
         controller.ops.enter_running_moving()
 
         # Simulate train moving to BLOCK_B (middle of route). The live span
-        # lives on the controller; cab "A" (set above) makes end_a the head,
-        # so end_a is the (3,0) head tile and end_b the (2,0) tail tile.
+        # lives on the controller; the framed head (end_a, set above) is the
+        # head, so end_a is the (3,0) head tile and end_b the (2,0) tail tile.
         controller.physics_sync.current_span = TrainSpan(
             end_a=SpanEndLocator(tile=(3, 0), distance_cm=25.0, entry_edge="W"),
             end_b=SpanEndLocator(tile=(2, 0), distance_cm=25.0, entry_edge="W"),

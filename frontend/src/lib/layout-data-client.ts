@@ -147,7 +147,6 @@ export interface SimClient {
   // --- Train control ---
   trainPowerOn(trainId: string): Promise<any>;
   trainPowerOff(trainId: string): Promise<any>;
-  trainSetCab(trainId: string, cab: string): Promise<any>;
   setHandle(trainId: string, position: string): Promise<any>;
   releaseEmergency(trainId: string): Promise<any>;
   setControlMode(trainId: string, mode: string): Promise<any>;

@@ -233,7 +233,7 @@ class TestRouteExecutor:
         # The predicate reads the head tile from the train's controller
         # (cab + current_span), so register a controller and seed its span.
         controller = executor._get_controller(train)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
 
         # Train is at STA_A
@@ -411,7 +411,7 @@ class TestRouteCallbacksWrapAround:
         executor.register_route(route)
 
         controller = executor._get_controller(train)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
 
         exec_state = RouteExecutionState(
@@ -525,7 +525,7 @@ class TestRouteCallbacksWrapAround:
         executor.register_route(route)
 
         controller = executor._get_controller(train)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
 
         exec_state = RouteExecutionState(
@@ -608,7 +608,7 @@ class TestRouteCallbacksWrapAround:
         executor = RouteExecutor(network)
         executor.register_route(route)
         controller = executor._get_controller(train)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
 
         exec_state = RouteExecutionState(
@@ -725,7 +725,7 @@ class TestBrokenDwellHandling:
         controller = executor._get_controller(train)
         # A powered-off train skips Phase 1 entirely, so power up first.
         controller.commands.power_on_cmd()
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
         assert controller.state != TrainState.OFF
 

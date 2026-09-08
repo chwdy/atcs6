@@ -71,8 +71,7 @@ def _ready_manual_train(sim, network, train_id):
     controller.commands.power_on_cmd()
     controller.commands.set_mode("manual")
     controller.commands.set_manual_mode_type("power_percent")
-    if controller.commands.cab is None:
-        controller.commands.set_cab("A")
+    controller._apply_head_frame("end_a")
     return controller
 
 

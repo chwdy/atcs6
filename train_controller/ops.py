@@ -77,15 +77,13 @@ class OperationalStateMachine:
         waiting for the next movement calculation). Both calls are idempotent
         and read the canonical stopped predicate ``TrainController.is_stopped()``.
 
-        Transition 1 — READY to RUNNING_MOVING: the controller is READY, a cab
-        is selected, and the train is moving. Motion out of a cab-selected
-        READY controller is a real departure (a manual driver pre-rolling, or
-        ATC clearance returning and physics resuming before the next plan
-        tick). The cab guard is mandatory: every legal RUNNING_MOVING has a
-        selected cab, so motion from a cabless READY controller is an invariant
-        violation and must not be turned into an illegal state. This writes
-        only ``state``; ATO intent (``ato.engaged``) is set separately by the
-        mode selector and is not touched here.
+        Transition 1 — READY to RUNNING_MOVING: the controller is READY and the
+        train is moving. Motion out of a READY controller is a real departure (a
+        manual driver pre-rolling, or ATC clearance returning and physics
+        resuming before the next plan tick). There is no cab guard — the head
+        end is derived from the authority (design_new.md "Authority-side head
+        derivation"). This writes only ``state``; ATO intent (``ato.engaged``)
+        is set separately by the mode selector and is not touched here.
 
         Transition 2 — RUNNING_MOVING to READY: the train has stopped, has no
         live authority (``received_path_plan is None``), and EB is not
@@ -100,11 +98,7 @@ class OperationalStateMachine:
         withholding onward authority.
         """
         c = self._c
-        if (
-            self.state == TrainState.READY
-            and c.commands.cab in ("A", "B")
-            and not c.is_stopped()
-        ):
+        if self.state == TrainState.READY and not c.is_stopped():
             self.enter_running_moving()
         elif (
             self.state == TrainState.RUNNING_MOVING

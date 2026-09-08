@@ -224,42 +224,12 @@ class ATOComputer:
         if not c.power_on:
             return CommandResult(False, "Power is off")
 
-        # Refresh the destination snapshot and align the cab to any live path
-        # direction so the driving rule can run immediately when authority
-        # already exists.
+        # Refresh the destination snapshot; the head end is derived from the
+        # live authority, so there is no cab to align.
         self.info = self.compute_info()
-        self.align_cab_to_path()
 
         self.engaged = True
         return CommandResult(True, "ATO engaged")
-
-    def align_cab_to_path(self) -> None:
-        """Align the cab to the live path's required direction (cab bridge).
-
-        The head is still selected through the cab in this build, so ATO drives
-        the wrong way (ATC reports WRONG_DIRECTION_CAB, a zero limit) whenever
-        the cab points away from the acquired authority. Operator intent
-        (set_mode("ato")) is set before a path exists, so the alignment cannot
-        happen once at engage time; the ATO driving rule calls this every tick
-        the engaged train is stopped, and it re-aligns the cab through the full
-        span reframe of ``set_cab(..., internal=True)``. Doing it only while the
-        train is stopped keeps the reframe safe. (This whole bridge is removed
-        once the head is derived from live authority.)
-        """
-        c = self._c
-        if not c.is_stopped():
-            return
-        required_cab = c.cab_policy.required_cab_for_path()
-        if required_cab is None or c.commands.cab == required_cab:
-            return
-        old_cab = c.commands.cab
-        result = c.commands.set_cab(required_cab, internal=True)
-        if result.success:
-            c.notifications.emit(
-                f"ATO auto-{'selected' if old_cab is None else 'switched'} cab to {required_cab} for path direction",
-                operation="ato_align_cab",
-                kind=_Kind.INFO,
-            )
 
     def disengage(self) -> CommandResult:
         """Clear the operator's ATO intent (``engaged = False``).
@@ -299,8 +269,11 @@ class ATOComputer:
             return ATOInfo(path_id=path_id)
 
         path_heading = "a"
-        required_cab = c.commands.cab or "A"
-
+        # The head end the authority requires (design_new.md "Authority-side
+        # head derivation"): the geometry engine's verdict when it can separate
+        # the ends, otherwise the currently-framed head. There is no operator
+        # cab to fall back to.
+        required_cab = "B" if c._framed_head_end == "end_b" else "A"
         connectivity_cab = c.cab_policy.required_cab_for_path()
         if connectivity_cab is not None:
             required_cab = connectivity_cab

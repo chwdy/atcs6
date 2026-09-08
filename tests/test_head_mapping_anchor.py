@@ -73,7 +73,7 @@ def _controller_on_lapping_path():
     sim = SimulationController(network)
     controller = sim._get_or_create_controller(train)
     controller.commands.control_mode = "manual"
-    controller.commands.cab = "A"  # end_a is head
+    controller._apply_head_frame("end_a")  # end_a is head
     controller.ops.state = TrainState.RUNNING_MOVING
     controller.physics_sync.current_span = make_train_span(
         (0, 0), facing_direction=Direction.EAST, occupied_blocks=["BLK_A"]

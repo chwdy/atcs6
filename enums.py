@@ -223,8 +223,6 @@ class AtcLimitReasonCode(Enum):
     CAUTION = "caution"
     OBSTRUCTION = "obstruction"
     NO_AUTHORITY = "no_authority"
-    NO_CAB = "no_cab"
-    WRONG_DIRECTION_CAB = "wrong_direction_cab"
     EB = "eb"
     # A posted block speed limit (`Block.speed_limit_kmh`) below the train's
     # current maximum: a permitted-speed restriction ahead, distinct from

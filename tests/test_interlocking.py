@@ -211,7 +211,7 @@ class TestPathPrepending:
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
         controller = create_controller_for_train(train.train_id, network)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
         path_tiles = [
             (2, 0, Direction.EAST),
@@ -233,7 +233,7 @@ class TestPathPrepending:
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
         controller = create_controller_for_train(train.train_id, network)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
         path_tiles = [
             (0, 0, Direction.EAST),
@@ -259,7 +259,7 @@ class TestPathPrepending:
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
         controller = create_controller_for_train(train.train_id, network)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
         path_tiles = [
             (3, 0, Direction.EAST),
@@ -279,7 +279,7 @@ class TestPathPrepending:
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
         controller = create_controller_for_train(train.train_id, network)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
         result = prepare_path_for_train(network, train, [], controller=controller)
         assert result.success is False

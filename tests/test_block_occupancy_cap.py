@@ -445,7 +445,7 @@ def drive_with_authority(confirmed):
     ).success
     controller.commands.power_on_cmd()
     controller.commands.set_mode("manual")
-    controller.commands.set_cab("A")
+    controller._apply_head_frame("end_a")
     controller.commands.set_handle(HandlePosition.P4)
     return sim, train, controller, physics
 

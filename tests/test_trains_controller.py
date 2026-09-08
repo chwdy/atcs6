@@ -34,39 +34,6 @@ def straight_ew_track(network):
         network.add_track(track)
     return network
 
-class TestTrainManualControlBugFixes:
-    """Tests for train manual control and ATC fallback fixes via TrainController."""
-
-    def test_set_cab_none_from_standby(self):
-        network = RailwayNetwork()
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
-        train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
-        network.add_train(train)
-        controller = create_controller_for_train("TRAIN_01", network)
-        controller.ops.state = TrainState.READY
-        controller.commands.cab = "A"
-        controller.commands.control_mode = "manual"  # cab selection is manual-only
-
-        assert controller.commands.set_cab(None).success is True
-        assert controller.ops.state == TrainState.READY
-        assert controller.commands.cab is None
-        assert controller._facing_direction() is None
-
-    def test_set_cab_rejects_moving(self):
-        network = RailwayNetwork()
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
-        train = Train(train_id="TRAIN_02", consist=[car], max_speed=60.0)
-        network.add_train(train)
-        controller = create_controller_for_train("TRAIN_02", network)
-        controller.ops.state = TrainState.READY
-        controller.commands.cab = "A"
-        controller.physics_sync.current_speed_kmh = 5.0
-
-        assert controller.commands.set_cab(None).success is False
-        assert controller.ops.state == TrainState.READY
-
-
-
 
 
 class TestRaceConditionFix:
@@ -120,7 +87,7 @@ class TestRaceConditionFix:
             controller, (0, 0), facing_direction=Direction.EAST, occupied_blocks=["B1"]
         )
         controller.ops.state = TrainState.RUNNING_MOVING
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         controller.physics_sync.current_speed_kmh = 42.0  # 12 km/h over limit (EB zone)
 
         # Tick controller
@@ -143,37 +110,6 @@ class TestRaceConditionFix:
         ]
         assert any("overspeed" in note.lower() for note in _notes), (
             f"Should have an overspeed EB event, got: {_notes}"
-        )
-
-
-    def test_no_cab_selected_sets_atc_speed_zero(self):
-        """
-        Test that when no cab is selected, ATC speed is 0.
-
-        Per new tick() workflow:
-        - If active_cab is None → atc_speed_limit = 0, reason = "No cab selected"
-        """
-        network = RailwayNetwork()
-
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
-        train = Train(train_id="TRAIN_NO_CAB_TEST", consist=[car], max_speed=60.0)
-        network.add_train(train)
-
-        sim = SimulationController(network)
-        controller = sim._get_or_create_controller(train)
-        controller.ops.state = TrainState.RUNNING_MOVING
-        controller.commands.cab = None  # No cab selected
-        controller.physics_sync.current_speed_kmh = 0.0
-
-        # Tick controller
-        sim.update(0.1)
-
-        # ATC speed should be 0
-        assert controller.atc.speed_limit == 0.0, (
-            "ATC speed should be 0 when no cab selected"
-        )
-        assert controller.speed_limit_reason == "No cab selected", (
-            f"Reason should be 'No cab selected', got: {controller.speed_limit_reason}"
         )
 
 
@@ -262,7 +198,7 @@ class TestTrainControllerBrakingNotches:
         # Per design_new.md: power_on is a read-only derived property; use
         # controller.ops.state to power on.
         controller.ops.state = TrainState.RUNNING_MOVING
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         controller.physics_sync.current_speed_kmh = 16.0
 
         monkeypatch.setattr(controller.atc, "clearance_ahead", lambda: 200.0)
@@ -374,8 +310,8 @@ class TestTrainClearancePrecisionBugFix:
 
         network.add_train(train)
         controller = TrainController(train_id=train.train_id, network=network)
-        # Head is end_a=(1,0), 5cm in from the W edge; default cab (None) ->
-        # end_a is head. The span runs head (1,0) -> tail (0,0).
+        # Head is end_a=(1,0), 5cm in from the W edge; the default framed head
+        # (end_a) is the head. The span runs head (1,0) -> tail (0,0).
         controller.physics_sync.current_span = TrainSpan(
             end_a=SpanEndLocator(tile=(1, 0), distance_cm=5.0, entry_edge="W"),
             end_b=SpanEndLocator(tile=(0, 0), distance_cm=5.0, entry_edge="W"),
@@ -425,7 +361,7 @@ class TestATCOverspeedWarning:
         set_train_span(
             controller, (0, 0), facing_direction=Direction.EAST, occupied_blocks=["B1"]
         )
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         controller.ops.state = TrainState.RUNNING_MOVING
 
         assert dispatcher.create_path(

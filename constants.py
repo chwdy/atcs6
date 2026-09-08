@@ -12,7 +12,7 @@ relevant entity (`SpeedProfile`, `Route`, `RouteTask`, ...) instead of here.
 
 # Global "considered stopped" speed threshold per design_new.md "Units contract".
 # Used by TrainController.is_stopped(), the post-physics usable-authority stop
-# check, command-acceptance gates (set_cab, set_mode, power_off_cmd,
+# check, command-acceptance gates (set_mode, power_off_cmd,
 # release_emergency_cmd), and any other layer that needs the canonical stopped
 # predicate. This is distinct from the ATC zero-speed limit, which is a separate
 # clearance value.

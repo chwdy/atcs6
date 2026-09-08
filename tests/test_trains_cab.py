@@ -1,10 +1,20 @@
 """
-Cab switching tests - Cab switching and entry edge
+Head-frame re-expression tests — the span frame follows the head end.
+
+The operator cab is gone: the head end is derived from the live authority
+(design_new.md "Authority-side head derivation"), and the single writer of the
+framed head is `TrainController._apply_head_frame("end_a"/"end_b")`. Re-framing
+the head to the other physical span end re-expresses both end locators (entry
+edges and distances) into the new head-forward travel frame, without moving the
+physical train. These tests pin that geometry, formerly driven through the
+removed `set_cab` command.
 
 Run with: pytest tests/test_trains_cab.py -v
 """
 
 import logging
+from types import SimpleNamespace
+
 import pytest
 
 from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW
@@ -20,6 +30,16 @@ from train_route import Route, RouteMode, RouteTask
 from switch import Switch
 
 
+def _give_authority(controller) -> None:
+    """Make ``received_path_plan`` read non-None by stubbing the dispatcher, so
+    the authority-gated ``travel_direction`` derives from the span frame. An
+    empty ``resource_sequence`` is enough to lift the no-authority gate."""
+    fake_path = SimpleNamespace(path_id="P", resource_sequence=[])
+    controller.path_dispatcher = SimpleNamespace(
+        get_active_path=lambda _train_id: fake_path
+    )
+
+
 @pytest.fixture
 def network():
     return RailwayNetwork()
@@ -32,14 +52,11 @@ def straight_ew_track(network):
         network.add_track(track)
     return network
 
-class TestCabSwitchEndPositionsBugFix:
+class TestHeadFrameEndPositions:
     """
-    Comprehensive tests for cab switching behavior (corrected 2026-02-04).
-
-    When switching cabs (A <-> B), the physical train DOES NOT MOVE:
+    Re-framing the head end (end_a <-> end_b) does NOT move the physical train:
     - end_a.tile and end_b.tile stay at their original locations
-    - The driver conceptually walks to the other cab
-    - Only the head end changes (the cab selects it: A -> end_a, B -> end_b)
+    - Only the head end changes (end_a <-> end_b)
     - Entry edges flip for BOTH ends (train will travel opposite direction)
     - Distances flip for BOTH ends (measured from opposite edge now)
     - occupied_tiles order stays the same (train hasn't moved)
@@ -56,33 +73,32 @@ class TestCabSwitchEndPositionsBugFix:
         span = network.place_train(train, 1, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
-        controller.commands.control_mode = "manual"  # cab selection is manual-only
         # place_train returns the span but does not seed the controller; the
         # canonical live store is controller.physics_sync.current_span.
         controller.physics_sync.current_span = span
 
         return train, controller
 
-    def test_cab_switch_tiles_dont_move(self, network):
-        """When switching cabs, tiles stay in place - physical train doesn't move."""
+    def test_reframe_tiles_dont_move(self, network):
+        """Re-framing the head keeps tiles in place - physical train doesn't move."""
         train, controller = self._setup_two_tile_train(network)
 
-        controller.commands.set_cab("A")
+        controller._apply_head_frame("end_a")
         original_end_a = controller.physics_sync.current_span.end_a.tile
         original_end_b = controller.physics_sync.current_span.end_b.tile
 
-        controller.commands.set_cab("B")
+        controller._apply_head_frame("end_b")
 
         # Tiles should NOT change - physical train stays in place
-        assert controller.commands.cab == "B"
+        assert controller._framed_head_end == "end_b"
         assert controller.physics_sync.current_span.end_a.tile == original_end_a
         assert controller.physics_sync.current_span.end_b.tile == original_end_b
 
-    def test_cab_switch_flips_entry_edges_for_both_ends(self, network):
-        """When switching cabs, entry edges flip for BOTH ends."""
+    def test_reframe_flips_entry_edges_for_both_ends(self, network):
+        """Re-framing the head flips entry edges for BOTH ends."""
         train, controller = self._setup_two_tile_train(network)
 
-        controller.commands.set_cab("A")
+        controller._apply_head_frame("end_a")
         span = controller.physics_sync.current_span
         original_entry_a = span.end_a.entry_edge
         original_entry_b = span.end_b.entry_edge
@@ -103,22 +119,21 @@ class TestCabSwitchEndPositionsBugFix:
             if exits:
                 expected_new_entry_b = exits[0]
 
-        controller.commands.set_cab("B")
+        controller._apply_head_frame("end_b")
 
         # BOTH ends should have flipped entry edges
         span = controller.physics_sync.current_span
         assert span.end_a.entry_edge == expected_new_entry_a
         assert span.end_b.entry_edge == expected_new_entry_b
 
-    def test_clear_cab_from_b_re_expresses_the_span_frame(self, network):
-        """`clear_cab()` (the B -> None power-off clear used by
-        `complete_power_off()`) moves the head from end_b to end_a, so it must
-        re-express both span end frames like any other cab writer (design_new.md
-        "Reversed-frame re-expression"). The direct `cab = None` write it replaced
-        skipped this, leaving the frame stale."""
+    def test_reset_to_default_re_expresses_the_span_frame(self, network):
+        """`_reset_head_frame_to_default()` (the end_b -> end_a power-off reset used
+        by `complete_power_off()`) moves the head from end_b to end_a, so it must
+        re-express both span end frames like any other head-frame writer
+        (design_new.md "Reversed-frame re-expression")."""
         train, controller = self._setup_two_tile_train(network)
 
-        controller.commands.set_cab("B")
+        controller._apply_head_frame("end_b")
         span = controller.physics_sync.current_span
         entry_a_at_b = span.end_a.entry_edge
         entry_b_at_b = span.end_b.entry_edge
@@ -134,21 +149,21 @@ class TestCabSwitchEndPositionsBugFix:
         expected_entry_a = _flip(span.end_a.tile, entry_a_at_b)
         expected_entry_b = _flip(span.end_b.tile, entry_b_at_b)
 
-        controller.commands.clear_cab()
+        controller._reset_head_frame_to_default()
 
-        assert controller.commands.cab is None
+        assert controller._framed_head_end == "end_a"
         span = controller.physics_sync.current_span
         assert span.end_a.entry_edge == expected_entry_a
         assert span.end_b.entry_edge == expected_entry_b
 
-    def test_cab_switch_preserves_occupied_tiles_order(self, network):
+    def test_reframe_preserves_occupied_tiles_order(self, network):
         """occupied_tiles order stays the same - physical train didn't move."""
         train, controller = self._setup_two_tile_train(network)
 
-        controller.commands.set_cab("A")
+        controller._apply_head_frame("end_a")
         original_occupied = controller.physics_sync.current_span.occupied_tiles.copy()
 
-        controller.commands.set_cab("B")
+        controller._apply_head_frame("end_b")
 
         # occupied_tiles should NOT change - train didn't physically move
         span = controller.physics_sync.current_span
@@ -159,31 +174,25 @@ class TestCabSwitchEndPositionsBugFix:
         assert span.occupied_tiles[-1] == span.end_b.tile
 
 
-    def test_cab_switch_reverses_facing_direction(self, network):
-        """Switching cabs reverses the train's facing direction."""
+    def test_reframe_reverses_facing_direction(self, network):
+        """Re-framing the head reverses the train's facing direction."""
         train, controller = self._setup_two_tile_train(network)
 
-        controller.commands.set_cab("A")
+        controller._apply_head_frame("end_a")
         assert controller._facing_direction() == Direction.EAST
 
-        controller.commands.set_cab("B")
+        controller._apply_head_frame("end_b")
         assert controller._facing_direction() == Direction.WEST
 
-        controller.commands.set_cab("A")
+        controller._apply_head_frame("end_a")
         assert controller._facing_direction() == Direction.EAST
 
 
 
-class TestCabSwitchEntryEdgeFlipBugFix:
+class TestHeadFrameEntryEdgeFlip:
     """
-    Comprehensive tests for cab switching entry edge reversal (corrected 2026-02-04).
-
-    BUG: Switching cabs in manual mode flips the head end / facing direction
-    but leaves entry_edges unchanged, so movement/renderer keep the old
-    direction.
-
-    FIX: On cab switch (A <-> B), flip entry_edge for BOTH ends since the train
-    will now travel in the opposite direction on the track.
+    Re-framing the head flips entry_edge for BOTH ends since the train will now
+    travel in the opposite direction on the track.
     """
 
     def _setup_straight_line(self, network, length_cm: float, head_x: int = 1):
@@ -196,7 +205,6 @@ class TestCabSwitchEntryEdgeFlipBugFix:
         span = network.place_train(train, head_x, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
-        controller.commands.control_mode = "manual"  # cab selection is manual-only
         controller.physics_sync.current_span = span
         return train, controller
 
@@ -207,11 +215,11 @@ class TestCabSwitchEntryEdgeFlipBugFix:
         assert exits
         return exits[0]
 
-    def test_cab_switch_flips_entry_edge_single_tile(self, network):
-        """Single-tile train: BOTH ends flip entry edges on cab switch."""
+    def test_reframe_flips_entry_edge_single_tile(self, network):
+        """Single-tile train: BOTH ends flip entry edges on re-frame."""
         train, controller = self._setup_straight_line(network, length_cm=40.0)
 
-        controller.commands.set_cab("A")
+        controller._apply_head_frame("end_a")
         span = controller.physics_sync.current_span
         original_entry_a = span.end_a.entry_edge
         original_entry_b = span.end_b.entry_edge
@@ -224,19 +232,19 @@ class TestCabSwitchEntryEdgeFlipBugFix:
             network, span.end_b.tile, original_entry_b
         )
 
-        controller.commands.set_cab("B")
+        controller._apply_head_frame("end_b")
 
-        assert controller.commands.cab == "B"
+        assert controller._framed_head_end == "end_b"
         # BOTH ends flip their entry edges
         span = controller.physics_sync.current_span
         assert span.end_a.entry_edge == expected_entry_a
         assert span.end_b.entry_edge == expected_entry_b
 
-    def test_cab_switch_flips_entry_edge_multi_tile(self, network):
-        """Multi-tile train: BOTH ends flip entry edges on cab switch."""
+    def test_reframe_flips_entry_edge_multi_tile(self, network):
+        """Multi-tile train: BOTH ends flip entry edges on re-frame."""
         train, controller = self._setup_straight_line(network, length_cm=140.0)
 
-        controller.commands.set_cab("A")
+        controller._apply_head_frame("end_a")
         span = controller.physics_sync.current_span
         original_entry_a = span.end_a.entry_edge
         original_entry_b = span.end_b.entry_edge
@@ -248,9 +256,9 @@ class TestCabSwitchEntryEdgeFlipBugFix:
             network, span.end_b.tile, original_entry_b
         )
 
-        controller.commands.set_cab("B")
+        controller._apply_head_frame("end_b")
 
-        assert controller.commands.cab == "B"
+        assert controller._framed_head_end == "end_b"
         # BOTH ends flip their entry edges
         span = controller.physics_sync.current_span
         assert span.end_a.entry_edge == expected_entry_a
@@ -258,26 +266,25 @@ class TestCabSwitchEntryEdgeFlipBugFix:
 
 
 
-class TestSetCabDoubleFlipBugFix:
+class TestHeadFrameDoubleFlip:
     """
-    Comprehensive tests for set_cab() direction handling (regression guard
-    for the double-flip bug fixed 2026-02-10).
+    Regression guard for the double-flip bug (fixed 2026-02-10).
 
-    When switching cabs (A <-> B) the head end is reselected and the train's
-    facing direction must reverse exactly once:
-    - Cab "A" makes end_a the head; cab "B" makes end_b the head.
+    Re-framing the head (end_a <-> end_b) must reverse the train's facing
+    direction exactly once:
+    - end_a as head faces one way; end_b as head faces the other.
     - For a multi-tile span the facing direction is derived from tile geometry,
       so swapping the head end reverses it automatically.
     - For a single-tile span the facing direction is derived from the head's
-      entry_edge + offsets, which set_cab flips for both ends.
+      entry_edge + offsets, which the re-frame flips for both ends.
 
     The earlier bug double-flipped the direction so it ended up unchanged,
     which broke backward path assignment after route completion. These tests
-    pin the direction to exactly one reversal per A <-> B switch.
+    pin the direction to exactly one reversal per end_a <-> end_b re-frame.
     """
 
     def _setup_multi_tile_train(self, network):
-        """Create a 2-tile train on E-W track, facing EAST with cab A."""
+        """Create a 2-tile train on E-W track, facing EAST framed at end_a."""
         for x in range(5):
             network.add_track(Tile(x, 0, track_bits=TRACK_EW))
 
@@ -287,12 +294,11 @@ class TestSetCabDoubleFlipBugFix:
         span = network.place_train(train, 1, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
-        controller.commands.control_mode = "manual"  # cab selection is manual-only
         controller.physics_sync.current_span = span
-        controller.commands.set_cab("A")
+        controller._apply_head_frame("end_a")
 
         assert controller._facing_direction() == Direction.EAST
-        assert controller.commands.cab == "A"
+        assert controller._framed_head_end == "end_a"
         span = controller.physics_sync.current_span
         assert span.end_a.tile != span.end_b.tile, (
             "Setup must produce a multi-tile train"
@@ -301,7 +307,7 @@ class TestSetCabDoubleFlipBugFix:
         return train, controller
 
     def _setup_single_tile_train(self, network):
-        """Create a 1-tile train on E-W track, facing EAST with cab A."""
+        """Create a 1-tile train on E-W track, facing EAST framed at end_a."""
         for x in range(3):
             network.add_track(Tile(x, 0, track_bits=TRACK_EW))
 
@@ -311,12 +317,11 @@ class TestSetCabDoubleFlipBugFix:
         span = network.place_train(train, 1, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
-        controller.commands.control_mode = "manual"  # cab selection is manual-only
         controller.physics_sync.current_span = span
-        controller.commands.set_cab("A")
+        controller._apply_head_frame("end_a")
 
         assert controller._facing_direction() == Direction.EAST
-        assert controller.commands.cab == "A"
+        assert controller._framed_head_end == "end_a"
         span = controller.physics_sync.current_span
         assert span.end_a.tile == span.end_b.tile, (
             "Setup must produce a single-tile train"
@@ -326,31 +331,33 @@ class TestSetCabDoubleFlipBugFix:
 
     # ---- Multi-tile tests (the original bug case) ----
 
-    def test_multi_tile_set_cab_flips_train_facing_direction(self, network):
+    def test_multi_tile_reframe_flips_train_facing_direction(self, network):
         """The specific case that triggered the bug: multi-tile train
-        facing direction stays wrong after set_cab()."""
+        facing direction stays wrong after the re-frame."""
         train, controller = self._setup_multi_tile_train(network)
 
-        controller.commands.set_cab("B")
+        controller._apply_head_frame("end_b")
 
         assert controller._facing_direction() == Direction.WEST, (
             f"BUG REGRESSION: facing direction should be WEST after "
-            f"switching to cab B, got {controller._facing_direction()}"
+            f"re-framing to end_b, got {controller._facing_direction()}"
         )
 
-    def test_multi_tile_set_cab_flips_computed_direction(self, network):
+    def test_multi_tile_reframe_flips_computed_direction(self, network):
         """travel_direction (edge form) also reverses to point WEST."""
         train, controller = self._setup_multi_tile_train(network)
+        _give_authority(controller)
 
-        controller.commands.set_cab("B")
+        controller._apply_head_frame("end_b")
 
         assert controller.travel_direction == "W"
 
-    def test_multi_tile_set_cab_facing_direction_consistent(self, network):
-        """After set_cab, the enum and edge derived reads agree on WEST."""
+    def test_multi_tile_reframe_facing_direction_consistent(self, network):
+        """After the re-frame, the enum and edge derived reads agree on WEST."""
         train, controller = self._setup_multi_tile_train(network)
+        _give_authority(controller)
 
-        controller.commands.set_cab("B")
+        controller._apply_head_frame("end_b")
 
         # Both derived reads on the controller should agree on the direction.
         via_enum = controller._facing_direction()  # Direction enum
@@ -360,82 +367,83 @@ class TestSetCabDoubleFlipBugFix:
         )
 
     def test_multi_tile_double_flip_returns_to_original(self, network):
-        """Switching cab twice returns to original direction (A->B->A)."""
+        """Re-framing twice returns to original direction (end_a->end_b->end_a)."""
         train, controller = self._setup_multi_tile_train(network)
 
-        controller.commands.set_cab("B")
+        controller._apply_head_frame("end_b")
         assert controller._facing_direction() == Direction.WEST
 
-        controller.commands.set_cab("A")
+        controller._apply_head_frame("end_a")
         assert controller._facing_direction() == Direction.EAST
 
     def test_multi_tile_triple_flip(self, network):
-        """Three cab switches (A->B->A->B) end correctly."""
+        """Three re-frames (end_a->end_b->end_a->end_b) end correctly."""
         train, controller = self._setup_multi_tile_train(network)
 
-        controller.commands.set_cab("B")
+        controller._apply_head_frame("end_b")
         assert controller._facing_direction() == Direction.WEST
 
-        controller.commands.set_cab("A")
+        controller._apply_head_frame("end_a")
         assert controller._facing_direction() == Direction.EAST
 
-        controller.commands.set_cab("B")
+        controller._apply_head_frame("end_b")
         assert controller._facing_direction() == Direction.WEST
 
-    def test_multi_tile_set_cab_opposite_flips_direction(self, network):
-        """Switching to the opposite cab via set_cab flips facing direction."""
+    def test_multi_tile_reframe_opposite_flips_direction(self, network):
+        """Re-framing to the opposite head end flips facing direction."""
         train, controller = self._setup_multi_tile_train(network)
 
-        result = controller.commands.set_cab("B")
-        assert result.success is True
+        result = controller._apply_head_frame("end_b")
+        assert result is None
         assert controller._facing_direction() == Direction.WEST
-        assert controller.commands.cab == "B"
+        assert controller._framed_head_end == "end_b"
 
-    def test_multi_tile_set_cab_opposite_twice_returns_original(self, network):
-        """Two opposite-cab switches return to original direction."""
+    def test_multi_tile_reframe_opposite_twice_returns_original(self, network):
+        """Two opposite re-frames return to original direction."""
         train, controller = self._setup_multi_tile_train(network)
 
-        controller.commands.set_cab("B")
+        controller._apply_head_frame("end_b")
         assert controller._facing_direction() == Direction.WEST
 
-        controller.commands.set_cab("A")
+        controller._apply_head_frame("end_a")
         assert controller._facing_direction() == Direction.EAST
 
     # ---- Single-tile tests ----
 
-    def test_single_tile_set_cab_flips_direction(self, network):
-        """Single-tile train also flips direction on cab switch."""
+    def test_single_tile_reframe_flips_direction(self, network):
+        """Single-tile train also flips direction on re-frame."""
         train, controller = self._setup_single_tile_train(network)
 
-        controller.commands.set_cab("B")
+        controller._apply_head_frame("end_b")
 
         assert controller._facing_direction() == Direction.WEST, (
             f"Single-tile train should flip to WEST, got {controller._facing_direction()}"
         )
 
     def test_single_tile_double_flip(self, network):
-        """Single-tile: A->B->A returns to original."""
+        """Single-tile: end_a->end_b->end_a returns to original."""
         train, controller = self._setup_single_tile_train(network)
 
-        controller.commands.set_cab("B")
+        controller._apply_head_frame("end_b")
         assert controller._facing_direction() == Direction.WEST
 
-        controller.commands.set_cab("A")
+        controller._apply_head_frame("end_a")
         assert controller._facing_direction() == Direction.EAST
 
-    def test_single_tile_set_cab_opposite(self, network):
-        """Single-tile: switching cab via set_cab flips direction."""
+    def test_single_tile_reframe_opposite(self, network):
+        """Single-tile: re-framing to the opposite head end flips direction."""
         train, controller = self._setup_single_tile_train(network)
 
-        result = controller.commands.set_cab("B")
-        assert result.success is True
+        result = controller._apply_head_frame("end_b")
+        assert result is None
         assert controller._facing_direction() == Direction.WEST
-        assert controller.commands.cab == "B"
+        assert controller._framed_head_end == "end_b"
 
     # ---- Edge cases ----
 
-    def test_set_cab_from_none_does_not_flip(self, network):
-        """Setting cab from None (first selection) should NOT flip direction."""
+    def test_reframe_to_current_default_does_not_flip(self, network):
+        """Re-framing to the already-framed end (the placed end_a default) does
+        NOT flip direction."""
         for x in range(5):
             network.add_track(Tile(x, 0, track_bits=TRACK_EW))
 
@@ -445,37 +453,24 @@ class TestSetCabDoubleFlipBugFix:
         span = network.place_train(train, 1, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
-        controller.commands.control_mode = "manual"  # cab selection is manual-only
         controller.physics_sync.current_span = span
 
-        # active_cab is None initially
-        assert controller.commands.cab is None
+        # The placed default frame is end_a.
+        assert controller._framed_head_end == "end_a"
 
-        # First cab selection should adopt the placed orientation, not flip it.
-        controller.commands.set_cab("A")
+        # Re-framing to end_a should adopt the placed orientation, not flip it.
+        controller._apply_head_frame("end_a")
         assert controller._facing_direction() == Direction.EAST, (
-            "First cab selection should NOT flip direction"
+            "Re-framing to the current head end should NOT flip direction"
         )
 
-    def test_set_same_cab_does_not_flip(self, network):
-        """Setting the same cab again should NOT flip direction."""
+    def test_reframe_same_end_does_not_flip(self, network):
+        """Re-framing to the same head end again should NOT flip direction."""
         train, controller = self._setup_multi_tile_train(network)
 
-        controller.commands.set_cab("A")  # Already A, setting A again
+        controller._apply_head_frame("end_a")  # Already end_a, re-applying
         assert controller._facing_direction() == Direction.EAST, (
-            "Re-selecting same cab should NOT flip direction"
-        )
-
-    def test_set_cab_fails_while_moving(self, network):
-        """set_cab is rejected if train is moving."""
-        train, controller = self._setup_multi_tile_train(network)
-
-        controller.physics_sync.current_speed_kmh = 10.0  # Moving
-
-        result = controller.commands.set_cab("B")
-        assert result.success is False
-        assert controller._facing_direction() == Direction.EAST, (
-            "Direction should not change on failed set_cab"
+            "Re-framing to the same head end should NOT flip direction"
         )
 
     def test_entry_edges_flip_with_direction(self, network):
@@ -488,15 +483,15 @@ class TestSetCabDoubleFlipBugFix:
         orig_a_dist = span.end_a.distance_cm
         orig_b_dist = span.end_b.distance_cm
 
-        controller.commands.set_cab("B")
+        controller._apply_head_frame("end_b")
 
         # Entry edges should have flipped
         span = controller.physics_sync.current_span
         assert span.end_a.entry_edge != orig_a_edge, (
-            "end_a entry edge should flip on cab switch"
+            "end_a entry edge should flip on re-frame"
         )
         assert span.end_b.entry_edge != orig_b_edge, (
-            "end_b entry edge should flip on cab switch"
+            "end_b entry edge should flip on re-frame"
         )
         # Distances should have changed (tile_length - original)
         assert span.end_a.distance_cm != orig_a_dist
@@ -507,11 +502,11 @@ class TestSetCabDoubleFlipBugFix:
 
     # ---- Real-world scenario: the actual bug trigger ----
 
-    def test_set_cab_after_ato_stops_in_ready_state(self, network):
+    def test_reframe_after_ato_stops_in_ready_state(self, network):
         """
         Real-world scenario: train arrives at terminal via ATO, route is
-        cancelled, train sits in READY with a cab still selected. Switching
-        to the opposite cab must succeed in this state.
+        cancelled, train sits in READY. Re-framing to the opposite head end
+        must succeed in this state (the frame is retained across authority loss).
         """
         train, controller = self._setup_multi_tile_train(network)
 
@@ -520,16 +515,13 @@ class TestSetCabDoubleFlipBugFix:
         controller.ato.engaged = False
         controller.physics_sync.current_speed_kmh = 0.0
 
-        # Active cab is still A (route cancellation doesn't clear cab)
-        assert controller.commands.cab == "A"
+        # The frame is retained (route cancellation doesn't reset it).
+        assert controller._framed_head_end == "end_a"
 
-        result = controller.commands.set_cab("B")
-        assert result.success is True, (
-            f"set_cab(\"B\") should work from READY state with cab selected, "
+        result = controller._apply_head_frame("end_b")
+        assert result is None, (
+            f"re-framing to end_b should work from READY state, "
             f"controller.ops.state={controller.ops.state}"
         )
         assert controller._facing_direction() == Direction.WEST
-        assert controller.commands.cab == "B"
-
-
-
+        assert controller._framed_head_end == "end_b"

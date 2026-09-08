@@ -73,7 +73,7 @@ def _run_task_ready(task_time=20.0):
     executor.register_route(route)
 
     controller = executor._get_controller(train)
-    controller.commands.cab = "A"
+    controller._apply_head_frame("end_a")
     controller.commands.control_mode = "ato"
     controller.ops.state = TrainState.RUNNING_MOVING
     controller.ato.engaged = True

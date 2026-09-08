@@ -1758,8 +1758,8 @@ class SimulationController(SwitchOutputOwner):
 
         # Controller-owned OFF cleanup. `complete_power_off()` is the single
         # OFF-writing entry point besides startup (design_new.md:282, :1808):
-        # it sets `state = OFF`, clears cab / eb.active / ato.engaged, and
-        # consumes `pending_power_off`.
+        # it sets `state = OFF`, resets the span head frame to end_a, clears
+        # eb.active / ato.engaged, and consumes `pending_power_off`.
         controller.complete_power_off()
 
     def _consume_pending_route_deactivate(
@@ -1802,8 +1802,8 @@ class SimulationController(SwitchOutputOwner):
         longer hold.
 
         A run ends the moment the train leaves `READY`, leaves `manual` control
-        mode, loses its cab, is powered off, has EB activated, or is assigned a
-        route — not only on Save or panel-close. The controller-side conditions
+        mode, is powered off, has EB activated, or is assigned a route — not only
+        on Save or panel-close. The controller-side conditions
         are `SpeedCalibration.lighting_run_still_valid(...)`; the route
         assignment is checked here because it lives on `RouteExecutor`.
         """
@@ -2116,12 +2116,15 @@ class SimulationController(SwitchOutputOwner):
 
         controller.physics_sync.current_span = placed_span
 
-        # If an initial cab was requested, write it directly. add_train runs
-        # before the first tick, so this bypasses the command queue by design.
-        # The cab is the head indicator (design_new.md): the controller derives
-        # head/tail from (cab, current_span); the span carries no head label.
-        if initial_cab is not None:
-            controller.commands.cab = initial_cab
+        # If an initial head end was requested, frame the span for it directly.
+        # add_train runs before the first tick, so this bypasses the command
+        # queue by design. There is no operator cab (design_new.md
+        # "Authority-side head derivation"); ``initial_cab`` "A"/"B" names the
+        # physical end the placement span is framed head-forward for, and the
+        # span carries no head label. A live authority reframes it on the first
+        # driving tick; "A" is the span's default framing.
+        if initial_cab == "B":
+            controller._apply_head_frame("end_b")
 
         # An operational event (design_new.md "Event log"): `operation` names the
         # function that produced it, and it carries `kind = "info"` and no error.
@@ -2357,8 +2360,11 @@ class SimulationController(SwitchOutputOwner):
             ) from exc
 
         controller.physics_sync.current_span = placed_span
-        if cab is not None:
-            controller.commands.cab = cab
+        # ``cab`` "A"/"B" names the physical end the placement span is framed
+        # head-forward for; there is no operator cab (design_new.md
+        # "Authority-side head derivation"). "A" is the span's default framing.
+        if cab == "B":
+            controller._apply_head_frame("end_b")
 
         # ---- Re-key onto the operator's id. --------------------------------
         # Read the held set after placement, so a block the rebuilt span reaches

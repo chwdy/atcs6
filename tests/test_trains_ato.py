@@ -75,7 +75,7 @@ class TestAtoStopButtonBugFix:
             ),
         )
         controller.commands.control_mode = "ato"
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         controller.ops.state = TrainState.RUNNING_MOVING
         controller.ato.engaged = True
         controller.ops.handle_position = HandlePosition.P2
@@ -115,61 +115,6 @@ class TestAtoStopButtonBugFix:
         assert controller.ops.state == TrainState.READY
         assert controller.ops.state == TrainState.READY
         assert controller.ops.handle_position == HandlePosition.N
-
-
-class TestAtoAutoCabSelectionBugFix:
-    """
-    Comprehensive tests for auto-selecting cab in ATO (2026-01-25).
-
-    BUG: ATO could be blocked by no cab selection, even though the path implies
-    a required cab. This prevented ATO from starting in demo/route flow.
-
-    FIX: ATO auto-selects required cab when missing (in depart() before calling ato_go()).
-    NOTE: depart() now calls ato_go() which starts ATO (simplified model 2026-01-26).
-    """
-
-    # v1: removed test_depart_selects_cab_and_starts_ato — tested the
-    # legacy `Train.assigned_path_id` + `network.paths` mirror pattern
-    # that design_new.md "Train ownership" forbids.
-
-    def test_tick_does_not_auto_select_cab_when_missing(self, network):
-        """
-        Test that tick() does NOT auto-select cab.
-
-        Previously, tick() would auto-select cab which caused state corruption
-        because it only updated active_cab/leading_end without flipping
-        facing_direction and entry edges.
-
-        The proper place for cab selection is:
-        1. Manual selection by operator (set_cab())
-        2. Auto-selection in depart() when called by RouteExecutor
-        """
-        track = Tile(x=0, y=0, track_bits=TRACK_EW)
-        next_track = Tile(x=1, y=0, track_bits=TRACK_EW)
-        network.add_track(track)
-        network.add_track(next_track)
-        make_segment_block_with_tracks(network, "B1", [(0, 0)], length_cm=100.0)
-
-        car = TrainCar(car_id="CAR_02", car_type="LOCOMOTIVE", length_cm=20.0)
-        train = Train(train_id="TRAIN_NO_CAB_TICK", consist=[car], max_speed=60.0)
-        network.add_train(train)
-        network.place_train(train, 0, 0, Direction.EAST)
-
-        # v1: paths are owned by PathDispatcher; the controller reads its
-        # active plan via `received_path_plan`. This test only exercises the
-        # "no cab selected" branch of tick(), which does not depend on path
-        # state, so no dispatcher wiring is needed.
-
-        controller = TrainController(train_id=train.train_id, network=network)
-        controller.commands.control_mode = "ato"
-        controller.ops.state = TrainState.READY
-        controller.commands.cab = None
-
-        controller.tick(0.1)
-
-        # tick() should NOT auto-select cab - that's done in depart()
-        assert controller.commands.cab is None
-
 
 
 class TestAtoDepartCallsAtoGo:
@@ -215,7 +160,7 @@ class TestAtoDepartCallsAtoGo:
             ),
         )
         controller.commands.control_mode = "ato"
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         controller.ops.state = TrainState.RUNNING_MOVING
         controller.ato.engaged = True
         controller.ops.handle_position = HandlePosition.P2
@@ -295,7 +240,7 @@ class TestAtoDepartCallsAtoGo:
             ),
         )
         controller.commands.control_mode = "ato"
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         controller.ops.state = TrainState.READY
         controller.ato.engaged = False
 
@@ -356,7 +301,7 @@ class TestAtoDistanceAwareControl:
             ),
         )
         controller.commands.control_mode = "ato"
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         controller.ops.state = TrainState.RUNNING_MOVING
         controller.ato.engaged = True
         controller.atc.clearance_ahead_cm = clearance_cm
@@ -440,7 +385,7 @@ class TestAtoDistanceAwareControl:
 
         controller = create_controller_for_train(train.train_id, network)
         controller.commands.control_mode = "ato"
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         controller.ops.state = TrainState.RUNNING_MOVING
         controller.ato.engaged = True
 
@@ -608,7 +553,7 @@ class TestAtoDestinationStoppingAfterPathCompletes:
 
         controller = TrainController(train_id=train.train_id, network=network)
         controller.commands.control_mode = "ato"
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         controller.ops.state = TrainState.READY
         controller.ato.engaged = False
         controller.physics_sync.current_speed_kmh = 0.0
@@ -659,7 +604,7 @@ class TestAtoDestinationStoppingAfterPathCompletes:
             occupied_blocks=["BLOCK_B"],
         )
         controller.commands.control_mode = "ato"
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         controller.ops.state = TrainState.RUNNING_MOVING
         controller.ato.engaged = True
 
@@ -780,7 +725,7 @@ class TestTrendAwareATOControl:
             ),
         )
         controller.commands.control_mode = "ato"
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
         controller.ops.state = TrainState.RUNNING_MOVING
         controller.ato.engaged = True
         controller.ato._previous_speed = 0.0

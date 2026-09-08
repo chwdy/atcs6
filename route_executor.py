@@ -2117,8 +2117,8 @@ class RouteExecutor:
         calibration touches route registries: it reconciles the stored leg route
         against the live run, lets the pass advance, then builds/assigns a one-off
         route to arm a leg, tears the active leg route down to abandon one, and
-        reverses the cab between legs. A no-op for any train with no open auto
-        pass.
+        re-frames the span head between legs. A no-op for any train with no open
+        auto pass.
         """
         sc = getattr(self, "simulation_controller", None)
         calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
@@ -2149,13 +2149,18 @@ class RouteExecutor:
         if command is None:
             return
 
-        # A reversal flips the cab through the ordinary stopped-only cab command
-        # before the leg's path is acquired (design_new.md "Speed calibration"):
-        # the pass only reverses between legs, with the train stopped, so the
-        # stopped-only rule the command enforces holds.
+        # A reversal re-frames the span to its other physical head end before the
+        # leg's path is acquired (design_new.md "Speed calibration" and
+        # "Reversed-frame re-expression"): the pass only reverses between legs,
+        # with the train stopped, so re-expressing the two end locators is safe.
+        # There is no operator cab; the leg's own authority would reframe the
+        # span too, but calibration flips it up front so the next leg starts from
+        # the intended end.
         if command.reverse_cab:
-            cab = getattr(controller.commands, "cab", None)
-            controller.commands.set_cab("A" if cab == "B" else "B")
+            target_head = (
+                "end_a" if controller._framed_head_end == "end_b" else "end_b"
+            )
+            controller._apply_head_frame(target_head)
 
         if command.arm_leg_to:
             self._arm_calibration_leg(train_id, controller, run, command.arm_leg_to)
@@ -2780,11 +2785,13 @@ class RouteExecutor:
         True when the driving source is ready to be granted authority: the
         controller is not OFF, EB is not active, no power-off is pending, no
         path cancel is pending, and the selected driving source is ready — ATO
-        engaged, or a manual train with a cab. It does NOT require the train to
-        be stopped: there is no recovery to reach, so a train that just lost its
-        authority can be granted a fresh path while still rolling. (Pending
-        route abort / deactivate are the teardown rule's concern, blocked
-        upstream in ``_eligible_for_authority_acquisition``.)
+        engaged, or a manual train (with no further condition; design_new.md:1953
+        "In `manual` mode there is no fifth condition ... There is no cab
+        condition — the head end is derived from the authority"). It does NOT
+        require the train to be stopped: there is no recovery to reach, so a
+        train that just lost its authority can be granted a fresh path while
+        still rolling. (Pending route abort / deactivate are the teardown rule's
+        concern, blocked upstream in ``_eligible_for_authority_acquisition``.)
         """
         controller = self._controller_by_id(train_id)
         if controller is None:
@@ -2797,10 +2804,11 @@ class RouteExecutor:
             return False
         if controller.route_hooks.phase_latches.path_cancel_request is not None:
             return False
-        # The selected driving source must be ready to run.
+        # The selected driving source must be ready to run. In ATO that means
+        # ATO is switched on; a manual train has no further gate.
         if controller.commands.control_mode == "ato":
             return controller.ato.engaged
-        return controller.commands.cab in ("A", "B")
+        return True
 
     def _eligible_for_authority_acquisition(
         self, controller: TrainController, exec_state: RouteExecutionState

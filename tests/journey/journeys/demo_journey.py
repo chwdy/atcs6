@@ -174,8 +174,6 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
                 assert_atc_reason_not_in(
                     [
                         AtcLimitReasonCode.NO_AUTHORITY,
-                        AtcLimitReasonCode.NO_CAB,
-                        AtcLimitReasonCode.WRONG_DIRECTION_CAB,
                         AtcLimitReasonCode.EB,
                     ]
                 ),

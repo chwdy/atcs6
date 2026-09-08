@@ -304,9 +304,9 @@ def _ready_manual_with_cab(state):
     )
     controller.commands.set_mode("manual")
     controller.commands.power_on_cmd()
-    controller.commands.set_cab("A")
+    controller._apply_head_frame("end_a")
     assert controller.ops.state is TrainState.READY
-    assert controller.commands.cab == "A"
+    assert controller._framed_head_end == "end_a"
     return train_service, controller
 
 
@@ -318,18 +318,6 @@ def test_service_opens_a_run_from_ready_manual_with_a_cab(state_with_train):
         state_with_train.sim_controller.speed_calibration.lighting_candidate_voltage("TRAIN_A")
         is not None
     )
-
-
-def test_service_rejects_a_run_without_a_cab(state_with_train):
-    """The sign put on each block is the direction the cab picked, so without
-    one the operator cannot know which way the locomotive will creep."""
-    from services import ConflictError
-
-    train_service, controller = _ready_manual_with_cab(state_with_train)
-    controller.commands.set_cab(None)
-
-    with pytest.raises(ConflictError, match="cab"):
-        train_service.start_lighting_calibration(state_with_train, "TRAIN_A")
 
 
 def test_service_rejects_a_run_in_ato_mode(state_with_train):

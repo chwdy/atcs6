@@ -91,7 +91,7 @@ def rolling_train_with_authority_to_c(network):
 
     controller.ops.state = TrainState.READY
     controller.commands.control_mode = "manual"
-    controller.commands.cab = "A"
+    controller._apply_head_frame("end_a")
     # Manual trains have no depart handshake; the driver drives. Put the train
     # in the moving state and give it a handle.
     controller.ops.enter_running_moving()

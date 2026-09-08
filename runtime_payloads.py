@@ -698,8 +698,8 @@ class CancellationResult:
 class Command:
     """Operator command queued on TrainController.command_inbox.
 
-    `kind` is one of the canonical command kind strings (power_on, set_cab,
-    set_mode, set_manual_mode_type, set_handle, set_manual_power_percent,
+    `kind` is one of the canonical command kind strings (power_on, set_mode,
+    set_manual_mode_type, set_handle, set_manual_power_percent,
     activate_emergency_cmd, release_emergency_cmd, power_off, ato_go,
     ato_stop). `payload` carries kind-specific args.
     """

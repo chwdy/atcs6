@@ -126,7 +126,11 @@ class CabFlipPolicy:
         if not train:
             return None
 
-        current_cab = self._c.commands.cab or "A"
+        # The reference "current" side is the span's currently-framed head, not
+        # an operator cab: "A" == end_a framed as head, "B" == end_b. The result
+        # is the side the authority requires (design_new.md "Authority-side head
+        # derivation"); the driving tick re-expresses the frame to it.
+        current_cab = "B" if self._c._framed_head_end == "end_b" else "A"
 
         # --- Approach 1: track connectivity (preferred) ---
         flip = self._path_needs_cab_flip()

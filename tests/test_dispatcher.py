@@ -1087,7 +1087,7 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = _make_seeded_controller(sim, train)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
 
         self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)])
 
@@ -1101,7 +1101,7 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = _make_seeded_controller(sim, train)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
 
         self._attach_live_path(controller, train, [(4, 0), (3, 0), (2, 0)])
 
@@ -1115,7 +1115,7 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = _make_seeded_controller(sim, train)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
 
         # Path doesn't include head tile (5,0)
         self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)])
@@ -1130,7 +1130,7 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = _make_seeded_controller(sim, train)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
 
         self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)])
 
@@ -1144,7 +1144,7 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = _make_seeded_controller(sim, train)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
 
         # Head is the last tile — no next tile to compare
         self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)])
@@ -1162,7 +1162,7 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = _make_seeded_controller(sim, train)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
 
         # Path goes EAST, train faces EAST -> same direction
         self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)], end_block_id="BLK_EAST")
@@ -1178,7 +1178,7 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = _make_seeded_controller(sim, train)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
 
         # Path goes WEST, train faces EAST -> opposite
         self._attach_live_path(controller, train, [(4, 0), (3, 0), (2, 0)], end_block_id="BLK_WEST")
@@ -1188,15 +1188,18 @@ class TestATODirectionDetection:
         assert info.required_cab == "B"  # flip to opposite cab
 
     def test_ato_info_opposite_direction_cab_b_to_a(self):
-        """When active_cab is B and path is opposite, required_cab becomes A."""
+        """When the head is framed end_b and the path is opposite, required_cab
+        becomes A. Framing end_b on this EAST-seeded span re-expresses the head
+        head-forward so it faces WEST; a path going EAST is then opposite the
+        head, and the authority side flips to end_a ("A")."""
         network = self._build_straight_ew_network()
-        train = self._create_stopped_train(network, (4, 0), Direction.WEST, "BLK_EAST")
+        train = self._create_stopped_train(network, (4, 0), Direction.EAST, "BLK_EAST")
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = _make_seeded_controller(sim, train)
-        controller.commands.cab = "B"
+        controller._apply_head_frame("end_b")  # head is end_b, now facing WEST
 
-        # Path goes EAST, train faces WEST (cab B) -> opposite
+        # Path goes EAST, head (end_b) faces WEST -> opposite
         self._attach_live_path(controller, train, [(4, 0), (5, 0)], end_block_id="BLK_EAST")
 
         info = controller.ato.compute_info()
@@ -1212,7 +1215,7 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = _make_seeded_controller(sim, train)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
 
         # Path goes NORTH, train faces EAST -> 90 degrees
         self._attach_live_path(controller, train, [(2, 0), (2, 1)], end_block_id="BLK_EAST")
@@ -1224,16 +1227,20 @@ class TestATODirectionDetection:
     # ===== ato_go auto-correction tests =====
 
     def test_ato_go_auto_corrects_cab_for_opposite_path(self):
-        """ato_go() should auto-switch cab when path goes opposite to facing."""
+        """The authority-driven reframe corrects the head end to the authority
+        side when the path goes opposite to the current facing. engage() only
+        sets ATO intent now; the head end is re-derived from the live authority
+        by the driving tick's reframe (_reframe_span_to_authority_head), so we
+        drive that here in place of the removed engage-time cab auto-correction."""
         network = self._build_straight_ew_network()
         train = self._create_stopped_train(network, (4, 0), Direction.EAST, "BLK_EAST")
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = _make_seeded_controller(sim, train)
         controller.commands.power_on_cmd()
-        controller.commands.set_cab("A", internal=True)  # ATO context: system-set cab
+        controller._apply_head_frame("end_a")  # frame end_a as head (was ATO system-set cab)
 
-        assert controller.commands.cab == "A"
+        assert controller._framed_head_end == "end_a"
         assert controller.ops.state == TrainState.READY
 
         # Assign a path going WEST (opposite)
@@ -1244,11 +1251,13 @@ class TestATODirectionDetection:
         controller.ato.info = controller.ato.compute_info()
         assert controller.ato.info.required_cab == "B"
 
-        # ato_go should auto-correct the cab
         result = controller.ato.engage()
-        assert result.success, f"ato_go failed: {result.message}"
-        assert controller.commands.cab == "B"
+        assert result.success, f"engage failed: {result.message}"
         assert controller.ato.engaged is True
+
+        # The tick's authority-side reframe corrects the head end to end_b.
+        controller._reframe_span_to_authority_head()
+        assert controller._framed_head_end == "end_b"
 
     def test_ato_go_no_correction_when_cab_matches(self):
         """ato_go() should NOT switch cab when path matches facing direction."""
@@ -1258,9 +1267,9 @@ class TestATODirectionDetection:
         sim = SimulationController(network, PathDispatcher(network))
         controller = _make_seeded_controller(sim, train)
         controller.commands.power_on_cmd()
-        controller.commands.set_cab("A", internal=True)  # ATO context: system-set cab
+        controller._apply_head_frame("end_a")  # frame end_a as head (was ATO system-set cab)
 
-        assert controller.commands.cab == "A"
+        assert controller._framed_head_end == "end_a"
 
         # Path goes EAST (same as facing)
         self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)], end_block_id="BLK_EAST")
@@ -1271,7 +1280,9 @@ class TestATODirectionDetection:
 
         result = controller.ato.engage()
         assert result.success
-        assert controller.commands.cab == "A"  # unchanged
+        # The authority-side reframe leaves the head on end_a (path matches).
+        controller._reframe_span_to_authority_head()
+        assert controller._framed_head_end == "end_a"  # unchanged
 
     # ===== Diagonal / real-world scenario tests =====
 
@@ -1286,7 +1297,7 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = _make_seeded_controller(sim, train)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
 
         # Return path goes south through diagonal: (1,4) -> (1,3) -> (0,3) -> (0,2) -> (0,1)
         # Tile-coord direction from (1,4) -> (1,3) is dy=-1 = SOUTH
@@ -1325,7 +1336,7 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = _make_seeded_controller(sim, train)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
 
         # Path: (1,4) -> (1,3) = SOUTH, out an edge the head did not enter by.
         self._attach_live_path(controller, train, [(1, 4), (1, 3), (0, 3)], "test_return", end_block_id="BLK_SOUTH")
@@ -1390,7 +1401,7 @@ class TestATODirectionDetection:
         controller.physics_sync.current_span = span
         controller.ops.state = TrainState.READY
         controller.commands.control_mode = "ato"
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
 
         # BLK_FAR's internal order runs (1,2)->(3,1), so entering it from
         # BLK_HEAD at (3,1) is a block-relative "reverse" arrival. Direction is
@@ -1416,7 +1427,7 @@ class TestATODirectionDetection:
 
         # And the whole way through: no flip, the path survives departure.
         assert controller.ato.engage().success
-        assert controller.commands.cab == "A"
+        assert controller._framed_head_end == "end_a"
         for _ in range(20):
             sim.update(0.05)
         assert dispatcher.active_path_id_by_train("T1") == result.path_id
@@ -1459,7 +1470,7 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = _make_seeded_controller(sim, train)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
 
         # Path: (2, 0) -> (10, 0) (tunnel hop) -> (11, 0) -> (12, 0).
         # Note (2,0)->(10,0) has dx=8, dy=0 — not grid-adjacent, but
@@ -1482,10 +1493,11 @@ class TestATODirectionDetection:
         )
 
     def test_path_assignment_turn_around_opposite(self):
-        """ato_go() should turn train around when path is opposite direction.
-
-        Previously path assignment handled turn-around directly, but now
-        ato_go() is the single point for cab auto-correction.
+        """The authority-side reframe turns the train around when the path is
+        opposite. engage() only sets ATO intent now; the head end (and thus the
+        derived facing) is re-expressed to the authority side by the driving
+        tick's reframe (_reframe_span_to_authority_head), which we drive here in
+        place of the removed engage-time cab auto-correction.
         """
         network = self._build_straight_ew_network()
         train = self._create_stopped_train(network, (4, 0), Direction.EAST, "BLK_EAST")
@@ -1493,9 +1505,9 @@ class TestATODirectionDetection:
         sim = SimulationController(network, PathDispatcher(network))
         controller = _make_seeded_controller(sim, train)
         # Seed a real two-tile span (head (4,0) facing EAST, tail one tile
-        # behind at (3,0)) so the cab flip genuinely re-derives facing. A
+        # behind at (3,0)) so the head reframe genuinely re-derives facing. A
         # degenerate single-tile span (end_a == end_b) cannot express a
-        # cab-driven orientation flip.
+        # head-driven orientation flip.
         controller.physics_sync.current_span = TrainSpan(
             end_a=SpanEndLocator(tile=(4, 0), distance_cm=20.0, entry_edge="W"),
             end_b=SpanEndLocator(tile=(3, 0), distance_cm=0.0, entry_edge="W"),
@@ -1503,23 +1515,25 @@ class TestATODirectionDetection:
             occupied_blocks=["BLK_EAST", "BLK_MID"],
         )
         controller.commands.power_on_cmd()
-        controller.commands.set_cab("A", internal=True)  # ATO context: system-set cab
+        controller._apply_head_frame("end_a")  # frame end_a as head (was ATO system-set cab)
         controller.commands.control_mode = "ato"
 
-        assert controller.commands.cab == "A"
+        assert controller._framed_head_end == "end_a"
         assert controller._facing_direction() == Direction.EAST
 
-        # Assign a return path going WEST (no turn-around happens here anymore)
+        # Assign a return path going WEST (no reframe happens on assignment)
         self._attach_live_path(controller, train, [(4, 0), (3, 0), (2, 0)], end_block_id="BLK_WEST")
 
-        # Cab should NOT have changed yet — path assignment no longer turns
-        assert controller.commands.cab == "A"
+        # Head must NOT have changed yet — path assignment no longer reframes.
+        assert controller._framed_head_end == "end_a"
 
-        # ato_go() should auto-correct the cab
         result = controller.ato.engage()
-        assert result.success, f"ato_go failed: {result.message}"
-        assert controller.commands.cab == "B"
-        # Cab B makes end_b (the (3,0) end) the head -> train now faces WEST.
+        assert result.success, f"engage failed: {result.message}"
+
+        # The authority-side reframe corrects the head to end_b.
+        controller._reframe_span_to_authority_head()
+        assert controller._framed_head_end == "end_b"
+        # end_b (the (3,0) end) is now the head -> train faces WEST.
         assert controller._facing_direction() == Direction.WEST
 
     def test_path_assignment_no_turn_when_same_direction(self):
@@ -1530,18 +1544,19 @@ class TestATODirectionDetection:
         sim = SimulationController(network, PathDispatcher(network))
         controller = _make_seeded_controller(sim, train)
         controller.commands.power_on_cmd()
-        controller.commands.set_cab("A", internal=True)  # ATO context: system-set cab
+        controller._apply_head_frame("end_a")  # frame end_a as head (was ATO system-set cab)
         controller.commands.control_mode = "ato"
 
-        assert controller.commands.cab == "A"
+        assert controller._framed_head_end == "end_a"
 
         # Assign forward path going EAST
         self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)], end_block_id="BLK_EAST")
 
-        # ato_go() should NOT switch cab
         result = controller.ato.engage()
         assert result.success
-        assert controller.commands.cab == "A"
+        # The authority-side reframe leaves the head on end_a (path matches).
+        controller._reframe_span_to_authority_head()
+        assert controller._framed_head_end == "end_a"
         # Facing derives from (cab, current_span); cab unchanged -> still EAST.
         assert controller._facing_direction() == Direction.EAST
 
@@ -1557,7 +1572,7 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = _make_seeded_controller(sim, train)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
 
         self._attach_live_path(controller, train, [(0, 4), (0, 3), (0, 2)], end_block_id="BLK_SOUTH")
 
@@ -1572,7 +1587,7 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = _make_seeded_controller(sim, train)
-        controller.commands.cab = "A"
+        controller._apply_head_frame("end_a")
 
         # No path, no destination
         train.assigned_path_id = None
@@ -1839,7 +1854,7 @@ class TestStopArrivalHeadInTerminalBlock:
         network.add_train(train)
         sim = SimulationController(network)
         controller = sim._get_or_create_controller(train)
-        controller.commands.cab = "A"  # end_a is head
+        controller._apply_head_frame("end_a")  # end_a is head
         set_train_span(
             controller,
             head_tile,
@@ -2008,7 +2023,7 @@ class TestSameBlockRejected:
         sim = SimulationController(network, dispatcher)
         controller = sim._get_or_create_controller(train)
         if cab is not None:
-            controller.commands.set_cab(cab, internal=True)  # mode-neutral cab setup
+            controller._apply_head_frame("end_a" if cab == "A" else "end_b")  # frame head end (was mode-neutral cab setup)
         set_train_span(
             controller,
             head_tile,

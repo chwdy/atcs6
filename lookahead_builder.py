@@ -54,12 +54,9 @@ class LookaheadBuilder:
                 reason_code=AtcLimitReasonCode.NO_TRAIN,
             )
 
-        if self._c.commands.cab not in ("A", "B"):
-            return self._build_empty_monitor_lookahead(
-                speed_limit_reason="No cab selected",
-                reason_code=AtcLimitReasonCode.NO_CAB,
-            )
-
+        # There is no cab gate: the head end is derived from the live authority
+        # (design_new.md "Authority-side head derivation"). A train with no live
+        # authority falls through to the `no_authority` empty payload below.
         head_tile = self._c._get_head_tile()
         head_distance_cm = self._c._get_head_distance_cm()
         facing = self._c._facing_direction()
@@ -562,9 +559,6 @@ class LookaheadBuilder:
         if self._c.eb.active:
             override_code = AtcLimitReasonCode.EB
             override_detail = "Emergency brake active"
-        elif self._c._is_cab_wrong_direction():
-            override_code = AtcLimitReasonCode.WRONG_DIRECTION_CAB
-            override_detail = "Cab points away from authority"
 
         speed_curves = self._c._get_speed_curve_calculator().calculate_speed_curves(
             max_distance_cm=clearance_cm if clearance_cm > 0 else 500.0,
@@ -595,7 +589,7 @@ class LookaheadBuilder:
             "head_tile": [head_tile[0], head_tile[1]],
             "head_distance_cm": head_distance_cm,
             "travel_direction": travel_direction,
-            "cab": self._c.commands.cab,
+            "cab": ("B" if self._c._framed_head_end == "end_b" else "A"),
             "speed_limit_reason": top_reason,
             "lookahead": {
                 "blocks": blocks,
@@ -635,7 +629,7 @@ class LookaheadBuilder:
             "head_tile": list(head_tile) if head_tile is not None else None,
             "head_distance_cm": head_distance_cm,
             "travel_direction": travel_direction,
-            "cab": self._c.commands.cab,
+            "cab": ("B" if self._c._framed_head_end == "end_b" else "A"),
             "speed_limit_reason": speed_limit_reason,
             "lookahead": {
                 "blocks": [],

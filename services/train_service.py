@@ -431,13 +431,9 @@ def diagnose_stopped_train(state: AppState, train_id: str) -> dict:
          "the train is powered off" if not powered else f"state {controller.ops.state.name}",
          "Press Power On. While a train is OFF its route is never planned at all.")
 
-    cab = controller.commands.cab
-    gate("cab_selected", cab is not None,
-         "no cab is selected, so the train has no forward end"
-         if cab is None else f"cab {cab}",
-         "Pick Cab A or Cab B.")
-
-    # 3. Authority. No path means no ATC limit, which means no voltage.
+    # 3. Authority. No path means no ATC limit, which means no voltage. There is
+    #    no cab gate — the head end is derived from the live authority
+    #    (design_new.md "Authority-side head derivation").
     path_id = sim.path_dispatcher.active_path_id_by_train(train_id)
     route_id = sim.route_executor.assigned_route_id_for(train_id)
     if path_id:
@@ -749,21 +745,6 @@ def power_off(state: AppState, train_id: str) -> CommandResult:
 
 
 @refuses_unidentified_trains()
-def set_cab(state: AppState, train_id: str, *, cab: Any) -> CommandResult:
-    """Set the active cab ('A', 'B', or off/None).
-
-    Raises ValidationError on an unrecognized cab value.
-    """
-    if cab not in ("A", "B", None, "off", "Off", "OFF"):
-        raise ValidationError(
-            f"Invalid cab value: {cab}. Must be 'A', 'B', or None"
-        )
-    if cab in ("off", "Off", "OFF"):
-        cab = None
-    return _controller(state, require_train(state, train_id)).commands.set_cab(cab)
-
-
-@refuses_unidentified_trains()
 def ato_go(state: AppState, train_id: str) -> CommandResult:
     """Engage ATO intent so the train drives toward its destination."""
     return _controller(state, require_train(state, train_id)).ato.engage()
@@ -906,9 +887,11 @@ def resolve_calibration_stretch(state: AppState, measured_block_id: str):
 def _require_calibration_ready(state: AppState, train_id: str, train, sim) -> None:
     """The opening preconditions (design_new.md "Speed calibration", Where it runs).
 
-    Every one of them is a condition the commands the pass issues already carry:
-    the pass drives with `set_manual_power_percent(...)` and turns the train
-    around with `set_cab(...)`, and both are manual-only, stopped-only commands.
+    Every one of them is a condition the pass already carries: it drives with
+    `set_manual_power_percent(...)` (a manual-only command) and turns the train
+    around between legs by re-framing the span to its other head end while the
+    train is stopped (design_new.md "Reversed-frame re-expression"); there is no
+    operator cab.
     """
     controller = _controller(state, train)
     if controller.commands.control_mode != "manual":
@@ -926,10 +909,9 @@ def _require_calibration_ready(state: AppState, train_id: str, train, sim) -> No
         )
     if not controller.is_stopped():
         raise ConflictError("Train must be stopped to start a calibration pass")
-    if controller.commands.cab is None:
-        raise ConflictError(
-            "Select a cab first — the pass reverses by writing the other end"
-        )
+    # There is no cab precondition: the pass reverses by re-framing the span to
+    # its other head end between legs (design_new.md "Reversed-frame
+    # re-expression"), not by an operator cab selection.
     # The train must have no assigned route to open a pass (design_new.md
     # "Speed calibration", Opening a pass): `assigned_route_id_for(train_id) is
     # None`, not merely no *running* route. A manual train holding an
@@ -1097,11 +1079,10 @@ def _lighting_calibration_target(state: AppState, train_id: str):
     """Resolve (train, profile, sim) for a lighting-voltage command.
 
     Gates (design_new.md "Lighting-voltage calibration", What the run drives):
-    the train must be placed, in manual mode, READY and stopped, with a cab
-    selected, following no ATO route, and with no speed-calibration pass open.
-    A cab is required because the sign put on each block is the direction that
-    cab picked — the operator must know which way the locomotive will creep
-    before it does.
+    the train must be placed, in manual mode, READY and stopped, following no
+    ATO route, and with no speed-calibration pass open. The locomotive creeps
+    forward from the span's current head framing (design_new.md "Authority-side
+    head derivation"); there is no operator cab.
     """
     train, profile, sim = _calibration_profile(state, train_id)
     controller = _controller(state, train)
@@ -1116,10 +1097,6 @@ def _lighting_calibration_target(state: AppState, train_id: str):
         )
     if not controller.is_stopped():
         raise ConflictError("Train must be stopped to calibrate lighting voltage")
-    if controller.commands.cab is None:
-        raise ConflictError(
-            "Select a cab first — it decides which way the locomotive will creep"
-        )
     if sim.speed_calibration.runs.get(train_id) is not None:
         raise ConflictError("A speed-calibration pass is already open for this train")
     return train, profile, sim

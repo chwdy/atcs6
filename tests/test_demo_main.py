@@ -163,14 +163,14 @@ def test_bootstrap_queues_power_on_for_first_tick_drain():
 
     controller = sim_controller.get_or_create_controller("DEMO_TRAIN")
 
-    # Before first tick: power_on + set_mode queued, controller still OFF, cab
-    # pre-set by add_train's `initial_cab="A"` placement input.
+    # Before first tick: power_on + set_mode queued, controller still OFF, head
+    # frame pre-set by add_train's `initial_cab="A"` placement input.
     queued_kinds = [cmd.kind for cmd in controller.commands.command_inbox]
     assert queued_kinds == ["power_on", "set_mode"], (
         f"Expected queued [power_on, set_mode]; got {queued_kinds}"
     )
     assert controller.ops.state == TrainState.OFF
-    assert controller.commands.cab == "A"
+    assert controller._framed_head_end == "end_a"
 
     # One tick should drain the queue and power the train on.
     sim_controller.update(0.0)

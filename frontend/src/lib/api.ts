@@ -1443,18 +1443,6 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
-  /** Set active cab ('A' or 'B'). */
-  async trainSetCab(trainId: string, cab: string): Promise<any> {
-    return this._request(
-      `/trains/${encodeURIComponent(trainId)}/set-cab`,
-      {
-        method: 'POST',
-        body: { cab },
-      },
-      'trainSetCab'
-    );
-  }
-
   // === OnboardComputer API (New Train Control Architecture) ===
 
   /**
