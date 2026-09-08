@@ -158,7 +158,7 @@ class Train:
 
         Per design_new.md, only persistent/configuration state loads here. Live
         runtime fields (position/span, current_speed, state, active_cab,
-        travel_direction, ato_running, control_mode, wait_reason,
+        travel_direction, ato_engaged, control_mode, wait_reason,
         emergency_brake) live on `TrainController` and are seeded through
         `add_train(...)` or explicit controller commands; any such values
         present in legacy saved snapshots are silently ignored on load.

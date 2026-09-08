@@ -454,9 +454,9 @@ def diagnose_stopped_train(state: AppState, train_id: str) -> dict:
     # 4. Told to go.
     mode = controller.commands.control_mode
     if mode == "ato":
-        gate("told_to_go", bool(controller.ato.running),
-             "ATO is not running" if not controller.ato.running else "ATO running",
-             "Press Depart / GO.")
+        gate("told_to_go", bool(controller.ato.engaged),
+             "ATO is not engaged" if not controller.ato.engaged else "ATO engaged",
+             "Engage ATO (set mode to ATO).")
     else:
         at_neutral = controller.ops.handle_position is HandlePosition.N
         gate("told_to_go", not at_neutral,
@@ -776,14 +776,14 @@ def depart(state: AppState, train_id: str) -> Tuple[bool, Optional[str]]:
 
 @refuses_unidentified_trains()
 def ato_go(state: AppState, train_id: str) -> CommandResult:
-    """Start ATO movement toward the destination."""
-    return _controller(state, require_train(state, train_id)).ato.go()
+    """Engage ATO intent so the train drives toward its destination."""
+    return _controller(state, require_train(state, train_id)).ato.engage()
 
 
 @refuses_unidentified_trains()
 def ato_stop(state: AppState, train_id: str) -> CommandResult:
-    """Service stop via ATO (used by both /stop and /ato-stop)."""
-    return _controller(state, require_train(state, train_id)).ato.stop()
+    """Disengage ATO intent (train holds; used by both /stop and /ato-stop)."""
+    return _controller(state, require_train(state, train_id)).ato.disengage()
 
 
 @refuses_unidentified_trains()

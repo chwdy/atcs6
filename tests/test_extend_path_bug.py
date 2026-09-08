@@ -240,7 +240,7 @@ class TestExtendPathBug:
 
         # Sync train state
         demo_train.state = controller.ops.state
-        demo_train.ato_running = controller.ato.running
+        demo_train.ato_running = controller.ato.engaged
 
         # Get initial lookahead
         initial_lookahead = controller.get_lookahead()

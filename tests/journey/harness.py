@@ -102,7 +102,7 @@ class Snapshot:
     cab: Optional[str]
     speed_kmh: float
     eb_active: bool
-    ato_running: bool
+    ato_engaged: bool
     handle_position: Any
     handle_reason: str
     atc_limit_kmh: float
@@ -155,7 +155,7 @@ class Snapshot:
         return (
             f"head={head} speed={self.speed_kmh:5.2f} "
             f"atc={self.atc_limit_kmh:5.2f} state={self.state.value} "
-            f"path={path} eb={int(self.eb_active)} ato={int(self.ato_running)}"
+            f"path={path} eb={int(self.eb_active)} ato={int(self.ato_engaged)}"
         )
 
 
@@ -229,7 +229,7 @@ def _capture_snapshot(
         cab=controller.commands.cab,
         speed_kmh=float(controller.physics_sync.current_speed_kmh),
         eb_active=bool(controller.eb.active),
-        ato_running=bool(controller.ato.running),
+        ato_engaged=bool(controller.ato.engaged),
         handle_position=controller.ops.handle_position,
         handle_reason=controller.ops.handle_reason or "",
         atc_limit_kmh=float(controller.atc.speed_limit),
@@ -302,7 +302,7 @@ class Failure:
             )
             lines.append(f"  active_path={path_desc} route={snap.assigned_route_id}")
             lines.append(
-                f"  eb={snap.eb_active} ato={snap.ato_running} "
+                f"  eb={snap.eb_active} ato={snap.ato_engaged} "
                 f"handle={getattr(snap.handle_position, 'value', snap.handle_position)} "
                 f"handle_reason={snap.handle_reason!r}"
             )

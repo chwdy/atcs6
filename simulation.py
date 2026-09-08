@@ -1823,7 +1823,7 @@ class SimulationController(SwitchOutputOwner):
 
         # Controller-owned OFF cleanup. `complete_power_off()` is the single
         # OFF-writing entry point besides startup (design_new.md:282, :1808):
-        # it sets `state = OFF`, clears cab / eb.active / ato.running, and
+        # it sets `state = OFF`, clears cab / eb.active / ato.engaged, and
         # consumes `pending_power_off`.
         controller.complete_power_off()
 

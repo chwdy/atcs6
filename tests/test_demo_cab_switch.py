@@ -142,7 +142,10 @@ def _build_cab_switch_journey(train_id: str = "DEMO_TRAIN") -> Journey:
             assertions=[
                 assert_state(TrainState.READY),
                 assert_cab("A"),
-                assert_ato(False),
+                # ATO intent stays engaged after the run completes (design_new.md
+                # "ato.engaged"): the train is held at the terminal by the absence
+                # of forward authority, not by a cleared flag.
+                assert_ato(True),
                 assert_eb(False),
                 assert_speed_eq(0.0, epsilon=0.5),
                 assert_no_active_path(),
@@ -170,6 +173,9 @@ def _build_cab_switch_journey(train_id: str = "DEMO_TRAIN") -> Journey:
             assertions=[
                 assert_state(TrainState.READY),
                 assert_cab("B"),
+                # The cab switch is issued through set_mode("manual") first (see
+                # _enqueue_set_cab), and set_mode("manual") disengages ATO
+                # (design_new.md "ato.engaged"), so intent is now clear.
                 assert_ato(False),
                 assert_eb(False),
                 assert_speed_eq(0.0, epsilon=0.05),

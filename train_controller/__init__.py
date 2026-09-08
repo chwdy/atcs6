@@ -239,9 +239,9 @@ class TrainController:
     # the per-tick debug payload (`debug`), and the diagnostic
     # `_previous_speed` tracker live on the `ATOComputer` sub-module
     # attached as `self.ato` in `__post_init__`. External callers read
-    # `controller.ato.running`, `controller.ato.info`,
-    # `controller.ato.debug`; the run-lifecycle methods are
-    # `controller.ato.go()` and `controller.ato.stop()`.
+    # `controller.ato.engaged`, `controller.ato.info`,
+    # `controller.ato.debug`; the intent methods are
+    # `controller.ato.engage()` and `controller.ato.disengage()`.
     #
     # `path_backed_run_active` was a stored field in earlier code; per the
     # design's "Latch Table" canonical home it is not part of the schema. It
@@ -799,7 +799,8 @@ class TrainController:
         if overspeed > OVERSPEED_EB_THRESHOLD_KMH or zero_limit_loss:
             # Raise EB through the canonical activation path (design_new.md "EB
             # has two trigger paths" / step `826a`): `eb.activate()` performs
-            # every canonical EB effect — force handle to EB, clear `ato.running`,
+            # every canonical EB effect — force handle to EB, disengage ATO
+            # (`ato.engaged = False`),
             # clear the service-stop latch via `consume_service_stop()`, and (only
             # outside dwell, when a live path exists) latch the `eb` cancel. ATC
             # must not assign `eb.active` itself: no site outside
@@ -833,11 +834,11 @@ class TrainController:
         self.ato.info = self.ato.compute_info()
 
         # ===== 6. ATO ACTION (skip if manual) =====
-        # Per design_new.md line 1637: if ato_running is True but the path
-        # authority has been revoked mid-motion, clear ato_running before the
-        # ATO/manual branch so the branch uses the correct run state.
-        if self.ato.running and self.path_projection.received_path_plan is None:
-            self.ato.stop()
+        # `ato.engaged` is operator intent, not a run-in-progress flag: losing
+        # path authority mid-motion does not clear it (design_new.md
+        # "ato.engaged"). An engaged train with no live authority holds at a
+        # stand and resumes on its own when authority returns, so nothing is
+        # cleared here.
 
         # Compute the effective_limit locally; consumers read this via the
         # `target_speed` property when needed.
@@ -851,24 +852,21 @@ class TrainController:
             # NOTE: We no longer auto-correct cab during tick().
             # Previously, this would partially update cab (leading_end only) without
             # flipping facing_direction and entry edges, causing state corruption.
-            # Cab selection should be done:
-            # 1. Manually by the operator before starting ATO
-            # 2. Automatically in ato_go() when cab is None (using required_cab)
-            # The operator can freely change cab when ato_running=False.
+            # Cab alignment happens in ato.engage() when a path direction is known.
 
-            # Calculate handle position based on ato_running
-            if self.ato.running:
-                # ATO is running - calculate handle to reach target speed
+            # Drive while ATO intent is engaged; otherwise brake to a stand.
+            if self.ato.engaged:
+                # Engaged - calculate handle to reach target speed. compute_handle
+                # returns neutral / a brake when there is no live authority, so an
+                # engaged train with no path simply holds at a stand.
                 self.ops.handle_position = self.ato.compute_handle(delta)
             else:
-                # ATO not running - brake to stop, then land the ended ATO run
-                # in the stopped standby state. This is the ATO-run-end path (an
-                # operator ATO-stop or any other clear of `ato.running`), which
-                # is a separate mechanism from the reactive condition evaluation:
-                # it lands in READY on run-end regardless of remaining authority,
-                # whereas the reactive RUNNING_MOVING -> READY transition only
-                # fires with no live authority. RUNNING_AT_STATION (dwell) is
-                # also a powered-stopped state and is owned by Plan's
+                # Not engaged - brake to stop, then land in the stopped standby
+                # state. An ATO-mode controller reads `engaged == False` only
+                # after an EB trip that has been released (release does not
+                # re-engage) or before the operator's first set_mode("ato"); it
+                # holds stopped until the operator re-engages. RUNNING_AT_STATION
+                # (dwell) is also a powered-stopped state and is owned by Plan's
                 # dwell-complete check; preserve it here so a single tick doesn't
                 # clobber dwell entry.
                 self.ops.handle_position = self.ato.calculate_braking_notch_for_speed(
@@ -896,7 +894,6 @@ class TrainController:
         # safety-cap ordering with a zero cap when service_stop_active is set.
         if self.ops.service_stop_active:
             if self.commands.control_mode == "ato":
-                self.ato.stop()
                 self.ops.set_service_brake_to_zero()
             elif self.manual.manual_mode_type == "simulation":
                 self.ops.set_service_brake_to_zero()
@@ -2302,9 +2299,9 @@ class TrainController:
     # `controller.commands.<method>(...)`. The drain itself is invoked at the
     # top of `tick(...)` as `self.commands._drain_command_inbox(...)`.
 
-    # ATO run lifecycle (`go`, `stop`) lives on the `ATOComputer` sub-module
-    # at `self.ato`. Callers use `controller.ato.go()` / `controller.ato.stop()`
-    # directly.
+    # ATO intent (`engage`, `disengage`) lives on the `ATOComputer` sub-module
+    # at `self.ato`. Callers use `controller.ato.engage()` /
+    # `controller.ato.disengage()` directly.
 
     # -------------------------------------------------------------------------
     # State Transitions
@@ -2319,7 +2316,8 @@ class TrainController:
         by `set_cab(...)` and `RouteExecutor` respectively.
         """
         self.ops.state = TrainState.READY
-        self.ato.stop()
+        # Reaching READY at a stand does not clear ATO intent (design_new.md
+        # "ato.engaged"): an engaged train resumes when authority returns.
         # path_backed_run_active is derived from path/route/destination context.
 
     # -------------------------------------------------------------------------
@@ -2364,18 +2362,18 @@ class TrainController:
 
         _was_ready = self.ops.state == TrainState.READY
 
-        # ATO mode: delegate to ato_go() which is the canonical writer of
-        # ato_running and handles both READY (full path) and RUNNING_MOVING
-        # (idempotent) entries.
+        # ATO mode: engage ATO intent, then move state through the single
+        # RUNNING_MOVING writer for the READY entry.
         if self.commands.control_mode == "ato":
-            result = self.ato.go()
+            result = self.ato.engage()
             if result.success:
                 if _was_ready:
+                    self.ops.enter_running_moving()
                     self._emit_event(
                         "depart", f"{self.train_id} departed"
                     )
                 return (True, None)
-            return (False, result.reason if hasattr(result, "reason") else "ato_go rejected")
+            return (False, result.reason if hasattr(result, "reason") else "ato engage rejected")
 
         # Manual mode: requires a cab and facing direction. From
         # RUNNING_MOVING the call is an idempotent success.
@@ -2501,7 +2499,6 @@ class TrainController:
             self._emit_dwell_diagnostic(reason)
             return (False, reason)
         self.ops.state = TrainState.RUNNING_AT_STATION
-        self.ato.stop()
         self._emit_event(
             "enter_station_dwell", f"{self.train_id} entered station dwell"
         )
@@ -2561,7 +2558,9 @@ class TrainController:
         is latched at completion, rather than forcing READY unconditionally.
         Does not clear received_path_plan, does not enter dwell itself.
         """
-        self.ato.stop()
+        # Path completion does not clear ATO intent (design_new.md "ato.engaged");
+        # the reactive rule lands the train in READY when it is stopped with no
+        # live authority and EB is not latched.
         # path_backed_run_active is derived from path/route/destination context.
         self.ops.evaluate_reactive_conditions()
 
@@ -2570,7 +2569,8 @@ class TrainController:
         "TrainController.begin_service_stop() / consume_service_stop()").
 
         Idempotent; valid while powered, in either control mode. Sets
-        `ops.service_stop_active = True` and clears `ato.running`. Does not
+        `ops.service_stop_active = True`. Does not clear ATO intent
+        (`ato.engaged`) and does not
         cancel authority or write route state — Controller tick step `b41e`
         owns the actual per-mode braking override; the caller is
         responsible for releasing authority separately.
@@ -2579,7 +2579,7 @@ class TrainController:
             return
         already = self.ops.service_stop_active
         self.ops.service_stop_active = True
-        self.ato.stop()
+        # A timed-run stop does not clear ATO intent (design_new.md "ato.engaged").
         # Idempotent, so report only the transition — Plan step `6a0d` calls
         # this on every eligible tick while the run timer is elapsed.
         if not already:
@@ -2645,7 +2645,7 @@ class TrainController:
         startup default, so the Operational state machine stays the single writer
         of ``state``. Callable only while ``power_off`` is latched; on commit it
         transitions ``state`` to ``OFF``, clears the active cab selection, clears
-        ``eb.active``, clears ``ato.running``, and consumes ``pending_power_off``.
+        ``eb.active``, disengages ATO (``ato.engaged = False``), and consumes ``pending_power_off``.
 
         Per design_new.md "Latch Table" (Clear/consume access) this method is
         the one place `phase_latches.power_off` is cleared — not the Action
@@ -2668,7 +2668,7 @@ class TrainController:
         # design_new.md:1895 — clear the EB latch through the EB-owned helper so
         # the EB Workflow stays the single writer of `eb.active`.
         self.eb.clear()
-        self.ato.stop()
+        self.ato.disengage()
         # Force-clear through the service-stop teardown path so an
         # interrupted run never leaves braking armed on a later route.
         self.consume_service_stop(force=True)

@@ -57,17 +57,14 @@ class OperationalStateMachine:
         is already RUNNING_MOVING unchanged.
 
         This is the single state-writer for entering RUNNING_MOVING. Every
-        path that enters that state goes through it: the reactive evaluation
-        below, the ATO departure helper ``TrainController.ato.go()``, and the
-        manual branch of ``TrainController.depart()`` (design_new.md
-        "Controller state machine" and "TrainController.depart() canonical
-        contract"). It writes only ``state``; arming an ATO run
-        (``ato.running``) is a separate write owned by ``TrainController.ato.go()``.
+        path that enters that state goes through it. It writes only ``state``;
+        ATO intent (``ato.engaged``) is a separate flag owned by the mode
+        selector (design_new.md "Controller state machine" and "ato.engaged")
+        and is not touched here.
 
-        Idempotent from RUNNING_MOVING (setting the same value is a no-op),
-        which is what lets ``depart()`` re-accept a train that is already
-        moving. Its callers only reach it from READY or RUNNING_MOVING, per
-        the Controller state machine.
+        Idempotent from RUNNING_MOVING (setting the same value is a no-op). Its
+        callers only reach it from READY or RUNNING_MOVING, per the Controller
+        state machine.
         """
         self.state = TrainState.RUNNING_MOVING
 
@@ -88,28 +85,24 @@ class OperationalStateMachine:
 
         Transition 1 — READY to RUNNING_MOVING: the controller is READY, a cab
         is selected, and the train is moving. Motion out of a cab-selected
-        READY controller is a real departure (a manual driver pre-rolling
-        before the route's ``depart()`` lands, or ATC clearance returning and
-        physics resuming before the next plan tick). The cab guard is
-        mandatory: every legal RUNNING_MOVING has a selected cab, so motion
-        from a cabless READY controller is an invariant violation and must not
-        be turned into an illegal state. After moving the state, call
-        ``TrainController.ato.go()`` unconditionally — that helper checks its
-        own preconditions and only sets ``ato.running`` when the controller is
-        in ATO mode with live authority, so the same call is a no-op in manual
-        mode (design_new.md "ato.running meaning and lifecycle").
+        READY controller is a real departure (a manual driver pre-rolling, or
+        ATC clearance returning and physics resuming before the next plan
+        tick). The cab guard is mandatory: every legal RUNNING_MOVING has a
+        selected cab, so motion from a cabless READY controller is an invariant
+        violation and must not be turned into an illegal state. This writes
+        only ``state``; ATO intent (``ato.engaged``) is set separately by the
+        mode selector and is not touched here.
 
         Transition 2 — RUNNING_MOVING to READY: the train has stopped, has no
         live authority (``received_path_plan is None``), and EB is not
         latched. This is braking completion with nothing left to move into.
         While live authority still exists the controller stays RUNNING_MOVING
-        even at a stand (clearance may return and motion resume without a
-        fresh ``depart()``), and while EB is latched this transition does not
-        fire — ``TrainController.eb.release()`` clears that latch and the
-        post-command call here then performs the move. This writes only
-        ``state``; clearing ``ato.running`` on authority loss is the separate
-        authority-clear ATO-stop bookkeeping (tick substep ``1b7a``), not this
-        transition's job. RUNNING_AT_STATION is not a source state here and is
+        even at a stand (clearance may return and motion resume on its own),
+        and while EB is latched this transition does not fire —
+        ``TrainController.eb.release()`` clears that latch and the post-command
+        call here then performs the move. This writes only ``state``; ATO
+        intent is unaffected by movement or authority loss (design_new.md
+        "ato.engaged"). RUNNING_AT_STATION is not a source state here and is
         left untouched.
         """
         c = self._c
@@ -119,7 +112,6 @@ class OperationalStateMachine:
             and not c.is_stopped()
         ):
             self.enter_running_moving()
-            c.ato.go()
         elif (
             self.state == TrainState.RUNNING_MOVING
             and c.is_stopped()

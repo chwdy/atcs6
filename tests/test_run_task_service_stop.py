@@ -81,7 +81,7 @@ def _run_task_ready(task_time=20.0):
     controller.commands.cab = "A"
     controller.commands.control_mode = "ato"
     controller.ops.state = TrainState.RUNNING_MOVING
-    controller.ato.running = True
+    controller.ato.engaged = True
     set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
 
     stub = _StubDispatcher()
@@ -127,7 +127,7 @@ def test_run_task_accrues_timer_and_keeps_rolling_within_window():
     assert still_rolling is False  # caller falls through to authority acquisition
     assert row.run_elapsed_seconds == 8.0
     assert controller.ops.service_stop_active is False
-    assert controller.ato.running is True  # untouched while still rolling
+    assert controller.ato.engaged is True  # intent untouched while still rolling
 
 
 def test_run_task_timer_elapses_begins_service_stop_without_cancelling_run():
@@ -148,7 +148,9 @@ def test_run_task_timer_elapses_begins_service_stop_without_cancelling_run():
     assert done is True  # caller must not acquire fresh authority
     assert row.run_elapsed_seconds == 20.0  # capped at task_time, not 23.0
     assert controller.ops.service_stop_active is True
-    assert controller.ato.running is False
+    # A timed-run stop does not clear ATO intent (design_new.md "ato.engaged"):
+    # a scheduled stop is not a cancellation.
+    assert controller.ato.engaged is True
     assert row.finished_at is None  # not yet — still moving
 
     # The onward authority release is classified as run-progress, not a plain

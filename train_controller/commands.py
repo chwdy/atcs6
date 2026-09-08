@@ -355,7 +355,7 @@ class OperatorCommands:
         when a live path exists, per design_new.md "Latch Table".
         """
         c = self._c
-        c.ato.stop()
+        c.ato.disengage()
         c.ops.reset_handle_to_neutral()
         c.manual.reset_power_percent_for_safety()
         # Force-clear through the service-stop teardown path so a run
@@ -494,10 +494,10 @@ class OperatorCommands:
         # one operation and can never disagree in the renderer or physics.
         self.cab = cab
 
-        # Per design_new.md: changing cab is part of the depart-acceptance
-        # contract; it disengages any active ATO run. set_cab from
-        # RUNNING_AT_STATION preserves the dwell state.
-        c.ato.stop()
+        # Aligning the cab does not touch ATO intent: `engaged` is cleared only
+        # by EB activation, power-off, and set_mode("manual") (design_new.md
+        # "ato.engaged"). set_cab from RUNNING_AT_STATION preserves the dwell
+        # state.
 
         prev_state = c.ops.state
         if prev_state != TrainState.RUNNING_AT_STATION:
@@ -533,14 +533,17 @@ class OperatorCommands:
             return CommandResult(False, f"Invalid mode: {mode}")
 
         self.control_mode = mode
-        # Per design_new.md, set_mode disengages any active ATO run.
-        c.ato.stop()
-        # Per design_new.md "Driver-control interlock": `manual_power_percent`
-        # is set-and-forget, so a mode change must clear it. Otherwise a
-        # percentage parked before the change becomes the train's command
-        # after it with no fresh driver input — the EB path is covered by
-        # `produce_physics_command()`'s per-tick reset, but a plain
-        # manual -> ato -> manual cycle never passes through that branch.
+        # Mode is the ATO/manual selector, and it is the writer of ATO intent
+        # (design_new.md "ato.engaged"): set_mode("ato") engages (the idempotent
+        # re-engage — the only way back after an EB trip or power-off), and
+        # set_mode("manual") disengages.
+        if mode == "ato":
+            c.ato.engage()
+        else:
+            c.ato.disengage()
+        # A mode change also clears the retained manual power notch: it is
+        # set-and-forget, so a percentage parked before the change must not
+        # become the train's command after it with no fresh driver input.
         c.manual.reset_power_percent_for_safety()
 
         # Preserve dwell state if currently dwelling; otherwise land in READY.

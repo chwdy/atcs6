@@ -59,7 +59,7 @@ class ProgressReportBuilder:
         # 1a. Reactive condition evaluation (design_new.md "Reactive condition
         # evaluation"). Fires synchronously after the new speed has been
         # written and before building the progress report, so any motion-caused
-        # READY <-> RUNNING_MOVING / ato.running transition lands in the same
+        # READY <-> RUNNING_MOVING / ato.engaged transition lands in the same
         # Observe pass that produced the speed change. This is one of the two
         # call sites of the single evaluator; TrainController.tick(...) calls it
         # again after the command drain (Action step `71ee`).

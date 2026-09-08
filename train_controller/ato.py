@@ -32,12 +32,12 @@ Algorithm summary (kinematic, single pass):
 
 External callers access ATO state and behavior as:
 
-  - ``controller.ato.running`` (bool — is an ATO run in progress?)
+  - ``controller.ato.engaged`` (bool — does the operator intend ATO to drive?)
   - ``controller.ato.info`` (Optional[ATOInfo] — destination snapshot)
   - ``controller.ato.debug`` (Optional[dict] — per-tick debug snapshot
     consumed by the debug inspector panel)
-  - ``controller.ato.go()`` (start a run)
-  - ``controller.ato.stop()`` (end a run; operator/admin)
+  - ``controller.ato.engage()`` (set ATO intent — the set_mode("ato") path)
+  - ``controller.ato.disengage()`` (clear ATO intent; EB / power-off / manual)
   - ``controller.ato.compute_handle(delta_seconds)`` (per-tick handle
     selection)
   - ``controller.ato.compute_info()`` (rebuild destination snapshot)
@@ -183,32 +183,35 @@ class ATOComputer:
     def __init__(self, controller: "TrainController") -> None:
         self._c = controller
 
-        # Run lifecycle and per-tick diagnostics.
-        self.running: bool = False
+        # Operator intent. `engaged` is the single "the operator wants ATO to
+        # drive" flag (design_new.md "ato.engaged"). It is set by
+        # set_mode("ato") (idempotent re-engage — the only way back after an EB
+        # trip or power-off), and cleared only by EB activation, power-off, and
+        # set_mode("manual"). Movement and authority do NOT set or clear it: a
+        # stopped-but-engaged train resumes on its own when authority returns.
+        self.engaged: bool = False
         self.info: Optional[ATOInfo] = None
         self.debug: Optional[Dict[str, Any]] = None
         # Diagnostic: previous tick's speed; used to compute trend in compute_handle.
         self._previous_speed: float = 0.0
 
     # ------------------------------------------------------------------
-    # Run lifecycle: go / stop
+    # Operator intent: engage / disengage
     # ------------------------------------------------------------------
 
-    def go(self) -> CommandResult:
-        """Canonical helper that arms an ATO run by setting ``running = True``.
+    def engage(self) -> CommandResult:
+        """Set the operator's ATO intent (``engaged = True``).
 
-        Per design_new.md "ato_running meaning and lifecycle", both
-        transitions into ``RUNNING_MOVING`` (the depart-acceptance path
-        and the reactive speed-based evaluation path) converge on this
-        writer so callers do not duplicate the precondition check.
+        This is the single writer that turns ATO intent on. It is the
+        set_mode("ato") re-engage path and the only way back to ATO driving
+        after an EB trip or a power-off (design_new.md "ato.engaged"). It is
+        idempotent: re-engaging an already-engaged controller is a success.
 
-        Accepted entry states:
-        - ``READY``: full depart-acceptance path with cab auto-selection
-          and state transition to ``RUNNING_MOVING``.
-        - ``RUNNING_MOVING``: idempotent success (the reactive
-          transition has already moved state forward); skip cab
-          auto-selection because the train is already moving with an
-          ATC-accepted cab.
+        Setting intent does not move the train or transition operational
+        state — the train departs on its own when it has live authority and a
+        driving command, and the reactive rule moves READY -> RUNNING_MOVING
+        from observed motion. Preconditions: the train exists, the controller
+        is in ATO mode, and power is on.
         """
         c = self._c
         train = c._get_train()
@@ -221,95 +224,40 @@ class ATOComputer:
         if not c.power_on:
             return CommandResult(False, "Power is off")
 
-        if c.ops.state not in (TrainState.READY, TrainState.RUNNING_MOVING):
-            return CommandResult(
-                False, f"Train not in READY (is {c.ops.state.value})"
-            )
-
-        # Reactive-transition entry: the evaluator has already moved state to
-        # RUNNING_MOVING. Arm ATO only when there is live authority to run on --
-        # ato.running is set only while `received_path_plan is not None`
-        # (design_new.md "ato_running meaning and lifecycle"). A cab-selected ATO
-        # train rolling with no path leaves running False, so the unconditional
-        # evaluator call stays a no-op without authority (substep 1b7a's level
-        # test keeps it cleared).
-        if c.ops.state == TrainState.RUNNING_MOVING:
-            if c.path_projection.received_path_plan is None:
-                return CommandResult(False, "No live authority")
-            self.running = True
-            return CommandResult(True, "ATO armed (already moving)")
-
-        # READY entry: full depart-acceptance path.
-        # Recalculate ATO info fresh to ensure cab direction matches
-        # the current path (path may have been assigned since last tick).
+        # Refresh the destination snapshot so the head/cab alignment used by
+        # the driving rule reflects the current path.
         self.info = self.compute_info()
 
-        # ATO Auto-selection/correction: determine the required cab from path
-        # direction and select or switch if needed.
+        # Cab auto-alignment bridge: the head is still selected through the cab
+        # in this build; align it to the live path direction when one is known
+        # so the ATO driving rule can run. (This alignment is removed once the
+        # head is derived from live authority.)
         if self.info and self.info.required_cab:
             required_cab = self.info.required_cab
-            if c.commands.cab != required_cab:
+            if c.commands.cab != required_cab and c.is_stopped():
                 old_cab = c.commands.cab
-                # Ensure train is physically stopped before switching cab.
-                if c.physics_sync.current_speed_kmh > 0:
-                    c.physics_sync.current_speed_kmh = 0.0
                 result = c.commands.set_cab(required_cab, internal=True)
-                if not result.success:
-                    return CommandResult(
-                        False,
-                        f"ATO cannot start: cab auto-{'selection' if old_cab is None else 'correction'} failed - {result.message}",
+                if result.success:
+                    c.notifications.emit(
+                        f"ATO auto-{'selected' if old_cab is None else 'switched'} cab to {required_cab} for path direction",
+                        operation="ato_engage",
+                        kind=_Kind.INFO,
                     )
-                c.notifications.emit(
-                    f"ATO auto-{'selected' if old_cab is None else 'switched'} cab to {required_cab} for path direction",
-                    operation="ato_go",
-                    kind=_Kind.INFO,
-                )
-        elif c.commands.cab is None:
-            return CommandResult(
-                False,
-                "No cab selected and no path available to auto-select direction",
-            )
 
-        # After auto-selection, verify we're still in READY (set_cab keeps
-        # state == READY for non-dwelling controllers).
-        if c.ops.state != TrainState.READY:
-            return CommandResult(False, f"Train not in READY (is {c.ops.state.value})")
-        if c.commands.cab not in ("A", "B"):
-            return CommandResult(False, "ATO requires a cab to be selected")
+        self.engaged = True
+        return CommandResult(True, "ATO engaged")
 
-        # ato.go() arms an ATO run only when there is live authority to run on:
-        # it verifies `received_path_plan is not None` before setting
-        # `running = True` (design_new.md "`ato.running` meaning and lifecycle").
-        # Without a path there is nothing to drive, so arming the run would leave
-        # a running flag with no authority (the RUNNING_MOVING branch above
-        # already makes this same check).
-        if c.path_projection.received_path_plan is None:
-            return CommandResult(False, "No live authority to run on")
+    def disengage(self) -> CommandResult:
+        """Clear the operator's ATO intent (``engaged = False``).
 
-        # Move state through the single RUNNING_MOVING writer rather than
-        # assigning `state` here (design_new.md "TrainController.depart()
-        # canonical contract": ato.go() applies the transition through the
-        # Operational state machine).
-        c.ops.enter_running_moving()
-        self.running = True
-        return CommandResult(True, "ATO started")
-
-    def stop(self) -> CommandResult:
-        """Stop ATO movement (service stop, not emergency).
-
-        Sets ``running = False``. The tick() will handle braking and
-        transitioning to ``READY`` when stopped.
+        Called only by the three events that drop ATO intent (design_new.md
+        "ato.engaged"): EB activation, power-off, and set_mode("manual").
+        Idempotent — clearing an already-clear flag is a success. Neither
+        movement, stopping, path completion, nor a timed-run stop clears
+        intent, so those callers must not route through here.
         """
-        c = self._c
-        train = c._get_train()
-        if train is None:
-            return CommandResult(False, "Train not found")
-
-        if not self.running:
-            return CommandResult(False, "ATO not running")
-
-        self.running = False
-        return CommandResult(True, "ATO stopping")
+        self.engaged = False
+        return CommandResult(True, "ATO disengaged")
 
     # ------------------------------------------------------------------
     # Destination info (used by tick() for display)

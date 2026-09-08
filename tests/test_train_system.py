@@ -892,7 +892,7 @@ class TestTrainStateTransitions:
         # ~line 161, no controller-owned setter); the assertion below confirms
         # the projection reads False when no path/route/destination context
         # exists for this stub controller.
-        controller.ato.running = False
+        controller.ato.engaged = False
 
         span = set_train_span(controller, (0, 0), facing_direction=Direction.NORTH)
         controller.tick(0.1)

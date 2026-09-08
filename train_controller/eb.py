@@ -61,7 +61,7 @@ class EBWorkflow:
 
         self.active = True
         c.ops.handle_position = HandlePosition.EB
-        c.ato.stop()
+        c.ato.disengage()
         # Force-clear through the service-stop teardown path so a run
         # interrupted by EB never leaves braking armed on a later route
         # (design_new.md "TrainController.begin_service_stop() /

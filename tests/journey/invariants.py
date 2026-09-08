@@ -123,22 +123,20 @@ def at_station_implies_no_path() -> Invariant:
     return Invariant(name="at_station_implies_no_path", check=check)
 
 
-def ato_running_implies_running_moving_with_cab() -> Invariant:
-    """When ato_running is True, the controller must be RUNNING_MOVING and
-    have a cab selected. (Path is grown by Phase 1, but ato_running can
-    survive a short window between authority loss and braking — so we only
-    check state + cab here.)
+def ato_engaged_implies_powered() -> Invariant:
+    """`ato.engaged` is operator intent, decoupled from movement (design_new.md
+    "ato.engaged"): it can be True while the train is stopped in READY waiting
+    for authority, moving in RUNNING_MOVING, or holding a dwell. The one state
+    it must never coexist with is OFF, because power-off is one of the three
+    events that disengage ATO.
     """
 
     def check(s: Snapshot) -> None:
-        if not s.ato_running:
+        if not s.ato_engaged:
             return
-        assert s.state == TrainState.RUNNING_MOVING, (
-            f"ato_running True but state={s.state.value}"
-        )
-        assert s.cab in ("A", "B"), f"ato_running True but cab={s.cab!r}"
+        assert s.state != TrainState.OFF, "ato_engaged True but state is OFF"
 
-    return Invariant(name="ato_running_implies_running_moving_with_cab", check=check)
+    return Invariant(name="ato_engaged_implies_powered", check=check)
 
 
 # --------------------------------------------------------------------------- #

@@ -42,7 +42,7 @@ from ..assertions import (
 )
 from ..events import Event, Invariant, Journey
 from ..invariants import (
-    ato_running_implies_running_moving_with_cab,
+    ato_engaged_implies_powered,
     no_eb,
     no_overspeed,
     no_pending_path_cancel_request,
@@ -342,16 +342,10 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
                 ),
                 assert_eb(False),
                 assert_cab("A"),
-                # ato_running must be clear once we've stopped.
-                lambda s: (
-                    None
-                    if not s.ato_running
-                    else (_ for _ in ()).throw(
-                        AssertionError(
-                            f"ato_running should be False after stop, got True"
-                        )
-                    )
-                ),
+                # ATO intent stays engaged through a scheduled stop (design_new.md
+                # "ato.engaged"): the train is held by the absence of authority,
+                # not by a cleared flag, and resumes on its own when authority
+                # returns. So nothing is asserted about ato_engaged here.
                 # Phase-3 latches all clear (covered by invariants too).
                 lambda s: (
                     None
@@ -411,7 +405,7 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
         no_pending_route_abort(),
         no_pending_power_off(),
         state_cab_pair_valid(),
-        ato_running_implies_running_moving_with_cab(),
+        ato_engaged_implies_powered(),
         # No-raise accumulator: records the deepest brake notch used; consumed
         # by assert_reached_b6_braking in E16.
         Invariant(name="track_deepest_brake", check=_track_deepest_brake),

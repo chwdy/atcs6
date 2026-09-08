@@ -44,7 +44,7 @@ from ..assertions import (
 from ..events import Event, Journey
 from ..invariants import (
     active_path_blocks_held_or_owned,
-    ato_running_implies_running_moving_with_cab,
+    ato_engaged_implies_powered,
     block_occupied_iff_span_covers_block,
     block_reservation_excludes_occupied_other_train,
     no_eb,
@@ -240,7 +240,7 @@ def build_strict_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
         no_pending_route_abort(),
         no_pending_power_off(),
         state_cab_pair_valid(),
-        ato_running_implies_running_moving_with_cab(),
+        ato_engaged_implies_powered(),
         # New strict block-state invariants — these run every tick. The
         # `block_occupied_iff_span_covers_block` invariant should fire as
         # soon as the train leaves the first tile, because BLOCK_MAIN_WEST

@@ -540,7 +540,7 @@ class TestSetCabDoubleFlipBugFix:
 
         # Simulate: train was running, ATO stopped, route cancelled -> READY
         controller.ops.state = TrainState.READY
-        controller.ato.running = False
+        controller.ato.engaged = False
         controller.physics_sync.current_speed_kmh = 0.0
 
         # Active cab is still A (route cancellation doesn't clear cab)

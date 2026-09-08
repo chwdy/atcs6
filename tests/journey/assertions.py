@@ -46,8 +46,8 @@ def assert_eb(active: bool = False) -> Check:
 
 def assert_ato(running: bool) -> Check:
     def check(s: Snapshot) -> None:
-        assert s.ato_running == running, (
-            f"ato_running expected {running}, got {s.ato_running}"
+        assert s.ato_engaged == running, (
+            f"ato_engaged expected {running}, got {s.ato_engaged}"
         )
 
     return check

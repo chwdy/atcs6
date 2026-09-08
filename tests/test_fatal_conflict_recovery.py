@@ -77,7 +77,7 @@ def test_clearing_leaves_every_train_off_and_stopped():
     assert controller.ops.handle_position is HandlePosition.N
     assert controller.physics_sync.current_speed_kmh == 0.0
     assert controller.eb.active is False
-    assert controller.ato.running is False
+    assert controller.ato.engaged is False
 
 
 def test_the_runtime_ticks_again_after_clearing():

@@ -52,7 +52,7 @@ def controller_to_dict(controller: "TrainController") -> Dict[str, Any]:
         "state": controller.ops.state.value,
         "target_speed": controller.target_speed,
         "handle_position": controller.ops.handle_position.value,
-        "ato_running": controller.ato.running,
+        "ato_engaged": controller.ato.engaged,
         "service_stop_active": controller.ops.service_stop_active,
         "ato_destination_block_id": controller.path_projection.ato_destination_block_id,
         "ato_path_id": controller.path_projection.ato_path_id,
@@ -206,14 +206,14 @@ def controller_from_dict(
     controller = TrainController(
         train_id=data["train_id"],
         network=network,
-        # `ato_running` and `path_backed_run_active` are not constructor args:
-        # `ato.running` lives on the ATO sub-module (restored below) and
+        # `ato_engaged` and `path_backed_run_active` are not constructor args:
+        # `ato.engaged` lives on the ATO sub-module (restored below) and
         # `path_backed_run_active` is a derived @property that recomputes from
         # path/route context, so any persisted value is ignored.
     )
     # `state` / `handle_position` live on the `OperationalStateMachine` and
-    # `ato.running` on the ATO sub-module; restore after construction.
-    controller.ato.running = bool(data.get("ato_running", False))
+    # `ato.engaged` on the ATO sub-module; restore after construction.
+    controller.ato.engaged = bool(data.get("ato_engaged", False))
     controller.ops.state = state
     controller.ops.handle_position = handle
     controller.ops.service_stop_active = data.get("service_stop_active", False)

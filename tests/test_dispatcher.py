@@ -1245,10 +1245,10 @@ class TestATODirectionDetection:
         assert controller.ato.info.required_cab == "B"
 
         # ato_go should auto-correct the cab
-        result = controller.ato.go()
+        result = controller.ato.engage()
         assert result.success, f"ato_go failed: {result.message}"
         assert controller.commands.cab == "B"
-        assert controller.ato.running is True
+        assert controller.ato.engaged is True
 
     def test_ato_go_no_correction_when_cab_matches(self):
         """ato_go() should NOT switch cab when path matches facing direction."""
@@ -1269,7 +1269,7 @@ class TestATODirectionDetection:
         controller.ato.info = controller.ato.compute_info()
         assert controller.ato.info.required_cab == "A"
 
-        result = controller.ato.go()
+        result = controller.ato.engage()
         assert result.success
         assert controller.commands.cab == "A"  # unchanged
 
@@ -1415,7 +1415,7 @@ class TestATODirectionDetection:
         assert controller.cab_policy.required_cab_for_path() == "A"
 
         # And the whole way through: no flip, the path survives departure.
-        assert controller.ato.go().success
+        assert controller.ato.engage().success
         assert controller.commands.cab == "A"
         for _ in range(20):
             sim.update(0.05)
@@ -1516,7 +1516,7 @@ class TestATODirectionDetection:
         assert controller.commands.cab == "A"
 
         # ato_go() should auto-correct the cab
-        result = controller.ato.go()
+        result = controller.ato.engage()
         assert result.success, f"ato_go failed: {result.message}"
         assert controller.commands.cab == "B"
         # Cab B makes end_b (the (3,0) end) the head -> train now faces WEST.
@@ -1539,7 +1539,7 @@ class TestATODirectionDetection:
         self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)], end_block_id="BLK_EAST")
 
         # ato_go() should NOT switch cab
-        result = controller.ato.go()
+        result = controller.ato.engage()
         assert result.success
         assert controller.commands.cab == "A"
         # Facing derives from (cab, current_span); cab unchanged -> still EAST.

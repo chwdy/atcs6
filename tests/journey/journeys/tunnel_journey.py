@@ -22,7 +22,7 @@ from ..assertions import (
 )
 from ..events import Event, Invariant, Journey
 from ..invariants import (
-    ato_running_implies_running_moving_with_cab,
+    ato_engaged_implies_powered,
     no_eb,
     no_overspeed,
     no_pending_path_cancel_request,
@@ -130,7 +130,7 @@ def build_tunnel_journey(
         no_overspeed(),
         no_eb(),
         state_cab_pair_valid(),
-        ato_running_implies_running_moving_with_cab(),
+        ato_engaged_implies_powered(),
         no_pending_path_cancel_request(),
         no_pending_power_off(),
         no_pending_route_abort(),
