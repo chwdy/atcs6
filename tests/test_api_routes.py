@@ -1421,6 +1421,10 @@ class TestRouteRedesignApis:
         Route, taking full responsibility for the manual reposition).
         """
         self._place_powered_train_on_two_block_line(app_state)
+        # Engage ATO: the planner grants authority only to a ready driving
+        # source (design_new.md "is_clean_for_create"), so an operator engages
+        # ATO as part of starting the run.
+        app_state.sim_controller.get_or_create_controller("TRAIN_QR").ato.engaged = True
 
         create_resp = client.post(
             "/api/train-routes",

@@ -2797,26 +2797,32 @@ class RouteExecutor:
         return bool(getattr(controller, "is_recovery_clean", False))
 
     def is_clean_for_create(self, train_id: str) -> bool:
-        """Canonical Plan create-branch gate per design_new.md.
+        """The one Plan create-branch gate (design_new.md "is_clean_for_create").
 
-        Per the Planning Kernel section: true when the controller has reached
-        recovery (``is_recovery_clean``), no pending admin/system cancellation
-        latch is set (``PATH_CANCEL_PENDING``, ``ROUTE_ABORT_PENDING``,
-        ``ROUTE_DEACTIVATE_PENDING`` all clear), and the route-run's deviation
-        latch (``path_cancelled``) is clear. Plan invokes ``create_path``
-        only when this predicate is true.
+        True when the driving source is ready to be granted authority: the
+        controller is not OFF, EB is not active, no power-off is pending, no
+        path cancel is pending, and the selected driving source is ready — ATO
+        engaged, or a manual train with a cab. It does NOT require the train to
+        be stopped: there is no recovery to reach, so a train that just lost its
+        authority can be granted a fresh path while still rolling. (Pending
+        route abort / deactivate are the teardown rule's concern, blocked
+        upstream in ``_eligible_for_authority_acquisition``.)
         """
         controller = self._controller_by_id(train_id)
         if controller is None:
             return False
-        if not controller.is_recovery_clean:
+        if controller.ops.state == TrainState.OFF:
             return False
-        if controller.active_conditions & _PENDING_CANCEL_CONDITIONS:
+        if controller.eb.active:
             return False
-        exec_state = self.execution_state_for(train_id)
-        if exec_state is not None and exec_state.path_cancelled:
+        if controller.route_hooks.phase_latches.power_off:
             return False
-        return True
+        if controller.route_hooks.phase_latches.path_cancel_request is not None:
+            return False
+        # The selected driving source must be ready to run.
+        if controller.commands.control_mode == "ato":
+            return controller.ato.engaged
+        return controller.commands.cab in ("A", "B")
 
     def _eligible_for_authority_acquisition(
         self, controller: TrainController, exec_state: RouteExecutionState
