@@ -918,8 +918,8 @@ class TestTrainStateTransitions:
         assert result.success is False
 
     def test_set_mode_clears_retained_manual_power_percent(self):
-        """A mode change clears `manual.manual_power_percent`, per
-        design_new.md "Driver-control interlock".
+        """A mode change clears `manual.manual_power_percent` (design_new.md
+        "ato.engaged").
 
         The percentage is set-and-forget: nothing re-asserts it per tick, so a
         value parked before the mode change would become the train's command
@@ -1154,10 +1154,11 @@ class TestCompleteStateFlows:
         assert result.success is True
         assert controller.eb.active is False
 
-    def test_eb_keeps_the_drivers_retained_power_percent(self):
-        """design_new.md "Controller tick order", Retained-field reset: an EB
-        override caps the tick to zero but leaves `manual_power_percent` alone.
-        The driver clears it, and `eb.release()` is gated on that clear."""
+    def test_eb_springs_the_drivers_retained_power_percent(self):
+        """EB is a supervisory brake-only override that springs both driver
+        inputs to their safe rest (design_new.md "ato.engaged"): activation
+        re-zeros `manual_power_percent`, so no retained percentage survives to
+        drive the train when EB lifts."""
         train, controller, network = create_test_train_with_controller(
             state=TrainState.READY, current_speed=0.0
         )
@@ -1166,14 +1167,13 @@ class TestCompleteStateFlows:
         controller.manual.manual_power_percent = 55.0
 
         controller.eb.activate()
-        controller.produce_physics_command()
 
-        assert controller.manual.manual_power_percent == 55.0
+        assert controller.manual.manual_power_percent == 0.0
 
-    def test_eb_release_is_refused_while_a_retained_percent_is_held(self):
-        """The driver-control interlock (row `ad04`). Without it, clearing
-        `eb.active` would hand the train straight back to a percentage the
-        driver never withdrew."""
+    def test_eb_release_is_not_gated_on_the_power_notch(self):
+        """There is no driver-control interlock: EB springs the notch to 0, so a
+        release reads only the physical-safety conditions (design_new.md
+        "ato.engaged")."""
         train, controller, network = create_test_train_with_controller(
             state=TrainState.READY, current_speed=0.0
         )
@@ -1182,40 +1182,12 @@ class TestCompleteStateFlows:
         controller.manual.manual_power_percent = 55.0
         controller.eb.activate()
 
-        result = controller.eb.release()
-
-        assert result.success is False
-        assert controller.eb.active is True
-
-    def test_zeroing_the_percent_satisfies_the_interlock(self):
-        """`set_manual_power_percent(...)` runs before `eb.release()` in the
-        drain order, so a driver satisfies this and releases in one batch."""
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.READY, current_speed=0.0
-        )
-        assert controller.commands.set_mode("manual").success is True
-        controller.manual.manual_mode_type = "power_percent"
-        controller.manual.manual_power_percent = 55.0
-        controller.eb.activate()
-
-        controller.manual.manual_power_percent = 0.0
         result = controller.eb.release()
 
         assert result.success is True
         assert controller.eb.active is False
-
-    def test_the_interlock_does_not_gate_a_handle_driver(self):
-        """It is a `power_percent`-submode gate: a handle driver has no
-        retained percentage to withdraw."""
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.READY, current_speed=0.0
-        )
-        assert controller.commands.set_mode("manual").success is True
-        controller.manual.manual_mode_type = "simulation"
-        controller.manual.manual_power_percent = 55.0
-        controller.eb.activate()
-
-        assert controller.eb.release().success is True
+        # The notch was sprung by EB, so nothing drives the train after release.
+        assert controller.manual.manual_power_percent == 0.0
 
     def test_shutdown_flow(self):
         """Test complete shutdown flow.

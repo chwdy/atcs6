@@ -715,6 +715,14 @@ class TrainController:
         if self.eb.active:
             self.ops.handle_position = HandlePosition.EB
             self.atc.speed_limit = 0.0
+            # EB is a supervisory brake-only override: it springs both driver
+            # inputs to their safe rest every latched tick (design_new.md
+            # "ato.engaged" / EB-hold step `d483`). The handle is pinned to EB
+            # above; the power notch is re-zeroed here, so a percentage
+            # re-commanded under EB is accepted by the tick-entry drain but
+            # wiped back to 0 before the tick ends. This is what keeps a
+            # retained percentage from driving the train the moment EB lifts.
+            self.manual.reset_power_percent_for_safety()
             # Reported before the early return, because a latched EB is exactly
             # when an operator asks why the limit is zero. The branches below
             # are never reached while EB holds, so this is the only place the
