@@ -1483,8 +1483,8 @@ class SimulationController(SwitchOutputOwner):
         # ghost's own voltage step de-energizes its retained span through the
         # ordinary emission-set difference (design_new.md "Power", Presence
         # unknown; "Action is the sole explicit-cancel and teardown committer").
-        # Propulsion stays neutral throughout because the power-off latch drives
-        # the c2fe neutral hold in the control decision.
+        # Propulsion stays neutral throughout because the power-off latch is a
+        # zero ceiling in the Propulsion cap step.
 
         # The speed-calibration pass no longer advances here: it advances in Plan
         # at step `c9e1` (RouteExecutor.tick_train_plan), where it arms and tears

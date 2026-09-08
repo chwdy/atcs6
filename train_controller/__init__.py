@@ -906,17 +906,23 @@ class TrainController:
         # commands.
 
     def produce_physics_command(self) -> PhysicsCommand:
-        """Compute the per-tick command physics will execute.
+        """Compute the per-tick command physics will execute — the **Propulsion
+        cap step** (design_new.md).
 
-        Decision tree:
-          - power off              → handle N (train coasts; physics
-                                     reads no controller mode fields)
-          - eb active              → emergency brake
-          - manual power_percent   → snap to target_speed_kmh, where
-                                     target = clamp(power_speed_curve(pct),
-                                     [0, atc_speed_limit])
-          - ATO / manual simulation→ integrate from previous speed via the
-                                     controller-set handle position
+        The selected driving source produces one commanded operating point, and
+        the safety layer only ever lowers it under the active ceilings — EB
+        (zero, at `emergency_brake_rate`), pending power-off (zero, at the
+        service rate), and ATC (`atc_speed_limit`) — springing the retained
+        power percentage to `0` whenever a ceiling intervenes. The `power_on`
+        check below is the device de-energize (OFF), not a ceiling. The ceilings
+        appear as ordered branches here because each source emits its own
+        command kind (handle / target-speed / track-voltage):
+          - not power_on           → handle N (OFF; train coasts)
+          - eb active              → emergency brake / zero target speed
+          - pending power-off      → handle N
+          - manual power_percent   → clamp(power_speed_curve(pct), [0, atc])
+          - ATO / manual simulation→ the handle; physics caps it at the live
+                                     distance-0 atc_limit
 
         `voltage_source_speed_kmh` is the scalar the voltage emitter uses
         as the train's "current speed" when computing the per-tick voltage:
@@ -940,23 +946,21 @@ class TrainController:
                 handle=HandlePosition.N,
                 voltage_source_speed_kmh=0.0,
             )
+        # Propulsion cap step, EB ceiling (design_new.md "Propulsion cap step").
+        # EB is a zero ceiling at `emergency_brake_rate`: it lowers the command
+        # to a stop and springs the retained percentage to `0` (the cap step's
+        # retained-field reset, no exception list), symmetric with the per-tick
+        # EB hold. Nothing drives under EB and no retained percentage survives.
         if self.eb.active:
-            # An EB override caps the tick to zero but leaves the retained
-            # `manual_power_percent` alone (design_new.md "Controller tick
-            # order", Retained-field reset). The driver clears it, and
-            # `eb.release()` is gated on that clear through its
-            # **driver-control interlock** — which is what keeps a retained
-            # percentage from driving the train the moment EB lifts. Clearing it
-            # here instead would make that interlock unreachable.
+            self.manual.reset_power_percent_for_safety()
             if (
                 self.commands.control_mode == "manual"
                 and self.manual.manual_mode_type == "power_percent"
             ):
-                # Manual `power_percent` is the momentum-free model: EB writes
-                # the capped zero speed THIS tick rather than decelerating at
-                # `emergency_brake_rate`, which does not apply there
-                # (design_new.md row `e67d` / Canonical power-percent safety-cap
-                # ordering).
+                # Manual `power_percent` is the momentum-free model: the zero
+                # ceiling writes the capped zero speed THIS tick rather than
+                # decelerating at `emergency_brake_rate` (design_new.md row
+                # `e67d`).
                 return PhysicsCommand(
                     kind=PHYSICS_KIND_TARGET_SPEED,
                     handle=HandlePosition.EB,
@@ -968,14 +972,13 @@ class TrainController:
                 handle=HandlePosition.EB,
                 voltage_source_speed_kmh=0.0,
             )
-        # design_new.md tick step `c2fe` — pending-power-off propulsion hold.
-        # When `phase_latches.power_off` is latched and EB is not (EB returned
-        # above), replace this tick's command with the neutral notch, overriding
-        # any ATO / manual command. This holds a still-powered rolling ghost train
-        # — whose Observe-set power-off latch is not stopped-gated and may persist
-        # across rolling ticks — at neutral every tick until the latch is
-        # consumed; it is a no-op for the stopped-only operator writer, which
-        # already neutralized once through `_apply_power_off_request()`.
+        # Propulsion cap step, power-off ceiling (design_new.md "Propulsion cap
+        # step"). A pending `phase_latches.power_off` (EB returned above) is a
+        # zero ceiling at the service rate: the command is the neutral notch and
+        # the retained percentage springs to `0`. This holds a still-powered
+        # rolling ghost train at neutral every tick until the latch is consumed;
+        # it is a no-op for the stopped-only operator writer, which already
+        # neutralized once through `_apply_power_off_request()`.
         if self.route_hooks.phase_latches.power_off:
             self.ops.reset_handle_to_neutral()
             self.manual.reset_power_percent_for_safety()
@@ -1022,10 +1025,11 @@ class TrainController:
                 else float(self.manual.manual_power_percent or 0.0)
             )
             target = profile.power_percent_to_speed(pct) if profile else 0.0
-            # Per design_new.md "Canonical power-percent safety-cap ordering":
-            # ATC is the cap (already zero when no cab, wrong-direction cab, or
-            # no/at-end authority set atc.speed_limit = 0 earlier this tick; EB
-            # returned above).
+            # Propulsion cap step, ATC ceiling (design_new.md "Propulsion cap
+            # step"): the commanded speed is lowered under `atc.speed_limit`
+            # (already zero when no cab, wrong-direction cab, or no/at-end
+            # authority set it to 0 earlier this tick; EB and power-off returned
+            # above as their own zero ceilings).
             cap = float(self.atc.speed_limit or 0.0)
             # The commanded percent is the authoritative operating point for
             # this tick, so physics maps it straight to track_voltage through
