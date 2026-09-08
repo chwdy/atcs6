@@ -149,9 +149,7 @@ class ControllerCondition(Enum):
 
     Per design_new.md "Controller condition set" canonical home, every member
     maps to one underlying controller field; TrainController.active_conditions
-    returns a frozenset of currently-true conditions. Predicates such as
-    is_recovery_clean and RouteExecutor.is_clean_for_create read subsets of
-    this set, so adding a new latch in the future is one enum value plus one
+    returns a frozenset of currently-true conditions. RouteExecutor.is_clean_for_create reads a subset of this set, so adding a new latch in the future is one enum value plus one
     mapping line.
     """
 

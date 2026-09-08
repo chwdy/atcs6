@@ -180,7 +180,7 @@ export class RouteRunEditorHandler {
     const accent = this._accentClass(display);
     const routeName = run.route_name || run.route_id;
     const isRunning = run.state === 'RUNNING';
-    const deviated = !!run.path_cancelled;
+    const cancelled = !!run.last_cancellation;
     const startedText = this._formatTime(run.started_at);
 
     // §11 status header block — `--bg-hover` bg + dynamic 3px accent strip.
@@ -266,10 +266,10 @@ export class RouteRunEditorHandler {
             </div>
         `;
 
-    const deviatedBanner = deviated
+    const deviatedBanner = cancelled
       ? `
             <div class="banner banner-warn">
-                Path cancelled — display state is DEVIATED until controller cleanup runs.
+                Path cancelled — ${run.last_cancellation?.origin ?? 'cancelled'}. Cleared on the next path.
             </div>`
       : '';
 
@@ -667,7 +667,7 @@ export class RouteRunEditorHandler {
         return 'info';
       case 'DEACTIVATED':
         return 'muted';
-      case 'DEVIATED':
+      case 'CANCELLED':
         return 'warn';
       case 'STALLED':
         return 'warn';

@@ -70,8 +70,14 @@ def _route_run_summary(route, run, executor=None) -> dict:
         "direction": run.direction,
         "state": run.current_route_status.value,
         "display_state": run.display_state,
-        "path_cancelled": run.path_cancelled,
-        "path_cancel_was_deviation": run.path_cancel_was_deviation,
+        "last_cancellation": (
+            {
+                "origin": run.last_cancellation.origin,
+                "text": run.last_cancellation.text,
+            }
+            if run.last_cancellation is not None
+            else None
+        ),
         "current_waypoint_index": run.current_waypoint_index,
         "next_planning_index": run.next_planning_index,
         "task_count": len(run.task_runs),

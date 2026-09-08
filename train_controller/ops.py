@@ -12,8 +12,7 @@ External callers access operational state as:
   - ``controller.ops.handle_position`` (HandlePosition)
   - ``controller.ops.handle_reason`` (str — diagnostic)
 
-The state-transition methods, predicates (``is_stopped``,
-``is_recovery_clean``, ``active_conditions``, ``power_on``), and
+The state-transition methods, predicates (``is_stopped``, ``active_conditions``, ``power_on``), and
 related helpers stay on the façade because they orchestrate writes
 across multiple sub-modules and the cleanest call shape stays
 ``controller.<X>``. Their bodies read/write ``self.ops.state`` etc.

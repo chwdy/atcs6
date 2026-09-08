@@ -17,10 +17,11 @@ from train_route import RouteRunStatus
 from simulation import SimulationController, build_network_payload
 
 
-def test_route_run_summary_for_running_deviated_finished_missing():
+def test_route_run_summary_reflects_cancellation_and_terminal_states():
     """`RouteExecutor.route_run_summary_for` returns the 5 doc fields for a
-    RUNNING run, reflects `display_state` (DEVIATED / CANCELLED split by
-    path_cancel_was_deviation), and is None for non-RUNNING or absent runs."""
+    RUNNING run, reflects `display_state == "CANCELLED"` while
+    `last_cancellation` is set (state stays RUNNING — a cancellation is not a
+    stored state), and is None for non-RUNNING or absent runs."""
     ex = RouteExecutor(RailwayNetwork())
 
     run = RouteExecutionState(
@@ -38,21 +39,15 @@ def test_route_run_summary_for_running_deviated_finished_missing():
         "last_error": None,
     }
 
-    # display_state projects DEVIATED / CANCELLED while path_cancelled, split by
-    # path_cancel_was_deviation, but state stays RUNNING (cancellation is not a
-    # stored state) — design_new.md "Route-run state".
-    run.path_cancelled = True
-    run.path_cancel_was_deviation = True
-    deviated = ex.route_run_summary_for("T1")
-    assert deviated["display_state"] == "DEVIATED"
-    assert deviated["state"] == "RUNNING"
-    # A non-deviation authority cancellation (operator cancel / revoke / EB /
-    # power-off) projects CANCELLED, not DEVIATED.
-    run.path_cancel_was_deviation = False
+    # A cancellation records `last_cancellation`; display_state reads CANCELLED
+    # while state stays RUNNING (design_new.md "RouteRun schema"). Every
+    # cancellation kind is surfaced the same way — the reason lives on the
+    # ErrorRecord.
+    run.last_cancellation = ErrorRecord("operator stop", "operator_cancelled")
     cancelled = ex.route_run_summary_for("T1")
     assert cancelled["display_state"] == "CANCELLED"
     assert cancelled["state"] == "RUNNING"
-    run.path_cancelled = False
+    run.last_cancellation = None
 
     # A terminal (FINISHED) run is not reported as a RUNNING summary.
     run.current_route_status = RouteRunStatus.FINISHED
@@ -101,35 +96,22 @@ def test_build_network_payload_emits_route_runs_sibling():
     assert "assigned_routes_by_train_id" in payload
 
 
-def test_handle_path_cancellation_records_was_deviation_for_display_split():
-    """`handle_path_cancellation` stores its `was_deviation` argument on the run
-    so `display_state` projects DEVIATED for a movement deviation and CANCELLED
-    for every other authority cancellation (design_new.md "Route-run state")."""
+def test_handle_path_cancellation_records_last_cancellation_for_display():
+    """`handle_path_cancellation` stores its `error` on the run as
+    `last_cancellation` so `display_state` projects CANCELLED for every
+    cancellation (design_new.md "RouteRun schema")."""
     ex = RouteExecutor(RailwayNetwork())
     run = RouteExecutionState(train_id="T1", route_id="R1", started_at=0.0)
     run.current_route_status = RouteRunStatus.RUNNING
     ex.execution_states["T1"] = run
 
-    # Movement-derived deviation -> DEVIATED.
-    ex.handle_path_cancellation(
-        "T1", "P1", error=ErrorRecord("off-sequence", "out_of_sequence"),
-        was_deviation=True,
-    )
-    assert run.path_cancelled is True
-    assert run.path_cancel_was_deviation is True
-    assert run.display_state == "DEVIATED"
-
-    # A non-deviation cancellation (operator / revoke / EB / power-off)
-    # re-classifies the latch to CANCELLED.
-    ex.handle_path_cancellation(
-        "T1", "P1", error=ErrorRecord("operator stop", "operator_cancelled"),
-        was_deviation=False,
-    )
-    assert run.path_cancel_was_deviation is False
+    err = ErrorRecord("off-sequence", "out_of_sequence")
+    ex.handle_path_cancellation("T1", "P1", error=err, was_deviation=True)
+    assert run.last_cancellation is err
     assert run.display_state == "CANCELLED"
 
-    # The signature default is non-deviation, so an unclassified cancel is CANCELLED.
-    run.path_cancel_was_deviation = True
-    ex.handle_path_cancellation("T1", "P1")
-    assert run.path_cancel_was_deviation is False
+    # A later cancellation replaces the recorded diagnostic; still CANCELLED.
+    err2 = ErrorRecord("operator stop", "operator_cancelled")
+    ex.handle_path_cancellation("T1", "P1", error=err2, was_deviation=False)
+    assert run.last_cancellation is err2
     assert run.display_state == "CANCELLED"

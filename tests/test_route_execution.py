@@ -255,7 +255,7 @@ class TestRouteExecutor:
         assert state.train_id == "T001"
         assert state.route_id == "R001"
         assert state.current_waypoint_index is None
-        assert state.path_cancelled is False
+        assert state.last_cancellation is None
         assert state.task_runs == []
 
     def test_run_numbers_are_globally_monotonic_across_routes(self, simple_network):

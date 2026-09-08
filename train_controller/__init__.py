@@ -1888,9 +1888,7 @@ class TrainController:
         """Canonical projection of recovery-relevant controller flags.
 
         Per design_new.md "Controller condition set" canonical home: derived
-        each read from controller-stored fields. Predicates such as
-        is_recovery_clean and RouteExecutor.is_clean_for_create read subsets
-        of this set; readers must not duplicate the underlying field checks.
+        each read from controller-stored fields. RouteExecutor.is_clean_for_create reads a subset of this set; readers must not duplicate the underlying field checks.
         """
         conditions: set[ControllerCondition] = set()
         if self.path_projection.received_path_plan is not None:
@@ -1907,28 +1905,6 @@ class TrainController:
         if latches.route_deactivate:
             conditions.add(ControllerCondition.ROUTE_DEACTIVATE_PENDING)
         return frozenset(conditions)
-
-    @property
-    def is_recovery_clean(self) -> bool:
-        """Canonical "controller has reached the stopped recovery state" predicate.
-
-        Per design_new.md (Controller state machine subsection): true when
-        ``state == READY`` and none of the active conditions
-        ``{HAS_AUTHORITY, EB_LATCHED, POWER_OFF_PENDING}`` are set. Plan
-        route-deviation cleanup and Plan dwell-entry both gate on this
-        predicate; other call sites cross-reference it by name and must not
-        restate the conjuncts.
-        """
-        if self.ops.state != TrainState.READY:
-            return False
-        return not (
-            self.active_conditions
-            & {
-                ControllerCondition.HAS_AUTHORITY,
-                ControllerCondition.EB_LATCHED,
-                ControllerCondition.POWER_OFF_PENDING,
-            }
-        )
 
     def is_stopped_at_authority_end(self) -> bool:
         """True when the train is stopped at the usable end of active authority.

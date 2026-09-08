@@ -290,18 +290,12 @@ class RouteExecutionState:
     task_runs: List[RouteTaskRun] = field(default_factory=list)
     # Opaque global run-instance number assigned by RouteExecutor (diagnostic only).
     run_number: int = 0
-    # v1 latch consumed by Plan route-deviation cleanup. With
-    # `path_cancel_was_deviation` it drives the derived `display_state`
-    # projection (DEVIATED / CANCELLED while True).
-    path_cancelled: bool = False
-    # Classification of the active `path_cancelled` latch (design_new.md:1456):
-    # True when the cancellation was a movement-derived deviation, False for
-    # every other authority cancellation (operator cancel, revoke, EB,
-    # power-off). Written by `handle_path_cancellation(...)` from its
-    # `was_deviation` argument; cleared together with `path_cancelled` by
-    # Plan deviation cleanup. Drives the `display_state`
-    # DEVIATED-vs-CANCELLED split.
-    path_cancel_was_deviation: bool = False
+    # The `error` carried by the most recent `handle_path_cancellation(...)` for
+    # this run (design_new.md "RouteRun schema"). Not a latch — it has no gating
+    # predicate; runtime branching never reads it. Written by that callback,
+    # cleared to None by Plan step `66aa` on the next successful create_path.
+    # Drives the derived `display_state == "CANCELLED"` projection.
+    last_cancellation: Optional["ErrorRecord"] = None
     # Plan-maintained flag (NOT a latch): set when every task on a
     # CIRCULAR / ROUND_TRIP walk is broken (target ID missing from the
     # network), cleared by the next Plan pass that finds a valid task.
@@ -440,23 +434,22 @@ class RouteExecutionState:
     def display_state(self) -> str:
         """UI-only diagnostic projection.
 
-        Per design_new.md ``current_route_status`` schema (the ``display_state``
-        row), in priority order: (1) when ``current_route_status`` is terminal
-        (``FINISHED`` / ``DEACTIVATED``), the terminal state — even if
-        ``path_cancelled`` is still set on the historical row; (2) else
-        ``"DEVIATED"`` when ``path_cancelled`` and ``path_cancel_was_deviation``,
-        ``"CANCELLED"`` when ``path_cancelled`` and not; (3) else ``"STALLED"``
-        when ``no_reachable_task``; (4) otherwise the stored
-        ``current_route_status.value``. Not a stored field; no writers. Runtime
-        branching never keys on this value.
+        Per design_new.md ``RouteRun schema`` (the ``display_state`` row), in
+        priority order: (1) when ``current_route_status`` is terminal
+        (``FINISHED`` / ``DEACTIVATED``), the terminal state; (2) else
+        ``"CANCELLED"`` when ``last_cancellation is not None`` — the UI reads the
+        reason from that ``ErrorRecord``; (3) else ``"STALLED"`` when
+        ``no_reachable_task``; (4) otherwise ``current_route_status.value``
+        (``"RUNNING"``). Not a stored field; no writers. Runtime branching never
+        keys on this value.
         """
         if self.current_route_status in (
             RouteRunStatus.FINISHED,
             RouteRunStatus.DEACTIVATED,
         ):
             return self.current_route_status.value
-        if self.path_cancelled:
-            return "DEVIATED" if self.path_cancel_was_deviation else "CANCELLED"
+        if self.last_cancellation is not None:
+            return "CANCELLED"
         if self.no_reachable_task:
             return "STALLED"
         return self.current_route_status.value
@@ -2276,25 +2269,17 @@ class RouteExecutor:
 
         # Plan kernel — step IDs trace back to design_new.md "Planning
         # Kernel" section. The `9c4f` (RouteRun reallocation) step is
-        # performed earlier inside `_ensure_run_for(...)`; this method
-        # picks up at `5fc7`.
-        # ---------- 5fc7: route-deviation cleanup ----------------------------
-        if exec_state.path_cancelled and self._deviation_cleanup_eligible(
-            controller
-        ):
-            # Clear the latch and its classification together (design_new.md:1457).
-            exec_state.path_cancelled = False
-            exec_state.path_cancel_was_deviation = False
+        # performed earlier inside `_ensure_run_for(...)`. There is no
+        # deviation-cleanup step: a cancellation only records `last_cancellation`
+        # for the display projection, cleared by the next successful create at
+        # step `66aa`.
 
         # ---------- Teardown outranks normal progress ------------------------
         # design_new.md "Teardown outranks normal progress" (:1967): while any
         # teardown latch (path_cancel_request / route_abort / power_off /
-        # route_deactivate) is set, steps `70c3`, `6a0d`, `a5c6`, and `3a37`
-        # make no timing, progress, dwell, departure, or authority write, and
-        # `c481` reads only far enough to see that no normal work may commit.
-        # Action owns the teardown, so Plan does no further progress this tick;
-        # step `5fc7` above already ran (it may still clear an older recovery
-        # latch under its own gate).
+        # route_deactivate) is set, steps `70c3`, `6a0d`, `a5c6`, and the dwell
+        # step make no timing, progress, dwell, departure, or authority write,
+        # and `c481` reads only far enough to see that no normal work may commit.
         if controller.active_conditions & _TEARDOWN_CONDITIONS:
             return
 
@@ -2789,13 +2774,6 @@ class RouteExecutor:
         logger.warning("route warning for %s (%s): %s", train_id, origin, reason)
 
     # ----- Plan sub-steps ---------------------------------------------------
-    def _deviation_cleanup_eligible(self, controller: TrainController) -> bool:
-        """Predicate for the route-deviation cleanup latch consumer.
-
-        Per design_new.md (line 277), this gate is `controller.is_recovery_clean`.
-        """
-        return bool(getattr(controller, "is_recovery_clean", False))
-
     def is_clean_for_create(self, train_id: str) -> bool:
         """The one Plan create-branch gate (design_new.md "is_clean_for_create").
 
@@ -3549,6 +3527,9 @@ class RouteExecutor:
         # design_new.md "Event log": a fresh create (no prior active path) is a
         # PATH_CREATED event; an extend grows an existing path and is not.
         if active_path_id is None:
+            # A successful fresh create clears the prior cancellation's display
+            # diagnostic (design_new.md "RouteRun schema", last_cancellation).
+            exec_state.last_cancellation = None
             self._emit_event(
                 "create_path",
                 f"path created for {train.train_id} to {target_block}",
@@ -3725,16 +3706,12 @@ class RouteExecutor:
         if exec_state is None:
             return
 
-        # design_new.md ``current_route_status`` write contract, Plan
-        # terminal-walk row: clear a still-set ``path_cancelled`` /
-        # ``path_cancel_was_deviation``. The terminal-walk guard may have
-        # interposed a ``revoked`` cancel (a terminal ``waypoint`` whose head
-        # entry never released authority, or an all-broken skip) that step
-        # ``5fc7``'s ``is_recovery_clean`` gate has not yet consumed on this
-        # pass; the run is finishing regardless, so the diagnostic latch is
+        # Clear a still-set ``last_cancellation`` diagnostic as the run finishes:
+        # the terminal-walk guard may have interposed a ``revoked`` cancel (a
+        # terminal ``waypoint`` whose head entry never released authority, or an
+        # all-broken skip); the run is finishing regardless, so the diagnostic is
         # retired here rather than carried onto the historical row.
-        exec_state.path_cancelled = False
-        exec_state.path_cancel_was_deviation = False
+        exec_state.last_cancellation = None
 
         route_id = exec_state.route_id
         route = self.route_registry.get(route_id)
@@ -3848,21 +3825,12 @@ class RouteExecutor:
         exec_state = self.execution_states.get(train_id)
         if exec_state is None:
             return
-        # Per design_new.md: deviation is purely the `path_cancelled` latch plus
-        # its `path_cancel_was_deviation` classification, surfaced through the
-        # derived `display_state` projection (DEVIATED for a movement deviation,
-        # CANCELLED for every other authority cancellation). The stored
-        # `current_route_status` does not transition.
-        exec_state.path_cancelled = True
-        exec_state.path_cancel_was_deviation = was_deviation
-        # This is the `path_cancelled` latch write, so per the Writer-helper
-        # table (design_new.md) its own write-event `kind` is fixed at `"info"`
-        # and it passes `latch_event=True` (a latch write must never be dropped
-        # by the unchanged-repeat suppression). The severity of the cancellation
-        # rides on the separate `cancel_path` event, whose kind is the writer's.
-        # The `ErrorRecord` is kept on this event because it is the one that
-        # names the RouteRun, so the run panel's `latest_error_for(run_id)` still
-        # surfaces the cause (`error.origin`).
+        # Record the cancellation's diagnostic (design_new.md "RouteRun schema",
+        # last_cancellation). `current_route_status` does not transition; the
+        # derived `display_state` reads `"CANCELLED"` until the next successful
+        # create_path clears this at Plan step `66aa`. Every cancellation kind
+        # is surfaced the same way — the reason lives on the ErrorRecord.origin.
+        exec_state.last_cancellation = error
         from notification_center import Kind as _Kind
         self._emit_run_error(
             exec_state,

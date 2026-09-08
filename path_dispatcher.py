@@ -1928,7 +1928,7 @@ class PathDispatcher:
         # `handle_path_cancellation(train_id, path_id, error, was_deviation)`:
         # the dispatcher derives the deviation classification from the
         # structured cancel-request field, never from anything inside `error`,
-        # so the route side projects DEVIATED vs CANCELLED.
+        # so the route side records the cancellation for the CANCELLED display projection.
         train_id = path.train_id
         if train_id:
             sc = self.simulation_controller
