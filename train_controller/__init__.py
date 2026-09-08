@@ -798,11 +798,9 @@ class TrainController:
             # Raise EB through the canonical activation path (design_new.md "EB
             # has two trigger paths" / step `826a`): `eb.activate()` performs
             # every canonical EB effect — force handle to EB, disengage ATO
-            # (`ato.engaged = False`),
-            # clear the service-stop latch via `consume_service_stop()`, and (only
-            # outside dwell, when a live path exists) latch the `eb` cancel. ATC
-            # must not assign `eb.active` itself: no site outside
-            # `train_controller/eb.py` assigns `eb.active`.
+            # (`ato.engaged = False`), and (when a live path exists) latch the
+            # `eb` cancel. ATC must not assign `eb.active` itself: no site
+            # outside `train_controller/eb.py` assigns `eb.active`.
             self.eb.activate()
             self.notifications.emit(
                 "ATC triggered emergency brake: overspeed"
@@ -879,21 +877,6 @@ class TrainController:
                 self.ops.handle_position = self.ato.calculate_braking_notch_for_speed(
                     self.physics_sync.current_speed_kmh, self.atc.speed_limit
                 )
-
-        # ===== 10a. ROUTE-OWNED SERVICE-STOP OVERRIDE (design_new.md `b41e`) =====
-        # Runs after ordinary ATO/manual command generation above and replaces
-        # this tick's effective command with service stopping while a Plan
-        # run task's timed stop is armed (TrainController.begin_service_stop()).
-        # EB and ATC, already applied above, always outrank this override.
-        # Persists across ticks until TrainController.consume_service_stop()
-        # clears it. Manual `power_percent` submode has no handle_position to
-        # write here; produce_physics_command() applies the canonical
-        # safety-cap ordering with a zero cap when service_stop_active is set.
-        if self.ops.service_stop_active:
-            if self.commands.control_mode == "ato":
-                self.ops.set_service_brake_to_zero()
-            elif self.manual.manual_mode_type == "simulation":
-                self.ops.set_service_brake_to_zero()
 
         # ===== 7. EFFECTIVE LIMIT (target_speed property reads from lookahead) =====
         # Per design_new.md, target_speed and speed_limit_reason are derived
@@ -1032,14 +1015,10 @@ class TrainController:
             )
             target = profile.power_percent_to_speed(pct) if profile else 0.0
             # Per design_new.md "Canonical power-percent safety-cap ordering":
-            # a service-stop or EB override supplies a zero cap; otherwise ATC
-            # is the cap (already zero when no cab, wrong-direction cab, or
-            # no/at-end authority set atc.speed_limit = 0 earlier this tick).
-            cap = (
-                0.0
-                if self.ops.service_stop_active
-                else float(self.atc.speed_limit or 0.0)
-            )
+            # ATC is the cap (already zero when no cab, wrong-direction cab, or
+            # no/at-end authority set atc.speed_limit = 0 earlier this tick; EB
+            # returned above).
+            cap = float(self.atc.speed_limit or 0.0)
             # The commanded percent is the authoritative operating point for
             # this tick, so physics maps it straight to track_voltage through
             # voltage_power_curve (design_new.md:2424, 2431). A zero percent
@@ -1081,23 +1060,22 @@ class TrainController:
         )
 
     def _abandon_calibration_on_braking_override(self) -> None:
-        """Void an open speed-calibration pass when ATC, service-stop, or EB
-        overrides it during a measured crossing (design_new.md "Speed
-        calibration", A braking override voids the pass).
+        """Void an open speed-calibration pass when ATC or EB overrides it during
+        a measured crossing (design_new.md "Speed calibration", A braking
+        override voids the pass).
 
-        ATC, service stopping, and EB outrank calibration output; a transient one
-        mid-crossing would corrupt the timed sample, so the pass is abandoned
-        (its previous curve left in place) and its reason reported before this
-        tick's output is selected. Only a pass actively driving a crossing is
-        abandoned.
+        ATC and EB outrank calibration output; a transient one mid-crossing
+        would corrupt the timed sample, so the pass is abandoned (its previous
+        curve left in place) and its reason reported before this tick's output
+        is selected. Only a pass actively driving a crossing is abandoned.
 
-        EB and an externally-issued service stop always override — the pass
-        never issues either itself while driving. An ATC `CAUTION` restriction is
-        external too: the leg reserves its stretch clear, so a caution block
-        ahead is anomalous. `AUTHORITY_STOP` / `OBSTRUCTION` / `NO_AUTHORITY` are
-        the leg's own authority-end approach and lifecycle — the ordinary
-        end-of-leg deceleration (design_new.md: "not an invalidating override")
-        and the "ran out of authority" resolution — so they are excluded.
+        EB always overrides — the pass never issues it while driving. An ATC
+        `CAUTION` restriction is external too: the leg reserves its stretch
+        clear, so a caution block ahead is anomalous. `AUTHORITY_STOP` /
+        `OBSTRUCTION` / `NO_AUTHORITY` are the leg's own authority-end approach
+        and lifecycle — the ordinary end-of-leg deceleration (design_new.md:
+        "not an invalidating override") and the "ran out of authority"
+        resolution — so they are excluded.
         """
         sc = getattr(self, "simulation_controller", None)
         calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
@@ -1108,8 +1086,6 @@ class TrainController:
             return
         if self.eb.active:
             reason = "emergency brake during a measured crossing"
-        elif self.ops.service_stop_active:
-            reason = "service stop during a measured crossing"
         elif self.atc._last_limit_reason_code == AtcLimitReasonCode.CAUTION:
             reason = "CAUTION restriction during a measured crossing"
         else:
@@ -2376,79 +2352,6 @@ class TrainController:
         # path_backed_run_active is derived from path/route/destination context.
         self.ops.evaluate_reactive_conditions()
 
-    def begin_service_stop(self) -> None:
-        """Route-owned operational deceleration command (design_new.md
-        "TrainController.begin_service_stop() / consume_service_stop()").
-
-        Idempotent; valid while powered, in either control mode. Sets
-        `ops.service_stop_active = True`. Does not clear ATO intent
-        (`ato.engaged`) and does not
-        cancel authority or write route state — Controller tick step `b41e`
-        owns the actual per-mode braking override; the caller is
-        responsible for releasing authority separately.
-        """
-        if not self.power_on:
-            return
-        already = self.ops.service_stop_active
-        self.ops.service_stop_active = True
-        # A timed-run stop does not clear ATO intent (design_new.md "ato.engaged").
-        # Idempotent, so report only the transition — Plan step `6a0d` calls
-        # this on every eligible tick while the run timer is elapsed.
-        if not already:
-            from notification_center import Kind as _Kind
-
-            self.notifications.emit(
-                "service stop armed",
-                operation="begin_service_stop",
-                kind=_Kind.INFO,
-                payload={"latch": "service_stop_active"},
-            )
-
-    def consume_service_stop(self, force: bool = False) -> bool:
-        """Clear the service-stop override (design_new.md "TrainController.
-        begin_service_stop() / consume_service_stop()").
-
-        Normal acceptance (``force=False``) requires
-        ``ops.service_stop_active == True``, ``is_stopped() == True``,
-        ``received_path_plan is None``, and no pending
-        ``pending_path_cancel_request``. ``force=True`` unconditionally
-        clears the override for an interrupted run — used by EB activation,
-        ``RouteExecutor.remove_train_route_run(...)``, and OFF cleanup so a
-        later route never inherits armed braking. Changes no operational
-        state either way; no other component assigns
-        ``ops.service_stop_active`` directly.
-        """
-        if force:
-            was_armed = self.ops.service_stop_active
-            self.ops.service_stop_active = False
-            if was_armed:
-                self._emit_service_stop_cleared("interrupted")
-            return True
-        if not self.ops.service_stop_active:
-            return False
-        if not self.is_stopped():
-            return False
-        if self.path_projection.received_path_plan is not None:
-            return False
-        if self.route_hooks.phase_latches.path_cancel_request is not None:
-            return False
-        self.ops.service_stop_active = False
-        self._emit_service_stop_cleared("run complete")
-        return True
-
-    def _emit_service_stop_cleared(self, why: str) -> None:
-        """Report the service-stop commit. Only the arm→clear transition is
-        reported: the gated branch returns early on every tick the gate has not
-        opened, and `force=True` from an already-clear latch changes nothing."""
-        from notification_center import Kind as _Kind
-
-        self.notifications.emit(
-            f"service stop cleared: {why}",
-            operation="consume_service_stop",
-            kind=_Kind.INFO,
-            payload={"latch": "service_stop_active", "reason": why},
-        )
-
     def complete_power_off(self) -> None:
         """Controller-owned OFF-cleanup entry point (design_new.md:282, :1808).
 
@@ -2481,9 +2384,6 @@ class TrainController:
         # the EB Workflow stays the single writer of `eb.active`.
         self.eb.clear()
         self.ato.disengage()
-        # Force-clear through the service-stop teardown path so an
-        # interrupted run never leaves braking armed on a later route.
-        self.consume_service_stop(force=True)
         if had_latch:
             self.route_hooks.phase_latches.clear("power_off")
             self.notifications.emit(

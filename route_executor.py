@@ -1248,10 +1248,23 @@ class RouteExecutor:
             if row.finished_at is not None:
                 continue
             task = route.get_task_at(row.task_index) if route is not None else None
+            task_kind = getattr(task, "task_kind", "") if task is not None else ""
+            # A `run` whose timer has elapsed is a stop at the current authority
+            # end (design_new.md "run task"): present it as a `stop` so the
+            # stop-arrival check completes it there. Plan step `6a0d` has frozen
+            # this row's `resolved_target` on that authority-end block.
+            if task_kind == "run":
+                run_time = (
+                    task.task_time
+                    if (task is not None and task.task_time and task.task_time > 0.0)
+                    else 0.0
+                )
+                if row.run_elapsed_seconds >= run_time:
+                    task_kind = "stop"
             return CompletionTaskProjection(
                 walk_position=pos,
                 task_index=row.task_index,
-                task_kind=getattr(task, "task_kind", "") if task is not None else "",
+                task_kind=task_kind,
                 stored_resolved_target=row.resolved_target,
             )
         return None
@@ -2914,27 +2927,25 @@ class RouteExecutor:
         now: float,
         delta_seconds: float,
     ) -> bool:
-        """Plan handling for a `run` task (design_new.md Planning Kernel
-        step `6a0d`, "Run timer, service stop, and normal-progress authority
-        release").
+        """Plan step `6a0d`: accrue a `run` task's timer, then turn it into a
+        stop at the run's current authority end.
 
         A `run` keeps the train moving for `task_time` seconds of simulated
-        time, then lets it coast to a smooth stop wherever it is and finishes
-        the run so the following task (typically a `dwell`) takes over. The
-        stop is `TrainController.begin_service_stop()`, an operational
-        deceleration, not an abrupt cut, and the run never targets a stop
-        location — where it comes to rest is not part of the contract
-        (design_new.md "RouteTask data").
+        time. Once the timer elapses the run becomes a stop at the run's current
+        authority end (design_new.md "run task"): this step freezes the run
+        row's `resolved_target` on the live authority-end block and stops
+        acquiring onward authority. With no fresh authority granted, the train
+        brakes to that authority end under ordinary ATC, and the ordinary
+        stop-arrival check completes the run there — no service brake and no
+        cancel. This step is `run_elapsed_seconds`'s only writer.
 
         The timer is measured in accumulated simulated `delta_seconds` (not
-        wall-clock) and stored on `RouteTaskRun.run_elapsed_seconds`, so
-        "run 20 s" means 20 s of simulation and behaves the same regardless
-        of tick cadence. This step is `run_elapsed_seconds`'s only writer.
+        wall-clock), so "run 20 s" means 20 s of simulation regardless of tick
+        cadence.
 
         Returns:
-            True  — the run window has elapsed and the train is stopping or the
-                    run is finished this tick; the caller must not acquire fresh
-                    authority.
+            True  — the run window has elapsed; the caller must not acquire
+                    fresh authority (the authority end is frozen).
             False — the run is still within its time window; the caller falls
                     through to ordinary authority acquisition to keep moving.
         """
@@ -2954,52 +2965,40 @@ class RouteExecutor:
         train_id = train.train_id
 
         # Accrue only while the direction-seed target resolves to a present
-        # usable target on this pass (design_new.md "`run` task lifecycle",
-        # Timer). A missing or currently unavailable seed
-        # (`projection.resolved_target is None`) pauses accrual for that pass
-        # and falls through to the ordinary broken/unreachable handling; the
-        # projection here comes from `_find_next_task_target(train_id)` with no
-        # exclude, so a `None` target is a genuine missing/unavailable seed, not
-        # the same-tick exclude sentinel. Completion of an already-elapsed run
-        # is not gated on the seed — once the window is spent the train service-
-        # stops and releases regardless.
-        if projection.resolved_target is not None:
+        # usable target on this pass and EB is not latched (design_new.md step
+        # `6a0d`): a missing seed (`projection.resolved_target is None`) or an
+        # active EB pauses accrual for that pass.
+        if projection.resolved_target is not None and not controller.eb.active:
             run_row.run_elapsed_seconds = min(
                 run_row.run_elapsed_seconds + max(0.0, delta_seconds), run_time
             )
 
-        # Still inside the run window (or accrual paused on a missing seed) →
-        # keep rolling toward the direction seed / defer to broken-unreachable.
+        # Still inside the run window (or accrual paused) → keep rolling toward
+        # the direction seed / defer to broken-unreachable.
         if run_row.run_elapsed_seconds < run_time:
             return False
 
-        # Window elapsed: bring the train to a smooth stop and release the
-        # onward authority so nothing re-drives it; the cancel commits in the
-        # gated Action once the train is stopped.
-        controller.begin_service_stop()
-        if (
-            self._get_active_path_id(train_id) is not None
-            and controller.route_hooks.phase_latches.path_cancel_request is None
-        ):
-            # The one writer permitted to pass `run_complete=True`; a
-            # run-completion release carries `error=None` because nothing
-            # failed (design_new.md "Latch Table", Payload fields).
-            controller.route_hooks.phase_latches.set_path_cancel_request(
-                None, Kind.INFO, run_complete=True
-            )
-
-        if (
-            not controller.is_stopped()
-            or controller.route_hooks.phase_latches.path_cancel_request is not None
-            or controller.path_projection.received_path_plan is not None
-        ):
-            return True
-
-        # At rest with authority released: record finished_at + advance the
-        # cursor so the next task (typically a dwell at this position) is
-        # armed on the next tick.
-        controller.consume_service_stop()
-        self.advance_walk_position(exec_state, route, walk_pos)
+        # Window elapsed: the run is now a stop at the current authority end.
+        # Freeze the run row's target on that block so the stop-arrival check
+        # matches the live authority end there (per **CompletionTaskProjection
+        # schema**), and stop acquiring onward authority by returning True.
+        active_path = (
+            self.path_dispatcher.get_active_path(train_id)
+            if self.path_dispatcher is not None
+            else None
+        )
+        if active_path is not None:
+            end_block = active_path.get_authority_end_block_id()
+            if end_block is not None:
+                direction = (
+                    projection.resolved_target.requested_destination_direction
+                    if projection.resolved_target is not None
+                    else exec_state.direction
+                )
+                run_row.resolved_target = ResolvedRouteTarget(
+                    requested_destination_block_id=end_block,
+                    requested_destination_direction=direction or "forward",
+                )
         return True
 
     def _covered_task_index_advance(
@@ -3827,30 +3826,21 @@ class RouteExecutor:
         path_id: str,
         error: Optional["ErrorRecord"] = None,
         was_deviation: bool = False,
-        was_run_completion: bool = False,
     ) -> None:
         """Action cancellation callback.
 
         Per design_new.md "route path-event callback schema" the v1 callback
-        signature is ``(train_id, path_id, error, was_deviation=False,
-        was_run_completion=False)``. Every cancellation kind shares the same
-        body; ``was_deviation`` and ``was_run_completion`` are the two
-        classification bits ``PathDispatcher.cancel_path(...)`` derives from
-        the structured cancel-request fields, never from anything inside
-        ``error``, and they are the only cancellation-kind details that cross
-        this callback boundary. ``error`` is diagnostic context only and must
-        not be used for branching. The callback is bookkeeping only: it must
-        not choose a fresh target or create fresh authority.
-
-        A `was_run_completion` callback writes neither `path_cancelled` nor
-        `path_cancel_was_deviation`: a timer-elapsed `run` task releasing its
-        now-unneeded authority is a normal route-progress event, not a
-        cancellation, and must not project `display_state == "CANCELLED"`.
+        signature is ``(train_id, path_id, error, was_deviation=False)``. Every
+        cancellation kind shares the same body; ``was_deviation`` is the
+        classification bit ``PathDispatcher.cancel_path(...)`` derives from the
+        structured cancel-request field, never from anything inside ``error``,
+        and it is the only cancellation-kind detail that crosses this callback
+        boundary. ``error`` is diagnostic context only and must not be used for
+        branching. The callback is bookkeeping only: it must not choose a fresh
+        target or create fresh authority.
         """
         exec_state = self.execution_states.get(train_id)
         if exec_state is None:
-            return
-        if was_run_completion:
             return
         # Per design_new.md: deviation is purely the `path_cancelled` latch plus
         # its `path_cancel_was_deviation` classification, surfaced through the
@@ -4042,15 +4032,11 @@ class RouteExecutor:
         When a run exists it performs the canonical teardown, then commits any
         held route-assignment replacement as the last operation:
 
-          1. Force-clear any service-stop override through
-             `TrainController.consume_service_stop(force=True)` so a run
-             interrupted by this teardown never leaves braking armed on a
-             later route.
-          2. Call `Route.unassign_train(train_id)` on the run's `route_id`.
-          4. Set `current_route_status = DEACTIVATED` and archive the
+          1. Call `Route.unassign_train(train_id)` on the run's `route_id`.
+          2. Set `current_route_status = DEACTIVATED` and archive the
              row as a historical run (visible to `history_for_train(...)`).
              The derived `execution_state_for(train_id)` no longer returns it.
-          5. Consume `_pending_route_assignments[train_id]` and apply its
+          3. Consume `_pending_route_assignments[train_id]` and apply its
              requested replacement, if any (design_new.md line 1864). The
              narrower same-route `_pending_reassign` entry is NOT applied here;
              the deactivate consumer applies it after this method returns.
@@ -4084,13 +4070,6 @@ class RouteExecutor:
             self.finalize_pending_route_deletions()
             return
 
-        controller = self._controller_by_id(train_id)
-        if controller is not None:
-            # Force-clear through the service-stop teardown path so a run
-            # interrupted by this teardown never leaves braking armed on a
-            # later route (design_new.md "TrainController.begin_service_stop()
-            # / consume_service_stop()").
-            controller.consume_service_stop(force=True)
         # A dwelling train is READY (dwell is not a controller state), so there
         # is no dwell to exit before teardown.
 

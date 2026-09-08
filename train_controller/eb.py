@@ -10,11 +10,10 @@ class stays a single-purpose owner of EB-specific state and behavior.
 
 The ATC overspeed escalation path calls ``activate()`` from inside
 ``TrainController.tick(...)`` rather than writing ``self.eb.active``
-directly, so it runs the same synchronous activation effects — including
-``consume_service_stop(...)`` — as an operator-issued EB. ``activate()``,
-``release()``, and ``clear()`` are the only three sites that assign
-``eb.active``; the ATC escalation call is the one caller of ``activate()``
-outside the operator-command drain.
+directly, so it runs the same synchronous activation effects as an
+operator-issued EB. ``activate()``, ``release()``, and ``clear()`` are the
+only three sites that assign ``eb.active``; the ATC escalation call is the
+one caller of ``activate()`` outside the operator-command drain.
 
 External callers access EB state and behavior as:
 
@@ -61,11 +60,6 @@ class EBWorkflow:
         self.active = True
         c.ops.handle_position = HandlePosition.EB
         c.ato.disengage()
-        # Force-clear through the service-stop teardown path so a run
-        # interrupted by EB never leaves braking armed on a later route
-        # (design_new.md "TrainController.begin_service_stop() /
-        # consume_service_stop()").
-        c.consume_service_stop(force=True)
 
         if c.path_projection.received_path_plan is not None:
             # A safety action that recovers, so `"warning"` — never `"error"`,

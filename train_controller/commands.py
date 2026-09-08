@@ -356,10 +356,6 @@ class OperatorCommands:
         c.ato.disengage()
         c.ops.reset_handle_to_neutral()
         c.manual.reset_power_percent_for_safety()
-        # Force-clear through the service-stop teardown path so a run
-        # interrupted by power-off never leaves braking armed on a later
-        # route (design_new.md step `98d3`).
-        c.consume_service_stop(force=True)
         c.route_hooks.phase_latches.set_power_off(
             reason=reason,
             has_active_path=c.path_projection.received_path_plan is not None,

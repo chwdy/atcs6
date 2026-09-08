@@ -1676,7 +1676,6 @@ class SimulationController(SwitchOutputOwner):
                 error=payload.error,
                 kind=payload.kind,
                 deviation=payload.deviation,
-                run_complete=payload.run_complete,
             )
         else:
             # No live path to cancel. Per design_new.md "Action latched-cancel
@@ -1697,9 +1696,7 @@ class SimulationController(SwitchOutputOwner):
                 payload={
                     "latch": "path_cancel_request",
                     "origin": (
-                        payload.error.origin
-                        if payload.error is not None
-                        else "run_complete"
+                        payload.error.origin if payload.error is not None else None
                     ),
                 },
                 event_time=time.time(),
@@ -2925,7 +2922,6 @@ class SimulationController(SwitchOutputOwner):
         path_id: str,
         error: Optional[ErrorRecord] = None,
         was_deviation: bool = False,
-        was_run_completion: bool = False,
     ) -> None:
         """Deliver a committed path cancellation to the `RouteExecutor`.
 
@@ -2942,7 +2938,6 @@ class SimulationController(SwitchOutputOwner):
             path_id,
             error=error,
             was_deviation=was_deviation,
-            was_run_completion=was_run_completion,
         )
 
 

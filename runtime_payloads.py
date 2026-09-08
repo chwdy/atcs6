@@ -215,7 +215,7 @@ class PendingPathCancelRequest:
     """Action latched cancellation payload written to TrainController.
 
     Per design_new.md (Latch Table, Payload fields) the canonical fields are
-    exactly these four:
+    exactly these three:
       * `kind: str` — the event level the writer declares for this
         cancellation: ``"info"`` for a normal cancellation and ``"warning"``
         for a recoverable problem or safety action. Latch writers never use
@@ -223,23 +223,15 @@ class PendingPathCancelRequest:
         and it is the level the Action `cancel_path(...)` consumption event
         carries.
       * `error: Optional[ErrorRecord]` — the whole diagnostic record the writer
-        hands forward. Required (non-`None`) on every request except a
-        `run_complete` release, where it must be `None`. Its `origin` carries
-        the free-form notification label (``"eb"``, ``"operator_cancelled"``,
-        ``"power_off"``, ``"out_of_sequence"``, ``"revoked"``,
-        ``"idle_hold_release"``, ``"contention_release"``,
-        ``"calibration_leg_complete"``); the Action commit puts the record in
-        the cancellation event's `error` field.
+        hands forward. Required (non-`None`) on every request. Its `origin`
+        carries the free-form notification label (``"eb"``,
+        ``"operator_cancelled"``, ``"power_off"``, ``"out_of_sequence"``,
+        ``"revoked"``, ``"calibration_leg_complete"``); the Action commit puts
+        the record in the cancellation event's `error` field.
       * `deviation: bool` — set only by the movement-derived deviation writer.
         It rides the latch payload so the Action commit can forward the
-        classification into `cancel_path(...)`.
-      * `run_complete: bool` — set only by Plan run step `6a0d` after its
-        timer elapses and service stopping begins.
-
-    The two booleans, never anything read out of `error`, drive the only
-    cancellation-callback classifications: `deviation` produces the deviation
-    diagnostic latch, while `run_complete` marks a normal route-progress
-    release that must not set `RouteRun.path_cancelled`.
+        classification into `cancel_path(...)`: it produces the deviation
+        diagnostic latch.
 
     Consumed by Action only when the train is fully stopped. While the train
     is still rolling, the latch survives across ticks and is reconsidered on
@@ -250,7 +242,6 @@ class PendingPathCancelRequest:
     kind: str
     error: Optional[ErrorRecord] = None
     deviation: bool = False
-    run_complete: bool = False
 
 
 # Note: per design_new.md (Latch Table), `pending_route_abort` and
@@ -360,7 +351,6 @@ class PhaseLatches:
         error: Optional[ErrorRecord],
         kind: str,
         deviation: bool = False,
-        run_complete: bool = False,
     ) -> None:
         """Leaf writer for `path_cancel_request`.
 
@@ -372,46 +362,31 @@ class PhaseLatches:
         `error` carries the whole `ErrorRecord` the writer hands forward, whose
         `origin` names what ended the path. Per design_new.md's
         `pending_path_cancel_request` payload contract it is required on every
-        request except a `run_complete` release, where it must be `None`; this
-        writer validates that pairing so `cancel_path(...)` never sees a
+        request; this writer validates that so `cancel_path(...)` never sees a
         malformed payload.
 
         `deviation` is set only by the movement-derived deviation writer; it
         rides the latch payload into the Action `cancel_path(...)` commit.
-        `run_complete` is set only by Plan run step `6a0d`; that is the only
-        writer permitted to pass `True`. The two are mutually exclusive.
         """
-        if deviation and run_complete:
-            raise ValueError(
-                "a cancel request cannot be both a deviation and a "
-                "run-completion release"
-            )
-        if run_complete and error is not None:
-            raise ValueError("a run_complete release must carry error=None")
-        if not run_complete and error is None:
-            raise ValueError(
-                "every cancel request except a run_complete release must "
-                "carry an ErrorRecord"
-            )
+        if error is None:
+            raise ValueError("every cancel request must carry an ErrorRecord")
 
         self.path_cancel_request = PendingPathCancelRequest(
             kind=kind,
             error=error,
             deviation=deviation,
-            run_complete=run_complete,
         )
-        origin = error.origin if error is not None else "run_complete"
+        origin = error.origin
         self._emit(
             "set_path_cancel_request",
             f"path cancel requested by {origin}"
-            + (f": {error.text}" if error is not None and error.text else ""),
+            + (f": {error.text}" if error.text else ""),
             kind=kind,
             error=error,
             payload={
                 "latch": "path_cancel_request",
                 "origin": origin,
                 "deviation": deviation,
-                "run_complete": run_complete,
             },
         )
 

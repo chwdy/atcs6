@@ -166,9 +166,9 @@ class LookaheadBuilder:
                 )
                 # Key on the structured classification boolean, never on
                 # anything inside `error`: design_new.md "Latch Table" makes
-                # `deviation` / `run_complete` the only cancellation
-                # classifications runtime code may read, and `ErrorRecord.origin`
-                # a diagnostic label nothing branches on.
+                # `deviation` the only cancellation classification runtime code
+                # may read, and `ErrorRecord.origin` a diagnostic label nothing
+                # branches on.
                 if latched_cancel is not None and latched_cancel.deviation:
                     return self._build_empty_monitor_lookahead(
                         head_tile=head_tile,

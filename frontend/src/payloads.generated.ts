@@ -59,7 +59,6 @@ export interface PendingPathCancelRequest {
   kind: string;
   error: ErrorRecord | null;
   deviation: boolean;
-  run_complete: boolean;
 }
 
 export interface PhaseLatches {

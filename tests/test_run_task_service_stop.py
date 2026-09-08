@@ -1,25 +1,20 @@
-"""Regression: a `run` task's timed stop drives to completion through
-`TrainController.begin_service_stop()` / `consume_service_stop()`, never
-through dispatcher-committed stop completion.
+"""Regression: a `run` task's timed stop completes as a stop at the run's
+current authority end, through the ordinary stop-arrival check — never through
+a service brake or a run-progress cancel.
 
-design_new.md Planning Kernel step `6a0d` ("Run timer, service stop, and
-normal-progress authority release"): while `RouteTaskRun.run_elapsed_seconds
-< task_time`, the step accumulates `delta_seconds` and keeps rolling. Once
-the window elapses, it calls the idempotent `TrainController.
-begin_service_stop()` (setting `ops.service_stop_active = True` and clearing
-`ato.running`) and, if live authority exists, latches
-`pending_path_cancel_request(error=None, kind="info", run_complete=True)`
-— the classification that must NOT set
-`RouteRun.path_cancelled` (design_new.md "pending_path_cancel_request" /
-M-PAYLOAD). Only once the train is stopped, the release request has been
-consumed, and `received_path_plan is None` does the step call
-`TrainController.consume_service_stop()` and `RouteRun.
-advance_walk_position(...)` to finish the task.
+design_new.md "run task" / Planning Kernel step `6a0d`: while
+`RouteTaskRun.run_elapsed_seconds < task_time`, the step accumulates
+`delta_seconds` and keeps rolling. Once the window elapses it freezes the run
+row's `resolved_target` on the live authority-end block and stops acquiring
+onward authority; with no fresh authority granted, the train brakes to that
+authority end under ordinary ATC, and the ordinary stop-arrival check completes
+it there — `find_next_completion_task` presents the elapsed run as
+`task_kind == "stop"`. There is no `begin_service_stop` and no `run_complete`
+cancel.
 
-This is also the regression guard for the H2/H-API-CHAIN fatal-freeze bug: a
-`run` task must never reach `RouteExecutor.handle_path_completion(...)`'s
-`task_kind == "stop"` match loop, which would otherwise raise
-`SimulationController.enter_failed_runtime(...)` for a healthy run.
+This is also the regression guard for the H2 fatal-freeze bug: a run task still
+in flight is the served completion projection with `task_kind == "run"`, which
+the stop-arrival check rejects; only an elapsed run presents as a stop.
 """
 
 from enums import Direction, TrainState
@@ -126,12 +121,11 @@ def test_run_task_accrues_timer_and_keeps_rolling_within_window():
 
     assert still_rolling is False  # caller falls through to authority acquisition
     assert row.run_elapsed_seconds == 8.0
-    assert controller.ops.service_stop_active is False
     assert controller.ato.engaged is True  # intent untouched while still rolling
 
 
-def test_run_task_timer_elapses_begins_service_stop_without_cancelling_run():
-    executor, exec_state, controller, train, route, projection, _stub = (
+def test_run_task_timer_elapses_freezes_authority_end_without_cancelling():
+    executor, exec_state, controller, train, route, projection, stub = (
         _run_task_ready(task_time=20.0)
     )
     row = exec_state.task_runs[0]
@@ -147,67 +141,52 @@ def test_run_task_timer_elapses_begins_service_stop_without_cancelling_run():
 
     assert done is True  # caller must not acquire fresh authority
     assert row.run_elapsed_seconds == 20.0  # capped at task_time, not 23.0
-    assert controller.ops.service_stop_active is True
-    # A timed-run stop does not clear ATO intent (design_new.md "ato.engaged"):
-    # a scheduled stop is not a cancellation.
+    # A timed-run stop does not clear ATO intent (design_new.md "ato.engaged").
     assert controller.ato.engaged is True
-    assert row.finished_at is None  # not yet — still moving
+    # Completion is dispatcher-side stop-arrival, not this step.
+    assert row.finished_at is None
 
-    # The onward authority release is classified as run-progress, not a plain
-    # cancel: RouteExecutor.handle_path_cancellation(...) must read this and
-    # NOT set RouteRun.path_cancelled (M-PAYLOAD / display_state != CANCELLED).
-    req = controller.route_hooks.phase_latches.path_cancel_request
-    assert req is not None
-    assert req.run_complete is True
-    assert req.error is None, "a run_complete release carries no ErrorRecord"
+    # The run is now a stop at the current authority end: its resolved_target is
+    # frozen on that block, and NO cancel is latched (design_new.md "run task").
+    path = stub.paths_by_train[train.train_id]
+    assert (
+        row.resolved_target.requested_destination_block_id
+        == path.get_authority_end_block_id()
+    )
+    assert controller.route_hooks.phase_latches.path_cancel_request is None
 
 
-def test_run_task_completes_only_after_stopped_with_authority_released():
+def test_run_task_presents_as_a_stop_at_authority_end_once_elapsed():
     executor, exec_state, controller, train, route, projection, stub = (
         _run_task_ready(task_time=20.0)
     )
-    row = exec_state.task_runs[0]
     controller.physics_sync.current_speed_kmh = 40.0
     executor._run_task_step(
         train, route, exec_state, controller, projection, now=8.0, delta_seconds=8.0
     )
+    # Before expiry the served completion projection is a `run` (the stop-arrival
+    # check rejects it).
+    pre = executor.find_next_completion_task(train.train_id)
+    assert pre is not None and pre.task_kind == "run"
+
+    # Elapse the timer.
     executor._run_task_step(
         train, route, exec_state, controller, projection, now=23.0, delta_seconds=15.0
     )
-    assert controller.ops.service_stop_active is True
 
-    # Still moving: must keep waiting even though the timer has elapsed.
-    still_waiting = executor._run_task_step(
-        train, route, exec_state, controller, projection, now=24.0, delta_seconds=1.0
+    # Now the elapsed run presents as a `stop` at the authority end, so the
+    # ordinary stop-arrival check completes it there.
+    post = executor.find_next_completion_task(train.train_id)
+    assert post is not None
+    assert post.task_kind == "stop"
+    path = stub.paths_by_train[train.train_id]
+    assert (
+        post.stored_resolved_target.requested_destination_block_id
+        == path.get_authority_end_block_id()
     )
-    assert still_waiting is True
-    assert row.finished_at is None
-
-    # Stops, but the cancel hasn't committed yet (path still live) — must wait.
-    controller.physics_sync.current_speed_kmh = 0.0
-    still_waiting = executor._run_task_step(
-        train, route, exec_state, controller, projection, now=25.0, delta_seconds=1.0
-    )
-    assert still_waiting is True
-    assert row.finished_at is None
-    assert controller.ops.service_stop_active is True  # not cleared yet
-
-    # Phase 3 commits the cancel: consumes the latch and releases the path.
-    controller.route_hooks.phase_latches.clear("path_cancel_request")
-    del stub.paths_by_train[train.train_id]
-
-    finished = executor._run_task_step(
-        train, route, exec_state, controller, projection, now=26.0, delta_seconds=1.0
-    )
-
-    assert finished is True
-    assert controller.ops.service_stop_active is False  # consume_service_stop() ran
-    # Finished through `advance_walk_position(...)`, which samples both clocks
-    # itself — callers pass no clock value (design_new.md
-    # "`RouteRun.advance_walk_position(walk_position)`").
-    assert row.finished_at is not None
-    assert row.finished_at_operating is not None
-    assert row.run_elapsed_seconds == 20.0  # unchanged by the final tick
+    # _run_task_step itself never finishes the run — the dispatcher's stop
+    # completion does.
+    assert exec_state.task_runs[0].finished_at is None
 
 
 def test_run_task_is_the_served_projection_and_never_completes_as_a_stop():

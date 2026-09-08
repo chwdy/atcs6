@@ -1848,25 +1848,23 @@ class PathDispatcher:
         error: Optional["ErrorRecord"] = None,
         kind: str = "info",
         deviation: bool = False,
-        run_complete: bool = False,
     ) -> CancellationResult:
         """v1 cancel_path: release reservations, mark path CANCELLED.
 
         Per design_new.md "cancel_path() return contract":
           * `error` is the diagnostic `ErrorRecord` that flows straight into the
             `cancel_path` event; its `origin` names what ended the path. It is
-            required for every cancellation except a `run_complete` release,
-            where it is `None`. No planning or routing logic branches on
-            anything inside it.
+            required for every cancellation. No planning or routing logic
+            branches on anything inside it.
           * `kind` is the event level the latch writer declared, carried through
             unchanged. This emit *is* the `path_cancel_request` consumption
             event (design_new.md "Latch consumption events"), so it reports the
             latched payload's own level rather than a level derived here.
-          * `deviation` and `run_complete` are the two structured, mutually
-            exclusive classification booleans forwarded to the route callback.
+          * `deviation` is the structured classification boolean forwarded to
+            the route callback.
           * A `path_id` absent from `paths_by_id` is a caller-contract
             violation and raises (design_new.md line 1360), like the
-            ``deviation``+``run_complete`` and error-pairing violations above.
+            error-pairing violation above.
           * An idempotent no-op (already ``COMPLETED`` / ``CANCELLED``) returns
             ``committed = False`` with ``new_status`` set to that terminal
             status and the canonical ``reason`` string (``"already completed"``
@@ -1875,18 +1873,8 @@ class PathDispatcher:
           * On success the result carries ``committed = True`` and
             ``new_status = PathStatus.CANCELLED``.
         """
-        if deviation and run_complete:
-            raise ValueError(
-                "a cancellation cannot be both a deviation and a "
-                "run-completion release"
-            )
-        if run_complete and error is not None:
-            raise ValueError("a run_complete release must carry error=None")
-        if not run_complete and error is None:
-            raise ValueError(
-                "every cancellation except a run_complete release must carry "
-                "an ErrorRecord"
-            )
+        if error is None:
+            raise ValueError("every cancellation must carry an ErrorRecord")
         path = self.paths.get(path_id)
         if path is None:
             # A `path_id` not present in `paths_by_id` is a caller-contract
@@ -1937,11 +1925,10 @@ class PathDispatcher:
 
         # Notify route executor (bookkeeping only). Per design_new.md "route
         # path-event callback schema" the canonical signature is
-        # `handle_path_cancellation(train_id, path_id, error, was_deviation,
-        # was_run_completion)`: the dispatcher derives the two classification
-        # bits from the structured cancel-request fields, never from anything
-        # inside `error`, so the route side projects DEVIATED vs CANCELLED vs
-        # (for a completing run) neither.
+        # `handle_path_cancellation(train_id, path_id, error, was_deviation)`:
+        # the dispatcher derives the deviation classification from the
+        # structured cancel-request field, never from anything inside `error`,
+        # so the route side projects DEVIATED vs CANCELLED.
         train_id = path.train_id
         if train_id:
             sc = self.simulation_controller
@@ -1951,7 +1938,6 @@ class PathDispatcher:
                     path_id,
                     error=error,
                     was_deviation=deviation,
-                    was_run_completion=run_complete,
                 )
             else:
                 # No `SimulationController` wired (isolated dispatcher tests):
@@ -1964,7 +1950,6 @@ class PathDispatcher:
                         path_id,
                         error=error,
                         was_deviation=deviation,
-                        was_run_completion=run_complete,
                     )
 
         # Emit the canonical `cancel_path` notification. Per design_new.md
@@ -1989,9 +1974,8 @@ class PathDispatcher:
                     event_time=now,
                     payload={
                         "latch": "path_cancel_request",
-                        "origin": error.origin if error is not None else "run_complete",
+                        "origin": error.origin,
                         "deviation": deviation,
-                        "run_complete": run_complete,
                     },
                     latch_event=True,
                 )

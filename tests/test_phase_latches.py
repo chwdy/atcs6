@@ -65,34 +65,12 @@ def test_kind_is_recorded_independently_of_the_error_record():
     assert latches.path_cancel_request.kind == "info"
 
 
-def test_a_run_complete_release_carries_no_error_record():
+def test_the_writer_requires_an_error_record():
     """design_new.md "Latch Table", Payload fields: `error` is required on every
-    request except a `run_complete` release, where it must be `None`."""
-    latches = PhaseLatches()
-    latches.set_path_cancel_request(None, "info", run_complete=True)
-    assert latches.path_cancel_request.run_complete is True
-    assert latches.path_cancel_request.error is None
-
-
-@pytest.mark.parametrize(
-    "error,run_complete",
-    [
-        (None, False),                                   # missing record
-        (ErrorRecord("t", "revoked"), True),             # record on a release
-    ],
-)
-def test_the_writer_validates_the_error_classification_pairing(error, run_complete):
+    cancel request."""
     latches = PhaseLatches()
     with pytest.raises(ValueError):
-        latches.set_path_cancel_request(error, "info", run_complete=run_complete)
-
-
-def test_deviation_and_run_complete_are_mutually_exclusive():
-    latches = PhaseLatches()
-    with pytest.raises(ValueError):
-        latches.set_path_cancel_request(
-            None, "info", deviation=True, run_complete=True
-        )
+        latches.set_path_cancel_request(None, "info")
 
 
 # ---------------------------------------------------------------------------

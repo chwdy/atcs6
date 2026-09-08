@@ -41,11 +41,6 @@ class OperationalStateMachine:
         self.handle_position: HandlePosition = HandlePosition.N
         # Diagnostic: reason for current handle position (set by ATO).
         self.handle_reason: str = ""
-        # Route-owned timed-run stop override (design_new.md
-        # "TrainController.begin_service_stop() / consume_service_stop()").
-        # Writers: TrainController.begin_service_stop() / consume_service_stop()
-        # only; no other component assigns this field directly.
-        self.service_stop_active: bool = False
 
     # ------------------------------------------------------------------
     # State transitions into / out of RUNNING_MOVING
@@ -132,14 +127,3 @@ class OperationalStateMachine:
         `power_percent`, and `TrainController.complete_power_off()`.
         """
         self.handle_position = HandlePosition.N
-
-    def set_service_brake_to_zero(self) -> None:
-        """Write the ordinary service-brake-to-zero notch — the braking notch
-        that brings the current speed to a stop. The non-driving service-brake
-        reset helper, called only by tick step `b41e`'s route-owned service-stop
-        override (design_new.md line 2320).
-        """
-        c = self._c
-        self.handle_position = c.ato.calculate_braking_notch_for_speed(
-            c.physics_sync.current_speed_kmh, 0.0
-        )

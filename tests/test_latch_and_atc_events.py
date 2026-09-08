@@ -172,13 +172,13 @@ def test_the_committed_payload_survives_until_the_step_reads_it(latches):
     `ErrorRecord` it forwards into `cancel_path(...)` must both still be
     there when it does."""
     lat, _ = latches
-    lat.set_path_cancel_request(None, "info", run_complete=True)
+    err = ErrorRecord("operator cancelled", "operator_cancelled")
+    lat.set_path_cancel_request(err, "info")
 
     payload = lat.path_cancel_request
     lat.clear("path_cancel_request")
-    assert payload.run_complete is True
     assert payload.kind == "info"
-    assert payload.error is None
+    assert payload.error is err
     assert lat.path_cancel_request is None
 
 
