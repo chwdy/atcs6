@@ -26,9 +26,6 @@ from typing import Any, ClassVar, Dict, Iterable, List, Optional, Set, Tuple, TY
 
 from constants import (
     DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS,
-    IDLE_HOLD_COOLDOWN_TICKS,
-    IDLE_HOLD_RELEASE_TICKS,
-    WAYPOINT_LOOKAHEAD_BLOCKS,
 )
 from enums import AtcLimitReasonCode, ControllerCondition, Direction, TrainState
 from train_controller import TrainController, create_controller_for_train
@@ -330,14 +327,6 @@ class RouteExecutionState:
     # seeded position `s` for NEAREST / SPECIFIC. Written once at allocation by
     # `RouteExecutor._seed_start_position(...)`. Read only by `is_starting`.
     start_walk_position: int = 0
-    # Idle-hold release counters (NOT latches), Plan-maintained by direct
-    # write in the authority-acquisition step. `idle_hold_ticks` counts
-    # consecutive Plan ticks on a stalled truncated best-effort hold;
-    # `release_cooldown_ticks` is the post-release acquisition-skip countdown.
-    # Per design_new.md "Idle-hold maintenance and release" (Planning Kernel
-    # step 66aa).
-    idle_hold_ticks: int = 0
-    release_cooldown_ticks: int = 0
 
     @property
     def run_id(self) -> str:
@@ -1747,38 +1736,6 @@ class RouteExecutor:
         route = self.route_registry.get(route_id) if route_id else None
         return bool(getattr(route, "manual_override", False)) if route else False
 
-    def _held_future_reservations(self, train_id: str) -> set:
-        """Block ids this train holds as not-yet-entered future reservations
-        (reserved-ahead, not occupied) — the set the contention-driven release
-        checks against the snapshot."""
-        bm = getattr(self.network, "block_manager", None)
-        if bm is None:
-            return set()
-        return set(bm.reserved_blocks_for_train(train_id))
-
-    def _contention_release_due(self, train_id: str) -> bool:
-        """True when a strictly-higher-priority run is blocked on a block this
-        run holds as a not-yet-entered future reservation.
-
-        design_new.md "Contention snapshot" (line 1544) — the contention-driven
-        release branch of Planning Kernel step 66aa. Reads the tick-start
-        `contention_snapshot` (highest-priority waiter per block) against this
-        run's reserved-ahead corridor.
-        """
-        if not self.contention_snapshot:
-            return False
-        my_pri = self._effective_priority_for(train_id)
-        highest = self.contention_snapshot.highest_waiter_by_block
-        for block_id in self._held_future_reservations(train_id):
-            entry = highest.get(block_id)
-            if (
-                entry is not None
-                and entry.train_id != train_id
-                and entry.effective_priority > my_pri
-            ):
-                return True
-        return False
-
     # ------------------------------------------------------------------
     # Route + RouteRun override helpers (per design_new.md
     # "RouteRun overrides" canonical home).
@@ -2238,6 +2195,10 @@ class RouteExecutor:
         if controller.ops.state == TrainState.OFF:
             return
 
+        # This tick's elapsed time, read by the braking-distance cap for its
+        # one-tick cushion (design_new.md "Braking-distance lock").
+        self._current_delta_seconds = float(delta_seconds)
+
         # ---------- c9e1: prepare the active speed-calibration leg -----------
         # Runs before the assigned-route lookup because a new leg has no assigned
         # route yet — this step is what creates and assigns it. A no-op for a
@@ -2424,24 +2385,6 @@ class RouteExecutor:
                 )
                 return
 
-        # Idle-hold release cooldown (design_new.md "Idle-hold maintenance and
-        # release"): while cooling down after a release, skip acquisition so the
-        # just-freed reservations/locks stay available for higher-priority runs.
-        if exec_state.release_cooldown_ticks > 0:
-            exec_state.release_cooldown_ticks -= 1
-            return
-
-        # Capture the live authority end before this tick's acquisition so the
-        # idle-hold maintenance below can tell whether the authority grew.
-        _pre_path = (
-            self.path_dispatcher.get_active_path(train_id)
-            if self.path_dispatcher is not None
-            else None
-        )
-        auth_end_before = (
-            _pre_path.get_authority_end_block_id() if _pre_path is not None else None
-        )
-
         # Per design_new.md (fix #14, part a): wrap authority acquisition in a
         # retry loop that accumulates previously-failed resolved_target values
         # into an `exclude` set and re-calls `_find_next_task_target(train_id,
@@ -2502,13 +2445,16 @@ class RouteExecutor:
                 # Terminal walk — no later task on the directed walk.
                 break
 
-        # Idle-hold maintenance + release (design_new.md "Idle-hold maintenance
-        # and release", step 66aa). A truncated best-effort hold that neither
-        # grew this tick nor has the train moving accrues idle ticks; at the
-        # threshold it latches the ordinary cancel and returns True (stop
-        # planning this tick — Action commits the release).
-        if self._maintain_idle_hold(train_id, controller, exec_state, auth_end_before):
-            return
+        # Stopped-run authority shrink (design_new.md "Stopped-run authority
+        # shrink", step 66aa): a run that reached a stand holding more than its
+        # braking-distance floor releases the surplus forward reservations and
+        # switch locks, so contention resolves without any priority-driven cancel
+        # — a lower-priority train that braked short of a contested block gives
+        # those blocks back by standing still, and the higher-priority train takes
+        # them. It releases forward resources only while stopped, so it never
+        # releases track ahead of a rolling train. Not a cancel: the path stays
+        # ACTIVE and `ato.engaged` is untouched.
+        self._run_stopped_authority_shrink(train_id, train, controller)
 
         if any_success:
             # A valid task was served this tick → the walk is not all-broken.
@@ -3154,23 +3100,17 @@ class RouteExecutor:
         waypoint is track the train passes through, not a place it stops, so
         re-arming one the authority already reaches would leave the train
         braking toward a terminal it is meant to run straight past. This step
-        arms the *next* task's target instead, which grows the authority
-        forward before the brake is needed.
+        arms the *next* task's target instead, so authority can grow forward
+        past the reached waypoint; the **Braking-distance lock** then bounds how
+        far it actually grows (there is no fixed block-count lookahead).
 
-        It applies only when both hold:
+        It applies when the armed task is a `waypoint` and the live authority
+        already reaches it — nothing is owed on the current target.
 
-        - the armed task is a `waypoint` and the live authority already reaches
-          it — nothing is owed on the current target;
-        - fewer than `WAYPOINT_LOOKAHEAD_BLOCKS` block resources remain ahead
-          of the train head — the train is close enough to the end of its
-          cleared track to need more.
-
-        Returns the projection to arm this tick: the lookahead one when both
-        hold and a next task exists, otherwise the one passed in. Everything
-        downstream — the `resolved_target` write, the `direction` write, the
-        extend retries, the idle-hold predicate — then uses the returned
-        projection's `walk_position`, which is what the doc means by the
-        lookahead index applying at all four use sites.
+        Returns the projection to arm this tick: the lookahead one when it
+        applies and a next task exists, otherwise the one passed in. Everything
+        downstream — the `resolved_target` write, the `direction` write, and the
+        extend retries — then uses the returned projection's `walk_position`.
         """
         if projection.task_kind != "waypoint":
             return projection
@@ -3188,14 +3128,6 @@ class RouteExecutor:
         )
         if not target_block or not path.reaches_target(target_block):
             return projection
-        blocks_ahead = sum(
-            1
-            for entry in path.resource_sequence
-            if entry.resource_type == "block"
-            and entry.sequence_index > path.current_resource_index
-        )
-        if blocks_ahead >= WAYPOINT_LOOKAHEAD_BLOCKS:
-            return projection
         ahead = self._find_next_task_target(
             train.train_id, after_walk_position=projection.walk_position
         )
@@ -3204,6 +3136,113 @@ class RouteExecutor:
             # the served waypoint armed and let the ordinary flow handle it.
             return projection
         return ahead
+
+    def _run_stopped_authority_shrink(
+        self, train_id: str, train: "Train", controller: TrainController
+    ) -> None:
+        """Pull a stopped run's forward authority back to its braking-distance cap
+        (design_new.md "Stopped-run authority shrink").
+
+        The cap is the same block the acquisition step targets — the braking
+        distance ahead of the head (at a stand, the block whose far seam clears
+        the safety margin, i.e. the floor). When the run holds more than that,
+        shrink to it and release the surplus through
+        `PathDispatcher.shrink_authority_to_cap(...)`, which keeps the path ACTIVE
+        (not a cancel). Only while `is_stopped()` is True, so it never releases
+        track ahead of a rolling train.
+        """
+        if self.path_dispatcher is None or not controller.is_stopped():
+            return
+        active_path_id = self._get_active_path_id(train_id)
+        if active_path_id is None:
+            return
+        armed = self.find_armed_task(train_id)
+        if armed is None or armed.stored_resolved_target is None:
+            return
+        target_block = armed.stored_resolved_target.requested_destination_block_id
+        target_dir = armed.stored_resolved_target.requested_destination_direction
+        if not target_block:
+            return
+        manual_override = self._manual_override_for(train_id)
+        cap_block = self._acquisition_cap_block(
+            train, controller, target_block, target_dir, manual_override, None
+        )
+        if cap_block is None:
+            # No cap (the braking distance covers the whole forward route): the
+            # run holds no surplus to release.
+            return
+        self.path_dispatcher.shrink_authority_to_cap(active_path_id, cap_block)
+
+    def _acquisition_cap_block(
+        self,
+        train: "Train",
+        controller: TrainController,
+        target_block: str,
+        target_dir: str,
+        manual_override: bool,
+        meet_ceiling_block: Optional[str],
+    ) -> Optional[str]:
+        """The acquisition cap block for step `66aa` — the NEARER of the
+        braking-distance lock and any meet ceiling (design_new.md
+        "Acquisition-cap rule" / "Braking-distance lock").
+
+        Both caps are measured along the forward route from the head toward
+        `target_block`. The braking-distance cap is the first block whose far
+        seam is at or beyond the train's braking distance, summing full
+        `Block.length_cm` from the head, floored at the next block ahead of the
+        head so a stopped train (braking distance `0`) still locks one whole
+        block. Returns `None` — the no-cap case — when neither cap is nearer
+        than the target: the braking distance covers the whole forward route and
+        there is no meet ceiling.
+        """
+        if self.path_dispatcher is None:
+            return meet_ceiling_block
+        head_block = controller._get_current_block_id()
+        if not head_block or head_block == target_block:
+            return meet_ceiling_block
+
+        candidates = self.path_dispatcher.find_walk_candidates(
+            head_block,
+            target_block,
+            train.train_id,
+            direction_constraint=target_dir,
+            manual_override=manual_override,
+        )
+        ordered = candidates[0].ordered_blocks if candidates else None
+        if not ordered or len(ordered) < 2:
+            return meet_ceiling_block
+
+        # Braking-distance cap index: the first block ahead of the head whose far
+        # seam is at or beyond the braking distance, measured from the head's
+        # current position (its remaining distance in the head block plus each
+        # forward block's full length). The scan starts at the next block ahead
+        # (index 1), so a stopped train always locks at least one whole block
+        # (the floor).
+        braking_cm = controller.braking_distance_cm(
+            getattr(self, "_current_delta_seconds", 0.0)
+        )
+        braking_index: Optional[int] = None
+        far_seam_cm = float(controller._get_remaining_distance_in_current_block())
+        for i in range(1, len(ordered)):
+            block = self.network.blocks.get(ordered[i]) if self.network else None
+            far_seam_cm += float(getattr(block, "length_cm", 0.0) or 0.0)
+            if far_seam_cm >= braking_cm:
+                braking_index = i
+                break
+
+        cap_index = braking_index
+        if meet_ceiling_block is not None and meet_ceiling_block in ordered:
+            meet_index = ordered.index(meet_ceiling_block)
+            cap_index = meet_index if cap_index is None else min(cap_index, meet_index)
+
+        if cap_index is None:
+            return None
+        cap_block = ordered[cap_index]
+        # A cap at (or past) the target is the no-cap case (design_new.md
+        # "Acquisition-cap rule", No-cap case): acquire to the target.
+        if cap_block == target_block:
+            return None
+        return cap_block
 
     def _authority_acquisition_step(
         self,
@@ -3284,20 +3323,29 @@ class RouteExecutor:
         # authority never completes, so the train holds at the ceiling. A train
         # outside a meet passes neither constraint and requests its route target
         # normally.
-        acquisition_cap_block_id: Optional[str] = None
         required_candidate_resource_keys: Optional[List[Tuple[str, str, str, str]]] = None
+        meet_ceiling_block: Optional[str] = None
         ceiling = self.meet_assignment.get(train.train_id)
         if ceiling is not None:
             if ceiling.candidate_resource_keys:
                 required_candidate_resource_keys = list(ceiling.candidate_resource_keys)
             if ceiling.block_id and ceiling.block_id != target_block:
-                acquisition_cap_block_id = ceiling.block_id
+                meet_ceiling_block = ceiling.block_id
 
         # design_new.md line 1208 / line 640: forward the assigned route's
         # operator override into the acquisition chain so an operator-initiated
         # route can serve `manual` resources. Route-level only (never a RouteRun
         # override); an automatic route leaves this False.
         manual_override = bool(getattr(route, "manual_override", False))
+
+        # Acquisition cap (design_new.md "Acquisition-cap rule"): the NEARER of
+        # the braking-distance lock (bound authority to the stopping distance)
+        # and any meet ceiling, both measured along the forward route from the
+        # head toward the target. `None` acquires to the target.
+        acquisition_cap_block_id = self._acquisition_cap_block(
+            train, controller, target_block, target_dir,
+            manual_override, meet_ceiling_block,
+        )
 
         success = False
         result = None
@@ -3551,108 +3599,6 @@ class RouteExecutor:
         # authority is acquired, an engaged ATO train (or a manual train with a
         # command) drives on its own through the Action driving rule, and the
         # reactive rule moves READY -> RUNNING_MOVING from the observed motion.
-        return True
-
-    def _maintain_idle_hold(
-        self,
-        train_id: str,
-        controller: TrainController,
-        exec_state: RouteExecutionState,
-        auth_end_before: Optional[str],
-    ) -> bool:
-        """Maintain `idle_hold_ticks` and release a stalled best-effort hold.
-
-        Per design_new.md "Idle-hold maintenance and release" (Planning Kernel
-        step 66aa). Returns True when it latched an idle-hold release (the caller
-        stops planning this tick; Action commits the cancel). A truncated
-        best-effort authority — one whose live walk does not reach the requested
-        target, per ``Path.reaches_target(...)`` — that neither grew this tick
-        (the authority end is unchanged from ``auth_end_before``) nor has the
-        train moving accrues `idle_hold_ticks`; at `IDLE_HOLD_RELEASE_TICKS` it
-        latches ``pending_path_cancel_request(initiator="idle_hold_release")``,
-        starts the cooldown, and returns True. Any growth, train movement, full
-        authority, or no live path resets `idle_hold_ticks` to 0.
-        """
-        path = (
-            self.path_dispatcher.get_active_path(train_id)
-            if self.path_dispatcher is not None
-            else None
-        )
-        # The requested target is route-owned: read it from the armed task's
-        # stored `resolved_target`, not from Path (design_new.md "Contention
-        # snapshot"; Path stores no requested-target field).
-        armed = self.find_armed_task(train_id)
-        requested_target = (
-            armed.stored_resolved_target.requested_destination_block_id
-            if armed is not None and armed.stored_resolved_target is not None
-            else None
-        )
-        # "Short of the target" is `reaches_target(...)`, never an equality test
-        # against the authority end (design_new.md "Path field schema"): an
-        # authority that legitimately runs past its target has reached it, and
-        # holding it back for an idle-hold release would be wrong.
-        if (
-            path is None
-            or requested_target is None
-            or path.reaches_target(requested_target)
-        ):
-            # Full authority, no live path, or no armed target → not a truncated
-            # best-effort hold.
-            exec_state.idle_hold_ticks = 0
-            return False
-        grew = (
-            auth_end_before is None
-            or path.get_authority_end_block_id() != auth_end_before
-        )
-        moving = not controller.is_stopped()
-        if grew or moving:
-            exec_state.idle_hold_ticks = 0
-            return False
-        # Contention-driven release (design_new.md "Contention snapshot", line
-        # 1544): a stalled best-effort hold whose reserved-ahead corridor blocks
-        # a strictly-higher-priority run is released NOW, not after the idle-hold
-        # timeout — the higher-priority run is waiting on resources this run is
-        # sitting on. Same latch path as the timeout release (Plan latches;
-        # Action commits the cancel once stopped), only sooner.
-        if self._contention_release_due(train_id):
-            controller.route_hooks.phase_latches.set_path_cancel_request(
-                ErrorRecord(
-                    f"best-effort authority at {path.get_authority_end_block_id()} "
-                    "released for a higher-priority run blocked on a held "
-                    "reservation",
-                    "contention_release",
-                ),
-                Kind.INFO,
-            )
-            exec_state.release_cooldown_ticks = IDLE_HOLD_COOLDOWN_TICKS
-            exec_state.idle_hold_ticks = 0
-            return True
-        # A meet-ceiling-governed hold is deliberate, not hoarding: it must not
-        # time out and release (design_new.md:1582 — "a meet ceiling capping
-        # this tick's acquisition ... must not time out and release"). Reset the
-        # no-progress count, but only after the contention-release safety floor
-        # above (design_new.md:1560), which still applies to a meet-held run.
-        if self.meet_assignment.get(train_id) is not None:
-            exec_state.idle_hold_ticks = 0
-            return False
-        exec_state.idle_hold_ticks += 1
-        if exec_state.idle_hold_ticks < IDLE_HOLD_RELEASE_TICKS:
-            return False
-        # Stalled past the budget: release the held truncated authority the
-        # ordinary system-replan way (Plan latches; Action commits the
-        # cancel once stopped) and start the cooldown so the freed resources
-        # stay available for higher-priority runs.
-        controller.route_hooks.phase_latches.set_path_cancel_request(
-            ErrorRecord(
-                f"best-effort authority idle for {exec_state.idle_hold_ticks} "
-                f"ticks at {path.get_authority_end_block_id()}; releasing so "
-                "higher-priority runs can use the held resources",
-                "idle_hold_release",
-            ),
-            Kind.INFO,
-        )
-        exec_state.release_cooldown_ticks = IDLE_HOLD_COOLDOWN_TICKS
-        exec_state.idle_hold_ticks = 0
         return True
 
     def _finish_or_defer_terminal_walk(self, train_id: str, controller) -> None:

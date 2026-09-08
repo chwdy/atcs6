@@ -965,6 +965,23 @@ class PathDispatcherForRouteExecutor(Protocol):
     # authority end (design_new.md "Stop-arrival procedure").
     def try_complete_active_path(self, train_id: str) -> "PathCompletionResult": ...
 
+    # Braking-distance cap (step `66aa`): RouteExecutor walks the best candidate's
+    # ordered blocks from the head toward the target to find the cap block
+    # (design_new.md "Braking-distance lock").
+    def find_walk_candidates(
+        self,
+        start_block_id: str,
+        end_block_id: str,
+        train_id: Optional[str] = None,
+        direction_constraint: Optional[str] = None,
+        manual_override: bool = False,
+    ) -> "List[Any]": ...
+
+    # Stopped-run authority shrink (step `66aa`): RouteExecutor pulls a stopped
+    # run's forward authority back to its braking-distance floor
+    # (design_new.md "Stopped-run authority shrink").
+    def shrink_authority_to_cap(self, path_id: str, cap_block_id: str) -> bool: ...
+
     def create_path(
         self,
         train_id: str = "",

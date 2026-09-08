@@ -44,11 +44,6 @@ class RuntimeConfig:
     track_end_safety_margin_cm: float = C.TRACK_END_SAFETY_MARGIN_CM
     platform_safety_margin_cm: float = C.PLATFORM_SAFETY_MARGIN_CM
     caution_speed_limit_kmh: float = C.CAUTION_SPEED_LIMIT_KMH
-    # --- Sim timing (audit Tier 5) ---
-    idle_hold_release_ticks: int = C.IDLE_HOLD_RELEASE_TICKS
-    idle_hold_cooldown_ticks: int = C.IDLE_HOLD_COOLDOWN_TICKS
-    # --- Route planning ---
-    waypoint_lookahead_blocks: int = C.WAYPOINT_LOOKAHEAD_BLOCKS
     # --- Route timing ---
     delay_class_on_time_tolerance_seconds: float = (
         C.DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS
@@ -102,23 +97,6 @@ _TARGETS: Dict[str, List[Tuple[str, str]]] = {
         # rebind it there too, or the ATC/ATO curve keeps the boot-time cap.
         ("train_controller.speed_curves", "CAUTION_SPEED_LIMIT_KMH"),
     ],
-    "idle_hold_release_ticks": [
-        ("constants", "IDLE_HOLD_RELEASE_TICKS"),
-        ("route_executor", "IDLE_HOLD_RELEASE_TICKS"),
-    ],
-    "idle_hold_cooldown_ticks": [
-        ("constants", "IDLE_HOLD_COOLDOWN_TICKS"),
-        ("route_executor", "IDLE_HOLD_COOLDOWN_TICKS"),
-    ],
-    # `route_executor` imports `WAYPOINT_LOOKAHEAD_BLOCKS` as its own module
-    # global and reads it in the step-`66aa` waypoint-lookahead arming
-    # (`_apply_waypoint_lookahead`), so a live PUT (design_new.md **Tunable
-    # fields**, `waypoint_lookahead_blocks`) must rebind that mirror too or the
-    # reader keeps the stale import binding.
-    "waypoint_lookahead_blocks": [
-        ("constants", "WAYPOINT_LOOKAHEAD_BLOCKS"),
-        ("route_executor", "WAYPOINT_LOOKAHEAD_BLOCKS"),
-    ],
     "delay_class_on_time_tolerance_seconds": [
         ("constants", "DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS"),
         ("route_executor", "DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS"),
@@ -140,9 +118,6 @@ _MIN_INCLUSIVE: Dict[str, float] = {
     "overspeed_warn_threshold_kmh": 0.0,
     "atc_signal_lookahead_blocks": 1,
     "lookahead_sample_count": 1,
-    "idle_hold_release_ticks": 1,
-    "idle_hold_cooldown_ticks": 0,
-    "waypoint_lookahead_blocks": 0,
     "notification_retention_rows": 1,
     "ato_speed_margin_kmh": 0.0,
     "lookahead_headroom": 0.0,

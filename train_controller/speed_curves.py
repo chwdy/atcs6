@@ -75,6 +75,47 @@ def calculate_max_safe_speed(
     return v_kmh
 
 
+def calculate_braking_distance(
+    speed_kmh: float,
+    deceleration_rate: float,
+    safety_margin_cm: float = TRACK_END_SAFETY_MARGIN_CM,
+) -> float:
+    """Forward distance needed to brake from ``speed_kmh`` to a stand.
+
+    The algebraic inverse of :func:`calculate_max_safe_speed`: it returns the
+    clearance a train needs to stop at ``deceleration_rate`` from ``speed_kmh``
+    with ``safety_margin_cm`` still intact — the stopping distance plus the
+    margin. Used by the braking-distance authority lock (design_new.md
+    "Braking-distance lock") to bound how far a powered run locks track.
+
+    Uses physics formula: d = v^2 / (2 * a), with v in cm/s and a in cm/s^2.
+
+    Args:
+        speed_kmh: Current speed in km/h.
+        deceleration_rate: Service braking rate in km/h per second.
+        safety_margin_cm: Buffer distance kept clear beyond the stop (default 25cm).
+
+    Returns:
+        Forward distance in cm — the stopping distance plus the safety margin.
+        At a stand (``speed_kmh <= 0``) the stopping distance is ``0`` and this
+        is just ``safety_margin_cm``, so a stopped train's floor still clears the
+        margin ahead (design_new.md "The floor keeps a stopped train able to
+        start").
+    """
+    if deceleration_rate <= 0:
+        # A train that cannot brake needs unbounded room; the caller floors it.
+        return float("inf")
+    if speed_kmh <= 0:
+        return safety_margin_cm
+
+    km_h_to_cm_s = get_speed_conversion_factor()
+    v_cm_s = speed_kmh * km_h_to_cm_s
+    decel_cm_s2 = deceleration_rate * km_h_to_cm_s
+
+    stopping_distance_cm = (v_cm_s * v_cm_s) / (2 * decel_cm_s2)
+    return stopping_distance_cm + safety_margin_cm
+
+
 def calculate_speed_for_target(
     distance_cm: float,
     target_speed_kmh: float,

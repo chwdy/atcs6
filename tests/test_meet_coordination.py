@@ -146,35 +146,6 @@ def test_contention_snapshot_one_edge_per_holder():
     assert snap.highest_waiter_by_block == {"B_HELD": ContentionWaiter("T1", 5)}
 
 
-def test_contention_release_due_for_higher_priority_waiter():
-    ex = _executor()
-    ex.contention_snapshot = ContentionSnapshot(
-        highest_waiter_by_block={"B_HELD": ContentionWaiter("T_HI", 8)}
-    )
-    ex._effective_priority_for = lambda tid: {"T_LO": 5, "T_HI": 8}.get(tid, 5)
-    ex._held_future_reservations = lambda tid: {"B_HELD"} if tid == "T_LO" else set()
-    assert ex._contention_release_due("T_LO") is True
-
-
-def test_contention_release_not_due_for_equal_priority():
-    ex = _executor()
-    ex.contention_snapshot = ContentionSnapshot(
-        highest_waiter_by_block={"B_HELD": ContentionWaiter("T_EQ", 5)}
-    )
-    ex._effective_priority_for = lambda tid: 5
-    ex._held_future_reservations = lambda tid: {"B_HELD"}
-    assert ex._contention_release_due("T_LO") is False
-
-
-def test_contention_release_not_due_when_block_not_held():
-    ex = _executor()
-    ex.contention_snapshot = ContentionSnapshot(
-        highest_waiter_by_block={"B_OTHER": ContentionWaiter("T_HI", 8)}
-    )
-    ex._effective_priority_for = lambda tid: {"T_LO": 5, "T_HI": 8}.get(tid, 5)
-    ex._held_future_reservations = lambda tid: {"B_HELD"}  # not B_OTHER
-    assert ex._contention_release_due("T_LO") is False
-
 
 # --- build() attaches the pinned candidate keys to the ceiling ------------
 

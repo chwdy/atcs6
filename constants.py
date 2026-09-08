@@ -39,17 +39,15 @@ CAUTION_SPEED_LIMIT_KMH: float = 40.0
 # `speed_cm_s * tick_delta * LOOKAHEAD_TICKS`.
 LOOKAHEAD_TICKS: int = 5
 
-# Idle-hold release tunables per design_new.md "Idle-hold maintenance and
-# release" (Planning Kernel step 66aa). A RouteRun holding a truncated
-# best-effort authority (authority_end_block_id != requested_destination_block_id)
-# that neither grows nor has the train moving for IDLE_HOLD_RELEASE_TICKS
-# consecutive Plan ticks releases that authority through the
-# pending_path_cancel_request latch so higher-priority runs can claim the held
-# reservations/locks, then skips acquisition for IDLE_HOLD_COOLDOWN_TICKS ticks so
-# the freed resources stay available. Counted in Plan ticks (not wall-clock
-# seconds), so the release is deterministic and testable in the journey harness.
-IDLE_HOLD_RELEASE_TICKS: int = 30
-IDLE_HOLD_COOLDOWN_TICKS: int = 20
+# Minimum speed the braking-distance authority lock sizes its reservation for
+# (design_new.md "Braking-distance lock"). A stopped or crawling train's real
+# braking distance is near zero, which would lock too little track for the
+# ATC/ATO curve to allow it to power up off a stand; flooring the lock speed
+# here reserves enough room to reach a usable start speed, after which the lock
+# ratchets forward with the train's real speed. A train already faster than this
+# locks its true braking distance. Kept comfortably above the low end of the
+# operational speed curve so a stopped train always has room to accelerate.
+BRAKING_LOCK_MIN_SPEED_KMH: float = 20.0
 
 # How many of the most recent events `NotificationCenter` keeps before dropping
 # the oldest (design_new.md "Core Runtime Loop", Runtime notifications ->
@@ -57,13 +55,6 @@ IDLE_HOLD_COOLDOWN_TICKS: int = 20
 # means events aged out rather than that the stream lost order. Tunable, so an
 # operator running a long session may raise it.
 NOTIFICATION_RETENTION_ROWS: int = 10000
-
-# How few block resources may remain ahead of the train head before Plan
-# arms the next target while the current `waypoint` is still unserved
-# (design_new.md "Route And RouteExecutor", Waypoint lookahead). Raising it
-# makes trains hold more track ahead of themselves and brake less at
-# waypoints; lowering it frees track for other trains.
-WAYPOINT_LOOKAHEAD_BLOCKS: int = 3
 
 # Delay-class on-time tolerance per design_new.md "RouteTaskRun schema"
 # (delay_class). A task's actual elapsed travel time is compared with its

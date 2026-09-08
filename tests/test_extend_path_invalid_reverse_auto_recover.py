@@ -49,7 +49,13 @@ class _FakeDispatcher:
 def _make_controller():
     latches = PhaseLatches()
     route_hooks = SimpleNamespace(phase_latches=latches)
-    controller = SimpleNamespace(route_hooks=route_hooks)
+    # `_get_current_block_id` returning None makes the braking-distance
+    # acquisition cap a no-op (no head block → no cap), so these extend-failure /
+    # cancellation unit tests exercise the acquisition step without a cap.
+    controller = SimpleNamespace(
+        route_hooks=route_hooks,
+        _get_current_block_id=lambda: None,
+    )
     return controller, latches
 
 

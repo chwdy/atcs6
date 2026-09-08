@@ -642,19 +642,13 @@ class ATOComputer:
                 and min_target_in_window <= STOPPED_SPEED_THRESHOLD_KMH
             ):
                 # Stopped with the usable authority ending inside the lookahead
-                # window: the operational curve collapses to ~0 just ahead, so
-                # there is no room to accelerate into. The distance-0 stopping
-                # zone above already covers a ~0 limit AT the head; this covers a
-                # healthy head limit (ceiling_at_zero) with the authority end a
-                # few cm ahead — the best-effort-truncation case. Powering up
-                # here only starts a creep-and-coast limit cycle: a P-notch lurch
-                # over the stop threshold, then a deadband coast back, netting no
-                # progress. That cycle jitters the handle and, because each lurch
-                # pushes speed back above STOPPED_SPEED_THRESHOLD_KMH, keeps
-                # is_stopped() flickering False so RouteExecutor's idle-hold
-                # release never accrues its stall budget. Holding keeps the train
-                # genuinely stopped, so the idle-hold release can recognize the
-                # stall and free the truncated authority.
+                # window and no room to accelerate into. Under the
+                # braking-distance lock a stopped train that has clean track
+                # ahead is given enough authority (the braking-distance floor) to
+                # power up and ratchet forward, so its window does not collapse to
+                # ~0; this fires only when the authority genuinely ends at the
+                # head with no usable forward room (a real stall / block), where
+                # holding keeps the train stopped instead of jittering.
                 target_handle = HandlePosition.N
                 c.ops.handle_reason = (
                     f"Hold: stopped, authority ends within {look_cm:.0f}cm "

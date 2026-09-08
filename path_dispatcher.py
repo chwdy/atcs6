@@ -2018,63 +2018,12 @@ class PathDispatcher:
 
         # Item-11 truncation-terminal rules (design_new.md line 1366): the cut
         # lands at the furthest legal terminal at or behind the last block entry
-        # before the taken block, preferring a holding point and honoring the
-        # reversal-trap and junction-fouling exclusions and the never-terminate-
-        # on-a-waypoint/run-target rule. Walk block candidates furthest-forward
-        # first; the first eligible one is the new authority end.
-        route_executor = self._get_route_executor()
-        excluded_terminal_targets = (
-            route_executor.waypoint_and_run_target_blocks(path.train_id)
-            if route_executor is not None
-            and hasattr(route_executor, "waypoint_and_run_target_blocks")
-            else set()
+        # before the taken block. The taken block is the first block that would
+        # be dropped just after that candidate terminal (the reversal-trap
+        # check's "next block"), so the scan starts one entry behind it.
+        keep_through = self._furthest_legal_terminal_index(
+            path, cut_index - 1, next_block_after_start=block_id
         )
-        # Terminal-preference (design_new.md line 1368 / item 11, Holding-point
-        # preference): walk block candidates furthest-forward first and prefer
-        # the furthest-forward *holding point* that is a legal terminal over any
-        # longer non-holding-point terminal, exactly as best-effort truncation
-        # does. The reversal-trap exclusion and the never-terminate-on-a-
-        # waypoint/run-target rule stay absolute; a holding point waives only the
-        # junction-fouling exclusion. When no holding point qualifies, keep the
-        # longest terminal that also clears the two-way-switch foul.
-        keep_through: Optional[int] = None
-        fallback_through: Optional[int] = None
-        # `next_block_after_terminal` is the first block that would be dropped
-        # just after the candidate terminal — the reversal-trap check's "next
-        # block". For the furthest candidate that is the taken block itself.
-        next_block_after_terminal: Optional[str] = block_id
-        # Candidate terminals are strictly AHEAD of the train's head resource
-        # (current_resource_index), never the head block itself: ending authority
-        # at the head is zero forward authority, which the doc treats as "the
-        # taken block is the first thing ahead of the train, so there is no
-        # shorter authority to hold" -> return False / full cancel
-        # (design_new.md:1375). So the scan stops one short of the head.
-        for index in range(cut_index - 1, path.current_resource_index, -1):
-            entry = path.resource_sequence[index]
-            if entry.resource_type != "block":
-                continue
-            terminal_block_id = entry.resource_id
-            trapped = next_block_after_terminal is not None and (
-                self._terminal_traps_reversing_occupant(
-                    next_block_id=next_block_after_terminal,
-                    terminal_block_id=terminal_block_id,
-                    train_id=path.train_id,
-                )
-            )
-            next_block_after_terminal = terminal_block_id
-            if trapped or terminal_block_id in excluded_terminal_targets:
-                continue
-            if self._block_is_holding_point(terminal_block_id):
-                # Furthest-forward qualifying holding point wins (it overrides
-                # the junction-fouling exclusion).
-                keep_through = index
-                break
-            if fallback_through is None and not self._resource_seq_terminal_fouls_switch(
-                path, index, terminal_block_id
-            ):
-                fallback_through = index
-        if keep_through is None:
-            keep_through = fallback_through
         if keep_through is None:
             # No legal terminal remains at or behind the cut (the taken block is
             # the first thing ahead, or every candidate is barred by an item-11
@@ -2129,6 +2078,128 @@ class PathDispatcher:
                     "released_switch_ids": list(dropped_switches),
                 },
             )
+        return True
+
+    def _furthest_legal_terminal_index(
+        self, path, start_index: int, next_block_after_start: Optional[str]
+    ) -> Optional[int]:
+        """The furthest-forward `resource_sequence` block index at or behind
+        `start_index` that is a legal authority terminal (design_new.md item-11
+        truncation-terminal rules, line 1366).
+
+        Walks block candidates furthest-forward first and prefers the
+        furthest-forward *holding point* that is a legal terminal over any longer
+        non-holding-point terminal. The reversal-trap exclusion and the
+        never-terminate-on-a-waypoint/run-target rule stay absolute; a holding
+        point waives only the junction-fouling exclusion. When no holding point
+        qualifies, keeps the longest terminal that also clears the two-way-switch
+        foul. `next_block_after_start` is the first block that would be dropped
+        just after `start_index` (the reversal-trap check's "next block").
+
+        Candidate terminals are strictly ahead of the train's head resource
+        (`current_resource_index`); the scan stops one short of the head, so
+        `None` means no legal terminal remains ahead of the train.
+        """
+        route_executor = self._get_route_executor()
+        excluded_terminal_targets = (
+            route_executor.waypoint_and_run_target_blocks(path.train_id)
+            if route_executor is not None
+            and hasattr(route_executor, "waypoint_and_run_target_blocks")
+            else set()
+        )
+        keep_through: Optional[int] = None
+        fallback_through: Optional[int] = None
+        next_block_after_terminal: Optional[str] = next_block_after_start
+        for index in range(start_index, path.current_resource_index, -1):
+            entry = path.resource_sequence[index]
+            if entry.resource_type != "block":
+                continue
+            terminal_block_id = entry.resource_id
+            trapped = next_block_after_terminal is not None and (
+                self._terminal_traps_reversing_occupant(
+                    next_block_id=next_block_after_terminal,
+                    terminal_block_id=terminal_block_id,
+                    train_id=path.train_id,
+                )
+            )
+            next_block_after_terminal = terminal_block_id
+            if trapped or terminal_block_id in excluded_terminal_targets:
+                continue
+            if self._block_is_holding_point(terminal_block_id):
+                keep_through = index
+                break
+            if fallback_through is None and not self._resource_seq_terminal_fouls_switch(
+                path, index, terminal_block_id
+            ):
+                fallback_through = index
+        return keep_through if keep_through is not None else fallback_through
+
+    def shrink_authority_to_cap(self, path_id: str, cap_block_id: str) -> bool:
+        """Stopped-run authority shrink (design_new.md "Stopped-run authority
+        shrink"): pull a stopped run's forward authority back toward its
+        braking-distance floor so a train that braked to a stand does not keep
+        track it locked at speed.
+
+        Finds the furthest legal authority terminal within the live
+        `resource_sequence` at or behind `cap_block_id` (the same item-11 terminal
+        rules acquisition uses). When that terminal is nearer than the current
+        authority end, shortens `resource_sequence` to it and releases every block
+        reservation and switch lock past it through
+        `ResourceCoordinator.release_authority_tail(...)`. The path keeps its
+        `path_id` and stays `ACTIVE` — this is not a cancellation and does not
+        touch `ato.engaged`.
+
+        Returns True when it shortened the authority, False on the no-op fallback
+        (the cap is not on the live path, the authority already ends at or behind
+        the cap, or no legal terminal nearer than the current end exists). A
+        stopped train holding slightly more than the floor is safe, and there is
+        no cancel.
+        """
+        path = self.paths.get(path_id)
+        if path is None or path.status != PathStatus.ACTIVE:
+            return False
+
+        cap_index: Optional[int] = None
+        for index, entry in enumerate(path.resource_sequence):
+            if entry.resource_type == "block" and entry.resource_id == cap_block_id:
+                cap_index = index
+                break
+        if cap_index is None:
+            # The cap is not on the live path (e.g. beyond the current authority):
+            # there is nothing to pull back.
+            return False
+        # Already ending at or behind the cap block → nothing to release.
+        if cap_index >= len(path.resource_sequence) - 1:
+            return False
+
+        # The cap block itself is the furthest terminal candidate; the first
+        # dropped block after it is the reversal-trap "next block".
+        next_block_after_cap: Optional[str] = None
+        for entry in path.resource_sequence[cap_index + 1 :]:
+            if entry.resource_type == "block":
+                next_block_after_cap = entry.resource_id
+                break
+        keep_through = self._furthest_legal_terminal_index(
+            path, cap_index, next_block_after_start=next_block_after_cap
+        )
+        if keep_through is None or keep_through >= len(path.resource_sequence) - 1:
+            # No legal terminal nearer than the current end: keep the authority
+            # unchanged for the tick (no cancel).
+            return False
+
+        dropped = path.resource_sequence[keep_through + 1 :]
+        dropped_blocks = self._blocks_still_reserved_by(
+            [e.resource_id for e in dropped if e.resource_type == "block"], path_id
+        )
+        dropped_switches = [
+            e.resource_id for e in dropped if e.resource_type == "switch"
+        ]
+        coordinator = getattr(self.network, "resource_coordinator", None)
+        if coordinator is not None:
+            coordinator.release_authority_tail(
+                dropped_blocks, dropped_switches, path_id
+            )
+        path.resource_sequence = path.resource_sequence[: keep_through + 1]
         return True
 
     # ========================================================================

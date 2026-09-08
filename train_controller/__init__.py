@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 
 from constants import (
+    BRAKING_LOCK_MIN_SPEED_KMH,
     CAUTION_SPEED_LIMIT_KMH,
     PLATFORM_SAFETY_MARGIN_CM,
     STOPPED_SPEED_THRESHOLD_KMH,
@@ -442,6 +443,36 @@ class TrainController:
         from speed_profile import resolve_memoized_default_profile
 
         return resolve_memoized_default_profile(self, train)
+
+    def braking_distance_cm(self, delta_seconds: float = 0.0) -> float:
+        """Forward distance the braking-distance authority lock reserves ahead of
+        this train (design_new.md "Braking-distance lock").
+
+        It is the stopping distance at the service rate
+        (`SpeedProfile.deceleration_rate`) with the armed target's safety margin
+        intact (`atc.effective_safety_margin()`), computed by
+        `speed_curves.calculate_braking_distance(...)`, plus one tick of travel at
+        the current speed as a cushion for tick and detector-confirmation lag.
+
+        The stopping-distance speed is floored at `BRAKING_LOCK_MIN_SPEED_KMH`, so
+        a stopped or crawling train still locks enough track to reach a usable
+        start speed — the room the ATC/ATO curve needs to power up off a stand,
+        after which the lock ratchets forward with the real speed. A train
+        already faster than the floor locks its true braking distance."""
+        from train_controller.speed_curves import calculate_braking_distance
+
+        speed_kmh = float(self.physics_sync.current_speed_kmh)
+        profile = self._get_speed_profile()
+        decel = float(getattr(profile, "deceleration_rate", 0.0) or 0.0)
+        margin = self.atc.effective_safety_margin()
+        lock_speed_kmh = max(speed_kmh, BRAKING_LOCK_MIN_SPEED_KMH)
+        distance = calculate_braking_distance(lock_speed_kmh, decel, margin)
+        cushion = (
+            max(0.0, speed_kmh)
+            * get_speed_conversion_factor()
+            * max(0.0, float(delta_seconds))
+        )
+        return distance + cushion
 
     # -------------------------------------------------------------------------
     # Derived properties (per design_new.md)
