@@ -201,6 +201,28 @@ class PathDispatcher:
             return set()
         return set(getattr(span, "occupied_blocks", None) or [])
 
+    def _block_available_for_train(self, block_id: str, train_id: str) -> bool:
+        """True when `block_id` could be acquired by `train_id` right now — FREE,
+        or already RESERVED / OCCUPIED by this same train (re-entry).
+
+        Read-only mirror of `BlockManager.is_block_available` over
+        `self.network.blocks` (validate_path reads block state the same way). Used
+        to tell a transient braking cap that will grow past a block from a cap the
+        train will park at because the block beyond is blocked.
+        """
+        block = self.network.blocks.get(block_id)
+        if block is None or getattr(block, "disabled", False):
+            return False
+        if block.state == BlockState.FREE:
+            return True
+        return bool(
+            train_id
+            and (
+                getattr(block, "occupied_by", None) == train_id
+                or getattr(block, "reserved_for_train", None) == train_id
+            )
+        )
+
     def _head_tile_for_train(self, train):
         """Train head tile via its controller's cab-derived span, or None
         (design_new.md: head/tail live on the controller, not on Train)."""
@@ -1193,6 +1215,35 @@ class PathDispatcher:
                 # the cap rather than failing to acquire.
                 segment = capped_segment
                 ordered_walk = capped_walk
+                # Item-11 truncation-terminal rules on a cap terminal the train
+                # will PARK at (design_new.md item 11). A braking cap that lands on
+                # a junction-fouling or reversal-trap block is fine while the train
+                # rolls through it, but not if the train must stop there because
+                # the block beyond is blocked. When the next block cannot be
+                # acquired, pull the terminal back to the furthest legal one.
+                next_after_cap = (
+                    cand.walk.blocks[len(segment.blocks)]
+                    if len(cand.walk.blocks) > len(segment.blocks)
+                    else None
+                )
+                if next_after_cap is not None and not self._block_available_for_train(
+                    next_after_cap, train_id
+                ):
+                    legal_len = self._furthest_legal_cap_terminal_len(
+                        segment, train_id, next_block_after_cap=next_after_cap
+                    )
+                    if legal_len <= 0:
+                        last_reason = (
+                            "no legal terminal at or behind the acquisition cap"
+                        )
+                        continue
+                    if legal_len < len(segment.blocks):
+                        segment, cutoff_tiles = self._make_prefix_segment(
+                            segment, legal_len
+                        )
+                        ordered_walk = self._slice_ordered_walk(
+                            ordered_walk, cutoff_tiles
+                        )
 
             # Covered-span invariant for a reverse move (design_new.md
             # "`create_path()` flow", item 9, line 1240): a stored reverse
@@ -1670,6 +1721,37 @@ class PathDispatcher:
             if cap_status == "capped":
                 segment = capped_segment
                 ordered_walk = capped_walk
+                # Item-11 truncation-terminal rules on a cap terminal the train
+                # will PARK at (design_new.md item 11): a braking cap must not
+                # append authority ending on a junction-fouling or reversal-trap
+                # block when the block beyond is blocked (the train can't grow past
+                # it). When the next block cannot be acquired, pull the terminal
+                # back to the furthest legal one; when that leaves only the current
+                # authority end, the extend appends nothing and the train holds.
+                next_after_cap = (
+                    cand.walk.blocks[len(segment.blocks)]
+                    if len(cand.walk.blocks) > len(segment.blocks)
+                    else None
+                )
+                if next_after_cap is not None and not self._block_available_for_train(
+                    next_after_cap, train_id
+                ):
+                    legal_len = self._furthest_legal_cap_terminal_len(
+                        segment, train_id, next_block_after_cap=next_after_cap
+                    )
+                    if legal_len <= 1:
+                        had_occupancy_blocker = True
+                        last_reason = (
+                            "no legal terminal past the authority end at the cap"
+                        )
+                        continue
+                    if legal_len < len(segment.blocks):
+                        segment, cutoff_tiles = self._make_prefix_segment(
+                            segment, legal_len
+                        )
+                        ordered_walk = self._slice_ordered_walk(
+                            ordered_walk, cutoff_tiles
+                        )
 
             # Validate (pretend the extension uses the same path_id).
             validation = self.validate_path(
@@ -2828,6 +2910,58 @@ class PathDispatcher:
             truncated,
             self._slice_ordered_walk(ordered_walk, cutoff_tiles),
         )
+
+    def _furthest_legal_cap_terminal_len(
+        self,
+        segment: PathSegment,
+        train_id: str,
+        next_block_after_cap: Optional[str] = None,
+    ) -> int:
+        """The furthest-forward prefix length of a cap-shortened `segment` whose
+        terminal is a legal authority terminal under the item-11 truncation-terminal
+        rules (design_new.md "`create_path()` flow", item 11): the furthest holding
+        point wins; otherwise the longest terminal that clears the reversal-trap
+        and junction-fouling exclusions. Returns `0` when no legal terminal exists.
+
+        Pure — it applies the same exclusions as `_best_effort_truncate` without
+        acquiring; the caller slices the segment to the returned length. `segment`
+        is already sliced to the cap block, so the scan starts at the cap terminal;
+        `next_block_after_cap` is the first block the cap dropped, used only for the
+        reversal-trap check at the cap terminal itself. Callers invoke this only
+        when the train would park at the cap (the block beyond it is not
+        acquirable); a cap the train will grow past keeps its terminal untouched.
+        """
+        route_executor = self._get_route_executor()
+        excluded_terminal_targets = (
+            route_executor.waypoint_and_run_target_blocks(train_id)
+            if route_executor is not None
+            and hasattr(route_executor, "waypoint_and_run_target_blocks")
+            else set()
+        )
+        fallback_block_count = 0
+        for prefix_block_count in range(len(segment.blocks), 1, -1):
+            terminal_block_id = segment.blocks[prefix_block_count - 1]
+            if prefix_block_count < len(segment.blocks):
+                next_block_id: Optional[str] = segment.blocks[prefix_block_count]
+            else:
+                next_block_id = next_block_after_cap
+            if next_block_id is not None and self._terminal_traps_reversing_occupant(
+                next_block_id=next_block_id,
+                terminal_block_id=terminal_block_id,
+                train_id=train_id,
+            ):
+                continue
+            if terminal_block_id in excluded_terminal_targets:
+                continue
+            # A holding point overrides the junction-fouling back-off (item 11,
+            # Holding-point preference); the furthest-forward one wins.
+            if self._block_is_holding_point(terminal_block_id):
+                return prefix_block_count
+            if self._terminal_fouls_two_way_switch_block(segment, terminal_block_id):
+                continue
+            if fallback_block_count == 0:
+                fallback_block_count = prefix_block_count
+        return fallback_block_count
 
     def _best_effort_truncate(
         self,
