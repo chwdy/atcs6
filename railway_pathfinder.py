@@ -1068,10 +1068,26 @@ class RailwayPathfinder:
         # ``Train.max_slope`` "unspecified" sentinel), or a step has no
         # classified block direction (cannot tell uphill from downhill).
         if train_max_slope_percent is not None and train_max_slope_percent > 0:
+            # The block the walk starts from is one the train already occupies (its
+            # current block or its live authority end), so it is not "climbed
+            # into" — its grade must not exclude the walk. It is also the one block
+            # whose traversal frame is inferred rather than derived from a real
+            # predecessor edge (a mid-route start has no entry edge, so its
+            # `block_direction` can mis-sign the grade on a non-straight block).
+            # Both reasons say the same thing: skip the start block; gate only the
+            # blocks ahead that the train would move into.
+            start_block_id: Optional[str] = None
+            for step in candidate.ordered_walk or ():
+                if step.resource_type == "block":
+                    start_block_id = step.block_id or step.resource_id
+                    break
             for step in candidate.ordered_walk or ():
                 if step.resource_type != "block" or step.block_direction is None:
                     continue
-                block = self.network.blocks.get(step.block_id or step.resource_id)
+                step_block_id = step.block_id or step.resource_id
+                if step_block_id == start_block_id:
+                    continue
+                block = self.network.blocks.get(step_block_id)
                 grade = getattr(block, "grade_percent", None) if block else None
                 if grade is None:
                     continue
