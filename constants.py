@@ -39,15 +39,18 @@ CAUTION_SPEED_LIMIT_KMH: float = 40.0
 # `speed_cm_s * tick_delta * LOOKAHEAD_TICKS`.
 LOOKAHEAD_TICKS: int = 5
 
-# Minimum speed the braking-distance authority lock sizes its reservation for
-# (design_new.md "Braking-distance lock"). A stopped or crawling train's real
-# braking distance is near zero, which would lock too little track for the
-# ATC/ATO curve to allow it to power up off a stand; flooring the lock speed
-# here reserves enough room to reach a usable start speed, after which the lock
-# ratchets forward with the train's real speed. A train already faster than this
-# locks its true braking distance. Kept comfortably above the low end of the
-# operational speed curve so a stopped train always has room to accelerate.
-BRAKING_LOCK_MIN_SPEED_KMH: float = 20.0
+# The braking-distance authority lock sizes its reservation for a speed a little
+# above the train's current speed, so there is always enough locked track ahead
+# for the ATC/ATO curve to accelerate into (design_new.md "Braking-distance
+# lock"). The lock speed is `current_speed + BRAKING_LOCK_ACCEL_HEADROOM_KMH`,
+# capped at `atc_limit + BRAKING_LOCK_LIMIT_MARGIN_KMH` so a train at line speed
+# reserves only its real braking distance (plus a small margin so the posted
+# limit, not the reservation, is what holds it at top speed), and floored at the
+# current speed so an overspeeding train still reserves its full stopping
+# distance. The one-block floor in the cap-block walk keeps a stopped train able
+# to start when even this rounds under a single block.
+BRAKING_LOCK_ACCEL_HEADROOM_KMH: float = 20.0
+BRAKING_LOCK_LIMIT_MARGIN_KMH: float = 5.0
 
 # How many of the most recent events `NotificationCenter` keeps before dropping
 # the oldest (design_new.md "Core Runtime Loop", Runtime notifications ->

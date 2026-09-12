@@ -48,7 +48,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 
 from constants import (
-    BRAKING_LOCK_MIN_SPEED_KMH,
+    BRAKING_LOCK_ACCEL_HEADROOM_KMH,
+    BRAKING_LOCK_LIMIT_MARGIN_KMH,
     CAUTION_SPEED_LIMIT_KMH,
     PLATFORM_SAFETY_MARGIN_CM,
     STOPPED_SPEED_THRESHOLD_KMH,
@@ -454,18 +455,32 @@ class TrainController:
         `speed_curves.calculate_braking_distance(...)`, plus one tick of travel at
         the current speed as a cushion for tick and detector-confirmation lag.
 
-        The stopping-distance speed is floored at `BRAKING_LOCK_MIN_SPEED_KMH`, so
-        a stopped or crawling train still locks enough track to reach a usable
-        start speed — the room the ATC/ATO curve needs to power up off a stand,
-        after which the lock ratchets forward with the real speed. A train
-        already faster than the floor locks its true braking distance."""
+        The stopping-distance speed is not the raw current speed but a little
+        above it, so the lock always leaves room for the ATC/ATO curve to
+        accelerate into: `current_speed + BRAKING_LOCK_ACCEL_HEADROOM_KMH`, capped
+        at `atc.speed_limit + BRAKING_LOCK_LIMIT_MARGIN_KMH` so a train at line
+        speed reserves only its real braking distance (the small margin keeps the
+        posted limit, not the reservation, the thing holding it at top speed), and
+        floored at the current speed so an overspeeding train still reserves its
+        full stopping distance. From a stand the ATC limit is low (short
+        clearance), so the lock starts small and ratchets forward as the train
+        rolls; the one-block floor in the cap-block walk covers the case where
+        even this rounds under a single block (design_new.md "Braking-distance
+        lock")."""
         from train_controller.speed_curves import calculate_braking_distance
 
         speed_kmh = float(self.physics_sync.current_speed_kmh)
         profile = self._get_speed_profile()
         decel = float(getattr(profile, "deceleration_rate", 0.0) or 0.0)
         margin = self.atc.effective_safety_margin()
-        lock_speed_kmh = max(speed_kmh, BRAKING_LOCK_MIN_SPEED_KMH)
+        atc_limit_kmh = float(self.atc.speed_limit)
+        lock_speed_kmh = max(
+            speed_kmh,
+            min(
+                speed_kmh + BRAKING_LOCK_ACCEL_HEADROOM_KMH,
+                atc_limit_kmh + BRAKING_LOCK_LIMIT_MARGIN_KMH,
+            ),
+        )
         distance = calculate_braking_distance(lock_speed_kmh, decel, margin)
         cushion = (
             max(0.0, speed_kmh)
