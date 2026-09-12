@@ -63,10 +63,14 @@ from ..triggers import (
 )
 
 
-# East Terminal target blocks are resolved at journey-build time would make
-# this hard to swap scenes; instead, we resolve dynamically inside the
-# assertion via the dispatcher's authority_end_block_id (E2) and inside the
-# `head_in` set for the stop check (E15).
+# East Terminal target blocks are resolved dynamically (not pinned at
+# journey-build time, which would make scenes hard to swap): the `head_in` set
+# for the stop check (E15) resolves them from the current network. E2 no longer
+# pins the authority end to the terminal — under the braking-distance lock the
+# authority acquired from a stand is capped to the stopping distance (the first
+# block ahead), not the full route target, so E2 asserts only that forward
+# authority beyond the covered span was acquired and leaves arrival at the East
+# Terminal to E14/E15.
 EAST_TERMINAL_TILES = [(9, 3), (9, 4)]
 
 
@@ -91,13 +95,24 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
                 ids.add(bid)
         return ids
 
-    def assert_active_path_target_is_east_terminal():
+    def assert_active_path_authority_acquired_forward():
+        """Under the braking-distance lock the authority acquired from a stand is
+        capped to the stopping distance — the first block ahead — not the full
+        route target (design_new.md "Braking-distance lock"), and the requested
+        target is route-owned, not stored on `Path`. So assert only that forward
+        authority exists: an active path whose authority end is a block the train
+        does not yet occupy (the covered-span invariant, design_new.md item 9,
+        line 1240). Arrival at the East Terminal is verified by E14/E15.
+        """
         def check(s):
-            terminal_ids = _expected_terminal_blocks(s)
             assert s.active_path_id is not None, "no active path"
-            assert s.active_path_authority_end_block_id in terminal_ids, (
-                f"path authority_end={s.active_path_authority_end_block_id!r} "
-                f"not in East Terminal blocks {sorted(terminal_ids)}"
+            end = s.active_path_authority_end_block_id
+            assert end is not None, "active path has no authority end"
+            occupied = set(s.occupied_blocks or [])
+            assert end not in occupied, (
+                f"authority_end={end!r} is within the train's covered span "
+                f"{sorted(occupied)}; expected forward authority beyond the span "
+                f"(design_new.md item 9, line 1240)"
             )
 
         return check
@@ -170,7 +185,7 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
                 # no depart handshake (design_new.md "ato.engaged").
                 assert_state(TrainState.READY),
                 assert_has_active_path(),
-                assert_active_path_target_is_east_terminal(),
+                assert_active_path_authority_acquired_forward(),
                 assert_atc_reason_not_in(
                     [
                         AtcLimitReasonCode.NO_AUTHORITY,
