@@ -184,6 +184,23 @@ class PathDispatcher:
             return controllers.get(train_id)
         return None
 
+    def _train_covered_blocks(self, train_id: str) -> Set[str]:
+        """The set of blocks the train currently occupies — its covered span.
+
+        Enforces the covered-span invariant (design_new.md "`create_path()`
+        flow", item 9, line 1240): a stored authority must reach at least one
+        block outside this set. Returns an empty set when the span is
+        unavailable, which disables the exclusion rather than blocking
+        acquisition.
+        """
+        ctrl = self._get_controller(train_id)
+        if ctrl is None:
+            return set()
+        span = ctrl.get_current_span()
+        if span is None:
+            return set()
+        return set(getattr(span, "occupied_blocks", None) or [])
+
     def _head_tile_for_train(self, train):
         """Train head tile via its controller's cab-derived span, or None
         (design_new.md: head/tail live on the controller, not on Train)."""
@@ -1147,6 +1164,7 @@ class PathDispatcher:
         last_failed_resource_id: Optional[str] = None
         last_reason: str = ""
         had_structural_failure = False
+        covered_blocks_create = self._train_covered_blocks(train_id)
         for cand in candidates:
             # `segment` is the flat walk used by the structural/acquisition
             # helpers; `cand.ordered_walk` is the per-step geometry threaded
@@ -1175,6 +1193,24 @@ class PathDispatcher:
                 # the cap rather than failing to acquire.
                 segment = capped_segment
                 ordered_walk = capped_walk
+
+            # Covered-span invariant for a reverse move (design_new.md
+            # "`create_path()` flow", item 9, line 1240): a stored reverse
+            # authority must reach at least one block the train does not occupy.
+            # When a reverse candidate is entirely within the covered span — the
+            # degenerate self-reversal onto a tail block the train already sits on,
+            # with no track beyond it — skip it so the request is a total
+            # acquisition failure (item 11) rather than a one-tick body-internal
+            # path whose reframed head lands off its own authority. A forward move
+            # is not excluded here: its head stays covered by the stored path, so
+            # an overshot covered-stop authority within the span is legitimate.
+            if (
+                requested_destination_direction == "reverse"
+                and covered_blocks_create
+                and not (set(segment.blocks) - covered_blocks_create)
+            ):
+                last_reason = "reverse candidate stays within the train's covered span"
+                continue
 
             validation = self.validate_path(
                 segment, path_id, train_id, manual_override=manual_override
@@ -2828,6 +2864,16 @@ class PathDispatcher:
             and hasattr(route_executor, "waypoint_and_run_target_blocks")
             else set()
         )
+        # Covered-span invariant (design_new.md "`create_path()` flow", item 9,
+        # line 1240): every stored live authority must cross at least one
+        # resource boundary beyond the train's covered span — its blocks must
+        # include at least one the train does not currently occupy. A prefix
+        # whose blocks are all within the covered span (the degenerate reversal
+        # onto a tail block the train already sits on) is not a storable
+        # authority; excluding it here makes such a request a total acquisition
+        # failure (item 11) instead of a one-tick body-internal path. An empty
+        # cover (span unavailable) excludes nothing.
+        covered_blocks = self._train_covered_blocks(train_id)
         # Terminal-preference (design_new.md "`create_path()` flow", item 11,
         # Holding-point preference): scan the acquirable prefix furthest-forward
         # first. The furthest-forward *holding point* that is a legal terminal
@@ -2847,6 +2893,18 @@ class PathDispatcher:
         fallback_block_count: Optional[int] = None
         for prefix_block_count in range(start, 1, -1):
             terminal_block_id = segment.blocks[prefix_block_count - 1]
+            # Covered-span exclusion for a reverse move (design_new.md item 9,
+            # line 1240): skip any reverse prefix whose blocks are all within the
+            # train's covered span, so a stored reverse authority always reaches
+            # at least one block the train does not occupy. This stays absolute for
+            # every terminal, holding points included. A forward prefix is not
+            # excluded (its head stays covered — an overshot covered stop).
+            if (
+                direction == "reverse"
+                and covered_blocks
+                and not (set(segment.blocks[:prefix_block_count]) - covered_blocks)
+            ):
+                continue
             # When `start` was clamped up to the 2-block floor on a short
             # segment, `prefix_block_count` can equal the block count; nothing
             # is dropped ahead, so the reversal-trap / junction-fouling
