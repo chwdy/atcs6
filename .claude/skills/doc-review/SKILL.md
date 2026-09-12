@@ -31,7 +31,7 @@ This is doc-vs-doc. Doc-vs-code is the `gap-analysis` skill.
 - A low-severity ambiguity the engineer could resolve with one throwaway question to the author is a
   LOW. Any blocking cross-component contract that needs a question is at least a MEDIUM.
 
-## The six tenets the doc must express
+## The seven tenets the doc must express
 
 Flag prose that drifts from these even where the local rule is internally consistent.
 
@@ -51,6 +51,13 @@ Flag prose that drifts from these even where the local rule is internally consis
 6. **Similar steps share one mechanism.** Dwell is a general task step, not a special branch of route
    completion. EB recovery is ordinary cancellation recovery. Parallel-but-different definitions of the
    same concept are findings.
+7. **A mechanism carries its preconditions, and every reuse checks them.** A rule defined for one
+   situation — a terminal chosen for a train that *stops* there, a filter for a block the train *climbs
+   into* — depends on a condition that makes it correct (its *holds-when*). Where the same rule is
+   applied to a second situation, the doc must show that situation meets the holds-when, or explicitly
+   waive it. A blanket "X also applies here" with no precondition is a smell: the reuse silently inherits
+   an assumption the new situation may break. This is the one tenet a self-consistent doc can violate
+   while every individual sentence still reads fine.
 
 ## Severity
 
@@ -65,11 +72,11 @@ Flag prose that drifts from these even where the local rule is internally consis
 - **LOW** — non-blocking ambiguity, weak cross-reference, dead branch, vague failure text.
 
 Categories: `H-CONTRADICTION`, `H-SIGNATURE`, `H-API-CHAIN`, `H-GUARD`, `H-DEAD-BRANCH`,
-`H-UNREACHABLE-STATE`, `H-PHASE-BOUNDARY`, `H-SPECIAL-CASE`, `M-PAYLOAD`, `M-OWNER`,
+`H-UNREACHABLE-STATE`, `H-PHASE-BOUNDARY`, `H-SPECIAL-CASE`, `H-PRECONDITION`, `M-PAYLOAD`, `M-OWNER`,
 `M-CHAIN-CONTRACT`, `M-STATE-TRIGGER`, `M-BYPASS-CONSISTENCY`, `M-TERMINOLOGY`, `M-RATIONALE`,
 `M-EXTERNAL-DEPENDENCY`, `M-CANONICAL-HOME`, `M-COUPLING`, `M-FLAG-HANDOFF`, `M-GENERALITY`,
-`L-VACUOUS`, `L-UNRESOLVED-CONSTRAINT`, `L-DEAD-END`, `L-STALE-CONTEXT`, `L-CROSSREF`. Pick the best
-fit; don't force one.
+`M-PRECONDITION`, `M-OPAQUE-REF`, `L-VACUOUS`, `L-UNRESOLVED-CONSTRAINT`, `L-DEAD-END`,
+`L-STALE-CONTEXT`, `L-CROSSREF`. Pick the best fit; don't force one.
 
 ---
 
@@ -158,6 +165,26 @@ have already verified, with an explicit note about which sections went uncovered
 review evaporate; a report that says "here are four confirmed contradictions, and I never reached the
 Route section" is useful, and losing it because you were mid-grep is not. The same applies to readers:
 tell each one that if it runs out of room, it must return verified findings rather than nothing.
+
+**Checkpoint each reader the moment it returns.** As soon as a reader hands back its findings, append them
+to `.claude/scratch/review-<section>.md` — one file per partition, named for the sections that reader owned
+— *before* you dispatch, consolidate, or do anything else. Open each file with a header line naming the
+sections and line ranges that reader covered, so a resume can tell what is already done even if the doc was
+re-partitioned since. This is crash insurance: a sleep, an API error, or a context reset mid-sweep otherwise
+loses every reader that already came back. `.claude/scratch/` is gitignored, so these files never reach a
+commit. They are intermediate only — the final report still goes inline in the conversation per step 6,
+never assembled from a file.
+
+## 3a. Resuming an interrupted fan-out.
+
+If a sweep dies partway and the user says **"resume review"**, do not start the review over. Re-run
+`doc_map.py` with the same `--readers` count to get the current partition, read every
+`.claude/scratch/review-*.md` already on disk, and compare the sections those files claim to cover against
+the partition. Re-dispatch readers for **only** the sections with no checkpoint yet; carry the checkpointed
+findings forward unchanged. Once every section has a checkpoint, delete the scratch files, then continue at
+step 5 (verify everything) with the full set. If the doc was edited between the crash and the resume, trust
+the section names in the checkpoint headers over partition position, and re-review any section whose line
+range shifted enough that the old coverage looks stale.
 
 ## 4. While they run, read the spine yourself.
 
@@ -266,6 +293,28 @@ means an entity merge left a dead one behind.
 
 **A procedure referenced by name but absent from the canonical step chain.** Grep every "step" the prose
 names and check it appears in the Phase Table and the Planning Kernel list.
+
+**A mechanism is reused where its precondition may not hold.** Find each named rule / helper / exclusion
+applied at more than one site. At its canonical home, look for the condition it assumes — "holds when the
+train stops here", "when the block is climbed into", "for a stopped run". Read every *other* site through
+that condition. Two shapes are findings: (i) the home states a precondition and a reuse site's context
+violates it (`H-PRECONDITION` — this is where a self-consistent doc still specifies wrong behavior); (ii)
+the home states *no* precondition though the rule is reused across visibly different contexts
+(`M-PRECONDITION` — the reader cannot tell which reuses are valid). This is the one shape a pure
+self-consistency pass otherwise misses, because each site reads fine alone. Real example: the
+truncation-terminal rules are written for choosing where a train *holds*, then applied verbatim to a
+moving train's per-tick braking cap, which the train rolls through rather than stops at — correct for the
+parked case, wrong for the rolling case.
+
+**A rule is referenced by position, or a load-bearing term is never defined.** Grep for cross-references
+of the form "item N", numeric "step N", "the rule / bullet / table above / below". A rule pointed at by
+list position is fragile (renumber the list and every reference silently moves) and opaque (the number
+carries no meaning), so it hides what the rule assumes — the same blank that lets a bad reuse pass the
+precondition check above. Flag each `M-OPAQUE-REF` and name the fix: give the rule a stable name and refer
+to it by that. **Do not** flag the doc's intentional immutable step IDs (`66aa`, `9c4f`) — those are
+stable handles, not positional. Separately, take each load-bearing term (a coined phrase, a mechanism
+name, a defined-once concept) and confirm it has exactly one plain-English definition at a canonical home;
+a term used across sections but defined nowhere is `M-TERMINOLOGY`.
 
 ---
 

@@ -46,6 +46,9 @@ node_modules/
 # Skill dev scratch (benchmark/eval iterations from building a skill, not the skill itself)
 .claude/skills/*-workspace/
 
+# Doc-review checkpoint files (per-reader findings persisted mid-fan-out, for crash recovery)
+.claude/scratch/
+
 # Persisted runtime event log (design_new.md Event log)
 event_log.jsonl
 

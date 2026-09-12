@@ -9,6 +9,7 @@ This file collects directives for working in this repo. Every rule below is glob
 - "Running Python in this repo" applies to every Python invocation.
 - "Browser preview" applies whenever you use the browser preview tools.
 - "How to communicate" applies to every message, doc, comment, and commit you write.
+- "Terminology discipline" applies whenever you discuss this system, in any message or artifact.
 
 ## How to communicate
 
@@ -18,6 +19,10 @@ Say what a thing does in plain words. Do not invent a short label for an idea an
 - **The explanation is the writing, not a footnote to it.** If you catch yourself writing a term and then a sentence that translates it, delete the term and keep the translation.
 - **Real identifiers are allowed, defined once, plainly.** A word that names actual code — a field, method, class, or an established project concept — may be used, but give it a one-line plain-English meaning the first time it appears (for example: "the span — the stretch of track from the back of the last car to the front of the loco"). This is the only kind of "term" permitted, and only because it points at something concrete in the code.
 - **Short beats clever.** Prefer the sentence a junior engineer understands on first read over the compact phrase that sounds precise but has to be unpacked.
+
+## Terminology discipline
+
+Use ONLY terms defined in design_new.md when discussing this system. Never invent paraphrases, shorthand, or jargon (e.g. 'braking cap', 'global Sense preamble', 'fuse', 'raw currents', 'safe place to stop'). If a concept has no canonical term in the doc, say so explicitly and propose adding one — do not coin one silently. Prefer plain language over buzzwords.
 
 ## Running Python in this repo
 
