@@ -957,9 +957,9 @@ class RouteExecutor:
             return False
 
         had_leg_route = cal_run.active_leg_route_id is not None
-        # Abandon the pass first. When a leg is armed, cancel() sets the
+        # Abandon the pass first. When a leg is armed, abandon() sets the
         # route-deactivate latch for the active leg route.
-        calibration.cancel(train_id, reason="external route assignment requested")
+        calibration.abandon(train_id, reason="external route assignment requested")
         if not had_leg_route:
             # No leg route to tear down, so no RUNNING run to wait on: let the
             # ordinary flow assign the requested route immediately.

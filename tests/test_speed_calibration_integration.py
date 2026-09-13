@@ -243,6 +243,83 @@ def test_cancelling_a_pass_deactivates_its_leg_route(state):
     assert sim.route_executor.execution_state_for(train_id) is None
 
 
+def test_powering_off_mid_pass_ends_the_speed_run(state):
+    """An ordinary power-off mid-pass ends the speed run on that same Action pass,
+    so no spent run leaks (design_new.md "Speed calibration", Where it runs — the
+    OFF gate is passed after the command drain, so step `26f5` finds the pass
+    invalid and ends it that tick). A leaked run would otherwise block a new pass
+    at the readiness gate."""
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    block_id = _first_calibratable_block(state, train_id)
+    _ready_manual_train(sim, state.network, train_id)
+    sim.update(0.1)
+    train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+    sim.update(0.1)  # arm the leg
+    assert sim.speed_calibration.runs.get(train_id) is not None
+
+    sim.controllers[train_id].commands.power_off_cmd()
+    for _ in range(10):
+        sim.update(0.1)
+        if sim.speed_calibration.runs.get(train_id) is None:
+            break
+    assert sim.speed_calibration.runs.get(train_id) is None, (
+        "a powered-off train must not leave an open calibration run behind"
+    )
+
+
+def test_emergency_brake_mid_pass_ends_the_speed_run(state):
+    """`eb.active` makes `run_still_valid` false, so step `26f5` ends the pass
+    (design_new.md "Speed calibration", Where it runs). A run left open would
+    block a new pass at the readiness gate."""
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    block_id = _first_calibratable_block(state, train_id)
+    _ready_manual_train(sim, state.network, train_id)
+    sim.update(0.1)
+    train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+    assert sim.speed_calibration.runs.get(train_id) is not None
+
+    sim.controllers[train_id].eb.activate()
+    # The predicate is false the moment EB latches, before any further tick.
+    assert sim.speed_calibration.run_still_valid(train_id) is False
+    for _ in range(10):
+        sim.update(0.1)
+        if sim.speed_calibration.runs.get(train_id) is None:
+            break
+    assert sim.speed_calibration.runs.get(train_id) is None
+
+
+def test_fatal_halt_clear_ends_an_open_speed_run(state):
+    """A fatal-halt clear ends every open calibration run directly during step
+    `7c41`, not through an Action pass (design_new.md "Speed calibration", Where
+    it runs)."""
+    from runtime_payloads import FatalConflictKind, FatalPhysicalEntryConflict
+
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    block_id = _first_calibratable_block(state, train_id)
+    _ready_manual_train(sim, state.network, train_id)
+    sim.update(0.1)
+    train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+    sim.update(0.1)  # arm the leg
+    assert sim.speed_calibration.runs.get(train_id) is not None
+
+    sim.enter_failed_runtime(
+        FatalPhysicalEntryConflict(
+            resource_type="block",
+            resource_id=block_id,
+            incoming_train_id=train_id,
+            prior_owner_train_id="OTHER",
+            conflict_kind=FatalConflictKind.OCCUPIED_BY_OTHER_TRAIN,
+        )
+    )
+    sim.clear_failed_runtime()
+    assert sim.speed_calibration.runs.get(train_id) is None, (
+        "a fatal-halt clear must end every open calibration run"
+    )
+
+
 def test_a_calibration_leg_completes_through_ordinary_stop_completion(state):
     """The `9d8b` gate, end to end: a calibration leg runs as a one-off route and
     finishes through ordinary stop completion — Observe step `9d8b`

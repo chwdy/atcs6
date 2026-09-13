@@ -372,17 +372,19 @@ class SpeedCalibration:
         self._step0_entries.pop(train.train_id, None)
         return run
 
-    def cancel(self, train_id: str, reason: str = "cancelled") -> None:
-        """Drop a pass without writing. The samples go with it.
+    def abandon(self, train_id: str, reason: str = "cancelled") -> None:
+        """End a speed pass without writing, and report the reason. The samples
+        go with it (design_new.md "Speed calibration", `abandon`).
 
-        Operator Stop and a mid-run panel close are pass-abandonment cases, and
-        every one of those commands `power_percent = 0` and tears the active leg
-        route down (design_new.md "Speed calibration", Pass-abandonment cases
-        command a stop and deactivate the leg route). Dropping the run withdraws
-        the propulsion override, so the controller falls back to its ordinary
-        manual source; zeroing that source here is what brings the train to a
-        stand. The route deactivate's inclusive latch cancels any still-live leg
-        path, and the Action consumer removes the RouteRun.
+        The one teardown for a speed pass: operator Stop, a mid-run panel close,
+        and Action step `26f5` finding the pass no longer valid all end it here.
+        Each commands `power_percent = 0` and tears the active leg route down.
+        Dropping the run withdraws the propulsion override, so the controller
+        falls back to its ordinary manual source; zeroing that source here is
+        what brings the train to a stand. The route deactivate's inclusive latch
+        cancels any still-live leg path, and the Action consumer removes the
+        RouteRun. An existing teardown is not duplicated (see
+        `_deactivate_leg_route`).
         """
         run = self.runs.pop(train_id, None)
         self._step0_entries.pop(train_id, None)
@@ -423,10 +425,18 @@ class SpeedCalibration:
         )
 
     def fail(self, run: CalibrationRun, reason: str) -> CalibrationCommand:
-        """Abandon a pass, command `power_percent = 0`, and report the reason.
+        """End a pass on a measurement fault, command `power_percent = 0`, and
+        report the reason.
 
         The profile's previous curve is left in place — a pass that does not
-        measure every step writes nothing.
+        measure every step writes nothing. The run is removed from `self.runs`
+        so a failed pass never lingers: the caller's next Plan step no longer
+        finds it, and the readiness gate that refuses a new pass while a run is
+        open (`services.train_service._require_calibration_ready`) is not blocked
+        by a spent, failed one. The reason has already gone out on the
+        command-result stream, so the panel still learns why the pass ended. The
+        `run` object the caller holds keeps its `PHASE_FAILED` phase and
+        `failure_reason` for that caller's own inspection.
         """
         run.phase = PHASE_FAILED
         run.failure_reason = reason
@@ -437,6 +447,8 @@ class SpeedCalibration:
         self._emit_command_result(
             run.train_id, operation="speed_calibration", success=False, reason=reason
         )
+        self.runs.pop(run.train_id, None)
+        self._step0_entries.pop(run.train_id, None)
         return CalibrationCommand(power_percent=0.0, deactivate_route=True)
 
     def abandon_speed_pass(self, train_id: str, reason: str) -> bool:
@@ -1006,33 +1018,78 @@ class SpeedCalibration:
         self.lighting_runs[train.train_id] = run
         return run
 
-    def lighting_run_still_valid(self, train_id: str) -> bool:
-        """Whether this train's open lighting run still meets its conditions.
+    def _assigned_route_id(self, train_id: str) -> Optional[str]:
+        """`RouteExecutor.assigned_route_id_for(train_id)`, or None when no route
+        executor is wired (the state-machine unit tests drive with no runtime)."""
+        sc = self._sc
+        rex = getattr(sc, "route_executor", None) if sc is not None else None
+        if rex is None:
+            return None
+        try:
+            return rex.assigned_route_id_for(train_id)
+        except Exception:
+            return None
 
-        A run ends the moment any of these holds, not only on Save or
-        panel-close: the train leaves `READY`, leaves `manual` control mode,
-        is powered off, or has EB activated (design_new.md "Lighting-voltage
-        calibration", What the run drives). Being assigned a route ends it too;
-        that check is the caller's, because the route assignment lives on
-        `RouteExecutor` rather than the controller. There is no cab condition —
-        the head end is derived from the authority.
+    def run_still_valid(self, train_id: str) -> bool:
+        """Whether this train's open calibration run — a speed pass or a
+        lighting-voltage run — still meets the conditions to stay open.
 
-        Returns True when no run is open, so a caller with nothing to
-        re-evaluate takes no action.
+        The one validity predicate for both run kinds (design_new.md "Speed
+        calibration", Where it runs). Action step `26f5`
+        (`SimulationController._reevaluate_calibration_run`) evaluates it once per
+        tick from live state; when it is false the run ends that same tick — a
+        speed pass through `abandon(train_id, reason)`, a lighting run through
+        `cancel_lighting(train_id)`. A run ends the moment its condition is met,
+        not only on Save, Stop, or panel-close.
+
+        Returns True when no run is open (nothing to end) and when a speed pass
+        has measured every step — a finished result is committable and is never
+        re-evaluated (design_new.md "Speed calibration", a measured pass is not
+        evaluated). Otherwise it is false when any of these holds:
+          - the runtime or controller is gone
+          - the train is powered off — `controller.ops.state == OFF`
+          - the controller state is neither `READY` nor `RUNNING_MOVING`
+          - `eb.active`
+          - a power-off is pending — `phase_latches.power_off`
+          - for a lighting run: `control_mode != "manual"`, or any route is
+            assigned (a lighting run has no reservation)
+          - for a speed pass: the assigned route is not the leg's own
+            `active_leg_route_id` (both `None` between legs), or a measurement
+            fault was recorded (`phase == PHASE_FAILED`)
+        There is no cab condition for either kind — the head end is derived from
+        the authority (a speed pass) or the candidate drives positive (a lighting
+        run).
         """
-        run = self.lighting_runs.get(train_id)
-        if run is None:
+        speed = self.runs.get(train_id)
+        lighting = self.lighting_runs.get(train_id)
+        if speed is None and lighting is None:
+            return True
+        # A finished speed result is committable and is never invalidated.
+        if speed is not None and speed.is_measured:
             return True
         controller = self._controller(train_id)
         if controller is None:
             return False
-        if controller.ops.state != TrainState.READY:
+        # Conditions shared by both run kinds.
+        if controller.ops.state == TrainState.OFF:
             return False
-        if getattr(controller.commands, "control_mode", None) != "manual":
+        if controller.ops.state not in (TrainState.READY, TrainState.RUNNING_MOVING):
             return False
         if controller.eb.active:
             return False
-        return True
+        if getattr(controller.route_hooks.phase_latches, "power_off", False):
+            return False
+        assigned = self._assigned_route_id(train_id)
+        if lighting is not None:
+            if getattr(controller.commands, "control_mode", None) != "manual":
+                return False
+            return assigned is None
+        # A speed pass. Only the leg's own one-off route may be assigned while it
+        # is open, and both are None between legs. A recorded measurement fault
+        # ends it too.
+        if speed.phase == PHASE_FAILED:
+            return False
+        return assigned == speed.active_leg_route_id
 
     def step_lighting(self, train_id: str, direction: int) -> Optional[LightingCalibrationRun]:
         """Move the candidate one `LIGHTING_VOLTAGE_STEP_V` up or down.

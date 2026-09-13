@@ -242,6 +242,20 @@ def test_a_leg_that_overruns_the_stretch_fails_the_pass():
     assert "overran" in run.failure_reason
 
 
+def test_a_failed_pass_leaves_no_open_run_to_block_a_restart():
+    """A measurement fault ends the pass AND removes its run from the registry,
+    so a spent, failed pass never blocks a new one at the readiness gate
+    (`services.train_service._require_calibration_ready` refuses a start while
+    `runs.get(train_id)` is set). The `run` object the caller holds still carries
+    `PHASE_FAILED` and its reason for inspection (design_new.md "Speed
+    calibration", `fail`)."""
+    cal, run, _profile = _open_run()
+    _crossing(cal, run, 0.0, seconds=2.0, overrun_block="D")  # overrun -> fail
+    assert run.phase == PHASE_FAILED  # the held object records the fault
+    assert run.failure_reason  # and its reason, for the caller
+    assert cal.runs.get("T1") is None  # but no open run lingers in the registry
+
+
 def test_a_slower_step_is_measured_once_more_then_fails():
     cal, run, _profile = _open_run()
     # Step 1 fast, step 2 slow twice: the re-measure tells a noisy crossing

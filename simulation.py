@@ -1656,12 +1656,14 @@ class SimulationController(SwitchOutputOwner):
         self._consume_pending_power_off(controller, train)
         self._consume_pending_route_deactivate(controller, train)
 
-        # 26f5. Re-evaluate this train's open lighting-voltage run. Ordered after
-        # the power-off / route-deactivate consumption above so it observes this
-        # same pass's teardown before deciding whether the run has ended
-        # (design_new.md "Lighting-voltage calibration", What the run drives):
-        # the run ends the same tick its condition is met.
-        self._reevaluate_lighting_run(train)
+        # 26f5. Re-evaluate this train's open calibration run — a speed pass or a
+        # lighting-voltage run. Ordered after the power-off / route-deactivate
+        # consumption above so it observes this same pass's teardown before
+        # deciding whether the run has ended (design_new.md "Speed calibration",
+        # Where it runs): the run ends the same tick its condition is met, so an
+        # ordinary power-off that drove the controller to OFF at step `886a` ends
+        # the run here on that same Action pass.
+        self._reevaluate_calibration_run(train)
 
         # Sync only persistent/configuration state back to Train.
         self._sync_persistent_train_state(train, controller)
@@ -1829,24 +1831,33 @@ class SimulationController(SwitchOutputOwner):
         # consume-side emitter and this step clears the field after it returns.
         controller.route_hooks.phase_latches.clear("route_deactivate")
 
-    def _reevaluate_lighting_run(self, train: Train) -> None:
-        """Action step `26f5` — end an open lighting run whose conditions no
-        longer hold.
+    def _reevaluate_calibration_run(self, train: Train) -> None:
+        """Action step `26f5` — end an open calibration run whose conditions no
+        longer hold, for either run kind.
 
-        A run ends the moment the train leaves `READY`, leaves `manual` control
-        mode, is powered off, has EB activated, or is assigned a route — not only
-        on Save or panel-close. The controller-side conditions
-        are `SpeedCalibration.lighting_run_still_valid(...)`; the route
-        assignment is checked here because it lives on `RouteExecutor`.
+        `SpeedCalibration.run_still_valid(train_id)` is the one validity predicate
+        for both an open speed pass and an open lighting-voltage run (design_new.md
+        "Speed calibration", Where it runs). When it is false the run ends this
+        same tick — a speed pass through `SpeedCalibration.abandon(...)`, a
+        lighting run through `SpeedCalibration.cancel_lighting(...)`. It is a
+        `SimulationController`-level step because the predicate reads the route
+        assignment, which lives on `RouteExecutor`.
         """
         calibration = self.speed_calibration
-        if not calibration.lighting_runs:
-            return
         train_id = train.train_id
-        if train_id not in calibration.lighting_runs:
+        speed_open = calibration.runs.get(train_id) is not None
+        lighting_open = calibration.lighting_runs.get(train_id) is not None
+        if not speed_open and not lighting_open:
             return
-        assigned = self.route_executor.assigned_route_id_for(train_id)
-        if assigned is not None or not calibration.lighting_run_still_valid(train_id):
+        if calibration.run_still_valid(train_id):
+            return
+        # The two run kinds are mutually exclusive by their opening
+        # preconditions; each is ended through its own teardown.
+        if speed_open:
+            calibration.abandon(
+                train_id, reason="calibration pass ended: conditions no longer hold"
+            )
+        if lighting_open:
             calibration.cancel_lighting(train_id)
 
     # =========================================================================
@@ -2899,8 +2910,13 @@ class SimulationController(SwitchOutputOwner):
             # resumes mid-motion.
             controller.physics_sync.current_speed_kmh = 0.0
             # This fan-out is not an Action pass, so step `26f5` does not run
-            # for it — end any open lighting run here instead (design_new.md
-            # "Lighting-voltage calibration", What the run drives).
+            # for it — end every open calibration run here instead (design_new.md
+            # "Speed calibration", Where it runs: a fatal-halt clear ends every
+            # open calibration run directly). A speed pass ends through
+            # `abandon(...)` (which tears its leg route down), a lighting run
+            # through `cancel_lighting(...)`.
+            if self.speed_calibration.runs.get(train_id) is not None:
+                self.speed_calibration.abandon(train_id, reason="runtime halted")
             self.speed_calibration.cancel_lighting(train_id)
 
         self.failed_runtime = False

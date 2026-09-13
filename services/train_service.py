@@ -1016,7 +1016,7 @@ def calibrate_cancel(state: AppState, train_id: str) -> None:
     """Drop an open pass. Its samples go with it and the profile is untouched."""
     sim = getattr(state, "sim_controller", None)
     if sim is not None:
-        sim.speed_calibration.cancel(train_id, reason="cancelled by the operator")
+        sim.speed_calibration.abandon(train_id, reason="cancelled by the operator")
 
 
 def calibrate_commit(
