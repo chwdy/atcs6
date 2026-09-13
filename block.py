@@ -113,6 +113,7 @@ class Block(TrackResource):
         occupied_by: Optional[str] = None,
         caution: Optional[CautionState] = None,
         reservation: Optional[BlockReservation] = None,
+        locked_by_path: Optional[str] = None,
         disabled: bool = False,
         manual: bool = False,
         current_voltage: float = 0.0,
@@ -151,6 +152,12 @@ class Block(TrackResource):
         # Single Optional reservation record. The reserved_by_path,
         # reserved_for_train, reserved_direction reads are derived @properties.
         self.reservation = reservation
+        # The braking-distance lock: the path_id holding this block hard, or
+        # None. A peer to `reservation` (design_new.md "Block" field schema),
+        # not derived from it: a block is locked only by the path that already
+        # reserves it, so `locked_by_path == reserved_by_path` whenever set.
+        # Sole mutator is `BlockManager`; `is_locked` is the convenience read.
+        self.locked_by_path = locked_by_path
         self.disabled = disabled  # Static availability flag (physical-absence)
         self.manual = manual  # Virtual-disable flag (manual_override bypasses)
 
@@ -314,6 +321,17 @@ class Block(TrackResource):
         """Reserved exit edge ('N'|'E'|'S'|'W'), or None."""
         return self.reservation.exit_edge if self.reservation is not None else None
 
+    @property
+    def is_locked(self) -> bool:
+        """True iff a path holds this block's braking-distance lock.
+
+        Convenience read for `locked_by_path is not None` (design_new.md
+        "Block" field schema). A locked block is uncancellable: Preemption may
+        take a reserved block from a lower-priority train only when it is not
+        locked.
+        """
+        return self.locked_by_path is not None
+
     # ========================================================================
     # Derived caution reads
     # ========================================================================
@@ -383,6 +401,9 @@ class Block(TrackResource):
             "reserved_by_path": self.reserved_by_path,
             "reserved_direction": self.reserved_direction,
             "reserved_for_train": self.reserved_for_train,
+            # Braking-distance lock (peer to reservation).
+            "locked_by_path": self.locked_by_path,
+            "is_locked": self.is_locked,
             "disabled": self.disabled,
             "manual": self.manual,
             "current_voltage": self.current_voltage,
@@ -729,8 +750,15 @@ class Block(TrackResource):
         Clears `block.reservation` with no state guard. MUST NOT touch
         `caution_exit_edge` or `_is_caution` (those are physical-lifecycle
         fields owned by `BlockManager`).
+
+        Also clears `block.locked_by_path`: the braking-distance lock is the
+        reserving path's commitment on a reserved block, so releasing the
+        reservation releases the lock with it (design_new.md "Block" field
+        schema). A block can only be locked by the path whose reservation this
+        clears, so the drop is unconditional.
         """
         self.reservation = None
+        self.locked_by_path = None
 
     # ------------------------------------------------------------------
     # Direction normalization

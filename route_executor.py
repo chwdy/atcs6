@@ -3137,6 +3137,37 @@ class RouteExecutor:
             return projection
         return ahead
 
+    def _write_braking_distance_lock(self, train_id: str) -> None:
+        """Write the braking-distance lock onto the train's reserved blocks
+        (design_new.md "Braking-distance lock", step 66aa).
+
+        Called after a successful create/extend. Locks every block the active
+        path currently reserves through `BlockManager.lock_blocks_for_path(...)`
+        — in the current model the reservation is bounded to the stopping
+        distance by the acquisition cap, so the reserved prefix is the
+        braking-distance subset. Re-locking an already-locked own block is an
+        idempotent no-op, so running this on every acquisition pass is safe.
+        Never bounds acquisition; the lock is a tier inside the reservation.
+        """
+        if self.path_dispatcher is None:
+            return
+        path = self.path_dispatcher.get_active_path(train_id)
+        if path is None:
+            return
+        block_manager = getattr(self.network, "block_manager", None)
+        if block_manager is None:
+            return
+        blocks = getattr(self.network, "blocks", {})
+        reserved_block_ids = [
+            entry.resource_id
+            for entry in path.resource_sequence
+            if entry.resource_type == "block"
+            and getattr(blocks.get(entry.resource_id), "reserved_by_path", None)
+            == path.path_id
+        ]
+        if reserved_block_ids:
+            block_manager.lock_blocks_for_path(reserved_block_ids, path.path_id)
+
     def _run_stopped_authority_shrink(
         self, train_id: str, train: "Train", controller: TrainController
     ) -> None:
@@ -3436,6 +3467,15 @@ class RouteExecutor:
         # banner and the Quick Route toast keep gating on live state (a
         # `received_path_plan` on the controller payload) as before.
         self._resolve_run_condition(exec_state, "planning_failed")
+
+        # Braking-distance lock (design_new.md "Braking-distance lock", step
+        # 66aa): after the reservation is stored, lock the reserved blocks the
+        # train needs within its stopping distance. The acquisition cap already
+        # bounds the reservation to that stopping distance, so the reserved
+        # prefix and the braking-distance subset coincide here — lock the whole
+        # reserved prefix. The lock is a tier inside the reservation and never
+        # bounds acquisition; nothing yet reads it for a planning decision.
+        self._write_braking_distance_lock(train.train_id)
 
         # Fix (deviation guard): insert any start-block tiles that lie between
         # the train's current head tile and the path segment's first tile into

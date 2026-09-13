@@ -167,6 +167,13 @@ class Path:
     # change. Set on creation and on every transition.
     last_status_updated_time: float = 0.0
 
+    # Non-serialized runtime injection: the RailwayNetwork, set by
+    # PathDispatcher when it creates or loads a path, so get_lock_end_block_id()
+    # can read per-block `Block.locked_by_path`. Excluded from equality/repr and
+    # never serialized; a bare deserialized Path leaves it None and reports no
+    # lock until the dispatcher wires it.
+    network: Any = field(default=None, compare=False, repr=False)
+
     # ========================================================================
     # Status helpers
     # ========================================================================
@@ -208,17 +215,32 @@ class Path:
             return ""
         return str(getattr(terminal, "resource_id", "") or "")
 
-    def get_lock_end_block_id(self) -> str:
-        """Derived active lock end block — the far edge of the uncancellable
-        braking-distance lock.
+    def get_lock_end_block_id(self) -> Optional[str]:
+        """Derived active lock end block — the furthest-forward block this path
+        holds under the uncancellable braking-distance lock.
 
-        Per design_new.md "Path field schema". The hard lock is the subset of
-        the reserved prefix that is held by `Block.locked_by_path`; until that
-        per-block lock flag is stored, the reserved prefix and the lock
-        coincide, so this returns the same block as
-        `get_reservation_end_block_id()`.
+        Per design_new.md "Path field schema": returns the furthest-forward
+        block in `resource_sequence` (at or after `current_resource_index`)
+        whose `Block.locked_by_path == path_id`, or `None` when the path locks
+        no block. Not a stored field; it derives live from the per-block
+        `Block.locked_by_path` flags, so it reflects the current lock
+        automatically and is always at or behind `reservation_end_block_id`.
+
+        Reading the per-block flags needs the network; when the dispatcher has
+        not wired it (a bare deserialized path), returns `None`.
         """
-        return self.get_reservation_end_block_id()
+        if self.network is None:
+            return None
+        result: Optional[str] = None
+        for entry in self.resource_sequence:
+            if entry.sequence_index < self.current_resource_index:
+                continue
+            if entry.resource_type != "block":
+                continue
+            block = self.network.blocks.get(entry.resource_id)
+            if block is not None and block.locked_by_path == self.path_id:
+                result = entry.resource_id
+        return result
 
     def reaches_target(self, block_id: str) -> bool:
         """Whether the live authority reaches `block_id`.

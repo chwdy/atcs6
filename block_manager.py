@@ -319,6 +319,11 @@ class BlockManager:
         # Read `reserved_for_train` before clearing `reservation`.
         self._index_drop_reserved(block_id, block.reserved_for_train)
         block.reservation = None
+        # The head consumes the braking-distance lock together with the
+        # reservation, so an entered block is never left locked (design_new.md
+        # "BlockManager", occupy_blocks). The lock can only be this same
+        # (now-occupying) path's, so the drop is unconditional.
+        block.locked_by_path = None
         # An unidentified train holds a block but commands no voltage, so entry by an unidentified train
         # queues the feed for the end-of-tick 0V check instead of energizing it
         # (design_new.md "Unidentified trains", Never energized).
@@ -505,6 +510,8 @@ class BlockManager:
         block.caution = None
         self._index_drop_reserved(block_id, block.reserved_for_train)
         block.reservation = None
+        # A block cleared back to FREE holds no braking-distance lock.
+        block.locked_by_path = None
         self._mark_for_deenergize(block_id)
 
         self._record_history(
@@ -861,6 +868,47 @@ class BlockManager:
             any_released = True
         return any_released
 
+    def lock_blocks_for_path(self, block_ids: List[str], path_id: str) -> None:
+        """Set the braking-distance lock on each listed block for `path_id`.
+
+        The per-tick braking-distance lock write (design_new.md "BlockManager",
+        the Braking-distance lock). A block may be locked only by the path that
+        already reserves it, so a block whose `reserved_by_path != path_id` is
+        skipped with one warning event rather than locked. Re-locking an
+        already-locked own block is an idempotent no-op. Never touches
+        `reservation`, `occupied_by`, or `caution`.
+        """
+        for block_id in block_ids:
+            block = self._block_registry.get(block_id)
+            if block is None:
+                continue
+            if block.reserved_by_path != path_id:
+                self._emit_diagnostic(
+                    f"lock {block_id} skipped: not reserved by {path_id}",
+                    operation="lock_blocks_for_path",
+                    block_id=block_id,
+                )
+                continue
+            block.locked_by_path = path_id
+
+    def unlock_blocks_for_path(self, block_ids: List[str], path_id: str) -> None:
+        """Clear the braking-distance lock on each listed block locked by `path_id`.
+
+        The release side of `lock_blocks_for_path(...)`, used by the Stopped-run
+        lock shrink (design_new.md "BlockManager"). A block not locked by that
+        path is ignored. Named distinctly from `Switch.release_lock(...)`, which
+        releases a switch-lock claim. Never touches `reservation`, `occupied_by`,
+        or `caution`: releasing a block lock is not a reservation release, so the
+        reserved block stays reserved (and a reserved-but-not-locked block is
+        what Preemption may take).
+        """
+        for block_id in block_ids:
+            block = self._block_registry.get(block_id)
+            if block is None:
+                continue
+            if block.locked_by_path == path_id:
+                block.locked_by_path = None
+
     def on_block_tail_vacated(
         self,
         block_id: str,
@@ -909,6 +957,11 @@ class BlockManager:
         prior_state = block.state
         block.occupied_by = None
         block.caution = CautionState(exit_edge=direction) if direction else None
+        # Defensive floor (design_new.md "BlockManager", on_block_tail_vacated):
+        # clean head-entry already consumed this block's lock with its
+        # reservation, so a normally-progressing train's vacated block carries
+        # no lock — clear any residual one so a vacated block is never locked.
+        block.locked_by_path = None
         self._mark_for_deenergize(block_id)
         # design_new.md "Event log": the train vacated a block (tail cleared).
         # Carries the exit edge so the log / replay can render direction.

@@ -3619,6 +3619,9 @@ class PathDispatcher:
             resource_sequence=sequence,
             current_resource_index=0,
             last_status_updated_time=now,
+            # Wire the network so Path.get_lock_end_block_id() can read
+            # per-block Block.locked_by_path (design_new.md "Path field schema").
+            network=self.network,
         )
         return path
 
