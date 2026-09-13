@@ -226,6 +226,56 @@ class TestRoutePointExemption:
         assert flank_locks[0][1] == expected_safe
 
 
+class TestUnavailableNeighbourExemption:
+    """A flank neighbour that is `disabled` drives no motor and carries no live
+    traversal, so it cannot route a train into a head-on flank approach: the
+    flank entry is skipped at ACQUISITION time, the segment still acquires, and
+    the disabled switch is neither locked nor a cause of failure
+    (design_new.md:1377, the unavailable-neighbour exemption). Regression for
+    the missing `disabled` skip in `SwitchManager._expand_flank_requests` —
+    only `manual` was handled, so a flank request hit the disabled switch,
+    `Switch.acquire_lock` rejected it, and the whole segment failed.
+    """
+
+    def test_disabled_neighbour_is_skipped_and_acquire_succeeds(self):
+        net = _demo5()
+        sm = net.switch_manager
+        xn = net.switches["SW_XOVER_N"]
+        s = net.switches["SW_XOVER_S"]
+
+        # Precondition: SW_XOVER_N flank-protects its non-route neighbour
+        # SW_XOVER_S (the case that otherwise places a flank lock on it — see
+        # TestRoutePointExemption.test_flank_still_applies_to_non_route_neighbour).
+        assert "SW_XOVER_S" in {nb for nb, _ in xn.flank_protection}
+
+        # Disable the neighbour. The exemption is applied live at acquisition
+        # time, so the flank_protection entry deliberately survives — proving
+        # the skip is NOT a computation-time filter.
+        s.disabled = True
+        assert "SW_XOVER_S" in {nb for nb, _ in xn.flank_protection}, (
+            "the disabled neighbour must stay in flank_protection; the exemption "
+            "is applied at acquisition time, not by recompute"
+        )
+
+        req = SwitchLockRequest(
+            switch_id="SW_XOVER_N", locked_state=int(xn.position),
+            source_switch_id=None, route=frozenset({"W", "N"}))
+        result = sm.acquire_locks_for_segment(
+            [req], path_id="P_DIS", train_id="T1", manual_override=False)
+
+        # Pre-fix this FAILED: the flank request hit the disabled SW_XOVER_S and
+        # acquire_lock rejected it, failing the whole segment.
+        assert result.success, (
+            f"a disabled flank neighbour must be exempt, not fail the segment; "
+            f"got failure at {result.failed_switch_id!r}: {result.reason}"
+        )
+        # And no flank lock was placed on the disabled neighbour.
+        flank_locks = [k for k in s.locks if k[1] == "SW_XOVER_N"]
+        assert not flank_locks, (
+            f"the disabled neighbour must not be flank-locked; got {flank_locks}"
+        )
+
+
 class TestSegmentRollbackReleasesFlankLocks:
     """Authority-tail release (`ResourceCoordinator.release_reservation_tail`) is
     scoped to the dropped primary switches, but the acquire-time flank expansion

@@ -370,9 +370,9 @@ class SwitchManager:
 
         For each primary (route-point) claim, append a flank request locking
         every `switch.flank_protection` neighbour to its safe state (the binary
-        complement of the blocking state). Two exemptions keep a path from
-        flank-locking a switch against itself (design_new.md "Flank Protection
-        Computation"):
+        complement of the blocking state). Three exemptions suppress a flank
+        lock that would be self-defeating or impossible (design_new.md "Flank
+        Protection Computation", design_new.md:1377):
 
         - Route-point exemption: a neighbour that is itself a primary on this
           same path is governed by its own main claim; flank-locking it would
@@ -386,6 +386,15 @@ class SwitchManager:
           an earlier segment (its flank locks for this path, or this train's
           protection claims on the neighbour) are folded into the conflict
           test.
+        - Unavailable-neighbour exemption: a neighbour with `disabled == True`
+          drives no motor and carries no live traversal, so it cannot route a
+          train into a head-on flank approach — there is nothing to protect
+          against and nothing to lock (and `Switch.acquire_lock` would reject
+          the lock anyway, failing the whole segment). The skip reads each
+          neighbour's live `disabled` flag at acquisition time, so the entry
+          deliberately stays in `flank_protection` (design_new.md:1377). The
+          `manual`-but-not-disabled neighbour is a distinct rule: it is claimed
+          normally, carrying the segment's `manual_override`.
         """
         primary_switch_ids = {
             req.switch_id for req in requests if req.source_switch_id is None
@@ -439,6 +448,9 @@ class SwitchManager:
                     continue  # route-point exemption (see docstring)
                 if neighbour_switch_id in conflicted_neighbours:
                     continue  # triangle-apex exemption (see docstring)
+                neighbour = self._switch_registry.get(neighbour_switch_id)
+                if neighbour is not None and neighbour.disabled:
+                    continue  # unavailable-neighbour exemption (see docstring)
                 # v1 switches are binary, so safe_state = 1 - blocking_state.
                 safe_state = 1 - blocking_state
                 expanded.append(

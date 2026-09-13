@@ -940,6 +940,56 @@ class TestTrainStateTransitions:
         assert controller.manual.manual_mode_type == "power_percent"
         assert controller.manual.manual_power_percent == 0
 
+    def test_set_mode_rejected_during_open_calibration(self):
+        """set_mode is rejected while a calibration leg or run is open: a
+        calibration pass drives the train itself and outranks the ATO/manual
+        sources, so its driving mode must not change underneath it — the
+        operator ends the pass first (design_new.md "set_mode", "calibration
+        outranks ATO"). The open-pass signal is
+        `SpeedCalibration.get_propulsion_override(train_id) is not None`, reached
+        through the `simulation_controller` back-reference.
+        """
+        from types import SimpleNamespace
+
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.READY  # stopped -> passes the is_stopped() gate
+        )
+        # An open pass returns a non-None override for this train. (A stopped
+        # auto pass returns value=0.0 — still non-None — and a lighting run is
+        # always non-None; both must block the mode change.)
+        override = SimpleNamespace(kind="power_percent", value=0.0)
+        controller.simulation_controller = SimpleNamespace(
+            speed_calibration=SimpleNamespace(
+                get_propulsion_override=(
+                    lambda tid: override if tid == controller.train_id else None
+                )
+            )
+        )
+        # Train is stopped with a valid mode, so the ONLY remaining reason to
+        # reject is the calibration guard.
+        result = controller.commands.set_mode("manual")
+        assert result.success is False, (
+            "set_mode must be rejected while a calibration pass is open"
+        )
+        assert "calibration" in result.message.lower()
+
+    def test_set_mode_allowed_when_no_calibration_open(self):
+        """The guard is scoped to an open pass: with no override
+        (`get_propulsion_override` returns None), a stopped train's set_mode
+        still succeeds — the ordinary path is unchanged.
+        """
+        from types import SimpleNamespace
+
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.READY
+        )
+        controller.simulation_controller = SimpleNamespace(
+            speed_calibration=SimpleNamespace(
+                get_propulsion_override=lambda tid: None
+            )
+        )
+        assert controller.commands.set_mode("ato").success is True
+
 
 
 

@@ -427,6 +427,25 @@ class OperatorCommands:
         if mode not in ("ato", "manual"):
             return CommandResult(False, f"Invalid mode: {mode}")
 
+        # Rejected while a calibration leg or run is open for this train: a
+        # calibration pass drives the train itself and outranks the ordinary
+        # ATO/manual sources, so its driving mode must not change underneath it
+        # — the operator ends the pass first (design_new.md "set_mode":
+        # rejected while `SpeedCalibration.get_propulsion_override(train_id)` is
+        # not None; "calibration outranks ATO"). Reached through the same
+        # `simulation_controller` back-reference the controller's own
+        # calibration-output read uses; it is None in unit-test controllers,
+        # where no pass can be open. `get_propulsion_override(...) is not None`
+        # (not the power-percent-only read) so an open lighting run is covered
+        # too — a stopped auto pass returns value=0.0, still non-None.
+        sc = getattr(c, "simulation_controller", None)
+        calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
+        if (
+            calibration is not None
+            and calibration.get_propulsion_override(c.train_id) is not None
+        ):
+            return CommandResult(False, "Cannot switch mode during calibration")
+
         self.control_mode = mode
         # Mode is the ATO/manual selector, and it is the writer of ATO intent
         # (design_new.md "ato.engaged"): set_mode("ato") engages (the idempotent
