@@ -412,8 +412,12 @@ export class RouteRunEditorHandler {
         rt.terminal_heading || null,
         { form: 'full' }
       );
-    } else if (t.task_direction) {
-      dirText = this._shortDir(t.task_direction);
+    } else if (t.walk_direction) {
+      // An unarmed row has no resolved target yet; show the planned per-visit
+      // direction from the run's directed walk (design_new.md "Data Flow To UI",
+      // the tasks projection carries walk_direction), which is "reverse" on a
+      // round-trip return leg.
+      dirText = this._shortDir(t.walk_direction);
     }
     const modParts: string[] = [];
     if (target.kind) modParts.push(target.kind);
@@ -425,7 +429,7 @@ export class RouteRunEditorHandler {
 
     // Row tooltip carries the resolved-target details.
     let tooltip = `#${t.walk_position + 1} ${t.task_kind || '?'} ${target.id}`;
-    if (t.task_direction) tooltip += ` · intent=${t.task_direction}`;
+    if (t.walk_direction) tooltip += ` · dir=${t.walk_direction}`;
     if (t.resolved_target) {
       const rt = t.resolved_target;
       const rDir = rt.requested_destination_direction;

@@ -1463,6 +1463,49 @@ class TestRouteRedesignApis:
             "is the contract editor-paths.js's Quick Route tool depends on."
         )
 
+    def test_route_run_detail_reports_walk_direction_not_task_direction(
+        self, client, app_state
+    ):
+        """The `GET /api/route-runs/<n>` tasks projection reports each visit's
+        resolved `walk_direction` (stored on `RouteTaskRun`), not the shared
+        `RouteTask.task_direction` authoring preference (design_new.md "Data Flow
+        To UI", the `tasks` projection). Regression: the endpoint emitted
+        `task_direction` where the doc names `walk_direction`."""
+        self._place_powered_train_on_two_block_line(app_state)
+        app_state.sim_controller.get_or_create_controller("TRAIN_QR").ato.engaged = True
+
+        assert client.post(
+            "/api/train-routes",
+            json={
+                "route_id": "ROUTE_WD",
+                "mode": "one_off",
+                "tasks": [{
+                    "task_kind": "stop",
+                    "task_location": {"block_id": "BLK_B"},
+                    "task_direction": "forward",
+                }],
+            },
+        ).status_code == 200
+        assert client.post("/api/train-routes/ROUTE_WD/activate").status_code == 200
+        assert client.put(
+            "/api/trains/TRAIN_QR/assign-route", json={"route_id": "ROUTE_WD"}
+        ).status_code == 200
+        # Tick so a RouteRun (and its task_runs) is allocated.
+        for _ in range(10):
+            app_state.sim_controller.update(0.1)
+
+        listed = client.get("/api/route-runs").get_json()["route_runs"]
+        assert listed, "expected at least one RouteRun after assign + ticks"
+        run_number = listed[0]["run_number"]
+
+        tasks = client.get(f"/api/route-runs/{run_number}").get_json()["tasks"]
+        assert tasks, "expected the detail payload to carry per-task rows"
+        row = tasks[0]
+        # The projection reports the per-visit walk_direction (initial row is
+        # "forward"); the shared authoring preference must not stand in for it.
+        assert row.get("walk_direction") in ("forward", "reverse")
+        assert "task_direction" not in row
+
     def test_assign_route_conflict_returns_409_without_force(self, client, app_state):
         """assign-route returns 409 when the train already has an active
         route assignment and `force=true` is not supplied. The Quick Route

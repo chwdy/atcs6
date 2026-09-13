@@ -211,7 +211,14 @@ def register(app, state: AppState) -> None:
                     "task_location": (
                         task_location_to_dict(task.task_location) if task else None
                     ),
-                    "task_direction": task.task_direction if task else None,
+                    # The per-visit resolved direction stored on this
+                    # `RouteTaskRun`, not the shared `RouteTask.task_direction`
+                    # authoring preference: the `tasks` projection reports
+                    # `walk_direction` (design_new.md "Data Flow To UI", the
+                    # `route_runs_by_train_id` / `tasks` projection). It flips to
+                    # "reverse" on a ROUND_TRIP return leg, where the authored
+                    # preference is typically "either".
+                    "walk_direction": task_run.walk_direction,
                     "task_time": task.task_time if task else None,
                     # target_time applies to every task kind (load-bearing on
                     # `dwell`, whose scheduled departure it names outright per
