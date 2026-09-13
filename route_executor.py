@@ -1665,6 +1665,15 @@ class RouteExecutor:
         except Exception:
             pass
 
+    def effective_priority_for(self, train_id: str) -> int:
+        """Public resolver for a train's run priority, used by `PathDispatcher`
+        Preemption (design_new.md "Preemption", Priority is read through an
+        injected reader). Higher is stronger — `order_runnable_trains` sorts by
+        descending effective priority, and Preemption takes track only from a
+        strictly-lower-priority holder. Same rule as the private reader below.
+        """
+        return self._effective_priority_for(train_id)
+
     def _effective_priority_for(self, train_id: str) -> int:
         """`RouteRun.effective_priority` for a train, mirroring the rule
         `order_runnable_trains` uses: per-run override, else shared

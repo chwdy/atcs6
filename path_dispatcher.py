@@ -1266,6 +1266,14 @@ class PathDispatcher:
             validation = self.validate_path(
                 segment, path_id, train_id, manual_override=manual_override
             )
+            # Preemption (design_new.md "Preemption"): when the only blockers are
+            # reserved-but-unlocked blocks held by strictly lower-priority runs,
+            # take them (truncating those holders) and re-validate; otherwise this
+            # returns the same failed validation and the ordinary truncate path
+            # below stores the shorter acquirable prefix.
+            validation = self._apply_preemption(
+                validation, segment, path_id, train_id, manual_override
+            )
             if not validation.valid:
                 structural = [
                     e for e in validation.errors
@@ -1757,6 +1765,13 @@ class PathDispatcher:
             validation = self.validate_path(
                 segment, path_id, train_id, manual_override=manual_override
             )
+            # Preemption (design_new.md "Preemption"): a strictly higher-priority
+            # extend may take reserved-but-unlocked blocks from a lower-priority
+            # holder here — the primary preemption site, a running train growing
+            # toward contested track. No eligible victim → validation unchanged.
+            validation = self._apply_preemption(
+                validation, segment, path_id, train_id, manual_override
+            )
             applied_segment: Optional[PathSegment] = None
             if not validation.valid:
                 structural = [
@@ -2092,6 +2107,86 @@ class PathDispatcher:
             # the writer's own text now lives on the `ErrorRecord` that reaches
             # the event, so surface that rather than a second copy.
             reason=error.text if error is not None else None,
+        )
+
+    def _can_preempt(
+        self, requesting_train_id: str, holder_train_id: Optional[str]
+    ) -> bool:
+        """True when `requesting_train_id`'s run is STRICTLY higher priority than
+        the holder's — the priority half of the Preemption precondition
+        (design_new.md "Preemption").
+
+        Equal priority never preempts (first-come-first-served), so the
+        comparison can never flip back and forth between two runs. Priority is
+        read through the injected route resolver, the same dependency the
+        reversal-trap exclusion uses; the dispatcher never reaches
+        `RouteExecutor` through `SimulationController`.
+        """
+        if not holder_train_id or holder_train_id == requesting_train_id:
+            return False
+        rx = self._get_route_executor()
+        if rx is None or not hasattr(rx, "effective_priority_for"):
+            return False
+        return rx.effective_priority_for(requesting_train_id) > rx.effective_priority_for(
+            holder_train_id
+        )
+
+    def _apply_preemption(
+        self, validation, segment, path_id: str, train_id: str, manual_override: bool
+    ):
+        """Preemption (design_new.md "Preemption"): when a candidate segment is
+        blocked only by reserved-but-not-locked blocks held by strictly
+        lower-priority runs, take them and re-validate.
+
+        A higher-priority run may take a reserved block from a lower-priority one
+        only when the block is beyond the holder's lock (`Block.locked_by_path is
+        None`) — committed (locked or occupied) track is never taken. When EVERY
+        occupancy conflict on the segment is such a preemptible block, this
+        truncates each holder's reservation before the taken block through
+        `truncate_path_before_block(...)` (which releases the holder's tail and
+        its `locked_by_path` flags, leaves it ACTIVE braking to its new nearer
+        end, and never touches its `control_mode`), then re-validates so the
+        caller's ordinary acquire path stores the preempting reservation.
+
+        Any non-preemptible conflict — an occupied block, a locked block, a
+        switch lock (switch preemption is not handled here), or a holder of
+        equal-or-higher priority — means no preemption: the segment's validation
+        is returned unchanged and the caller falls back to truncating its own
+        segment short. Preemption is atomic with acquisition: because every
+        blocker is removed, the re-validated segment acquires cleanly on the
+        caller's existing path.
+        """
+        if validation.valid:
+            return validation
+        occupancy = [e for e in validation.errors if e.type.is_occupancy_class()]
+        structural = [e for e in validation.errors if not e.type.is_occupancy_class()]
+        if structural or not occupancy:
+            return validation
+        victims = []  # (holder_path_id, taken_block_id)
+        for err in occupancy:
+            # Only a foreign reserved-but-unlocked BLOCK is preemptible here.
+            if err.type != ValidationErrorType.BLOCK_RESERVED or not err.block_id:
+                return validation
+            block = self.network.blocks.get(err.block_id)
+            if block is None:
+                return validation
+            holder_path = block.reserved_by_path
+            if not holder_path or holder_path == path_id:
+                return validation
+            if block.locked_by_path is not None:
+                # Committed to stopping within this block — never preemptible.
+                return validation
+            if not self._can_preempt(train_id, block.reserved_for_train):
+                return validation
+            victims.append((holder_path, err.block_id))
+        for holder_path, taken_block_id in victims:
+            self.truncate_path_before_block(
+                holder_path,
+                taken_block_id,
+                f"preempted by higher-priority train {train_id}",
+            )
+        return self.validate_path(
+            segment, path_id, train_id, manual_override=manual_override
         )
 
     def truncate_path_before_block(
