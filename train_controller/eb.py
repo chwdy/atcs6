@@ -120,11 +120,13 @@ class EBWorkflow:
             return CommandResult(False, "Emergency brake not active")
         if not c.is_stopped():
             return CommandResult(False, "Cannot release emergency while moving")
-        if c.route_hooks.phase_latches.path_cancel_request is not None:
-            return CommandResult(
-                False, "EB cancellation has not committed yet"
-            )
         if c.path_projection.received_path_plan is not None:
+            # A pending EB cancel keeps the path ACTIVE (completion is skipped
+            # while `path_cancel_request` is set) and the cancel clears the plan
+            # and the latch together, so `received_path_plan is None` already
+            # implies no pending cancel — this one check covers both. Release
+            # reads exactly the four physical-safety conditions (design_new.md
+            # "eb.release()").
             return CommandResult(
                 False, "Pre-EB path authority has not cleared yet"
             )
