@@ -570,20 +570,19 @@ class RouteTargetResolver:
         """The platform's candidate end blocks (deduped): both ends of a
         multi-block platform, or the single block both ends collapse to.
 
-        The two platform-end blocks are `Platform.ordered_blocks[0]` and
-        `Platform.ordered_blocks[-1]` (design_new.md "Platform And Station");
-        they collapse to one entry for a single-block platform, so only that
-        block participates. When `ordered_blocks` is empty (block assignments
-        not populated yet) this falls back to the first block found by walking
-        `positions`, mirroring `platform_block_id`'s tile-by-tile fallback so a
-        not-yet-assigned platform still resolves to something.
+        The two platform-end blocks are the first and last of
+        `RailwayNetwork.blocks_for_platform(platform_id)` — the derived
+        `platform -> blocks` index (design_new.md "Platform And Station"); they
+        collapse to one entry for a single-block platform, so only that block
+        participates. Falls back to the first block found by walking `positions`
+        only when the platform has no resolvable segment membership at all.
         """
-        ordered = getattr(platform, "ordered_blocks", None)
+        network = self._e.network
+        ordered = network.blocks_for_platform(getattr(platform, "platform_id", ""))
         if ordered:
             end_a = ordered[0]
             end_b = ordered[-1]
             return [end_a] if end_a == end_b else [end_a, end_b]
-        network = self._e.network
         for x, y in getattr(platform, "positions", []):
             track = network.get_track(x, y)
             if track and getattr(track, "block_id", None):
@@ -872,32 +871,34 @@ class RouteTargetResolver:
     ) -> Optional[str]:
         """Resolve a platform to one concrete dispatcher-facing end block.
 
-        Per design_new.md line 1247, a platform exposes its two platform-end
-        blocks as `ordered_blocks[0]` and `ordered_blocks[-1]`. For a
+        A platform's two platform-end blocks are the first and last of
+        `RailwayNetwork.blocks_for_platform(platform_id)` — the derived
+        `platform -> blocks` index (design_new.md "Platform And Station"). For a
         multi-block platform this picks the end whose graph walk from the
         train's current start block wins the cross-query comparison, using the
         same shared network-graph walk query that
         `PathDispatcher.create_path(...)` uses, ranked by the canonical
         candidate comparison defined in **`GraphWalkCandidate` payload**
         (`estimated_travel_seconds` first when the train carries a max speed,
-        then `tile_count`, then `walk_length_cm`), tie-broken to
-        `ordered_blocks[0]`.
+        then `tile_count`, then `walk_length_cm`), tie-broken to the first end
+        block.
 
         For a single-block platform both platform ends collapse to the same
         block, so only that one block participates and no graph walk is run —
         behavior is unchanged. When `train` is omitted, or the train's start
         block / dispatcher cannot be resolved (early bootstrap, the
         viability/reachable read-only callers), the resolver also falls back to
-        `ordered_blocks[0]` so those single-end callers keep working.
+        the first end block so those single-end callers keep working.
 
-        A tile-by-tile fallback covers platforms whose `block_assignments`
-        have not been populated yet.
+        A tile-by-tile fallback covers a platform with no resolvable segment
+        membership at all.
         """
         platform = self.get_platform(platform_id)
         if not platform:
             return None
 
-        ordered_blocks = getattr(platform, "ordered_blocks", None)
+        network = self._e.network
+        ordered_blocks = network.blocks_for_platform(platform_id)
         if ordered_blocks:
             end_a = ordered_blocks[0]
             end_b = ordered_blocks[-1]
@@ -908,7 +909,6 @@ class RouteTargetResolver:
             chosen = self._closer_platform_end(train, end_a, end_b)
             return chosen if chosen is not None else end_a
 
-        network = self._e.network
         for x, y in getattr(platform, "positions", []):
             track = network.get_track(x, y)
             if track and track.block_id:
@@ -1064,11 +1064,11 @@ class RouteTargetResolver:
         `(estimated_travel_seconds, tile_count, walk_length_cm)`: estimated
         travel time first when the train carries a max speed, otherwise the
         distance keys alone. Ties — including both ends equal — resolve to
-        `end_a` (the platform's `ordered_blocks[0]`), the platform-end-identity
-        tie-break for this cross-query site. Returns `None` when the comparison
-        cannot be evaluated (no train, no dispatcher, no resolvable start block,
-        or neither end is reachable); the caller then falls back to
-        `ordered_blocks[0]`.
+        `end_a` (the platform's first end block from `blocks_for_platform`), the
+        platform-end-identity tie-break for this cross-query site. Returns `None`
+        when the comparison cannot be evaluated (no train, no dispatcher, no
+        resolvable start block, or neither end is reachable); the caller then
+        falls back to the first end block.
         """
         key_a = self._walk_cross_query_key_to_block(train, end_a)
         key_b = self._walk_cross_query_key_to_block(train, end_b)

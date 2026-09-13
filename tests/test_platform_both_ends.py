@@ -84,6 +84,13 @@ class _StubNetwork:
     def get_track(self, x: int, y: int) -> Optional[_StubTrack]:
         return self._tracks.get((x, y))
 
+    def blocks_for_platform(self, platform_id: str) -> List[str]:
+        """The derived `platform -> blocks` index the resolver reads (real
+        `RailwayNetwork.blocks_for_platform`); the stub mirrors it from the
+        platform's own ordered block list."""
+        platform = self.platforms.get(platform_id)
+        return list(platform.ordered_blocks) if platform is not None else []
+
 
 @dataclass
 class _StubSegment:

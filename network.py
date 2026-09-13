@@ -1542,6 +1542,52 @@ class RailwayNetwork(SwitchOutputOwner):
                 return platform_id
         return None
 
+    def platforms_for_block(self, block_id: str) -> List[str]:
+        """The `Platform`s a block's member segments belong to.
+
+        The `block -> platform` reverse index (design_new.md "Platform And
+        Station"), two-way with `blocks_for_platform`. Derived live from the
+        ownership chain — each of the block's `Segment`s through
+        `segment_to_platform_id` — never a stored back-reference. Block and
+        platform are orthogonal groupings over `Segment`: a segment belongs to
+        exactly one block and at most one platform, but a multi-segment block's
+        members may sit on different platforms or none. So this resolves a block
+        to every `Platform` its members belong to (deduped, in block-segment
+        order), and is empty when no member segment has one. A caller needing a
+        single platform for a directional standoff takes the one for the
+        terminal segment in the traversed direction.
+        """
+        block = self.blocks.get(block_id)
+        if block is None:
+            return []
+        out: List[str] = []
+        for segment_id in block.segment_ids:
+            platform_id = self.segment_to_platform_id(segment_id)
+            if platform_id is not None and platform_id not in out:
+                out.append(platform_id)
+        return out
+
+    def blocks_for_platform(self, platform_id: str) -> List[str]:
+        """The `Block`s a platform's segments belong to, in platform order.
+
+        The `platform -> blocks` reverse index (design_new.md "Platform And
+        Station"), two-way with `platforms_for_block`. Derived live from
+        `Platform.ordered_segments(self)` through `segment_to_block_id`, deduped
+        while preserving the platform's tile-extent order, so the first and last
+        entries are the platform's two end blocks (they collapse to one for a
+        single-block platform). Never read from a stored back-reference on the
+        platform.
+        """
+        platform = self.platforms.get(platform_id)
+        if platform is None:
+            return []
+        out: List[str] = []
+        for segment_id in platform.ordered_segments(self):
+            block_id = self.segment_to_block_id(segment_id)
+            if block_id is not None and block_id not in out:
+                out.append(block_id)
+        return out
+
     def add_segment_to_block(self, block_id: str, segment_id: str) -> bool:
         """Forward to `BlockGroupingManager.add_segment_to_block(...)`."""
         return self._get_block_grouping_manager().add_segment_to_block(
