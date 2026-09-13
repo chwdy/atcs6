@@ -189,10 +189,15 @@ class MeetCoordinator:
         assignment.setdefault(lo_id, ceiling)
 
     def _committed_in_zone(self, train_id: str, zone: set) -> bool:
-        """True when ``train_id`` already occupies or holds live authority on any
-        block in the contested ``zone`` (design_new.md:1945). Occupancy is read
-        from ``Block.occupied_by``; authority is a ``Block.reserved_by_path``
-        naming a path this train owns.
+        """True when ``train_id`` already occupies or **locks** any block in the
+        contested ``zone`` (design_new.md "Meet coordination", Existing
+        commitment decides before priority).
+
+        Commitment is occupancy or a lock, never a bare reservation: a block
+        this train has reserved but not yet locked does **not** commit the meet,
+        because Preemption can still take it. Occupancy is read from
+        ``Block.occupied_by``; a lock is a ``Block.locked_by_path`` naming a path
+        this train owns.
         """
         blocks = getattr(self._re.network, "blocks", {}) or {}
         dispatcher = getattr(self._re, "path_dispatcher", None)
@@ -203,9 +208,9 @@ class MeetCoordinator:
                 continue
             if getattr(block, "occupied_by", None) == train_id:
                 return True
-            reserved_by_path = getattr(block, "reserved_by_path", None)
-            if reserved_by_path is not None:
-                path = paths.get(reserved_by_path)
+            locked_by_path = getattr(block, "locked_by_path", None)
+            if locked_by_path is not None:
+                path = paths.get(locked_by_path)
                 if path is not None and getattr(path, "train_id", None) == train_id:
                     return True
         return False
