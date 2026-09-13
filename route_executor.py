@@ -2445,16 +2445,15 @@ class RouteExecutor:
                 # Terminal walk — no later task on the directed walk.
                 break
 
-        # Stopped-run authority shrink (design_new.md "Stopped-run authority
-        # shrink", step 66aa): a run that reached a stand holding more than its
-        # braking-distance floor releases the surplus forward reservations and
-        # switch locks, so contention resolves without any priority-driven cancel
-        # — a lower-priority train that braked short of a contested block gives
-        # those blocks back by standing still, and the higher-priority train takes
-        # them. It releases forward resources only while stopped, so it never
-        # releases track ahead of a rolling train. Not a cancel: the path stays
-        # ACTIVE and `ato.engaged` is untouched.
-        self._run_stopped_authority_shrink(train_id, train, controller)
+        # Stopped-run lock shrink (design_new.md "Stopped-run lock shrink", step
+        # 66aa): a run that reached a stand holding more locked track than its
+        # braking-distance floor releases the surplus lock flags, keeping the
+        # reservation. The freed blocks stay reserved-but-not-locked, so a
+        # strictly higher-priority run may preempt them while this train keeps its
+        # claim. It releases lock only while stopped, so it never unlocks track
+        # ahead of a rolling train. Not a cancel: the path stays ACTIVE and
+        # `control_mode` is untouched.
+        self._run_stopped_lock_shrink(train_id, train, controller)
 
         if any_success:
             # A valid task was served this tick → the walk is not all-broken.
@@ -3137,101 +3136,30 @@ class RouteExecutor:
             return projection
         return ahead
 
-    def _write_braking_distance_lock(self, train_id: str) -> None:
-        """Write the braking-distance lock onto the train's reserved blocks
-        (design_new.md "Braking-distance lock", step 66aa).
-
-        Called after a successful create/extend. Locks every block the active
-        path currently reserves through `BlockManager.lock_blocks_for_path(...)`
-        — in the current model the reservation is bounded to the stopping
-        distance by the acquisition cap, so the reserved prefix is the
-        braking-distance subset. Re-locking an already-locked own block is an
-        idempotent no-op, so running this on every acquisition pass is safe.
-        Never bounds acquisition; the lock is a tier inside the reservation.
-        """
-        if self.path_dispatcher is None:
-            return
-        path = self.path_dispatcher.get_active_path(train_id)
-        if path is None:
-            return
-        block_manager = getattr(self.network, "block_manager", None)
-        if block_manager is None:
-            return
-        blocks = getattr(self.network, "blocks", {})
-        reserved_block_ids = [
-            entry.resource_id
-            for entry in path.resource_sequence
-            if entry.resource_type == "block"
-            and getattr(blocks.get(entry.resource_id), "reserved_by_path", None)
-            == path.path_id
-        ]
-        if reserved_block_ids:
-            block_manager.lock_blocks_for_path(reserved_block_ids, path.path_id)
-
-    def _run_stopped_authority_shrink(
-        self, train_id: str, train: "Train", controller: TrainController
-    ) -> None:
-        """Pull a stopped run's forward authority back to its braking-distance cap
-        (design_new.md "Stopped-run authority shrink").
-
-        The cap is the same block the acquisition step targets — the braking
-        distance ahead of the head (at a stand, the block whose far seam clears
-        the safety margin, i.e. the floor). When the run holds more than that,
-        shrink to it and release the surplus through
-        `PathDispatcher.shrink_authority_to_cap(...)`, which keeps the path ACTIVE
-        (not a cancel). Only while `is_stopped()` is True, so it never releases
-        track ahead of a rolling train.
-        """
-        if self.path_dispatcher is None or not controller.is_stopped():
-            return
-        active_path_id = self._get_active_path_id(train_id)
-        if active_path_id is None:
-            return
-        armed = self.find_armed_task(train_id)
-        if armed is None or armed.stored_resolved_target is None:
-            return
-        target_block = armed.stored_resolved_target.requested_destination_block_id
-        target_dir = armed.stored_resolved_target.requested_destination_direction
-        if not target_block:
-            return
-        manual_override = self._manual_override_for(train_id)
-        cap_block = self._acquisition_cap_block(
-            train, controller, target_block, target_dir, manual_override, None
-        )
-        if cap_block is None:
-            # No cap (the braking distance covers the whole forward route): the
-            # run holds no surplus to release.
-            return
-        self.path_dispatcher.shrink_authority_to_cap(active_path_id, cap_block)
-
-    def _acquisition_cap_block(
+    def _braking_lock_block_ids(
         self,
         train: "Train",
         controller: TrainController,
         target_block: str,
         target_dir: str,
         manual_override: bool,
-        meet_ceiling_block: Optional[str],
-    ) -> Optional[str]:
-        """The acquisition cap block for step `66aa` — the NEARER of the
-        braking-distance lock and any meet ceiling (design_new.md
-        "Acquisition-cap rule" / "Braking-distance lock").
+    ) -> List[str]:
+        """The forward blocks within the train's braking distance — the
+        braking-distance lock subset (design_new.md "Braking-distance lock",
+        Computing the locked blocks).
 
-        Both caps are measured along the forward route from the head toward
-        `target_block`. The braking-distance cap is the first block whose far
-        seam is at or beyond the train's braking distance, summing full
-        `Block.length_cm` from the head, floored at the next block ahead of the
-        head so a stopped train (braking distance `0`) still locks one whole
-        block. Returns `None` — the no-cap case — when neither cap is nearer
-        than the target: the braking distance covers the whole forward route and
-        there is no meet ceiling.
+        Walks the forward route from the head toward `target_block`, summing each
+        block's `Block.length_cm` from the head's current position, and returns
+        every block up to and including the first whose far seam is at or beyond
+        the braking distance. The scan starts at the next block ahead (index 1),
+        so a stopped train (braking distance rounding under one block) still
+        locks one whole block — the floor.
         """
         if self.path_dispatcher is None:
-            return meet_ceiling_block
+            return []
         head_block = controller._get_current_block_id()
         if not head_block or head_block == target_block:
-            return meet_ceiling_block
-
+            return []
         candidates = self.path_dispatcher.find_walk_candidates(
             head_block,
             target_block,
@@ -3241,39 +3169,95 @@ class RouteExecutor:
         )
         ordered = candidates[0].ordered_blocks if candidates else None
         if not ordered or len(ordered) < 2:
-            return meet_ceiling_block
-
-        # Braking-distance cap index: the first block ahead of the head whose far
-        # seam is at or beyond the braking distance, measured from the head's
-        # current position (its remaining distance in the head block plus each
-        # forward block's full length). The scan starts at the next block ahead
-        # (index 1), so a stopped train always locks at least one whole block
-        # (the floor).
+            return []
         braking_cm = controller.braking_distance_cm(
             getattr(self, "_current_delta_seconds", 0.0)
         )
-        braking_index: Optional[int] = None
         far_seam_cm = float(controller._get_remaining_distance_in_current_block())
+        lock_ids: List[str] = []
         for i in range(1, len(ordered)):
-            block = self.network.blocks.get(ordered[i]) if self.network else None
+            bid = ordered[i]
+            block = self.network.blocks.get(bid) if self.network else None
             far_seam_cm += float(getattr(block, "length_cm", 0.0) or 0.0)
+            lock_ids.append(bid)  # floor: always at least ordered[1]
             if far_seam_cm >= braking_cm:
-                braking_index = i
                 break
+        return lock_ids
 
-        cap_index = braking_index
-        if meet_ceiling_block is not None and meet_ceiling_block in ordered:
-            meet_index = ordered.index(meet_ceiling_block)
-            cap_index = meet_index if cap_index is None else min(cap_index, meet_index)
+    def _write_braking_distance_lock(
+        self,
+        train: "Train",
+        controller: TrainController,
+        target_block: str,
+        target_dir: str,
+        manual_override: bool,
+    ) -> None:
+        """Write the braking-distance lock onto the reserved blocks within the
+        train's stopping distance (design_new.md "Braking-distance lock", step
+        66aa).
 
-        if cap_index is None:
-            return None
-        cap_block = ordered[cap_index]
-        # A cap at (or past) the target is the no-cap case (design_new.md
-        # "Acquisition-cap rule", No-cap case): acquire to the target.
-        if cap_block == target_block:
-            return None
-        return cap_block
+        Called after a successful create/extend. The lock is the braking-distance
+        subset of the reservation, not the whole reserved prefix: reserved blocks
+        beyond the stopping distance stay reserved-but-not-locked (preemptible).
+        The lock only grows forward while the train rolls; a stopped run's
+        surplus lock is released by `_run_stopped_lock_shrink`. Re-locking an
+        already-locked own block is idempotent.
+        """
+        if self.path_dispatcher is None:
+            return
+        path = self.path_dispatcher.get_active_path(train.train_id)
+        if path is None:
+            return
+        block_manager = getattr(self.network, "block_manager", None)
+        if block_manager is None:
+            return
+        blocks = getattr(self.network, "blocks", {})
+        lock_ids = [
+            bid
+            for bid in self._braking_lock_block_ids(
+                train, controller, target_block, target_dir, manual_override
+            )
+            if getattr(blocks.get(bid), "reserved_by_path", None) == path.path_id
+        ]
+        if lock_ids:
+            block_manager.lock_blocks_for_path(lock_ids, path.path_id)
+
+    def _run_stopped_lock_shrink(
+        self, train_id: str, train: "Train", controller: TrainController
+    ) -> None:
+        """Release a stopped run's surplus lock back to the floor, keeping the
+        reservation (design_new.md "Stopped-run lock shrink").
+
+        When the run is stopped holding more locked track than the floor (the
+        next block ahead of the head), release the lock flag on every locked
+        block beyond that first one through
+        `BlockManager.unlock_blocks_for_path(...)`. The reservation, the head
+        resources, and `control_mode` are untouched, so the freed blocks stay
+        reserved-but-not-locked — preemptible by a strictly higher-priority run.
+        Only while stopped, so it never unlocks track ahead of a rolling train.
+        """
+        if self.path_dispatcher is None or not controller.is_stopped():
+            return
+        path = self.path_dispatcher.get_active_path(train_id)
+        if path is None:
+            return
+        block_manager = getattr(self.network, "block_manager", None)
+        if block_manager is None:
+            return
+        blocks = getattr(self.network, "blocks", {})
+        locked_forward = [
+            entry.resource_id
+            for entry in path.resource_sequence
+            if entry.resource_type == "block"
+            and entry.sequence_index > path.current_resource_index
+            and getattr(blocks.get(entry.resource_id), "locked_by_path", None)
+            == path.path_id
+        ]
+        # Keep the floor block (the first locked block ahead of the head); release
+        # the surplus lock beyond it. The lock is a forward-contiguous prefix, so
+        # locked_forward[0] is the floor.
+        if len(locked_forward) > 1:
+            block_manager.unlock_blocks_for_path(locked_forward[1:], path.path_id)
 
     def _authority_acquisition_step(
         self,
@@ -3369,13 +3353,15 @@ class RouteExecutor:
         # override); an automatic route leaves this False.
         manual_override = bool(getattr(route, "manual_override", False))
 
-        # Acquisition cap (design_new.md "Acquisition-cap rule"): the NEARER of
-        # the braking-distance lock (bound authority to the stopping distance)
-        # and any meet ceiling, both measured along the forward route from the
-        # head toward the target. `None` acquires to the target.
-        reservation_cap_block_id = self._acquisition_cap_block(
-            train, controller, target_block, target_dir,
-            manual_override, meet_ceiling_block,
+        # Reservation cap (design_new.md "Reservation-cap rule"): MEET-ONLY. The
+        # braking distance sizes the lock (per "Braking-distance lock"), not this
+        # cap — the lock is a tier inside the reservation, written block-by-block
+        # after acquisition, never a bound on how far reservation is acquired. So
+        # the only cap source is a meet ceiling; `None` acquires to the target.
+        reservation_cap_block_id = (
+            meet_ceiling_block
+            if meet_ceiling_block and meet_ceiling_block != target_block
+            else None
         )
 
         success = False
@@ -3469,13 +3455,13 @@ class RouteExecutor:
         self._resolve_run_condition(exec_state, "planning_failed")
 
         # Braking-distance lock (design_new.md "Braking-distance lock", step
-        # 66aa): after the reservation is stored, lock the reserved blocks the
-        # train needs within its stopping distance. The acquisition cap already
-        # bounds the reservation to that stopping distance, so the reserved
-        # prefix and the braking-distance subset coincide here — lock the whole
-        # reserved prefix. The lock is a tier inside the reservation and never
-        # bounds acquisition; nothing yet reads it for a planning decision.
-        self._write_braking_distance_lock(train.train_id)
+        # 66aa): after the reservation is stored, lock only the reserved blocks
+        # within the train's stopping distance ahead of the head. Blocks reserved
+        # beyond that stay reserved-but-not-locked (preemptible). The lock is a
+        # tier inside the reservation and never bounds acquisition.
+        self._write_braking_distance_lock(
+            train, controller, target_block, target_dir, manual_override
+        )
 
         # Fix (deviation guard): insert any start-block tiles that lie between
         # the train's current head tile and the path segment's first tile into
