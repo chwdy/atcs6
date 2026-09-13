@@ -997,8 +997,8 @@ class TestATODirectionDetection:
         v1: controller.path_projection.received_path_plan reads from
         path_dispatcher.get_active_path(train_id) and narrows it to the
         canonical **received_path_plan schema** (`path_id`,
-        `resource_sequence`, `authority_end_block_id`). Both `get_path_tiles()`
-        and `get_authority_end_block_id()` are *derived* from
+        `resource_sequence`, `reservation_end_block_id`). Both `get_path_tiles()`
+        and `get_reservation_end_block_id()` are *derived* from
         `resource_sequence`, so the stub supplies that underlying data rather
         than faking the derived accessors.
         """
@@ -1663,9 +1663,9 @@ class TestBestEffortAcquisitionContract:
         )
         assert result.reached_target is False
         assert result.appended_resource_count > 0
-        assert result.authority_end_block_id == "BLOCK_B", (
+        assert result.reservation_end_block_id == "BLOCK_B", (
             f"Expected truncation to BLOCK_B (longest acquirable prefix "
-            f"toward occupied BLOCK_C). Got: {result.authority_end_block_id!r}"
+            f"toward occupied BLOCK_C). Got: {result.reservation_end_block_id!r}"
         )
         assert result.path_id is not None
         assert result.resource_sequence is not None
@@ -1745,7 +1745,7 @@ class TestBestEffortAcquisitionContract:
         live_path = dispatcher.paths.get(path_id)
         assert live_path is not None
         assert live_path.status == PathStatus.ACTIVE
-        assert live_path.get_authority_end_block_id() == "BLOCK_B"
+        assert live_path.get_reservation_end_block_id() == "BLOCK_B"
 
     def test_create_path_best_effort_truncates_before_locked_switch(
         self, network, dispatcher,
@@ -1809,16 +1809,16 @@ class TestBestEffortAcquisitionContract:
         )
         assert result.reached_target is False
         assert result.appended_resource_count > 0
-        assert result.authority_end_block_id == "BLOCK_B", (
+        assert result.reservation_end_block_id == "BLOCK_B", (
             f"Truncated authority must land at BLOCK_B (before the "
-            f"contested switch). Got: {result.authority_end_block_id!r}"
+            f"contested switch). Got: {result.reservation_end_block_id!r}"
         )
 
 
 class TestStopArrivalHeadInTerminalBlock:
     """Stop-arrival disjunct 4b (design_new.md step `8df5`): a train stopped
     with its head physically in the authority-end (terminal) block completes
-    even when the distance-0 dominant restriction is NOT `AUTHORITY_STOP` — the
+    even when the distance-0 dominant restriction is NOT `RESERVATION_STOP` — the
     manual-stop-in-a-long-terminal-block case. Disjunct 4a covers the
     complementary stopped-short-of-a-very-short-final-block case.
     """
@@ -1846,7 +1846,7 @@ class TestStopArrivalHeadInTerminalBlock:
         )
         attach_synthetic_path(controller, path)
         # Force disjunct 4a false: the distance-0 dominant restriction is NOT
-        # AUTHORITY_STOP, so only 4b can complete this stop.
+        # RESERVATION_STOP, so only 4b can complete this stop.
         controller._compute_canonical_lookahead = lambda: {
             "lookahead": {
                 "speed_curves": [{"atc_limit_reason_code": "block_speed_limit"}]
@@ -1854,17 +1854,17 @@ class TestStopArrivalHeadInTerminalBlock:
         }
         return controller
 
-    def test_head_in_terminal_block_completes_without_authority_stop(
+    def test_head_in_terminal_block_completes_without_reservation_stop(
         self, simple_linear_network
     ):
-        # Head in BLOCK_C (the authority end); reason is not AUTHORITY_STOP.
+        # Head in BLOCK_C (the authority end); reason is not RESERVATION_STOP.
         controller = self._stopped_controller(
             simple_linear_network, "BLOCK_C", (3, 0), ["BLOCK_C"]
         )
-        assert controller.is_stopped_at_authority_end() is True, (
+        assert controller.is_stopped_at_reservation_end() is True, (
             "Disjunct 4b: a train stopped with its head in the authority-end "
             "block has arrived even when the dominant restriction is not "
-            "AUTHORITY_STOP (manual-stop-in-terminal-block case)"
+            "RESERVATION_STOP (manual-stop-in-terminal-block case)"
         )
 
     def test_head_short_of_terminal_block_does_not_complete_on_4b(
@@ -1874,9 +1874,9 @@ class TestStopArrivalHeadInTerminalBlock:
         controller = self._stopped_controller(
             simple_linear_network, "BLOCK_C", (1, 0), ["BLOCK_B"]
         )
-        assert controller.is_stopped_at_authority_end() is False, (
+        assert controller.is_stopped_at_reservation_end() is False, (
             "4b must require the head to be physically in the terminal block; a "
-            "train stopped short of it with no AUTHORITY_STOP has not arrived"
+            "train stopped short of it with no RESERVATION_STOP has not arrived"
         )
 
 
@@ -1912,14 +1912,14 @@ class TestMeetCapShortOfTarget:
             train_id="T_PROBE",
             requested_destination_block_id="BLOCK_C",
             requested_destination_direction="forward",
-            acquisition_cap_block_id="BLOCK_B",
+            reservation_cap_block_id="BLOCK_B",
         )
 
         assert result.success is True
         assert result.reached_target is False
-        assert result.authority_end_block_id == "BLOCK_B", (
+        assert result.reservation_end_block_id == "BLOCK_B", (
             "BEST_EFFORT stores authority up to the cap and holds there. "
-            f"Got authority_end={result.authority_end_block_id!r}"
+            f"Got authority_end={result.reservation_end_block_id!r}"
         )
 
 
@@ -2123,7 +2123,7 @@ class TestSameBlockRejected:
             f"ordinary different-block create_path must still work; got "
             f"failure_kind={result.failure_kind!r}, reason={result.reason!r}"
         )
-        assert result.authority_end_block_id == "BLOCK_C"
+        assert result.reservation_end_block_id == "BLOCK_C"
         block_ids = [
             e.resource_id for e in result.resource_sequence
             if e.resource_type == "block"
@@ -2234,4 +2234,4 @@ class TestSameBlockRejected:
             f"path must start from the dual-end-resolved tail block BLOCK_B; got "
             f"resource_sequence blocks {seq_blocks}"
         )
-        assert result.authority_end_block_id == "BLOCK_A"
+        assert result.reservation_end_block_id == "BLOCK_A"

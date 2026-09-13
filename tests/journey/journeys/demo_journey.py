@@ -106,7 +106,7 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
         """
         def check(s):
             assert s.active_path_id is not None, "no active path"
-            end = s.active_path_authority_end_block_id
+            end = s.active_path_reservation_end_block_id
             assert end is not None, "active path has no authority end"
             occupied = set(s.occupied_blocks or [])
             assert end not in occupied, (
@@ -188,7 +188,7 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
                 assert_active_path_authority_acquired_forward(),
                 assert_atc_reason_not_in(
                     [
-                        AtcLimitReasonCode.NO_AUTHORITY,
+                        AtcLimitReasonCode.NO_RESERVATION,
                         AtcLimitReasonCode.EB,
                     ]
                 ),

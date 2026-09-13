@@ -3,7 +3,7 @@ line 1025).
 
 A cap short of the requested target must:
   * leave ``requested_destination_block_id`` at the real route target,
-  * truncate stored authority so ``authority_end_block_id`` lands on the cap,
+  * truncate stored authority so ``reservation_end_block_id`` lands on the cap,
   * report ``reached_target = False`` (never ``True``),
   * never satisfy ``try_complete_active_path(...)``, so the train holds at the
     cap.
@@ -74,7 +74,7 @@ def test_create_path_caps_authority_and_never_completes():
     result = dispatcher.create_path(
         train_id=train.train_id,
         requested_destination_block_id="BLOCK_E",
-        acquisition_cap_block_id="BLOCK_C",
+        reservation_cap_block_id="BLOCK_C",
     )
     assert result.success, result.reason
     # Requested target is unchanged (result echo); authority is capped at the
@@ -84,7 +84,7 @@ def test_create_path_caps_authority_and_never_completes():
     assert result.appended_resource_count > 0
 
     path = dispatcher.get_path(result.path_id)
-    assert path.get_authority_end_block_id() == "BLOCK_C"
+    assert path.get_reservation_end_block_id() == "BLOCK_C"
 
     # The completion gate requires authority_end == requested. A capped authority
     # (BLOCK_C != BLOCK_E) can therefore never complete — the train holds at the
@@ -102,11 +102,11 @@ def test_create_path_cap_equal_to_target_is_no_cap():
     result = dispatcher.create_path(
         train_id=train.train_id,
         requested_destination_block_id="BLOCK_C",
-        acquisition_cap_block_id="BLOCK_C",
+        reservation_cap_block_id="BLOCK_C",
     )
     assert result.success, result.reason
     assert result.reached_target is True
-    assert dispatcher.get_path(result.path_id).get_authority_end_block_id() == "BLOCK_C"
+    assert dispatcher.get_path(result.path_id).get_reservation_end_block_id() == "BLOCK_C"
 
 
 def test_create_path_no_cap_reaches_target():
@@ -122,7 +122,7 @@ def test_create_path_no_cap_reaches_target():
     )
     assert result.success, result.reason
     assert result.reached_target is True
-    assert dispatcher.get_path(result.path_id).get_authority_end_block_id() == "BLOCK_D"
+    assert dispatcher.get_path(result.path_id).get_reservation_end_block_id() == "BLOCK_D"
 
 
 def test_extend_path_holds_no_growth_when_already_at_cap():
@@ -137,17 +137,17 @@ def test_extend_path_holds_no_growth_when_already_at_cap():
     )
     assert created.success, created.reason
     path_id = created.path_id
-    assert dispatcher.get_path(path_id).get_authority_end_block_id() == "BLOCK_C"
+    assert dispatcher.get_path(path_id).get_reservation_end_block_id() == "BLOCK_C"
 
     ext = dispatcher.extend_path(
         path_id=path_id,
         requested_destination_block_id="BLOCK_E",
-        acquisition_cap_block_id="BLOCK_C",
+        reservation_cap_block_id="BLOCK_C",
     )
     assert ext.success is True
     assert ext.appended_resource_count == 0
     assert ext.reached_target is False
-    assert dispatcher.get_path(path_id).get_authority_end_block_id() == "BLOCK_C"
+    assert dispatcher.get_path(path_id).get_reservation_end_block_id() == "BLOCK_C"
 
 
 def test_extend_path_caps_ahead_of_authority_end():
@@ -166,7 +166,7 @@ def test_extend_path_caps_ahead_of_authority_end():
     ext = dispatcher.extend_path(
         path_id=path_id,
         requested_destination_block_id="BLOCK_E",
-        acquisition_cap_block_id="BLOCK_D",
+        reservation_cap_block_id="BLOCK_D",
     )
     assert ext.success is True, ext.reason
     assert ext.appended_resource_count > 0
@@ -175,7 +175,7 @@ def test_extend_path_caps_ahead_of_authority_end():
     # stored on Path.
     assert ext.requested_destination_block_id == "BLOCK_E"
     path = dispatcher.get_path(path_id)
-    assert path.get_authority_end_block_id() == "BLOCK_D"
+    assert path.get_reservation_end_block_id() == "BLOCK_D"
 
 
 # --- create_path() / extend_path() return contract ---------------------------
@@ -199,7 +199,7 @@ def test_failed_acquisition_result_nulls_every_field_but_failure_kind_and_reason
         requested_destination_direction="forward",
         requested_destination_block_id="BLOCK_E",
         path_id="PATH_1",
-        authority_end_block_id="BLOCK_C",
+        reservation_end_block_id="BLOCK_C",
     )
 
     assert result.success is False
@@ -212,7 +212,7 @@ def test_failed_acquisition_result_nulls_every_field_but_failure_kind_and_reason
     assert result.reached_target is None
     assert result.requested_destination_block_id is None
     assert result.requested_destination_direction is None
-    assert result.authority_end_block_id is None
+    assert result.reservation_end_block_id is None
 
     # Nothing diagnostic was lost — it moved into `reason`.
     assert "PATH_1" in result.reason

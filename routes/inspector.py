@@ -120,11 +120,11 @@ _DERIVED_DOC: Dict[str, Dict[str, Any]] = {
         "formula_doc": "train_controller/path_projection.py:92 — alias for assigned_path_id.",
     },
     "path_projection.ato_destination_block_id": {
-        "computed_from": ["received_path_plan.authority_end_block_id"],
+        "computed_from": ["received_path_plan.reservation_end_block_id"],
         "formula_doc": (
             "train_controller/path_projection.py:97 — derived from "
-            "received_path_plan.authority_end_block_id "
-            "(Path.get_authority_end_block_id())."
+            "received_path_plan.reservation_end_block_id "
+            "(Path.get_reservation_end_block_id())."
         ),
     },
     "path_projection.path_backed_run_active": {

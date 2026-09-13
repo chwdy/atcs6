@@ -156,7 +156,7 @@ class ResourceCoordinator:
         holds are released in reverse acquisition order (switches are acquired
         first, so they release last).
 
-        This is deliberately NOT `release_authority_tail(...)`: a failed probe
+        This is deliberately NOT `release_reservation_tail(...)`: a failed probe
         removes only its own new holds, never a whole switch family.
         """
         if block_ids:
@@ -168,7 +168,7 @@ class ResourceCoordinator:
                 path_id, list(reversed(list(inserted_switch_claim_keys)))
             )
 
-    def release_authority_tail(
+    def release_reservation_tail(
         self,
         block_ids: List[str],
         main_switch_ids: List[str],
@@ -214,7 +214,7 @@ class ResourceCoordinator:
             # design_new.md: filter to the blocks actually reserved for this path
             # before releasing, so an expected already-released block (e.g. an
             # ahead reservation Observe authority truncation already dropped via
-            # release_authority_tail) does not emit a spurious mismatch warning.
+            # release_reservation_tail) does not emit a spurious mismatch warning.
             # The released set is exactly that matching subset.
             matching = self.block_manager.matching_path_reservation_ids(
                 list(block_ids), path_id

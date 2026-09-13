@@ -43,7 +43,7 @@ What this test asserts
 Per design_new.md "`create_path()` flow" and "Authority truncation", calling
 `PathDispatcher.create_path(..., BEST_EFFORT)` against a destination whose
 future blocks include one currently OCCUPIED by another train must return
-`success=True, reached_target=False` with `authority_end_block_id`
+`success=True, reached_target=False` with `reservation_end_block_id`
 set to the longest acquirable block-terminated prefix. For the T1 →
 PLT_S2_S_BLOCK probe (with T2 still occupying PLT_S2_S_BLOCK), that
 prefix ends at `BLK_X1_TO_S2_S` — the block immediately before the
@@ -309,10 +309,10 @@ def _t1_path_capture_window(
             "failure_kind": None,
             "reason": "T1 has no active path",
             "path_id": None,
-            "authority_end_block_id": None,
+            "reservation_end_block_id": None,
             "resource_sequence_len": 0,
         }
-    auth_end = path.get_authority_end_block_id()
+    auth_end = path.get_reservation_end_block_id()
     # The requested target is route-owned (RouteRun.task_runs[i].resolved_target),
     # not stored on Path: read it from the armed task.
     armed = sim_controller.route_executor.find_armed_task("T1")
@@ -329,7 +329,7 @@ def _t1_path_capture_window(
         "failure_kind": None,
         "reason": "stored path snapshot",
         "path_id": path.path_id,
-        "authority_end_block_id": auth_end,
+        "reservation_end_block_id": auth_end,
         "resource_sequence_len": len(path.resource_sequence),
     }
 
@@ -441,7 +441,7 @@ def test_best_effort_crossover_block_states(dt, label, capsys):
         "\nBEST_EFFORT contract assertion:"
         f"\n  observed success      = {probe_result.get('success')!r}"
         f"\n  observed reached      = {probe_result.get('reached_target')!r}"
-        f"\n  observed authority    = {probe_result.get('authority_end_block_id')!r}"
+        f"\n  observed authority    = {probe_result.get('reservation_end_block_id')!r}"
         f"\n  observed reason       = {probe_result.get('reason')!r}"
     )
     assert probe_result["success"] is True, (
@@ -455,12 +455,12 @@ def test_best_effort_crossover_block_states(dt, label, capsys):
         f"by T2, so the full target cannot be reached). "
         f"Got: {probe_result['reached_target']!r}"
     )
-    assert probe_result["authority_end_block_id"] == "BLK_S1_S_TO_X1", (
+    assert probe_result["reservation_end_block_id"] == "BLK_S1_S_TO_X1", (
         f"Expected truncation to BLK_S1_S_TO_X1 (held back before SW_X1). The "
         f"furthest acquirable prefix, BLK_X1_TO_S2_S, is a two-way block "
         f"straight off SW_X1, so the junction-fouling exclusion (item 11) "
         f"holds the authority one block back to keep the crossover clear. "
-        f"Got: {probe_result['authority_end_block_id']!r}"
+        f"Got: {probe_result['reservation_end_block_id']!r}"
     )
     assert probe_result["resource_sequence_len"] >= 1, (
         f"A grown-but-short result should carry a non-empty resource_sequence. "

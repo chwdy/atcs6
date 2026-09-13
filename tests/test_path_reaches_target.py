@@ -5,7 +5,7 @@ design_new.md "Path field schema": `True` when `block_id` appears as a `block`
 entry in `resource_sequence` at a `sequence_index` at or after
 `current_resource_index`.
 
-It is deliberately not an equality test against `get_authority_end_block_id()`.
+It is deliberately not an equality test against `get_reservation_end_block_id()`.
 Callers that asked "is this authority short of its target?" by comparing the
 target with the authority end got the answer wrong for an authority that
 legitimately runs *past* its target — reached, not missed. Entries before
@@ -46,7 +46,7 @@ def test_a_target_the_authority_runs_past_is_reached():
     authority was grown beyond the target, so the target is reached."""
     path = _path(("block", "A"), ("block", "B"), ("block", "C"))
 
-    assert path.get_authority_end_block_id() == "C"
+    assert path.get_reservation_end_block_id() == "C"
     assert path.reaches_target("B") is True
 
 

@@ -58,7 +58,7 @@ def test_travel_direction_has_no_setter():
         controller.travel_direction = "EAST"
 
 
-def test_travel_direction_none_when_no_authority():
+def test_travel_direction_none_when_no_reservation():
     """No live authority (received_path_plan is None) -> travel_direction None."""
     network = _build_two_tile_network()
     train, span = _make_train(network)

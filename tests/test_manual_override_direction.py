@@ -130,7 +130,7 @@ class TestCreatePathDirectionOverride:
             "not include the resolved terminal direction. Got "
             f"failure_kind={result.failure_kind!r}, reason={result.reason!r}"
         )
-        assert result.authority_end_block_id == "BLOCK_C"
+        assert result.reservation_end_block_id == "BLOCK_C"
 
     def test_override_false_rejects_against_policy(
         self, linear_network, dispatcher
@@ -158,10 +158,10 @@ class TestCreatePathDirectionOverride:
         )
 
         assert not result.reached_target
-        assert result.authority_end_block_id != "BLOCK_C", (
+        assert result.reservation_end_block_id != "BLOCK_C", (
             "Direction policy must keep the authority short of BLOCK_C without "
-            f"manual_override. Got authority_end_block_id="
-            f"{result.authority_end_block_id!r}, reason={result.reason!r}"
+            f"manual_override. Got reservation_end_block_id="
+            f"{result.reservation_end_block_id!r}, reason={result.reason!r}"
         )
 
     def test_default_call_still_enforces_direction(
@@ -183,10 +183,10 @@ class TestCreatePathDirectionOverride:
         )
 
         assert not result.reached_target
-        assert result.authority_end_block_id != "BLOCK_C", (
+        assert result.reservation_end_block_id != "BLOCK_C", (
             "Direction policy must keep the authority short of BLOCK_C without "
-            f"manual_override. Got authority_end_block_id="
-            f"{result.authority_end_block_id!r}, reason={result.reason!r}"
+            f"manual_override. Got reservation_end_block_id="
+            f"{result.reservation_end_block_id!r}, reason={result.reason!r}"
         )
 
 

@@ -112,7 +112,7 @@ def test_switch_lock_holders_use_holder_identity():
 # --- membership predicate (fake controllers) -------------------------------
 
 
-def _fake_controller(stopped=True, has_plan=True, reason="authority_stop", curves=True):
+def _fake_controller(stopped=True, has_plan=True, reason="reservation_stop", curves=True):
     payload = {
         "lookahead": {
             "speed_curves": ([{"atc_limit_reason_code": reason}] if curves else [])
@@ -151,9 +151,9 @@ def test_train_without_authority_is_not_a_participant():
 
 
 def test_train_with_room_ahead_is_not_a_participant():
-    # Dominant restriction is an obstruction ahead, not the zero-clearance
-    # authority hold — the train still has clearance to advance.
-    ex = _executor_with_controllers({"T": _fake_controller(reason="obstruction")})
+    # Dominant restriction is a posted speed limit ahead, not the zero-clearance
+    # reservation-stop hold — the train still has clearance to advance.
+    ex = _executor_with_controllers({"T": _fake_controller(reason="speed_limit")})
     assert ex._is_wedge_participant("T") is False
 
 

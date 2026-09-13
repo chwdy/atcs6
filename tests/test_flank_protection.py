@@ -227,7 +227,7 @@ class TestRoutePointExemption:
 
 
 class TestSegmentRollbackReleasesFlankLocks:
-    """Authority-tail release (`ResourceCoordinator.release_authority_tail`) is
+    """Authority-tail release (`ResourceCoordinator.release_reservation_tail`) is
     scoped to the dropped primary switches, but the acquire-time flank expansion
     also placed flank locks on NEIGHBOUR switches that are not in that list.
     `SwitchManager.release_segment_locks(...)` must drop those flank locks too,
@@ -261,7 +261,7 @@ class TestSegmentRollbackReleasesFlankLocks:
         # Authority truncation drops the whole family of the dropped primary;
         # the dispatcher passes ONLY the primary switch id (the flank neighbour
         # SW_XOVER_N is not in the list).
-        coord.release_authority_tail(
+        coord.release_reservation_tail(
             block_ids=[], main_switch_ids=["SW_LEAD"], path_id="P"
         )
 
@@ -300,7 +300,7 @@ class TestProbeRollbackReleasesOnlyNewlyAcquired:
     """A failed acquisition probe must release only what THAT probe newly
     acquired, never a switch the probe merely re-touched over crossover
     topology and the path legitimately still holds (design_new.md
-    "Resource-coordinator model": `rollback_probe` vs `release_authority_tail`).
+    "Resource-coordinator model": `rollback_probe` vs `release_reservation_tail`).
 
     `SwitchManager.rollback_inserted_claims(...)` is the newly-acquired-only
     release: it drops exactly the listed `SwitchClaimKey`s (and only when the

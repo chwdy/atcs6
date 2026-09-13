@@ -81,7 +81,7 @@ export interface PathAcquisitionResult {
   path_id: string | null;
   requested_destination_block_id: string | null;
   requested_destination_direction: string | null;
-  authority_end_block_id: string | null;
+  reservation_end_block_id: string | null;
   resource_sequence: unknown[] | null;
   reason: string;
 }

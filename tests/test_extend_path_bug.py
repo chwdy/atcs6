@@ -182,7 +182,7 @@ class TestExtendPathBug:
 
         # Verify dispatcher's Path object is updated
         updated_path = dispatcher.get_path(path.path_id)
-        assert updated_path.get_authority_end_block_id() == "BLOCK_E"
+        assert updated_path.get_reservation_end_block_id() == "BLOCK_E"
 
         # Verify controller sees extended path immediately via _get_effective_path_tiles()
         extended_tiles = controller._get_effective_path_tiles()
@@ -350,7 +350,7 @@ class TestExtendPathBug:
 
         # Verify dispatcher's Path object is updated
         updated_path = dispatcher.get_path(path_result.path.path_id)
-        assert updated_path.get_authority_end_block_id() == "BLOCK_E"
+        assert updated_path.get_reservation_end_block_id() == "BLOCK_E"
 
         # Controller should see extended path immediately
         tiles_after = controller._get_effective_path_tiles()
@@ -460,7 +460,7 @@ class TestExtendPathAtoSync:
         )
         assert success, f"Failed to assign path: {error}"
         train_on_network.assigned_path_id = path.path_id
-        train_on_network.ato_destination_block_id = path.get_authority_end_block_id()
+        train_on_network.ato_destination_block_id = path.get_reservation_end_block_id()
 
         return dispatcher, path
 

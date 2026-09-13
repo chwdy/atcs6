@@ -162,8 +162,8 @@ def test_clearance_ahead_uses_fallback_when_no_blocks_ahead():
 # ---------------------------------------------------------------------------
 
 
-def test_speed_limit_no_authority_short_circuits():
-    """Without a received path plan, return (0, ``"no_authority"``)."""
+def test_speed_limit_no_reservation_short_circuits():
+    """Without a received path plan, return (0, ``"no_reservation"``)."""
     speed, reason = speed_limit_pure(
         received_path_plan_exists=False,
         clearance_cm=10000.0,
@@ -175,7 +175,7 @@ def test_speed_limit_no_authority_short_circuits():
         calculate_max_safe_speed=lambda c, d, s: 100.0,
     )
     assert speed == 0.0
-    assert reason == "no_authority"
+    assert reason == "no_reservation"
 
 
 def test_speed_limit_plain_kinematic_far_clearance():

@@ -56,7 +56,7 @@ class LookaheadBuilder:
 
         # There is no cab gate: the head end is derived from the live authority
         # (design_new.md "Authority-side head derivation"). A train with no live
-        # authority falls through to the `no_authority` empty payload below.
+        # authority falls through to the `no_reservation` empty payload below.
         head_tile = self._c._get_head_tile()
         head_distance_cm = self._c._get_head_distance_cm()
         facing = self._c._facing_direction()
@@ -79,19 +79,19 @@ class LookaheadBuilder:
             # Per design_new.md step `22a9` (canonical lookahead), without a
             # path plan the canonical payload is the no-authority empty form:
             # a single distance-0 anchor with atc_limit/operational_limit=0
-            # and reason `no_authority`. There is no block-bounded fallback;
+            # and reason `no_reservation`. There is no block-bounded fallback;
             # movement authority is binary on `received_path_plan`.
             # EB is a higher-priority safety state — when EB is latched the
             # reason is stamped as `eb` even though authority is also absent
             # (the cancellation-during-EB sequence drops authority too, and
             # operators should see the safety state, not the latent
-            # "no_authority" condition).
+            # "no_reservation" condition).
             if self._c.eb.active:
                 reason_code = AtcLimitReasonCode.EB
                 reason_detail = "Emergency brake active"
             else:
-                reason_code = AtcLimitReasonCode.NO_AUTHORITY
-                reason_detail = "no_authority"
+                reason_code = AtcLimitReasonCode.NO_RESERVATION
+                reason_detail = "no_reservation"
             return self._build_empty_monitor_lookahead(
                 head_tile=head_tile,
                 head_distance_cm=head_distance_cm,
@@ -155,7 +155,7 @@ class LookaheadBuilder:
                 # `deviation`. ATC brakes the train and the overspeed branch in
                 # step `826a` escalates a still-rolling train to EB; the gated
                 # Action explicit-cancel step commits the latch once stopped.
-                # The `no_authority` reason remains for a genuinely-absent plan
+                # The `no_reservation` reason remains for a genuinely-absent plan
                 # (handled in the `not plan` branch above) and for any other
                 # head-off-path case with no deviation latch pending.
                 latched_cancel = (
@@ -178,8 +178,8 @@ class LookaheadBuilder:
                     head_tile=head_tile,
                     head_distance_cm=head_distance_cm,
                     travel_direction=travel_direction,
-                    speed_limit_reason="no_authority",
-                    reason_code=AtcLimitReasonCode.NO_AUTHORITY,
+                    speed_limit_reason="no_reservation",
+                    reason_code=AtcLimitReasonCode.NO_RESERVATION,
                 )
             head_resource_index = 0
             head_tile_index = 0
@@ -530,7 +530,7 @@ class LookaheadBuilder:
         # Calculate effective safety margin (5cm for platform, 25cm otherwise)
         effective_safety_margin = self._c.atc.effective_safety_margin()
         # Target stop point is clearance minus safety margin.
-        # `authority_boundary_delta_cm` is the forward distance from the head to
+        # `reservation_boundary_delta_cm` is the forward distance from the head to
         # the safety-margin-adjusted authority boundary; with an active path,
         # that is the same axis as the speed_curves samples. The boundary
         # projection is owned by `RailwayNetwork.project_authority_boundary_delta`
@@ -538,7 +538,7 @@ class LookaheadBuilder:
         # carried in the head locator, and the authority end is the final block
         # resource's directed frame.
         target_stop_cm = max(0.0, clearance_cm - effective_safety_margin)
-        authority_boundary_delta_cm = (
+        reservation_boundary_delta_cm = (
             self._project_authority_boundary_delta(
                 head_tile=head_tile,
                 head_block_id=head_block_id,
@@ -599,7 +599,7 @@ class LookaheadBuilder:
                 "clearance_cm": clearance_cm,
                 "safety_margin_cm": effective_safety_margin,
                 "target_stop_cm": target_stop_cm,
-                "authority_boundary_delta_cm": authority_boundary_delta_cm,
+                "reservation_boundary_delta_cm": reservation_boundary_delta_cm,
                 "speed_curves": speed_curves,
             },
         }
@@ -638,7 +638,7 @@ class LookaheadBuilder:
                 "stations": [],
                 "clearance_cm": 0.0,
                 "safety_margin_cm": 0.0,
-                "authority_boundary_delta_cm": 0.0,
+                "reservation_boundary_delta_cm": 0.0,
                 "target_stop_cm": 0.0,
                 "speed_curves": [],
             },

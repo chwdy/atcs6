@@ -4,7 +4,7 @@ Path Management Routes - v1 wire format.
 JSON shape (request and response) uses the v1 Path field names directly:
 - requested_destination_block_id
 - requested_destination_direction ("forward" | "reverse")
-- authority_end_block_id
+- reservation_end_block_id
 - resource_sequence
 
 The v0 keys `start_block_id`, `end_block_id`, `priority`, `dispatcher_id`,

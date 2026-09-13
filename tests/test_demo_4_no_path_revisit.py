@@ -190,7 +190,7 @@ def test_t3_s_line_reassignment_does_not_grow_repeated_resource_path(dt, label):
                         and head_block not in set(tpath.get_all_blocks())):
                     overrun_events.append(
                         (tick, tid, "off_authority", head_block,
-                         tpath.get_authority_end_block_id(), None)
+                         tpath.get_reservation_end_block_id(), None)
                     )
 
     # Assertion 1: path stays bounded.

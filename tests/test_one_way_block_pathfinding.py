@@ -95,7 +95,7 @@ def test_create_path_reroutes_around_one_way_block():
         f"failure_kind={result.failure_kind!r} reason={result.reason!r}"
     )
     assert result.reached_target is True
-    assert result.authority_end_block_id == TARGET_WITH_ALTERNATIVE
+    assert result.reservation_end_block_id == TARGET_WITH_ALTERNATIVE
     assert ONE_WAY not in _sequence_ids(result), (
         "the granted path must not cross the one-way block against its "
         "direction"
@@ -118,7 +118,7 @@ def test_create_path_fails_no_viable_path_when_no_legal_alternative():
     assert not result.success, (
         "a one-way violation with no alternative must fail the create call, "
         f"got reached_target={result.reached_target!r} "
-        f"authority_end={result.authority_end_block_id!r}"
+        f"authority_end={result.reservation_end_block_id!r}"
     )
     assert result.failure_kind == PathAcquisitionFailureKind.NO_VIABLE_PATH
     assert dispatcher.get_active_path(TRAIN) is None, (

@@ -152,7 +152,7 @@ def test_the_reserving_train_keeps_a_shorter_path_instead_of_losing_it():
         network
     )
     path = dispatcher.paths[path_id]
-    assert path.get_authority_end_block_id() == "BLK_C"
+    assert path.get_reservation_end_block_id() == "BLK_C"
 
     sim.block_occupancy_detector.input_interface.live = {"BLK_A", "BLK_C"}
     for _ in range(5):
@@ -162,7 +162,7 @@ def test_the_reserving_train_keeps_a_shorter_path_instead_of_losing_it():
     # reservation up to the new end.
     assert path.status == PathStatus.ACTIVE
     assert dispatcher.active_path_id_by_train("T1") == path_id
-    assert path.get_authority_end_block_id() == "BLK_B"
+    assert path.get_reservation_end_block_id() == "BLK_B"
     assert network.blocks["BLK_B"].reserved_for_train == "T1"
     assert network.blocks["BLK_C"].reserved_for_train is None
 
@@ -206,7 +206,7 @@ def test_current_on_the_next_reserved_block_is_still_the_train_arriving():
 
     assert network.blocks["BLK_B"].occupied_by == "T1"
     assert "BLK_B" in controller.physics_sync.current_span.occupied_blocks
-    assert path.get_authority_end_block_id() == "BLK_C"
+    assert path.get_reservation_end_block_id() == "BLK_C"
     assert all(
         not getattr(t, "is_unidentified", False) for t in network.trains.values()
     )
@@ -226,10 +226,10 @@ def test_truncation_declines_a_block_that_is_not_on_the_path():
     assert (
         dispatcher.truncate_path_before_block(path_id, "BLK_NOPE", "test") is False
     )
-    assert dispatcher.paths[path_id].get_authority_end_block_id() == "BLK_C"
+    assert dispatcher.paths[path_id].get_reservation_end_block_id() == "BLK_C"
 
 
-def test_truncation_declines_when_no_authority_would_be_left():
+def test_truncation_declines_when_no_reservation_would_be_left():
     """Cutting before the block the train is already anchored on leaves nothing
     to hold, so the caller cancels the path instead."""
     network = build_abc()
@@ -240,7 +240,7 @@ def test_truncation_declines_when_no_authority_would_be_left():
     assert path.resource_sequence[path.current_resource_index].resource_id == "BLK_A"
 
     assert dispatcher.truncate_path_before_block(path_id, "BLK_A", "test") is False
-    assert path.get_authority_end_block_id() == "BLK_C"
+    assert path.get_reservation_end_block_id() == "BLK_C"
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +290,7 @@ def test_truncation_backs_off_a_two_way_switch_foul_terminal():
     # to B, the nearest legal (one-way) terminal (design_new.md line 1366).
     assert dispatcher.truncate_path_before_block("P1", "BLK_D", "taken") is True
     assert path.status == PathStatus.ACTIVE
-    assert path.get_authority_end_block_id() == "BLK_B"
+    assert path.get_reservation_end_block_id() == "BLK_B"
 
 
 def test_truncation_keeps_a_holding_point_terminal_over_a_foul():
@@ -299,4 +299,4 @@ def test_truncation_keeps_a_holding_point_terminal_over_a_foul():
     # the two-way-switch foul (design_new.md item 11): the cut lands on C.
     network.blocks["BLK_C"].is_holding_point = True
     assert dispatcher.truncate_path_before_block("P1", "BLK_D", "taken") is True
-    assert path.get_authority_end_block_id() == "BLK_C"
+    assert path.get_reservation_end_block_id() == "BLK_C"

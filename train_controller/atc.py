@@ -148,12 +148,12 @@ def speed_limit_pure(
 
     Per design_new.md step ``22a9`` (canonical lookahead), without a
     received path plan the controller publishes no forward authority:
-    ATC limit is ``0`` and the reason is ``no_authority``. There is
+    ATC limit is ``0`` and the reason is ``no_reservation``. There is
     no block-bounded fallback — movement authority is binary on
     ``received_path_plan``.
     """
     if not received_path_plan_exists:
-        return 0.0, "no_authority"
+        return 0.0, "no_reservation"
 
     safe_speed = calculate_max_safe_speed(
         clearance_cm, decel_rate_kmh_s, safety_margin_cm
@@ -401,20 +401,19 @@ class ATCComputer:
         limiting_code: Optional[AtcLimitReasonCode] = None
 
         if clearance < float("inf"):
-            if limiting_speed <= STOPPED_SPEED_THRESHOLD_KMH:
-                limiting_code = AtcLimitReasonCode.AUTHORITY_STOP
-            else:
-                limiting_code = AtcLimitReasonCode.OBSTRUCTION
+            # A finite clearance means the reservation/clearance end is within
+            # the lookahead, so the braking curve to it is the limit — whether
+            # the train is still ramping down or already held at a stop.
+            limiting_code = AtcLimitReasonCode.RESERVATION_STOP
 
         if self.is_caution_ahead():
             limiting_code = AtcLimitReasonCode.CAUTION
 
         if c.path_projection.received_path_plan is None and limiting_code in (
             None,
-            AtcLimitReasonCode.AUTHORITY_STOP,
-            AtcLimitReasonCode.OBSTRUCTION,
+            AtcLimitReasonCode.RESERVATION_STOP,
         ):
-            limiting_code = AtcLimitReasonCode.NO_AUTHORITY
+            limiting_code = AtcLimitReasonCode.NO_RESERVATION
 
         return limiting_speed, limiting_reason, limiting_code
 

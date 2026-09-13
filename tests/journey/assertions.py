@@ -361,9 +361,9 @@ def assert_active_path_authority_end_in(allowed: Iterable[str]) -> Check:
 
     def check(s: Snapshot) -> None:
         assert s.active_path_id is not None, "no active path"
-        assert s.active_path_authority_end_block_id in allowed_set, (
-            f"active path authority_end_block_id="
-            f"{s.active_path_authority_end_block_id!r} not in {allowed_set}"
+        assert s.active_path_reservation_end_block_id in allowed_set, (
+            f"active path reservation_end_block_id="
+            f"{s.active_path_reservation_end_block_id!r} not in {allowed_set}"
         )
 
     return check

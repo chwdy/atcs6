@@ -266,9 +266,9 @@ class SpeedCurveCalculator:
         path_end_safety_margin = self._c.atc.effective_safety_margin()
         # The path end stop is the safety-margin-adjusted authority boundary.
         # `path_end_reason_code` lets callers override the reason — the
-        # fallback (no active path) builder uses `NO_AUTHORITY` here, while
-        # the path-based builder uses `AUTHORITY_STOP`.
-        path_end_code = path_end_reason_code or AtcLimitReasonCode.AUTHORITY_STOP
+        # fallback (no active path) builder uses `NO_RESERVATION` here, while
+        # the path-based builder uses `RESERVATION_STOP`.
+        path_end_code = path_end_reason_code or AtcLimitReasonCode.RESERVATION_STOP
         restrictions.append(
             (max_distance_cm, 0.0, path_end_safety_margin, path_end_code, None)
         )
@@ -294,8 +294,8 @@ class SpeedCurveCalculator:
                     )
                 else:
                     # A posted block speed limit is a permitted-speed
-                    # restriction, not an in-path conflict (design_new.md
-                    # reason-code enumeration): use SPEED_LIMIT, not OBSTRUCTION.
+                    # restriction, not a reservation-end braking code
+                    # (design_new.md reason-code enumeration): use SPEED_LIMIT.
                     block_code = AtcLimitReasonCode.SPEED_LIMIT
                     restriction_speed = block_speed
                 if restriction_speed is not None and restriction_speed < max_speed:
@@ -423,8 +423,8 @@ class SpeedCurveCalculator:
                                 else min(block_speed, CAUTION_SPEED_LIMIT_KMH)
                             )
                         else:
-                            # Posted block speed limit, not an in-path conflict:
-                            # SPEED_LIMIT, not OBSTRUCTION (see above).
+                            # Posted block speed limit, not a reservation-end
+                            # braking code: SPEED_LIMIT (see above).
                             inside_code = AtcLimitReasonCode.SPEED_LIMIT
                             inside_speed = block_speed
                         if inside_speed is not None:
@@ -474,8 +474,8 @@ class SpeedCurveCalculator:
 
         # Add explicit curve points for cleaner visualization. Both anchor
         # points carry the path-end reason code so consumers can key on it
-        # (`AUTHORITY_STOP` with an active path, `NO_AUTHORITY` without).
-        anchor_code = path_end_reason_code or AtcLimitReasonCode.AUTHORITY_STOP
+        # (`RESERVATION_STOP` with an active path, `NO_RESERVATION` without).
+        anchor_code = path_end_reason_code or AtcLimitReasonCode.RESERVATION_STOP
 
         # 1. Target stop point (where train actually stops)
         if target_stop_cm is not None and target_stop_cm > 0:

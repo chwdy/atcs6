@@ -93,7 +93,7 @@ class TestLookaheadNoPathRegardlessOfNetworkState:
     These tests pin the invariant for two failure modes the old fallback
     had to validate by walking the network: (a) wrong-side switch after a
     cab change, (b) switch locked by another path. Under Option B, both
-    cases collapse to the same answer — empty `blocks`, no_authority.
+    cases collapse to the same answer — empty `blocks`, no_reservation.
     """
 
     def _build_three_tile_with_switch(self, network: RailwayNetwork) -> Train:
@@ -128,7 +128,7 @@ class TestLookaheadNoPathRegardlessOfNetworkState:
             occupied_tiles=[(0, 0), (1, 0), (2, 0)],
         )
 
-    def _assert_no_authority(self, payload):
+    def _assert_no_reservation(self, payload):
         from enums import AtcLimitReasonCode
 
         inner = payload["lookahead"]
@@ -136,7 +136,7 @@ class TestLookaheadNoPathRegardlessOfNetworkState:
             f"Lookahead without path must publish no blocks, got {inner['blocks']}"
         )
         assert inner["clearance_cm"] == 0.0
-        assert inner["authority_boundary_delta_cm"] == 0.0
+        assert inner["reservation_boundary_delta_cm"] == 0.0
         # M5: the empty/no-authority payload must still carry the nested
         # target_stop_cm key (emit 0.0, don't omit it) so consumers see a
         # consistent shape between the empty and populated payloads.
@@ -147,10 +147,10 @@ class TestLookaheadNoPathRegardlessOfNetworkState:
         assert curves[0]["operational_limit"] == 0.0
         assert (
             curves[0]["atc_limit_reason_code"]
-            == AtcLimitReasonCode.NO_AUTHORITY.value
+            == AtcLimitReasonCode.NO_RESERVATION.value
         )
 
-    def test_no_path_yields_no_authority_with_wrong_side_switch(self, network):
+    def test_no_path_yields_no_reservation_with_wrong_side_switch(self, network):
         """A switch set against the cab's travel frame is irrelevant when no
         path is wired — the payload is no-authority regardless."""
         train = self._build_three_tile_with_switch(network)
@@ -161,9 +161,9 @@ class TestLookaheadNoPathRegardlessOfNetworkState:
         controller._apply_head_frame("end_a")  # mode-neutral head-frame setup
         controller._apply_head_frame("end_b")  # mode-neutral head-frame setup
 
-        self._assert_no_authority(controller.get_lookahead())
+        self._assert_no_reservation(controller.get_lookahead())
 
-    def test_no_path_yields_no_authority_with_foreign_locked_switch(self, network):
+    def test_no_path_yields_no_reservation_with_foreign_locked_switch(self, network):
         """A switch locked by another path is irrelevant when no path is
         wired — the payload is no-authority regardless."""
         train = self._build_three_tile_with_switch(network)
@@ -181,7 +181,7 @@ class TestLookaheadNoPathRegardlessOfNetworkState:
         self._seed_span(controller)
         controller._apply_head_frame("end_a")  # mode-neutral head-frame setup
 
-        self._assert_no_authority(controller.get_lookahead())
+        self._assert_no_reservation(controller.get_lookahead())
 
 
 
@@ -335,7 +335,7 @@ class TestNoPathProducesNoAuthorityPayload:
         controller._apply_head_frame("end_a")  # mode-neutral head-frame setup
         return controller
 
-    def _assert_no_authority_payload(self, lookahead):
+    def _assert_no_reservation_payload(self, lookahead):
         """The canonical no-authority shape, repeated across positions."""
         from enums import AtcLimitReasonCode
 
@@ -345,7 +345,7 @@ class TestNoPathProducesNoAuthorityPayload:
         assert inner["switches"] == []
         assert inner["stations"] == []
         assert inner["clearance_cm"] == 0.0
-        assert inner["authority_boundary_delta_cm"] == 0.0
+        assert inner["reservation_boundary_delta_cm"] == 0.0
         # M5: the empty/no-authority payload must still carry the nested
         # target_stop_cm key (emit 0.0, don't omit it) so consumers see a
         # consistent shape between the empty and populated payloads.
@@ -356,9 +356,9 @@ class TestNoPathProducesNoAuthorityPayload:
         assert anchor["distance_cm"] == 0.0
         assert anchor["atc_limit"] == 0.0
         assert anchor["operational_limit"] == 0.0
-        assert anchor["atc_limit_reason_code"] == AtcLimitReasonCode.NO_AUTHORITY.value
+        assert anchor["atc_limit_reason_code"] == AtcLimitReasonCode.NO_RESERVATION.value
 
-    def test_first_tile_placement_returns_no_authority(self, multi_tile_block_network):
+    def test_first_tile_placement_returns_no_reservation(self, multi_tile_block_network):
         controller = self._place_and_build(
             multi_tile_block_network,
             train_id="TRAIN_NO_PATH_FIRST",
@@ -366,9 +366,9 @@ class TestNoPathProducesNoAuthorityPayload:
             head_distance_cm=50.0,
             occupied_tiles=[(0, 0)],
         )
-        self._assert_no_authority_payload(controller.get_lookahead())
+        self._assert_no_reservation_payload(controller.get_lookahead())
 
-    def test_mid_tile_placement_returns_no_authority(self, multi_tile_block_network):
+    def test_mid_tile_placement_returns_no_reservation(self, multi_tile_block_network):
         controller = self._place_and_build(
             multi_tile_block_network,
             train_id="TRAIN_NO_PATH_MID",
@@ -376,9 +376,9 @@ class TestNoPathProducesNoAuthorityPayload:
             head_distance_cm=25.0,
             occupied_tiles=[(0, 0), (1, 0)],
         )
-        self._assert_no_authority_payload(controller.get_lookahead())
+        self._assert_no_reservation_payload(controller.get_lookahead())
 
-    def test_last_tile_placement_returns_no_authority(self, multi_tile_block_network):
+    def test_last_tile_placement_returns_no_reservation(self, multi_tile_block_network):
         controller = self._place_and_build(
             multi_tile_block_network,
             train_id="TRAIN_NO_PATH_LAST",
@@ -386,7 +386,7 @@ class TestNoPathProducesNoAuthorityPayload:
             head_distance_cm=40.0,
             occupied_tiles=[(0, 0), (1, 0), (2, 0)],
         )
-        self._assert_no_authority_payload(controller.get_lookahead())
+        self._assert_no_reservation_payload(controller.get_lookahead())
 
     def test_prior_clearance_field_does_not_leak_into_payload(
         self, multi_tile_block_network
@@ -403,7 +403,7 @@ class TestNoPathProducesNoAuthorityPayload:
             occupied_tiles=[(0, 0)],
         )
         controller.atc.clearance_ahead_cm = 200.0  # stale leftover
-        self._assert_no_authority_payload(controller.get_lookahead())
+        self._assert_no_reservation_payload(controller.get_lookahead())
 
 
 

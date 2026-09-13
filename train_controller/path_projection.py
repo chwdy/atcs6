@@ -46,7 +46,7 @@ class PathProjection:
         Resolves to ``PathDispatcher.get_active_path(self.train_id)`` on every
         read and narrows it to the canonical **received_path_plan schema**
         (design_new.md): ``path_id``, ``resource_sequence``, and
-        ``authority_end_block_id``. The dispatcher-only fields on the ``Path``
+        ``reservation_end_block_id``. The dispatcher-only fields on the ``Path``
         record are not projected — the controller does not see them.
 
         There is no setter and no stored field. When the dispatcher transitions
@@ -70,7 +70,7 @@ class PathProjection:
     def received_path_plan_dict(self) -> Optional[Dict[str, Any]]:
         """Serialize the active authority as the canonical
         **received_path_plan schema** (design_new.md:1924): exactly
-        ``path_id``, ``resource_sequence``, and ``authority_end_block_id``.
+        ``path_id``, ``resource_sequence``, and ``reservation_end_block_id``.
 
         Dispatcher-only fields (``status`` / ``current_resource_index`` /
         ``last_status_updated_time``) stay on the ``Path`` record and are
@@ -88,7 +88,7 @@ class PathProjection:
         resource_sequence = getattr(plan, "resource_sequence", None) or []
         return {
             "path_id": getattr(plan, "path_id", None) or getattr(plan, "id", None),
-            "authority_end_block_id": plan.get_authority_end_block_id() or None,
+            "reservation_end_block_id": plan.get_reservation_end_block_id() or None,
             "resource_sequence": [e.to_dict() for e in resource_sequence],
         }
 
@@ -108,16 +108,16 @@ class PathProjection:
     @property
     def ato_destination_block_id(self) -> Optional[str]:
         """Computed read derived from
-        ``received_path_plan.authority_end_block_id``.
+        ``received_path_plan.reservation_end_block_id``.
 
         Per design_new.md ~line 80, ``Path`` carries
-        ``authority_end_block_id`` as a derived read over
+        ``reservation_end_block_id`` as a derived read over
         ``resource_sequence``; this property simply forwards it.
         """
         plan = self.received_path_plan
         if plan is None:
             return None
-        return plan.get_authority_end_block_id() or None
+        return plan.get_reservation_end_block_id() or None
 
     @property
     def path_backed_run_active(self) -> bool:

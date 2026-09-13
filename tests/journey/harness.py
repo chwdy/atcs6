@@ -123,7 +123,7 @@ class Snapshot:
     # Path / route
     active_path_id: Optional[str]
     active_path_status: Optional[str]
-    active_path_authority_end_block_id: Optional[str]
+    active_path_reservation_end_block_id: Optional[str]
     assigned_route_id: Optional[str]
 
     # Cumulative resource-event tracker (populated by ProgressTracker; None for
@@ -202,9 +202,9 @@ def _capture_snapshot(
             status = getattr(path, "status", None)
             active_path_status = getattr(status, "value", str(status)) if status else None
             # Per design_new.md "Path field schema", `Path.path_tiles` and
-            # `Path.authority_end_block_id` are exposed as functions
-            # (`get_path_tiles()`, `get_authority_end_block_id()`).
-            getter = getattr(path, "get_authority_end_block_id", None)
+            # `Path.reservation_end_block_id` are exposed as functions
+            # (`get_path_tiles()`, `get_reservation_end_block_id()`).
+            getter = getattr(path, "get_reservation_end_block_id", None)
             active_path_authority_end = (
                 getter() if callable(getter) else None
             ) or getattr(path, "end_block_id", None)
@@ -246,7 +246,7 @@ def _capture_snapshot(
         latch_route_deactivate=bool(latches.route_deactivate),
         active_path_id=active_path_id,
         active_path_status=active_path_status,
-        active_path_authority_end_block_id=active_path_authority_end,
+        active_path_reservation_end_block_id=active_path_authority_end,
         assigned_route_id=assigned_route_id,
         tracker=tracker,
     )
@@ -296,7 +296,7 @@ class Failure:
             )
             path_desc = (
                 f"{snap.active_path_id} ({snap.active_path_status} "
-                f"-> {snap.active_path_authority_end_block_id})"
+                f"-> {snap.active_path_reservation_end_block_id})"
                 if snap.active_path_id
                 else "None"
             )

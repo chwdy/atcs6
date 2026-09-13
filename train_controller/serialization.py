@@ -62,7 +62,7 @@ def controller_to_dict(controller: "TrainController") -> Dict[str, Any]:
         "path_backed_run_active": controller.path_projection.path_backed_run_active,
         # Export the live received_path_plan using the canonical
         # received_path_plan schema (design_new.md:1740, 2187): exactly
-        # path_id, resource_sequence, authority_end_block_id. Dispatcher-
+        # path_id, resource_sequence, reservation_end_block_id. Dispatcher-
         # only requested-target / lifecycle / progress fields stay on the
         # Path record and must not leak into the controller projection.
         "received_path_plan": controller.path_projection.received_path_plan_dict(),

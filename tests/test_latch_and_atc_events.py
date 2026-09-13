@@ -273,20 +273,20 @@ def test_a_flickering_code_reports_each_real_change():
     alternating pair does not collapse into silence."""
     h = ReasonCodeHarness()
     h.emit_for("caution")
-    h.emit_for("authority_stop")
+    h.emit_for("reservation_stop")
     h.emit_for("caution")
 
     codes = [e["payload"]["reason_code"] for e in h.notifications.events]
-    assert codes == ["caution", "authority_stop", "caution"]
+    assert codes == ["caution", "reservation_stop", "caution"]
 
 
 @pytest.mark.parametrize(
     "code,expected",
     [
         ("deviation", "info"),
-        ("no_authority", "info"),
+        ("no_reservation", "info"),
         ("caution", "debug"),
-        ("authority_stop", "debug"),
+        ("reservation_stop", "debug"),
         ("speed_limit", "debug"),
     ],
 )
@@ -333,9 +333,9 @@ def test_an_info_reason_code_change_never_surfaces_as_an_error():
         source="TrainController",
         operation="tick",
         kind=Kind.INFO,
-        message="ATC limit reason none -> no_authority",
+        message="ATC limit reason none -> no_reservation",
         entities=[train_ref(tid)],
-        payload={"reason_code": "no_authority"},
+        payload={"reason_code": "no_reservation"},
     )
 
     surfaced = center.latest_error_for("train", tid)
@@ -347,8 +347,8 @@ def test_an_enum_code_is_reported_by_its_value():
     from enums import AtcLimitReasonCode
 
     h = ReasonCodeHarness()
-    h.emit_for(AtcLimitReasonCode.NO_AUTHORITY)
-    assert h.notifications.events[0]["payload"]["reason_code"] == "no_authority"
+    h.emit_for(AtcLimitReasonCode.NO_RESERVATION)
+    assert h.notifications.events[0]["payload"]["reason_code"] == "no_reservation"
 
 
 def test_clearing_to_no_code_reports_nothing_but_rearms():
@@ -367,7 +367,7 @@ def test_clearing_to_no_code_reports_nothing_but_rearms():
 
 def test_the_detail_rides_along_when_the_lookahead_has_one():
     h = ReasonCodeHarness()
-    h.emit_for("obstruction", detail="BLK_7 occupied by TRAIN_2")
+    h.emit_for("reservation_stop", detail="BLK_7 occupied by TRAIN_2")
     assert (
         h.notifications.events[0]["payload"]["atc_limit_reason_detail"]
         == "BLK_7 occupied by TRAIN_2"

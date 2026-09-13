@@ -9,7 +9,7 @@ The PathDispatcher is the dispatcher-owned authority registry. It owns:
 
 In v1 the canonical Path schema lives in path.py and uses:
   requested_destination_block_id, requested_destination_direction,
-  authority_end_block_id, resource_sequence (List[ResourceSequenceEntry]),
+  reservation_end_block_id, resource_sequence (List[ResourceSequenceEntry]),
   current_resource_index, last_status_updated_time, status.
 
 There is no v0 start_block_id / end_block_id / block_sequence /
@@ -82,9 +82,9 @@ class PathDispatcher:
 
     Public v1 API:
         create_path(train_id, requested_destination_block_id,
-                    requested_destination_direction, acquisition_cap_block_id)
+                    requested_destination_direction, reservation_cap_block_id)
         extend_path(path_id, requested_destination_block_id,
-                    requested_destination_direction, acquisition_cap_block_id)
+                    requested_destination_direction, reservation_cap_block_id)
         cancel_path(path_id, initiator, reason)
         on_controller_progress(report)
         try_complete_active_path(train_id)
@@ -656,7 +656,7 @@ class PathDispatcher:
         path = self.paths.get(path_id)
         if path is None:
             return None
-        authority_end = path.get_authority_end_block_id()
+        authority_end = path.get_reservation_end_block_id()
         if not authority_end:
             return None
         forward_ok = False
@@ -897,14 +897,14 @@ class PathDispatcher:
         requested_destination_direction: str,
         requested_destination_block_id: Optional[str] = None,
         path_id: Optional[str] = None,
-        authority_end_block_id: Optional[str] = None,
+        reservation_end_block_id: Optional[str] = None,
     ) -> PathAcquisitionResult:
         """Build a `success=False` PathAcquisitionResult for create_path /
         extend_path validation guards.
 
         Per the **`create_path()` / `extend_path()` return contract**: on
         failure only `failure_kind` and `reason` carry information. `path_id`,
-        `resource_sequence`, `authority_end_block_id`, `appended_resource_count`,
+        `resource_sequence`, `reservation_end_block_id`, `appended_resource_count`,
         `reached_target`, and both
         target fields are `None`, so a caller can never mistake a rejection's
         echoed request for authority the dispatcher actually stored.
@@ -921,8 +921,8 @@ class PathDispatcher:
             context.append(f"target={requested_destination_block_id}")
         if requested_destination_direction:
             context.append(f"direction={requested_destination_direction}")
-        if authority_end_block_id:
-            context.append(f"authority_end={authority_end_block_id}")
+        if reservation_end_block_id:
+            context.append(f"authority_end={reservation_end_block_id}")
         detail = f"{reason} ({', '.join(context)})" if context else reason
 
         return PathAcquisitionResult(
@@ -938,7 +938,7 @@ class PathDispatcher:
         train_id: str = "",
         requested_destination_direction: str = "forward",
         manual_override: bool = False,
-        acquisition_cap_block_id: Optional[str] = None,
+        reservation_cap_block_id: Optional[str] = None,
         required_candidate_resource_keys: Optional[List[CandidateResourceKey]] = None,
     ) -> PathAcquisitionResult:
         """v1 create_path: build authority for a train to a destination block.
@@ -948,7 +948,7 @@ class PathDispatcher:
         acquisition behavior and no acquisition-mode parameter (design_new.md
         "One acquisition behavior"): it stores the furthest forward acquirable
         block-terminated prefix toward the target, bounded by
-        `acquisition_cap_block_id`.
+        `reservation_cap_block_id`.
 
         Args:
             requested_destination_block_id: Caller's target block.
@@ -960,11 +960,11 @@ class PathDispatcher:
                 including `RouteExecutor`); True only for operator-initiated
                 API/UI/admin calls that explicitly chose to use manual
                 resources. Disabled resources are always excluded regardless.
-            acquisition_cap_block_id: Meet-coordination acquisition cap per the
+            reservation_cap_block_id: Meet-coordination acquisition cap per the
                 `Acquisition-cap rule` (design_new.md:1025). Default None (no
                 cap). When set short of the requested target, authority is
                 acquired toward the requested target but never stored past the
-                cap block, so `authority_end_block_id` lands on the cap and the
+                cap block, so `reservation_end_block_id` lands on the cap and the
                 result carries `reached_target = False` (never `True`) — the
                 train holds at the cap without completing. The requested target
                 is unchanged.
@@ -1201,7 +1201,7 @@ class PathDispatcher:
             # and report `reached_target = False` via the cap-aware success return.
             cap_status, capped_segment, capped_walk = self._truncate_segment_to_cap(
                 segment, ordered_walk,
-                acquisition_cap_block_id, requested_destination_block_id,
+                reservation_cap_block_id, requested_destination_block_id,
             )
             if cap_status == "hold":
                 # The cap is the train's current block: no forward authority can
@@ -1322,7 +1322,7 @@ class PathDispatcher:
                     path_id=path_id,
                     requested_destination_block_id=requested_destination_block_id,
                     requested_destination_direction=requested_destination_direction,
-                    authority_end_block_id=path.get_authority_end_block_id(),
+                    reservation_end_block_id=path.get_reservation_end_block_id(),
                     resource_sequence=list(path.resource_sequence),
                     reason="best_effort partial acquisition",
                 )
@@ -1377,7 +1377,7 @@ class PathDispatcher:
                     path_id=path_id,
                     requested_destination_block_id=requested_destination_block_id,
                     requested_destination_direction=requested_destination_direction,
-                    authority_end_block_id=path.get_authority_end_block_id(),
+                    reservation_end_block_id=path.get_reservation_end_block_id(),
                     resource_sequence=list(path.resource_sequence),
                     reason="best_effort partial acquisition",
                 )
@@ -1408,7 +1408,7 @@ class PathDispatcher:
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
-                authority_end_block_id=path.get_authority_end_block_id(),
+                reservation_end_block_id=path.get_reservation_end_block_id(),
                 resource_sequence=list(path.resource_sequence),
                 reason=created_reason,
             )
@@ -1448,7 +1448,7 @@ class PathDispatcher:
         requested_destination_block_id: str = "",
         requested_destination_direction: str = "forward",
         manual_override: bool = False,
-        acquisition_cap_block_id: Optional[str] = None,
+        reservation_cap_block_id: Optional[str] = None,
         required_candidate_resource_keys: Optional[List[CandidateResourceKey]] = None,
     ) -> PathAcquisitionResult:
         """v1 extend_path: append more authority to an existing ACTIVE path.
@@ -1459,7 +1459,7 @@ class PathDispatcher:
         caller; True only for operator-initiated API/UI/admin calls that
         explicitly chose to use manual resources.
 
-        `acquisition_cap_block_id` (default None) is the Meet-coordination
+        `reservation_cap_block_id` (default None) is the Meet-coordination
         acquisition cap per the `Acquisition-cap rule` (design_new.md:1025).
         When set short of the requested target, the append is truncated so
         authority never extends past the cap block; when the next forward
@@ -1499,7 +1499,7 @@ class PathDispatcher:
                 failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
                 path_id=path_id,
                 requested_destination_direction=requested_destination_direction,
-                authority_end_block_id=path.get_authority_end_block_id() or None,
+                reservation_end_block_id=path.get_reservation_end_block_id() or None,
                 reason="requested_destination_block_id required",
             )
 
@@ -1533,7 +1533,7 @@ class PathDispatcher:
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
-                authority_end_block_id=path.get_authority_end_block_id(),
+                reservation_end_block_id=path.get_reservation_end_block_id(),
                 resource_sequence=list(path.resource_sequence),
                 reason=None,
             )
@@ -1548,7 +1548,7 @@ class PathDispatcher:
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
-                authority_end_block_id=path.get_authority_end_block_id() or None,
+                reservation_end_block_id=path.get_reservation_end_block_id() or None,
                 reason=(
                     f"{requested_destination_block_id} is still held by this path"
                 ),
@@ -1562,7 +1562,7 @@ class PathDispatcher:
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
-                authority_end_block_id=path.get_authority_end_block_id() or None,
+                reservation_end_block_id=path.get_reservation_end_block_id() or None,
                 reason="path has no train",
             )
 
@@ -1572,7 +1572,7 @@ class PathDispatcher:
         # candidate whose terminal traversal does not satisfy the caller's
         # `requested_destination_direction`; an undecidable terminal
         # (`terminal_block_direction is None`) is treated as allowed.
-        start_block_id = path.get_authority_end_block_id()
+        start_block_id = path.get_reservation_end_block_id()
         candidates = self._find_walk_candidates(
             start_block_id,
             requested_destination_block_id,
@@ -1586,7 +1586,7 @@ class PathDispatcher:
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
-                authority_end_block_id=path.get_authority_end_block_id() or None,
+                reservation_end_block_id=path.get_reservation_end_block_id() or None,
                 reason=f"No forward path from {start_block_id} to {requested_destination_block_id}",
             )
 
@@ -1610,7 +1610,7 @@ class PathDispatcher:
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
-                authority_end_block_id=path.get_authority_end_block_id() or None,
+                reservation_end_block_id=path.get_reservation_end_block_id() or None,
                 reason="extend would reverse at authority end",
             )
         candidates = forward_candidates
@@ -1649,7 +1649,7 @@ class PathDispatcher:
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
-                authority_end_block_id=path.get_authority_end_block_id() or None,
+                reservation_end_block_id=path.get_reservation_end_block_id() or None,
                 reason=(
                     "all forward candidates would revisit a resource already "
                     "in the path"
@@ -1679,7 +1679,7 @@ class PathDispatcher:
                     path_id=path_id,
                     requested_destination_block_id=requested_destination_block_id,
                     requested_destination_direction=requested_destination_direction,
-                    authority_end_block_id=path.get_authority_end_block_id(),
+                    reservation_end_block_id=path.get_reservation_end_block_id(),
                     resource_sequence=list(path.resource_sequence),
                     reason=(
                         "pinned meet candidate is no longer viable; holding the "
@@ -1712,7 +1712,7 @@ class PathDispatcher:
             # the train already holds at the cap -> no growth.
             cap_status, capped_segment, capped_walk = self._truncate_segment_to_cap(
                 segment, ordered_walk,
-                acquisition_cap_block_id, requested_destination_block_id,
+                reservation_cap_block_id, requested_destination_block_id,
             )
             if cap_status == "hold":
                 had_occupancy_blocker = True
@@ -1845,7 +1845,7 @@ class PathDispatcher:
             path.resource_sequence.extend(new_entries)
             # path_tiles is a derived `@property` over resource_sequence; no
             # explicit rebuild is needed (and no stored copy exists to write).
-            # authority_end_block_id is derived from resource_sequence[-1];
+            # reservation_end_block_id is derived from resource_sequence[-1];
             # the resource_sequence.extend(...) above advanced it. The requested
             # target is route-owned and not stored on Path.
             # No status transition here: the path is already ACTIVE (guaranteed
@@ -1871,7 +1871,7 @@ class PathDispatcher:
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
-                authority_end_block_id=path.get_authority_end_block_id(),
+                reservation_end_block_id=path.get_reservation_end_block_id(),
                 resource_sequence=list(path.resource_sequence),
                 reason=grown_reason,
             )
@@ -1910,7 +1910,7 @@ class PathDispatcher:
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
-                authority_end_block_id=path.get_authority_end_block_id(),
+                reservation_end_block_id=path.get_reservation_end_block_id(),
                 resource_sequence=list(path.resource_sequence),
                 reason=ext_reason,
             )
@@ -1929,7 +1929,7 @@ class PathDispatcher:
             path_id=path_id,
             requested_destination_block_id=requested_destination_block_id,
             requested_destination_direction=requested_destination_direction,
-            authority_end_block_id=path.get_authority_end_block_id() or None,
+            reservation_end_block_id=path.get_reservation_end_block_id() or None,
             reason=ext_reason,
         )
 
@@ -2149,7 +2149,7 @@ class PathDispatcher:
             # train and return False; Observe then latches the ordinary cancel so
             # the whole path comes down through Action (design_new.md line
             # 1371-1375). `resource_sequence` is left unchanged.
-            self._release_authority_tail_ahead(path, path_id)
+            self._release_reservation_tail_ahead(path, path_id)
             return False
 
         dropped = path.resource_sequence[keep_through + 1 :]
@@ -2163,7 +2163,7 @@ class PathDispatcher:
         if coordinator is not None:
             # Deliberate authority shortening: the dropped route points have
             # left the authority, so their whole switch families are released.
-            coordinator.release_authority_tail(
+            coordinator.release_reservation_tail(
                 dropped_blocks, dropped_switches, path_id
             )
         path.resource_sequence = path.resource_sequence[: keep_through + 1]
@@ -2184,14 +2184,14 @@ class PathDispatcher:
                 kind=_Kind.WARNING,
                 message=(
                     f"path {path_id} truncated to end at "
-                    f"{path.get_authority_end_block_id()}: {reason}"
+                    f"{path.get_reservation_end_block_id()}: {reason}"
                 ),
                 entities=[_train_ref(path.train_id), _path_ref(path_id)],
                 error=_ErrorRecord(reason, "authority_truncated"),
                 event_time=self._now(),
                 payload={
                     "blocked_block_id": block_id,
-                    "authority_end_block_id": path.get_authority_end_block_id(),
+                    "reservation_end_block_id": path.get_reservation_end_block_id(),
                     "released_block_ids": list(dropped_blocks),
                     "released_switch_ids": list(dropped_switches),
                 },
@@ -2263,7 +2263,7 @@ class PathDispatcher:
         rules acquisition uses). When that terminal is nearer than the current
         authority end, shortens `resource_sequence` to it and releases every block
         reservation and switch lock past it through
-        `ResourceCoordinator.release_authority_tail(...)`. The path keeps its
+        `ResourceCoordinator.release_reservation_tail(...)`. The path keeps its
         `path_id` and stays `ACTIVE` — this is not a cancellation and does not
         touch `ato.engaged`.
 
@@ -2314,7 +2314,7 @@ class PathDispatcher:
         ]
         coordinator = getattr(self.network, "resource_coordinator", None)
         if coordinator is not None:
-            coordinator.release_authority_tail(
+            coordinator.release_reservation_tail(
                 dropped_blocks, dropped_switches, path_id
             )
         path.resource_sequence = path.resource_sequence[: keep_through + 1]
@@ -2826,11 +2826,11 @@ class PathDispatcher:
             and path.resource_sequence[prev_index].resource_type == "switch"
         )
 
-    def _release_authority_tail_ahead(self, path: "Path", path_id: str) -> None:
+    def _release_reservation_tail_ahead(self, path: "Path", path_id: str) -> None:
         """Release every reservation the path holds ahead of the train — the
         block reservations and the switch families past
         ``current_resource_index`` — through
-        ``ResourceCoordinator.release_authority_tail(...)``. Used on a
+        ``ResourceCoordinator.release_reservation_tail(...)``. Used on a
         ``truncate_path_before_block`` False return (design_new.md line 1374):
         the path is about to be cancelled whole by Observe, so its future
         authority is freed now while ``resource_sequence`` is left unchanged.
@@ -2844,7 +2844,7 @@ class PathDispatcher:
         ]
         coordinator = getattr(self.network, "resource_coordinator", None)
         if coordinator is not None:
-            coordinator.release_authority_tail(
+            coordinator.release_reservation_tail(
                 ahead_blocks, ahead_switches, path_id
             )
 
@@ -2852,7 +2852,7 @@ class PathDispatcher:
         self,
         segment: PathSegment,
         ordered_walk: Optional[List[GraphWalkStep]],
-        acquisition_cap_block_id: Optional[str],
+        reservation_cap_block_id: Optional[str],
         requested_destination_block_id: str,
     ) -> Tuple[str, Optional[PathSegment], Optional[List[GraphWalkStep]]]:
         """Apply the Meet-coordination acquisition cap to a candidate walk.
@@ -2871,19 +2871,19 @@ class PathDispatcher:
         - ``("capped", truncated_segment, sliced_ordered_walk)`` — acquire only
           up to the cap block. The truncated segment is fed through the ordinary
           validate/acquire path, so any conflict within the cap truncates it
-          further and ``authority_end_block_id`` lands on the cap (or earlier).
+          further and ``reservation_end_block_id`` lands on the cap (or earlier).
 
         The cap never changes ``requested_destination_block_id``; the success
         path reports ``reached_target = False`` because the authority is short of
         the requested target.
         """
         if (
-            not acquisition_cap_block_id
-            or acquisition_cap_block_id == requested_destination_block_id
+            not reservation_cap_block_id
+            or reservation_cap_block_id == requested_destination_block_id
         ):
             return ("none", segment, ordered_walk)
         try:
-            cap_count = segment.blocks.index(acquisition_cap_block_id) + 1
+            cap_count = segment.blocks.index(reservation_cap_block_id) + 1
         except ValueError:
             return ("none", segment, ordered_walk)
         if cap_count <= 1:
@@ -3610,7 +3610,7 @@ class PathDispatcher:
             segment, base_index=0, skip_first_block=False, ordered_walk=ordered_walk
         )
         # `path_tiles` is a derived `@property` over `resource_sequence`; do
-        # not pass it as a constructor field. authority_end_block_id is also
+        # not pass it as a constructor field. reservation_end_block_id is also
         # derived from resource_sequence[-1].
         path = Path(
             path_id=path_id,
@@ -3879,7 +3879,7 @@ class PathDispatcher:
                 reason="controller not available",
             )
 
-        stop_check = getattr(controller, "is_stopped_at_authority_end", None)
+        stop_check = getattr(controller, "is_stopped_at_reservation_end", None)
         if not callable(stop_check) or not stop_check():
             return PathCompletionResult(
                 success=False,
@@ -3888,7 +3888,7 @@ class PathDispatcher:
                 reason="controller not stopped at authority end",
             )
 
-        if not path.get_authority_end_block_id():
+        if not path.get_reservation_end_block_id():
             return PathCompletionResult(
                 success=False,
                 path_id=path_id,
@@ -3924,7 +3924,7 @@ class PathDispatcher:
         stored_target = projection.stored_resolved_target
         if (
             stored_target is None
-            or path.get_authority_end_block_id()
+            or path.get_reservation_end_block_id()
             != stored_target.requested_destination_block_id
         ):
             return PathCompletionResult(
@@ -3976,7 +3976,7 @@ class PathDispatcher:
                 entities=[train_ref(train_id), path_ref(path_id)],
                 event_time=event_time,
                 payload={
-                    "authority_end_block_id": path.get_authority_end_block_id(),
+                    "reservation_end_block_id": path.get_reservation_end_block_id(),
                 },
             )
 
@@ -4061,7 +4061,7 @@ class PathDispatcher:
         train_id: str,
         stored_resolved_target: Optional[ResolvedRouteTarget],
         manual_override: bool = False,
-        acquisition_cap_block_id: Optional[str] = None,
+        reservation_cap_block_id: Optional[str] = None,
         required_candidate_resource_keys: Optional[List[CandidateResourceKey]] = None,
     ) -> Optional[WaitingConflict]:
         """Canonical forward-resource acquisition read for a blocked waiter
@@ -4072,7 +4072,7 @@ class PathDispatcher:
         `stored_resolved_target`, finds the first forward resource that fails
         acquisition because of a live occupancy / reservation / lock conflict,
         and reports it together with the trains in the way. `manual_override`,
-        `acquisition_cap_block_id`, and `required_candidate_resource_keys` are the
+        `reservation_cap_block_id`, and `required_candidate_resource_keys` are the
         same override and tick-start meet constraints Plan would pass to
         `extend_path(...)`.
 
@@ -4090,7 +4090,7 @@ class PathDispatcher:
         if path is None:
             return None
         target = stored_resolved_target.requested_destination_block_id
-        authority_end = path.get_authority_end_block_id()
+        authority_end = path.get_reservation_end_block_id()
         # Reached the requested target (or no target recorded): not waiting.
         # Whether a live authority reaches a target is `Path.reaches_target(...)`,
         # never `authority_end == target` (design_new.md:1231/1921): a live
@@ -4129,9 +4129,9 @@ class PathDispatcher:
         # past the cap block. When the cap sits at or before the current
         # authority end, the train holds at the cap rather than waiting on a live
         # conflict, so there is no conflict to report.
-        if acquisition_cap_block_id is not None:
+        if reservation_cap_block_id is not None:
             cap_status, capped_segment, _capped_walk = self._truncate_segment_to_cap(
-                segment, ordered_walk, acquisition_cap_block_id, target,
+                segment, ordered_walk, reservation_cap_block_id, target,
             )
             if cap_status == "hold":
                 return None
@@ -4154,7 +4154,7 @@ class PathDispatcher:
         train_id: str,
         stored_resolved_target: Optional[ResolvedRouteTarget] = None,
         manual_override: bool = False,
-        acquisition_cap_block_id: Optional[str] = None,
+        reservation_cap_block_id: Optional[str] = None,
         required_candidate_resource_keys: Optional[List[CandidateResourceKey]] = None,
     ) -> Optional[str]:
         """Read-model projection of `waiting_block_id` from `get_waiting_conflict`.
@@ -4168,7 +4168,7 @@ class PathDispatcher:
             train_id,
             stored_resolved_target,
             manual_override,
-            acquisition_cap_block_id,
+            reservation_cap_block_id,
             required_candidate_resource_keys,
         )
         return conflict.waiting_block_id if conflict is not None else None
@@ -4341,7 +4341,7 @@ class PathDispatcher:
 
         Used by the API/UI layer per design_new.md "Data Flow To UI". Returns
         the five dispatcher-owned path fields (``path_id``, ``status``,
-        ``current_resource_index``, ``authority_end_block_id``, and
+        ``current_resource_index``, ``reservation_end_block_id``, and
         ``resource_sequence``); it does not read train/controller mirror fields.
         ``None`` when no active path exists for the train.
 
@@ -4359,7 +4359,7 @@ class PathDispatcher:
             "path_id": path.path_id,
             "status": path.status.value,
             "current_resource_index": path.current_resource_index,
-            "authority_end_block_id": path.get_authority_end_block_id(),
+            "reservation_end_block_id": path.get_reservation_end_block_id(),
             "resource_sequence": [
                 {
                     "sequence_index": entry.sequence_index,

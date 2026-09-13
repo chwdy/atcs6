@@ -11,7 +11,7 @@ admitted contender stays admitted until it clears the zone, and each held
 contender keeps the same ceiling until then.
 
 The assignment only caps how far authority is acquired (it feeds
-`acquisition_cap_block_id` per the "Acquisition-cap rule", keeping the route
+`reservation_cap_block_id` per the "Acquisition-cap rule", keeping the route
 target unchanged); it never reserves a resource. All acquisition still runs
 through the interlocked `BlockManager` / `SwitchManager` path, so a stale or
 wrong ceiling costs at most one tick of a train aiming one block short. Meet coordination is the proactive
@@ -49,7 +49,7 @@ class MeetCeiling:
     """A train's per-tick meet assignment: a candidate pin and an optional cap.
 
     `block_id` is the ceiling block, or `""` when the entry carries no ceiling:
-    Plan passes a real ceiling as the `acquisition_cap_block_id` so authority is
+    Plan passes a real ceiling as the `reservation_cap_block_id` so authority is
     acquired toward the real route target but stored no further than this block.
     `direction` is the block-relative `"forward"` / `"reverse"` the train
     traverses the ceiling block in, so the capped terminal frame is unique.

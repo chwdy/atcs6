@@ -151,7 +151,7 @@ def test_run_task_timer_elapses_freezes_authority_end_without_cancelling():
     path = stub.paths_by_train[train.train_id]
     assert (
         row.resolved_target.requested_destination_block_id
-        == path.get_authority_end_block_id()
+        == path.get_reservation_end_block_id()
     )
     assert controller.route_hooks.phase_latches.path_cancel_request is None
 
@@ -182,7 +182,7 @@ def test_run_task_presents_as_a_stop_at_authority_end_once_elapsed():
     path = stub.paths_by_train[train.train_id]
     assert (
         post.stored_resolved_target.requested_destination_block_id
-        == path.get_authority_end_block_id()
+        == path.get_reservation_end_block_id()
     )
     # _run_task_step itself never finishes the run — the dispatcher's stop
     # completion does.

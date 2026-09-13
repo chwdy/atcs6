@@ -14,14 +14,14 @@ When a train's head leaves its authorized ``resource_sequence`` while ROLLING
    ``PathDispatcher.on_controller_progress``. It is NOT committed inline.
 3. The canonical lookahead reports ``atc_limit == 0`` at distance 0 with
    ``atc_limit_reason_code == AtcLimitReasonCode.DEVIATION`` (NOT
-   ``NO_AUTHORITY``). ATC brakes; an overspeed escalates to EB.
+   ``NO_RESERVATION``). ATC brakes; an overspeed escalates to EB.
 4. Only once the train is stopped does the gated Phase-3 explicit-cancel step
    commit ``cancel_path`` (reservations + switch locks released, latch cleared,
    path ``CANCELLED``).
 
 Why this discriminates latched-vs-inline behaviour
 --------------------------------------------------
-The *same* head-off-path geometry reports ``NO_AUTHORITY`` when no deviation
+The *same* head-off-path geometry reports ``NO_RESERVATION`` when no deviation
 latch is pending, and ``DEVIATION`` only when the deviation latch is set (the
 lookahead branch in ``train_controller/__init__.py`` keys on a pending
 ``deviation=True`` latch). Under the OLD inline-cancel behaviour,
@@ -30,15 +30,15 @@ on the deviating tick while the train was still rolling, so:
 
   * ``active_path_id_by_train(train_id)`` would already be ``None`` (path
     cancelled), not the path id this test asserts is still ACTIVE;
-  * the lookahead would report ``no_authority`` (no live plan), not
+  * the lookahead would report ``no_reservation`` (no live plan), not
     ``deviation``;
   * the block reservations and the switch lock would already be released while
     the train was still rolling.
 
 This test asserts the opposite of all three on the deviating (rolling) tick, so
 it fails closed against any regression to inline cancel. ``test_no_latch_head_
-off_path_reports_no_authority`` pins the contrast directly: identical geometry,
-no deviation latch -> ``NO_AUTHORITY``.
+off_path_reports_no_reservation`` pins the contrast directly: identical geometry,
+no deviation latch -> ``NO_RESERVATION``.
 
 The test drives the real tick pipeline -- ``TrainController.on_physics_updated``
 (deviation detection), ``PathDispatcher.on_controller_progress`` (latch write),
@@ -212,7 +212,7 @@ def test_deviation_while_rolling_latches_and_holds_resources():
     # Distance-0 anchor is NOT a stop reason yet (real forward authority).
     pre_limit, pre_code = controller._distance_zero_atc_anchor()
     assert pre_code != AtcLimitReasonCode.DEVIATION
-    assert pre_code != AtcLimitReasonCode.NO_AUTHORITY
+    assert pre_code != AtcLimitReasonCode.NO_RESERVATION
     assert pre_limit > 0.0
 
     # --- Deviate: head rolls onto an off-sequence tile (BLK_D) at 20 km/h. ---
@@ -245,11 +245,11 @@ def test_deviation_while_rolling_latches_and_holds_resources():
     )
     assert network.blocks["BLK_C"].reserved_by_path == path_id
 
-    # (3) Canonical lookahead reports DEVIATION (NOT NO_AUTHORITY) at limit 0.
+    # (3) Canonical lookahead reports DEVIATION (NOT NO_RESERVATION) at limit 0.
     dev_limit, dev_code = controller._distance_zero_atc_anchor()
     assert dev_code == AtcLimitReasonCode.DEVIATION, (
         f"expected DEVIATION reason, got {dev_code!r} "
-        "(NO_AUTHORITY here would mean the deviation latch did not fire / the "
+        "(NO_RESERVATION here would mean the deviation latch did not fire / the "
         "path was cancelled inline)"
     )
     assert dev_limit == 0.0
@@ -352,9 +352,9 @@ def test_head_on_path_resource_but_unenumerated_tile_is_not_a_deviation():
     assert dispatcher.get_path(path_id).status == PathStatus.ACTIVE
 
 
-def test_no_latch_head_off_path_reports_no_authority():
+def test_no_latch_head_off_path_reports_no_reservation():
     """Discrimination guard: the SAME head-off-path geometry, but with NO
-    deviation latch pending, reports NO_AUTHORITY -- not DEVIATION.
+    deviation latch pending, reports NO_RESERVATION -- not DEVIATION.
 
     This is the exact state the old inline-cancel behaviour would leave behind
     on the deviating tick (path already cancelled, no plan, no deviation
@@ -378,8 +378,8 @@ def test_no_latch_head_off_path_reports_no_authority():
 
     assert controller.route_hooks.phase_latches.path_cancel_request is None
     limit, code = controller._distance_zero_atc_anchor()
-    assert code == AtcLimitReasonCode.NO_AUTHORITY, (
-        f"head-off-path with no deviation latch must report NO_AUTHORITY, "
+    assert code == AtcLimitReasonCode.NO_RESERVATION, (
+        f"head-off-path with no deviation latch must report NO_RESERVATION, "
         f"got {code!r}"
     )
     assert limit == 0.0

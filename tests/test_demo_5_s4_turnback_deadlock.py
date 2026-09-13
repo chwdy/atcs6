@@ -104,7 +104,7 @@ def test_reversing_occupant_blocks_follower_before_crossover():
     res = _follow_best_effort_to_s4(dispatcher)
     assert res.success
     path = dispatcher.get_active_path("FOLLOW")
-    auth_end = path.get_authority_end_block_id()
+    auth_end = path.get_reservation_end_block_id()
     assert auth_end == "BLK_S3_S_TO_X2", (
         f"FOLLOW must truncate before X2; got {auth_end!r} "
         f"(pre-fix this was 'BLK_X2_TO_S4_S', past X2)."
@@ -147,7 +147,7 @@ def test_non_reversing_occupant_still_held_back_by_junction_rule():
 
     res = _follow_best_effort_to_s4(dispatcher)
     assert res.success
-    auth_end = dispatcher.get_active_path("FOLLOW").get_authority_end_block_id()
+    auth_end = dispatcher.get_active_path("FOLLOW").get_reservation_end_block_id()
     assert auth_end == "BLK_S3_S_TO_X2", (
         f"The junction-fouling exclusion must hold FOLLOW before X2 even with "
         f"no reversing occupant (BLK_X2_TO_S4_S is a two-way block off SW_X2); "
@@ -200,7 +200,7 @@ def test_caution_terminal_block_is_exempt_from_junction_rule():
     # block, instead of stopping a block short at BLK_S3_S_TO_X2.
     res = _follow_best_effort_to_s4(dispatcher)
     assert res.success
-    auth_end = dispatcher.get_active_path("FOLLOW").get_authority_end_block_id()
+    auth_end = dispatcher.get_active_path("FOLLOW").get_reservation_end_block_id()
     assert auth_end == "BLK_X2_TO_S4_S", (
         f"the caution carve-out must let FOLLOW terminate on the caution block "
         f"off SW_X2; got {auth_end!r}"

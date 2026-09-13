@@ -145,8 +145,8 @@ def build_tunnel_journey(
 
 def _assert_east_block_is_authority_end(s, east_tile):
     east_block_id = s.network.get_track(*east_tile).block_id
-    assert s.active_path_authority_end_block_id == east_block_id, (
-        f"path authority_end={s.active_path_authority_end_block_id!r}, "
+    assert s.active_path_reservation_end_block_id == east_block_id, (
+        f"path authority_end={s.active_path_reservation_end_block_id!r}, "
         f"expected east block {east_block_id!r}"
     )
 

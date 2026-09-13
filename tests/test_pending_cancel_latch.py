@@ -195,13 +195,13 @@ class _FakeResourceEntry:
 class _FakePath:
     """Tiny stand-in for a dispatcher Path with the fields the controller reads.
 
-    `authority_end_block_id` is derived from `resource_sequence[-1]`, not stored,
+    `reservation_end_block_id` is derived from `resource_sequence[-1]`, not stored,
     so the fake supplies the sequence the projection actually reads.
     """
 
-    def __init__(self, path_id="PATH_X", authority_end_block_id="BLK_C"):
+    def __init__(self, path_id="PATH_X", reservation_end_block_id="BLK_C"):
         self.path_id = path_id
-        self.resource_sequence = [_FakeResourceEntry(authority_end_block_id)]
+        self.resource_sequence = [_FakeResourceEntry(reservation_end_block_id)]
 
 
 class _FakePathDispatcher:
@@ -236,7 +236,7 @@ def test_set_pending_route_abort_inclusive_cancel_when_path_exists():
     plan = controller.path_projection.received_path_plan
     assert plan is not fake_path
     assert plan.path_id == "PATH_ABORT_001"
-    assert plan.get_authority_end_block_id() == "BLK_C"
+    assert plan.get_reservation_end_block_id() == "BLK_C"
     assert not hasattr(plan, "requested_destination_block_id")
     assert not hasattr(plan, "status")
     assert controller.path_projection.assigned_path_id == "PATH_ABORT_001"

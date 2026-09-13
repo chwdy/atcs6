@@ -92,7 +92,7 @@ def test_create_path_honors_matching_pin():
     )
     assert res.success
     assert res.reached_target
-    assert disp.get_path(res.path_id).get_authority_end_block_id() == "BLOCK_C"
+    assert disp.get_path(res.path_id).get_reservation_end_block_id() == "BLOCK_C"
 
 
 def test_create_path_refuses_mismatched_pin_without_fallthrough():
@@ -147,7 +147,7 @@ def test_extend_path_matches_pinned_suffix():
     assert res.success
     assert res.appended_resource_count > 0
     assert res.reached_target
-    assert disp.get_path(path_id).get_authority_end_block_id() == "BLOCK_E"
+    assert disp.get_path(path_id).get_reservation_end_block_id() == "BLOCK_E"
 
 
 def test_extend_path_refuses_mismatched_pin_as_no_growth():
@@ -167,7 +167,7 @@ def test_extend_path_refuses_mismatched_pin_as_no_growth():
     assert res.reached_target is False
     # Existing authority is preserved unchanged for the next tick's retry.
     assert disp.get_path(path_id).resource_sequence == before
-    assert disp.get_path(path_id).get_authority_end_block_id() == "BLOCK_B"
+    assert disp.get_path(path_id).get_reservation_end_block_id() == "BLOCK_B"
 
 
 # --- get_waiting_conflict --------------------------------------------------
@@ -184,7 +184,7 @@ def test_get_waiting_conflict_reports_block_holder():
         train_id="T1", requested_destination_block_id="BLOCK_E"
     )
     assert res.success
-    assert disp.get_path(res.path_id).get_authority_end_block_id() != "BLOCK_E"
+    assert disp.get_path(res.path_id).get_reservation_end_block_id() != "BLOCK_E"
 
     conflict = disp.get_waiting_conflict(
         "T1",

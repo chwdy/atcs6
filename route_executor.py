@@ -1443,7 +1443,7 @@ class RouteExecutor:
         - it is standing at its live authority boundary with no clearance left
           to advance: the lookahead's dominant restriction is the zero-clearance
           hold against that authority, which reads as reason code
-          `AUTHORITY_STOP` on the leading speed curve. This is what excludes a
+          `RESERVATION_STOP` on the leading speed curve. This is what excludes a
           stopped train that still has room to roll forward under its own
           authority.
         """
@@ -1464,7 +1464,7 @@ class RouteExecutor:
             return False
         return (
             curves[0].get("atc_limit_reason_code")
-            == AtcLimitReasonCode.AUTHORITY_STOP.value
+            == AtcLimitReasonCode.RESERVATION_STOP.value
         )
 
     @staticmethod
@@ -1684,7 +1684,7 @@ class RouteExecutor:
         design_new.md "Contention snapshot": obtain `stored_resolved_target` from
         `find_armed_task(train_id)`, resolve the run's manual override, and call
         the full `PathDispatcher.get_waiting_conflict(...)` with no meet constraint
-        (`acquisition_cap_block_id=None`, `required_candidate_resource_keys=None`).
+        (`reservation_cap_block_id=None`, `required_candidate_resource_keys=None`).
         """
         if self.path_dispatcher is None:
             return None
@@ -1696,7 +1696,7 @@ class RouteExecutor:
             train_id,
             armed.stored_resolved_target,
             manual_override,
-            acquisition_cap_block_id=None,
+            reservation_cap_block_id=None,
             required_candidate_resource_keys=None,
         )
 
@@ -1709,7 +1709,7 @@ class RouteExecutor:
         resolves the run's manual override, then forwards the complete request to
         the canonical
         `PathDispatcher.get_waiting_for_block_id(...)` projection with no meet
-        constraint (`acquisition_cap_block_id=None`,
+        constraint (`reservation_cap_block_id=None`,
         `required_candidate_resource_keys=None`), matching the tick-start
         contention view. Returns `None` when there is no dispatcher, no armed
         task, or nothing blocking the forward suffix.
@@ -1724,7 +1724,7 @@ class RouteExecutor:
             train_id,
             armed.stored_resolved_target,
             manual_override,
-            acquisition_cap_block_id=None,
+            reservation_cap_block_id=None,
             required_candidate_resource_keys=None,
         )
 
@@ -2168,7 +2168,7 @@ class RouteExecutor:
             return
         if self.path_dispatcher.active_path_id_by_train(train_id) is None:
             return
-        if controller.is_stopped_at_authority_end():
+        if controller.is_stopped_at_reservation_end():
             self.path_dispatcher.try_complete_active_path(train_id)
 
     def tick_train_plan(self, train_id: str, delta_seconds: float) -> None:
@@ -2430,7 +2430,7 @@ class RouteExecutor:
             # Plan step `66aa`: dispatch via PathDispatcher.create_path or
             # extend_path (v1 signature). Both methods take train_id +
             # requested_destination_block_id + requested_destination_direction +
-            # acquisition_cap_block_id and return a PathAcquisitionResult.
+            # reservation_cap_block_id and return a PathAcquisitionResult.
             success = self._authority_acquisition_step(
                 train, route, exec_state, controller, projection
             )
@@ -2931,7 +2931,7 @@ class RouteExecutor:
             else None
         )
         if active_path is not None:
-            end_block = active_path.get_authority_end_block_id()
+            end_block = active_path.get_reservation_end_block_id()
             if end_block is not None:
                 direction = (
                     projection.resolved_target.requested_destination_direction
@@ -3317,7 +3317,7 @@ class RouteExecutor:
         # short of the real route target — keep the request at that target and
         # pass the ceiling as the acquisition cap. The dispatcher acquires toward
         # the real target but stores no authority past the cap, so
-        # `authority_end_block_id` lands on the ceiling while
+        # `reservation_end_block_id` lands on the ceiling while
         # `requested_destination_block_id` (and the `task_runs[...].resolved_target`
         # written on success below) stay the farther route target. The capped
         # authority never completes, so the train holds at the ceiling. A train
@@ -3342,7 +3342,7 @@ class RouteExecutor:
         # the braking-distance lock (bound authority to the stopping distance)
         # and any meet ceiling, both measured along the forward route from the
         # head toward the target. `None` acquires to the target.
-        acquisition_cap_block_id = self._acquisition_cap_block(
+        reservation_cap_block_id = self._acquisition_cap_block(
             train, controller, target_block, target_dir,
             manual_override, meet_ceiling_block,
         )
@@ -3356,7 +3356,7 @@ class RouteExecutor:
                     requested_destination_block_id=target_block,
                     requested_destination_direction=target_dir,
                     manual_override=manual_override,
-                    acquisition_cap_block_id=acquisition_cap_block_id,
+                    reservation_cap_block_id=reservation_cap_block_id,
                     required_candidate_resource_keys=required_candidate_resource_keys,
                 )
                 success = bool(getattr(result, "success", False))
@@ -3366,7 +3366,7 @@ class RouteExecutor:
                     requested_destination_block_id=target_block,
                     requested_destination_direction=target_dir,
                     manual_override=manual_override,
-                    acquisition_cap_block_id=acquisition_cap_block_id,
+                    reservation_cap_block_id=reservation_cap_block_id,
                     required_candidate_resource_keys=required_candidate_resource_keys,
                 )
                 success = bool(getattr(result, "success", False))

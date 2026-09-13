@@ -169,9 +169,9 @@ def test_approaching_crossover_truncates_to_block_before_x1():
 
     assert res.success, f"expected truncated success, got {res.failure_kind}"
     assert not _is_detour(res), f"unexpected detour: {_seq_ids(res)}"
-    assert res.authority_end_block_id == "BLK_X1_TO_S2_N", (
+    assert res.reservation_end_block_id == "BLK_X1_TO_S2_N", (
         f"expected authority to stop at the block before X1, got "
-        f"{res.authority_end_block_id} seq={_seq_ids(res)}"
+        f"{res.reservation_end_block_id} seq={_seq_ids(res)}"
     )
 
 
@@ -186,7 +186,7 @@ def test_extend_at_locked_crossover_blocks_no_growth():
         requested_destination_block_id="PLT_S1_S_BLOCK",
         requested_destination_direction="reverse",
     )
-    assert created.success and created.authority_end_block_id == "BLK_X1_TO_S2_N"
+    assert created.success and created.reservation_end_block_id == "BLK_X1_TO_S2_N"
     seq_before = _seq_ids(created)
 
     extended = dispatcher.extend_path(

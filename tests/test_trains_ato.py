@@ -539,7 +539,7 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         a rolling train escalates to EB through step `826a`.
 
         This test pins the post-path-completion behavior: clearance and
-        ATC limit must both be `0`, with `no_authority` reason. The train
+        ATC limit must both be `0`, with `no_reservation` reason. The train
         cannot drive forward without a freshly-issued path.
         """
         from enums import AtcLimitReasonCode
@@ -565,9 +565,9 @@ class TestAtoDestinationStoppingAfterPathCompletes:
             f"got {controller.atc.speed_limit}"
         )
         assert (
-            controller.atc._last_limit_reason_code == AtcLimitReasonCode.NO_AUTHORITY
+            controller.atc._last_limit_reason_code == AtcLimitReasonCode.NO_RESERVATION
         ), (
-            f"Post-completion reason must be NO_AUTHORITY, "
+            f"Post-completion reason must be NO_RESERVATION, "
             f"got {controller.atc._last_limit_reason_code!r}"
         )
         assert controller.target_speed == 0.0, (

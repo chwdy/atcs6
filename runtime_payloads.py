@@ -621,7 +621,7 @@ class PathAcquisitionResult:
     path_id: Optional[str] = None
     requested_destination_block_id: Optional[str] = None
     requested_destination_direction: Optional[str] = None
-    authority_end_block_id: Optional[str] = None
+    reservation_end_block_id: Optional[str] = None
     # `None` on failure (the return contract nulls every field but
     # `failure_kind` / `reason`); the full live sequence on success.
     resource_sequence: Optional[List[Any]] = field(default_factory=list)
@@ -636,7 +636,7 @@ class PathAcquisitionResult:
             "path_id": self.path_id,
             "requested_destination_block_id": self.requested_destination_block_id,
             "requested_destination_direction": self.requested_destination_direction,
-            "authority_end_block_id": self.authority_end_block_id,
+            "reservation_end_block_id": self.reservation_end_block_id,
             "resource_sequence": (
                 None
                 if self.resource_sequence is None
@@ -988,7 +988,7 @@ class PathDispatcherForRouteExecutor(Protocol):
         requested_destination_block_id: str = "",
         requested_destination_direction: str = "forward",
         manual_override: bool = False,
-        acquisition_cap_block_id: Optional[str] = None,
+        reservation_cap_block_id: Optional[str] = None,
         required_candidate_resource_keys: Optional[Any] = None,
     ) -> PathAcquisitionResult: ...
 
@@ -998,7 +998,7 @@ class PathDispatcherForRouteExecutor(Protocol):
         requested_destination_block_id: str = "",
         requested_destination_direction: str = "forward",
         manual_override: bool = False,
-        acquisition_cap_block_id: Optional[str] = None,
+        reservation_cap_block_id: Optional[str] = None,
         required_candidate_resource_keys: Optional[Any] = None,
     ) -> PathAcquisitionResult: ...
 
@@ -1026,7 +1026,7 @@ class RouteExecutorForPathDispatcher(Protocol):
         self,
         train_id: str,
         path_id: str,
-        authority_end_block_id: Optional[str] = None,
+        reservation_end_block_id: Optional[str] = None,
         requested_destination_direction: Optional[str] = None,
         event_time: Optional[float] = None,
     ) -> bool: ...

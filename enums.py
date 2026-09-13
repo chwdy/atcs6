@@ -219,15 +219,14 @@ class AtcLimitReasonCode(Enum):
     `speed_curves[*].atc_limit_reason_code` field.
     """
 
-    AUTHORITY_STOP = "authority_stop"
+    RESERVATION_STOP = "reservation_stop"
     CAUTION = "caution"
-    OBSTRUCTION = "obstruction"
-    NO_AUTHORITY = "no_authority"
+    NO_RESERVATION = "no_reservation"
     EB = "eb"
     # A posted block speed limit (`Block.speed_limit_kmh`) below the train's
     # current maximum: a permitted-speed restriction ahead, distinct from
-    # `obstruction` (an in-path resource conflict). Per design_new.md canonical
-    # `atc_limit_reason_code` enumeration.
+    # `reservation_stop` (braking to the reservation/clearance end). Per
+    # design_new.md canonical `atc_limit_reason_code` enumeration.
     SPEED_LIMIT = "speed_limit"
     # Per design_new.md line 1728: used when the train or network object is
     # not yet wired, so the empty anchor reports a structured reason code.
@@ -236,7 +235,7 @@ class AtcLimitReasonCode(Enum):
     # latched (the live path stays ACTIVE), so the head is off its still-active
     # authority. The distance-0 anchor reports `atc_limit = 0` with this reason
     # so ATC brakes the train and the overspeed branch escalates to EB. Distinct
-    # from `no_authority`, which is the genuinely-absent-plan case.
+    # from `no_reservation`, which is the genuinely-absent-plan case.
     DEVIATION = "deviation"
 
 

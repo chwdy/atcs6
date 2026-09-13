@@ -19,7 +19,7 @@ class ReceivedPathPlan:
     """The controller's read-only view of dispatcher-owned movement authority.
 
     design_new.md "received_path_plan schema": the projection carries exactly
-    `path_id`, `resource_sequence`, and `authority_end_block_id`. The
+    `path_id`, `resource_sequence`, and `reservation_end_block_id`. The
     dispatcher-only fields on the `Path` record — `status`,
     `current_resource_index`, `last_status_updated_time` — are deliberately
     absent, because "the controller does not see those fields." The requested
@@ -34,15 +34,15 @@ class ReceivedPathPlan:
     resource_sequence: List["ResourceSequenceEntry"] = field(default_factory=list)
 
     @property
-    def authority_end_block_id(self) -> str:
+    def reservation_end_block_id(self) -> str:
         """Terminal block of the live authority; `""` when the sequence is empty."""
         if not self.resource_sequence:
             return ""
         return self.resource_sequence[-1].resource_id
 
-    def get_authority_end_block_id(self) -> str:
-        """Function form, matching `Path.get_authority_end_block_id()`."""
-        return self.authority_end_block_id
+    def get_reservation_end_block_id(self) -> str:
+        """Function form, matching `Path.get_reservation_end_block_id()`."""
+        return self.reservation_end_block_id
 
     def get_path_tiles(self) -> List["PathTileEntry"]:
         """Derived ordered tile list — `resource_sequence[*].path_tiles`

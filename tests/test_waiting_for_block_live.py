@@ -100,7 +100,7 @@ def test_waiting_for_block_id_reports_live_blocker():
     assert res.success
     path = disp.get_path(res.path_id)
     # Truncated short of the requested target (authority did not reach E).
-    assert path.get_authority_end_block_id() != "BLOCK_E"
+    assert path.get_reservation_end_block_id() != "BLOCK_E"
 
     ex = _route_backed(net, disp, target="BLOCK_E")
     # The route supplies the target; the dispatcher runs the walk and names the
@@ -141,7 +141,7 @@ def test_waiting_for_block_id_none_when_target_reached():
     )
     assert res.success
     path = disp.get_path(res.path_id)
-    assert path.get_authority_end_block_id() == "BLOCK_C"
+    assert path.get_reservation_end_block_id() == "BLOCK_C"
 
     ex = _route_backed(net, disp, target="BLOCK_C")
     assert ex.waiting_for_block_id_for("T1") is None

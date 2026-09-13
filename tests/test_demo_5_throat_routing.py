@@ -8,7 +8,7 @@ exemption (design_new.md "Flank Protection Computation" + the switch-first
 acquisition step) one switch's flank claim pinned the other to the opposite
 state and `Switch.acquire_lock` rejected the route's own primary -- no path
 through the throat could form. A clean train Quick-Routed S3_N -> S2_N then
-sat in READY/NO_AUTHORITY forever.
+sat in READY/NO_RESERVATION forever.
 
 This drives the canonical Quick Route flow (one-off Route + RouteRun, single
 `stop` task on the target block, `all_or_nothing` acquisition) through the
@@ -339,7 +339,7 @@ def test_best_effort_return_leg_holds_at_b2_not_b1_when_throat_busy(dt, label):
         ap = dispatcher.get_active_path("T3")
         if ap is not None:
             path_formed = True
-            auth_end = ap.get_authority_end_block_id()
+            auth_end = ap.get_reservation_end_block_id()
             # The core regression guard: a truncated authority on this leg may
             # only terminate at B_2. Never B_1 (8,9) — that fouls SW_8_10.
             assert auth_end == "BLK_S2_N_TO_S3_N_B_2", (

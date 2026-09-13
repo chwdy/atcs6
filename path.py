@@ -7,7 +7,7 @@ successful PathDispatcher.create_path(...) and transitions to COMPLETED or
 CANCELLED. Resource geometry is stored once in resource_sequence (the
 single source of truth) plus a derived flat path_tiles geometry. There is
 no v0 block_sequence / start_block_id / end_block_id / current_block_index;
-the live authority end is the derived authority_end_block_id (the last
+the live authority end is the derived reservation_end_block_id (the last
 block resource in resource_sequence). The requested target the authority
 was acquired toward is route-owned (RouteRun.task_runs[i].resolved_target),
 not stored on Path.
@@ -135,7 +135,7 @@ class Path:
     transitions to COMPLETED or CANCELLED. resource_sequence holds the
     full authority geometry (blocks + switches in traversal order); the
     flat path_tiles list is the concatenation of the per-resource tile
-    slices in sequence_index order. authority_end_block_id is the live
+    slices in sequence_index order. reservation_end_block_id is the live
     authority end and may be shorter than the route's requested target
     when acquisition truncated the path; that requested target
     is route-owned (RouteRun.task_runs[i].resolved_target) and is not
@@ -190,14 +190,15 @@ class Path:
             tiles.extend(entry.path_tiles)
         return tiles
 
-    def get_authority_end_block_id(self) -> str:
-        """Derived active authority end block.
+    def get_reservation_end_block_id(self) -> str:
+        """Derived active reservation end block — the far edge of the train's
+        reserved prefix.
 
         Per design_new.md "Path field schema": exposed as a function (not a
         property) returning `resource_sequence[-1].resource_id` on each
         call. Returns "" when the sequence is empty (e.g. before initial
         construction has populated it). Path invariants require the terminal
-        entry to be a `block` resource; switch-terminated authority is not
+        entry to be a `block` resource; a switch-terminated reservation is not
         valid in v1 (see "Path invariants").
         """
         if not self.resource_sequence:
@@ -206,6 +207,18 @@ class Path:
         if getattr(terminal, "resource_type", None) != "block":
             return ""
         return str(getattr(terminal, "resource_id", "") or "")
+
+    def get_lock_end_block_id(self) -> str:
+        """Derived active lock end block — the far edge of the uncancellable
+        braking-distance lock.
+
+        Per design_new.md "Path field schema". The hard lock is the subset of
+        the reserved prefix that is held by `Block.locked_by_path`; until that
+        per-block lock flag is stored, the reserved prefix and the lock
+        coincide, so this returns the same block as
+        `get_reservation_end_block_id()`.
+        """
+        return self.get_reservation_end_block_id()
 
     def reaches_target(self, block_id: str) -> bool:
         """Whether the live authority reaches `block_id`.
@@ -217,7 +230,7 @@ class Path:
 
         This is the canonical test for "is this authority still short of that
         target?". It is deliberately not an equality test against
-        `get_authority_end_block_id()`: a target the authority already runs
+        `get_reservation_end_block_id()`: a target the authority already runs
         past is reached, not missed. Entries before `current_resource_index`
         are the train's own covered span behind the head, so they never count
         as reached.
@@ -294,7 +307,8 @@ class Path:
             "path_id": self.path_id,
             "status": self.status.value,
             "train_id": self.train_id,
-            "authority_end_block_id": self.get_authority_end_block_id(),
+            "reservation_end_block_id": self.get_reservation_end_block_id(),
+            "lock_end_block_id": self.get_lock_end_block_id(),
             "resource_sequence": [e.to_dict() for e in self.resource_sequence],
             "path_tiles": [t.to_dict() for t in self.get_path_tiles()],
             "current_resource_index": self.current_resource_index,
@@ -310,7 +324,7 @@ class Path:
             path_id=str(data["path_id"]),
             status=PathStatus(data.get("status", PathStatus.ACTIVE.value)),
             train_id=data.get("train_id"),
-            # `authority_end_block_id` and `path_tiles` are both derived from
+            # `reservation_end_block_id` and `path_tiles` are both derived from
             # `resource_sequence`; their serialized values are ignored on read.
             resource_sequence=[
                 ResourceSequenceEntry.from_dict(e)

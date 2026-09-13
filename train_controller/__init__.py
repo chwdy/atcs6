@@ -652,7 +652,7 @@ class TrainController:
         detail = self.speed_limit_reason
         if detail == code_str:
             detail = None
-        holding = code_str in ("deviation", "no_authority")
+        holding = code_str in ("deviation", "no_reservation")
         self.notifications.emit(
             f"ATC limit reason {previous or 'none'} -> {code_str}",
             operation="tick",
@@ -844,7 +844,7 @@ class TrainController:
         # Per design_new.md step `914f` / `826a`: a rolling train whose
         # authority can no longer be used has nothing to brake against, so EB —
         # not a service-brake notch — is the only stopping protocol. Both
-        # zero-limit reasons trigger this fail-safe override: `no_authority`
+        # zero-limit reasons trigger this fail-safe override: `no_reservation`
         # (no live path at all) and `deviation` (the path is still ACTIVE but
         # the head is unmappable, so the distance-0 limit is 0 with reason
         # `deviation`). In either case any motion is overspeed at distance 0, so
@@ -855,7 +855,7 @@ class TrainController:
         zero_limit_loss = (
             self.atc.speed_limit <= 0.0
             and self.atc._last_limit_reason_code
-            in (AtcLimitReasonCode.NO_AUTHORITY, AtcLimitReasonCode.DEVIATION)
+            in (AtcLimitReasonCode.NO_RESERVATION, AtcLimitReasonCode.DEVIATION)
             and not self.is_stopped()
         )
 
@@ -1142,8 +1142,8 @@ class TrainController:
 
         EB always overrides — the pass never issues it while driving. An ATC
         `CAUTION` restriction is external too: the leg reserves its stretch
-        clear, so a caution block ahead is anomalous. `AUTHORITY_STOP` /
-        `OBSTRUCTION` / `NO_AUTHORITY` are the leg's own authority-end approach
+        clear, so a caution block ahead is anomalous. `RESERVATION_STOP` /
+        `NO_RESERVATION` are the leg's own reservation-end approach
         and lifecycle — the ordinary end-of-leg deceleration (design_new.md:
         "not an invalidating override") and the "ran out of authority"
         resolution — so they are excluded.
@@ -2011,7 +2011,7 @@ class TrainController:
             conditions.add(ControllerCondition.ROUTE_DEACTIVATE_PENDING)
         return frozenset(conditions)
 
-    def is_stopped_at_authority_end(self) -> bool:
+    def is_stopped_at_reservation_end(self) -> bool:
         """True when the train is stopped at the usable end of active authority.
 
         Per design_new.md step `8df5`, this is the post-physics usable-
@@ -2025,16 +2025,16 @@ class TrainController:
         safety-margin boundary short of that block — common when the
         authority-end block is very short or zero-length). Both cases surface
         identically at distance 0: the lookahead curve's dominant restriction
-        becomes the path-end stop, so its reason code is `AUTHORITY_STOP`. The
+        becomes the path-end stop, so its reason code is `RESERVATION_STOP`. The
         literal `atc_limit == 0` the spec mentions is unreachable under
         forward-Euler integration (a step cannot land exactly on the boundary,
-        so the value reads a few km/h); the `AUTHORITY_STOP` reason code is the
+        so the value reads a few km/h); the `RESERVATION_STOP` reason code is the
         reachable expression of the same intent.
 
         The gate fires on `is_stopped()` plus **either** of the step-`8df5`
         arrival conditions:
           - **4a** — the distance-0 lookahead's dominant restriction is the
-            authority-end stop (reason code `AUTHORITY_STOP`). This covers a
+            authority-end stop (reason code `RESERVATION_STOP`). This covers a
             train braked to rest at the safety-margin boundary short of a very
             short or zero-length final block; requiring head occupancy alone
             would strand it, since it never enters that block.
@@ -2042,7 +2042,7 @@ class TrainController:
             block. This covers a train held at rest inside its target block by
             something other than the authority end, such as a manual driver's
             voluntary stop under positive clearance (its dominant distance-0
-            restriction is then not `AUTHORITY_STOP`, so 4a alone would never
+            restriction is then not `RESERVATION_STOP`, so 4a alone would never
             complete it).
         The dispatcher's `try_complete_active_path(...)` separately verifies the
         live authority's terminal block is the served stop's target, so this
@@ -2059,12 +2059,12 @@ class TrainController:
         if plan is None:
             return False
         # 4a: the ATO curve has collapsed to the path-end stop at distance 0, so
-        # the dominant restriction's reason code is AUTHORITY_STOP.
+        # the dominant restriction's reason code is RESERVATION_STOP.
         payload = self._compute_canonical_lookahead()
         curves = (payload or {}).get("lookahead", {}).get("speed_curves") or []
         reason_4a = bool(curves) and (
             curves[0].get("atc_limit_reason_code")
-            == AtcLimitReasonCode.AUTHORITY_STOP.value
+            == AtcLimitReasonCode.RESERVATION_STOP.value
         )
         # 4b: the head is physically in the authority-end (terminal) block.
         # Derive the head tile from (cab, span) via `_get_head_tile()` and map it
@@ -2072,7 +2072,7 @@ class TrainController:
         # relative (it is geometric end_a->end_b, not cab-forward), so the head
         # block must come from the head tile, not from an occupied_blocks end.
         head_4b = False
-        authority_end_block = plan.authority_end_block_id
+        authority_end_block = plan.reservation_end_block_id
         if authority_end_block and self.network is not None:
             head_tile = self._get_head_tile()
             if head_tile is not None:
@@ -2660,7 +2660,7 @@ class TrainController:
         - top level: `train_id`, `head_tile`, `head_distance_cm`,
           `travel_direction`, `cab`, `speed_limit_reason`, `lookahead`
         - nested `lookahead`: `blocks`, `signals`, `switches`, `stations`,
-          `clearance_cm`, `safety_margin_cm`, `authority_boundary_delta_cm`,
+          `clearance_cm`, `safety_margin_cm`, `reservation_boundary_delta_cm`,
           `speed_curves`
 
         See the schema described in the design doc for each nested

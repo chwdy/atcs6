@@ -145,7 +145,7 @@ class CalibrationCommand:
     arm_leg_to: Optional[str] = None
     """The far outer block to build this leg's one-off route to, before the power
     command can move the train. A leg without a route has no authority, so the
-    ATC limit is `0` (`no_authority`) and the safety-cap ordering clamps the
+    ATC limit is `0` (`no_reservation`) and the safety-cap ordering clamps the
     commanded percent to it."""
 
 
