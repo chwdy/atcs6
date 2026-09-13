@@ -213,27 +213,29 @@ def test_current_on_the_next_reserved_block_is_still_the_train_arriving():
 
 
 # ---------------------------------------------------------------------------
-# truncate_path_before_block directly
+# truncate_path_before_resource directly
 # ---------------------------------------------------------------------------
 
 
-def test_truncation_is_a_noop_for_a_block_not_on_the_path():
-    """Truncation never fails: a block that is not on the path is a no-op that
+def test_truncation_is_a_noop_for_an_out_of_range_index():
+    """Truncation never fails: an index past the end of the path is a no-op that
     returns the current reservation end unchanged (design_new.md "Reservation
     truncation", Return value)."""
     network = build_abc()
     sim, dispatcher, controller, train, path_id = rolling_train_with_authority_to_c(
         network
     )
+    path = dispatcher.paths[path_id]
+    bad_index = len(path.resource_sequence) + 5
 
     assert (
-        dispatcher.truncate_path_before_block(path_id, "BLK_NOPE", "test") == "BLK_C"
+        dispatcher.truncate_path_before_resource(path_id, bad_index, "test") == "BLK_C"
     )
-    assert dispatcher.paths[path_id].get_reservation_end_block_id() == "BLK_C"
+    assert path.get_reservation_end_block_id() == "BLK_C"
 
 
-def test_truncation_is_a_noop_before_the_head_block():
-    """A block the train already covers (its head/anchor) has nothing forward to
+def test_truncation_is_a_noop_at_the_head_index():
+    """A resource at/behind the head (the train's anchor) has nothing forward to
     cut, so truncation is a no-op that returns the current end unchanged — it
     never empties the reservation (design_new.md "Reservation truncation")."""
     network = build_abc()
@@ -241,9 +243,12 @@ def test_truncation_is_a_noop_before_the_head_block():
         network
     )
     path = dispatcher.paths[path_id]
-    assert path.resource_sequence[path.current_resource_index].resource_id == "BLK_A"
+    head_index = path.current_resource_index
+    assert path.resource_sequence[head_index].resource_id == "BLK_A"
 
-    assert dispatcher.truncate_path_before_block(path_id, "BLK_A", "test") == "BLK_C"
+    assert (
+        dispatcher.truncate_path_before_resource(path_id, head_index, "test") == "BLK_C"
+    )
     assert path.get_reservation_end_block_id() == "BLK_C"
 
 
@@ -292,7 +297,10 @@ def test_truncation_backs_off_a_two_way_switch_foul_terminal():
     # The naive cut before the taken D is C, but C is a two-way block entered
     # straight off a switch — an item-11 junction foul — so truncation backs off
     # to B, the nearest legal (one-way) terminal (design_new.md line 1366).
-    assert dispatcher.truncate_path_before_block("P1", "BLK_D", "taken") == "BLK_B"
+    d_index = next(
+        i for i, e in enumerate(path.resource_sequence) if e.resource_id == "BLK_D"
+    )
+    assert dispatcher.truncate_path_before_resource("P1", d_index, "taken") == "BLK_B"
     assert path.status == PathStatus.ACTIVE
     assert path.get_reservation_end_block_id() == "BLK_B"
 
@@ -302,5 +310,8 @@ def test_truncation_keeps_a_holding_point_terminal_over_a_foul():
     # A holding point is the operator's explicit safe wait place, so it overrides
     # the two-way-switch foul (design_new.md item 11): the cut lands on C.
     network.blocks["BLK_C"].is_holding_point = True
-    assert dispatcher.truncate_path_before_block("P1", "BLK_D", "taken") == "BLK_C"
+    d_index = next(
+        i for i, e in enumerate(path.resource_sequence) if e.resource_id == "BLK_D"
+    )
+    assert dispatcher.truncate_path_before_resource("P1", d_index, "taken") == "BLK_C"
     assert path.get_reservation_end_block_id() == "BLK_C"

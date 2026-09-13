@@ -8,6 +8,8 @@ only BLK_2 locked (its braking floor); BLK_3/BLK_4 are reserved-but-unlocked —
 the preemptible tail. `T_EXPRESS` is higher priority than `T_LOCAL`.
 """
 
+from types import SimpleNamespace
+
 from block_manager import ReservedBlockTraversal
 from path import Path, ResourceSequenceEntry
 from path_dispatcher import PathDispatcher
@@ -151,3 +153,60 @@ def test_a_locked_block_is_never_taken():
     assert result.valid is False
     assert network.blocks["BLK_3"].reserved_by_path == "P_LOCAL"
     assert network.blocks["BLK_3"].locked_by_path == "P_LOCAL"
+
+
+# --- switch-preemption building blocks -----------------------------------
+
+
+def _entry(i, rtype, rid):
+    return ResourceSequenceEntry(sequence_index=i, resource_type=rtype, resource_id=rid)
+
+
+def test_forward_resource_index_picks_the_forward_occurrence():
+    _network, disp = _setup({}, ["BLK_2"], [], ["BLK_1", "BLK_2"])
+    path = Path(
+        path_id="P",
+        resource_sequence=[
+            _entry(0, "block", "B0"), _entry(1, "switch", "SW1"),
+            _entry(2, "block", "B1"), _entry(3, "switch", "SW1"),
+        ],
+        current_resource_index=0,
+    )
+    assert disp._forward_resource_index(path, "switch", "SW1") == 1
+    assert disp._forward_resource_index(path, "block", "B1") == 2
+    assert disp._forward_resource_index(path, "block", "NOPE") is None
+    # A lapping path holds SW1 twice; from a head past the first, the forward
+    # occurrence is the later index.
+    path.current_resource_index = 2
+    assert disp._forward_resource_index(path, "switch", "SW1") == 3
+
+
+def test_lock_end_index_is_the_lock_end_or_the_head():
+    network, disp = _setup(
+        {}, ["BLK_2", "BLK_3"], ["BLK_2"], ["BLK_1", "BLK_2", "BLK_3"]
+    )
+    # Lock end is BLK_2 at index 1.
+    assert disp._lock_end_index(disp.paths["P_LOCAL"]) == 1
+    # A path that locks nothing floors at the head index.
+    unlocked = Path(
+        path_id="P2",
+        resource_sequence=[_entry(0, "block", "BLK_1"), _entry(1, "block", "BLK_2")],
+        current_resource_index=0,
+        network=network,
+    )
+    assert disp._lock_end_index(unlocked) == 0
+
+
+def test_switch_committed_by_train_reads_occupancy_and_protection():
+    _network, disp = _setup({}, ["BLK_2"], [], ["BLK_1", "BLK_2"])
+    occupied = SimpleNamespace(
+        physical_occupants={"route_a": "T_LOCAL"}, train_protection_claims=[]
+    )
+    assert disp._switch_committed_by_train(occupied, "T_LOCAL") is True
+    assert disp._switch_committed_by_train(occupied, "T_OTHER") is False
+    protected = SimpleNamespace(
+        physical_occupants={}, train_protection_claims=[("T_LOCAL", "SW_SRC", 1)]
+    )
+    assert disp._switch_committed_by_train(protected, "T_LOCAL") is True
+    free = SimpleNamespace(physical_occupants={}, train_protection_claims=[])
+    assert disp._switch_committed_by_train(free, "T_LOCAL") is False

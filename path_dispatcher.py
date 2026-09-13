@@ -2135,26 +2135,29 @@ class PathDispatcher:
         self, validation, segment, path_id: str, train_id: str, manual_override: bool
     ):
         """Preemption (design_new.md "Preemption"): when a candidate segment is
-        blocked only by reserved-but-not-locked blocks held by strictly
+        blocked only by reserved-but-not-locked resources held by strictly
         lower-priority runs, take them and re-validate.
 
-        A higher-priority run may take a reserved block from a lower-priority one
-        only when the block is beyond the holder's lock (`Block.locked_by_path is
-        None`) — committed (locked or occupied) track is never taken. When EVERY
-        occupancy conflict on the segment is such a preemptible block, this
-        truncates each holder's reservation before the taken block through
-        `truncate_path_before_block(...)` (which releases the holder's tail and
-        its `locked_by_path` flags, leaves it ACTIVE braking to its new nearer
-        end, and never touches its `control_mode`), then re-validates so the
-        caller's ordinary acquire path stores the preempting reservation.
+        A higher-priority run may take a reserved resource from a lower-priority
+        one only when it is beyond the holder's braking-distance lock — for a
+        block, `Block.locked_by_path is None`; for a switch, its
+        `resource_sequence` index is beyond the holder's lock end and the holder
+        neither occupies nor protects it. Committed track (a locked block, a
+        switch at/before the lock end or already entered, or any occupied
+        resource) is never taken. When EVERY occupancy conflict on the segment
+        is such a preemptible resource, this truncates each holder's reservation
+        before it through `truncate_path_before_resource(...)` (which releases
+        the holder's tail and its `locked_by_path` flags, leaves it ACTIVE
+        braking to its new nearer end, and never touches its `control_mode`),
+        then re-validates so the caller's ordinary acquire path stores the
+        preempting reservation.
 
         Any non-preemptible conflict — an occupied block, a locked block, a
-        switch lock (switch preemption is not handled here), or a holder of
-        equal-or-higher priority — means no preemption: the segment's validation
-        is returned unchanged and the caller falls back to truncating its own
-        segment short. Preemption is atomic with acquisition: because every
-        blocker is removed, the re-validated segment acquires cleanly on the
-        caller's existing path.
+        committed switch, or a holder of equal-or-higher priority — means no
+        preemption: the segment's validation is returned unchanged and the
+        caller falls back to truncating its own segment short. Preemption is
+        atomic with acquisition: because every blocker is removed, the
+        re-validated segment acquires cleanly on the caller's existing path.
         """
         if validation.valid:
             return validation
@@ -2162,50 +2165,120 @@ class PathDispatcher:
         structural = [e for e in validation.errors if not e.type.is_occupancy_class()]
         if structural or not occupancy:
             return validation
-        victims = []  # (holder_path_id, taken_block_id)
+        victims = []  # (holder_path_id, resource_sequence_index)
         for err in occupancy:
-            # Only a foreign reserved-but-unlocked BLOCK is preemptible here.
-            if err.type != ValidationErrorType.BLOCK_RESERVED or not err.block_id:
+            if err.type == ValidationErrorType.BLOCK_RESERVED and err.block_id:
+                block = self.network.blocks.get(err.block_id)
+                if block is None:
+                    return validation
+                holder_path = block.reserved_by_path
+                if not holder_path or holder_path == path_id:
+                    return validation
+                if block.locked_by_path is not None:
+                    # Committed to stopping within this block — never preemptible.
+                    return validation
+                if not self._can_preempt(train_id, block.reserved_for_train):
+                    return validation
+                holder = self.paths.get(holder_path)
+                idx = (
+                    self._forward_resource_index(holder, "block", err.block_id)
+                    if holder is not None
+                    else None
+                )
+                if idx is None:
+                    return validation
+                victims.append((holder_path, idx))
+            elif err.type == ValidationErrorType.SWITCH_LOCKED and err.position is not None:
+                switch = self._resolve_switch_at_position(err.position)
+                holder_path = err.locked_by_path
+                if switch is None or not holder_path or holder_path == path_id:
+                    return validation
+                holder = self.paths.get(holder_path)
+                if holder is None:
+                    return validation
+                idx = self._forward_resource_index(
+                    holder, "switch", switch.switch_id
+                )
+                # Beyond the holder's lock end, and not already entered/protected.
+                if idx is None or idx <= self._lock_end_index(holder):
+                    return validation
+                if self._switch_committed_by_train(switch, holder.train_id):
+                    return validation
+                if not self._can_preempt(train_id, holder.train_id):
+                    return validation
+                victims.append((holder_path, idx))
+            else:
+                # An occupied block or any other occupancy conflict is committed
+                # track — not preemptible.
                 return validation
-            block = self.network.blocks.get(err.block_id)
-            if block is None:
-                return validation
-            holder_path = block.reserved_by_path
-            if not holder_path or holder_path == path_id:
-                return validation
-            if block.locked_by_path is not None:
-                # Committed to stopping within this block — never preemptible.
-                return validation
-            if not self._can_preempt(train_id, block.reserved_for_train):
-                return validation
-            victims.append((holder_path, err.block_id))
-        for holder_path, taken_block_id in victims:
-            self.truncate_path_before_block(
+        for holder_path, idx in victims:
+            self.truncate_path_before_resource(
                 holder_path,
-                taken_block_id,
+                idx,
                 f"preempted by higher-priority train {train_id}",
             )
         return self.validate_path(
             segment, path_id, train_id, manual_override=manual_override
         )
 
-    def truncate_path_before_block(
+    def _forward_resource_index(self, path, resource_type: str, resource_id: str):
+        """First `resource_sequence` index strictly ahead of the head
+        (`current_resource_index`) matching `(resource_type, resource_id)`, or
+        `None`. Picks the forward (reserved) occurrence for a lapping path that
+        holds one id at more than one index."""
+        for i in range(path.current_resource_index + 1, len(path.resource_sequence)):
+            entry = path.resource_sequence[i]
+            if entry.resource_type == resource_type and entry.resource_id == resource_id:
+                return i
+        return None
+
+    def _lock_end_index(self, path) -> int:
+        """`resource_sequence` index of `path`'s lock end block, or the head
+        index (`current_resource_index`) when the path locks nothing — the
+        Preemption floor for a switch (everything strictly beyond is
+        preemptible)."""
+        lock_end_id = path.get_lock_end_block_id()
+        if lock_end_id:
+            for i in range(path.current_resource_index, len(path.resource_sequence)):
+                entry = path.resource_sequence[i]
+                if entry.resource_type == "block" and entry.resource_id == lock_end_id:
+                    return i
+        return path.current_resource_index
+
+    def _switch_committed_by_train(self, switch, train_id: Optional[str]) -> bool:
+        """True when `train_id` has physically committed to `switch` — it
+        occupies it (`Switch.physical_occupants`) or protects it
+        (`Switch.train_protection_claims`). A committed switch is never
+        preempted (design_new.md "Preemption")."""
+        if not train_id:
+            return False
+        occupants = getattr(switch, "physical_occupants", {}) or {}
+        if train_id in occupants.values():
+            return True
+        claims = getattr(switch, "train_protection_claims", []) or []
+        return any(claim and claim[0] == train_id for claim in claims)
+
+    def truncate_path_before_resource(
         self,
         path_id: str,
-        block_id: str,
+        resource_sequence_index: int,
         reason: str,
     ) -> str:
-        """Pull a live path's reservation back to end before `block_id`, and
-        return the shortened reservation's new end block id.
+        """Pull a live path's reservation back to end before the contested
+        resource at `resource_sequence_index`, and return the shortened
+        reservation's new end block id.
 
         Per design_new.md "Reservation truncation": a reserved-but-unlocked
-        block a path holds may be physically taken by another train (an Observe
-        caller) or preempted by a higher-priority run before this train reaches
-        it, and reservation that runs through it is not reservation. This cuts
-        `resource_sequence` back to the furthest legal terminal that is both at
-        or behind the last block before `block_id` and at or beyond this path's
-        lock end (`Path.lock_end_block_id`) — the cut never enters the locked
-        span — releases the dropped entries' block reservations (and their
+        resource a path holds — a block a foreign train physically took (an
+        Observe caller), or a block or switch a higher-priority run preempts —
+        may be lost before this train reaches it, and reservation that runs
+        through it is not reservation. The index carries the contested resource
+        (block or switch) and disambiguates a lapping path that holds one
+        resource id at more than one index. This cuts `resource_sequence` back
+        to the furthest legal terminal that is both at or behind the last block
+        before that index and at or beyond this path's lock end
+        (`Path.lock_end_block_id`) — the cut never enters the locked span —
+        releases the dropped entries' block reservations (and their
         `locked_by_path`) and switch locks, and leaves the path ACTIVE.
 
         It always succeeds: when no preferred legal terminal remains in that
@@ -2213,24 +2286,27 @@ class PathDispatcher:
         which the braking-distance lock guarantees the train can stop within),
         so the path always survives with a valid shorter remainder and no caller
         branches on a failure result. A path must end on a block (see "Path
-        invariants"), so any switches between the terminal and the taken block go
-        with the dropped tail. Returns the new reservation end block id;
-        `block_id` not on the path (or at/behind the head, so nothing forward to
-        cut) is a no-op that returns the current reservation end unchanged.
+        invariants"), so any switches between the terminal and the contested
+        resource go with the dropped tail. Returns the new reservation end block
+        id; an index out of range or at/behind the head (a resource the train
+        already covers, nothing forward to cut) is a no-op that returns the
+        current reservation end unchanged.
         """
         path = self.paths.get(path_id)
         if path is None or path.status != PathStatus.ACTIVE:
             return ""
 
-        cut_index: Optional[int] = None
-        for index, entry in enumerate(path.resource_sequence):
-            if entry.resource_type == "block" and entry.resource_id == block_id:
-                cut_index = index
-                break
-        # `block_id` not on the path, or at/behind the head (a block the train
-        # already covers, nothing forward to cut): no-op, reservation unchanged.
-        if cut_index is None or cut_index <= path.current_resource_index:
+        cut_index = resource_sequence_index
+        # Out of range, or at/behind the head (a resource the train already
+        # covers, nothing forward to cut): no-op, reservation unchanged.
+        if (
+            cut_index is None
+            or cut_index < 0
+            or cut_index >= len(path.resource_sequence)
+            or cut_index <= path.current_resource_index
+        ):
             return path.get_reservation_end_block_id()
+        contested = path.resource_sequence[cut_index]
 
         # Lock-end floor: the cut never enters the locked span, so the terminal
         # search bottoms out at this path's lock end. When the path locks
@@ -2240,14 +2316,22 @@ class PathDispatcher:
 
         # Truncation-terminal rules (design_new.md "truncation-terminal rules"):
         # the cut lands at the furthest legal terminal at or behind the last
-        # block before the taken block and at or beyond the lock-end floor. The
-        # taken block is the first block dropped just after that candidate
-        # terminal (the reversal-trap check's "next block"), so the scan starts
-        # one entry behind it.
+        # block before the contested resource and at or beyond the lock-end
+        # floor. The reversal-trap check's "next block" is the first block at or
+        # after the cut (the contested block itself, or the first block past a
+        # contested switch).
+        next_block_after_start = next(
+            (
+                e.resource_id
+                for e in path.resource_sequence[cut_index:]
+                if e.resource_type == "block"
+            ),
+            None,
+        )
         keep_through = self._furthest_legal_terminal_index(
             path,
             cut_index - 1,
-            next_block_after_start=block_id,
+            next_block_after_start=next_block_after_start,
             floor_index=lock_floor_index,
         )
         if keep_through is None:
@@ -2287,7 +2371,7 @@ class PathDispatcher:
 
             nc.emit(
                 source="PathDispatcher",
-                operation="truncate_path_before_block",
+                operation="truncate_path_before_resource",
                 kind=_Kind.WARNING,
                 message=(
                     f"path {path_id} truncated to end at "
@@ -2297,7 +2381,8 @@ class PathDispatcher:
                 error=_ErrorRecord(reason, "reservation_truncated"),
                 event_time=self._now(),
                 payload={
-                    "cut_before_block_id": block_id,
+                    "cut_before_resource_type": contested.resource_type,
+                    "cut_before_resource_id": contested.resource_id,
                     "reservation_end_block_id": path.get_reservation_end_block_id(),
                     "released_block_ids": list(dropped_blocks),
                     "released_switch_ids": list(dropped_switches),

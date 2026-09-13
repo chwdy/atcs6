@@ -1228,7 +1228,7 @@ class SimulationController(SwitchOutputOwner):
 
         - Reserved-but-unlocked (the taken block is beyond the reserving train's
           `Path.lock_end_block_id`): the reservation is pulled back through
-          `truncate_path_before_block(...)`, which always succeeds (it falls
+          `truncate_path_before_resource(...)`, which always succeeds (it falls
           back to the lock end), so ATC brakes that train to a stop at its
           shortened reservation end and the route re-extends once the block
           clears. No cancel.
@@ -1263,12 +1263,28 @@ class SimulationController(SwitchOutputOwner):
                 # on whether the reserving train had LOCKED the taken block. A
                 # block reserved by a path is locked only by that same path, so
                 # `locked_by_path is None` means reserved-but-unlocked.
-                if path_id and getattr(block, "locked_by_path", None) is None:
-                    # Reserved-but-unlocked: pull the reservation back
-                    # gracefully. The call always succeeds (falling back to the
-                    # lock end), so the reserving train brakes to its shortened
-                    # reservation end — no cancel.
-                    dispatcher.truncate_path_before_block(path_id, block_id, reason)
+                victim_path = (
+                    dispatcher.paths.get(path_id)
+                    if path_id and dispatcher is not None
+                    else None
+                )
+                taken_index = (
+                    dispatcher._forward_resource_index(victim_path, "block", block_id)
+                    if victim_path is not None
+                    else None
+                )
+                if (
+                    path_id
+                    and getattr(block, "locked_by_path", None) is None
+                    and taken_index is not None
+                ):
+                    # Reserved-but-unlocked: pull the reservation back gracefully
+                    # to before the taken block's occurrence. The call always
+                    # succeeds (falling back to the lock end), so the reserving
+                    # train brakes to its shortened reservation end — no cancel.
+                    dispatcher.truncate_path_before_resource(
+                        path_id, taken_index, reason
+                    )
                     continue
 
                 # Locked (the foreign train is inside the reserving train's
