@@ -2099,58 +2099,70 @@ class PathDispatcher:
         path_id: str,
         block_id: str,
         reason: str,
-    ) -> bool:
-        """Pull a live path's authority back to end before `block_id`.
+    ) -> str:
+        """Pull a live path's reservation back to end before `block_id`, and
+        return the shortened reservation's new end block id.
 
-        Per design_new.md "Path And PathDispatcher", Authority truncation: a
-        block a path reserved may become physically occupied by another train
-        before this one reaches it, and authority that runs through an occupied
-        block is not authority. This cuts `resource_sequence` back to the last
-        block entry before `block_id`, releases the dropped entries' block
-        reservations and switch locks, and leaves the path ACTIVE. The
-        authority end is derived from `resource_sequence`, and the controller
-        reads its plan live from this dispatcher, so the shortened authority
-        reaches the lookahead on the next read and ATC brakes the train to a
-        stop at the new end. The train keeps everything it has already entered.
+        Per design_new.md "Reservation truncation": a reserved-but-unlocked
+        block a path holds may be physically taken by another train (an Observe
+        caller) or preempted by a higher-priority run before this train reaches
+        it, and reservation that runs through it is not reservation. This cuts
+        `resource_sequence` back to the furthest legal terminal that is both at
+        or behind the last block before `block_id` and at or beyond this path's
+        lock end (`Path.lock_end_block_id`) — the cut never enters the locked
+        span — releases the dropped entries' block reservations (and their
+        `locked_by_path`) and switch locks, and leaves the path ACTIVE.
 
-        Returns True when the path survives with a valid remainder. Returns
-        False when it cannot — the block is not on this path, it is not still
-        reserved by it, or nothing valid is left in front of the train — and the
-        caller cancels the path instead. A path must end on a block (see "Path
-        invariants"), so the cut lands on the last block entry before
-        `block_id`; any switches between that block and the stolen one go with
-        the dropped tail, because a lock on a switch the train may no longer
-        reach is a lock held against every other train for nothing.
+        It always succeeds: when no preferred legal terminal remains in that
+        range, the cut falls back to the lock end itself (the last locked block,
+        which the braking-distance lock guarantees the train can stop within),
+        so the path always survives with a valid shorter remainder and no caller
+        branches on a failure result. A path must end on a block (see "Path
+        invariants"), so any switches between the terminal and the taken block go
+        with the dropped tail. Returns the new reservation end block id;
+        `block_id` not on the path (or at/behind the head, so nothing forward to
+        cut) is a no-op that returns the current reservation end unchanged.
         """
         path = self.paths.get(path_id)
         if path is None or path.status != PathStatus.ACTIVE:
-            return False
+            return ""
 
         cut_index: Optional[int] = None
         for index, entry in enumerate(path.resource_sequence):
             if entry.resource_type == "block" and entry.resource_id == block_id:
                 cut_index = index
                 break
-        if cut_index is None:
-            return False
+        # `block_id` not on the path, or at/behind the head (a block the train
+        # already covers, nothing forward to cut): no-op, reservation unchanged.
+        if cut_index is None or cut_index <= path.current_resource_index:
+            return path.get_reservation_end_block_id()
 
-        # Item-11 truncation-terminal rules (design_new.md line 1366): the cut
-        # lands at the furthest legal terminal at or behind the last block entry
-        # before the taken block. The taken block is the first block that would
-        # be dropped just after that candidate terminal (the reversal-trap
-        # check's "next block"), so the scan starts one entry behind it.
+        # Lock-end floor: the cut never enters the locked span, so the terminal
+        # search bottoms out at this path's lock end. When the path locks
+        # nothing, the floor is the first block ahead of the head so a minimal
+        # reservation always survives.
+        lock_floor_index = self._lock_floor_index(path)
+
+        # Truncation-terminal rules (design_new.md "truncation-terminal rules"):
+        # the cut lands at the furthest legal terminal at or behind the last
+        # block before the taken block and at or beyond the lock-end floor. The
+        # taken block is the first block dropped just after that candidate
+        # terminal (the reversal-trap check's "next block"), so the scan starts
+        # one entry behind it.
         keep_through = self._furthest_legal_terminal_index(
-            path, cut_index - 1, next_block_after_start=block_id
+            path,
+            cut_index - 1,
+            next_block_after_start=block_id,
+            floor_index=lock_floor_index,
         )
         if keep_through is None:
-            # No legal terminal remains at or behind the cut (the taken block is
-            # the first thing ahead, or every candidate is barred by an item-11
-            # exclusion). Release every reservation the path holds ahead of the
-            # train and return False; Observe then latches the ordinary cancel so
-            # the whole path comes down through Action (design_new.md line
-            # 1371-1375). `resource_sequence` is left unchanged.
-            self._release_reservation_tail_ahead(path, path_id)
-            return False
+            # No preferred legal terminal in range — fall back to the lock end
+            # (design_new.md "Reservation truncation", Where the cut lands).
+            keep_through = lock_floor_index
+        if keep_through is None:
+            # Degenerate: no forward block at all to keep. Leave the reservation
+            # unchanged rather than emptying it.
+            return path.get_reservation_end_block_id()
 
         dropped = path.resource_sequence[keep_through + 1 :]
         dropped_blocks = self._blocks_still_reserved_by(
@@ -2187,19 +2199,46 @@ class PathDispatcher:
                     f"{path.get_reservation_end_block_id()}: {reason}"
                 ),
                 entities=[_train_ref(path.train_id), _path_ref(path_id)],
-                error=_ErrorRecord(reason, "authority_truncated"),
+                error=_ErrorRecord(reason, "reservation_truncated"),
                 event_time=self._now(),
                 payload={
-                    "blocked_block_id": block_id,
+                    "cut_before_block_id": block_id,
                     "reservation_end_block_id": path.get_reservation_end_block_id(),
                     "released_block_ids": list(dropped_blocks),
                     "released_switch_ids": list(dropped_switches),
                 },
             )
-        return True
+        return path.get_reservation_end_block_id()
+
+    def _lock_floor_index(self, path) -> Optional[int]:
+        """The `resource_sequence` index the cut floor bottoms out at for a
+        Reservation truncation of `path` — the lock end when the path holds a
+        lock, else the first block ahead of the head.
+
+        The truncation cut never enters the locked span, so the furthest a cut
+        may pull back is this path's lock end (`Path.lock_end_block_id`, the last
+        locked block, which the braking-distance lock guarantees the train can
+        stop within). When the path locks nothing, the floor is the first block
+        strictly ahead of the head so a minimal reservation still survives.
+        Returns `None` only when no block lies ahead of the head at all.
+        """
+        lock_end_id = path.get_lock_end_block_id()
+        if lock_end_id:
+            for i in range(path.current_resource_index, len(path.resource_sequence)):
+                entry = path.resource_sequence[i]
+                if entry.resource_type == "block" and entry.resource_id == lock_end_id:
+                    return i
+        for i in range(path.current_resource_index + 1, len(path.resource_sequence)):
+            if path.resource_sequence[i].resource_type == "block":
+                return i
+        return None
 
     def _furthest_legal_terminal_index(
-        self, path, start_index: int, next_block_after_start: Optional[str]
+        self,
+        path,
+        start_index: int,
+        next_block_after_start: Optional[str],
+        floor_index: Optional[int] = None,
     ) -> Optional[int]:
         """The furthest-forward `resource_sequence` block index at or behind
         `start_index` that is a legal authority terminal (design_new.md item-11
@@ -2215,8 +2254,10 @@ class PathDispatcher:
         just after `start_index` (the reversal-trap check's "next block").
 
         Candidate terminals are strictly ahead of the train's head resource
-        (`current_resource_index`); the scan stops one short of the head, so
-        `None` means no legal terminal remains ahead of the train.
+        (`current_resource_index`). `floor_index`, when given (Reservation
+        truncation's lock-end floor), stops the scan there inclusive so the cut
+        never pulls back past the lock; otherwise the scan stops one short of the
+        head. `None` means no legal terminal remains in the scanned range.
         """
         route_executor = self._get_route_executor()
         excluded_terminal_targets = (
@@ -2225,10 +2266,17 @@ class PathDispatcher:
             and hasattr(route_executor, "waypoint_and_run_target_blocks")
             else set()
         )
+        # The scan is inclusive of `floor_index` (the lock end is itself a legal
+        # terminal), else exclusive of the head.
+        scan_stop = (
+            floor_index - 1
+            if floor_index is not None
+            else path.current_resource_index
+        )
         keep_through: Optional[int] = None
         fallback_through: Optional[int] = None
         next_block_after_terminal: Optional[str] = next_block_after_start
-        for index in range(start_index, path.current_resource_index, -1):
+        for index in range(start_index, scan_stop, -1):
             entry = path.resource_sequence[index]
             if entry.resource_type != "block":
                 continue
@@ -2825,28 +2873,6 @@ class PathDispatcher:
             prev_index >= 0
             and path.resource_sequence[prev_index].resource_type == "switch"
         )
-
-    def _release_reservation_tail_ahead(self, path: "Path", path_id: str) -> None:
-        """Release every reservation the path holds ahead of the train — the
-        block reservations and the switch families past
-        ``current_resource_index`` — through
-        ``ResourceCoordinator.release_reservation_tail(...)``. Used on a
-        ``truncate_path_before_block`` False return (design_new.md line 1374):
-        the path is about to be cancelled whole by Observe, so its future
-        authority is freed now while ``resource_sequence`` is left unchanged.
-        """
-        ahead = path.resource_sequence[path.current_resource_index + 1 :]
-        ahead_blocks = self._blocks_still_reserved_by(
-            [e.resource_id for e in ahead if e.resource_type == "block"], path_id
-        )
-        ahead_switches = [
-            e.resource_id for e in ahead if e.resource_type == "switch"
-        ]
-        coordinator = getattr(self.network, "resource_coordinator", None)
-        if coordinator is not None:
-            coordinator.release_reservation_tail(
-                ahead_blocks, ahead_switches, path_id
-            )
 
     def _truncate_segment_to_cap(
         self,

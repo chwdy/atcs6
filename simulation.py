@@ -1214,25 +1214,32 @@ class SimulationController(SwitchOutputOwner):
     def _truncate_authority_at_occupied_reservations(
         self, entered_by_train: Dict[str, Set[str]]
     ) -> None:
-        """Cut a path's authority back when another train physically takes one
-        of its reserved blocks (design_new.md "Path And PathDispatcher",
-        Authority truncation).
+        """Cut a path's reservation back when another train physically takes one
+        of its reserved blocks (design_new.md "Reservation truncation", Observe
+        caller).
 
         A reservation is a claim on track the train has not reached yet, so the
         world can take it in between: an unidentified train appears on it, or a
-        train running under its own authority reaches it first. Authority that
-        runs through a block another train is standing on is not authority, and
-        acting on it drives one train at another. The path is therefore pulled
-        back to end at the last block before the taken one, which leaves the
-        train its whole route up to that point and lets ATC brake it to a stop
-        at the new end. The route layer extends the path again by the ordinary
-        acquisition step once the block clears; nothing here retries.
+        train running under its own reservation reaches it first. Reservation
+        that runs through a block another train is standing on is not
+        reservation, and acting on it drives one train at another. Which
+        resolution runs depends on whether the reserving train had LOCKED the
+        taken block:
 
-        When no valid remainder is left — the taken block is the first thing in
-        front of the train — there is no shorter authority to hold, so the path
-        is cancelled instead. Either way the reservation is gone before Observe
-        commits the entry, which is what keeps a legitimate arrival from being
-        reported as a `reserved_for_other_train` fatal conflict.
+        - Reserved-but-unlocked (the taken block is beyond the reserving train's
+          `Path.lock_end_block_id`): the reservation is pulled back through
+          `truncate_path_before_block(...)`, which always succeeds (it falls
+          back to the lock end), so ATC brakes that train to a stop at its
+          shortened reservation end and the route re-extends once the block
+          clears. No cancel.
+        - Locked (the taken block is within the reserving train's braking
+          distance): a graceful pull-back cannot leave room to stop, so the
+          taken block's reservation (and lock) is released and the rest comes
+          down through the cancel latch.
+
+        Either way the reservation is gone before Observe commits the entry,
+        which is what keeps a legitimate arrival from being reported as a
+        `reserved_for_other_train` fatal conflict.
         """
         dispatcher = self.path_dispatcher
         for train_id, block_ids in sorted(entered_by_train.items()):
@@ -1252,15 +1259,24 @@ class SimulationController(SwitchOutputOwner):
                     if dispatcher is not None
                     else None
                 )
-                if path_id and dispatcher.truncate_path_before_block(
-                    path_id, block_id, reason
-                ):
+                # design_new.md "Reservation truncation", Observe caller: split
+                # on whether the reserving train had LOCKED the taken block. A
+                # block reserved by a path is locked only by that same path, so
+                # `locked_by_path is None` means reserved-but-unlocked.
+                if path_id and getattr(block, "locked_by_path", None) is None:
+                    # Reserved-but-unlocked: pull the reservation back
+                    # gracefully. The call always succeeds (falling back to the
+                    # lock end), so the reserving train brakes to its shortened
+                    # reservation end — no cancel.
+                    dispatcher.truncate_path_before_block(path_id, block_id, reason)
                     continue
 
-                # No shorter authority to hold. Drop this one reservation so the
-                # entry commits cleanly, then tear the rest down through the
-                # ordinary cancel latch, which Action commits for a train that
-                # may still be rolling.
+                # Locked (the foreign train is inside the reserving train's
+                # braking distance): a graceful pull-back cannot leave room to
+                # stop. Release the taken block's reservation (and its lock) so
+                # the entry commits, then tear the rest down through the cancel
+                # latch, which Action commits for a train that may still be
+                # rolling.
                 reserved_by_path = getattr(block, "reserved_by_path", None)
                 if reserved_by_path and self.block_manager is not None:
                     self.block_manager.release_path_block_reservations(
