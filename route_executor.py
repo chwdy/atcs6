@@ -1009,6 +1009,58 @@ class RouteExecutor:
             "last_error": self.latest_run_error(run),
         }
 
+    def _run_is_at_started_dwell(self, run: RouteExecutionState) -> bool:
+        """True when the run's current walk task is a `dwell` row whose
+        `started_at` is set and whose `finished_at` is not — the route-owned
+        "at station" read (design_new.md "Data Flow To UI", UI data-flow
+        anchor). The next non-finished walk position is that current task.
+        """
+        if not run.task_runs:
+            return False
+        pos = run.next_planning_walk_position
+        if not (0 <= pos < len(run.task_runs)):
+            return False
+        row = run.task_runs[pos]
+        if row.started_at is None or row.finished_at is not None:
+            return False
+        route = self.route_registry.get(run.route_id) if run.route_id else None
+        if route is None:
+            return False
+        task = route.get_task_at(row.task_index) if hasattr(route, "get_task_at") else None
+        return task is not None and getattr(task, "task_kind", None) == "dwell"
+
+    def ato_status_for(self, train_id: str) -> str:
+        """Assemble the read-model `ato_status` projection for a train
+        (design_new.md "ATO status").
+
+        Computed from the controller's derived `train_status`,
+        `commands.engaged`, and stopped/moving predicate plus the train's
+        route-run state (whether a RUNNING run exists and whether its current
+        walk task is a started, unfinished `dwell` row). Display-only; no
+        control logic reads it. Returns the `AtoStatus` value string.
+        """
+        from enums import AtoStatus, TrainStatus
+
+        controller = self._controller_by_id(train_id)
+        if controller is None or controller.ops.train_status != TrainStatus.ATO:
+            return AtoStatus.OFF.value
+
+        run = self.execution_states.get(train_id)
+        has_running_run = (
+            run is not None and run.current_route_status == RouteRunStatus.RUNNING
+        )
+        # READY: not engaged, or no RUNNING run to pursue (freshly selected,
+        # paused by /ato/stop, or its route finished / was torn down).
+        if not controller.commands.engaged or not has_running_run:
+            return AtoStatus.READY.value
+        # Engaged with a RUNNING run.
+        if self._run_is_at_started_dwell(run):
+            return AtoStatus.DWELLING.value
+        if not controller.is_stopped():
+            return AtoStatus.RUNNING.value
+        # Engaged, stopped, and not at a station (target not yet reached).
+        return AtoStatus.HELD.value
+
     def latest_run_error(self, run: RouteExecutionState) -> Optional[Dict[str, Any]]:
         """The most recent unresolved-looking error event for this run, as the
         `{text, origin}` dict the UI renders, or `None`.

@@ -3043,7 +3043,18 @@ def build_network_payload(
 
     for train_id, train in network.trains.items():
         controller = sim_controller._get_or_create_controller(train)
-        controllers_by_train_id[train_id] = controller.to_dict()
+        controller_payload = controller.to_dict()
+        # `ato_status` is a read-model projection, not a controller field
+        # (design_new.md "ATO status"): the read model assembles it here from the
+        # controller's derived `train_status` / `commands.engaged` /
+        # stopped-predicate plus the train's route-run state, then exposes it on
+        # the controller payload alongside the derived `train_status`.
+        if route_executor is not None:
+            try:
+                controller_payload["ato_status"] = route_executor.ato_status_for(train_id)
+            except Exception:
+                controller_payload["ato_status"] = None
+        controllers_by_train_id[train_id] = controller_payload
 
         if path_dispatcher is not None:
             try:
