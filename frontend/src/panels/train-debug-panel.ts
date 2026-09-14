@@ -6,6 +6,7 @@
  * callers (incl. editor-trains via window.app) are unchanged.
  */
 import { stateManager } from '../lib/state-manager';
+import { trainDisplayStatus } from '../lib/train-status';
 
 export function updateTrainDebugPanel(train: any): void {
   const checkbox = document.getElementById('debug-show-train-position') as HTMLInputElement | null;
@@ -50,7 +51,7 @@ export function updateTrainDebugPanel(train: any): void {
   }
 
   panel!.querySelector('[data-debug-field="train-id"]')!.textContent = train.id;
-  panel!.querySelector('[data-debug-field="state"]')!.textContent = controller?.state || 'unknown';
+  panel!.querySelector('[data-debug-field="state"]')!.textContent = trainDisplayStatus(controller);
 
   // Resource sequence: rebuild children only when the sequence identity
   // changes (path reassigned / extended). Otherwise just toggle the

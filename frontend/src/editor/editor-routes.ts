@@ -2107,7 +2107,7 @@ export class RouteEditorHandler {
       try {
         const payload = await this.api.getTrain(trainId);
         const controller = payload?.controller;
-        trainOff = controller?.state === 'off' || controller?.power_on === false;
+        trainOff = controller?.train_status === 'off' || controller?.power_on === false;
       } catch (err) {
         console.warn(
           '[RouteEditor] getTrain pre-flight check failed; proceeding without train-state check:',

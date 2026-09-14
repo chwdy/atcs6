@@ -9,6 +9,7 @@
 // `updateCabButtons`; keep those names.
 
 import { stateManager } from '../lib/state-manager';
+import { trainDisplayStatus } from '../lib/train-status';
 import { formatSpeedReadout, formatATOEta, formatSimClock, middleTruncate } from './train-format';
 import { showToast } from '../lib/toast';
 import { copyIdButton } from '../lib/copy-id';
@@ -602,9 +603,9 @@ export class TrainEditorHandler {
   renderTrainListItem(train: any): string {
     if (train.is_unidentified) return this.renderUnidentifiedTrainListItem(train);
     const controller: any = stateManager?.getController(train.id);
-    const state = controller?.state || 'off';
+    const state = trainDisplayStatus(controller);
     const accent = this.getTrainAccent(state);
-    const stateLabel = state.toUpperCase().replace('RUNNING_', '');
+    const stateLabel = state.toUpperCase();
 
     // Head position from the controller span (leading end).
     let position = { x: 0, y: 0 };
@@ -950,30 +951,37 @@ export class TrainEditorHandler {
         `;
   }
 
-  getTrainStateVisualClass(state: string): string {
+  /** Map a display-status token (per `trainDisplayStatus`: the overall
+   *  `train_status` off/manual/eb, or an ATO train's `ato_status`
+   *  ready/running/held/dwelling) to a train-state CSS class. */
+  getTrainStateVisualClass(status: string): string {
     const map: Record<string, string> = {
       off: 'train-state-off',
-      idle: 'train-state-idle',
-      standby: 'train-state-standby',
-      running_moving: 'train-state-running',
-      running_at_station: 'train-state-station',
+      manual: 'train-state-manual',
+      eb: 'train-state-off',
+      ready: 'train-state-idle',
+      running: 'train-state-running',
+      held: 'train-state-waiting',
+      dwelling: 'train-state-station',
     };
-    return map[state] || 'train-state-off';
+    return map[status] || 'train-state-off';
   }
 
-  /** Map a controller state to a §6 status-accent / §7 chip variant for the
+  /** Map a display-status token to a §6 status-accent / §7 chip variant for the
    *  trains-list card (3px left border + state chip). Mirrors the token-based
-   *  .tc-state-badge semantics: running = success, at-station = info, every
-   *  not-running state (off / idle / standby) = muted. */
-  getTrainAccent(state: string): string {
+   *  .tc-state-badge semantics: running = success, dwelling = info, EB = danger
+   *  (faults/EB only), every other not-running status = muted. */
+  getTrainAccent(status: string): string {
     const map: Record<string, string> = {
       off: 'muted',
-      idle: 'muted',
-      standby: 'muted',
-      running_moving: 'success',
-      running_at_station: 'info',
+      manual: 'info',
+      eb: 'danger',
+      ready: 'muted',
+      running: 'success',
+      held: 'muted',
+      dwelling: 'info',
     };
-    return map[state] || 'muted';
+    return map[status] || 'muted';
   }
 
   getHandleVisualClass(handlePosition: string): string {
@@ -1082,7 +1090,7 @@ export class TrainEditorHandler {
       return;
     }
 
-    const trainState = controller?.state || 'off';
+    const trainState = trainDisplayStatus(controller);
     const trainStateClass = this.getTrainStateVisualClass(trainState);
 
     // Get path and destination info for ATO section
@@ -1978,7 +1986,8 @@ export class TrainEditorHandler {
     // re-asking on — the answer only moves when power, cab, ATO or authority
     // does, and this runs on every live controller push.
     const gateKey = [
-      controller.state,
+      controller.train_status,
+      controller.ato_status,
       controller.cab,
       controller.engaged,
       controller.handle_position,
@@ -2062,7 +2071,7 @@ export class TrainEditorHandler {
     if (!panel) return;
 
     const controller: any = stateManager?.getController(train.id) || null;
-    const trainState = controller?.state || 'off';
+    const trainState = trainDisplayStatus(controller);
 
     const stateEl = panel.querySelector('.train-state-display');
     if (stateEl) {
@@ -2072,7 +2081,7 @@ export class TrainEditorHandler {
         this.getTrainStateVisualClass(trainState)
       );
       stateEl.innerHTML = `
-                ${trainState.toUpperCase().replace('_', ' ')}
+                ${trainState.toUpperCase()}
             `;
     }
 
@@ -2477,7 +2486,7 @@ export class TrainEditorHandler {
 
   updateButtonStates(train: any): void {
     const controller: any = stateManager?.getController(train.id) || null;
-    const state = controller?.state;
+    const state = trainDisplayStatus(controller);
     const powerOn = controller?.power_on ?? false;
     // In v1, manual is a control mode (controller.control_mode), not a state.
     const isManual = controller?.control_mode === 'manual';

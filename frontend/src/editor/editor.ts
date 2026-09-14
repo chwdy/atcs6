@@ -11,6 +11,7 @@
 // the sim handlers each draw from a named, swappable surface.
 
 import type { StateManager } from '../lib/state-manager';
+import { trainDisplayStatus } from '../lib/train-status';
 import { showToast } from '../lib/toast';
 import { showContextMenu, type ContextMenuItem } from '../lib/context-menu';
 import { copyIdButton } from '../lib/copy-id';
@@ -2463,23 +2464,24 @@ export class Editor {
                 ${trainsAtTile
                   .map((train: any) => {
                     const controller: any = this.stateManager?.getController(train.id);
+                    const status = trainDisplayStatus(controller);
                     const dotColor =
-                      controller?.control_mode === 'manual'
-                        ? 'var(--warning-color)'
-                        : controller?.state === 'running_moving'
+                      status === 'eb'
+                        ? 'var(--danger-color)'
+                        : status === 'running'
                           ? 'var(--success-color)'
-                          : controller?.state === 'running_at_station'
+                          : status === 'dwelling'
                             ? 'var(--info-color)'
-                            : controller?.state === 'idle'
-                              ? 'var(--text-secondary)'
-                              : 'var(--danger-color)';
+                            : status === 'manual'
+                              ? 'var(--warning-color)'
+                              : 'var(--text-secondary)';
                     return `
                 <div class="property-item-row">
                     <div class="entity-card" style="--card-accent: var(--accent-color)">
                         <div class="entity-card-dot" style="background-color: ${dotColor}"></div>
                         <div class="entity-card-body">
                             <span class="entity-card-id">${train.id}</span>
-                            <span class="entity-card-state">${controller?.state || 'unknown'}</span>
+                            <span class="entity-card-state">${status}</span>
                         </div>
                         ${copyIdButton(train.id, 'Train ID')}
                         <button class="edit-btn edit-train-btn" data-train-id="${train.id}">Edit</button>

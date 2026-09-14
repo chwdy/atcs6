@@ -1,6 +1,7 @@
 // ── Payload shapes the monitor reads (loosely typed; the server owns them) ──
 
 import { api } from '../lib/api';
+import { trainDisplayStatus } from '../lib/train-status';
 import { stateManager } from '../lib/state-manager';
 import { showToast } from '../lib/toast';
 import { getBlockStateColor } from '../lib/helpers';
@@ -537,7 +538,7 @@ class TrainMonitor {
 
         this.lookaheadData = {
             current_speed_kmh: controller?.current_speed ?? 0,
-            state: controller?.state,
+            state: trainDisplayStatus(controller),
             speed_limit_reason: speedLimitReason,
             blocks: lookahead?.blocks || [],
             signals: lookahead?.signals || [],
