@@ -37,7 +37,11 @@ def _setup(priorities, local_reserved, local_locked, local_seq):
     # place() builds a SimulationController with no dispatcher; wire one that
     # resolves its route executor (and its priorities) through the sim.
     disp = PathDispatcher(network)
-    disp.simulation_controller = sim
+    disp.wire_dependencies(
+        route_executor=sim.route_executor,
+        notification_center=sim.notification_center,
+        controllers=sim.controllers,
+    )
     sim.route_executor.effective_priority_for = lambda tid: priorities.get(tid, 5)
     bm = sim.block_manager
     bm.reserve_blocks_for_path(
@@ -87,12 +91,12 @@ def test_can_preempt_only_when_strictly_higher():
     )
     assert disp._can_preempt("T_EXPRESS", "T_LOCAL") is True
     # Equal priority never preempts (first-come-first-served).
-    disp.simulation_controller.route_executor.effective_priority_for = (
+    disp._route_executor.effective_priority_for = (
         lambda tid: 5
     )
     assert disp._can_preempt("T_EXPRESS", "T_LOCAL") is False
     # Lower priority never preempts.
-    disp.simulation_controller.route_executor.effective_priority_for = (
+    disp._route_executor.effective_priority_for = (
         lambda tid: {"T_EXPRESS": 3, "T_LOCAL": 5}.get(tid, 5)
     )
     assert disp._can_preempt("T_EXPRESS", "T_LOCAL") is False

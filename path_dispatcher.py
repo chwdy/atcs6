@@ -102,10 +102,16 @@ class PathDispatcher:
         self.network = network
         self.paths: Dict[str, Path] = {}
         self.path_sequence_counter: int = 0
-        # Back-reference to SimulationController, wired by the runtime when
-        # available. Used to resolve TrainController instances and the
-        # NotificationCenter for progress callbacks.
-        self.simulation_controller: Optional[Any] = None
+        # Injected named dependencies (design_new.md:1418, 2673): PathDispatcher
+        # holds no general SimulationController reference. SimulationController
+        # wires these once via wire_dependencies(...); they stay None for isolated
+        # dispatcher unit tests, where every use below is None-guarded and no-ops.
+        # `_route_executor` provides the cancellation/completion callbacks and the
+        # preemption / reversal-trap resolvers; `_controllers` is the occupant-
+        # controller lookup registry; `_notification_center` is the event-log sink.
+        self._route_executor: Optional["RouteExecutorForPathDispatcher"] = None
+        self._notification_center: Optional[Any] = None
+        self._controllers: Optional[Dict[str, Any]] = None
         # Canonical pathfinding home shared with RouteExecutor (the shared
         # pathfinding home in design_new.md "Path And PathDispatcher"). The
         # same instance services dispatcher
@@ -159,27 +165,30 @@ class PathDispatcher:
             return None
         return self.network.trains.get(train_id)
 
+    def wire_dependencies(
+        self,
+        *,
+        route_executor: Optional[RouteExecutorForPathDispatcher] = None,
+        notification_center: Optional[Any] = None,
+        controllers: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Inject the named dependencies PathDispatcher needs (design_new.md:1418,
+        2673): the route executor (the cancellation/completion callbacks and the
+        preemption / reversal-trap resolvers), the occupant-controller lookup
+        registry, and the event-log NotificationCenter. Called once by
+        SimulationController at construction; PathDispatcher holds no general
+        SimulationController reference of its own."""
+        self._route_executor = route_executor
+        self._notification_center = notification_center
+        self._controllers = controllers
+
     def _get_route_executor(self) -> Optional[RouteExecutorForPathDispatcher]:
-        sc = self.simulation_controller
-        if sc is None:
-            return None
-        return sc.route_executor
+        return self._route_executor
 
     def _get_controller(self, train_id: str):
-        sc = self.simulation_controller
-        if sc is None:
-            return None
-        getter = (
-            getattr(sc, "get_or_create_controller", None)
-            or getattr(sc, "get_controller", None)
-            or getattr(sc, "_get_or_create_controller", None)
-        )
-        if callable(getter):
-            try:
-                return getter(train_id)
-            except Exception:
-                pass
-        controllers = getattr(sc, "controllers", None)
+        # Look up (never create) an occupant/covered controller from the injected
+        # registry; controller existence is a RouteExecutor precondition.
+        controllers = self._controllers
         if isinstance(controllers, dict):
             return controllers.get(train_id)
         return None
@@ -2037,24 +2046,13 @@ class PathDispatcher:
         # side records nothing of it here.
         train_id = path.train_id
         if train_id:
-            sc = self.simulation_controller
-            if sc is not None and hasattr(sc, "handle_path_cancellation"):
-                sc.handle_path_cancellation(
+            route_executor = self._get_route_executor()
+            if route_executor is not None:
+                route_executor.handle_path_cancellation(
                     train_id,
                     path_id,
                     error=error,
                 )
-            else:
-                # No `SimulationController` wired (isolated dispatcher tests):
-                # reach the route side directly rather than dropping the
-                # bookkeeping the callback owns.
-                route_executor = self._get_route_executor()
-                if route_executor is not None:
-                    route_executor.handle_path_cancellation(
-                        train_id,
-                        path_id,
-                        error=error,
-                    )
 
         # Emit the canonical `cancel_path` notification. Per design_new.md
         # "Latch consumption events" this event *is* the
@@ -2062,8 +2060,7 @@ class PathDispatcher:
         # payload's own `kind` (set by whichever writer latched it) rather than
         # a level derived here, and passes `latch_event=True` so the
         # unchanged-repeat suppression never drops it.
-        sc = self.simulation_controller
-        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        nc = self._notification_center
         if nc is not None:
             try:
                 from notification_center import train_ref as _train_ref, path_ref as _path_ref
@@ -2357,8 +2354,7 @@ class PathDispatcher:
             )
         path.resource_sequence = path.resource_sequence[: keep_through + 1]
 
-        sc = self.simulation_controller
-        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        nc = self._notification_center
         if nc is not None:
             from notification_center import (
                 Kind as _Kind,
@@ -2876,8 +2872,7 @@ class PathDispatcher:
         # A moving occupant already holds authority and will clear forward.
         if self.get_active_path(occ) is not None:
             return False
-        sc = self.simulation_controller
-        route_executor = getattr(sc, "route_executor", None) if sc else None
+        route_executor = self._get_route_executor()
         if route_executor is None:
             return False
         occ_target = route_executor.find_next_move_target(occ)
@@ -4102,8 +4097,7 @@ class PathDispatcher:
         # Event-log operational event (design_new.md "Event log"): path
         # completed. Emitted through NotificationCenter — the one stream the
         # event log persists — at the point completion is committed.
-        _sc = self.simulation_controller
-        _nc = getattr(_sc, "notification_center", None) if _sc else None
+        _nc = self._notification_center
         if _nc is not None:
             from notification_center import Kind, path_ref, train_ref
 
@@ -4124,13 +4118,12 @@ class PathDispatcher:
         if callable(on_complete):
             on_complete()
 
-        # Deliver completion through the SimulationController surface, which
-        # delegates to RouteExecutor.handle_path_completion(...) and emits the
-        # canonical `path_completion` notification (the terminal-teardown flow,
-        # step `09b0` in design_new.md "Core Runtime Loop"). Fall back to a
-        # direct RouteExecutor call only when no
-        # SimulationController is wired (isolated unit tests) — there is no
-        # NotificationCenter to emit through in that case.
+        # Deliver completion to the injected route executor, which records the
+        # served stop through RouteRun.advance_walk_position(...) and emits the
+        # canonical `path_completion` notification itself (the terminal-teardown
+        # flow, step `09b0` in design_new.md "Core Runtime Loop"). The dispatcher
+        # holds the route executor as an injected named dependency, not through a
+        # SimulationController reference (design_new.md:2673).
         #
         # Per design_new.md step `bc55`: the callback "records the stop as
         # finished through `RouteRun.advance_walk_position(walk_position)`" for
@@ -4139,22 +4132,13 @@ class PathDispatcher:
         # or the requested direction — the served row is already identified and
         # its arrival frame was fixed at acquisition.
         served_walk_position = projection.walk_position
-        sc = self.simulation_controller
-        sc_complete = getattr(sc, "handle_path_completion", None) if sc else None
-        if callable(sc_complete):
-            sc_complete(
+        route_executor = self._get_route_executor()
+        if route_executor is not None:
+            route_executor.handle_path_completion(
                 train_id,
                 path_id,
                 served_walk_position,
             )
-        else:
-            route_executor = self._get_route_executor()
-            if route_executor is not None:
-                route_executor.handle_path_completion(
-                    train_id,
-                    path_id,
-                    served_walk_position,
-                )
 
         # Per design_new.md ~line 80: completed paths remain in
         # `paths_by_id[path_id]` for history. `Path.status == COMPLETED`

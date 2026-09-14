@@ -328,7 +328,15 @@ class SimulationController(SwitchOutputOwner):
         # Wire back-references so peer components can reach the notification
         # center, the route executor, and each other.
         if self.path_dispatcher is not None:
-            self.path_dispatcher.simulation_controller = self
+            # Inject PathDispatcher's named dependencies rather than a general
+            # back-reference (design_new.md:1418, 2673): the route executor (its
+            # cancellation/completion callbacks + preemption/reversal resolvers),
+            # the occupant-controller lookup registry, and the event-log sink.
+            self.path_dispatcher.wire_dependencies(
+                route_executor=self.route_executor,
+                notification_center=self.notification_center,
+                controllers=self.controllers,
+            )
         if self.route_executor is not None:
             self.route_executor.simulation_controller = self
 
