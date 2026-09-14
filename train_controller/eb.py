@@ -43,14 +43,15 @@ class EBWorkflow:
     def activate(self) -> CommandResult:
         """Operator-issued emergency brake.
 
-        Per design_new.md: only acceptance gate is ``active == False``
-        (idempotent rejection of a duplicate activation). Valid in any motion
-        state, any operational state including OFF, with or without a cab,
-        with or without an active path. On acceptance: set ``active = True``,
-        force handle to EB, disengage ATO (``ato.engaged = False``), and (when
-        an active path exists) write ``pending_path_cancel_request(EB)``. A
-        dwelling train is READY with no active path, so it writes no cancel and
-        its dwell timer keeps counting.
+        Per design_new.md "Canonical EB activation effects": the only acceptance
+        gate is ``active == False`` (idempotent rejection of a duplicate
+        activation). Valid in any motion state, any status including OFF, with
+        or without an active path. On acceptance: set ``active = True``, force
+        handle to EB, set ``control_mode = "manual"`` (which clears
+        ``commands.engaged``), reset the power notch, and (when an active path
+        exists) write ``pending_path_cancel_request(EB)``. A dwelling train
+        holds no live path, so it writes no cancel and its dwell timer keeps
+        counting.
         """
         if self.active:
             return CommandResult(False, "Emergency brake already active")
@@ -59,11 +60,15 @@ class EBWorkflow:
 
         self.active = True
         c.ops.handle_position = HandlePosition.EB
-        c.ato.disengage()
-        # EB springs both driver inputs to their safe rest (design_new.md
-        # "ato.engaged"): the handle is pinned to EB above and the power notch
-        # is zeroed here, symmetric with the per-tick EB hold. Nothing drives
-        # under EB, and no retained percentage survives the release.
+        # Canonical EB activation effect: EB leaves ATO, so control_mode goes
+        # manual and the engage bit clears (design_new.md "Driving mode" /
+        # "ATO status"). A released EB then leaves the train in manual until the
+        # operator re-selects ATO.
+        c.commands._write_control_mode("manual")
+        # EB springs both driver inputs to their safe rest: the handle is pinned
+        # to EB above and the power notch is zeroed here, symmetric with the
+        # per-tick EB hold. Nothing drives under EB, and no retained percentage
+        # survives the release.
         c.manual.reset_power_percent_for_safety()
 
         if c.path_projection.received_path_plan is not None:

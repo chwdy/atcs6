@@ -353,3 +353,4 @@ def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
     controller = sim_controller.get_or_create_controller(train.train_id)
     controller.commands.enqueue_command("power_on")
     controller.commands.enqueue_command("set_mode", {"mode": "ato"})
+    controller.commands.enqueue_command("ato_go")

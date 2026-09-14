@@ -166,8 +166,8 @@ def test_bootstrap_queues_power_on_for_first_tick_drain():
     # Before first tick: power_on + set_mode queued, controller still OFF, head
     # frame pre-set by add_train's `initial_cab="A"` placement input.
     queued_kinds = [cmd.kind for cmd in controller.commands.command_inbox]
-    assert queued_kinds == ["power_on", "set_mode"], (
-        f"Expected queued [power_on, set_mode]; got {queued_kinds}"
+    assert queued_kinds == ["power_on", "set_mode", "ato_go"], (
+        f"Expected queued [power_on, set_mode, ato_go]; got {queued_kinds}"
     )
     assert not controller.powered
     assert controller._framed_head_end == "end_a"

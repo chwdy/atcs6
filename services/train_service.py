@@ -746,14 +746,22 @@ def power_off(state: AppState, train_id: str) -> CommandResult:
 
 @refuses_unidentified_trains()
 def ato_go(state: AppState, train_id: str) -> CommandResult:
-    """Engage ATO intent so the train drives toward its destination."""
-    return _controller(state, require_train(state, train_id)).ato.engage()
+    """Start ATO driving so the train drives toward its destination.
+
+    The canonical `/ato/go` operator command (design_new.md "ATO go"):
+    accepted only when `train_status == ATO`.
+    """
+    return _controller(state, require_train(state, train_id)).commands.ato_go()
 
 
 @refuses_unidentified_trains()
 def ato_stop(state: AppState, train_id: str) -> CommandResult:
-    """Disengage ATO intent (train holds; used by both /stop and /ato-stop)."""
-    return _controller(state, require_train(state, train_id)).ato.disengage()
+    """Pause ATO driving (train holds; used by both /stop and /ato-stop).
+
+    The canonical `/ato/stop` operator command (design_new.md "ATO stop"):
+    accepted only when `train_status == ATO`; accepted while moving.
+    """
+    return _controller(state, require_train(state, train_id)).commands.ato_stop()
 
 
 @refuses_unidentified_trains()

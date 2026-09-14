@@ -60,7 +60,9 @@ def controller_to_dict(controller: "TrainController") -> Dict[str, Any]:
         "train_status": controller.ops.train_status.value,
         "target_speed": controller.target_speed,
         "handle_position": controller.ops.handle_position.value,
-        "ato_engaged": controller.ato.engaged,
+        # The ATO engage bit (design_new.md "ATO status"), stored on
+        # OperatorCommands and serialized under the key "engaged".
+        "engaged": controller.commands.engaged,
         "ato_destination_block_id": controller.path_projection.ato_destination_block_id,
         "ato_path_id": controller.path_projection.ato_path_id,
         "assigned_path_id": controller.path_projection.assigned_path_id,
@@ -103,8 +105,6 @@ def controller_to_dict(controller: "TrainController") -> Dict[str, Any]:
         # design_new.md "Units contract".
         "current_speed": float(getattr(controller.physics_sync, "current_speed_kmh", 0.0) or 0.0),
         "is_stopped": controller.is_stopped(),
-        # Diagnostic: reason for current handle position
-        "handle_reason": controller.ops.handle_reason,
         # ATO ETA: integrates the operational_limit speed curve to the
         # current target stop. None when no path/target/curves.
         "time_to_target_sec": controller._calculate_time_to_target_sec(),
@@ -220,9 +220,9 @@ def controller_from_dict(
         # path/route context, so any persisted value is ignored.
     )
     # `powered` lives on the controller façade; `handle_position` on the
-    # `OperationalStateMachine`; `ato.engaged` on the ATO sub-module. Restore
-    # after construction.
-    controller.ato.engaged = bool(data.get("ato_engaged", False))
+    # `OperationalStateMachine`; the ATO engage bit on `commands.engaged`.
+    # Restore after construction.
+    controller.commands.engaged = bool(data.get("engaged", False))
     controller.powered = powered
     controller.ops.handle_position = handle
     # Sub-module fields are created in `__post_init__`; restore

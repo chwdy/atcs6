@@ -88,6 +88,9 @@ class TunnelScene:
         controller = sim_controller.get_or_create_controller(self.train_id)
         controller.commands.enqueue_command("power_on")
         controller.commands.enqueue_command("set_mode", {"mode": "ato"})
+        # /ato/go starts the run: set_mode selects ATO but lands not engaged
+        # (design_new.md "ATO status").
+        controller.commands.enqueue_command("ato_go")
 
         return SceneFixture(
             network=network,

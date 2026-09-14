@@ -569,15 +569,18 @@ def setup_demo_train(
     sim_controller.route_executor.register_route(demo_route_v2)
     demo_route_v2.assign_train(demo_train.train_id)
 
-    # 7. Queue the operator's start-up commands: power on, then engage ATO.
-    #    Action's drain executes them on the first tick; from tick 2 onward Plan
-    #    sees a powered-on, ATO-engaged controller, acquires the path for
-    #    DEMO_ROUTE_V2, and the engaged driving rule moves the train (design_new.md
-    #    "ato.engaged": intent is set by set_mode("ato"), not by acquiring
-    #    authority).
+    # 7. Queue the operator's start-up commands: power on, select ATO, then
+    #    start ATO with /ato/go. Action's drain executes them in canonical order
+    #    on the first tick (set_mode is slot 2, ato_go slot 3, so the batch is
+    #    accepted in one drain); from tick 2 onward Plan sees a powered-on,
+    #    engaged ATO controller, acquires the path for DEMO_ROUTE_V2, and the
+    #    ATO driving rule moves the train. `set_mode("ato")` lands the train not
+    #    engaged (design_new.md "ATO status"); `/ato/go` is the one operator
+    #    action that starts ATO movement.
     controller = sim_controller.get_or_create_controller(demo_train.train_id)
     controller.commands.enqueue_command("power_on")
     controller.commands.enqueue_command("set_mode", {"mode": "ato"})
+    controller.commands.enqueue_command("ato_go")
 
 
 def create_diagonal_siding(network: RailwayNetwork):

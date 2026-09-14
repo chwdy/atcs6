@@ -966,16 +966,18 @@ class TestTrainRoutes:
         app_state.network.place_train(train, 0, 0, Direction.EAST)
 
         controller = app_state.sim_controller.get_or_create_controller("TRAIN_001")
-        controller.commands.power_on_cmd()  # OFF -> READY; ATO is the default mode
+        controller.commands.power_on_cmd()  # OFF -> powered; ATO is the default mode
         assert controller.commands.control_mode == "ato"
         controller.eb.activate()  # stopped, no path -> EB latches cleanly
         assert controller.eb.active is True
+        # EB activation sets control_mode to manual (design_new.md "Canonical EB
+        # activation effects").
+        assert controller.commands.control_mode == "manual"
 
-        # The OLD button path (handle 'N') is still rejected in ATO mode and
-        # leaves EB latched -- exactly the bug the user hit.
-        bad = client.post("/api/trains/TRAIN_001/handle", json={"position": "N"})
-        assert bad.status_code == 400
-        assert "manual mode" in bad.get_json()["error"].lower()
+        # The OLD button path (handle 'N') never releases EB — the handle and EB
+        # are separate — so EB stays latched however the handle command is
+        # resolved.
+        client.post("/api/trains/TRAIN_001/handle", json={"position": "N"})
         assert controller.eb.active is True
 
         # The NEW path releases EB and leaves the controller powered and stopped.
@@ -1416,10 +1418,6 @@ class TestRouteRedesignApis:
         allocate a dispatcher path on a subsequent sim tick.
         """
         self._place_powered_train_on_two_block_line(app_state)
-        # Engage ATO: the planner grants authority only to a ready driving
-        # source (design_new.md "is_clean_for_create"), so an operator engages
-        # ATO as part of starting the run.
-        app_state.sim_controller.get_or_create_controller("TRAIN_QR").ato.engaged = True
 
         create_resp = client.post(
             "/api/train-routes",
@@ -1444,6 +1442,13 @@ class TestRouteRedesignApis:
             json={"route_id": "ROUTE_QR_TEST"},
         )
         assert assign_resp.status_code == 200, assign_resp.get_json()
+
+        # A new route assignment resets the ATO engage bit, so the operator
+        # issues /ato/go to start the run (design_new.md "ATO status"): the
+        # planner grants reservation only to an engaged ATO train (the ATO
+        # engage gate).
+        go_resp = client.post("/api/trains/TRAIN_QR/ato-go")
+        assert go_resp.status_code == 200, go_resp.get_json()
 
         # Pre-tick: no path yet — assign-route only writes the assignment.
         assert app_state.path_dispatcher.active_path_id_by_train("TRAIN_QR") is None

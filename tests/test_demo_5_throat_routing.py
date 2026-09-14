@@ -80,6 +80,9 @@ def _quick_route(state, train_id, block_id, route_id, direction="forward"):
     )
     train_route_service.activate_route(state, route_id)
     train_service.assign_route(state, train_id, route_id=route_id, force=True)
+    # A new route assignment resets the ATO engage bit; the operator issues
+    # /ato/go to start the run (design_new.md "ATO status").
+    train_service.ato_go(state, train_id)
 
 
 @pytest.mark.parametrize("dt,label", [(0.1, "1x"), (0.2, "2x")])
@@ -237,6 +240,7 @@ def test_best_effort_return_leg_truncated_at_b1_still_crosses_sw_lead():
     )
     train_route_service.activate_route(state, "ROUTE_QR_TRUNC")
     train_service.assign_route(state, "T3", route_id="ROUTE_QR_TRUNC", force=True)
+    train_service.ato_go(state, "T3")
 
     released = False
     arrived = False
@@ -325,6 +329,7 @@ def test_best_effort_return_leg_holds_at_b2_not_b1_when_throat_busy(dt, label):
     )
     train_route_service.activate_route(state, "ROUTE_QR_B2HOLD")
     train_service.assign_route(state, "T3", route_id="ROUTE_QR_B2HOLD", force=True)
+    train_service.ato_go(state, "T3")
 
     path_formed = False
     settled_at_b2 = False

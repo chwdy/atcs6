@@ -2413,10 +2413,11 @@ class TrainController:
         Invoked by the Action ``pending_power_off`` consumer (step ``886a`` of
         the Power-off procedure). It is the only ``OFF``-writing site besides the
         startup default, so the Operational state machine stays the single writer
-        of ``state``. Callable only while ``power_off`` is latched; on commit it
-        transitions ``state`` to ``OFF``, resets the span framing to its ``end_a``
-        head default, clears ``eb.active``, disengages ATO (``ato.engaged =
-        False``), and consumes ``pending_power_off``.
+        of ``powered``. Callable only while ``power_off`` is latched; on commit it
+        sets ``powered = False`` (so ``train_status`` derives to ``OFF``), resets
+        the span framing to its ``end_a`` head default, clears ``eb.active``,
+        sets ``control_mode = "manual"`` (which clears ``commands.engaged``), and
+        consumes ``pending_power_off``.
 
         Per design_new.md "Latch Table" (Clear/consume access) this method is
         the one place `phase_latches.power_off` is cleared — not the Action
@@ -2439,7 +2440,10 @@ class TrainController:
         # design_new.md:1895 — clear the EB latch through the EB-owned helper so
         # the EB Workflow stays the single writer of `eb.active`.
         self.eb.clear()
-        self.ato.disengage()
+        # OFF cleanup sets control_mode = "manual" (which clears
+        # commands.engaged), so a powered-on train reads MANUAL until the
+        # operator re-selects ATO (design_new.md "complete_power_off").
+        self.commands._write_control_mode("manual")
         if had_latch:
             self.route_hooks.phase_latches.clear("power_off")
             self.notifications.emit(

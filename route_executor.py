@@ -877,6 +877,14 @@ class RouteExecutor:
                     new_route.assign_train(train_id)
                 if start_override is not None:
                     self._pending_start_overrides[train_id] = dict(start_override)
+            # A new route assignment resets the ATO engage bit (design_new.md
+            # "ATO status"): the fresh run starts not engaged (`ato_status ==
+            # READY`) and the operator issues `/ato/go` to start it. This is an
+            # operator-initiated write between ticks, cleared here where the
+            # assignment commits immediately.
+            controller = self._controller_by_id(train_id)
+            if controller is not None:
+                controller.commands.engaged = False
             return
 
         # A live run exists and the request names a different route (or None):
@@ -2763,10 +2771,12 @@ class RouteExecutor:
             return False
         if controller.route_hooks.phase_latches.path_cancel_request is not None:
             return False
-        # The selected driving source must be ready to run. In ATO that means
-        # ATO is switched on; a manual train has no further gate.
+        # The selected driving source must be ready to run. In ATO that is the
+        # engage gate: a not-engaged ATO train neither creates nor extends
+        # reservation (design_new.md "ATO status", ATO engage gate). A manual
+        # train has no further gate.
         if controller.commands.control_mode == "ato":
-            return controller.ato.engaged
+            return controller.commands.engaged
         return True
 
     def _eligible_for_authority_acquisition(
@@ -2777,8 +2787,9 @@ class RouteExecutor:
         Per design_new.md (Planning Kernel section): the dispatch is
         two-branch. Extend is allowed when an active path exists AND none of
         the three pending admin/system cancellation latches are set (so
-        Plan does not extend a path Action is about to cancel). Create
-        delegates to ``is_clean_for_create``.
+        Plan does not extend a path Action is about to cancel) AND the ATO
+        engage gate holds — a not-engaged ATO train extends no reservation
+        (design_new.md ~1981). Create delegates to ``is_clean_for_create``.
         """
         if controller.active_conditions & _PENDING_CANCEL_CONDITIONS:
             return False
@@ -2787,6 +2798,13 @@ class RouteExecutor:
         except Exception:
             has_active_path = False
         if has_active_path:
+            # Extend branch — a not-engaged ATO train keeps its reservation but
+            # extends nothing (ATO engage gate); manual has no such condition.
+            if (
+                controller.commands.control_mode == "ato"
+                and not controller.commands.engaged
+            ):
+                return False
             return True
         # Create branch — full clean-for-create predicate.
         train_id = getattr(exec_state, "train_id", None)
@@ -2916,10 +2934,23 @@ class RouteExecutor:
         train_id = train.train_id
 
         # Accrue only while the direction-seed target resolves to a present
-        # usable target on this pass and EB is not latched (design_new.md step
-        # `6a0d`): a missing seed (`projection.resolved_target is None`) or an
-        # active EB pauses accrual for that pass.
-        if projection.resolved_target is not None and not controller.eb.active:
+        # usable target on this pass, EB is not latched, and the train is not a
+        # paused ATO train (design_new.md step `6a0d`): a missing seed
+        # (`projection.resolved_target is None`), an active EB, or a not-engaged
+        # ATO train (`train_status == ATO and not commands.engaged`) each pauses
+        # accrual for that pass — EB and a paused ATO train pause the run timer
+        # the same way.
+        from enums import TrainStatus
+
+        paused_ato = (
+            controller.ops.train_status == TrainStatus.ATO
+            and not controller.commands.engaged
+        )
+        if (
+            projection.resolved_target is not None
+            and not controller.eb.active
+            and not paused_ato
+        ):
             run_row.run_elapsed_seconds = min(
                 run_row.run_elapsed_seconds + max(0.0, delta_seconds), run_time
             )
@@ -4043,6 +4074,14 @@ class RouteExecutor:
         # Mark DEACTIVATED and move to the historical archive.
         exec_state.current_route_status = RouteRunStatus.DEACTIVATED
         self._archive_run(exec_state)
+
+        # Clear the ATO engage bit as the run is torn down (design_new.md "ATO
+        # status": `remove_train_route_run` clears `commands.engaged` in Action),
+        # so the now-idle train and any replacement run start not engaged
+        # (`ato_status == READY`) rather than `HELD`.
+        controller = self._controller_by_id(train_id)
+        if controller is not None:
+            controller.commands.engaged = False
 
         # Commit any held route-assignment replacement as the last state
         # mutation, now that the old run is archived and unassigned
