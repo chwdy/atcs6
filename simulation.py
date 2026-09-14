@@ -1246,8 +1246,10 @@ class SimulationController(SwitchOutputOwner):
           clears. No cancel.
         - Locked (the taken block is within the reserving train's braking
           distance): a graceful pull-back cannot leave room to stop, so the
-          taken block's reservation (and lock) is released and the rest comes
-          down through the cancel latch.
+          reserving train is emergency-braked. Only the taken block's
+          reservation and lock are released so the foreign entry commits, and
+          the rest of that train's reservation and lock come down through the
+          ordinary EB cancellation once it stops.
 
         Either way the reservation is gone before Observe commits the entry,
         which is what keeps a legitimate arrival from being reported as a
@@ -1301,20 +1303,34 @@ class SimulationController(SwitchOutputOwner):
 
                 # Locked (the foreign train is inside the reserving train's
                 # braking distance): a graceful pull-back cannot leave room to
-                # stop. Release the taken block's reservation (and its lock) so
-                # the entry commits, then tear the rest down through the cancel
-                # latch, which Action commits for a train that may still be
-                # rolling.
+                # stop, so the reserving train is emergency-braked. Release only
+                # the taken block's reservation and lock through the coordinator
+                # tail-release so the foreign entry commits cleanly; the rest of
+                # the reserving train's reservation and lock come down through
+                # the ordinary EB cancellation once it stops (design_new.md
+                # "Reservation truncation", Observe caller, Locked branch).
                 reserved_by_path = getattr(block, "reserved_by_path", None)
-                if reserved_by_path and self.block_manager is not None:
-                    self.block_manager.release_path_block_reservations(
-                        [block_id], reserved_by_path, completed=False
-                    )
+                if reserved_by_path:
+                    if self.resource_coordinator is not None:
+                        self.resource_coordinator.release_reservation_tail(
+                            [block_id], [], reserved_by_path
+                        )
+                    elif self.block_manager is not None:
+                        self.block_manager.release_path_block_reservations(
+                            [block_id], reserved_by_path, completed=False
+                        )
                 controller = self.controllers.get(reserved_for)
                 if controller is not None and path_id:
-                    controller.route_hooks.phase_latches.set_path_cancel_request(
-                        ErrorRecord(reason, "revoked"), Kind.INFO
-                    )
+                    # Canonical EB activation effects (design_new.md, "Reservation
+                    # truncation", Observe caller, Locked branch): set `eb.active`,
+                    # force `control_mode = "manual"`, spring the notch to zero,
+                    # and — because a live path exists — latch
+                    # `pending_path_cancel_request` with `error.origin = "eb"`,
+                    # which Action commits once the train has stopped. This is
+                    # what actually forces the reserving train to a stand; a soft
+                    # cancel alone would not, and the train is inside its braking
+                    # distance of an occupied block.
+                    controller.eb.activate()
 
     def _update_presence_unknown(self, detector) -> None:
         """Flag each train whose calculated position no physical reading backs

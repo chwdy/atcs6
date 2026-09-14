@@ -210,6 +210,42 @@ def test_current_on_the_next_reserved_block_is_still_the_train_arriving():
     )
 
 
+def test_a_foreign_train_taking_a_locked_block_emergency_brakes_the_reserver():
+    """The LOCKED counterpart of the truncation case.
+
+    When the taken block is within the reserving train's braking distance
+    (`Block.locked_by_path` set), a graceful pull-back cannot leave that train
+    room to stop, so Observe raises the canonical emergency brake on it and
+    releases only the taken block so the foreign entry commits — the rest of its
+    reservation and lock come down through the ordinary EB cancellation once it
+    stops (design_new.md "Reservation truncation", Observe caller, Locked
+    branch). A soft `revoked` cancel alone would not force the stop, and the
+    train is inside its braking distance of an occupied block.
+    """
+    network = build_abc()
+    sim, dispatcher, controller, train, path_id = rolling_train_with_authority_to_c(
+        network
+    )
+    # The reserving train has LOCKED BLK_C within its braking distance (the
+    # never-release lock reaches it while rolling); the foreign object lands on
+    # that locked block, not a reserved-but-unlocked one.
+    network.blocks["BLK_C"].locked_by_path = path_id
+    assert network.blocks["BLK_C"].reserved_for_train == "T1"
+    assert controller.eb.active is False
+
+    sim._truncate_authority_at_occupied_reservations({"FOREIGN": {"BLK_C"}})
+
+    # The reserving train is emergency-braked, with the EB cancel latched.
+    assert controller.eb.active is True
+    latch = controller.route_hooks.phase_latches.path_cancel_request
+    assert latch is not None and latch.error is not None
+    assert latch.error.origin == "eb"
+    # Only the taken block's reservation is released; the path stays ACTIVE and
+    # the rest comes down with the EB cancel once the train stops.
+    assert network.blocks["BLK_C"].reserved_for_train is None
+    assert dispatcher.active_path_id_by_train("T1") == path_id
+
+
 # ---------------------------------------------------------------------------
 # truncate_path_before_resource directly
 # ---------------------------------------------------------------------------
