@@ -287,12 +287,6 @@ class RouteExecutionState:
     task_runs: List[RouteTaskRun] = field(default_factory=list)
     # Opaque global run-instance number assigned by RouteExecutor (diagnostic only).
     run_number: int = 0
-    # The `error` carried by the most recent `handle_path_cancellation(...)` for
-    # this run (design_new.md "RouteRun schema"). Not a latch — it has no gating
-    # predicate; runtime branching never reads it. Written by that callback,
-    # cleared to None by Plan step `66aa` on the next successful create_path.
-    # Drives the derived `display_state == "CANCELLED"` projection.
-    last_cancellation: Optional["ErrorRecord"] = None
     # Plan-maintained flag (NOT a latch): set when every task on a
     # CIRCULAR / ROUND_TRIP walk is broken (target ID missing from the
     # network), cleared by the next Plan pass that finds a valid task.
@@ -399,24 +393,28 @@ class RouteExecutionState:
 
     @property
     def display_state(self) -> str:
-        """UI-only diagnostic projection.
+        """The run-only part of the UI display projection.
 
-        Per design_new.md ``RouteRun schema`` (the ``display_state`` row), in
+        Per design_new.md ``Route-run state`` (the ``display_state`` row), in
         priority order: (1) when ``current_route_status`` is terminal
         (``FINISHED`` / ``DEACTIVATED``), the terminal state; (2) else
-        ``"CANCELLED"`` when ``last_cancellation is not None`` — the UI reads the
-        reason from that ``ErrorRecord``; (3) else ``"STALLED"`` when
-        ``no_reachable_task``; (4) otherwise ``current_route_status.value``
-        (``"RUNNING"``). Not a stored field; no writers. Runtime branching never
-        keys on this value.
+        ``"STALLED"`` when ``no_reachable_task``; (3) otherwise
+        ``current_route_status.value`` (``"RUNNING"``).
+
+        The ``"CANCELLED"`` case is resolved in the read model (see
+        ``RouteExecutor._display_state_for(...)``), which has the dispatcher and
+        the event stream in hand: it needs the train's most recently terminated
+        ``Path`` record's status plus the run's live-path state, which this
+        run-only property cannot see. STALLED outranks CANCELLED, so the read
+        model only considers CANCELLED when this property returns ``"RUNNING"``.
+        Not a stored field; no writers. Runtime branching never keys on this
+        value.
         """
         if self.current_route_status in (
             RouteRunStatus.FINISHED,
             RouteRunStatus.DEACTIVATED,
         ):
             return self.current_route_status.value
-        if self.last_cancellation is not None:
-            return "CANCELLED"
         if self.no_reachable_task:
             return "STALLED"
         return self.current_route_status.value
@@ -1005,9 +1003,38 @@ class RouteExecutor:
             "route_id": run.route_id,
             "run_number": run.run_number,
             "state": run.current_route_status.value,
-            "display_state": run.display_state,
+            "display_state": self._display_state_for(train_id, run),
             "last_error": self.latest_run_error(run),
         }
+
+    def _display_state_for(self, train_id: str, run: RouteExecutionState) -> str:
+        """Assemble the read-model `display_state` for a run (design_new.md
+        "Route-run state", `display_state`).
+
+        Starts from the run-only projection (terminal / STALLED / RUNNING) and
+        adds the `"CANCELLED"` case, which STALLED outranks: when the run is
+        non-terminal and not stalled (the run-only projection is `"RUNNING"`),
+        holds no live path (`PathDispatcher.active_path_id_by_train(train_id) is
+        None`), and the train's most recently terminated `Path` record ended
+        `CANCELLED` (not `COMPLETED`), the projection is `"CANCELLED"` — the UI
+        reads the reason from that path's `cancel_path` event. A fresh
+        `create_path(...)` gives the run a live path again, so the projection
+        returns to `"RUNNING"` on the next read with no stored field to clear.
+        """
+        from enums import PathStatus
+
+        base = run.display_state
+        if base != "RUNNING":
+            return base
+        dispatcher = self.path_dispatcher
+        if dispatcher is None:
+            return base
+        if dispatcher.active_path_id_by_train(train_id) is not None:
+            return base
+        terminated = dispatcher.most_recently_terminated_path(train_id)
+        if terminated is not None and terminated.status == PathStatus.CANCELLED:
+            return "CANCELLED"
+        return base
 
     def _run_is_at_started_dwell(self, run: RouteExecutionState) -> bool:
         """True when the run's current walk task is a `dwell` row whose
@@ -2310,9 +2337,10 @@ class RouteExecutor:
         # Plan kernel — step IDs trace back to design_new.md "Planning
         # Kernel" section. The `9c4f` (RouteRun reallocation) step is
         # performed earlier inside `_ensure_run_for(...)`. There is no
-        # deviation-cleanup step: a cancellation only records `last_cancellation`
-        # for the display projection, cleared by the next successful create at
-        # step `66aa`.
+        # deviation-cleanup step: a cancellation writes no RouteRun field; the
+        # read-model `display_state` derives "CANCELLED" from the cancel_path
+        # event and the terminated Path record, and returns to "RUNNING" once a
+        # fresh create at step `66aa` gives the run a live path again.
 
         # ---------- Teardown outranks normal progress ------------------------
         # design_new.md "Teardown outranks normal progress" (:1967): while any
@@ -3697,9 +3725,10 @@ class RouteExecutor:
         # design_new.md "Event log": a fresh create (no prior active path) is a
         # PATH_CREATED event; an extend grows an existing path and is not.
         if active_path_id is None:
-            # A successful fresh create clears the prior cancellation's display
-            # diagnostic (design_new.md "RouteRun schema", last_cancellation).
-            exec_state.last_cancellation = None
+            # A successful fresh create gives the run a live path again, so the
+            # read-model `display_state` stops projecting "CANCELLED" on its own
+            # (design_new.md "Route-run state", `display_state`) — there is no
+            # stored field to clear.
             self._emit_event(
                 "create_path",
                 f"path created for {train.train_id} to {target_block}",
@@ -3773,13 +3802,6 @@ class RouteExecutor:
         exec_state = self.execution_state_for(train_id)
         if exec_state is None:
             return
-
-        # Clear a still-set ``last_cancellation`` diagnostic as the run finishes:
-        # the terminal-walk guard may have interposed a ``revoked`` cancel (a
-        # terminal ``waypoint`` whose head entry never released authority, or an
-        # all-broken skip); the run is finishing regardless, so the diagnostic is
-        # retired here rather than carried onto the historical row.
-        exec_state.last_cancellation = None
 
         route_id = exec_state.route_id
         route = self.route_registry.get(route_id)
@@ -3895,12 +3917,14 @@ class RouteExecutor:
         exec_state = self.execution_states.get(train_id)
         if exec_state is None:
             return
-        # Record the cancellation's diagnostic (design_new.md "RouteRun schema",
-        # last_cancellation). `current_route_status` does not transition; the
-        # derived `display_state` reads `"CANCELLED"` until the next successful
-        # create_path clears this at Plan step `66aa`. Every cancellation kind
-        # is surfaced the same way — the reason lives on the ErrorRecord.origin.
-        exec_state.last_cancellation = error
+        # This callback writes no `RouteRun` field (design_new.md "Route-run
+        # state"): `current_route_status` does not transition, and the
+        # cancellation's `ErrorRecord` rides the `cancel_path` event alone. The
+        # read-model `display_state` reads `"CANCELLED"` from that event and the
+        # terminated `Path` record while the run has no live path, and returns to
+        # `"RUNNING"` once a fresh create_path gives the run a live path again.
+        # Every cancellation kind is surfaced the same way — the reason lives on
+        # the ErrorRecord.origin.
         from notification_center import Kind as _Kind
         self._emit_run_error(
             exec_state,
