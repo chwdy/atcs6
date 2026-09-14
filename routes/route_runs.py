@@ -69,14 +69,15 @@ def _route_run_summary(route, run, executor=None) -> dict:
         "started_at": run.started_at,
         "direction": run.direction,
         "state": run.current_route_status.value,
-        "display_state": run.display_state,
-        "last_cancellation": (
-            {
-                "origin": run.last_cancellation.origin,
-                "text": run.last_cancellation.text,
-            }
-            if run.last_cancellation is not None
-            else None
+        # `display_state` is the read-model projection (design_new.md "Route-run
+        # state"): its "CANCELLED" case needs the dispatcher + terminated Path
+        # record, so resolve it through the executor when available. A
+        # cancellation stores no ErrorRecord — the reason rides the `cancel_path`
+        # event, surfaced here as `last_error`.
+        "display_state": (
+            executor._display_state_for(run.train_id, run)
+            if executor is not None
+            else run.display_state
         ),
         "current_waypoint_index": run.current_waypoint_index,
         "next_planning_index": run.next_planning_index,

@@ -475,7 +475,7 @@ def test_every_operator_command_is_refused_for_an_unidentified_train():
 
     # The controller never saw any of it.
     assert sim.controllers[unidentified_id]._framed_head_end == "end_a"
-    assert sim.controllers[unidentified_id].ops.state.name == "OFF"
+    assert sim.controllers[unidentified_id].train_status.name == "OFF"
 
 
 def test_an_unidentified_train_is_never_assigned_a_route_or_repositioned():

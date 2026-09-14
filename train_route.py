@@ -155,9 +155,11 @@ class RouteRunStatus(Enum):
     """Per-run lifecycle state.
 
     Per design_new.md `current_route_status` enum. v1 stores exactly
-    these three states; a cancellation is recorded on `RouteRun.last_cancellation` and surfaced
-    through the derived `display_state` == "CANCELLED" projection. Runtime branching keys on controller state, latches, and
-    current span coverage, not on this enum.
+    these three states; a cancellation stores no field — the read-model
+    `display_state` derives "CANCELLED" from the `cancel_path` event and the
+    train's terminated `Path` record while the run has no live path. Runtime
+    branching keys on controller state, latches, and current span coverage, not
+    on this enum.
     """
 
     RUNNING = "RUNNING"  # Ordinary execution (incl. dwell, between-legs)

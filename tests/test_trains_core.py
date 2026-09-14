@@ -10,7 +10,7 @@ import pytest
 from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
-from enums import BlockState, Direction, TrainState, HandlePosition, PathStatus
+from enums import BlockState, Direction, HandlePosition, PathStatus
 from train import Train, TrainCar
 from simulation import SimulationController
 from train_controller import TrainController, create_controller_for_train
@@ -103,11 +103,13 @@ class TestSimulationController:
         # production; this test places via network.place_train directly).
         controller.physics_sync.current_span = placed_span
         controller.commands.power_on_cmd()
-        # Operator start-up: frame the head end, then switch to ATO, which
-        # engages the run (design_new.md "ato.engaged").
+        # Operator start-up: frame the head end, switch to ATO, then start ATO
+        # driving with /ato/go (design_new.md "ATO status": set_mode selects the
+        # mode; /ato/go starts the run).
         controller.commands.control_mode = "manual"
         controller._apply_head_frame("end_a")
         controller.commands.set_mode("ato")
+        controller.commands.ato_go()
 
         # A one-off route to the east terminal. Phase 1 (RouteExecutor) owns
         # creating the authority and departing the train; we only drive ticks.
@@ -150,7 +152,7 @@ class TestSimulationController:
             f"{getattr(dispatcher.get_path(captured_path_id), 'status', None)!r}, "
             f"head_block={controller._get_current_block_id()!r}, "
             f"speed={controller.physics_sync.current_speed_kmh:.2f}, "
-            f"state={controller.ops.state.value!r}. Per design_new.md, the "
+            f"train_status={controller.train_status.value!r}. Per design_new.md, the "
             f"Phase-3 usable-authority stop check must call "
             f"try_complete_active_path(...) once the train is stopped at the "
             f"end of its authority."
@@ -221,11 +223,13 @@ class TestSimulationController:
         controller = simulation._get_or_create_controller(train)
         controller.physics_sync.current_span = placed_span
         controller.commands.power_on_cmd()
-        # Operator start-up: frame the head end, then switch to ATO, which
-        # engages the run (design_new.md "ato.engaged").
+        # Operator start-up: frame the head end, switch to ATO, then start ATO
+        # driving with /ato/go (design_new.md "ATO status": set_mode selects the
+        # mode; /ato/go starts the run).
         controller.commands.control_mode = "manual"
         controller._apply_head_frame("end_a")
         controller.commands.set_mode("ato")
+        controller.commands.ato_go()
 
         route = Route(route_id="ROUTE_AC_WP", name="A to C (waypoint)", mode=RouteMode.ONE_OFF)
         route.add_task(RouteTask(task_kind="waypoint", task_location="STA_C"))

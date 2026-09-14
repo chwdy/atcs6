@@ -123,25 +123,45 @@ class BlockState(Enum):
     CAUTION = "caution"  # 警告（列车刚离开，下一区段仍被占用，需减速）
 
 
-class TrainState(Enum):
-    """
-    Train power and operational states.
+class TrainStatus(Enum):
+    """Overall train status, derived (never stored) per design_new.md
+    "Controller state machine".
 
-    Per design_new.md, the operational state set in v1 is exactly three:
-    - OFF: power off
-    - READY: powered and stopped (including a train dwelling at a stop, which
-      is not a separate state — the planner withholds its onward authority)
-    - RUNNING_MOVING: physically moving, or stopped at zero ATC clearance under
-      the same active authority
+    Computed each read from the three stored inputs `powered`, `eb.active`,
+    and `commands.control_mode`:
+      - OFF: not powered.
+      - EB: powered and the emergency brake is latched.
+      - ATO: powered, not under EB, control_mode == "ato".
+      - MANUAL: powered, not under EB, control_mode == "manual".
 
-    READY <-> RUNNING_MOVING is movement-derived. Manual driving is a control
-    mode (control_mode == "manual"), not a separate operational state; a
-    stopped manual train sits in READY just like an ATO train.
+    The ATO-mode detail (READY / RUNNING / HELD / DWELLING) is the read-model
+    `ato_status` projection (see `AtoStatus` and design_new.md "ATO status"),
+    not part of this enum, because it needs route state the controller never
+    reads.
     """
 
     OFF = "off"
-    READY = "ready"
-    RUNNING_MOVING = "running_moving"
+    MANUAL = "manual"
+    ATO = "ato"
+    EB = "eb"
+
+
+class AtoStatus(Enum):
+    """ATO's own status — a read-model display projection per design_new.md
+    "ATO status".
+
+    Not a controller field: assembled in the read model from the controller's
+    derived `train_status`, `commands.engaged`, and `current_speed_kmh` plus
+    the train's route-run state (whether a RUNNING run exists and whether its
+    current walk task is a started, unfinished `dwell` row). No control logic
+    reads it; it is display-only.
+    """
+
+    OFF = "OFF"
+    READY = "READY"
+    RUNNING = "RUNNING"
+    HELD = "HELD"
+    DWELLING = "DWELLING"
 
 
 class ControllerCondition(Enum):
@@ -153,7 +173,6 @@ class ControllerCondition(Enum):
     mapping line.
     """
 
-    HAS_AUTHORITY = "has_authority"
     EB_LATCHED = "eb_latched"
     POWER_OFF_PENDING = "power_off_pending"
     PATH_CANCEL_PENDING = "path_cancel_pending"

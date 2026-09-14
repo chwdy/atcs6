@@ -31,7 +31,7 @@ from train import Train, TrainCar
 from train_controller import TrainController, create_controller_for_train
 from simulation import SimulationController
 from train_physics import TrainPhysics
-from enums import Direction, TrainState, HandlePosition, BlockState
+from enums import Direction, HandlePosition, BlockState
 
 
 

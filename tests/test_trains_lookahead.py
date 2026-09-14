@@ -10,7 +10,7 @@ import pytest
 from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
-from enums import BlockState, Direction, TrainState, HandlePosition
+from enums import BlockState, Direction, HandlePosition
 from train import Train, TrainCar
 from train_span import SpanEndLocator, TrainSpan
 from tests.train_test_helpers import make_train_span, set_train_span
@@ -207,9 +207,8 @@ class TestTrainControlPanelDataBugFix:
 
         sim_controller = SimulationController(network)
         controller = sim_controller._get_or_create_controller(train)
-        # Per design_new.md: power_on is a read-only derived property; use
-        # controller.ops.state to power on.
-        controller.ops.state = TrainState.READY
+        # Per design_new.md: `power_on` is a read-only alias for `powered`.
+        controller.powered = True
         controller.ops.handle_position = HandlePosition.P2
         controller.commands.control_mode = "ato"
 

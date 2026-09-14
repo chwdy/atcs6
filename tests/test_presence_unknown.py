@@ -171,7 +171,6 @@ def test_rising_edge_stops_the_train_and_releases_its_blocks():
     """With no detection behind it there is nothing to predict and no grounds
     to keep resources: the controller is written OFF at zero speed and every
     held block is released, on the tick the flag rises."""
-    from enums import TrainState
 
     network = build_line()
     sim, train, controller = place(network)
@@ -186,7 +185,7 @@ def test_rising_edge_stops_the_train_and_releases_its_blocks():
         sim._detect_block_occupancy()
 
     assert controller.presence_unknown is True
-    assert controller.ops.state == TrainState.OFF
+    assert not controller.powered
     assert controller.physics_sync.current_speed_kmh == 0.0
     assert all(b.occupied_by is None for b in network.blocks.values())
 
@@ -223,7 +222,7 @@ def test_span_survives_the_release_for_the_question_mark():
 
 def test_lost_train_cancels_path_and_releases_every_reserved_block():
     """The question-mark identifier is diagnostic only, never live authority."""
-    from enums import PathStatus, TrainState
+    from enums import PathStatus
     from path_dispatcher import PathDispatcher
 
     network = build_line()
@@ -263,7 +262,7 @@ def test_lost_train_cancels_path_and_releases_every_reserved_block():
     sim.update(0.1)
 
     assert controller.presence_unknown is True
-    assert controller.ops.state == TrainState.OFF
+    assert not controller.powered
     assert controller.physics_sync.current_speed_kmh == 0.0
     assert dispatcher.paths[path_id].status == PathStatus.CANCELLED
     assert dispatcher.active_path_id_by_train("T") is None
@@ -277,12 +276,12 @@ def test_lost_train_cancels_path_and_releases_every_reserved_block():
         train_id="T", requested_destination_block_id="BLK_0"
     )
     assert recreated.success
-    assert controller.ops.state == TrainState.READY
+    assert controller.powered
     assert any(b.reserved_for_train == "T" for b in network.blocks.values())
 
     sim.update(0.1)
 
-    assert controller.ops.state == TrainState.OFF
+    assert not controller.powered
     assert dispatcher.paths[recreated.path_id].status == PathStatus.CANCELLED
     assert dispatcher.active_path_id_by_train("T") is None
     assert all(b.reserved_for_train is None for b in network.blocks.values())
@@ -290,7 +289,6 @@ def test_lost_train_cancels_path_and_releases_every_reserved_block():
 
 def test_lost_train_drops_queued_commands_and_never_runs_physics():
     """An old power command cannot revive an identifier backed by no train."""
-    from enums import TrainState
 
     network = build_line()
     sim, train, controller = place(network)
@@ -314,7 +312,7 @@ def test_lost_train_drops_queued_commands_and_never_runs_physics():
     sim.update(1.0)
 
     assert controller.commands.command_inbox == []
-    assert controller.ops.state == TrainState.OFF
+    assert not controller.powered
     assert controller.physics_sync.current_speed_kmh == 0.0
     assert physics.pending_entry_block is None
     span = controller.physics_sync.current_span

@@ -9,7 +9,7 @@ import pytest
 from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
-from enums import BlockState, Direction, TrainState, HandlePosition
+from enums import BlockState, Direction, TrainStatus, HandlePosition
 from train import Train, TrainCar
 from train_span import SpanEndLocator, TrainSpan
 from tests.train_test_helpers import set_train_span
@@ -86,7 +86,7 @@ class TestRaceConditionFix:
         set_train_span(
             controller, (0, 0), facing_direction=Direction.EAST, occupied_blocks=["B1"]
         )
-        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.powered = True
         controller._apply_head_frame("end_a")
         controller.physics_sync.current_speed_kmh = 42.0  # 12 km/h over limit (EB zone)
 
@@ -197,7 +197,7 @@ class TestTrainControllerBrakingNotches:
         controller.commands.control_mode = "manual"
         # Per design_new.md: power_on is a read-only derived property; use
         # controller.ops.state to power on.
-        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.powered = True
         controller._apply_head_frame("end_a")
         controller.physics_sync.current_speed_kmh = 16.0
 
@@ -266,16 +266,16 @@ class TestPoweredOffControllerTick:
 
     def test_tick_on_a_powered_off_controller_is_inert(self):
         controller = self._controller()
-        assert controller.state == TrainState.OFF
+        assert controller.train_status == TrainStatus.OFF
         controller.tick(0.1)  # must not raise
-        assert controller.state == TrainState.OFF
+        assert controller.train_status == TrainStatus.OFF
         assert controller.power_on is False
 
     def test_power_on_is_accepted_while_off(self):
         controller = self._controller()
         controller.tick(0.1)
         assert controller.commands.power_on_cmd().success is True
-        assert controller.state == TrainState.READY
+        assert controller.train_status != TrainStatus.OFF
         assert controller.power_on is True
 
 
@@ -362,7 +362,7 @@ class TestATCOverspeedWarning:
             controller, (0, 0), facing_direction=Direction.EAST, occupied_blocks=["B1"]
         )
         controller._apply_head_frame("end_a")
-        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.powered = True
 
         assert dispatcher.create_path(
             train_id=train.train_id, requested_destination_block_id="B3"

@@ -40,7 +40,7 @@ from typing import (
 from unidentified_trains import UnidentifiedTrainTracker
 from network import RailwayNetwork
 from train import Train, TrainCar
-from enums import TrainState, Direction, HandlePosition, OperationMode
+from enums import Direction, HandlePosition, OperationMode
 import operation_environment
 from block_power import BlockPowerController
 from switch_power import (
@@ -549,7 +549,7 @@ class SimulationController(SwitchOutputOwner):
                 # "Power", Presence unknown).
                 controller = self._get_or_create_controller(train)
                 if (
-                    controller.ops.state != TrainState.OFF
+                    controller.powered
                     and not controller.presence_unknown
                 ):
                     self.route_executor.tick_train_plan(train_id, delta_seconds)
@@ -1417,7 +1417,7 @@ class SimulationController(SwitchOutputOwner):
             and dispatcher.active_path_id_by_train(train_id) is not None
         )
         already_settled = (
-            controller.ops.state == TrainState.OFF and not has_active_path
+            not controller.powered and not has_active_path
         )
         if not already_settled:
             controller.commands._apply_power_off_request(
@@ -1589,7 +1589,7 @@ class SimulationController(SwitchOutputOwner):
         gate holds. `observing_only` therefore returns right after step `3e9b`.
         """
         if (
-            controller.ops.state == TrainState.OFF
+            not controller.powered
             and train.train_id not in self._detected_change_train_ids
         ):
             self._sync_persistent_train_state(train, controller)
@@ -1638,7 +1638,7 @@ class SimulationController(SwitchOutputOwner):
         drain that just ran in Action may have powered the train on, in which
         case this runs.
         """
-        if controller.ops.state == TrainState.OFF:
+        if not controller.powered:
             self._sync_persistent_train_state(train, controller)
             return
 
@@ -3035,7 +3035,18 @@ def build_network_payload(
 
     for train_id, train in network.trains.items():
         controller = sim_controller._get_or_create_controller(train)
-        controllers_by_train_id[train_id] = controller.to_dict()
+        controller_payload = controller.to_dict()
+        # `ato_status` is a read-model projection, not a controller field
+        # (design_new.md "ATO status"): the read model assembles it here from the
+        # controller's derived `train_status` / `commands.engaged` /
+        # stopped-predicate plus the train's route-run state, then exposes it on
+        # the controller payload alongside the derived `train_status`.
+        if route_executor is not None:
+            try:
+                controller_payload["ato_status"] = route_executor.ato_status_for(train_id)
+            except Exception:
+                controller_payload["ato_status"] = None
+        controllers_by_train_id[train_id] = controller_payload
 
         if path_dispatcher is not None:
             try:

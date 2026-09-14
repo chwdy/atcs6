@@ -19,7 +19,7 @@ from track import (
 from network import RailwayNetwork
 from block import Block
 from railway_signal import Signal, SignalType, SignalState
-from enums import BlockState, PlatformSide, Direction, TrainState
+from enums import BlockState, PlatformSide, Direction
 from tests.train_test_helpers import set_train_span
 from segment_validation import (
     is_crossing,

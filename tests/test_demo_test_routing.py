@@ -29,10 +29,9 @@ at path-acquisition time, so it must be identical across dt.
 
 import pytest
 
-from enums import TrainState
 from tests.journey.assertions import assert_speed_eq, assert_state
 from tests.journey.events import Event, Journey
-from tests.journey.harness import JourneyHarness
+from tests.journey.harness import JourneyHarness, TrainState
 from tests.journey.invariants import no_eb, no_overspeed
 from tests.journey.scenes.demo_test_scene import (
     DemoTestScene,

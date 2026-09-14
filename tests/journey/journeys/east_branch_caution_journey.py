@@ -23,7 +23,9 @@ no E edge) as the exit tile for direction="E"; the walk stepped into the
 empty cell (10,5), failed, and the reevaluator force-cleared the caution.
 """
 
-from enums import BlockState, TrainState
+from enums import BlockState
+
+from ..harness import TrainState
 
 from ..assertions import assert_state
 from ..events import Event, Journey

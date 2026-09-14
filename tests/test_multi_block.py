@@ -14,7 +14,7 @@ from block import Block
 from track import Tile
 from block_power import BlockPowerController, SimulatedTrackDriver
 from speed_profile import SpeedProfile
-from enums import Direction, TrainState
+from enums import Direction
 from entity_ids import segment_id_for_block
 
 

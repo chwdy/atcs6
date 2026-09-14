@@ -25,7 +25,7 @@ at an authority end it had never travelled to.
 from typing import Dict, Set
 
 from block_occupancy import OccupancyInput
-from enums import Direction, HandlePosition, PathStatus, TrainState
+from enums import Direction, HandlePosition, PathStatus
 from network import RailwayNetwork
 from path import Path, ResourceSequenceEntry
 from path_dispatcher import PathDispatcher
@@ -89,12 +89,10 @@ def rolling_train_with_authority_to_c(network):
     )
     assert result.success, getattr(result, "reason", None)
 
-    controller.ops.state = TrainState.READY
+    controller.powered = True
     controller.commands.control_mode = "manual"
     controller._apply_head_frame("end_a")
-    # Manual trains have no depart handshake; the driver drives. Put the train
-    # in the moving state and give it a handle.
-    controller.ops.enter_running_moving()
+    # Manual trains have no depart handshake; the driver drives.
     assert controller.commands.set_handle(HandlePosition.P4).success
 
     sim.block_occupancy_detector.input_interface = FakeDetectorInput(

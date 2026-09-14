@@ -20,7 +20,7 @@ import pytest
 from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
-from enums import BlockState, Direction, TrainState, HandlePosition
+from enums import BlockState, Direction, HandlePosition
 from train import Train, TrainCar
 from train_span import SpanEndLocator, TrainSpan
 from simulation import SimulationController
@@ -510,8 +510,9 @@ class TestHeadFrameDoubleFlip:
         """
         train, controller = self._setup_multi_tile_train(network)
 
-        # Simulate: train was running, ATO stopped, route cancelled -> READY
-        controller.ops.state = TrainState.READY
+        # Simulate: train was running, ATO stopped, route cancelled -> powered
+        # and stopped with no reservation.
+        controller.powered = True
         controller.ato.engaged = False
         controller.physics_sync.current_speed_kmh = 0.0
 
@@ -520,8 +521,8 @@ class TestHeadFrameDoubleFlip:
 
         result = controller._apply_head_frame("end_b")
         assert result is None, (
-            f"re-framing to end_b should work from READY state, "
-            f"controller.ops.state={controller.ops.state}"
+            f"re-framing to end_b should work while stopped, "
+            f"train_status={controller.train_status}"
         )
         assert controller._facing_direction() == Direction.WEST
         assert controller._framed_head_end == "end_b"

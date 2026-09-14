@@ -23,7 +23,7 @@ Asserts at the key transitions:
     controller settles in READY.
 """
 
-from enums import TrainState
+from ..harness import TrainState
 
 from ..assertions import assert_cab, assert_state
 from ..events import Event, Journey

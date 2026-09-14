@@ -51,7 +51,7 @@ from typing import (
 )
 
 from constants import OVERRUN_REPORT_MIN_BLOCKS, STOPPED_SPEED_THRESHOLD_KMH
-from enums import BRAKE_MULTIPLIERS, POWER_MULTIPLIERS, Direction, HandlePosition, TrainState
+from enums import BRAKE_MULTIPLIERS, POWER_MULTIPLIERS, Direction, HandlePosition
 from model_scale import kmh_to_cm_per_sec
 from runtime_payloads import PhysicsSpanUpdate, TileTraversal
 from train_controller_types import (
@@ -631,15 +631,11 @@ class TrainPhysics:
         `BlockPowerController` consumes this scalar without making any
         manual-mode policy decisions itself.
         """
-        # OFF or no controller: 0V.
-        # Read the operational state through `controller.state`, which is a
-        # property proxying `ops.state` (TrainController has no stored top-level
-        # `state`). Per design_new.md "SpeedProfile", the stopped-but-lit states
-        # (READY) output `lighting_voltage`.
-        operational_state = (
-            getattr(controller, "state", None) if controller is not None else None
-        )
-        if controller is None or operational_state == TrainState.OFF:
+        # OFF or no controller: 0V. `train_status` is derived from the stored
+        # `powered` flag (design_new.md "Controller state machine"); an
+        # unpowered train de-energizes its block.
+        powered = bool(getattr(controller, "powered", False)) if controller is not None else False
+        if controller is None or not powered:
             return 0.0
 
         # Read the controller's per-tick command once. Physics is an executor:
@@ -664,11 +660,20 @@ class TrainPhysics:
             speed_profile.lighting_voltage if speed_profile is not None else 0.0
         )
 
-        # Stopped lit state: lighting voltage scalar. A dwelling train is READY.
-        if operational_state == TrainState.READY:
+        # Stopped-but-lit: a powered train standing at rest with no live
+        # reservation and no EB (the old READY case) outputs the lighting
+        # voltage scalar so its block stays detectable. A dwelling train, whose
+        # reservation released on arrival, is one such case.
+        stopped_but_lit = (
+            controller.is_stopped()
+            and controller.path_projection.received_path_plan is None
+            and not controller.eb.active
+        )
+        if stopped_but_lit:
             return lighting_voltage
 
-        # RUNNING_MOVING: the reference comes from the controller's
+        # Moving, or stopped under a live reservation / EB (the old
+        # RUNNING_MOVING case): the reference comes from the controller's
         # PhysicsCommand. EB collapses voltage_source_speed_kmh to 0.0 in
         # the producer, so no extra branch is needed here.
         voltage_speed = float(command.voltage_source_speed_kmh)

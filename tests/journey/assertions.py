@@ -7,9 +7,9 @@ identifies the exact mismatch.
 
 from typing import Callable, Iterable, Optional, Set, Tuple, Union
 
-from enums import AtcLimitReasonCode, BlockState, TrainState
+from enums import AtcLimitReasonCode, BlockState
 
-from .harness import Snapshot
+from .harness import Snapshot, TrainState
 
 Check = Callable[[Snapshot], None]
 

@@ -9,12 +9,52 @@ Public API:
 
 from collections import deque
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Deque, List, Optional, Set, Tuple
 
-from enums import AtcLimitReasonCode, TrainState
+from enums import AtcLimitReasonCode
 
 from .events import Event, Invariant, Journey
 from .scenes.base import Scene, SceneFixture
+
+
+class TrainState(Enum):
+    """Legacy operational-state view for the journey harness only.
+
+    Runtime no longer stores this: `train_status` (`OFF`/`MANUAL`/`ATO`/`EB`)
+    and the read-model `ato_status` replaced the old stored `state`
+    (`OFF`/`READY`/`RUNNING_MOVING`) and its reactive machinery (design_new.md
+    "Controller state machine"). The journeys still describe their expected
+    behaviour in terms of "stopped/powered" (READY) versus "moving or holding
+    under a live reservation" (RUNNING_MOVING), so `legacy_op_state(...)`
+    projects the new stored inputs back onto this three-value view. Only the
+    journey harness and its assertions read it.
+    """
+
+    OFF = "off"
+    READY = "ready"
+    RUNNING_MOVING = "running_moving"
+
+
+def legacy_op_state(controller: Any) -> TrainState:
+    """Project the new derived model onto the legacy `TrainState` view.
+
+    Reproduces the old reactive semantics at the points the journeys assert
+    them: the old machine only left READY for RUNNING_MOVING on observed
+    motion, and only returned to READY once stopped, so at a standstill the
+    journeys always describe the train as READY (whether or not it already
+    holds a reservation it has not yet moved on), and as RUNNING_MOVING only
+    while actually moving. A pure function of the current inputs therefore
+    keys on motion:
+      - OFF when not powered;
+      - RUNNING_MOVING while moving;
+      - READY otherwise (powered and stopped).
+    """
+    if not getattr(controller, "powered", False):
+        return TrainState.OFF
+    if not controller.is_stopped():
+        return TrainState.RUNNING_MOVING
+    return TrainState.READY
 
 
 # --------------------------------------------------------------------------- #
@@ -225,7 +265,7 @@ def _capture_snapshot(
         tick=tick,
         sim_time=sim.simulation_time,
         fixture=fixture,
-        state=controller.ops.state,
+        state=legacy_op_state(controller),
         cab=("B" if controller._framed_head_end == "end_b" else "A"),
         speed_kmh=float(controller.physics_sync.current_speed_kmh),
         eb_active=bool(controller.eb.active),

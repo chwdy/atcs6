@@ -27,7 +27,7 @@ from typing import Any, ClassVar, Dict, Iterable, List, Optional, Set, Tuple, TY
 from constants import (
     DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS,
 )
-from enums import AtcLimitReasonCode, ControllerCondition, Direction, TrainState
+from enums import AtcLimitReasonCode, ControllerCondition, Direction
 from train_controller import TrainController, create_controller_for_train
 from train_route import (
     RouteMode,
@@ -299,12 +299,6 @@ class RouteExecutionState:
     task_runs: List[RouteTaskRun] = field(default_factory=list)
     # Opaque global run-instance number assigned by RouteExecutor (diagnostic only).
     run_number: int = 0
-    # The `error` carried by the most recent `handle_path_cancellation(...)` for
-    # this run (design_new.md "RouteRun schema"). Not a latch — it has no gating
-    # predicate; runtime branching never reads it. Written by that callback,
-    # cleared to None by Plan step `66aa` on the next successful create_path.
-    # Drives the derived `display_state == "CANCELLED"` projection.
-    last_cancellation: Optional["ErrorRecord"] = None
     # Plan-maintained flag (NOT a latch): set when every task on a
     # CIRCULAR / ROUND_TRIP walk is broken (target ID missing from the
     # network), cleared by the next Plan pass that finds a valid task.
@@ -411,24 +405,28 @@ class RouteExecutionState:
 
     @property
     def display_state(self) -> str:
-        """UI-only diagnostic projection.
+        """The run-only part of the UI display projection.
 
-        Per design_new.md ``RouteRun schema`` (the ``display_state`` row), in
+        Per design_new.md ``Route-run state`` (the ``display_state`` row), in
         priority order: (1) when ``current_route_status`` is terminal
         (``FINISHED`` / ``DEACTIVATED``), the terminal state; (2) else
-        ``"CANCELLED"`` when ``last_cancellation is not None`` — the UI reads the
-        reason from that ``ErrorRecord``; (3) else ``"STALLED"`` when
-        ``no_reachable_task``; (4) otherwise ``current_route_status.value``
-        (``"RUNNING"``). Not a stored field; no writers. Runtime branching never
-        keys on this value.
+        ``"STALLED"`` when ``no_reachable_task``; (3) otherwise
+        ``current_route_status.value`` (``"RUNNING"``).
+
+        The ``"CANCELLED"`` case is resolved in the read model (see
+        ``RouteExecutor._display_state_for(...)``), which has the dispatcher and
+        the event stream in hand: it needs the train's most recently terminated
+        ``Path`` record's status plus the run's live-path state, which this
+        run-only property cannot see. STALLED outranks CANCELLED, so the read
+        model only considers CANCELLED when this property returns ``"RUNNING"``.
+        Not a stored field; no writers. Runtime branching never keys on this
+        value.
         """
         if self.current_route_status in (
             RouteRunStatus.FINISHED,
             RouteRunStatus.DEACTIVATED,
         ):
             return self.current_route_status.value
-        if self.last_cancellation is not None:
-            return "CANCELLED"
         if self.no_reachable_task:
             return "STALLED"
         return self.current_route_status.value
@@ -889,6 +887,14 @@ class RouteExecutor:
                     new_route.assign_train(train_id)
                 if start_override is not None:
                     self._pending_start_overrides[train_id] = dict(start_override)
+            # A new route assignment resets the ATO engage bit (design_new.md
+            # "ATO status"): the fresh run starts not engaged (`ato_status ==
+            # READY`) and the operator issues `/ato/go` to start it. This is an
+            # operator-initiated write between ticks, cleared here where the
+            # assignment commits immediately.
+            controller = self._controller_by_id(train_id)
+            if controller is not None:
+                controller.commands.engaged = False
             return
 
         # A live run exists and the request names a different route (or None):
@@ -1017,9 +1023,90 @@ class RouteExecutor:
             "route_id": run.route_id,
             "run_number": run.run_number,
             "state": run.current_route_status.value,
-            "display_state": run.display_state,
+            "display_state": self._display_state_for(train_id, run),
             "last_error": self.latest_run_error(run),
         }
+
+    def _display_state_for(self, train_id: str, run: RouteExecutionState) -> str:
+        """Assemble the read-model `display_state` for a run (design_new.md
+        "Route-run state", `display_state`).
+
+        Starts from the run-only projection (terminal / STALLED / RUNNING) and
+        adds the `"CANCELLED"` case, which STALLED outranks: when the run is
+        non-terminal and not stalled (the run-only projection is `"RUNNING"`),
+        holds no live path (`PathDispatcher.active_path_id_by_train(train_id) is
+        None`), and the train's most recently terminated `Path` record ended
+        `CANCELLED` (not `COMPLETED`), the projection is `"CANCELLED"` — the UI
+        reads the reason from that path's `cancel_path` event. A fresh
+        `create_path(...)` gives the run a live path again, so the projection
+        returns to `"RUNNING"` on the next read with no stored field to clear.
+        """
+        from enums import PathStatus
+
+        base = run.display_state
+        if base != "RUNNING":
+            return base
+        dispatcher = self.path_dispatcher
+        if dispatcher is None:
+            return base
+        if dispatcher.active_path_id_by_train(train_id) is not None:
+            return base
+        terminated = dispatcher.most_recently_terminated_path(train_id)
+        if terminated is not None and terminated.status == PathStatus.CANCELLED:
+            return "CANCELLED"
+        return base
+
+    def _run_is_at_started_dwell(self, run: RouteExecutionState) -> bool:
+        """True when the run's current walk task is a `dwell` row whose
+        `started_at` is set and whose `finished_at` is not — the route-owned
+        "at station" read (design_new.md "Data Flow To UI", UI data-flow
+        anchor). The next non-finished walk position is that current task.
+        """
+        if not run.task_runs:
+            return False
+        pos = run.next_planning_walk_position
+        if not (0 <= pos < len(run.task_runs)):
+            return False
+        row = run.task_runs[pos]
+        if row.started_at is None or row.finished_at is not None:
+            return False
+        route = self.route_registry.get(run.route_id) if run.route_id else None
+        if route is None:
+            return False
+        task = route.get_task_at(row.task_index) if hasattr(route, "get_task_at") else None
+        return task is not None and getattr(task, "task_kind", None) == "dwell"
+
+    def ato_status_for(self, train_id: str) -> str:
+        """Assemble the read-model `ato_status` projection for a train
+        (design_new.md "ATO status").
+
+        Computed from the controller's derived `train_status`,
+        `commands.engaged`, and stopped/moving predicate plus the train's
+        route-run state (whether a RUNNING run exists and whether its current
+        walk task is a started, unfinished `dwell` row). Display-only; no
+        control logic reads it. Returns the `AtoStatus` value string.
+        """
+        from enums import AtoStatus, TrainStatus
+
+        controller = self._controller_by_id(train_id)
+        if controller is None or controller.ops.train_status != TrainStatus.ATO:
+            return AtoStatus.OFF.value
+
+        run = self.execution_states.get(train_id)
+        has_running_run = (
+            run is not None and run.current_route_status == RouteRunStatus.RUNNING
+        )
+        # READY: not engaged, or no RUNNING run to pursue (freshly selected,
+        # paused by /ato/stop, or its route finished / was torn down).
+        if not controller.commands.engaged or not has_running_run:
+            return AtoStatus.READY.value
+        # Engaged with a RUNNING run.
+        if self._run_is_at_started_dwell(run):
+            return AtoStatus.DWELLING.value
+        if not controller.is_stopped():
+            return AtoStatus.RUNNING.value
+        # Engaged, stopped, and not at a station (target not yet reached).
+        return AtoStatus.HELD.value
 
     def latest_run_error(self, run: RouteExecutionState) -> Optional[Dict[str, Any]]:
         """The most recent unresolved-looking error event for this run, as the
@@ -2221,7 +2308,7 @@ class RouteExecutor:
             controller = self._get_controller(train)
 
         # If controller is OFF, Plan is skipped entirely.
-        if controller.ops.state == TrainState.OFF:
+        if not controller.powered:
             return
 
         # This tick's elapsed time, read by the braking-distance cap for its
@@ -2270,9 +2357,10 @@ class RouteExecutor:
         # Plan kernel — step IDs trace back to design_new.md "Planning
         # Kernel" section. The `9c4f` (RouteRun reallocation) step is
         # performed earlier inside `_ensure_run_for(...)`. There is no
-        # deviation-cleanup step: a cancellation only records `last_cancellation`
-        # for the display projection, cleared by the next successful create at
-        # step `66aa`.
+        # deviation-cleanup step: a cancellation writes no RouteRun field; the
+        # read-model `display_state` derives "CANCELLED" from the cancel_path
+        # event and the terminated Path record, and returns to "RUNNING" once a
+        # fresh create at step `66aa` gives the run a live path again.
 
         # ---------- Teardown outranks normal progress ------------------------
         # design_new.md "Teardown outranks normal progress" (:1967): while any
@@ -2775,7 +2863,7 @@ class RouteExecutor:
         controller = self._controller_by_id(train_id)
         if controller is None:
             return False
-        if controller.ops.state == TrainState.OFF:
+        if not controller.powered:
             return False
         if controller.eb.active:
             return False
@@ -2783,10 +2871,12 @@ class RouteExecutor:
             return False
         if controller.route_hooks.phase_latches.path_cancel_request is not None:
             return False
-        # The selected driving source must be ready to run. In ATO that means
-        # ATO is switched on; a manual train has no further gate.
+        # The selected driving source must be ready to run. In ATO that is the
+        # engage gate: a not-engaged ATO train neither creates nor extends
+        # reservation (design_new.md "ATO status", ATO engage gate). A manual
+        # train has no further gate.
         if controller.commands.control_mode == "ato":
-            return controller.ato.engaged
+            return controller.commands.engaged
         return True
 
     def _eligible_for_authority_acquisition(
@@ -2797,8 +2887,9 @@ class RouteExecutor:
         Per design_new.md (Planning Kernel section): the dispatch is
         two-branch. Extend is allowed when an active path exists AND none of
         the three pending admin/system cancellation latches are set (so
-        Plan does not extend a path Action is about to cancel). Create
-        delegates to ``is_clean_for_create``.
+        Plan does not extend a path Action is about to cancel) AND the ATO
+        engage gate holds — a not-engaged ATO train extends no reservation
+        (design_new.md ~1981). Create delegates to ``is_clean_for_create``.
         """
         if controller.active_conditions & _PENDING_CANCEL_CONDITIONS:
             return False
@@ -2807,6 +2898,13 @@ class RouteExecutor:
         except Exception:
             has_active_path = False
         if has_active_path:
+            # Extend branch — a not-engaged ATO train keeps its reservation but
+            # extends nothing (ATO engage gate); manual has no such condition.
+            if (
+                controller.commands.control_mode == "ato"
+                and not controller.commands.engaged
+            ):
+                return False
             return True
         # Create branch — full clean-for-create predicate.
         train_id = getattr(exec_state, "train_id", None)
@@ -2936,10 +3034,23 @@ class RouteExecutor:
         train_id = train.train_id
 
         # Accrue only while the direction-seed target resolves to a present
-        # usable target on this pass and EB is not latched (design_new.md step
-        # `6a0d`): a missing seed (`projection.resolved_target is None`) or an
-        # active EB pauses accrual for that pass.
-        if projection.resolved_target is not None and not controller.eb.active:
+        # usable target on this pass, EB is not latched, and the train is not a
+        # paused ATO train (design_new.md step `6a0d`): a missing seed
+        # (`projection.resolved_target is None`), an active EB, or a not-engaged
+        # ATO train (`train_status == ATO and not commands.engaged`) each pauses
+        # accrual for that pass — EB and a paused ATO train pause the run timer
+        # the same way.
+        from enums import TrainStatus
+
+        paused_ato = (
+            controller.ops.train_status == TrainStatus.ATO
+            and not controller.commands.engaged
+        )
+        if (
+            projection.resolved_target is not None
+            and not controller.eb.active
+            and not paused_ato
+        ):
             run_row.run_elapsed_seconds = min(
                 run_row.run_elapsed_seconds + max(0.0, delta_seconds), run_time
             )
@@ -3641,9 +3752,10 @@ class RouteExecutor:
         # design_new.md "Event log": a fresh create (no prior active path) is a
         # PATH_CREATED event; an extend grows an existing path and is not.
         if active_path_id is None:
-            # A successful fresh create clears the prior cancellation's display
-            # diagnostic (design_new.md "RouteRun schema", last_cancellation).
-            exec_state.last_cancellation = None
+            # A successful fresh create gives the run a live path again, so the
+            # read-model `display_state` stops projecting "CANCELLED" on its own
+            # (design_new.md "Route-run state", `display_state`) — there is no
+            # stored field to clear.
             self._emit_event(
                 "create_path",
                 f"path created for {train.train_id} to {target_block}",
@@ -3717,13 +3829,6 @@ class RouteExecutor:
         exec_state = self.execution_state_for(train_id)
         if exec_state is None:
             return
-
-        # Clear a still-set ``last_cancellation`` diagnostic as the run finishes:
-        # the terminal-walk guard may have interposed a ``revoked`` cancel (a
-        # terminal ``waypoint`` whose head entry never released authority, or an
-        # all-broken skip); the run is finishing regardless, so the diagnostic is
-        # retired here rather than carried onto the historical row.
-        exec_state.last_cancellation = None
 
         route_id = exec_state.route_id
         route = self.route_registry.get(route_id)
@@ -3837,12 +3942,14 @@ class RouteExecutor:
         exec_state = self.execution_states.get(train_id)
         if exec_state is None:
             return
-        # Record the cancellation's diagnostic (design_new.md "RouteRun schema",
-        # last_cancellation). `current_route_status` does not transition; the
-        # derived `display_state` reads `"CANCELLED"` until the next successful
-        # create_path clears this at Plan step `66aa`. Every cancellation kind
-        # is surfaced the same way — the reason lives on the ErrorRecord.origin.
-        exec_state.last_cancellation = error
+        # This callback writes no `RouteRun` field (design_new.md "Route-run
+        # state"): `current_route_status` does not transition, and the
+        # cancellation's `ErrorRecord` rides the `cancel_path` event alone. The
+        # read-model `display_state` reads `"CANCELLED"` from that event and the
+        # terminated `Path` record while the run has no live path, and returns to
+        # `"RUNNING"` once a fresh create_path gives the run a live path again.
+        # Every cancellation kind is surfaced the same way — the reason lives on
+        # the ErrorRecord.origin.
         from notification_center import Kind as _Kind
         self._emit_run_error(
             exec_state,
@@ -4068,6 +4175,14 @@ class RouteExecutor:
         # Mark DEACTIVATED and move to the historical archive.
         exec_state.current_route_status = RouteRunStatus.DEACTIVATED
         self._archive_run(exec_state)
+
+        # Clear the ATO engage bit as the run is torn down (design_new.md "ATO
+        # status": `remove_train_route_run` clears `commands.engaged` in Action),
+        # so the now-idle train and any replacement run start not engaged
+        # (`ato_status == READY`) rather than `HELD`.
+        controller = self._controller_by_id(train_id)
+        if controller is not None:
+            controller.commands.engaged = False
 
         # Commit any held route-assignment replacement as the last state
         # mutation, now that the old run is archived and unassigned

@@ -23,7 +23,7 @@ unit contracts:
 
 from block import Block
 from block_manager import BlockManager
-from enums import BlockState, Direction, TrainState
+from enums import BlockState, Direction
 from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from simulation import SimulationController
@@ -114,7 +114,7 @@ def _sim_with_off_train():
     sim.path_dispatcher = dispatcher
     # The train has never been powered on, which is also an unidentified train's standing
     # condition (design_new.md "Running and stopped": its controller stays OFF).
-    assert controller.ops.state == TrainState.OFF
+    assert not controller.powered
     return sim, train, controller, dispatcher
 
 

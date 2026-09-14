@@ -20,7 +20,7 @@ Run with:
 from block import Block
 from block_occupancy import OccupancyInput
 from constants import OCCUPANCY_OFF_THRESHOLD, OCCUPANCY_ON_THRESHOLD
-from enums import BlockState, OperationMode, TrainState
+from enums import BlockState, OperationMode
 from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from simulation import SimulationController
@@ -144,18 +144,18 @@ def test_a_stopped_poll_does_not_drain_the_command_inbox():
     network.add_train(Train(train_id="T1"))
     controller = sim.get_or_create_controller("T1")
     controller.commands.enqueue_command("power_on")
-    assert controller.ops.state == TrainState.OFF
+    assert not controller.powered
 
     detector.current = {"BLK_1": True}
     sim.poll_hardware_occupancy()
 
     assert len(controller.commands.command_inbox) == 1
-    assert controller.ops.state == TrainState.OFF
+    assert not controller.powered
 
     # ... and the resume drains it, so nothing was lost either.
     sim.update(0.1)
     assert controller.commands.command_inbox == []
-    assert controller.ops.state != TrainState.OFF
+    assert controller.powered
 
 
 def test_a_stopped_poll_does_not_move_a_train():

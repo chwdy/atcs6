@@ -33,7 +33,7 @@ from runtime_payloads import ErrorRecord as _ErrorRecord
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from enums import CommandResult, HandlePosition, TrainState
+from enums import CommandResult, HandlePosition
 from runtime_payloads import Command
 
 if TYPE_CHECKING:
@@ -54,13 +54,25 @@ class OperatorCommands:
         # derivation"), so no cab is stored or selected here.
         self.control_mode: str = "ato"  # 'ato' or 'manual'
 
+        # ATO engage bit — whether the operator has started ATO driving with
+        # `/ato/go` (design_new.md "ATO status", `commands.engaged`). Written by
+        # `ato_go()` / `ato_stop()` (accepted only when `train_status == ATO`),
+        # cleared by any `control_mode` write (`_write_control_mode`) and by a
+        # new route assignment. Read only in ATO, by the derived `ato_status`
+        # and the ATO driving rule. Serialized under the key `"engaged"`.
+        self.engaged: bool = False
+
         # Per design_new.md "Command queue + drain": operator commands
         # land here and the tick-entry drain processes them in canonical
-        # ``drain_order``.
+        # ``drain_order``. `set_mode` (slot 2) drains before `ato_go` / `ato_stop`
+        # (slot 3), so a same-tick "switch to ATO, then go" batch is accepted in
+        # one drain.
         self.command_inbox: List[Any] = []
         self.drain_order: tuple = (
             "power_on",
             "set_mode",
+            "ato_go",
+            "ato_stop",
             "set_manual_mode_type",
             "set_handle",
             "set_manual_power_percent",
@@ -109,11 +121,12 @@ class OperatorCommands:
         """Drain the command inbox in canonical kind order, FIFO within each.
 
         Per design_new.md "Per-train tick transaction" / "Driver/operator inputs",
-        commands are drained in the order: power_on -> set_mode
-        -> set_manual_mode_type -> set_handle / set_manual_power_percent ->
-        activate_emergency_cmd -> release_emergency_cmd -> power_off.
-        `ato_go` / `ato_stop` are internal helpers and are not part of the
-        operator-command drain.
+        commands are drained in the order: power_on -> set_mode ->
+        ato_go / ato_stop -> set_manual_mode_type -> set_handle /
+        set_manual_power_percent -> activate_emergency_cmd ->
+        release_emergency_cmd -> power_off. set_mode (slot 2) drains before
+        ato_go / ato_stop (slot 3), so a same-tick "switch to ATO, then go"
+        batch is accepted in one drain.
 
         Each drained command re-checks acceptance gates by delegating to the
         existing inline command method. Rejected commands are silently dropped
@@ -164,15 +177,16 @@ class OperatorCommands:
                 result = self._execute_release_emergency_cmd(payload, event_time)
             elif kind == "set_mode":
                 result = self._execute_set_mode(payload, event_time)
+            elif kind == "ato_go":
+                result = self.ato_go()
+            elif kind == "ato_stop":
+                result = self.ato_stop()
             elif kind == "set_manual_mode_type":
                 result = self._execute_set_manual_mode_type(payload, event_time)
             elif kind == "set_handle":
                 result = self._execute_set_handle(payload, event_time)
             elif kind == "set_manual_power_percent":
                 result = self._execute_set_manual_power_percent(payload, event_time)
-            # ATO engage/disengage are not operator commands; set_mode is the
-            # operator surface for ATO intent, and it engages/disengages
-            # directly. They do not appear in the canonical drain order.
         except Exception as exc:
             c.notifications.emit(
                 f"Command {kind} raised: {exc}",
@@ -235,9 +249,9 @@ class OperatorCommands:
         train = c._get_train()
         if train is None:
             return CommandResult(False, "Train not found")
-        if c.ops.state != TrainState.OFF:
+        if c.powered:
             return CommandResult(False, "Power already on")
-        c.ops.state = TrainState.READY
+        c.powered = True
         c.ops.handle_position = HandlePosition.N
         return CommandResult(True, "Power on")
 
@@ -275,18 +289,20 @@ class OperatorCommands:
         """
         Turn on train power.
 
-        Per design_new.md: valid only when state == OFF. On accept, transitions
-        to READY.
+        Per design_new.md "Power/mode command contracts": valid only when power
+        is currently off. On accept it sets the stored `powered` flag, leaving
+        the train `train_status == MANUAL` (the stored `control_mode` is manual
+        from OFF cleanup) with no reservation. It does not touch `eb.active`.
         """
         c = self._c
         train = c._get_train()
         if train is None:
             return CommandResult(False, "Train not found")
 
-        if c.ops.state != TrainState.OFF:
+        if c.powered:
             return CommandResult(False, "Power already on")
 
-        c.ops.state = TrainState.READY
+        c.powered = True
         c.ops.handle_position = HandlePosition.N
 
         return CommandResult(True, "Power on")
@@ -311,11 +327,12 @@ class OperatorCommands:
         if not c.is_stopped():
             return CommandResult(False, "Cannot power off while moving")
 
-        # power_off while already OFF is a no-op (design_new.md:1783): the train
-        # is already off, so do NOT arm the `power_off` latch. A stale latch
-        # would survive a later `power_on_cmd()` and tear the freshly-powered
-        # train straight back to OFF in the next Action cleanup.
-        if c.ops.state == TrainState.OFF:
+        # power_off while already OFF is a no-op (design_new.md "Power/mode
+        # command contracts"): the train is already off, so do NOT arm the
+        # `power_off` latch. A stale latch would survive a later
+        # `power_on_cmd()` and tear the freshly-powered train straight back to
+        # OFF in the next Action cleanup.
+        if not c.powered:
             return CommandResult(True, "Power off (already off)")
 
         self._apply_power_off_request()
@@ -323,31 +340,47 @@ class OperatorCommands:
         return CommandResult(True, "Power off accepted; shutdown deferred to Action")
 
     # -------------------------------------------------------------------------
+    # Control-mode writer (design_new.md "ATO status")
+    # -------------------------------------------------------------------------
+
+    def _write_control_mode(self, mode: str) -> None:
+        """The one place `control_mode` is assigned.
+
+        Any write of `control_mode` clears the ATO engage bit (design_new.md
+        "ATO status": "Any write of `control_mode` sets it `False`"), so
+        `set_mode(...)`, EB activation, and both power-off paths all route
+        through here and a re-selected or released-into ATO train lands not
+        engaged (`ato_status == READY`).
+        """
+        self.control_mode = mode
+        self.engaged = False
+
+    # -------------------------------------------------------------------------
     # Power-off request side effects
     # -------------------------------------------------------------------------
     #
     # The four Action latches themselves live on
     # `self._c.route_hooks.phase_latches` (see
-    # `runtime_payloads.PhaseLatches`). Setting `power_off` also has the
-    # cross-field side effect of clearing `ato.engaged`; that side effect is
-    # bundled into `_apply_power_off_request(...)` so every power-off code
-    # path stays consistent.
+    # `runtime_payloads.PhaseLatches`). Power-off acceptance also sets
+    # `control_mode = "manual"` (which clears `commands.engaged`); that
+    # cross-field write is bundled into `_apply_power_off_request(...)` so every
+    # power-off code path stays consistent.
 
     def _apply_power_off_request(self, reason: str = "power off") -> None:
-        """Set the `power_off` latch and disengage any active ATO run.
+        """Set the `power_off` latch and take the train to manual.
 
         Wraps `phase_latches.set_power_off(...)` together with the
-        controller-local side effects of clearing `ato.engaged`, force-
-        clearing any service-stop override, and neutralizing propulsion:
-        `handle_position` goes to neutral and `manual.manual_power_percent`
-        is zeroed, so the rest of this tick's `TrainController.tick(...)`
-        cannot produce a non-neutral propulsion command while
-        `pending_power_off` is set (design_new.md step `98d3`). The
-        inclusive `path_cancel_request` fan-out is applied automatically
-        when a live path exists, per design_new.md "Latch Table".
+        controller-local side effects of setting `control_mode = "manual"`
+        (which clears `commands.engaged`, per design_new.md "Driving mode",
+        Power-off acceptance) and neutralizing propulsion: `handle_position`
+        goes to neutral and `manual.manual_power_percent` is zeroed, so the rest
+        of this tick's `TrainController.tick(...)` cannot produce a non-neutral
+        propulsion command while `pending_power_off` is set (design_new.md step
+        `98d3`). The inclusive `path_cancel_request` fan-out is applied
+        automatically when a live path exists, per design_new.md "Latch Table".
         """
         c = self._c
-        c.ato.disengage()
+        self._write_control_mode("manual")
         c.ops.reset_handle_to_neutral()
         c.manual.reset_power_percent_for_safety()
         c.route_hooks.phase_latches.set_power_off(
@@ -402,18 +435,56 @@ class OperatorCommands:
     # Mode Commands
     # -------------------------------------------------------------------------
 
+    def ato_go(self) -> CommandResult:
+        """Start ATO driving (design_new.md "ATO go").
+
+        Accepted only when `train_status == ATO`; otherwise (not powered, under
+        EB, or in manual) it returns `success=False` and changes nothing. On
+        acceptance it sets `commands.engaged = True` (the canonical `/ato/go`
+        writer). It creates no reservation itself: the next Plan pass acquires
+        reservation once the ATO engage gate is open. Idempotent while already
+        engaged.
+        """
+        from enums import TrainStatus
+
+        c = self._c
+        if c.ops.train_status != TrainStatus.ATO:
+            return CommandResult(False, "ATO go requires the train in ATO mode")
+        self.engaged = True
+        return CommandResult(True, "ATO go")
+
+    def ato_stop(self) -> CommandResult:
+        """Pause ATO driving (design_new.md "ATO stop").
+
+        Accepted only when `train_status == ATO`; otherwise it returns
+        `success=False` and changes nothing. Unlike the stopped-only commands
+        it is accepted while the train is moving — pausing a running ATO train
+        is its purpose. On acceptance it sets `commands.engaged = False`, so the
+        ATO driving rule commands `0` and the train brakes to a stand at
+        `ato_status == READY`. The reservation it holds is retained, not
+        released (the ATO engage gate). Idempotent while already not engaged.
+        """
+        from enums import TrainStatus
+
+        c = self._c
+        if c.ops.train_status != TrainStatus.ATO:
+            return CommandResult(False, "ATO stop requires the train in ATO mode")
+        self.engaged = False
+        return CommandResult(True, "ATO stop")
+
     def set_mode(self, mode: str) -> CommandResult:
         """
         Set control mode (ATO or Manual).
 
         Per design_new.md, manual is a control mode, not a separate
-        operational state. Stopped manual trains sit in READY just like ATO
-        trains.
+        operational state.
 
         Rules:
         - Train must be stopped
-        - 'ato' / 'manual' both leave a stopped train in READY.
-        - set_mode("ato") engages ATO intent; set_mode("manual") disengages it.
+        - set_mode from OFF also powers the controller up as a side effect.
+        - Any control_mode write clears `commands.engaged`, so set_mode("ato")
+          lands the train not engaged (`ato_status == READY`); driving waits for
+          `/ato/go`.
         - The retained `manual.manual_power_percent` is cleared.
         """
         c = self._c
@@ -446,22 +517,19 @@ class OperatorCommands:
         ):
             return CommandResult(False, "Cannot switch mode during calibration")
 
-        self.control_mode = mode
-        # Mode is the ATO/manual selector, and it is the writer of ATO intent
-        # (design_new.md "ato.engaged"): set_mode("ato") engages (the idempotent
-        # re-engage — the only way back after an EB trip or power-off), and
-        # set_mode("manual") disengages.
-        if mode == "ato":
-            c.ato.engage()
-        else:
-            c.ato.disengage()
+        # Select the driving source. Any control_mode write clears the ATO
+        # engage bit (design_new.md "ATO status"), so a fresh ATO selection
+        # lands not engaged and driving waits for `/ato/go`.
+        self._write_control_mode(mode)
         # A mode change also clears the retained manual power notch: it is
         # set-and-forget, so a percentage parked before the change must not
         # become the train's command after it with no fresh driver input.
         c.manual.reset_power_percent_for_safety()
 
-        # A stopped train lands in READY.
-        c.ops.state = TrainState.READY
+        # A stopped train issuing set_mode is brought under control: from OFF
+        # this powers the controller up as a side effect (design_new.md
+        # "Controller state machine": set_mode from OFF sets `powered = True`).
+        c.powered = True
         return CommandResult(True, f"Mode set to {mode}")
 
     def set_manual_mode_type(self, mode_type: str) -> CommandResult:

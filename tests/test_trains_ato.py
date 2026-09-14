@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
-from enums import BlockState, Direction, TrainState, HandlePosition
+from enums import BlockState, Direction, HandlePosition
 from train import Train, TrainCar
 from train_span import SpanEndLocator, TrainSpan
 from simulation import SimulationController
@@ -76,7 +76,7 @@ class TestAtoStopButtonBugFix:
         )
         controller.commands.control_mode = "ato"
         controller._apply_head_frame("end_a")
-        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.powered = True
         controller.ato.engaged = True
         controller.ops.handle_position = HandlePosition.P2
 
@@ -112,8 +112,9 @@ class TestAtoStopButtonBugFix:
 
         controller.tick(0.1)
 
-        assert controller.ops.state == TrainState.READY
-        assert controller.ops.state == TrainState.READY
+        # Braked to a stand; there is no operational-state transition to make
+        # (`train_status` is derived).
+        assert controller.is_stopped()
         assert controller.ops.handle_position == HandlePosition.N
 
 
@@ -161,7 +162,7 @@ class TestAtoDepartCallsAtoGo:
         )
         controller.commands.control_mode = "ato"
         controller._apply_head_frame("end_a")
-        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.powered = True
         controller.ato.engaged = True
         controller.ops.handle_position = HandlePosition.P2
 
@@ -203,8 +204,8 @@ class TestAtoDepartCallsAtoGo:
         controller.physics_sync.current_speed_kmh = 0.0
         controller.tick(0.1)
 
-        # Now should transition to STANDBY
-        assert controller.ops.state == TrainState.READY
+        # Now braked to a stand.
+        assert controller.is_stopped()
 
     def test_ato_go_starts_ato(self, network):
         """
@@ -241,15 +242,16 @@ class TestAtoDepartCallsAtoGo:
         )
         controller.commands.control_mode = "ato"
         controller._apply_head_frame("end_a")
-        controller.ops.state = TrainState.READY
+        controller.powered = True
         controller.ato.engaged = False
 
 
-        # Engaging ATO sets intent; the stopped train stays READY until it moves.
+        # Engaging ATO sets intent; the stopped train stays at a stand until it
+        # is granted reservation and moves.
         result = controller.ato.engage()
         assert result.success is True
         assert controller.ato.engaged is True
-        assert controller.ops.state == TrainState.READY
+        assert controller.is_stopped()
 
 
 
@@ -302,7 +304,7 @@ class TestAtoDistanceAwareControl:
         )
         controller.commands.control_mode = "ato"
         controller._apply_head_frame("end_a")
-        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.powered = True
         controller.ato.engaged = True
         controller.atc.clearance_ahead_cm = clearance_cm
         controller.atc.speed_limit = 60.0
@@ -386,7 +388,7 @@ class TestAtoDistanceAwareControl:
         controller = create_controller_for_train(train.train_id, network)
         controller.commands.control_mode = "ato"
         controller._apply_head_frame("end_a")
-        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.powered = True
         controller.ato.engaged = True
 
         controller.physics_sync.current_speed_kmh = 30.0  # Moving at 30 km/h
@@ -554,7 +556,7 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         controller = TrainController(train_id=train.train_id, network=network)
         controller.commands.control_mode = "ato"
         controller._apply_head_frame("end_a")
-        controller.ops.state = TrainState.READY
+        controller.powered = True
         controller.ato.engaged = False
         controller.physics_sync.current_speed_kmh = 0.0
 
@@ -605,7 +607,7 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         )
         controller.commands.control_mode = "ato"
         controller._apply_head_frame("end_a")
-        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.powered = True
         controller.ato.engaged = True
 
         controller.physics_sync.current_speed_kmh = 0.0  # Train is stopped
@@ -620,9 +622,9 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         # intent is cleared only by EB / power-off / set_mode("manual")); it is
         # the absence of authority, not a cleared flag, that keeps the train
         # from moving.
-        assert controller.ops.state == TrainState.READY, (
-            f"Train stopped at destination with no authority should be READY. "
-            f"state={controller.ops.state}"
+        assert controller.is_stopped(), (
+            f"Train stopped at destination with no authority should be at a stand. "
+            f"train_status={controller.train_status}"
         )
         assert controller.ops.handle_position == HandlePosition.N, (
             f"A stopped train with no authority must not be driven forward. "
@@ -726,7 +728,7 @@ class TestTrendAwareATOControl:
         )
         controller.commands.control_mode = "ato"
         controller._apply_head_frame("end_a")
-        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.powered = True
         controller.ato.engaged = True
         controller.ato._previous_speed = 0.0
         controller.atc.speed_limit = 60.0
@@ -949,7 +951,7 @@ class TestSpeedCurveCalculation:
 
         controller = TrainController(train_id=train.train_id, network=network)
         controller.commands.control_mode = "ato"
-        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.powered = True
 
         return train, controller
 

@@ -157,11 +157,11 @@ class Train:
         Reconstruct a Train from a persisted snapshot.
 
         Per design_new.md, only persistent/configuration state loads here. Live
-        runtime fields (position/span, current_speed, state, active_cab,
-        travel_direction, ato_engaged, control_mode, wait_reason,
-        emergency_brake) live on `TrainController` and are seeded through
-        `add_train(...)` or explicit controller commands; any such values
-        present in legacy saved snapshots are silently ignored on load.
+        runtime fields (position/span, current_speed, powered, train_status,
+        travel_direction, engaged, control_mode, eb.active) live on
+        `TrainController` and are seeded through `add_train(...)` or explicit
+        controller commands; any such values present in legacy saved snapshots
+        are silently ignored on load.
         """
         train = cls(
             train_id=data.get("id", ""),

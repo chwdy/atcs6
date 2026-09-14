@@ -25,7 +25,9 @@ End-state contract (design_new.md _reevaluate_caution_blocks() section):
     which this route never does.
 """
 
-from enums import BlockState, TrainState
+from enums import BlockState
+
+from ..harness import TrainState
 
 from ..assertions import assert_cab, assert_state
 from ..events import Event, Journey

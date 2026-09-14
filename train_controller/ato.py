@@ -54,7 +54,7 @@ from notification_center import Kind as _Kind
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from constants import STOPPED_SPEED_THRESHOLD_KMH
-from enums import BRAKE_MULTIPLIERS, HANDLE_POSITION_INDEX, INDEX_TO_HANDLE_POSITION, CommandResult, HandlePosition, TrainState
+from enums import BRAKE_MULTIPLIERS, HANDLE_POSITION_INDEX, INDEX_TO_HANDLE_POSITION, CommandResult, HandlePosition
 from model_scale import get_speed_conversion_factor
 from train_controller_types import ATOInfo
 
@@ -183,62 +183,58 @@ class ATOComputer:
     def __init__(self, controller: "TrainController") -> None:
         self._c = controller
 
-        # Operator intent. `engaged` is the single "the operator wants ATO to
-        # drive" flag (design_new.md "ato.engaged"). It is set by
-        # set_mode("ato") (idempotent re-engage — the only way back after an EB
-        # trip or power-off), and cleared only by EB activation, power-off, and
-        # set_mode("manual"). Movement and authority do NOT set or clear it: a
-        # stopped-but-engaged train resumes on its own when authority returns.
-        self.engaged: bool = False
         self.info: Optional[ATOInfo] = None
         self.debug: Optional[Dict[str, Any]] = None
         # Diagnostic: previous tick's speed; used to compute trend in compute_handle.
         self._previous_speed: float = 0.0
 
     # ------------------------------------------------------------------
-    # Operator intent: engage / disengage
+    # ATO engage bit (stored on OperatorCommands; see design_new.md
+    # "ATO status")
     # ------------------------------------------------------------------
 
+    @property
+    def engaged(self) -> bool:
+        """The operator's ATO engage bit — whether ATO driving has been started
+        with `/ato/go`.
+
+        Canonical storage is `commands.engaged` (design_new.md "ATO status");
+        this is a convenience read/write alias. The `/ato/go` and `/ato/stop`
+        writers live on `OperatorCommands.ato_go()` / `ato_stop()`, and any
+        write of `control_mode` clears it.
+        """
+        return self._c.commands.engaged
+
+    @engaged.setter
+    def engaged(self, value: bool) -> None:
+        self._c.commands.engaged = bool(value)
+
     def engage(self) -> CommandResult:
-        """Set the operator's ATO intent (``engaged = True``).
+        """Set the ATO engage bit (internal / test helper).
 
-        This is the single writer that turns ATO intent on. It is the
-        set_mode("ato") re-engage path and the only way back to ATO driving
-        after an EB trip or a power-off (design_new.md "ato.engaged"). It is
-        idempotent: re-engaging an already-engaged controller is a success.
-
-        Setting intent does not move the train or transition operational
-        state — the train departs on its own when it has live authority and a
-        driving command, and the reactive rule moves READY -> RUNNING_MOVING
-        from observed motion. Preconditions: the train exists, the controller
-        is in ATO mode, and power is on.
+        The operator surface for starting ATO is `commands.ato_go()` (wired to
+        `/ato/go`); this helper is retained for internal callers and tests. It
+        keeps the same preconditions — the train exists, is in ATO mode, and is
+        powered — and writes the canonical `commands.engaged` bit. Idempotent.
         """
         c = self._c
         train = c._get_train()
         if train is None:
             return CommandResult(False, "Train not found")
-
         if c.commands.control_mode != "ato":
             return CommandResult(False, "Not in ATO mode")
-
-        if not c.power_on:
+        if not c.powered:
             return CommandResult(False, "Power is off")
-
-        # Refresh the destination snapshot; the head end is derived from the
-        # live authority, so there is no cab to align.
         self.info = self.compute_info()
-
         self.engaged = True
         return CommandResult(True, "ATO engaged")
 
     def disengage(self) -> CommandResult:
-        """Clear the operator's ATO intent (``engaged = False``).
+        """Clear the ATO engage bit (internal / test helper).
 
-        Called only by the three events that drop ATO intent (design_new.md
-        "ato.engaged"): EB activation, power-off, and set_mode("manual").
-        Idempotent — clearing an already-clear flag is a success. Neither
-        movement, stopping, path completion, nor a timed-run stop clears
-        intent, so those callers must not route through here.
+        The operator surface for pausing ATO is `commands.ato_stop()` (wired to
+        `/ato/stop`); this helper is retained for internal callers and tests.
+        Idempotent.
         """
         self.engaged = False
         return CommandResult(True, "ATO disengaged")

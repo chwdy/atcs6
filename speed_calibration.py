@@ -45,7 +45,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from enums import TrainState
 from constants import (
     CALIBRATION_POWER_STEP_PERCENT,
     CALIBRATION_ROUND_TRIPS,
@@ -1069,8 +1068,8 @@ class SpeedCalibration:
         re-evaluated (design_new.md "Speed calibration", a measured pass is not
         evaluated). Otherwise it is false when any of these holds:
           - the runtime or controller is gone
-          - the train is powered off — `controller.ops.state == OFF`
-          - the controller state is neither `READY` nor `RUNNING_MOVING`
+          - the train is powered off — `not controller.powered`
+            (`train_status == OFF`)
           - `eb.active`
           - a power-off is pending — `phase_latches.power_off`
           - for a lighting run: `control_mode != "manual"`, or any route is
@@ -1092,10 +1091,10 @@ class SpeedCalibration:
         controller = self._controller(train_id)
         if controller is None:
             return False
-        # Conditions shared by both run kinds.
-        if controller.ops.state == TrainState.OFF:
-            return False
-        if controller.ops.state not in (TrainState.READY, TrainState.RUNNING_MOVING):
+        # Conditions shared by both run kinds. A calibration run is valid only
+        # while the train is powered; `train_status != OFF` is the sole
+        # power gate (design_new.md "Speed calibration", run_still_valid).
+        if not controller.powered:
             return False
         if controller.eb.active:
             return False

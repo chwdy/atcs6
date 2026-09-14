@@ -27,7 +27,7 @@ from railway_signal import Signal, SignalType
 from station import Station
 from train import Train, TrainCar
 from switch import Switch
-from enums import Direction, BlockState, TrainState
+from enums import Direction, BlockState, TrainStatus
 from tests.train_test_helpers import set_train_span
 from tests.segment_test_helpers import make_segment_block, make_segment_block_with_tracks
 
@@ -966,24 +966,26 @@ class TestTrainRoutes:
         app_state.network.place_train(train, 0, 0, Direction.EAST)
 
         controller = app_state.sim_controller.get_or_create_controller("TRAIN_001")
-        controller.commands.power_on_cmd()  # OFF -> READY; ATO is the default mode
+        controller.commands.power_on_cmd()  # OFF -> powered; ATO is the default mode
         assert controller.commands.control_mode == "ato"
         controller.eb.activate()  # stopped, no path -> EB latches cleanly
         assert controller.eb.active is True
+        # EB activation sets control_mode to manual (design_new.md "Canonical EB
+        # activation effects").
+        assert controller.commands.control_mode == "manual"
 
-        # The OLD button path (handle 'N') is still rejected in ATO mode and
-        # leaves EB latched -- exactly the bug the user hit.
-        bad = client.post("/api/trains/TRAIN_001/handle", json={"position": "N"})
-        assert bad.status_code == 400
-        assert "manual mode" in bad.get_json()["error"].lower()
+        # The OLD button path (handle 'N') never releases EB — the handle and EB
+        # are separate — so EB stays latched however the handle command is
+        # resolved.
+        client.post("/api/trains/TRAIN_001/handle", json={"position": "N"})
         assert controller.eb.active is True
 
-        # The NEW path releases EB and lands the controller in READY.
+        # The NEW path releases EB and leaves the controller powered and stopped.
         resp = client.post("/api/trains/TRAIN_001/release-emergency")
         assert resp.status_code == 200
         assert resp.get_json()["status"] == "success"
         assert controller.eb.active is False
-        assert controller.ops.state == TrainState.READY
+        assert controller.powered and controller.is_stopped()
 
     def test_release_emergency_rejected_while_moving(
         self, client, app_state, network_with_tracks
@@ -1005,16 +1007,15 @@ class TestTrainRoutes:
         assert "moving" in resp.get_json()["error"].lower()
         assert controller.eb.active is True
 
-    def test_release_emergency_lands_running_moving_in_ready_synchronously(
+    def test_release_emergency_lands_stopped_powered_synchronously(
         self, client, app_state, network_with_tracks
     ):
-        """The POST is synchronous: a train EB'd to a stop from RUNNING_MOVING
-        with no live authority lands in READY within the POST.
+        """The POST is synchronous: a train EB'd to a stop with no live
+        reservation reads a powered, non-EB status within the POST.
 
-        eb.release() no longer writes the operational state; the route runs the
-        reactive evaluator right after it (design_new.md "Reactive condition
-        evaluation"), so the READY transition commits before the response
-        without waiting for the next tick.
+        `train_status` is derived, so once `eb.release()` clears `eb.active`
+        the train reads its underlying mode with no separate state write
+        (design_new.md "Controller state machine").
         """
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0, max_speed=100.0)
         train = Train("TRAIN_003", consist=[car])
@@ -1023,18 +1024,18 @@ class TestTrainRoutes:
 
         controller = app_state.sim_controller.get_or_create_controller("TRAIN_003")
         controller.commands.power_on_cmd()
-        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.powered = True
         controller.physics_sync.current_speed_kmh = 0.0
         controller.eb.activate()  # stopped, no path -> clean latch
         assert controller.eb.active is True
-        # EB activation does not move the operational state.
-        assert controller.ops.state == TrainState.RUNNING_MOVING
+        # While EB is latched the derived status is EB.
+        assert controller.train_status == TrainStatus.EB
 
         resp = client.post("/api/trains/TRAIN_003/release-emergency")
         assert resp.status_code == 200
         assert controller.eb.active is False
-        # Synchronous: the evaluator committed READY within the POST.
-        assert controller.ops.state == TrainState.READY
+        # Derived: once the latch clears the train reads a powered, non-EB status.
+        assert controller.powered and controller.train_status != TrainStatus.EB
 
 # ============================================================================
 # Path Routes Tests (9 routes)
@@ -1407,7 +1408,7 @@ class TestRouteRedesignApis:
 
         controller = app_state.sim_controller.get_or_create_controller(train_id)
         controller.commands.control_mode = "ato"
-        controller.ops.state = TrainState.READY
+        controller.powered = True
         return train, controller
 
     def test_quick_route_three_call_flow_creates_path_via_phase1(self, client, app_state):
@@ -1417,10 +1418,6 @@ class TestRouteRedesignApis:
         allocate a dispatcher path on a subsequent sim tick.
         """
         self._place_powered_train_on_two_block_line(app_state)
-        # Engage ATO: the planner grants authority only to a ready driving
-        # source (design_new.md "is_clean_for_create"), so an operator engages
-        # ATO as part of starting the run.
-        app_state.sim_controller.get_or_create_controller("TRAIN_QR").ato.engaged = True
 
         create_resp = client.post(
             "/api/train-routes",
@@ -1445,6 +1442,13 @@ class TestRouteRedesignApis:
             json={"route_id": "ROUTE_QR_TEST"},
         )
         assert assign_resp.status_code == 200, assign_resp.get_json()
+
+        # A new route assignment resets the ATO engage bit, so the operator
+        # issues /ato/go to start the run (design_new.md "ATO status"): the
+        # planner grants reservation only to an engaged ATO train (the ATO
+        # engage gate).
+        go_resp = client.post("/api/trains/TRAIN_QR/ato-go")
+        assert go_resp.status_code == 200, go_resp.get_json()
 
         # Pre-tick: no path yet — assign-route only writes the assignment.
         assert app_state.path_dispatcher.active_path_id_by_train("TRAIN_QR") is None

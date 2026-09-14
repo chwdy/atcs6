@@ -10,7 +10,7 @@ import pytest
 from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
-from enums import BlockState, Direction, TrainState, HandlePosition
+from enums import BlockState, Direction, HandlePosition
 from train import Train, TrainCar
 from simulation import SimulationController
 from train_controller import TrainController, create_controller_for_train

@@ -13,7 +13,6 @@ import pytest
 
 from bootstrap import bootstrap_runtime
 from demo_main import create_comprehensive_demo, setup_demo_train
-from enums import TrainState
 from path_dispatcher import PathDispatcher
 from train_controller import ATO_SPEED_MARGIN_KMH
 
@@ -109,7 +108,8 @@ def test_bootstrap_demo_train_respects_east_terminal_speed_limit_at_3x():
         if (
             tick > 30
             and controller.physics_sync.current_speed_kmh <= 0.5
-            and controller.ops.state == TrainState.READY
+            and controller.powered
+            and controller.path_projection.received_path_plan is None
         ):
             break
 
@@ -166,17 +166,17 @@ def test_bootstrap_queues_power_on_for_first_tick_drain():
     # Before first tick: power_on + set_mode queued, controller still OFF, head
     # frame pre-set by add_train's `initial_cab="A"` placement input.
     queued_kinds = [cmd.kind for cmd in controller.commands.command_inbox]
-    assert queued_kinds == ["power_on", "set_mode"], (
-        f"Expected queued [power_on, set_mode]; got {queued_kinds}"
+    assert queued_kinds == ["power_on", "set_mode", "ato_go"], (
+        f"Expected queued [power_on, set_mode, ato_go]; got {queued_kinds}"
     )
-    assert controller.ops.state == TrainState.OFF
+    assert not controller.powered
     assert controller._framed_head_end == "end_a"
 
     # One tick should drain the queue and power the train on.
     sim_controller.update(0.0)
 
     assert controller.commands.command_inbox == []
-    assert controller.ops.state != TrainState.OFF
+    assert controller.powered
 
 
 def test_bootstrap_creates_path_during_phase1_after_power_on():

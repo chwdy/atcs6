@@ -6,7 +6,7 @@ block becomes occupied, and travel_direction stays EAST throughout —
 i.e., the tunneled edge is never seen as a track-end fallback.
 """
 
-from enums import TrainState
+from ..harness import TrainState
 
 from ..assertions import (
     assert_cab,

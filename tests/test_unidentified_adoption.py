@@ -19,7 +19,7 @@ import pytest
 
 from block import Block
 from constants import OCCUPANCY_OFF_THRESHOLD
-from enums import BlockState, TrainState
+from enums import BlockState
 from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from services import ValidationError, train_service
@@ -523,7 +523,7 @@ def test_an_adopted_train_accepts_operator_commands_an_unidentified_train_refuse
     controller = sim.controllers["T1"]
     assert controller._framed_head_end == "end_a"
     assert controller.commands.power_on_cmd().success is True
-    assert controller.ops.state is not TrainState.OFF
+    assert controller.powered
 
 
 def test_adoption_rebuilds_the_span_from_the_real_consist_length():

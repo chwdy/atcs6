@@ -4195,6 +4195,26 @@ class PathDispatcher:
         path = self.get_active_path(train_id)
         return path.path_id if path else None
 
+    def most_recently_terminated_path(self, train_id: str) -> Optional[Path]:
+        """The train's most recently terminated (non-`ACTIVE`) `Path` record.
+
+        Cancelled and completed rows stay in `paths_by_id` as history; this
+        returns the one with the latest status change (`last_status_updated_time`),
+        or `None` when the train has no terminated path. The read model uses it
+        to derive `RouteRun.display_state == "CANCELLED"` (design_new.md
+        "Route-run state", `display_state`).
+        """
+        if train_id is None:
+            return None
+        terminals = [
+            p
+            for p in self.paths.values()
+            if p.train_id == train_id and p.status != PathStatus.ACTIVE
+        ]
+        if not terminals:
+            return None
+        return max(terminals, key=lambda p: p.last_status_updated_time)
+
     def get_waiting_conflict(
         self,
         train_id: str,

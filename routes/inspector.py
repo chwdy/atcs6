@@ -45,7 +45,8 @@ _TRAIN_CONFIG_FIELDS: List[str] = [
 ]
 
 _CONTROLLER_STORED_FIELDS: List[str] = [
-    "ops.state",
+    "powered",
+    "ops.train_status",
     "_framed_head_end",
     "physics_sync.current_span",
     "physics_sync.current_speed_kmh",

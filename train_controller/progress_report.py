@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from typing import Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
-from enums import TrainState
 from runtime_payloads import (
     ErrorRecord,
     ControllerProgressReport,
@@ -56,17 +55,12 @@ class ProgressReportBuilder:
         self._c.physics_sync.current_span = span_update.new_span
         self._c.physics_sync.current_speed_kmh = float(span_update.current_speed_kmh)
 
-        # 1a. Reactive condition evaluation (design_new.md "Reactive condition
-        # evaluation"). Fires synchronously after the new speed has been
-        # written and before building the progress report, so any motion-caused
-        # READY <-> RUNNING_MOVING / ato.engaged transition lands in the same
-        # Observe pass that produced the speed change. This is one of the two
-        # call sites of the single evaluator; TrainController.tick(...) calls it
-        # again after the command drain (Action step `71ee`).
-        self._c.ops.evaluate_reactive_conditions()
+        # `train_status` is derived from `powered` / `eb.active` /
+        # `control_mode`, so writing the new speed needs no state re-evaluation
+        # here (design_new.md "Controller state machine").
 
         # 2/3. Build progress report from tile delta and enqueue for Observe.
-        if self._c.ops.state == TrainState.OFF:
+        if not self._c.powered:
             # Powered-off transactions append no dispatcher/route progress to the
             # mailbox BEYOND the block observations folded in from the
             # detector-read detected sets (design_new.md ":2181"). Those observations are the

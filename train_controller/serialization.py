@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
-from enums import HandlePosition, TrainState
+from enums import HandlePosition
 from model_scale import get_speed_conversion_factor
 
 if TYPE_CHECKING:
@@ -37,6 +37,9 @@ def controller_to_dict(controller: "TrainController") -> Dict[str, Any]:
     return {
         "train_id": controller.train_id,
         "power_on": controller.power_on,
+        # Stored power flag; `train_status` derives OFF from `not powered`
+        # (design_new.md "Controller state machine").
+        "powered": controller.powered,
         "eb_active": controller.eb.active,
         # `cab` on the wire is the physical end the span is framed head-forward
         # for ("A" == end_a, "B" == end_b); there is no operator cab (design_new.md
@@ -52,10 +55,14 @@ def controller_to_dict(controller: "TrainController") -> Dict[str, Any]:
         "facing_direction": (lambda d: d.name if d is not None else None)(
             controller._facing_direction()
         ),
-        "state": controller.ops.state.value,
+        # Derived overall status (`OFF` / `MANUAL` / `ATO` / `EB`); replaces the
+        # removed stored `state` (design_new.md "Controller state machine").
+        "train_status": controller.ops.train_status.value,
         "target_speed": controller.target_speed,
         "handle_position": controller.ops.handle_position.value,
-        "ato_engaged": controller.ato.engaged,
+        # The ATO engage bit (design_new.md "ATO status"), stored on
+        # OperatorCommands and serialized under the key "engaged".
+        "engaged": controller.commands.engaged,
         "ato_destination_block_id": controller.path_projection.ato_destination_block_id,
         "ato_path_id": controller.path_projection.ato_path_id,
         "assigned_path_id": controller.path_projection.assigned_path_id,
@@ -98,8 +105,6 @@ def controller_to_dict(controller: "TrainController") -> Dict[str, Any]:
         # design_new.md "Units contract".
         "current_speed": float(getattr(controller.physics_sync, "current_speed_kmh", 0.0) or 0.0),
         "is_stopped": controller.is_stopped(),
-        # Diagnostic: reason for current handle position
-        "handle_reason": controller.ops.handle_reason,
         # ATO ETA: integrates the operational_limit speed curve to the
         # current target stop. None when no path/target/curves.
         "time_to_target_sec": controller._calculate_time_to_target_sec(),
@@ -195,11 +200,11 @@ def controller_from_dict(
     except ValueError:
         handle = HandlePosition.N
 
-    state_str = data.get("state", "off")
-    try:
-        state = TrainState(state_str)
-    except ValueError:
-        state = TrainState.OFF
+    # `powered` is the stored power flag; the derived `train_status` is never
+    # restored directly (design_new.md "Controller state machine"). Fall back to
+    # the legacy `power_on` alias for older saves that predate the `powered`
+    # key.
+    powered = bool(data.get("powered", data.get("power_on", False)))
 
     # Per design_new.md, travel_direction / target_speed / speed_limit_reason
     # / ato_destination_block_id / ato_path_id are derived properties; we
@@ -209,15 +214,16 @@ def controller_from_dict(
     controller = TrainController(
         train_id=data["train_id"],
         network=network,
-        # `ato_engaged` and `path_backed_run_active` are not constructor args:
-        # `ato.engaged` lives on the ATO sub-module (restored below) and
+        # `engaged` and `path_backed_run_active` are not constructor args: the
+        # ATO engage bit lives on `commands.engaged` (restored below) and
         # `path_backed_run_active` is a derived @property that recomputes from
         # path/route context, so any persisted value is ignored.
     )
-    # `state` / `handle_position` live on the `OperationalStateMachine` and
-    # `ato.engaged` on the ATO sub-module; restore after construction.
-    controller.ato.engaged = bool(data.get("ato_engaged", False))
-    controller.ops.state = state
+    # `powered` lives on the controller façade; `handle_position` on the
+    # `OperationalStateMachine`; the ATO engage bit on `commands.engaged`.
+    # Restore after construction.
+    controller.commands.engaged = bool(data.get("engaged", False))
+    controller.powered = powered
     controller.ops.handle_position = handle
     # Sub-module fields are created in `__post_init__`; restore
     # persisted values after construction.
