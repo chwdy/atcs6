@@ -796,3 +796,26 @@ class TestUngatedReleaseAndStall:
         # The broken first stop (a non-dwell task) is skipped even though
         # authority acquisition was gated off — the un-gated broken-skip ran.
         assert exec_state.task_runs[0].finished_at is not None
+
+
+def test_is_starting_is_false_for_a_terminal_one_off_run():
+    """A single-task ONE_OFF run whose only task has finished is terminal, so it
+    is no longer "starting" (design_new.md "Route-run state", is_starting:
+    "False ... including when next_planning_walk_position is None"). It must
+    order in the established tier, not ahead of it."""
+    terminal = RouteExecutionState(
+        train_id="T",
+        route_id="R",
+        started_at=0.0,
+        task_runs=[RouteTaskRun(task_index=0, finished_at=1.0)],
+    )
+    assert terminal.is_starting is False
+
+    # A run still on its (unfinished) first task is starting.
+    fresh = RouteExecutionState(
+        train_id="T2",
+        route_id="R",
+        started_at=0.0,
+        task_runs=[RouteTaskRun(task_index=0)],
+    )
+    assert fresh.is_starting is True

@@ -509,6 +509,17 @@ class RouteExecutionState:
         Read by ``RouteExecutor.order_runnable_trains`` as the primary phase
         tier (running-phase runs ordered ahead of starting-phase runs).
         """
+        # A terminal walk (every row finished) is never "starting" — the run has
+        # completed its first movement target and then some. The doc models this
+        # as ``next_planning_walk_position is None``; here that property returns
+        # ``len(task_runs) - 1`` for a terminal walk, so guard on the terminal
+        # condition directly (design_new.md "Route-run state", is_starting: "and
+        # False once the train completes the task at start_walk_position,
+        # including when next_planning_walk_position is None").
+        if self.task_runs and all(
+            r.finished_at is not None for r in self.task_runs
+        ):
+            return False
         return self.next_planning_walk_position <= self.start_walk_position
 
     def _append_next_walk_task(
@@ -1418,10 +1429,12 @@ class RouteExecutor:
             if run is not None:
                 priority = run.effective_priority(route=route, route_executor=self)
                 starting = run.is_starting
-            elif route is not None:
-                priority = int(getattr(route, "priority", 5))
-                starting = False
             else:
+                # No current RouteRun (unrouted, or assigned-but-not-yet-
+                # allocated in the assign-to-allocation window): running tier at
+                # effective priority 5, whatever the assigned route's priority
+                # (design_new.md "Canonical ownership split": "Trains with no
+                # current RouteRun use effective priority 5").
                 priority = 5
                 starting = False
             # Ascending stable sort: tier 0 (running) before tier 1 (starting);
@@ -2393,7 +2406,18 @@ class RouteExecutor:
                 != TargetResolutionFailureKind.MISSING_TARGET
             ):
                 break
-            self._skip_broken_task(exec_state, route, projection.walk_position)
+            # A dwell whose timer has already started is served by the dwell
+            # step to completion, not broken-skipped, even if its target later
+            # leaves the network (design_new.md "Unreachable and broken task
+            # handling", dwell walk-positions: the guard both `c481` and `592a`
+            # test is the dwell row's own `started_at`).
+            wp = projection.walk_position
+            if (
+                0 <= wp < len(exec_state.task_runs)
+                and exec_state.task_runs[wp].started_at is not None
+            ):
+                break
+            self._skip_broken_task(exec_state, route, wp)
             projection = self._find_next_task_target(train_id)
         if projection is None:
             self._finish_or_defer_terminal_walk(train_id, controller)
@@ -2444,6 +2468,14 @@ class RouteExecutor:
         projection = self._find_next_task_target(train_id)
         if projection is None or projection.task_kind == "dwell":
             return
+
+        # Step 592a commits the resolved direction from this projection
+        # (design_new.md "Route-run state", direction row: "Its one writer is
+        # Plan, at steps 592a / 66aa"). Step 66aa writes it again from the
+        # accepted projection on a successful create/extend; this 592a write is
+        # what keeps `direction` current when acquisition does not run this pass.
+        if projection.direction:
+            exec_state.direction = projection.direction
 
         # Capture the broken-vs-unreachable inputs from the freshly resolved
         # projection BEFORE the acquisition gate, so the stopped-run lock shrink
@@ -2578,11 +2610,10 @@ class RouteExecutor:
                 ),
             )
             exec_state.no_reachable_task = True
-            self._emit_route_warning(
-                exec_state.train_id,
-                "run_stalled",
-                "every task target on the route is missing from the network",
-            )
+            # One event per stall (design_new.md "Unreachable and broken task
+            # handling": "one error event ... origin run_stalled"): the
+            # condition-keyed `_emit_run_error` above is that event, naming the
+            # train and the run; no separate operator warning is emitted.
 
     def _walk_has_valid_task(
         self,
@@ -2635,11 +2666,10 @@ class RouteExecutor:
             exec_state._append_next_walk_task(route, walk_position)
         except Exception:
             pass
-        self._emit_route_warning(
-            exec_state.train_id,
-            "task_skipped",
-            f"task {walk_position} skipped: target missing from network",
-        )
+        # One event per skip (design_new.md "Unreachable and broken task
+        # handling": "one diagnostic event ... origin task_skipped"): the
+        # `_emit_run_error` above is that event, naming the train, run, and
+        # walk-position; no separate operator warning is emitted.
 
     @staticmethod
     def _run_condition_key(run_id: str, origin: str) -> str:
@@ -3155,6 +3185,8 @@ class RouteExecutor:
     def _apply_waypoint_lookahead(
         self,
         train: "Train",
+        route: "Route",
+        exec_state: RouteExecutionState,
         projection: ResolvedNextTaskProjection,
     ) -> ResolvedNextTaskProjection:
         """Arm the task after the served waypoint when the train is running out
@@ -3168,15 +3200,42 @@ class RouteExecutor:
         past the reached waypoint; the **Braking-distance lock** then bounds how
         far it actually grows (there is no fixed block-count lookahead).
 
-        It applies when the armed task is a `waypoint` and the live authority
-        already reaches it — nothing is owed on the current target.
+        It applies when the armed task is a `waypoint`, or a `run` whose timer
+        is still running — a waypoint for reservation growth per the
+        **Reservation termination rule** — and the live authority already
+        reaches it (nothing is owed on the current target).
 
         Returns the projection to arm this tick: the lookahead one when it
         applies and a next task exists, otherwise the one passed in. Everything
         downstream — the `resolved_target` write, the `direction` write, and the
         extend retries — then uses the returned projection's `walk_position`.
+
+        NOTE ON THE LOCK-CATCH-UP GATE: design_new.md pairs the "authority
+        already reaches it" test with a second condition — that the lock end has
+        caught up to the reservation end, so the extend fires just-in-time
+        rather than eagerly. v1 arms the next target eagerly instead (as soon as
+        the authority reaches the current one). The eager form is what keeps the
+        reservation one waypoint ahead of the braking curve on a running lap: a
+        train slowing toward its reservation end never lets the braking-distance
+        lock reach that end, so a strict lock-end == reservation-end gate would
+        stall the reservation and brake the train short of the waypoint. The
+        only cost of the eager form is a slightly larger reserved footprint (a
+        Medium doc-vs-code note), not incorrect behavior — the dispatcher's
+        holding-point chunking still bounds each extend.
         """
-        if projection.task_kind != "waypoint":
+        # A waypoint, or a run whose timer is still running (a waypoint for
+        # reservation growth), may reserve onward past its target.
+        armable = projection.task_kind == "waypoint"
+        if projection.task_kind == "run" and 0 <= projection.walk_position < len(
+            exec_state.task_runs
+        ):
+            run_row = exec_state.task_runs[projection.walk_position]
+            task = route.tasks[run_row.task_index]
+            run_time = (
+                task.task_time if (task.task_time and task.task_time > 0.0) else 0.0
+            )
+            armable = run_row.run_elapsed_seconds < run_time
+        if not armable:
             return projection
         path = (
             self.path_dispatcher.get_active_path(train.train_id)
@@ -3417,7 +3476,19 @@ class RouteExecutor:
             # failure_reason BEFORE breaking the loop so a broken-task skip
             # does not advance the cursor past the task with no diagnostic.
             if projection.resolved_target is None:
-                if projection.failure_reason and 0 <= projection.walk_position < len(exec_state.task_runs):
+                # Emit the unreachable diagnostic only for a target that is
+                # present but unusable this tick (target_unavailable). A BROKEN
+                # task (missing_target) gets its own `task_skipped` event from
+                # the broken-skip, so emitting `planning_failed` for it here too
+                # would double-report it (design_new.md "Unreachable and broken
+                # task handling": broken -> task_skipped, unreachable ->
+                # planning_failed).
+                if (
+                    projection.failure_kind
+                    != TargetResolutionFailureKind.MISSING_TARGET
+                    and projection.failure_reason
+                    and 0 <= projection.walk_position < len(exec_state.task_runs)
+                ):
                     self._emit_run_error(
                         exec_state,
                         projection.walk_position,
@@ -3473,7 +3544,9 @@ class RouteExecutor:
         if projection.resolved_target is None:
             return False
 
-        projection = self._apply_waypoint_lookahead(train, projection)
+        projection = self._apply_waypoint_lookahead(
+            train, route, exec_state, projection
+        )
         if projection.resolved_target is None:
             return False
 
