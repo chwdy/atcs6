@@ -675,18 +675,19 @@ class SimulationController(SwitchOutputOwner):
         commit changes block state exactly like a moving train's does, so the
         voltage and signal consequences must follow it either way.
 
-        **The calculated span is what decides, never debounced
-        `Block.occupied_by`.** `BlockManager` queues a block on the debounced
-        signal, which is right for queueing but wrong for the final test: a
-        detector that briefly reads clear under a stationary locomotive would
-        drop the rail out from under it. Cutting the rail then makes the block
-        idle, the idle detector reads the locomotive again, the block
-        re-energizes, and the drive-state read flips the occupancy source back —
-        a block a train is standing on oscillates between powered and dead
-        instead of settling. `_calculated_hold_blocks()` is the same
-        calculated-span-plus-reservations set the emission side drives, so a
-        block under a span is never zeroed however its detector reads
-        (design_new.md "Power", De-energize against the same source).
+        **The drain tests both views of occupancy, never one alone.** The final
+        hold test is the same four-term emission set the drive side computes: the
+        calculated span, the confirmed-occupancy blocks (`Block.occupied_by`),
+        the pending-entry block, and the one next reserved block. It tests the
+        calculated span in addition to debounced `Block.occupied_by`, never
+        instead of it, so neither view of occupancy alone can zero a rail: a
+        detector that briefly reads clear under a stationary locomotive still
+        leaves the block held by its span, and a block held only by confirmed
+        occupancy the span does not cover is held by that term. Because
+        `_calculated_hold_blocks()` is exactly the set the emission side drives,
+        a block under a span is never driven and zeroed on the same tick
+        (design_new.md "Power", The drain tests both views of occupancy, never
+        one alone).
         """
         held = self._calculated_hold_blocks()
         dropped: Set[str] = set()
@@ -763,16 +764,22 @@ class SimulationController(SwitchOutputOwner):
         """Every block some controllable train energizes this tick, by
         calculation.
 
-        The union, over every train that is not an unidentified train, of its
-        calculated span's `occupied_blocks`, its `pending-entry block`, and the
+        The union, over every train the app can steer, of the four emission-set
+        terms: its calculated span's `occupied_blocks`, the blocks confirmed
+        occupied by it (`Block.occupied_by`), its `pending-entry block`, and the
         one next block of its reserved corridor — exactly the emission set
         `TrainPhysics` drives each tick (design_new.md "Power", Energized set:
-        where the train stands plus one block ahead). The rest of the corridor is
+        where the train stands plus one block ahead). The confirmed-occupancy
+        term is here because a block attribution gave a train for neighbouring
+        its span is in neither the span nor the reservations, yet the emission
+        side drives it, so the drain must hold it too or it would be driven and
+        zeroed on the same tick (design_new.md "Power", The drain tests both
+        views of occupancy, never one alone). The rest of the corridor is
         deliberately absent: a reserved block the train has not reached yet is
-        not energized, so it must not be held against the drain either, or the
-        two sides would disagree and a block would be driven and zeroed on the
-        same tick. Unidentified trains are excluded because they command no
-        `track_voltage`, so a block held only by an unidentified train is driven to `0`.
+        not energized, so it must not be held against the drain either. An
+        unidentified train and a ghosted train (`presence_unknown`) are excluded
+        because they command no `track_voltage`, so a block held only by such a
+        train is driven to `0`.
         """
         held: Set[str] = set()
         for train_id, physics in self.physics_instances.items():
@@ -780,11 +787,18 @@ class SimulationController(SwitchOutputOwner):
             if train is None or getattr(train, "is_unidentified", False):
                 continue
             controller = self.controllers.get(train_id)
+            if getattr(controller, "presence_unknown", False):
+                continue
             span = getattr(
                 getattr(controller, "physics_sync", None), "current_span", None
             )
             if span is not None:
                 held.update(span.occupied_blocks or [])
+            held.update(
+                block_id
+                for block_id, block in self.network.blocks.items()
+                if getattr(block, "occupied_by", None) == train_id
+            )
             pending = physics.pending_entry_block
             if pending is not None:
                 held.add(pending)

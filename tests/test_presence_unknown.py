@@ -287,6 +287,45 @@ def test_lost_train_cancels_path_and_releases_every_reserved_block():
     assert all(b.reserved_for_train is None for b in network.blocks.values())
 
 
+def test_ghost_energizes_nothing_so_its_span_de_energizes():
+    """A ghosted train controls no `track_voltage`: its emission set is empty, so
+    the retained span it keeps for the question mark is driven to `0` by the
+    drain rather than held at lighting voltage (design_new.md "Power", A ghosted
+    or unidentified train's emission set is empty for that tick)."""
+    network = build_line()
+    sim, train, controller = place(network)
+    physics = sim._get_or_create_physics(train)
+
+    # Before the flag rises, the train energizes the block it stands on.
+    assert physics._energized_blocks_for_train(train)
+
+    controller.presence_unknown = True
+
+    # Emission set is empty, and the span is not held against the drain, so the
+    # blocks it dropped are free to be zeroed.
+    span_blocks = set(controller.physics_sync.current_span.occupied_blocks)
+    assert physics._energized_blocks_for_train(train) == set()
+    assert not (sim._calculated_hold_blocks() & span_blocks)
+
+
+def test_hold_set_includes_confirmed_occupancy_outside_the_span():
+    """A block a train is confirmed standing on (`Block.occupied_by`) that its
+    calculated span does not cover is still held against the de-energize drain,
+    matching the four-term emission set the drive side computes (design_new.md
+    "Power", The drain tests both views of occupancy, never one alone)."""
+    network = build_line()
+    sim, train, controller = place(network, head_x=1)
+    sim._get_or_create_physics(train)
+
+    span_blocks = set(controller.physics_sync.current_span.occupied_blocks)
+    assert "BLK_3" not in span_blocks
+    network.blocks["BLK_3"].occupied_by = "T"
+
+    held = sim._calculated_hold_blocks()
+
+    assert "BLK_3" in held
+
+
 def test_lost_train_drops_queued_commands_and_never_runs_physics():
     """An old power command cannot revive an identifier backed by no train."""
 

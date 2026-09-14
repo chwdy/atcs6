@@ -2402,13 +2402,17 @@ class TrainPhysics:
         believes it is a block back. Energizing one block bounds that overrun to
         one block, and puts dead rail immediately beyond the authority end.
 
-        An unidentified train commands no `track_voltage` at all, so its set is empty and
-        a block held only by an unidentified train is driven to `0` by the de-energize drain.
-        Putting voltage on the rail under a train the app cannot steer or stop is
-        the hazard the unidentified train rule exists to contain (design_new.md "Unidentified train
-        trains", Never energized).
+        An unidentified or ghosted (`presence_unknown`) train commands no
+        `track_voltage` at all, so its set is empty and a block held only by such
+        a train is driven to `0` by the de-energize drain. Putting voltage on the
+        rail under a train the app cannot steer or stop — one it cannot identify,
+        or one no detector can find — is the hazard this rule exists to contain
+        (design_new.md "Power", A ghosted or unidentified train's emission set is
+        empty for that tick).
         """
-        if getattr(train, "is_unidentified", False):
+        if getattr(train, "is_unidentified", False) or getattr(
+            self.controller, "presence_unknown", False
+        ):
             self._next_reserved_block = None
             return set()
         energized = self._standing_blocks_for_train(train)
