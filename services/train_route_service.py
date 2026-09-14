@@ -658,7 +658,7 @@ def activate_route(
     A route with no tasks would be terminal on the first eligible Plan
     tick: ``_find_next_task_target`` returns ``None`` for an empty walk,
     which makes Plan call ``finish_route_run(train_id)`` immediately,
-    which for ``RouteMode.ONE_OFF`` then calls ``route.deactivate()``
+    which for ``RouteMode.ONE_OFF`` then calls ``deactivate_route(route_id)``
     again. The user-visible result is an "activated" toast followed by an
     auto-deactivation a few ticks later, plus any assigned train silently
     unassigned. Reject activation on a 0-task route up front so this
@@ -695,5 +695,8 @@ def deactivate_route(state: AppState, route_id: str) -> Route:
         NotFoundError when the route does not exist.
     """
     route = _require_route(state, route_id)
-    route.deactivate(state.sim_controller)
+    # The per-train cancel-latch walk is the canonical job of
+    # RouteExecutor.deactivate_route(route_id) (design_new.md:2187); Route
+    # .deactivate() itself writes only is_active.
+    state.sim_controller.route_executor.deactivate_route(route_id)
     return route

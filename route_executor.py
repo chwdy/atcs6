@@ -3824,7 +3824,8 @@ class RouteExecutor:
           * archives the run as a historical FINISHED row (``execution_states``
             slot frees up so a later route assignment can populate a fresh run)
           * for ``RouteMode.ONE_OFF`` routes with no remaining assigned trains,
-            also calls ``route.deactivate()``
+            also calls ``self.deactivate_route(route_id)`` (its latch walk is
+            empty because no assigned trains remain)
         """
         exec_state = self.execution_state_for(train_id)
         if exec_state is None:
@@ -3847,13 +3848,41 @@ class RouteExecutor:
             and getattr(route, "mode", None) == RouteMode.ONE_OFF
             and not getattr(route, "assigned_train_ids", [])
         ):
-            simulation_controller = getattr(self, "simulation_controller", None)
-            route.deactivate(simulation_controller)
+            self.deactivate_route(route_id)
 
         # A natural finish may have removed this route's last assignment / live
         # run, satisfying a deferred deletion that was waiting on it
         # (design_new.md line 2102).
         self.finalize_pending_route_deletions()
+
+    def deactivate_route(self, route_id: str) -> None:
+        """Canonical latch-writing route deactivation (design_new.md:2187).
+
+        Calls ``Route.deactivate()`` (which writes only ``Route.is_active =
+        False``), then walks every assigned train and writes
+        ``pending_route_deactivate`` through
+        ``controller.route_hooks.phase_latches.set_route_deactivate(...)`` per the
+        inclusive-latch rule. This is the one home every latch-writing
+        deactivation reaches — admin/UI, shared-route structural edit, and the
+        ``ONE_OFF`` finish cascade. Idempotent: an already-inactive route with no
+        assigned trains is a no-op with an empty walk. Does not delete any
+        ``RouteRun``; the per-train teardown (to ``DEACTIVATED``) happens later in
+        each train's Action ``pending_route_deactivate`` consumer.
+        """
+        route = self.route_registry.get(route_id)
+        if route is None:
+            return
+        route.deactivate()
+        diagnostic = f"route_deactivated:{route_id}"
+        for train_id in list(getattr(route, "assigned_train_ids", [])):
+            controller = self._controller_by_id(train_id)
+            if controller is None:
+                continue
+            controller.route_hooks.phase_latches.set_route_deactivate(
+                reason=diagnostic,
+                has_active_path=controller.path_projection.received_path_plan
+                is not None,
+            )
 
     def _archive_run(self, exec_state: RouteExecutionState) -> None:
         """Move a now-terminal `RouteRun` to `_historical_runs`.
@@ -3939,8 +3968,28 @@ class RouteExecutor:
         branching. The callback is bookkeeping only: it must not choose a fresh
         target or create fresh authority.
         """
-        exec_state = self.execution_states.get(train_id)
+        # Read the RUNNING run via the canonical accessor so a stale
+        # DEACTIVATED/FINISHED slot is never treated as live (design_new.md
+        # "Route-run state"). A committed cancellation with no RUNNING run is an
+        # invariant violation — "every live path is backed by a RouteRun"
+        # (design_new.md:1839, 2221) — so surface it on the event stream rather
+        # than swallowing it. It is deliberately not raised: that invariant is
+        # strained by calibration legs and broken-skip finishes, so a hard crash
+        # could hit a legal edge; an ERROR event flags it without stopping the tick.
+        exec_state = self.execution_state_for(train_id)
         if exec_state is None:
+            from notification_center import Kind as _Kind
+
+            self._emit_event(
+                operation="handle_path_cancellation",
+                message=(
+                    f"cancellation callback for train {train_id} path {path_id} "
+                    "found no RUNNING RouteRun (invariant violation)"
+                ),
+                train_id=train_id,
+                path_id=path_id,
+                kind=_Kind.ERROR,
+            )
             return
         # This callback writes no `RouteRun` field (design_new.md "Route-run
         # state"): `current_route_status` does not transition, and the

@@ -508,34 +508,18 @@ class Route:
         self.is_active = True
         self.started_at = time.time()
 
-    def deactivate(self, simulation_controller: Optional[Any] = None) -> None:
-        """Deactivate the route.
+    def deactivate(self) -> None:
+        """Deactivate the route: write only ``Route.is_active = False``.
 
-        Per design_new.md inclusive-latch rule: when a ``simulation_controller``
-        is supplied, walk every assigned train and call
-        ``controller.route_hooks.phase_latches.set_route_deactivate(...)``, which writes
-        the deactivate latch and (when an active path exists) fans out to
-        ``set_path_cancel_request(initiator="revoked")``. Action then commits
-        the cancel and the route-run teardown.
-
-        ``simulation_controller`` is optional so direct-pause callers (tests,
-        internal route definition tooling) can flip the flag without needing
-        the runtime surface; production deactivation through the admin
-        handler MUST pass it so the controller mailboxes are written.
+        Per design_new.md:2187 ``Route.deactivate()`` writes no latch itself. The
+        per-train latch walk — ``set_route_deactivate(...)`` on each assigned
+        train's controller — is the canonical job of
+        ``RouteExecutor.deactivate_route(route_id)``, which every latch-writing
+        deactivation (admin/UI, shared-route structural edit, and the
+        ``ONE_OFF`` finish cascade) reaches. This is symmetric with
+        ``Route.activate()``, which writes only ``is_active`` / ``started_at``.
         """
         self.is_active = False
-        if simulation_controller is None:
-            return
-
-        diagnostic = f"route_deactivated:{self.route_id}"
-        for train_id in list(self.assigned_train_ids):
-            controller = simulation_controller.get_controller(train_id)
-            if controller is None:
-                continue
-            controller.route_hooks.phase_latches.set_route_deactivate(
-                reason=diagnostic,
-                has_active_path=controller.path_projection.received_path_plan is not None,
-            )
 
     # ── Assignment Methods ─────────────────────────────────────────
 

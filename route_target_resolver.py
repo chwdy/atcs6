@@ -203,15 +203,26 @@ class RouteTargetResolver:
                     and ex.requested_destination_direction
                     == resolved.requested_destination_direction
                 ):
-                    # Per design_new.md (fix #14, part b): return a sentinel
-                    # projection with resolved_target=None so Plan knows
-                    # "no more candidates this tick" without claiming a
-                    # terminal walk (which would finalize the run prematurely).
+                    # Every candidate for this task's location was already
+                    # attempted this tick, so no concrete target remains (per
+                    # design_new.md:1632). Return a sentinel with
+                    # resolved_target=None so Plan knows "no more candidates this
+                    # tick" without claiming a terminal walk (which would
+                    # finalize the run prematurely), carrying the
+                    # `target_unavailable` diagnostic. It is UNAVAILABLE, not
+                    # MISSING_TARGET: the target IDs are present, just all tried.
+                    from runtime_payloads import TargetResolutionFailureKind
+
                     return ResolvedNextTaskProjection(
                         walk_position=walk_position,
                         task_kind=task.task_kind,
                         direction=direction_str,
                         resolved_target=None,
+                        failure_reason=(
+                            "every candidate for this task was already "
+                            "attempted this tick"
+                        ),
+                        failure_kind=TargetResolutionFailureKind.TARGET_UNAVAILABLE,
                     )
 
         return ResolvedNextTaskProjection(

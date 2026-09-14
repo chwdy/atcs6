@@ -253,23 +253,26 @@ def test_set_pending_route_abort_inclusive_cancel_when_path_exists():
 
 
 class _StubSimController:
-    """Tiny stand-in for SimulationController exposing only get_controller."""
+    """Tiny stand-in for SimulationController exposing the `.controllers`
+    registry (which `RouteExecutor._controller_by_id` reads) plus a
+    `get_controller` accessor."""
 
     def __init__(self):
-        self._controllers = {}
+        self.controllers = {}
 
     def register(self, controller):
-        self._controllers[controller.train_id] = controller
+        self.controllers[controller.train_id] = controller
 
     def get_controller(self, train_id):
-        return self._controllers.get(train_id)
+        return self.controllers.get(train_id)
 
 
 def test_route_deactivate_writes_latches_per_assigned_train():
-    """Route.deactivate(simulation_controller) writes pending_route_deactivate
+    """RouteExecutor.deactivate_route(route_id) writes pending_route_deactivate
     on each assigned train's controller, and inclusive
     pending_path_cancel_request(error.origin="revoked") when that train has a
-    live path."""
+    live path (design_new.md:2187 — the latch walk lives on the executor, not
+    Route.deactivate)."""
     from train_route import Route, RouteMode
 
     network = _build_three_block_network()
@@ -311,7 +314,13 @@ def test_route_deactivate_writes_latches_per_assigned_train():
         assigned_train_ids=[train1.train_id, train2.train_id],
         is_active=True,
     )
-    route.deactivate(sim)
+
+    from route_executor import RouteExecutor
+
+    executor = RouteExecutor(network)
+    executor.simulation_controller = sim
+    executor.route_registry[route.route_id] = route
+    executor.deactivate_route(route.route_id)
 
     assert route.is_active is False
 
