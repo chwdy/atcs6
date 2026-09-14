@@ -736,3 +736,63 @@ class TestBrokenDwellHandling:
         assert exec_state.task_runs[0].finished_at is not None
         # The diagnostic rides an event, not the task row.
         assert not hasattr(exec_state.task_runs[0], "last_error")
+
+
+class TestUngatedReleaseAndStall:
+    """The stopped-run lock shrink and the non-dwell broken-skip / stall run on
+    a pass where authority acquisition is gated off — a paused (not-engaged)
+    ATO train.
+
+    design_new.md: the step-`592a` no-valid-task branch and the broken-skip run
+    "ungated by is_clean_for_create", and the "Stopped-run lock shrink" is "Not
+    gated by acquisition eligibility". Before the un-gating fix these lived
+    behind the step-`66aa` eligibility gate, so a paused ATO train sat on a
+    broken stop forever and never freed its surplus lock.
+    """
+
+    def _executor_with_two_stops(self):
+        network = RailwayNetwork()
+        network.platforms["PLT_A"] = Platform(platform_id="PLT_A", name="A")
+        network.platforms["PLT_B"] = Platform(platform_id="PLT_B", name="B")
+        route = Route(
+            route_id="R2",
+            name="two stops",
+            mode=RouteMode.ONE_OFF,
+            tasks=[
+                RouteTask(task_kind="stop", task_location=PlatformTarget("PLT_A")),
+                RouteTask(task_kind="stop", task_location=PlatformTarget("PLT_B")),
+            ],
+        )
+        route.activate(0.0)
+        route.assign_train("T2")
+        network.trains["T2"] = Train(train_id="T2")
+        executor = RouteExecutor(network)
+        executor.register_route(route)
+        executor.execution_states["T2"] = RouteExecutionState(
+            train_id="T2",
+            route_id="R2",
+            started_at=0.0,
+            task_runs=[RouteTaskRun(task_index=i) for i in range(len(route.tasks))],
+        )
+        return network, executor
+
+    def test_paused_ato_train_still_skips_a_broken_stop(self):
+        network, executor = self._executor_with_two_stops()
+        exec_state = executor.execution_states["T2"]
+        train = network.trains["T2"]
+        controller = executor._get_controller(train)
+        controller.commands.power_on_cmd()
+        controller._apply_head_frame("end_a")
+        set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
+        # Paused ATO: in ato mode but not engaged, so is_clean_for_create is
+        # False and step-66aa acquisition is gated off this pass.
+        controller.commands.control_mode = "ato"
+        controller.commands.engaged = False
+        assert executor.is_clean_for_create("T2") is False
+
+        del network.platforms["PLT_A"]  # the first stop's target goes missing
+        executor.tick_train_plan("T2", 0.1)
+
+        # The broken first stop (a non-dwell task) is skipped even though
+        # authority acquisition was gated off — the un-gated broken-skip ran.
+        assert exec_state.task_runs[0].finished_at is not None

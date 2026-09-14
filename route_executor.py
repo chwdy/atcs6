@@ -2445,123 +2445,31 @@ class RouteExecutor:
         if projection is None or projection.task_kind == "dwell":
             return
 
-        # ---------- 66aa: authority acquisition (create_path / extend_path) -
-        if not self._eligible_for_authority_acquisition(controller, exec_state):
-            return
-
-        # Live-path target re-resolution invalidation (design_new.md, "route
-        # path-event callback schema", case `162a`): when a live path exists and a
-        # fresh resolve of the CURRENT
-        # walk-position now yields a different target BLOCK than the path was
-        # built toward — e.g. a StationTarget re-resolving to a different
-        # platform — the already-acquired authority toward the old block is
-        # potentially stale. Latch a `revoked` cancel and wait for the ordinary
-        # Action cancel / replan flow instead of extending toward a different
-        # block; the same RouteRun is kept (this is NOT a structural
-        # Route.tasks edit). Normal waypoint-chaining advances to a fresh
-        # walk-position whose stored `resolved_target` is still None, so it
-        # never trips this check.
-        #
-        # A direction-only change for the SAME block does not trip this check.
-        # A `task_direction == "either"` task resolves direction against the
-        # train's current span each time (design_new.md "RouteTask data"), so
-        # the resolved direction can legitimately differ from an earlier
-        # resolution purely because the train moved closer under its own live
-        # authority — the target block never changed, so the live path is not
-        # stale. Fall through and let `extend_path(...)` receive the freshly
-        # resolved direction. `extend_path(...)` still rejects a direction that
-        # would require reversing at the current authority end
-        # (`failure_kind = invalid_reverse`, design_new.md "Path extension"),
-        # and `_authority_acquisition_step` latches this same `revoked` cancel
-        # through that structural-extend-failure path, so an actually
-        # incompatible direction still gets cancelled and replanned.
-        active_path_id = self._get_active_path_id(train_id)
-        if active_path_id is not None and 0 <= projection.walk_position < len(
-            exec_state.task_runs
-        ):
-            stored_target = exec_state.task_runs[
-                projection.walk_position
-            ].resolved_target
-            new_target = projection.resolved_target
-            if (
-                stored_target is not None
-                and new_target is not None
-                and stored_target.requested_destination_block_id
-                != new_target.requested_destination_block_id
-            ):
-                controller.route_hooks.phase_latches.set_path_cancel_request(
-                    ErrorRecord(
-                        "live-path target re-resolved for walk-position "
-                        f"{projection.walk_position} "
-                        f"({stored_target.requested_destination_block_id} -> "
-                        f"{new_target.requested_destination_block_id}); "
-                        "cancelling stale authority so the next pass replans "
-                        "toward the new target",
-                        "revoked",
-                    ),
-                    Kind.INFO,
-                )
-                return
-
-        # Per design_new.md (fix #14, part a): wrap authority acquisition in a
-        # retry loop that accumulates previously-failed resolved_target values
-        # into an `exclude` set and re-calls `_find_next_task_target(train_id,
-        # exclude=exclude)` so StationTarget tasks can try alternate platforms
-        # within the same tick. Cap iterations at the number of platforms in
-        # the resolved station group (or a conservative maximum of 8) to
-        # prevent an infinite loop when every candidate is blocked.
-        exclude: List[ResolvedRouteTarget] = []
-        _max_iterations = 8
-        # Track the walk-position of the first attempted target so we can
-        # apply the broken-vs-unreachable policy below if the whole retry loop
-        # exhausts without acquiring authority. Per design_new.md "Unreachable
-        # and broken task handling".
+        # Capture the broken-vs-unreachable inputs from the freshly resolved
+        # projection BEFORE the acquisition gate, so the stopped-run lock shrink
+        # and the broken-skip / no-reachable-task stall handling below run even
+        # on a pass where acquisition is gated off — a paused ATO train (not
+        # engaged) or an EB'd train. design_new.md: the step-`592a`
+        # no-valid-task branch and broken-skip run "ungated by
+        # is_clean_for_create", and the "Stopped-run lock shrink" is "Not gated
+        # by acquisition eligibility".
         failed_walk_position: Optional[int] = projection.walk_position
         # A BROKEN task has its target ID absent from the network (resolver
-        # failure_kind == MISSING_TARGET). Captured from the initial projection
-        # before the retry loop reassigns `projection`.
+        # failure_kind == MISSING_TARGET), captured from the initial projection
+        # before the retry loop inside the acquisition helper reassigns it.
         initial_broken = (
             projection.resolved_target is None
             and projection.failure_kind == TargetResolutionFailureKind.MISSING_TARGET
         )
-        any_success = False
-        for _attempt in range(_max_iterations):
-            if projection is None or projection.task_kind == "dwell":
-                break
-            # A sentinel projection (resolved_target=None) means the resolver
-            # filtered out every candidate (missing target, or disabled /
-            # manual / all-platforms-unavailable). Emit the resolver's
-            # failure_reason BEFORE breaking the loop so a broken-task skip
-            # does not advance the cursor past the task with no diagnostic.
-            if projection.resolved_target is None:
-                if projection.failure_reason and 0 <= projection.walk_position < len(exec_state.task_runs):
-                    self._emit_run_error(
-                        exec_state,
-                        projection.walk_position,
-                        "planning_failed",
-                        projection.failure_reason,
-                        condition_key=self._run_condition_key(
-                            exec_state.run_id, "planning_failed"
-                        ),
-                    )
-                break  # sentinel projection — no more candidates this tick
-            # Plan step `66aa`: dispatch via PathDispatcher.create_path or
-            # extend_path (v1 signature). Both methods take train_id +
-            # requested_destination_block_id + requested_destination_direction +
-            # reservation_cap_block_id and return a PathAcquisitionResult.
-            success = self._authority_acquisition_step(
-                train, route, exec_state, controller, projection
-            )
-            if success:
-                any_success = True
-                break
-            # Acquisition failed for this resolved_target. Add to exclude
-            # and try the next candidate platform (fix #14a).
-            exclude.append(projection.resolved_target)
-            projection = self._find_next_task_target(train_id, exclude=exclude)
-            if projection is None:
-                # Terminal walk — no later task on the directed walk.
-                break
+
+        # ---------- 66aa: authority acquisition (create_path / extend_path) -
+        # Gated internally by `_eligible_for_authority_acquisition`; returns
+        # whether a create/extend succeeded this pass. When the gate is off the
+        # train acquires nothing, but the stopped-run lock shrink and the
+        # broken/stall handling below still run.
+        any_success = self._acquire_authority_66aa(
+            train, route, exec_state, controller, projection
+        )
 
         # Stopped-run lock shrink (design_new.md "Stopped-run lock shrink", step
         # 66aa): a run that reached a stand holding more locked track than its
@@ -2571,6 +2479,15 @@ class RouteExecutor:
         # claim. It releases lock only while stopped, so it never unlocks track
         # ahead of a rolling train. Not a cancel: the path stays ACTIVE and
         # `control_mode` is untouched.
+        #
+        # It runs here AFTER the acquisition helper and UNGATED by eligibility
+        # ("Stopped-run lock shrink", Not gated by acquisition eligibility): on
+        # an eligible pass the order is acquire -> lock -> shrink, and on a pass
+        # where acquisition was skipped (a paused ATO train that keeps its
+        # reservation, or an EB'd train) the shrink still frees the
+        # reserved-but-unlocked tail for a higher-priority preemptor. Its own
+        # is_stopped() / live-path / teardown-latch guards decide whether it does
+        # anything.
         self._run_stopped_lock_shrink(train_id, train, controller)
 
         if any_success:
@@ -3406,6 +3323,129 @@ class RouteExecutor:
         # locked_forward[0] is the floor.
         if len(locked_forward) > 1:
             block_manager.unlock_blocks_for_path(locked_forward[1:], path.path_id)
+
+    def _acquire_authority_66aa(
+        self,
+        train: "Train",
+        route: "Route",
+        exec_state: RouteExecutionState,
+        controller: TrainController,
+        projection: "ResolvedNextTaskProjection",
+    ) -> bool:
+        """Planning Kernel step `66aa` authority acquisition (create/extend).
+
+        Gated by ``_eligible_for_authority_acquisition`` — a not-eligible train
+        (OFF, EB, pending teardown, or a not-engaged ATO train) acquires nothing
+        and this returns ``False`` at once, so the caller still runs the ungated
+        stopped-run lock shrink and the broken/stall handling. Returns whether a
+        ``create_path`` / ``extend_path`` succeeded this pass.
+        """
+        if not self._eligible_for_authority_acquisition(controller, exec_state):
+            return False
+        train_id = train.train_id
+
+        # Live-path target re-resolution invalidation (design_new.md, "route
+        # path-event callback schema", case `162a`): when a live path exists and a
+        # fresh resolve of the CURRENT
+        # walk-position now yields a different target BLOCK than the path was
+        # built toward — e.g. a StationTarget re-resolving to a different
+        # platform — the already-acquired authority toward the old block is
+        # potentially stale. Latch a `revoked` cancel and wait for the ordinary
+        # Action cancel / replan flow instead of extending toward a different
+        # block; the same RouteRun is kept (this is NOT a structural
+        # Route.tasks edit). Normal waypoint-chaining advances to a fresh
+        # walk-position whose stored `resolved_target` is still None, so it
+        # never trips this check.
+        #
+        # A direction-only change for the SAME block does not trip this check.
+        # A `task_direction == "either"` task resolves direction against the
+        # train's current span each time (design_new.md "RouteTask data"), so
+        # the resolved direction can legitimately differ from an earlier
+        # resolution purely because the train moved closer under its own live
+        # authority — the target block never changed, so the live path is not
+        # stale. Fall through and let `extend_path(...)` receive the freshly
+        # resolved direction. `extend_path(...)` still rejects a direction that
+        # would require reversing at the current authority end
+        # (`failure_kind = invalid_reverse`, design_new.md "Path extension"),
+        # and `_authority_acquisition_step` latches this same `revoked` cancel
+        # through that structural-extend-failure path, so an actually
+        # incompatible direction still gets cancelled and replanned.
+        active_path_id = self._get_active_path_id(train_id)
+        if active_path_id is not None and 0 <= projection.walk_position < len(
+            exec_state.task_runs
+        ):
+            stored_target = exec_state.task_runs[
+                projection.walk_position
+            ].resolved_target
+            new_target = projection.resolved_target
+            if (
+                stored_target is not None
+                and new_target is not None
+                and stored_target.requested_destination_block_id
+                != new_target.requested_destination_block_id
+            ):
+                controller.route_hooks.phase_latches.set_path_cancel_request(
+                    ErrorRecord(
+                        "live-path target re-resolved for walk-position "
+                        f"{projection.walk_position} "
+                        f"({stored_target.requested_destination_block_id} -> "
+                        f"{new_target.requested_destination_block_id}); "
+                        "cancelling stale authority so the next pass replans "
+                        "toward the new target",
+                        "revoked",
+                    ),
+                    Kind.INFO,
+                )
+                return False
+
+        # Per design_new.md (fix #14, part a): wrap authority acquisition in a
+        # retry loop that accumulates previously-failed resolved_target values
+        # into an `exclude` set and re-calls `_find_next_task_target(train_id,
+        # exclude=exclude)` so StationTarget tasks can try alternate platforms
+        # within the same tick. Cap iterations at the number of platforms in
+        # the resolved station group (or a conservative maximum of 8) to
+        # prevent an infinite loop when every candidate is blocked.
+        exclude: List[ResolvedRouteTarget] = []
+        _max_iterations = 8
+        any_success = False
+        for _attempt in range(_max_iterations):
+            if projection is None or projection.task_kind == "dwell":
+                break
+            # A sentinel projection (resolved_target=None) means the resolver
+            # filtered out every candidate (missing target, or disabled /
+            # manual / all-platforms-unavailable). Emit the resolver's
+            # failure_reason BEFORE breaking the loop so a broken-task skip
+            # does not advance the cursor past the task with no diagnostic.
+            if projection.resolved_target is None:
+                if projection.failure_reason and 0 <= projection.walk_position < len(exec_state.task_runs):
+                    self._emit_run_error(
+                        exec_state,
+                        projection.walk_position,
+                        "planning_failed",
+                        projection.failure_reason,
+                        condition_key=self._run_condition_key(
+                            exec_state.run_id, "planning_failed"
+                        ),
+                    )
+                break  # sentinel projection — no more candidates this tick
+            # Plan step `66aa`: dispatch via PathDispatcher.create_path or
+            # extend_path (v1 signature). Both methods take train_id +
+            # requested_destination_block_id + requested_destination_direction +
+            # reservation_cap_block_id and return a PathAcquisitionResult.
+            success = self._authority_acquisition_step(
+                train, route, exec_state, controller, projection
+            )
+            if success:
+                any_success = True
+                break
+            # Acquisition failed for this resolved_target. Add to exclude
+            # and try the next candidate platform (fix #14a).
+            exclude.append(projection.resolved_target)
+            projection = self._find_next_task_target(train_id, exclude=exclude)
+            if projection is None:
+                # Terminal walk — no later task on the directed walk.
+                break
+        return any_success
 
     def _authority_acquisition_step(
         self,
