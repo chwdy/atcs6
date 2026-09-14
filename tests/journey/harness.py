@@ -154,7 +154,7 @@ class Snapshot:
     occupied_blocks: List[str]
     command_inbox_kinds: List[str]
 
-    # Phase-3 latch view (booleans + cancel-request payload presence)
+    # Action-teardown latch view (booleans + cancel-request payload presence)
     latch_path_cancel_request: bool
     latch_route_abort: bool
     latch_power_off: bool

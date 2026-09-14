@@ -30,7 +30,7 @@ from enums import Direction
 class GraphLocator:
     """Tile-precise locator used by the operational graph query API.
 
-    Canonical home: design_new.md "Pathfinding home" subsection.
+    Canonical home: design_new.md "Pathfinding-home migration" subsection.
 
     Fields:
         tile: Tile coordinate anchoring the locator.
@@ -60,7 +60,7 @@ class GraphLocator:
 class DirectedBlockFrame:
     """Terminal directed block frame returned inside GraphWalkCandidate.
 
-    Canonical home: design_new.md "Pathfinding home" subsection.
+    Canonical home: design_new.md "Pathfinding-home migration" subsection.
 
     Fields:
         block_id: Block whose directed traversal is represented.
@@ -82,7 +82,7 @@ class DirectedBlockFrame:
 class GraphWalkStep:
     """One resource step inside an ordered_walk list.
 
-    Canonical home: design_new.md "Pathfinding home" subsection.
+    Canonical home: design_new.md "Pathfinding-home migration" subsection.
 
     Fields:
         step_index: Zero-based step index inside ordered_walk.
@@ -115,7 +115,7 @@ class GraphWalkStep:
 class GraphWalkQuery:
     """Request payload for RailwayPathfinder.query_graph_walks(...).
 
-    Canonical home: design_new.md "Pathfinding home" subsection.
+    Canonical home: design_new.md "Pathfinding-home migration" subsection.
 
     Fields:
         start_locator: Tile-precise start locator.

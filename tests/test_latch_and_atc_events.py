@@ -3,7 +3,7 @@
 design_new.md "Error events" (Deferred actions are events too): a latch records
 an action the runtime means to take and cannot commit yet, so setting one and
 committing one are both reported. Without the set event the intent is invisible
-whenever a second writer overwrites the payload before Phase 3 reaches it —
+whenever a second writer overwrites the payload before Action teardown reaches it —
 most-recent-payload-wins means the first writer's `ErrorRecord` would otherwise
 never be seen at all.
 
@@ -112,7 +112,7 @@ def test_an_overwritten_intent_is_still_reported(latches):
     """The reason this rule exists.
 
     Two writers in the same rolling window overwrite one payload slot, so the
-    first `ErrorRecord` never reaches Phase 3. It must still be in the stream.
+    first `ErrorRecord` never reaches Action teardown. It must still be in the stream.
     """
     lat, notifier = latches
     first = ErrorRecord("deviated off the authority", "out_of_sequence")
@@ -150,7 +150,7 @@ def test_a_teardown_with_no_live_path_reports_only_itself(latches):
 #
 # design_new.md "Latch Table" (No shared consume accessor) + "Latch consumption
 # events": the aggregate does not consume. Each field is cleared by its own
-# named Phase-3 consumer step, and the commit event comes from that step's own
+# named Action (teardown) consumer step, and the commit event comes from that step's own
 # consume-side call — `PathDispatcher.cancel_path(...)`,
 # `RouteExecutor.remove_train_route_run(...)`, or
 # `TrainController.complete_power_off()`. Those emitters are covered where they

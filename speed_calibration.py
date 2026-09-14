@@ -225,7 +225,7 @@ class CalibrationRun:
     `taint_current_crossing(...)`, reset when a fresh leg (crossing) arms. A
     tainted crossing is discarded rather than banked and the step is re-measured
     on the next crossing, so a transient restriction never fails the pass
-    (design_new.md:3047, "A capped crossing is discarded")."""
+    (design_new.md, "A capped crossing is discarded")."""
 
     safe_state_generation: int = 0
     failure_reason: str = ""
@@ -459,7 +459,7 @@ class SpeedCalibration:
 
     def taint_current_crossing(self, train_id: str, reason: str) -> bool:
         """Mark the crossing now being timed as capped, so it is discarded
-        instead of banked (design_new.md:3047, "A capped crossing is discarded").
+        instead of banked (design_new.md, "A capped crossing is discarded").
 
         Called by the controller during Action when the Propulsion cap step
         lowered the calibration drive on this tick through an external ATC
@@ -522,7 +522,7 @@ class SpeedCalibration:
             run.leg_started_at = None
             run.clock_started_at = None
             # A fresh crossing begins clean: any taint from the last one is spent
-            # (design_new.md:3047, "A capped crossing is discarded").
+            # (design_new.md, "A capped crossing is discarded").
             run.current_crossing_tainted = False
             # The head-frame reversal is one-shot per arm: the Plan translation
             # re-frames the span on each `reverse_cab=True`, so clear the flag
@@ -570,7 +570,7 @@ class SpeedCalibration:
                 # during this crossing, so the timed speed is not the speed the
                 # step commanded. Discard the sample and re-measure on the next
                 # crossing (the step still needs `crossings_target` of them);
-                # discarding never fails the pass (design_new.md:3047, "A capped
+                # discarding never fails the pass (design_new.md, "A capped
                 # crossing is discarded"). The leg still ends through ordinary
                 # stop completion at the far block.
                 run.current_crossing_tainted = False
@@ -831,7 +831,7 @@ class SpeedCalibration:
 
         `TrainSpan.occupied_blocks` is ordered `end_a` to `end_b`, and the framed
         head end names which physical end is the head (design_new.md
-        "Authority-side head derivation") — a span framed at `end_b` puts the head
+        "Reservation-side head derivation") — a span framed at `end_b` puts the head
         there, so that end's block is the last entry rather than the first.
         """
         span = controller.get_current_span()
@@ -1187,7 +1187,7 @@ class SpeedCalibration:
 
         In Simulation (`is_simulation=True`) the `current_sense_min_drive_v`
         bound is NOT evaluated, because Simulation never reads Hardware Setup
-        (design_new.md:3197, "Simulation is independent of Hardware Setup"); a
+        (design_new.md, "Simulation is independent of Hardware Setup"); a
         candidate saved there is bounded only by `max_voltage`. The readiness
         evaluator under "Occupancy source follows drive state" re-checks the
         stored value against `current_sense_min_drive_v` at hardware activation,

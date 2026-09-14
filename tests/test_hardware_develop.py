@@ -275,13 +275,13 @@ def _wire_session(state, inp):
     to the SimulationController constructor.
 
     The detector holds its own reference, so setting `sim_controller`'s alone
-    would leave Step 0 still reading the simulated driver — and the verdict the
+    would leave Observe still reading the simulated driver — and the verdict the
     read-back reports comes from the detector.
     """
     state.sim_controller.input_interface = inp
     state.sim_controller.block_occupancy_detector.input_interface = inp
     state.network.input_interface = inp
-    # The bound blocks have to exist in the layout: Step 0 walks
+    # The bound blocks have to exist in the layout: Observe walks
     # `network.blocks`, so a binding for a block the network never heard of is
     # never read and never confirmed.
     from block import Block
@@ -293,7 +293,7 @@ def _wire_session(state, inp):
 
 
 def _run_step_zero(state, times: int = 1):
-    """Run the tick's Step 0: read the detectors and debounce.
+    """Run the tick's Observe stage: read the detectors and debounce.
 
     What turns a poked register into the verdict the bench's "App sees" column
     reports. The runtime does this at 10 Hz — from `update()` while running and
@@ -340,7 +340,7 @@ def test_debug_occupancy_poke_and_readback(client):
     assert data["develop_active"] is True
     assert data["blocks"]["B1"]["occupancy_bit"] is True
     # ...but `occupied` is the pipeline's verdict, not the register, so it
-    # appears only once Step 0 has read and debounced.
+    # appears only once Observe has read and debounced.
     assert data["blocks"]["B1"]["occupied"] is False
     _confirm_step_zero(state)
     data = test_client.get("/api/debug/hw").get_json()

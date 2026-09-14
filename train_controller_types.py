@@ -96,7 +96,7 @@ PHYSICS_KIND_EMERGENCY_BRAKE = "emergency_brake"
 class PhysicsCommand:
     """Per-tick command from `TrainController` to `TrainPhysics`.
 
-    Per design_new.md ~line 168, `TrainPhysics` is an executor only and
+    Per design_new.md "Ownership split", `TrainPhysics` is an executor only and
     must not decide manual-mode policy. The controller pre-computes which
     speed-axis to apply this tick (handle integration, snap to a target
     speed, or emergency brake) and what speed the voltage emitter should

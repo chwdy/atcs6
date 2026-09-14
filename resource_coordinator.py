@@ -75,7 +75,7 @@ class ResourceCoordinator:
     ) -> SegmentReserveResult:
         """Atomically reserve a segment's blocks AND switches.
 
-        Fix #11 (design_new.md line 938): order is switches first, then blocks,
+        Fix #11 (design_new.md "Switch-first acquisition order"): order is switches first, then blocks,
         so switch conflicts are discovered before any blocks are reserved. On
         block failure, release the just-acquired switch locks before returning.
 

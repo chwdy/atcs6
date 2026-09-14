@@ -207,7 +207,7 @@ def test_reserved_block_the_train_cannot_reach_is_not_that_train():
     T1 stands on C and has reserved A and B. Current appears on A with B still
     reading clear, so the only way A could be T1 is if T1 skipped B — track no
     detector confirmed. The reservation does not claim it; it is unmatched, and
-    the Step-0 preamble mints an unidentified train for it.
+    Observe mints an unidentified train for it.
     """
     net, det = make_detector(
         ["A", "B", "C"],
@@ -272,7 +272,7 @@ def test_attribute_unresolved_entry_is_reported_as_unmatched():
     # No reserving train and no covering span -> the entry belongs to an unidentified train
     # train (design_new.md "Attribution"). `attribute()` is a pure attribution
     # step: it reports the block as unmatched and writes no block state and
-    # registers no train. The Step-0 preamble hands it to UnidentifiedTrainTracker.
+    # registers no train. Observe hands it to UnidentifiedTrainTracker.
     entered_by_train, _, unmatched = det.attribute(entered, set())
     assert entered_by_train == {}
     assert unmatched == {"A"}

@@ -121,7 +121,7 @@ def register(app, state: AppState) -> None:
             except ValueError as e:
                 return jsonify({"error": str(e)}), 400
 
-        # design_new.md line 658: every entity-flag PATCH emits a command_result.
+        # design_new.md "Availability flag REST API surface": every entity-flag PATCH emits a command_result.
         # Station flag toggles always succeed (no admin-reject 409).
         emit_command_result(
             state, source="Station", entity_id_key="station_id",

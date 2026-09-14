@@ -15,7 +15,7 @@ When a train's head leaves its authorized ``resource_sequence`` while ROLLING
 3. The canonical lookahead reports ``atc_limit == 0`` at distance 0 with
    ``atc_limit_reason_code == AtcLimitReasonCode.DEVIATION`` (NOT
    ``NO_RESERVATION``). ATC brakes; an overspeed escalates to EB.
-4. Only once the train is stopped does the gated Phase-3 explicit-cancel step
+4. Only once the train is stopped does the gated Action (teardown) explicit-cancel step
    commit ``cancel_path`` (reservations + switch locks released, latch cleared,
    path ``CANCELLED``).
 
@@ -44,7 +44,7 @@ The test drives the real tick pipeline -- ``TrainController.on_physics_updated``
 (deviation detection), ``PathDispatcher.on_controller_progress`` (latch write),
 ``TrainController.get_lookahead`` / ``_distance_zero_atc_anchor`` (DEVIATION
 emission), and ``SimulationController._consume_pending_path_cancel_request``
-(stopped-gated Phase-3 commit) -- with a deterministic, fixed off-sequence span
+(stopped-gated Action-teardown commit) -- with a deterministic, fixed off-sequence span
 update (no wall-clock, no randomness). A ``no-boundary`` span update whose
 ``new_span`` places the head on a tile the path does not enumerate is exactly
 what physics produces when a train rolls onto track the route never authorized
@@ -86,7 +86,7 @@ def _build_switch_network() -> Tuple[RailwayNetwork, Switch]:
 
     A path from BLK_A to BLK_C traverses SW_X, so create_path both reserves
     BLK_C and locks SW_X -- giving us a block reservation AND a switch lock to
-    assert are held during the deviation and released after the Phase-3 commit.
+    assert are held during the deviation and released after the Action-teardown commit.
     BLK_D is reachable track that the A->C authority never enumerates; the
     deviated head is placed there.
     """
@@ -174,7 +174,7 @@ def _apply_span_update(controller, head_tile, speed_kmh) -> None:
 
 
 def _drain_progress_reports(dispatcher, controller) -> None:
-    """Phase 3a: drain queued progress reports through on_controller_progress
+    """Observe (movement): drain queued progress reports through on_controller_progress
     (the canonical site that writes the deviation cancel latch)."""
     while controller.physics_sync.queued_progress_reports:
         report = controller.physics_sync.queued_progress_reports.pop(0)
@@ -192,7 +192,7 @@ def test_deviation_while_rolling_latches_and_holds_resources():
 
     rolling deviation -> latch set (deviation=True), path stays ACTIVE,
     block reservation + switch lock STILL held, lookahead reports DEVIATION at
-    atc_limit 0; Phase-3 does NOT commit while rolling; once stopped, Phase-3
+    atc_limit 0; Action teardown does NOT commit while rolling; once stopped, Action teardown
     commits cancel_path (resources released, latch cleared, path CANCELLED).
     """
     network, switch = _build_switch_network()
@@ -258,11 +258,11 @@ def test_deviation_while_rolling_latches_and_holds_resources():
     assert curves[0]["atc_limit_reason_code"] == AtcLimitReasonCode.DEVIATION.value
     assert curves[0]["atc_limit"] == 0.0
 
-    # (4a) Phase-3 must NOT commit while the train is still rolling: the latch
+    # (4a) Action teardown must NOT commit while the train is still rolling: the latch
     # survives and the path stays ACTIVE.
     sim._consume_pending_path_cancel_request(controller, train)
     assert controller.route_hooks.phase_latches.path_cancel_request is not None, (
-        "Phase-3 must preserve the latch while the train is rolling"
+        "Action teardown must preserve the latch while the train is rolling"
     )
     assert dispatcher.active_path_id_by_train("T1") == path_id
     assert switch.is_locked()
@@ -273,7 +273,7 @@ def test_deviation_while_rolling_latches_and_holds_resources():
     _drain_progress_reports(dispatcher, controller)
     assert controller.is_stopped()
 
-    # (4b) Now the gated Phase-3 explicit-cancel step commits the latch.
+    # (4b) Now the gated Action (teardown) explicit-cancel step commits the latch.
     sim._consume_pending_path_cancel_request(controller, train)
 
     # Path is no longer active for the train; the retained row is CANCELLED.

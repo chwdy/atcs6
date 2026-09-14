@@ -98,7 +98,7 @@ def clearance_ahead_pure(
     ``ato_destination_block_id`` is set, derives clearance from
     ``fallback_clearance_to_destination(base_clearance)`` instead.
 
-    Signal state is intentionally not an ATC input (design_new.md:1849):
+    Signal state is intentionally not an ATC input (design_new.md, "ATC speed limit"):
     signals are display state derived from blocks, not an independent
     clearance source. ``blocks_ahead`` walks only the train's own live
     authority (``received_path_plan``), whose switches are already locked
@@ -314,7 +314,7 @@ class ATCComputer:
         global so a runtime ``PUT`` (which rebinds
         ``train_controller.atc.TRACK_END_SAFETY_MARGIN_CM`` through
         ``runtime_config._propagate``) takes effect for controllers that
-        already exist (design_new.md:3857/3888). The smaller
+        already exist (design_new.md, "Tunable fields"). The smaller
         ``PLATFORM_SAFETY_MARGIN_CM`` is layered in by
         ``effective_safety_margin()`` when the destination is a station.
         """
@@ -323,7 +323,7 @@ class ATCComputer:
     @property
     def signal_lookahead_blocks(self) -> int:
         """Signal-scan depth, read live from the module global for the same
-        reason as ``safety_margin_cm`` (design_new.md:3857/3908)."""
+        reason as ``safety_margin_cm`` (design_new.md, "Tunable fields")."""
         return ATC_SIGNAL_LOOKAHEAD_BLOCKS
 
     # ------------------------------------------------------------------

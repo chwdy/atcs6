@@ -246,10 +246,10 @@ class TestTrainControllerBrakingNotches:
 
 
 class TestPoweredOffControllerTick:
-    """A powered-off controller's Phase-2 tick entry still runs, but is inert.
+    """A powered-off controller's Action tick entry still runs, but is inert.
 
     design_new.md "SimulationController.update() calls": for a train that is
-    `OFF` at transaction start, route Phase 1 is skipped while Phase 2 still
+    `OFF` at transaction start, route Plan is skipped while Action still
     runs, so `power_on_cmd()` can be accepted. This replaces an older test that
     asserted a `logger.debug("power off")` trace — component-local logging is
     forbidden by design ("NotificationCenter is the only runtime sink"), so the

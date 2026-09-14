@@ -60,7 +60,7 @@ class TestSimulationController:
         simulation.update(0.1)
 
     def test_simulation_completes_active_path_at_destination(self, network):
-        """Path completion is a Phase-3 step, not a side queue.
+        """Path completion is a Plan-settlement step, not a side queue.
 
         Per design_new.md, `SimulationController` runs the post-physics
         usable-authority stop check and, once the train is stopped at the end
@@ -111,7 +111,7 @@ class TestSimulationController:
         controller.commands.set_mode("ato")
         controller.commands.ato_go()
 
-        # A one-off route to the east terminal. Phase 1 (RouteExecutor) owns
+        # A one-off route to the east terminal. Plan (RouteExecutor) owns
         # creating the authority and departing the train; we only drive ticks.
         # The terminal task is a `stop`, not a `waypoint`: per design_new.md's
         # "Stop-arrival check" (step `8df5`) the `try_complete_active_path(...)`
@@ -153,12 +153,12 @@ class TestSimulationController:
             f"head_block={controller._get_current_block_id()!r}, "
             f"speed={controller.physics_sync.current_speed_kmh:.2f}, "
             f"train_status={controller.train_status.value!r}. Per design_new.md, the "
-            f"Phase-3 usable-authority stop check must call "
+            f"Plan-settlement usable-authority stop check must call "
             f"try_complete_active_path(...) once the train is stopped at the "
             f"end of its authority."
         )
 
-        # Phase-3 completion transitioned the Path to COMPLETED...
+        # Plan-settlement completion transitioned the Path to COMPLETED...
         assert dispatcher.get_path(captured_path_id).status == PathStatus.COMPLETED
         # ...so the live projection no longer surfaces it as the active plan.
         assert controller.path_projection.received_path_plan is None

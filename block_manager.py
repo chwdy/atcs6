@@ -305,7 +305,7 @@ class BlockManager:
             )
             return False
 
-        # Clean entry per design_new.md:717 — set physical occupancy, clear
+        # Clean entry per design_new.md, "Block-manager model" — set physical occupancy, clear
         # stale caution, and consume any same-train reservation. The
         # reservation clear must run for every clean entry (FREE / RESERVED
         # / CAUTION) so a reservation hidden under a caution does not
@@ -935,7 +935,8 @@ class BlockManager:
 
         ``direction`` is the vacated block's forward `exit_edge`, or ``None``
         when the train left the detected area and no exit edge is known
-        (design_new.md ":1043"). With no edge there is no forward neighbour to
+        (design_new.md, "`on_block_tail_vacated()` behaviour (directional CAUTION evaluation)").
+        With no edge there is no forward neighbour to
         consult and no direction to protect, so no caution is written and the
         block's computed state goes straight to FREE.
         """
@@ -1133,7 +1134,7 @@ class BlockManager:
 
         ``next_block`` is the next reachable block resource. ``chain_entry_edge``
         is the edge through which this walk actually entered that block (per
-        design_new.md line 842): for a straight adjacent block this is simply
+        design_new.md "Block-manager model"): for a straight adjacent block this is simply
         the side facing ``block``, but through switch tiles and curves it is the
         entry edge the walk used as it crossed switch legs. The reevaluator uses
         it only as a validity signal — a ``None`` entry edge means the walk

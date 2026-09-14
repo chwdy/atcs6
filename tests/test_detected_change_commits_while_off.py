@@ -1,4 +1,4 @@
-"""Phase-1 gap fixes for the Step-0 detector commit path.
+"""Phase-1 gap fixes for the Observe detector commit path.
 
 Two contracts, both real-hardware-only in effect (the simulated detector builds
 current from live spans, so neither fires in a pure-sim run), exercised here as
@@ -8,15 +8,15 @@ unit contracts:
   evaluation)" — `direction` on
   `BlockManager.on_block_tail_vacated(...)` is `Optional[edge]`. With `None` (the
   train left the detected area and no exit edge is known) the block clears
-  `occupied_by`, writes no caution, and goes straight to FREE. The Step-0
-  preamble's clear for a detected occupant the app does not control routes
+  `occupied_by`, writes no caution, and goes straight to FREE. Observe's clear
+  for a detected occupant the app does not control routes
   through that same canonical entry (see the unidentified-train tests), so the
   de-energize queueing, BLOCK_VACATED event, and history record are not skipped.
 
-- design_new.md "Running and stopped" — Phase 3 is skipped for a still-OFF
-  transaction
-  only when it has nothing to commit. When Step 0 attributed a block entry or
-  vacate to the train this tick, Phase 3 runs anyway: that is the only path that
+- design_new.md "Running and stopped" — Observe's occupancy commit (step
+  `3e9b`) is skipped for a still-OFF transaction
+  only when it has nothing to commit. When Observe attributed a block entry or
+  vacate to the train this tick, the commit runs anyway: that is the only path that
   commits the entries/vacates of a train that moves without power (pushed by
   hand, or an occupant the app does not control).
 """
@@ -71,7 +71,7 @@ def test_tail_vacate_with_an_edge_still_takes_caution():
     assert block.caution.exit_edge == "E"
 
 
-# --------------------------------------- Phase 3 for a still-OFF transaction
+# -------------------------- Observe occupancy commit for a still-OFF transaction
 
 
 class _RecordingDispatcher:
@@ -125,7 +125,7 @@ def test_off_train_with_a_detected_block_change_runs_phase_3():
 
     sim._observe_train(train, 0.1)
 
-    assert dispatcher.reports, "Phase 3 must drain the report Step 0 produced"
+    assert dispatcher.reports, "Observe's occupancy commit must drain the report the detector read produced"
     assert controller.physics_sync.queued_progress_reports == []
 
 

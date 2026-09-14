@@ -6,7 +6,7 @@ Operator command surface owns the operator-side configuration state
 (``control_mode``), the per-tick command inbox / canonical drain order,
 and the operator-facing setter / queue methods themselves. There is no
 operator cab: the head end is derived from the live authority
-(design_new.md "Authority-side head derivation").
+(design_new.md "Reservation-side head derivation").
 
 External callers access operator-command state and behavior as:
 
@@ -62,7 +62,7 @@ class OperatorCommands:
         # and the ATO driving rule. Serialized under the key `"engaged"`.
         self.engaged: bool = False
 
-        # Per design_new.md "Command queue + drain": operator commands
+        # Per design_new.md "Operator-command processing slot": operator commands
         # land here and the tick-entry drain processes them in canonical
         # ``drain_order``. `set_mode` (slot 2) drains before `ato_go` / `ato_stop`
         # (slot 3), so a same-tick "switch to ATO, then go" batch is accepted in
@@ -258,7 +258,7 @@ class OperatorCommands:
     def _execute_power_off(self, payload, event_time) -> CommandResult:
         # The drained-queue path delegates to the canonical command method so
         # the stopped-only check AND the already-OFF no-op guard
-        # (design_new.md:1799) stay in one place. Otherwise an enqueued
+        # (design_new.md, "Power/mode command contracts") stay in one place. Otherwise an enqueued
         # `power_off` drained on an already-OFF train would arm a stale
         # `power_off` latch that tears a later freshly-powered train back to OFF.
         return self.power_off_cmd()
@@ -414,13 +414,13 @@ class OperatorCommands:
         if position == HandlePosition.EB:
             return c.eb.activate()
 
-        # Per design_new.md line 1757: set_handle() accepts only when
+        # Per design_new.md "Driver input acceptance": set_handle() accepts only when
         # control_mode == manual and manual_mode_type == simulation; it is
         # rejected in the power_percent submode (that submode is driven by
         # set_manual_power_percent()). The EB activation above is the one
         # always-available exception and returns before this gate. There is no
         # cab gate — the head end is derived from the live authority
-        # (design_new.md "Authority-side head derivation").
+        # (design_new.md "Reservation-side head derivation").
         if self.control_mode != "manual":
             return CommandResult(False, "Handle input requires manual mode")
         if c.manual.manual_mode_type != "simulation":
@@ -573,7 +573,7 @@ class OperatorCommands:
         (forcing 0) and this command never clears ``eb.active``. The command
         does not start movement by itself; it just writes the controller-owned
         field. There is no cab gate — the head end is derived from the live
-        authority (design_new.md "Authority-side head derivation").
+        authority (design_new.md "Reservation-side head derivation").
         """
         c = self._c
         if not c.power_on:

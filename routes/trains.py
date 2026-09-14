@@ -766,7 +766,7 @@ def register(app, state: AppState) -> None:
     def assign_route_to_train(train_id):
         """Assign a route to a train.
 
-        Per `design_new.md` line 272 (Operator retargeting / route swap), the
+        Per `design_new.md` "Route Edit And Reconciliation" (operator retargeting / route swap), the
         service atomically writes the Action route-abort latch and updates
         `Route` assignment; it does NOT mutate `RouteExecutor.execution_states`
         or cancel the path inline -- those flow through Action cleanup, and

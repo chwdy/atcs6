@@ -170,7 +170,7 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
             assertions=[
                 assert_state(TrainState.READY),
                 assert_cab("A"),
-                # Phase 1 was skipped while OFF; no path yet.
+                # Plan was skipped while OFF; no path yet.
                 assert_no_active_path(),
                 assert_eb(False),
             ],
@@ -343,7 +343,7 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
             # ticks, so the controller's state machine has settled past the
             # transient final-deceleration tick. Verify it landed in READY (a
             # dwelling train is READY — dwell is not a controller state), the
-            # cab is still set, EB is clear, and no Phase-3 latches are armed.
+            # cab is still set, EB is clear, and no Action-teardown latches are armed.
             trigger=train_stopped_for(settle_ticks=30, after_tick=50),
             assertions=[
                 assert_state(TrainState.READY),
@@ -353,7 +353,7 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
                 # "ato.engaged"): the train is held by the absence of authority,
                 # not by a cleared flag, and resumes on its own when authority
                 # returns. So nothing is asserted about ato_engaged here.
-                # Phase-3 latches all clear (covered by invariants too).
+                # Action-teardown latches all clear (covered by invariants too).
                 lambda s: (
                     None
                     if not (
@@ -364,7 +364,7 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
                     )
                     else (_ for _ in ()).throw(
                         AssertionError(
-                            f"Phase-3 latch armed after stop: "
+                            f"Action-teardown latch armed after stop: "
                             f"path_cancel={s.latch_path_cancel_request}, "
                             f"route_abort={s.latch_route_abort}, "
                             f"power_off={s.latch_power_off}, "

@@ -174,7 +174,7 @@ class BlockPowerController:
     # SimulationController back-reference, set by bootstrap so this
     # controller can fetch the live `TrainController` (for the operational
     # state machine and cab) and the live `TrainPhysics` (canonical home of
-    # `track_voltage` per design_new.md "Power-controller role"). This
+    # `track_voltage` per design_new.md "Block power-controller role"). This
     # controller does not read controller-owned manual-mode state directly —
     # it asks `TrainPhysics.compute_track_voltage(...)` for the scalar.
     _sim_controller: Optional[Any] = None
@@ -225,7 +225,7 @@ class BlockPowerController:
     ) -> float:
         """Resolve the train's current `track_voltage` from `TrainPhysics`.
 
-        Per design_new.md "Power-controller role", `TrainPhysics` owns
+        Per design_new.md "Block power-controller role", `TrainPhysics` owns
         `track_voltage` and `BlockPowerController` is the software-to-
         hardware emission layer. This method asks
         `TrainPhysics.compute_track_voltage(...)` for the scalar; it does

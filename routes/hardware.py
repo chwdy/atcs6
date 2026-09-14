@@ -1,4 +1,4 @@
-"""Hardware configuration routes (design_new.md "Power -> Hardware configuration").
+"""Hardware configuration routes (design_new.md "Hardware setup").
 
 - `GET/PUT /api/hardware/config` reads / writes the `HardwareConfig` store (chip
   inventory + port bindings). A `PUT` validates the merged configuration and, on

@@ -200,7 +200,7 @@ class UnidentifiedTrainTracker:
         """Set an unidentified train's span from this tick's detector slice, during the global detector read.
 
         Called by `TrainPhysics.reconcile_to_detected_occupancy(...)`, which stays
-        the detector-read span writer for every train (design_new.md ":2629"): detection
+        the detector-read span writer for every train (design_new.md, "Block occupancy detection"): detection
         is an unidentified train's only span source, and it arrives through that ordinary call.
         The blocks are the ones it holds now plus this tick's confirmed entries
         minus its confirmed vacates — the commits themselves land in the occupancy commit.

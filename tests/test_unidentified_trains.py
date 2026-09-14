@@ -2,8 +2,9 @@
 
 Current detected on track that no train the app controls is standing on becomes
 a real `Train` with `is_unidentified = True` and its own `TrainController`, so its block
-entries and vacates run through the ordinary Step-0 -> Phase-2 callback ->
-Phase-3 coordinator/manager chain. The app can never drive it; keeping track of
+entries and vacates run through the ordinary Observe attribution -> movement callback ->
+occupancy-commit coordinator/manager chain (the whole chain now runs inside
+Observe). The app can never drive it; keeping track of
 it is what keeps every other train clear of it.
 
 Only real hardware can produce an unidentified train — the simulated occupancy driver builds
@@ -141,7 +142,7 @@ def test_current_on_a_block_no_train_covers_creates_an_unidentified_train():
     assert sim.controllers.get(unidentified_id) is not None
     assert unidentified_train.speed_profile_id is not None
     assert network.speed_profiles.get(unidentified_train.speed_profile_id) is not None
-    # The entry commits through the ordinary Phase-3 chain, not a side channel.
+    # The entry commits through the ordinary occupancy-commit chain (inside Observe), not a side channel.
     assert network.blocks["BLK_1"].occupied_by == unidentified_id
     assert network.blocks["BLK_1"].state == BlockState.OCCUPIED
 
@@ -155,7 +156,7 @@ def test_an_unidentified_train_is_never_powered_and_never_driven_by_the_app():
     controller = sim.controllers[unidentified_id]
     assert controller.physics_sync.current_speed_kmh == 0.0
     assert controller._framed_head_end == "end_a"
-    # No route and no path: its Phase 1 is a no-op.
+    # No route and no path: its Plan is a no-op.
     assert sim.route_executor.assigned_route_id_for(unidentified_id) is None
     assert sim.path_dispatcher.active_path_id_by_train(unidentified_id) is None
 

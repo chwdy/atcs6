@@ -222,7 +222,7 @@ class Tile:
 
     # === OTHER PROPERTIES ===
     length: float = 1.0
-    # Per design_new.md line 566, `occupied_by` and `reserved_by` are removed
+    # Per design_new.md "Tile role and traversal", `occupied_by` and `reserved_by` are removed
     # live runtime fields on Tile in v1. Physical occupancy lives on
     # the owning resource (`Block.occupied_by` / `Switch.occupied_by`) and
     # reservations live on `Block.reserved_for_train` /
@@ -234,13 +234,13 @@ class Tile:
     _reserved_by_local: Optional[str] = None
 
     # === PATH LOCKING (Dispatcher System) ===
-    # Per design_new.md "Track-segment role and traversal", switch lock
+    # Per design_new.md "Tile role and traversal", switch lock
     # ownership lives entirely on `Switch.locks` (keyed by
     # `(path_id, source_switch_id)`). `Tile` stores no lock state and
     # exposes no lock surface; callers resolve the owning `Switch` via
     # `switch_id` and read `Switch.locks` / `Switch.is_locked()` directly.
     # Note: pre-v1 also stored `path_direction` on Tile. Per
-    # design_new.md line 566/941 it is a removed field; traversal direction
+    # design_new.md "Tile role and traversal" it is a removed field; traversal direction
     # is owned by `Block.reserved_direction` (dispatcher reservation) and
     # `Path.resource_sequence[*].entry_edge` (per-resource frame data). Live
     # consumers read those instead of any tile-stored direction.
@@ -724,7 +724,7 @@ class Tile:
     ) -> List[Tuple[str, Optional[int]]]:
         """Enumerate every legal geometric traversal through this tile.
 
-        Per design_new.md "Track-segment role and traversal" — pure-geometry
+        Per design_new.md "Tile role and traversal" — pure-geometry
         helper used by `PathDispatcher` path construction/extension and BFS
         switch derivation. Returns one `(exit_edge, required_switch_state)`
         pair per legal traversal; for non-switch tiles `required_switch_state`
@@ -795,7 +795,7 @@ class Tile:
     ) -> List[str]:
         """Return exit edges currently reachable from `entry_edge`.
 
-        Per design_new.md "Track-segment role and traversal" — the live-state
+        Per design_new.md "Tile role and traversal" — the live-state
         helper. For switch tiles, `resolver` is a callable or network-like
         object exposing `.switches[switch_id]` so the helper can read
         `Switch.position` to filter the geometric enumeration. When no
@@ -806,7 +806,7 @@ class Tile:
         sourced from the canonical `Switch.position`, not the legacy
         `Tile._switch_state` cache.
         """
-        # Fix #10 (design_new.md line 617): disabled switches have no
+        # Fix #10 (design_new.md "Tile role and traversal"): disabled switches have no
         # traversable exits; check before delegating to get_exits.
         if (
             self.is_switch
@@ -832,7 +832,7 @@ class Tile:
     ) -> Optional[str]:
         """Return the live-state entry edge that yields `exit_edge`.
 
-        Per design_new.md "Track-segment role and traversal" — the inverse
+        Per design_new.md "Tile role and traversal" — the inverse
         of `get_active_exits(...)`. Used for backward tracing during tail
         movement. `resolver` is reserved for the post-migration call shape.
         """
@@ -889,7 +889,7 @@ class Tile:
         if not self.is_switch:
             return sorted(all_exits)
 
-        # Fix #10 (design_new.md line 617): disabled switches have no
+        # Fix #10 (design_new.md "Tile role and traversal"): disabled switches have no
         # traversable exits. Resolve the owning Switch entity from the network
         # registry; if `switch.disabled` is True return [] immediately.
         if (

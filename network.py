@@ -477,7 +477,7 @@ class RailwayNetwork(SwitchOutputOwner):
         """Return the connecting edge pair for two tiles, either via grid
         adjacency or via a tunnel.
 
-        Per design_new.md "Pathfinding home": answers two questions at once
+        Per design_new.md "Pathfinding-home migration": answers two questions at once
         — are the two tiles track-connected, and if so, which edge on each
         tile connects to the other?
 
@@ -523,7 +523,7 @@ class RailwayNetwork(SwitchOutputOwner):
         safety_margin_cm: float,
     ) -> float:
         """Project the head's forward distance to the safety-margin-adjusted
-        authority boundary (design_new.md:2161).
+        authority boundary (design_new.md, "Pathfinding-home migration").
 
         ``head_locator`` carries the already-measured forward clearance from the
         head to ``authority_end`` in ``head_locator.distance_cm`` (the
@@ -1402,7 +1402,7 @@ class RailwayNetwork(SwitchOutputOwner):
         # Link track to switch
         track.switch_id = switch.switch_id
         # A new switch can create flank relationships for itself and any
-        # nearby switches (design_new.md:686 — recompute on topology change).
+        # nearby switches (design_new.md, "Flank protection computation" — recompute on topology change).
         self.recompute_all_flank_protection()
 
     def get_switch(self, switch_id: str) -> Optional["Switch"]:
@@ -1439,8 +1439,8 @@ class RailwayNetwork(SwitchOutputOwner):
         # Removing a switch removes exits the topology-only BFS could take.
         self.invalidate_pathfinding_cache()
         # Drop any stale flank entries that referenced the removed switch and
-        # recompute neighbours (design_new.md:686 — recompute on topology
-        # change).
+        # recompute neighbours (design_new.md, "Flank protection computation" — recompute on
+        # topology change).
         self.recompute_all_flank_protection()
         return True
 
@@ -1495,7 +1495,7 @@ class RailwayNetwork(SwitchOutputOwner):
 
     # ------------------------------------------------------------------
     # Flank protection computation (design_new.md "Flank Protection
-    # Computation", lines 679-688)
+    # Computation")
     # ------------------------------------------------------------------
 
     def recompute_all_flank_protection(self) -> None:

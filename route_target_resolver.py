@@ -114,7 +114,7 @@ class RouteTargetResolver:
         # `walk_position` in the projection is the list index into
         # `exec_state.task_runs`, not the `Route.tasks` index — these
         # decouple after CIRCULAR / ROUND_TRIP wraparound (design_new.md
-        # line 1104 + line 1267). The two values match only for the first
+        # "Canonical Next-Target Selection"). The two values match only for the first
         # walk and for ONE_OFF routes. Canonical helper lives on
         # `RouteExecutionState.next_planning_walk_position`.
         walk_position = (
@@ -124,7 +124,7 @@ class RouteTargetResolver:
         )
 
         # The visit direction is stored per-row on the target walk-position
-        # (design_new.md line 1836): `_find_next_task_target` reports the row's
+        # (design_new.md "Route-run state"): `_find_next_task_target` reports the row's
         # `walk_direction`, never the run-level `RouteRun.direction`. Fall back
         # to the run-level direction only when the row does not exist yet (an
         # empty walk before pre-allocation). A local signed-int form is computed
@@ -205,7 +205,7 @@ class RouteTargetResolver:
                 ):
                     # Every candidate for this task's location was already
                     # attempted this tick, so no concrete target remains (per
-                    # design_new.md:1632). Return a sentinel with
+                    # design_new.md, "Canonical Next-Target Selection"). Return a sentinel with
                     # resolved_target=None so Plan knows "no more candidates this
                     # tick" without claiming a terminal walk (which would
                     # finalize the run prematurely), carrying the
@@ -432,7 +432,7 @@ class RouteTargetResolver:
     def _route_manual_override(self, train: Optional["Train"]) -> bool:
         """Operator override flag from this train's assigned route.
 
-        design_new.md line 1208 / line 640: `RouteExecutor` applies the
+        design_new.md "`disabled` and `manual` availability flags": `RouteExecutor` applies the
         assigned route's `manual_override` to manual target filtering. The flag
         is route-level (default False); an automatic route never sets it, so
         auto plans never resolve `manual` targets. Returns False when the train
@@ -478,7 +478,7 @@ class RouteTargetResolver:
         `tick_train_plan`) so the operator sees why the task stalled
         instead of an empty diagnostic.
 
-        Per design_new.md line 1125, `task_location` is a tagged union of
+        Per design_new.md "RouteTask data", `task_location` is a tagged union of
         `BlockTarget | PlatformTarget | StationTarget`; this method
         dispatches on the variant rather than probing in order.
 
@@ -486,7 +486,7 @@ class RouteTargetResolver:
         across EVERY platform in `Station.platform_ids` and returns the
         globally best one by the cross-query comparison — travel time first,
         then tile count, then walk length — with ties broken by platform-end
-        identity (design_new.md line 1667; see
+        identity (design_new.md "`GraphWalkCandidate` payload"; see
         `_resolve_station_target_block`). It is not the first available
         platform's end.
 
@@ -506,8 +506,8 @@ class RouteTargetResolver:
         # Availability filters per design_new.md "Platform And Station" and the
         # `disabled` and `manual` availability flags canonical home under
         # TrackResource. The `manual` filter is relaxed when the train's
-        # assigned route carries `manual_override == True` (design_new.md line
-        # 1208 / line 640): an operator-initiated route may target `manual`
+        # assigned route carries `manual_override == True` (design_new.md
+        # "`disabled` and `manual` availability flags"): an operator-initiated route may target `manual`
         # blocks/platforms/stations. `disabled` is never relaxed. An automatic
         # route leaves `manual_override == False`, so auto plans still treat
         # `manual` targets like disabled ones.
@@ -615,7 +615,7 @@ class RouteTargetResolver:
 
         This is cross-query comparison site 2 in design_new.md's
         `GraphWalkCandidate` payload home (Planning-Kernel step `9c4f` target
-        resolution, design_new.md line 1667 / line 2818): query both ends of
+        resolution): query both ends of
         every platform, merge all reachable platform-end candidates into one
         list, and sort by the first three cross-query keys
         `(estimated_travel_seconds, tile_count, walk_length_cm)` — estimated
@@ -642,7 +642,7 @@ class RouteTargetResolver:
 
         `exclude` names `(block, direction)` pairs Plan already tried and failed
         this pass; their blocks are skipped so the same-pass retry walks down
-        the sorted list to the next distinct pair (design_new.md line 1667:
+        the sorted list to the next distinct pair (design_new.md "Canonical Next-Target Selection":
         "try create_path once for each distinct resolved pair, stopping at the
         first success"). When every candidate block is excluded, the global
         best is returned so `find_next_task_target`'s own exclude check emits
@@ -687,7 +687,7 @@ class RouteTargetResolver:
                     continue
                 block = blocks_registry.get(bid)
                 occupant = getattr(block, "occupied_by", None) if block else None
-                # design_new.md line 1670: a platform is unavailable when any
+                # design_new.md "Canonical Next-Target Selection": a platform is unavailable when any
                 # linked block is held by another train's physical occupancy OR
                 # another train/path's live reservation. The current train's own
                 # occupancy / live authority never makes the platform unavailable
@@ -745,14 +745,14 @@ class RouteTargetResolver:
         must always eliminate it before any `create_path` / `extend_path`
         call.
 
-        Per design_new.md line 1145, `"either"` on a block-relative target
+        Per design_new.md "RouteTask data", `"either"` on a block-relative target
         means "pick whichever block-relative direction is reachable under the
         same current-span comparison and allowed by
         `Block.allowed_travel_directions`." The pathfinder's
         `find_paths(...)` already encodes both constraints, so probe both
         directions and pick the one that returns a candidate. When both
         succeed, tie-break by the shortest candidate per the canonical
-        candidate comparison (design_new.md line 1158). The route-walk
+        candidate comparison (design_new.md "`GraphWalkCandidate` payload"). The route-walk
         fallback is used only when reachability cannot be evaluated
         (no dispatcher, train has no resolvable start block).
         """

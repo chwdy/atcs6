@@ -4,7 +4,9 @@ Simulation Controller - Train Movement and Control
 Definition:
 This module provides the SimulationController class which runs the train
 simulation using the TrainController + TrainPhysics architecture, following
-the per-train three-phase transaction model defined in design_new.md.
+the Observe / Plan / Action tick transaction defined in design_new.md
+(Core Runtime Loop): Observe runs once as a batch over every train, then
+Plan and Action run per train in the runnable order.
 
 Architecture:
     SimulationController
@@ -131,7 +133,7 @@ class SimulationController(SwitchOutputOwner):
         self.path_dispatcher = path_dispatcher
         self.last_update_time = datetime.now()
 
-        # Run mode (design_new.md "Run modes"): the hardware backend is chosen
+        # Run mode (design_new.md "Session mode and operating environment"): the hardware backend is chosen
         # once when the operation session is built and never switched mid-run.
         # Sim mode (the v1 default) wires the simulated interfaces; a real
         # backend injects real implementations of each interface behind the same
@@ -184,7 +186,8 @@ class SimulationController(SwitchOutputOwner):
 
         # Trains this tick's global detector read attributed a block entry or
         # vacate to. Rewritten every `_detect_block_occupancy()`; read by the
-        # Observe gate for a still-OFF transaction (design_new.md ":2181").
+        # Observe gate for a still-OFF transaction (design_new.md, "Movement feedback
+        # runs only when movement is calculated; detection feedback always runs").
         self._detected_change_train_ids: Set[str] = set()
 
         # Wall time of the previous pass of the runtime loop, running or
@@ -197,7 +200,7 @@ class SimulationController(SwitchOutputOwner):
         # Initialize components with shared controllers. The block/switch power
         # output interfaces come from the session-build override (real backend)
         # or default to the simulated interfaces (sim mode) — design_new.md
-        # "Run modes", "the backend is chosen once when the session is built".
+        # "Session mode and operating environment", "the backend is chosen once when the session is built".
         self.power_controller = (
             BlockPowerController(
                 network, output_interface=self._block_output_interface_override
@@ -223,7 +226,7 @@ class SimulationController(SwitchOutputOwner):
         network.switch_power_controller = self.switch_power_controller
 
         # Block occupancy detection: the global per-block current sensor plus the
-        # debounce/attribution detector (design_new.md "Power -> Block occupancy
+        # debounce/attribution detector (design_new.md "Block occupancy
         # detection"). The simulated sensor reads the live spans of all
         # controllers; `self.controllers` is shared by reference and populated as
         # trains are added, so the detector sees every train without re-wiring.
@@ -244,7 +247,7 @@ class SimulationController(SwitchOutputOwner):
                 message=message,
             ),
         )
-        # Unidentified trains (design_new.md "Power -> Unidentified trains"): the Observe owner of
+        # Unidentified trains (design_new.md "Unidentified trains"): the Observe owner of
         # every confirmed entry that matches no existing train. It creates and
         # retires the unidentified train `Train` records; their block commits then run through
         # the ordinary per-train chain like any other train's.
@@ -329,7 +332,7 @@ class SimulationController(SwitchOutputOwner):
         # center, the route executor, and each other.
         if self.path_dispatcher is not None:
             # Inject PathDispatcher's named dependencies rather than a general
-            # back-reference (design_new.md:1418, 2673): the route executor (its
+            # back-reference (design_new.md, "Preemption" and "Dispatcher/route-executor inputs"): the route executor (its
             # cancellation/completion callbacks + preemption/reversal resolvers),
             # the occupant-controller lookup registry, and the event-log sink.
             self.path_dispatcher.wire_dependencies(
@@ -482,7 +485,7 @@ class SimulationController(SwitchOutputOwner):
         net.bump_lookahead_world_version()
         try:
             # Observe - global block-current read + debounce + attribution
-            # (design_new.md "Power -> Block occupancy detection"). One world-wide
+            # (design_new.md "Block occupancy detection"). One world-wide
             # current read per tick reflecting end-of-last-tick positions. Confirmed
             # entered/vacated blocks are attributed to trains and stashed per
             # controller; each train commits its slice in Observe through the normal
@@ -580,7 +583,7 @@ class SimulationController(SwitchOutputOwner):
             # `Block.occupied_by` says which blocks each unidentified train ended the tick
             # holding — so the unidentified train reconciliation (merge, split, gap hold,
             # retirement) runs once here, after every train's transaction
-            # (design_new.md "Power -> Unidentified trains").
+            # (design_new.md "Unidentified trains").
             self.unidentified_trains.reconcile(self._unidentified_clock())
 
             self._settle_after_commits()
@@ -792,7 +795,7 @@ class SimulationController(SwitchOutputOwner):
 
     def poll_hardware_occupancy(self) -> None:
         """Read the block detectors and commit what they say, with the
-        simulation stopped (design_new.md "Power -> Block occupancy detection").
+        simulation stopped (design_new.md "Block occupancy detection").
 
         Real hardware does not stop reporting when the operator presses Stop. A
         loco lifted onto the rails, a hand-pushed cut of wagons, a train left
@@ -1121,7 +1124,7 @@ class SimulationController(SwitchOutputOwner):
         current detector, debounce, attribute confirmed transitions to trains,
         and stash each train's entered/vacated block slice for its Observe
         commit (design_new.md
-        "Power -> Block occupancy detection"). The controller drains its slice in
+        "Block occupancy detection"). The controller drains its slice in
         on_physics_updated and the existing on_controller_progress flow commits
         Block.occupied_by.
 
@@ -1130,7 +1133,8 @@ class SimulationController(SwitchOutputOwner):
         the pending sets themselves, so that set is the only thing left by the
         occupancy-commit step that can answer "did the detector read attribute a
         block entry or vacate to this train this tick?" — the condition under which
-        a still-OFF transaction must run its Observe commit anyway (design_new.md ":2181").
+        a still-OFF transaction must run its Observe commit anyway (design_new.md, "Movement
+        feedback runs only when movement is calculated; detection feedback always runs").
         """
         detector = self.block_occupancy_detector
 
@@ -1471,18 +1475,21 @@ class SimulationController(SwitchOutputOwner):
         controller.physics_sync.queued_progress_reports.clear()
 
     # =========================================================================
-    # Per-train three-phase transaction
+    # Per-train Observe and Action stages
+    # (Plan runs between them via RouteExecutor.tick_train_plan)
     # =========================================================================
 
     def _observe_train(self, train: Train, delta_seconds: float) -> None:
         """Observe stage for one train: integrate its movement over the elapsed
-        time, then commit occupancy and recognize a normal stop arrival.
+        time, then commit occupancy.
 
         Runs for every train as a batch before any train plans, so planning sees
         every train's committed position (design_new.md Core Runtime Loop,
         Observe). The movement calculation (`TrainPhysics.integrate_movement`)
         and the occupancy commit both live here; setting the track voltage is
-        Action.
+        Action. Observe finishes no route task: recognizing a stop arrival is
+        Plan-settlement work in `RouteExecutor.tick_train_plan(...)`, not Observe
+        (design_new.md Core Runtime Loop, step 2 and the Observe scope bullet).
         """
         controller = self._get_or_create_controller(train)
         physics = self._get_or_create_physics(train)
@@ -1581,7 +1588,8 @@ class SimulationController(SwitchOutputOwner):
 
         If the controller is OFF and the global detector read attributed no block
         entry or vacate to this train this tick, there is no movement to commit and this is a
-        no-op except the persistent-state sync (design_new.md ":2181", ":2641").
+        no-op except the persistent-state sync (design_new.md, "Movement feedback runs
+        only when movement is calculated; detection feedback always runs").
         The skip is about having no movement to commit, not about power: a train
         that moves without power — pushed by hand, or an occupant the app does
         not control — still has its block entries and vacates committed, and this
@@ -1640,7 +1648,7 @@ class SimulationController(SwitchOutputOwner):
 
         Skipped, except the persistent-state sync, for any train still OFF
         after the command drain. The OFF gate reads power state alone
-        (design_new.md:504): a pending teardown latch or a detector-attributed
+        (design_new.md, "Observe, Plan, and Action structure"): a pending teardown latch or a detector-attributed
         block change to an OFF train runs none of these steps — those teardown
         latches wait for a later pass on which power-on has run. The command
         drain that just ran in Action may have powered the train on, in which
@@ -1792,7 +1800,7 @@ class SimulationController(SwitchOutputOwner):
         self.route_executor.remove_train_route_run(train.train_id)
 
         # Controller-owned OFF cleanup. `complete_power_off()` is the single
-        # OFF-writing entry point besides startup (design_new.md:282, :1808):
+        # OFF-writing entry point besides startup (design_new.md, "Power/mode command contracts"):
         # it sets `state = OFF`, resets the span head frame to end_a, clears
         # eb.active / ato.engaged, and consumes `pending_power_off`.
         controller.complete_power_off()
@@ -1814,7 +1822,7 @@ class SimulationController(SwitchOutputOwner):
         if controller.route_hooks.phase_latches.path_cancel_request is not None:
             return
 
-        # Per design_new.md:1461 ("Shared-route edit teardown"): a held
+        # Per design_new.md ("Shared-route edit teardown"): a held
         # re-assignment is applied only when THIS consumer owned the run teardown
         # — i.e. its own remove_train_route_run cleared a still-RUNNING run. If an
         # earlier abort/power-off consumer (or a natural finish) already ended the
@@ -1901,7 +1909,7 @@ class SimulationController(SwitchOutputOwner):
             # Wire the back-reference so the controller can reach the
             # NotificationCenter and other simulation services.
             controller.simulation_controller = self
-            # Per design_new.md ~line 1292, live operational state
+            # Per design_new.md "Ownership split", live operational state
             # (`state`, `active_cab`, `ato.engaged`, `control_mode`) lives
             # exclusively on the controller; we no longer inherit it from
             # `Train`. Tests and demo bootstrap that need pre-armed state
@@ -2163,7 +2171,7 @@ class SimulationController(SwitchOutputOwner):
         # If an initial head end was requested, frame the span for it directly.
         # add_train runs before the first tick, so this bypasses the command
         # queue by design. There is no operator cab (design_new.md
-        # "Authority-side head derivation"); ``initial_cab`` "A"/"B" names the
+        # "Reservation-side head derivation"); ``initial_cab`` "A"/"B" names the
         # physical end the placement span is framed head-forward for, and the
         # span carries no head label. A live authority reframes it on the first
         # driving tick; "A" is the span's default framing.
@@ -2406,7 +2414,7 @@ class SimulationController(SwitchOutputOwner):
         controller.physics_sync.current_span = placed_span
         # ``cab`` "A"/"B" names the physical end the placement span is framed
         # head-forward for; there is no operator cab (design_new.md
-        # "Authority-side head derivation"). "A" is the span's default framing.
+        # "Reservation-side head derivation"). "A" is the span's default framing.
         if cab == "B":
             controller._apply_head_frame("end_b")
 
@@ -2688,7 +2696,7 @@ class SimulationController(SwitchOutputOwner):
         This is the "the layout is not a simulation" test, and it follows the
         occupancy interface specifically rather than the run mode as a whole —
         a real-mode session that leaves occupancy simulated still runs its
-        occupancy by calculation (design_new.md "Run modes", point 3). It is
+        occupancy by calculation (design_new.md "Session mode and operating environment", point 3). It is
         what gates unidentified train adoption and what the UI reads to stop calling a
         railway with live detectors a simulation.
         """
@@ -2979,7 +2987,7 @@ class SimulationController(SwitchOutputOwner):
     ) -> None:
         """Deliver a committed path cancellation to the `RouteExecutor`.
 
-        Per design_new.md "Phase handoff rule" this is the sanctioned
+        Per design_new.md "Stage handoff rule" this is the sanctioned
         same-transaction hop: `PathDispatcher.cancel_path(...)` calls here and
         this method delegates to `RouteExecutor.handle_path_cancellation(...)`.
         It emits nothing of its own — the `cancel_path` event the dispatcher
@@ -3101,7 +3109,7 @@ def build_network_payload(
     payload["assigned_routes_by_train_id"] = assigned_routes_by_train_id
     payload["route_runs_by_train_id"] = route_runs_by_train_id
 
-    # Run mode (design_new.md "Run modes"). The UI reads these to stop calling a
+    # Run mode (design_new.md "Session mode and operating environment"). The UI reads these to stop calling a
     # railway with real hardware on it a simulation, and to decide whether the
     # unidentified-adoption control is offered at all.
     payload["operation_mode"] = sim_controller.operation_mode.value

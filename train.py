@@ -94,7 +94,7 @@ class Train:
     total_run_time_seconds: float = 0.0  # Cumulative powered-on time (s)
 
     # `False` on every train the operator places, `True` only on a runtime-created
-    # unidentified train (design_new.md "Power -> Unidentified trains"). Set once at creation and
+    # unidentified train (design_new.md "Unidentified trains"). Set once at creation and
     # never edited; it is the predicate every rule about unidentified trains tests. Unidentified trains are
     # runtime-only — they are not written to saved state and not restored.
     is_unidentified: bool = False

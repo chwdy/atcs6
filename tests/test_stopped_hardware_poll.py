@@ -3,7 +3,7 @@
 design_new.md "Power -> Block occupancy detection": in real mode occupancy is
 whatever the hardware says it is. Pressing Stop stops the app driving trains; it
 does not stop a loco sitting on the rails from being detected. Before
-`poll_hardware_occupancy` existed, Step 0 only ever ran from inside `update()`,
+`poll_hardware_occupancy` existed, Observe only ever ran from inside `update()`,
 which the runtime loop skips while stopped — so a live rig with a train standing
 on it read FREE on every block, including at boot, which is stopped by
 definition.
@@ -136,8 +136,8 @@ def test_a_stopped_poll_does_not_advance_the_simulation_clock():
 
 
 def test_a_stopped_poll_does_not_drain_the_command_inbox():
-    """Stop has to keep meaning stop: the poll runs Step 0 and its commit, not
-    Phase 2, so an inbox command still waits for the resume that drains it."""
+    """Stop has to keep meaning stop: the poll runs Observe and its occupancy commit, not
+    Action, so an inbox command still waits for the resume that drains it."""
     from train import Train
 
     network, sim, detector = build_sim()
@@ -177,7 +177,7 @@ def test_a_stopped_poll_does_not_move_a_train():
 
 
 class _ArrivalSpy:
-    """Records whether Phase-3 step 3b reached the dispatcher."""
+    """Records whether the stop-arrival step (Plan settlement, step 9d8b) reached the dispatcher."""
 
     def __init__(self):
         self.completion_calls = 0
@@ -194,7 +194,7 @@ class _ArrivalSpy:
 
 def _stopped_train_carrying_a_latch():
     """A powered-off train with a detected block change this pass and a
-    `path_cancel_request` waiting for Phase 3 to commit."""
+    `path_cancel_request` waiting for Action teardown to commit."""
     from train import Train
 
     network, sim, _detector = build_sim()
@@ -204,7 +204,7 @@ def _stopped_train_carrying_a_latch():
     controller.route_hooks.phase_latches.set_path_cancel_request(
         ErrorRecord("operator cancelled", "operator_cancelled"), "info"
     )
-    # Only a train Step 0 attributed a change to reaches Phase 3 while OFF.
+    # Only a train Observe attributed a change to reaches the occupancy commit while OFF.
     sim._detected_change_train_ids = {"T1"}
     return sim, train, controller
 
@@ -237,7 +237,7 @@ def test_the_resumed_pass_consumes_the_latch_the_stopped_pass_kept():
 
 def test_a_stopped_pass_reaches_no_arrival_verdict():
     """Arrival is a statement about live authority, and a stopped session
-    exercises none — so step 3b does not run either (design_new.md "Running and
+    exercises none — so the stop-arrival step (Plan settlement, step 9d8b) does not run either (design_new.md "Running and
     stopped"; the stopped pass commits the detected-blocks report alone)."""
     from train import Train
 

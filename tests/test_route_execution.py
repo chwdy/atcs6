@@ -356,7 +356,7 @@ class TestRouteExecutorCompatibilityBugFixes:
 
 class TestRouteCallbacksWrapAround:
     """Regression tests for the `task_runs` list-index vs `Route.tasks`
-    index conflation in Phase-3 callbacks.
+    index conflation in Plan-settlement callbacks.
 
     Per design_new.md "Route-run state" and "RouteTaskRun schema",
     `walk_position` (the list index in `RouteRun.task_runs`) and `task_index`
@@ -722,7 +722,7 @@ class TestBrokenDwellHandling:
         exec_state = executor.execution_states["T_DWELL"]
         train = network.trains["T_DWELL"]
         controller = executor._get_controller(train)
-        # A powered-off train skips Phase 1 entirely, so power up first.
+        # A powered-off train skips Plan entirely, so power up first.
         controller.commands.power_on_cmd()
         controller._apply_head_frame("end_a")
         set_train_span(controller, (0, 0), facing_direction=Direction.EAST)

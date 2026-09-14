@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 # Task location tagged union
 # =============================================================================
 #
-# Per design_new.md line 1125, `RouteTask.task_location` is a tagged union of
+# Per design_new.md "RouteTask data", `RouteTask.task_location` is a tagged union of
 # three concrete target dataclasses. The union enforces that exactly one
 # targeting mode is present and dispatch is structural rather than probe-in-order.
 
@@ -511,7 +511,7 @@ class Route:
     def deactivate(self) -> None:
         """Deactivate the route: write only ``Route.is_active = False``.
 
-        Per design_new.md:2187 ``Route.deactivate()`` writes no latch itself. The
+        Per design_new.md, "Arrival detection", ``Route.deactivate()`` writes no latch itself. The
         per-train latch walk — ``set_route_deactivate(...)`` on each assigned
         train's controller — is the canonical job of
         ``RouteExecutor.deactivate_route(route_id)``, which every latch-writing

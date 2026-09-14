@@ -3,7 +3,7 @@
 Per design_new.md, operator-issued emergency brake (activate_emergency_cmd)
 sets eb_active = True, forces handle to EB, clears ato_running, and (when a
 live path exists) writes pending_path_cancel_request(EB). The latch survives
-across ticks until Phase 3 commits it, which only happens when the train is
+across ticks until Action teardown commits it, which only happens when the train is
 fully stopped at zero speed.
 
 The doc rule (Latch Table): pending_path_cancel_request is consumed only
@@ -101,7 +101,7 @@ def test_pending_cancel_latch_survives_while_moving():
     """Latch remains set across simple controller operations until stopped.
 
     We don't run the full simulation tick chain here (that would require the
-    Phase-3 consumer to be fully wired). Instead we directly verify the
+    Action-teardown consumer to be fully wired). Instead we directly verify the
     latch is preserved while the train's current_speed > 0 — i.e. the latch
     is durable across reads and not cleared by any incidental call.
     """

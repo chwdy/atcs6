@@ -138,7 +138,7 @@ def update_switch(
                     block_manager.on_switch_position_changed(switch_id)
                 except Exception:
                     pass
-            # design_new.md line 708: the disabled toggle is a topology-
+            # design_new.md "`disabled` and `manual` availability flags": the disabled toggle is a topology-
             # availability change, so neighbouring switches' stored
             # flank_protection can go stale against the opened/closed circuit.
             # Recompute network-wide (the same recompute the add/remove/update-

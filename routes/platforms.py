@@ -62,7 +62,7 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": "Platform not found"}), 404
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
-        # design_new.md line 658: every entity-flag PATCH emits a command_result.
+        # design_new.md "Availability flag REST API surface": every entity-flag PATCH emits a command_result.
         # Platform flag toggles always succeed (no admin-reject 409).
         emit_command_result(
             state, source="Platform", entity_id_key="platform_id",

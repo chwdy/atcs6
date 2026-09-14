@@ -433,7 +433,7 @@ def diagnose_stopped_train(state: AppState, train_id: str) -> dict:
 
     # 3. Authority. No path means no ATC limit, which means no voltage. There is
     #    no cab gate — the head end is derived from the live authority
-    #    (design_new.md "Authority-side head derivation").
+    #    (design_new.md "Reservation-side head derivation").
     path_id = sim.path_dispatcher.active_path_id_by_train(train_id)
     route_id = sim.route_executor.assigned_route_id_for(train_id)
     if path_id:
@@ -788,7 +788,7 @@ def release_emergency(state: AppState, train_id: str) -> CommandResult:
     """Release the emergency brake via the canonical ``eb.release()`` command.
 
     The handle never releases EB (see ``OperatorCommands.set_handle`` and
-    design_new.md:239); EB is released only by ``eb.release()``, which is
+    design_new.md, "EB release"); EB is released only by ``eb.release()``, which is
     latch-gated (stopped, EB cancellation committed, authority cleared). This
     is the operator surface for the "Release Emergency" / Reset button.
 

@@ -222,7 +222,7 @@ class TrainController:
     # `control_mode` lives on the `OperatorCommands` sub-module at
     # `self.commands`. External readers use `controller.commands.control_mode`.
     # There is no operator cab: the head end is derived from the live authority
-    # (design_new.md "Authority-side head derivation") and framed as
+    # (design_new.md "Reservation-side head derivation") and framed as
     # `controller._framed_head_end`.
     # `manual_mode_type` lives on the `ManualDriving` sub-module at
     # `self.manual` in `__post_init__`. External readers use
@@ -293,7 +293,7 @@ class TrainController:
     # the matching `consume_*()` methods. See runtime_payloads.PhaseLatches.
 
     # -------------------------------------------------------------------------
-    # Operator Command Inbox (per design_new.md "Command queue + drain")
+    # Operator Command Inbox (per design_new.md "Operator-command processing slot")
     # -------------------------------------------------------------------------
     # Operator commands enter the controller via the public command methods
     # (power_on_cmd, set_mode, etc.). Each command is enqueued into
@@ -520,10 +520,10 @@ class TrainController:
     @property
     def travel_direction(self) -> Optional[str]:
         """Read-only derived value computed each read from
-        (received_path_plan, current_span) per design_new.md:2283.
+        (received_path_plan, current_span) per design_new.md, "Controller state".
 
         The head is the physical span end that faces into the live authority
-        (**Authority-side head derivation**); travel_direction is the
+        (**Reservation-side head derivation**); travel_direction is the
         network-frame direction pointing from the opposite physical end through
         the head end and onward. When no next span resource exists ahead, it is
         the direction outward through the head end's tile edge.
@@ -577,7 +577,7 @@ class TrainController:
     @property
     def target_speed(self) -> float:
         """Live read: `operational_limit` at distance 0 from the canonical
-        lookahead payload (per design_new.md ~line 161:
+        lookahead payload (per design_new.md "Ownership split":
         "Target speed and speed-limit reason MUST NOT be stored as
         standalone fields anywhere; they are the value and reason metadata
         at position 0 of the lookahead series").
@@ -601,7 +601,7 @@ class TrainController:
     def speed_limit_reason(self) -> Optional[str]:
         """Live read of the canonical ATC speed-limit reason at distance 0.
 
-        Per design_new.md ~line 161, the canonical source is
+        Per design_new.md "Ownership split", the canonical source is
         `lookahead.speed_curves[0].atc_limit_reason_detail` (with
         `atc_limit_reason_code` as the structured tag). There is no
         controller-owned cache; the reason is recomputed from the live
@@ -912,7 +912,7 @@ class TrainController:
 
         if self.commands.control_mode == "ato":
             # The head end is derived from the live authority (design_new.md
-            # "Authority-side head derivation"), so ATO always drives toward the
+            # "Reservation-side head derivation"), so ATO always drives toward the
             # authority end — no cab to align.
 
             # Drive while ATO intent is engaged; otherwise brake to a stand.
@@ -985,14 +985,14 @@ class TrainController:
           - everything else        → 0.0 (READY/AT_STATION/OFF use lighting
                                      or zero voltage and ignore this field)
         """
-        # design_new.md:3047 (A capped crossing is discarded): when the
+        # design_new.md, "A capped crossing is discarded": when the
         # Propulsion cap step lowers the calibration drive through an external
         # ATC restriction during a measured crossing, taint that crossing so it
         # is discarded and re-measured rather than banked. EB and power-off end
         # the whole pass separately, through run_still_valid at step `26f5`.
         self._taint_calibration_crossing_on_cap()
         if not self.power_on:
-            # Per design_new.md line 1755: clear manual_power_percent on
+            # Per design_new.md "Power/mode command contracts": clear manual_power_percent on
             # power-off so the set-and-forget contract holds.
             self.manual.reset_power_percent_for_safety()
             return PhysicsCommand(
@@ -1087,7 +1087,7 @@ class TrainController:
             cap = float(self.atc.speed_limit or 0.0)
             # The commanded percent is the authoritative operating point for
             # this tick, so physics maps it straight to track_voltage through
-            # voltage_power_curve (design_new.md:2424, 2431). A zero percent
+            # voltage_power_curve (design_new.md, "Voltage behavior"). A zero percent
             # keeps the existing dead-rail outcome rather than the curve's
             # 0%-power lighting anchor.
             voltage_pct: Optional[float] = pct if pct > 0.0 else None
@@ -1128,7 +1128,7 @@ class TrainController:
     def _taint_calibration_crossing_on_cap(self) -> None:
         """Taint an open speed-calibration crossing when the Propulsion cap step
         lowers the calibration drive through an external ATC restriction
-        (design_new.md:3047, "A capped crossing is discarded").
+        (design_new.md, "A capped crossing is discarded").
 
         The calibration drive goes through the cap step like every driving
         source. When that step lowers it on a tick, the speed the pass would time
@@ -1505,7 +1505,7 @@ class TrainController:
         return None
 
     # --- Authority-framed head/tail/orientation helpers ----------------------
-    # Per design_new.md "Authority-side head derivation": head/tail and
+    # Per design_new.md "Reservation-side head derivation": head/tail and
     # travel_direction derive from (`_framed_head_end`, current_span). The framed
     # head follows the live authority, defaulting to end_a with no authority
     # (matching the placement default). `end_a` / `end_b` on the span are
@@ -1514,7 +1514,7 @@ class TrainController:
     def _head_end_label(self) -> str:
         """Which physical span end ("end_a"/"end_b") the span is currently framed
         with as the head. Kept in sync with the authority-derived head by the
-        driving tick's reframe (design_new.md "Authority-side head derivation");
+        driving tick's reframe (design_new.md "Reservation-side head derivation");
         span re-framing is driven by a live authority, so a train that loses its
         authority keeps the framing it last had until a new authority moves it
         (power-off resets it to the ``end_a`` default). There is no operator cab:
@@ -1560,7 +1560,7 @@ class TrainController:
 
     def _authority_head_end(self) -> str:
         """The physical span end ("end_a"/"end_b") that faces into the live
-        authority (design_new.md "Authority-side head derivation"): the end whose
+        authority (design_new.md "Reservation-side head derivation"): the end whose
         resource sits later in ``received_path_plan.resource_sequence``, with the
         track-connectivity / path-direction geometry resolving a train whose span
         covers one resource. Returns the currently-framed head when there is no
@@ -1929,7 +1929,7 @@ class TrainController:
         - It's reserved for a different path
         - It's disabled
 
-        Per design_new.md lines 703 and 1751, CAUTION is NOT an obstruction:
+        Per design_new.md "ATC speed limit", CAUTION is NOT an obstruction:
         its only operational effect on lookahead is the CAUTION_SPEED_LIMIT_KMH
         cap applied in `ATCCalculator.speed_limit()`. A CAUTION block that is
         otherwise free / reserved-for-this-train must remain enterable so a
@@ -1991,7 +1991,7 @@ class TrainController:
     def active_conditions(self) -> FrozenSet[ControllerCondition]:
         """Canonical projection of recovery-relevant controller flags.
 
-        Per design_new.md "Controller condition set" canonical home: derived
+        Per design_new.md "`ControllerCondition` set" canonical home: derived
         each read from controller-stored fields. RouteExecutor.is_clean_for_create reads a subset of this set; readers must not duplicate the underlying field checks.
         """
         conditions: set[ControllerCondition] = set()
@@ -2389,7 +2389,7 @@ class TrainController:
                 event_time=self.commands._estimate_event_time(),
                 payload=payload or {},
                 # `_emit_event` callers are latch-consume / event-log events, so
-                # per the Latch consumption events table (design_new.md:156) it
+                # per the Latch consumption events table (design_new.md, "Latch consumption events") it
                 # passes latch_event=True and is never dropped by suppression.
                 latch_event=True,
             )
@@ -2411,7 +2411,7 @@ class TrainController:
         return None
 
     def complete_power_off(self) -> None:
-        """Controller-owned OFF-cleanup entry point (design_new.md:282, :1808).
+        """Controller-owned OFF-cleanup entry point (design_new.md, "Power/mode command contracts").
 
         Invoked by the Action ``pending_power_off`` consumer (step ``886a`` of
         the Power-off procedure). It is the only ``OFF``-writing site besides the
@@ -2440,7 +2440,7 @@ class TrainController:
         self.powered = False
         self._reset_head_frame_to_default()
         self.ops.reset_handle_to_neutral()
-        # design_new.md:1895 — clear the EB latch through the EB-owned helper so
+        # design_new.md, "EB workflow state machine" — clear the EB latch through the EB-owned helper so
         # the EB Workflow stays the single writer of `eb.active`.
         self.eb.clear()
         # OFF cleanup sets control_mode = "manual" (which clears

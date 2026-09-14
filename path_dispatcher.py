@@ -102,7 +102,8 @@ class PathDispatcher:
         self.network = network
         self.paths: Dict[str, Path] = {}
         self.path_sequence_counter: int = 0
-        # Injected named dependencies (design_new.md:1418, 2673): PathDispatcher
+        # Injected named dependencies (design_new.md, "Preemption" and
+        # "Dispatcher/route-executor inputs"): PathDispatcher
         # holds no general SimulationController reference. SimulationController
         # wires these once via wire_dependencies(...); they stay None for isolated
         # dispatcher unit tests, where every use below is None-guarded and no-ops.
@@ -123,7 +124,7 @@ class PathDispatcher:
     def active_paths(self) -> Dict[str, Path]:
         """Legacy alias for the underlying path registry.
 
-        Per design_new.md ~line 80, completed/cancelled paths are retained
+        Per design_new.md "Retained path history", completed/cancelled paths are retained
         as historical records in the same dict (skipped by the canonical
         `active_path_id_by_train(...)` projection because their status is
         no longer ACTIVE). Callers that want only ACTIVE-status rows
@@ -133,7 +134,7 @@ class PathDispatcher:
 
     @property
     def paths_by_id(self) -> Dict[str, Path]:
-        """Canonical alias from design_new.md ~line 78. Same dict as
+        """Canonical alias from design_new.md "Retained path history". Same dict as
         `self.paths`; includes retained terminal rows."""
         return self.paths
 
@@ -172,8 +173,9 @@ class PathDispatcher:
         notification_center: Optional[Any] = None,
         controllers: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Inject the named dependencies PathDispatcher needs (design_new.md:1418,
-        2673): the route executor (the cancellation/completion callbacks and the
+        """Inject the named dependencies PathDispatcher needs (design_new.md,
+        "Preemption" and "Dispatcher/route-executor inputs"): the route executor
+        (the cancellation/completion callbacks and the
         preemption / reversal-trap resolvers), the occupant-controller lookup
         registry, and the event-log NotificationCenter. Called once by
         SimulationController at construction; PathDispatcher holds no general
@@ -197,7 +199,7 @@ class PathDispatcher:
         """The set of blocks the train currently occupies — its covered span.
 
         Enforces the covered-span invariant (design_new.md "`create_path()`
-        flow", item 9, line 1240): a stored authority must reach at least one
+        flow", item 9): a stored authority must reach at least one
         block outside this set. Returns an empty set when the span is
         unavailable, which disables the exclusion rather than blocking
         acquisition.
@@ -426,7 +428,7 @@ class PathDispatcher:
         block or switch already in ``existing_blocks`` / ``existing_switches``,
         or on a block / switch already visited earlier in the same walk.
 
-        Per design_new.md "Path extension" (lines 1040-1041, 1083): a path's
+        Per design_new.md "Path extension": a path's
         ``resource_sequence`` must not contain the same block or switch
         twice; ``extend_path`` must reject any extension that would cause a
         resource to appear twice in the combined path, and ``create_path``
@@ -851,7 +853,7 @@ class PathDispatcher:
             # Resolve the underlying Switch entity for availability checks.
             switch_entity = self._resolve_switch_at_position(pos)
             # Disabled switches are structural failures, not occupancy-class.
-            # Per design_new.md "Availability flags" canonical home, a
+            # Per design_new.md "`disabled` and `manual` availability flags" canonical home, a
             # disabled switch behaves like missing track; per
             # ValidationErrorType.is_occupancy_class, SWITCH_DISABLED is not
             # occupancy-class, so incremental acquisition will not retry around it and a
@@ -970,7 +972,7 @@ class PathDispatcher:
                 API/UI/admin calls that explicitly chose to use manual
                 resources. Disabled resources are always excluded regardless.
             reservation_cap_block_id: Meet-coordination acquisition cap per the
-                `Acquisition-cap rule` (design_new.md:1025). Default None (no
+                `Reservation-cap rule` (design_new.md, "Reservation-cap rule"). Default None (no
                 cap). When set short of the requested target, authority is
                 acquired toward the requested target but never stored past the
                 cap block, so `reservation_end_block_id` lands on the cap and the
@@ -978,8 +980,8 @@ class PathDispatcher:
                 train holds at the cap without completing. The requested target
                 is unchanged.
             required_candidate_resource_keys: Meet candidate-pinning per the
-                `Path API migration` and `Meet coordination` (design_new.md:1232,
-                :1261, :1939). Default None. When set, it is the exact ordered
+                `Path API migration` and `Meet coordination` (design_new.md).
+                Default None. When set, it is the exact ordered
                 `(resource_type, resource_id, entry_edge, exit_edge)` key list of
                 the candidate the tick-start meet calculation selected; dispatcher
                 filters the direction-compatible candidates to that one route
@@ -1125,7 +1127,7 @@ class PathDispatcher:
 
         # Reject candidates with internal repeats — a single path's
         # resource_sequence must not contain the same block or switch
-        # twice. Per design_new.md "Path extension" line 1083 the same
+        # twice. Per design_new.md "Path extension" the same
         # rule applies to create_path() and extend_path(). At create_path
         # time there is no existing path to overlap against; we only
         # catch tile-walks whose post-seam path re-enters an earlier block
@@ -1151,7 +1153,7 @@ class PathDispatcher:
             )
         candidates = non_revisit_candidates
 
-        # Meet candidate-pinning (design_new.md:1261, :1939): when the tick-start
+        # Meet candidate-pinning (design_new.md, "Path API migration"): when the tick-start
         # meet calculation pinned this train to one route, keep only the
         # direction-compatible candidate matching that exact ordered
         # resource/frame key before choosing. A newly-invalid pin (the pinned
@@ -1203,7 +1205,7 @@ class PathDispatcher:
             segment = cand.walk
             ordered_walk = cand.ordered_walk
 
-            # Meet-coordination acquisition cap (design_new.md:1025): never store
+            # Meet-coordination acquisition cap (design_new.md, "Reservation-cap rule"): never store
             # authority past the cap block. Raw-slice the candidate walk at the
             # cap, then let the ordinary validate/acquire path below handle any
             # within-cap conflict (best-effort truncation pulls it back further)
@@ -1255,7 +1257,7 @@ class PathDispatcher:
                         )
 
             # Covered-span invariant for a reverse move (design_new.md
-            # "`create_path()` flow", item 9, line 1240): a stored reverse
+            # "`create_path()` flow", item 9): a stored reverse
             # authority must reach at least one block the train does not occupy.
             # When a reverse candidate is entirely within the covered span — the
             # degenerate self-reversal onto a tail block the train already sits on,
@@ -1302,7 +1304,7 @@ class PathDispatcher:
 
                 if structural:
                     # Structural failures (disabled block, missing track)
-                    # always hard-reject per design_new.md ":890".
+                    # always hard-reject per design_new.md, "Viable-but-unavailable rule".
                     had_structural_failure = True
                     continue
 
@@ -1411,7 +1413,7 @@ class PathDispatcher:
             # When a meet acquisition cap left the stored authority short of the
             # requested target, report `reached_target = False` so the path
             # never satisfies try_complete_active_path — the train holds at the
-            # cap (design_new.md "Acquisition-cap rule", Capped-short behavior).
+            # cap (design_new.md "Reservation-cap rule", Capped-short behavior).
             created_reached = path.reaches_target(requested_destination_block_id)
             created_reason = (
                 "created"
@@ -1432,7 +1434,7 @@ class PathDispatcher:
 
         # All candidates failed. When the train head currently sits on a switch
         # resource we cannot store a block-terminated holding authority, so
-        # surface the head-on-switch case explicitly per design_new.md ":894".
+        # surface the head-on-switch case explicitly per design_new.md, "Resource acquisition".
         # This only fires when the loop exhausted because of occupancy conflicts —
         # a structural failure (e.g. disabled downstream block) is reported
         # through the BLOCKED_BEFORE_TARGET tail instead.
@@ -1477,7 +1479,7 @@ class PathDispatcher:
         explicitly chose to use manual resources.
 
         `reservation_cap_block_id` (default None) is the Meet-coordination
-        acquisition cap per the `Acquisition-cap rule` (design_new.md:1025).
+        acquisition cap per the `Reservation-cap rule` (design_new.md, "Reservation-cap rule").
         When set short of the requested target, the append is truncated so
         authority never extends past the cap block; when the next forward
         resource lies beyond the cap, the extend appends nothing (a
@@ -1485,7 +1487,7 @@ class PathDispatcher:
         requested target is unchanged.
 
         `required_candidate_resource_keys` (default None) applies the same exact
-        meet candidate-pinning `create_path(...)` does (design_new.md:1448): the
+        meet candidate-pinning `create_path(...)` does (design_new.md, "Path API migration"): the
         appended suffix must be the forward tail of the pinned candidate's
         ordered `(resource_type, resource_id, entry_edge, exit_edge)` key list.
         When the named candidate is no longer viable the extend returns the
@@ -1540,7 +1542,7 @@ class PathDispatcher:
         if path.reaches_target(requested_destination_block_id):
             # Nothing was appended, so the terminal frame is unchanged. The
             # returned pair echoes what Plan passed (design_new.md "Path
-            # extension", line 2243): the caller records it as the match key
+            # extension"): the caller records it as the match key
             # for stop completion, and try_complete_active_path(...) checks the
             # actual terminal frame independently before it commits completion.
             return PathAcquisitionResult(
@@ -1674,7 +1676,7 @@ class PathDispatcher:
             )
         candidates = non_revisit_candidates
 
-        # Meet candidate-pinning (design_new.md:1448): keep only the forward
+        # Meet candidate-pinning (design_new.md, "Path API migration"): keep only the forward
         # suffix that continues the pinned candidate's route. When the pin no
         # longer matches any forward continuation, do NOT fall through to another
         # candidate and do NOT tear the path down — return the ordinary no-growth
@@ -1723,7 +1725,7 @@ class PathDispatcher:
             segment = cand.walk
             ordered_walk = cand.ordered_walk
 
-            # Meet-coordination acquisition cap (design_new.md:1025): never append
+            # Meet-coordination acquisition cap (design_new.md, "Reservation-cap rule"): never append
             # authority past the cap block. The forward suffix's first block is
             # the current authority end; a cap there (or off this suffix) means
             # the train already holds at the cap -> no growth.
@@ -1800,7 +1802,7 @@ class PathDispatcher:
                     continue
                 # Pure occupancy failure: this is the "valid prefix,
                 # temporarily blocked" condition described by
-                # design_new.md ":994". Track it so the tail can return
+                # design_new.md, "Viable-but-unavailable rule". Track it so the tail can return
                 # `appended_resource_count = 0` if no candidate grows the path.
                 had_occupancy_blocker = True
 
@@ -1904,7 +1906,7 @@ class PathDispatcher:
         if last_resource and last_resource not in ext_reason:
             ext_reason = f"{ext_reason} (blocked at {last_resource})"
 
-        # Per design_new.md ":994" / ":997": when incremental acquisition extend cannot
+        # Per design_new.md, "Viable-but-unavailable rule": when incremental acquisition extend cannot
         # append any new resource but the existing path is still a legal
         # forward prefix to the requested target (`find_paths` returned
         # forward candidates above) and the only obstruction was an
@@ -1919,7 +1921,7 @@ class PathDispatcher:
             # an occupancy/reservation/lock conflict: an extend that cannot grow
             # returns appended_resource_count = 0 / reached_target = False, NOT
             # blocked_before_target (which only create_path returns)
-            # (design_new.md:1339/1462).
+            # (design_new.md, "Path API migration").
             # No status transition here: the path is already ACTIVE and stays
             # ACTIVE on a no-growth hold, so `last_status_updated_time` must
             # not be re-stamped (design_new.md: status transitions only).
@@ -1947,7 +1949,7 @@ class PathDispatcher:
         # To UI").
         # An extend that could not grow for a non-occupancy (structural) reason
         # is no_viable_path, never blocked_before_target — that failure kind is
-        # create_path-only (design_new.md:1339).
+        # create_path-only (design_new.md, "Path API migration").
         return self._reject(
             failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
             path_id=path_id,
@@ -1966,7 +1968,7 @@ class PathDispatcher:
     ) -> CancellationResult:
         """v1 cancel_path: release reservations, mark path CANCELLED.
 
-        Per design_new.md "cancel_path() return contract":
+        Per design_new.md "Path API migration":
           * `error` is the diagnostic `ErrorRecord` that flows straight into the
             `cancel_path` event; its `origin` names what ended the path. It is
             required for every cancellation. No planning or routing logic
@@ -1978,7 +1980,7 @@ class PathDispatcher:
           * `deviation` is the structured classification boolean forwarded to
             the route callback.
           * A `path_id` absent from `paths_by_id` is a caller-contract
-            violation and raises (design_new.md line 1360), like the
+            violation and raises (design_new.md "Path API migration"), like the
             error-pairing violation above.
           * An idempotent no-op (already ``COMPLETED`` / ``CANCELLED``) returns
             ``committed = False`` with ``new_status`` set to that terminal
@@ -1993,7 +1995,7 @@ class PathDispatcher:
         path = self.paths.get(path_id)
         if path is None:
             # A `path_id` not present in `paths_by_id` is a caller-contract
-            # violation, not an outcome (design_new.md line 1360): `cancel_path`
+            # violation, not an outcome (design_new.md "Path API migration"): `cancel_path`
             # carries no `failure_kind` to report one, so it raises rather than
             # returning a result. Callers resolve the id through
             # `active_path_id_by_train(...)` first, so this never fires in v1.
@@ -2004,7 +2006,7 @@ class PathDispatcher:
         if path.status == PathStatus.COMPLETED:
             # Idempotent no-op: the path already released its future authority
             # through normal completion on an earlier tick. `new_status` is
-            # always terminal on return (design_new.md line 1357-1358).
+            # always terminal on return (design_new.md "Path API migration").
             return CancellationResult(
                 committed=False,
                 path_id=None,
@@ -2039,7 +2041,7 @@ class PathDispatcher:
         path._set_status(PathStatus.CANCELLED, now)
 
         # Notify route executor (bookkeeping only). Per design_new.md "route
-        # path-event callback schema" (design_new.md:2673) the canonical
+        # path-event callback schema" the canonical
         # signature is `handle_path_cancellation(train_id, path_id, error)`. The
         # deviation classification is not passed to the callback — it rides the
         # `cancel_path` event emitted below (and `error.origin`), so the route
@@ -2088,7 +2090,7 @@ class PathDispatcher:
                     exc_info=True,
                 )
 
-        # Per design_new.md ~line 80: cancelled or completed paths remain
+        # Per design_new.md "Retained path history": cancelled or completed paths remain
         # in `paths_by_id[path_id]` for history. They are no longer active
         # authority because `Path.status` is no longer ACTIVE, so
         # `active_path_id_by_train(...)` skips them and the controller's
@@ -2416,7 +2418,7 @@ class PathDispatcher:
     ) -> Optional[int]:
         """The furthest-forward `resource_sequence` block index at or behind
         `start_index` that is a legal authority terminal (design_new.md item-11
-        truncation-terminal rules, line 1366).
+        truncation-terminal rules).
 
         Walks block candidates furthest-forward first and prefers the
         furthest-forward *holding point* that is a legal terminal over any longer
@@ -2771,7 +2773,7 @@ class PathDispatcher:
         errors: List[ValidationError],
     ) -> Optional[int]:
         """Return the prefix length at which incremental acquisition should start the
-        backward walk, per design_new.md ":938".
+        backward walk, per design_new.md, "Resource acquisition".
 
         The index of the first failing occupancy-class block in
         `segment.blocks` is the count of blocks that are still acquirable
@@ -2945,7 +2947,7 @@ class PathDispatcher:
         """True when ``block_id`` is an operator-marked holding point.
 
         Reads the static `Block.is_holding_point` config flag (design_new.md
-        "Block" field schema, line 848). Used only by the best-effort
+        "Block" field schema). Used only by the best-effort
         truncation holding-point preference (item 11).
         """
         blocks = getattr(self.network, "blocks", None)
@@ -2988,7 +2990,7 @@ class PathDispatcher:
     ) -> Tuple[str, Optional[PathSegment], Optional[List[GraphWalkStep]]]:
         """Apply the Meet-coordination acquisition cap to a candidate walk.
 
-        Per design_new.md "Acquisition-cap rule" (line 1025): when a cap short
+        Per design_new.md "Reservation-cap rule": when a cap short
         of the requested target lies on this walk, authority must not be stored
         past the cap block. Returns one of:
 
@@ -3109,7 +3111,7 @@ class PathDispatcher:
         When `start_at_block_count` is provided, start the backward walk at
         that prefix length (capped to `len(segment.blocks) - 1`). Callers
         compute it from the first occupancy-class validation error's index
-        per design_new.md ":938" ("use the first failing block/switch as
+        per design_new.md, "Resource acquisition" ("use the first failing block/switch as
         the truncation point"). Default `None` preserves the full backward
         walk for callers that have no hint.
         """
@@ -3129,8 +3131,7 @@ class PathDispatcher:
             and hasattr(route_executor, "waypoint_and_run_target_blocks")
             else set()
         )
-        # Covered-span invariant (design_new.md "`create_path()` flow", item 9,
-        # line 1240): every stored live authority must cross at least one
+        # Covered-span invariant (design_new.md "`create_path()` flow", item 9): every stored live authority must cross at least one
         # resource boundary beyond the train's covered span — its blocks must
         # include at least one the train does not currently occupy. A prefix
         # whose blocks are all within the covered span (the degenerate reversal
@@ -3158,8 +3159,7 @@ class PathDispatcher:
         fallback_block_count: Optional[int] = None
         for prefix_block_count in range(start, 1, -1):
             terminal_block_id = segment.blocks[prefix_block_count - 1]
-            # Covered-span exclusion for a reverse move (design_new.md item 9,
-            # line 1240): skip any reverse prefix whose blocks are all within the
+            # Covered-span exclusion for a reverse move (design_new.md "`create_path()` flow", item 9): skip any reverse prefix whose blocks are all within the
             # train's covered span, so a stored reverse authority always reaches
             # at least one block the train does not occupy. This stays absolute for
             # every terminal, holding points included. A forward prefix is not
@@ -3272,8 +3272,8 @@ class PathDispatcher:
         `prefix_blocks`. A switch tile is kept only when the next non-switch
         tile in path order belongs to a kept block — i.e. the switch sits
         inside the prefix, not at the boundary to a dropped block. Per
-        design_new.md ":891" the stored live authority is always
-        block-terminated, and per ":938" truncation must land "before that
+        design_new.md, "Resource acquisition" the stored live authority is always
+        block-terminated, and per "Resource acquisition" truncation must land "before that
         failed switch", so a boundary switch must not appear in the truncated
         segment.
         """
@@ -3784,7 +3784,7 @@ class PathDispatcher:
 
         if report.deviation:
             if active_path is not None:
-                # design_new.md step `389a` + lines 277-279: movement-derived
+                # design_new.md step `389a`: movement-derived
                 # deviation LATCHES the cancel instead of committing it inline.
                 # Writing the controller's `set_path_cancel_request` leaves the
                 # live path ACTIVE with its not-yet-entered reservations and
@@ -3819,7 +3819,7 @@ class PathDispatcher:
         # `current_head_sequence_index = None`) and a `deviation == true` report
         # (head unmappable, also `None`) are the occupancy commit alone and
         # suppress the callback, so a stopped pass or an OFF / hand-pushed
-        # detected entry cannot consume a waypoint task (design_new.md line 89 /
+        # detected entry cannot consume a waypoint task (design_new.md step
         # 640a). A fatal conflict (fix #3) also skips this. Within a mapped
         # report, a per-entry `sequence_index is None` advances no path index.
         if (
@@ -4123,7 +4123,7 @@ class PathDispatcher:
         # canonical `path_completion` notification itself (the terminal-teardown
         # flow, step `09b0` in design_new.md "Core Runtime Loop"). The dispatcher
         # holds the route executor as an injected named dependency, not through a
-        # SimulationController reference (design_new.md:2673).
+        # SimulationController reference (design_new.md, "Dispatcher/route-executor inputs").
         #
         # Per design_new.md step `bc55`: the callback "records the stop as
         # finished through `RouteRun.advance_walk_position(walk_position)`" for
@@ -4140,7 +4140,7 @@ class PathDispatcher:
                 served_walk_position,
             )
 
-        # Per design_new.md ~line 80: completed paths remain in
+        # Per design_new.md "Retained path history": completed paths remain in
         # `paths_by_id[path_id]` for history. `Path.status == COMPLETED`
         # is what makes `active_path_id_by_train(...)` skip them.
 
@@ -4161,7 +4161,7 @@ class PathDispatcher:
     def get_active_paths(self) -> List[Path]:
         """Return all currently ACTIVE path records.
 
-        Per design_new.md ~line 80 cancelled/completed rows remain in
+        Per design_new.md "Retained path history" cancelled/completed rows remain in
         `paths_by_id` as historical records; they are filtered out here so
         callers that ask for "active paths" never see terminal rows.
         """
@@ -4236,7 +4236,7 @@ class PathDispatcher:
         authority_end = path.get_reservation_end_block_id()
         # Reached the requested target (or no target recorded): not waiting.
         # Whether a live authority reaches a target is `Path.reaches_target(...)`,
-        # never `authority_end == target` (design_new.md:1231/1921): a live
+        # never `authority_end == target` (design_new.md, "Path field schema"): a live
         # authority can legitimately run past a waypoint target, and an
         # authority-end equality test would miss that reached case.
         if not target or path.reaches_target(target):

@@ -125,8 +125,8 @@ def test_F4_path_completes_on_arrival_at_terminal():
 def test_F6_route_finishes_after_terminal_stop():
     """design_new.md step `879a` and the "Active-path completion procedure"
     steps `09b0`/`29c5`/`d843`: after the train stops at its terminal,
-    Phase 3 completion → `RouteExecutor.handle_path_completion(...)` →
-    Phase 1 `finish_route_run(train_id)` must run, which sets
+    Plan-settlement completion → `RouteExecutor.handle_path_completion(...)` →
+    Plan-settlement `finish_route_run(train_id)` must run, which sets
     `RouteRun.current_route_status = FINISHED` and makes
     `assigned_route_id_for(train_id)` return None.
 
@@ -140,7 +140,7 @@ def test_F6_route_finishes_after_terminal_stop():
         f"After the train stopped at the terminal and the route's "
         f"terminal-walk should have run, `assigned_route_id_for"
         f"('DEMO_TRAIN')` is still {assigned!r}. Per design_new.md "
-        f"step `879a`, Phase 1 must call `finish_route_run(train_id)` "
+        f"step `879a`, Plan settlement must call `finish_route_run(train_id)` "
         f"so the run transitions out of RUNNING and assigned-route reads "
         f"return None. Root cause: the upstream completion handshake "
         f"(F4) never fires."

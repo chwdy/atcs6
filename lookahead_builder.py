@@ -46,7 +46,7 @@ class LookaheadBuilder:
 
         train = self._c._get_train()
         if not train or not self._c.network:
-            # Per design_new.md line 1728: emit the distance-0 anchor with a
+            # Per design_new.md, the canonical lookahead payload: emit the distance-0 anchor with a
             # structured reason code so consumers always see `speed_curves`
             # with at least one entry rather than an empty list.
             return self._build_empty_monitor_lookahead(
@@ -55,7 +55,7 @@ class LookaheadBuilder:
             )
 
         # There is no cab gate: the head end is derived from the live authority
-        # (design_new.md "Authority-side head derivation"). A train with no live
+        # (design_new.md "Reservation-side head derivation"). A train with no live
         # authority falls through to the `no_reservation` empty payload below.
         head_tile = self._c._get_head_tile()
         head_distance_cm = self._c._get_head_distance_cm()
@@ -148,7 +148,7 @@ class LookaheadBuilder:
                 # empty distance-0 anchor rather than silently fabricating
                 # block-bounded authority.
                 #
-                # Per design_new.md lines 279/1825: when a movement-derived
+                # Per design_new.md, the canonical lookahead payload: when a movement-derived
                 # deviation cancel is latched (initiator "deviation"), the live
                 # path stays ACTIVE with its locks while the head has run off
                 # it, so the anchor reports `atc_limit = 0` with reason
@@ -512,7 +512,7 @@ class LookaheadBuilder:
 
         # The head→authority-end clearance is the in-walk locator-to-locator
         # projection owned by `RailwayPathfinder.measure_along_walk`
-        # (design_new.md:2146, :2158): sum the forward tile lengths from the
+        # (design_new.md, "Pathfinding-home migration"): sum the forward tile lengths from the
         # head's tile through the authority end, netting out the head's already-
         # traversed in-tile offset. `head_distance_cm` carries that offset (and
         # is negative in the freshly-departed recovery anchor, which the helper
@@ -534,7 +534,7 @@ class LookaheadBuilder:
         # the safety-margin-adjusted authority boundary; with an active path,
         # that is the same axis as the speed_curves samples. The boundary
         # projection is owned by `RailwayNetwork.project_authority_boundary_delta`
-        # (design_new.md:2161): the head→authority-end clearance just walked is
+        # (design_new.md, "Pathfinding-home migration"): the head→authority-end clearance just walked is
         # carried in the head locator, and the authority end is the final block
         # resource's directed frame.
         target_stop_cm = max(0.0, clearance_cm - effective_safety_margin)
@@ -664,7 +664,7 @@ class LookaheadBuilder:
         resource_sequence: List[Any],
     ) -> float:
         """Measure the head→authority-end clearance via
-        `RailwayPathfinder.measure_along_walk` (design_new.md:2146, :2158).
+        `RailwayPathfinder.measure_along_walk` (design_new.md, "Pathfinding-home migration").
 
         Builds the forward directed walk (one `GraphWalkStep` per tile, from the
         head's position through the authority end) out of `resource_sequence`,
@@ -723,7 +723,7 @@ class LookaheadBuilder:
     ) -> float:
         """Build the head locator + authority-end frame and route the boundary
         projection through `RailwayNetwork.project_authority_boundary_delta`
-        (design_new.md:2161).
+        (design_new.md, "Pathfinding-home migration").
 
         The head→authority-end clearance the lookahead walk just produced is
         carried on the head locator's `distance_cm`; the authority end is the

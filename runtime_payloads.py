@@ -164,8 +164,8 @@ class ResourceEvent:
 
     `traversal_direction` is the block-relative `"forward"` / `"reverse"`
     direction of the entered block, used by the head-advance route callback
-    to match a waypoint task on block AND direction (design_new.md:462,
-    465). It is populated by `PathDispatcher` from the entered block's
+    to match a waypoint task on block AND direction (design_new.md,
+    "Head-mapping rule"). It is populated by `PathDispatcher` from the entered block's
     `resource_sequence` entry before calling
     `RouteExecutor.handle_train_advanced(...)`; it is `None` for switch
     resources and `None` until the dispatcher computes it.
@@ -522,7 +522,7 @@ class PhaseLatches:
 class PathCompletionResult:
     """Result returned by PathDispatcher.try_complete_active_path(...).
 
-    Per design_new.md ~line 271 (Path completion notification flow):
+    Per design_new.md "Path completion notification flow":
     - success=True only when dispatcher accepted and committed completion.
     - path_id: the active path that was completed/considered. None only when no
       active path existed.
@@ -579,7 +579,7 @@ class TargetResolutionFailureKind(Enum):
 class PathAcquisitionResult:
     """Structured result for create_path / extend_path.
 
-    Per design_new.md "create_path() / extend_path() return contract", the
+    Per design_new.md "Path API migration", the
     payload carries the success flag, the two values that describe every
     successful outcome (`appended_resource_count` and `reached_target`), the
     `failure_kind` discriminator, the live `path_id`, the live
@@ -653,14 +653,14 @@ class PathAcquisitionResult:
 class CancellationResult:
     """Structured result for PathDispatcher.cancel_path(...).
 
-    Per design_new.md "cancel_path() return contract": when the path was
+    Per design_new.md "Path API migration": when the path was
     ACTIVE, `committed=True`, `path_id` is required, `new_status` is
     `PathStatus.CANCELLED`. On an idempotent no-op (the path was already
     COMPLETED / CANCELLED), `committed=False`, `path_id=None`, and `new_status`
     is that terminal status (never `None` — it is always terminal on return),
     with `reason` the canonical string "already completed" / "already
     cancelled". A caller-contract miss (a `path_id` absent from `paths_by_id`)
-    raises rather than returning a result (design_new.md line 1360). Callers
+    raises rather than returning a result (design_new.md "Path API migration"). Callers
     must not branch on the exact `reason` text. `committed` is whether this call
     performed the `ACTIVE -> CANCELLED` transition.
     """
@@ -724,7 +724,7 @@ class FatalConflictKind(Enum):
     SWITCH_OCCUPIED_BY_OTHER_TRAIN = "switch_occupied_by_other_train"
     DISABLED_RESOURCE_ENTRY = "disabled_resource_entry"
     MALFORMED_ROUTE_KEY = "malformed_route_key"
-    # design_new.md line 663: a train physically on a switch must hold a
+    # design_new.md "Switch entity": a train physically on a switch must hold a
     # compatible main lock for the route it occupies; entering with no such lock
     # (and not a same-train already-covered seeded span) is a fatal intrusion.
     SWITCH_INTRUSION = "switch_intrusion"
@@ -880,7 +880,7 @@ class ValidationErrorType(Enum):
 
     def is_occupancy_class(self) -> bool:
         # Live-state conflicts that acquisition truncates around per
-        # design_new.md ":938" ("If a switch acquisition fails ... truncate
+        # design_new.md, "Resource acquisition" ("If a switch acquisition fails ... truncate
         # the candidate to the previous block before that failed switch")
         # and the block-conflict half of the same contract. `_best_effort_
         # truncate` drops the contested resource entirely — for a

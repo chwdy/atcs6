@@ -67,7 +67,7 @@ _TEARDOWN_CONDITIONS = _PENDING_CANCEL_CONDITIONS | frozenset(
     {ControllerCondition.POWER_OFF_PENDING}
 )
 
-# design_new.md:1559 "A pending teardown holds the request": when any of these
+# design_new.md "A pending teardown holds the request": when any of these
 # is already active on a re-request, `request_route_assignment` writes no second
 # teardown latch — the teardown consumer already in flight applies the latest
 # held `_pending_route_assignments` entry when it removes the run.
@@ -235,7 +235,7 @@ class ResolvedNextTaskProjection:
     of `task_runs[walk_position].resolved_target`; this helper itself never
     writes that field.
 
-    Per design_new.md line 1089, `walk_position` is the walk-position index
+    Per design_new.md "Canonical Next-Target Selection", `walk_position` is the walk-position index
     in `RouteRun.task_runs`. The underlying `RouteTask` is
     `Route.tasks[task_runs[walk_position].task_index]`.
 
@@ -476,7 +476,7 @@ class RouteExecutionState:
         """Derived: list position in `task_runs` of the next non-finished
         entry — the walk-position counterpart of `next_planning_index`.
 
-        Per design_new.md line 1104 + line 1267, `walk_position` (the list
+        Per design_new.md "Canonical Next-Target Selection", `walk_position` (the list
         index in `task_runs`) and `task_index` (the index into
         `Route.tasks`) decouple after `CIRCULAR` / `ROUND_TRIP` wrap-around
         when `len(task_runs) > len(Route.tasks)`. Callers that need to
@@ -534,7 +534,7 @@ class RouteExecutionState:
           group with the flipped direction. Rows keep their authored order inside
           a group on both visits, and the end group is not repeated.
 
-        Never reads or writes ``RouteRun.direction`` (design_new.md line 1857):
+        Never reads or writes ``RouteRun.direction`` (design_new.md "Route-run state"):
         the visit direction lives per-row in ``walk_direction``. Appends only one
         row beyond the current tail, so a waypoint-lookahead row already appended
         past ``from_walk_position`` is never duplicated. ``route`` may be ``None``
@@ -686,7 +686,7 @@ class RouteExecutor:
         # structural-edit re-add applied by the deactivate consumer.
         self._pending_route_assignments: Dict[str, Dict[str, Any]] = {}
         # Routes awaiting deferred deletion (per design_new.md "Route deletion
-        # waits for live teardown", lines 2098-2103). `DELETE /api/train-routes`
+        # waits for live teardown"). `DELETE /api/train-routes`
         # never removes a route used by a live or pending run inline: it sets
         # `Route.is_active = False`, records the id here, and fans out the
         # per-train deactivate teardown. The registry retains the `Route` while
@@ -818,7 +818,7 @@ class RouteExecutor:
         start_override: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Canonical assignment-request entry (design_new.md "Route assignment
-        writers", lines 1530-1545). Every HTTP/UI/admin assignment writer routes
+        writers"). Every HTTP/UI/admin assignment writer routes
         through here instead of mutating `Route.assigned_train_ids` directly.
 
         `requested_route_id is None` means unassign. `start_override`, when
@@ -868,7 +868,7 @@ class RouteExecutor:
 
         # An explicit request supersedes any held same-route structural
         # re-allocation: a stale `_pending_reassign` entry must not fire on a
-        # later deactivate of this train (design_new.md line 2097 / the explicit
+        # later deactivate of this train (design_new.md, the explicit
         # "Retargeting/swap uses the general held-assignment mechanism" rule).
         self.discard_pending_reassign(train_id)
 
@@ -902,7 +902,7 @@ class RouteExecutor:
         # down through the canonical workflow, then hold the request; do NOT
         # mutate either route's `assigned_train_ids` yet.
         controller = self._controller_by_id(train_id)
-        # A pending teardown holds the request (design_new.md:1559): when a
+        # A pending teardown holds the request (design_new.md, "A pending teardown holds the request"): when a
         # teardown latch is already in flight for this train, write no second
         # teardown latch — the consumer already scheduled applies whatever
         # `_pending_route_assignments` holds when it removes the run. Only the
@@ -928,7 +928,7 @@ class RouteExecutor:
 
     def _commit_pending_route_assignment(self, train_id: str) -> None:
         """Consume any held `_pending_route_assignments[train_id]` and apply its
-        requested replacement (design_new.md lines 1531 / 1860 / 1864).
+        requested replacement (design_new.md "Route Edit And Reconciliation").
 
         Called by `remove_train_route_run(...)` as its last state mutation,
         once the old run has been archived and unassigned. When the held
@@ -1846,7 +1846,7 @@ class RouteExecutor:
 
     def _manual_override_for(self, train_id: str) -> bool:
         """The `manual_override` flag for a train, from its assigned shared
-        `Route` (design_new.md "manual_override propagation"), matching what Plan
+        `Route` (design_new.md "`disabled` and `manual` availability flags"), matching what Plan
         step `66aa` passes to the dispatcher."""
         route_id = self.assigned_route_id_for(train_id)
         route = self.route_registry.get(route_id) if route_id else None
@@ -1863,7 +1863,7 @@ class RouteExecutor:
         the live shared value when no per-run override is present.
 
         Falls back to the archived `_historical_routes` copy when the active
-        registry has no live route (design_new.md line 2102): a route removed by
+        registry has no live route (design_new.md "Route Edit And Reconciliation"): a route removed by
         a deferred deletion must still resolve for historical-run serialization.
         A live route is only ever archived once nothing holds it, so no live run
         ever reaches the fallback -- Plan/Action always find their route in the
@@ -2346,7 +2346,7 @@ class RouteExecutor:
         # Consume the head-entered blocks Observe recorded and run the
         # stop-arrival check BEFORE the planning half — and before the teardown
         # early-return below: head-advance (640a) applies even under a pending
-        # cancel latch (design_new.md line 433), and stop-arrival (9d8b) guards
+        # cancel latch (design_new.md "Planning Kernel"), and stop-arrival (9d8b) guards
         # itself on `path_cancel_request`. Finishing a stop and re-planning
         # therefore happen in one Plan pass (design_new.md "Stop-arrival
         # procedure").
@@ -2449,8 +2449,9 @@ class RouteExecutor:
         if not self._eligible_for_authority_acquisition(controller, exec_state):
             return
 
-        # Live-path target re-resolution invalidation (design_new.md:1716, 1735,
-        # case `162a`): when a live path exists and a fresh resolve of the CURRENT
+        # Live-path target re-resolution invalidation (design_new.md, "route
+        # path-event callback schema", case `162a`): when a live path exists and a
+        # fresh resolve of the CURRENT
         # walk-position now yields a different target BLOCK than the path was
         # built toward — e.g. a StationTarget re-resolving to a different
         # platform — the already-acquired authority toward the old block is
@@ -2852,7 +2853,7 @@ class RouteExecutor:
         True when the driving source is ready to be granted authority: the
         controller is not OFF, EB is not active, no power-off is pending, no
         path cancel is pending, and the selected driving source is ready — ATO
-        engaged, or a manual train (with no further condition; design_new.md:1953
+        engaged, or a manual train (with no further condition; design_new.md, "Planning Kernel"
         "In `manual` mode there is no fifth condition ... There is no cab
         condition — the head end is derived from the authority"). It does NOT
         require the train to be stopped: there is no recovery to reach, so a
@@ -3086,7 +3087,7 @@ class RouteExecutor:
             # agnostic (the train coasts to a stand wherever it is), and with
             # no path the Stop-arrival check will never fire to finish this
             # row — so finish it here, or the walk would wedge with the run row
-            # forever unfinished (design_new.md:1642, "Run task resolution").
+            # forever unfinished (design_new.md, "Run task resolution").
             self.advance_walk_position(exec_state, route, walk_pos)
         return True
 
@@ -3126,7 +3127,7 @@ class RouteExecutor:
         # so on a fully-covered CIRCULAR / ROUND_TRIP walk `_append_next_walk_
         # task` keeps supplying an unfinished row and the condition never falls
         # false on its own. The scan budget bounds the advance to one full
-        # `len(Route.tasks)` scan per Plan pass (design_new.md line 2011).
+        # `len(Route.tasks)` scan per Plan pass (design_new.md "Covered-task index advance").
         scanned = 0
         while exec_state.next_planning_index < task_count:
             if scanned >= task_count:
@@ -3178,7 +3179,7 @@ class RouteExecutor:
                 # would wrongly declare that stop complete and finish the route
                 # without the train ever turning around. The head must actually
                 # reach the destination. (The covered-stop's doc home,
-                # design_new.md line 1458, describes the train already parked AT
+                # design_new.md "Covered-task index advance", describes the train already parked AT
                 # the destination, where head and span agree; head-anchoring is
                 # the safe reading of that case and preserves turnaround safety.)
                 if not controller.is_stopped():
@@ -3188,7 +3189,7 @@ class RouteExecutor:
                 if not self._is_train_at_block(train, target_block):
                     break
             else:
-                # waypoint coverage (design_new.md line 1458): covered when the
+                # waypoint coverage (design_new.md "Covered-task index advance"): covered when the
                 # resolved target block is anywhere in the train's current span
                 # (a waypoint the train physically passed mid-span is covered
                 # even after its head has moved beyond it), or — for a
@@ -3198,7 +3199,7 @@ class RouteExecutor:
                         break
                 # A post-wrap row (walk_position >= len(Route.tasks)) needs more
                 # than span membership: the head must have moved on past the
-                # block (design_new.md line 1892). Otherwise a cyclic all-in-span
+                # block (design_new.md "Covered-task index advance"). Otherwise a cyclic all-in-span
                 # waypoint walk would advance every row forever without the train
                 # ever leaving the covering position.
                 if pos >= task_count and self._is_train_at_block(
@@ -3220,7 +3221,7 @@ class RouteExecutor:
         """True when ``block_id`` is anywhere in the train's current span.
 
         Covered-task / covered-stop coverage reads the train's full physical
-        span, not just the head-tile block (design_new.md line 1458): the
+        span, not just the head-tile block (design_new.md "Covered-task index advance"): the
         target is covered when it appears in
         ``SimulationController.get_or_create_controller(train_id)
         .get_current_span().occupied_blocks``. Returns False when no span is
@@ -3472,7 +3473,7 @@ class RouteExecutor:
                     target_dir = forward_dir
 
         # Meet-coordination ceiling + candidate pin (design_new.md "Meet
-        # coordination" lines 1558/1565 + "Acquisition-cap rule" line 1025):
+        # coordination" + "Reservation-cap rule"):
         # when this train carries a meet entry, pass its `candidate_resource_keys`
         # as `required_candidate_resource_keys` so the dispatcher acquires the
         # exact route meet coordination evaluated, and — when the entry also caps
@@ -3494,7 +3495,7 @@ class RouteExecutor:
             if ceiling.block_id and ceiling.block_id != target_block:
                 meet_ceiling_block = ceiling.block_id
 
-        # design_new.md line 1208 / line 640: forward the assigned route's
+        # design_new.md "`disabled` and `manual` availability flags": forward the assigned route's
         # operator override into the acquisition chain so an operator-initiated
         # route can serve `manual` resources. Route-level only (never a RouteRun
         # override); an automatic route leaves this False.
@@ -3852,11 +3853,11 @@ class RouteExecutor:
 
         # A natural finish may have removed this route's last assignment / live
         # run, satisfying a deferred deletion that was waiting on it
-        # (design_new.md line 2102).
+        # (design_new.md "Route Edit And Reconciliation").
         self.finalize_pending_route_deletions()
 
     def deactivate_route(self, route_id: str) -> None:
-        """Canonical latch-writing route deactivation (design_new.md:2187).
+        """Canonical latch-writing route deactivation (design_new.md, "Arrival detection").
 
         Calls ``Route.deactivate()`` (which writes only ``Route.is_active =
         False``), then walks every assigned train and writes
@@ -3931,7 +3932,7 @@ class RouteExecutor:
             != resource_event.resource_id
         ):
             return
-        # Match on block AND direction (design_new.md:465). Both sides are
+        # Match on block AND direction (design_new.md, "Head-mapping rule"). Both sides are
         # block-relative "forward"/"reverse": the resolved target carries the
         # requested block-relative direction, and `traversal_direction` is the
         # block-relative direction the dispatcher computed for this entry. Skip
@@ -3959,7 +3960,7 @@ class RouteExecutor:
     ) -> None:
         """Action cancellation callback.
 
-        Per design_new.md "route path-event callback schema" (design_new.md:2673)
+        Per design_new.md "route path-event callback schema"
         the v1 callback signature is ``(train_id, path_id, error)``. Every
         cancellation kind shares the same body; the deviation classification is
         not passed here — it rides the ``cancel_path`` event payload (and
@@ -3972,7 +3973,7 @@ class RouteExecutor:
         # DEACTIVATED/FINISHED slot is never treated as live (design_new.md
         # "Route-run state"). A committed cancellation with no RUNNING run is an
         # invariant violation — "every live path is backed by a RouteRun"
-        # (design_new.md:1839, 2221) — so surface it on the event stream rather
+        # (design_new.md, "route path-event callback schema") — so surface it on the event stream rather
         # than swallowing it. It is deliberately not raised: that invariant is
         # strained by calibration legs and broken-skip finishes, so a hard crash
         # could hit a legal edge; an ERROR event flags it without stopping the tick.
@@ -4019,7 +4020,7 @@ class RouteExecutor:
     ) -> bool:
         """Observe completion callback — step `bc55` (Finished-stop route commit).
 
-        Per design_new.md step `bc55` / line 2182: this records the served stop
+        Per design_new.md step `bc55`: this records the served stop
         as finished by finishing exactly `walk_position` through
         `RouteRun.advance_walk_position(...)`, which samples and writes the row's
         wall and operating finish fields locally; the derived
@@ -4059,7 +4060,7 @@ class RouteExecutor:
         # Idempotency: `advance_walk_position(...)` no-ops on an already-finished
         # row, so a re-delivered completion neither double-advances the walk nor
         # double-appends. ROUND_TRIP reflection is carried by the appended row's
-        # stored `walk_direction` (design_new.md line 1857), not a
+        # stored `walk_direction` (design_new.md "Route-run state"), not a
         # `RouteRun.direction` flip here.
         self.advance_walk_position(exec_state, route, walk_position)
         # design_new.md "Event log": the train reached its stop target. The
@@ -4168,7 +4169,7 @@ class RouteExecutor:
         """Tear down a `RouteRun` for `pending_route_abort` /
         `pending_power_off` / `pending_route_deactivate`.
 
-        Per design_new.md (lines 1860 / 1864): looks up the train's
+        Per design_new.md "Route Edit And Reconciliation": looks up the train's
         currently-RUNNING `RouteRun`.
 
         When a run exists it performs the canonical teardown, then commits any
@@ -4179,13 +4180,13 @@ class RouteExecutor:
              row as a historical run (visible to `history_for_train(...)`).
              The derived `execution_state_for(train_id)` no longer returns it.
           3. Consume `_pending_route_assignments[train_id]` and apply its
-             requested replacement, if any (design_new.md line 1864). The
+             requested replacement, if any (design_new.md "Route Edit And Reconciliation"). The
              narrower same-route `_pending_reassign` entry is NOT applied here;
              the deactivate consumer applies it after this method returns.
 
         When NO run exists, it still removes any stored assignment and consumes
         `_pending_route_assignments[train_id]` exactly as the commit contract
-        specifies (design_new.md line 1860) -- this covers a train assigned
+        specifies (design_new.md "Route Edit And Reconciliation") -- this covers a train assigned
         before its first Plan allocation and an earlier teardown consumer in the
         same Action pass.
 
@@ -4200,7 +4201,7 @@ class RouteExecutor:
         if exec_state is None:
             # No active run to remove (a train assigned before its first Plan
             # allocation, or an earlier teardown consumer already ran this
-            # pass). Per design_new.md line 1860 the method still removes any
+            # pass). Per design_new.md "Route Edit And Reconciliation" the method still removes any
             # stored assignment, then commits any held replacement.
             old_route_id = self.assigned_route_id_for(train_id)
             if old_route_id:
@@ -4235,7 +4236,7 @@ class RouteExecutor:
 
         # Commit any held route-assignment replacement as the last state
         # mutation, now that the old run is archived and unassigned
-        # (design_new.md line 1864). The narrower same-route `_pending_reassign`
+        # (design_new.md "Route Edit And Reconciliation"). The narrower same-route `_pending_reassign`
         # entry is applied separately by the deactivate consumer after this
         # method returns.
         self._commit_pending_route_assignment(train_id)
@@ -4271,8 +4272,7 @@ class RouteExecutor:
 
     def finalize_pending_route_deletions(self) -> None:
         """Archive + unregister any route whose deferred deletion is now
-        satisfied (design_new.md "Route deletion waits for live teardown",
-        line 2102).
+        satisfied (design_new.md "Route deletion waits for live teardown").
 
         Called after each Action teardown (`remove_train_route_run`) and each
         natural finish (`finish_route_run`). For every route awaiting deletion,
@@ -4314,7 +4314,7 @@ class RouteExecutor:
 
         A route removed from the active registry by
         `finalize_pending_route_deletions()` is retained here (design_new.md
-        line 2102). Used by the DELETE service for post-archival idempotency and
+        "Route deletion waits for live teardown"). Used by the DELETE service for post-archival idempotency and
         by `get_route(...)`'s historical fallback.
         """
         return self._historical_routes.get(route_id)
@@ -4352,7 +4352,7 @@ class RouteExecutor:
     def discard_pending_reassign(self, train_id: str) -> None:
         """Drop any held re-assignment for `train_id` WITHOUT applying it.
 
-        Per design_new.md "Shared-route edit teardown" (line 1461): when an
+        Per design_new.md "Shared-route edit teardown": when an
         earlier Action consumer (abort / power-off) or a natural finish ended
         the run before the deactivate consumer ran, the operator/admin teardown
         wins — the held re-assignment is discarded so a powered-off or aborted

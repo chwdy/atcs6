@@ -167,7 +167,7 @@ class AtoStatus(Enum):
 class ControllerCondition(Enum):
     """Derived projection of TrainController recovery-relevant flags.
 
-    Per design_new.md "Controller condition set" canonical home, every member
+    Per design_new.md "`ControllerCondition` set" canonical home, every member
     maps to one underlying controller field; TrainController.active_conditions
     returns a frozenset of currently-true conditions. RouteExecutor.is_clean_for_create reads a subset of this set, so adding a new latch in the future is one enum value plus one
     mapping line.
@@ -247,10 +247,10 @@ class AtcLimitReasonCode(Enum):
     # `reservation_stop` (braking to the reservation/clearance end). Per
     # design_new.md canonical `atc_limit_reason_code` enumeration.
     SPEED_LIMIT = "speed_limit"
-    # Per design_new.md line 1728: used when the train or network object is
+    # Per design_new.md, the canonical `atc_limit_reason_code` enumeration: used when the train or network object is
     # not yet wired, so the empty anchor reports a structured reason code.
     NO_TRAIN = "no_train"
-    # Per design_new.md lines 279/1825: a movement-derived deviation cancel is
+    # Per design_new.md, the canonical `atc_limit_reason_code` enumeration: a movement-derived deviation cancel is
     # latched (the live path stays ACTIVE), so the head is off its still-active
     # authority. The distance-0 anchor reports `atc_limit = 0` with this reason
     # so ATC brakes the train and the overspeed branch escalates to EB. Distinct

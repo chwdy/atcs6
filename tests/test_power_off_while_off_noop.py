@@ -2,9 +2,9 @@
 (design_new.md "Power/cab/mode command contracts").
 
 Regression for the gap-analysis finding: power_off from OFF armed the
-`power_off` Phase-3 latch unconditionally. That stale latch survived a later
+`power_off` Action (teardown) latch unconditionally. That stale latch survived a later
 `power_on_cmd()` and tore the freshly-powered train straight back to OFF in the
-next Phase-3 cleanup.
+next Action-teardown cleanup.
 
 Run with: ``conda run -n general python -m pytest
 tests/test_power_off_while_off_noop.py -q``
@@ -46,5 +46,5 @@ def test_power_off_then_power_on_while_off_does_not_tear_back_to_off():
 
     assert on.success is True
     assert controller.powered
-    # No stale latch left to drag the powered train back to OFF in Phase 3.
+    # No stale latch left to drag the powered train back to OFF in Action teardown.
     assert controller.route_hooks.phase_latches.power_off is False

@@ -1,6 +1,6 @@
 """Loss-of-control watchdog for the real output interfaces.
 
-design_new.md "Power -> Hardware interface boundary": a real output
+design_new.md "Hardware interface boundary": a real output
 implementation arms a watchdog that drops the outputs to the safe state when
 the control loop stops refreshing them. The timing lives here; the design
 models only the safe-state command and the rule that loss of control reaches

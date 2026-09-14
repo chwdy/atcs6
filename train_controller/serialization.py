@@ -43,7 +43,7 @@ def controller_to_dict(controller: "TrainController") -> Dict[str, Any]:
         "eb_active": controller.eb.active,
         # `cab` on the wire is the physical end the span is framed head-forward
         # for ("A" == end_a, "B" == end_b); there is no operator cab (design_new.md
-        # "Authority-side head derivation").
+        # "Reservation-side head derivation").
         "cab": ("B" if controller._framed_head_end == "end_b" else "A"),
         "control_mode": controller.commands.control_mode,
         "manual_mode_type": controller.manual.manual_mode_type,
@@ -68,7 +68,7 @@ def controller_to_dict(controller: "TrainController") -> Dict[str, Any]:
         "assigned_path_id": controller.path_projection.assigned_path_id,
         "path_backed_run_active": controller.path_projection.path_backed_run_active,
         # Export the live received_path_plan using the canonical
-        # received_path_plan schema (design_new.md:1740, 2187): exactly
+        # received_path_plan schema (design_new.md): exactly
         # path_id, resource_sequence, reservation_end_block_id. Dispatcher-
         # only requested-target / lifecycle / progress fields stay on the
         # Path record and must not leak into the controller projection.
@@ -234,7 +234,7 @@ def controller_from_dict(
     )
     # Restore which physical end the span is framed head-forward for. The saved
     # span locators are already in that frame, so set the label directly without
-    # re-expressing (design_new.md "Authority-side head derivation"; there is no
+    # re-expressing (design_new.md "Reservation-side head derivation"; there is no
     # operator cab).
     controller._framed_head_end = "end_b" if data.get("cab") == "B" else "end_a"
     controller.commands.control_mode = data.get("control_mode", "ato")

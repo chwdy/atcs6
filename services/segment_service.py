@@ -14,7 +14,7 @@ mutations:
     validation that protects segment geometry.
   * ``can_extend`` — the pure "may this tile join the segment?" predicate.
   * Whole-segment delete — with the downward platform cascade
-    (design_new.md:644): a segment delete that empties its owning block drops
+    (design_new.md, "Non-empty parent rule"): a segment delete that empties its owning block drops
     that block from any owning `Platform.block_assignments`, deleting a platform
     left with no blocks.
 
@@ -432,9 +432,9 @@ def delete_segment(state: AppState, segment_id: str) -> bool:
     """Delete a segment's geometry and clear its tile references. Returns True.
 
     Removing a segment fans out per the Non-empty parent rule
-    (design_new.md:777): the segment leaves its owning `Block`, and if that was
+    (design_new.md, "Non-empty parent rule"): the segment leaves its owning `Block`, and if that was
     the block's last member the block is deleted too. When the block disappears,
-    the downward platform cascade (design_new.md:644) drops it from any owning
+    the downward platform cascade (design_new.md, "Non-empty parent rule") drops it from any owning
     `Platform.block_assignments` and deletes a platform left with no blocks.
 
     Raises:

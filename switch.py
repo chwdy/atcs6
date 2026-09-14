@@ -94,7 +94,7 @@ class Switch(TrackResource):
       `(path_id, source_switch_id)` mapped to `(train_id, locked_state)`.
       Compatible same-position lock claims may co-exist. The claim role
       (`claim_role` = "main" when `source_switch_id is None`, else "flank";
-      see design_new.md:651) is derived from `source_switch_id is None`,
+      see design_new.md, "Switch entity") is derived from `source_switch_id is None`,
       not stored as a separate key field.
     - `train_protection_claims` is the train-owned physical protection set used
       after the train head has entered a switch and consumed the path lock.
@@ -239,7 +239,7 @@ class Switch(TrackResource):
         """Record that ``train_id`` physically occupies ``route`` on this
         switch tile. Returns True on success; False if another train holds
         a conflicting route (caller treats this as the fatal
-        `SWITCH_OCCUPIED_BY_OTHER_TRAIN` conflict per design_new.md:471).
+        `SWITCH_OCCUPIED_BY_OTHER_TRAIN` conflict per design_new.md, "Fatal physical-entry conflict procedure").
         """
         if self.has_conflicting_route(route, train_id=train_id):
             return False
@@ -652,7 +652,7 @@ class Switch(TrackResource):
                     "source_switch_id": source_switch_id,
                     "train_id": train_id,
                     "locked_state": locked_state,
-                    # Derived role for diagnostic readers; per design_new.md:651
+                    # Derived role for diagnostic readers; per design_new.md, "Switch entity"
                     # `claim_role` is "main" for a primary claim (source_switch_id
                     # is None), else "flank".
                     "claim_role": "main" if source_switch_id is None else "flank",

@@ -79,7 +79,7 @@ def register(app, state: AppState) -> None:
         except NotFoundError as exc:
             return jsonify({"error": str(exc)}), 404
         except ConflictError as exc:
-            # design_new.md line 658: the flag PATCH emits a command_result even
+            # design_new.md "Availability flag REST API surface": the flag PATCH emits a command_result even
             # on the 409 admin-reject, carrying the rejection reason.
             emit_command_result(
                 state, source="Switch", entity_id_key="switch_id",

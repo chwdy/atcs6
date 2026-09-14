@@ -141,7 +141,7 @@ def register(app, state: AppState) -> None:
             except ValidationError as exc:
                 return jsonify({"error": str(exc)}), 400
 
-        # Per design_new.md line 1074, structural route edits should
+        # Per design_new.md "Route Edit And Reconciliation", structural route edits should
         # tear down active `RouteRun`s and let Plan allocate fresh
         # runs. The legacy in-place cursor clamp here was an admin
         # shortcut that is incompatible with the derived

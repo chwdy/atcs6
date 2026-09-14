@@ -1,14 +1,14 @@
-"""How Phase 1 sorts extend_path failures into structural and temporary.
+"""How Plan sorts extend_path failures into structural and temporary.
 
 Per design_new.md **Planning Kernel**, a structural extend failure on a live
 path — `no_viable_path` — latches `pending_path_cancel_request` rather than
 surfacing a hard
-an error event. Phase 3 cancels the stale path once the train stops, and the
-next eligible Phase 1 acquires fresh authority via `create_path()` from the
+an error event. Action teardown cancels the stale path once the train stops, and the
+next eligible Plan acquires fresh authority via `create_path()` from the
 train's current span, which is free to pick a route the extend could not.
 
 A temporary failure is the opposite case: the live path is still valid, so it
-is kept, the error is recorded for the operator, and Phase 1 retries later.
+is kept, the error is recorded for the operator, and Plan retries later.
 """
 
 from types import SimpleNamespace
@@ -42,7 +42,7 @@ class _FakeDispatcher:
         self.create_calls.append(kwargs)
         raise AssertionError(
             "create_path must not be called on the same tick as the failed "
-            "extend_path; the recovery latch is consumed by Phase 3 instead."
+            "extend_path; the recovery latch is consumed by Action teardown instead."
         )
 
 
@@ -139,7 +139,7 @@ def test_reverse_at_authority_end_latches_cancel_and_emits_no_hard_error():
     assert len(dispatcher.extend_calls) == 1
     assert dispatcher.create_calls == []
 
-    # The recovery path latches a Phase-3 cancellation instead of bubbling
+    # The recovery path latches an Action-teardown cancellation instead of bubbling
     # the failure up as an operator-facing error.
     assert latches.path_cancel_request is not None
     assert latches.path_cancel_request.error.origin == "revoked"
@@ -201,7 +201,7 @@ def test_temporary_failure_kinds_still_emit_a_hard_error():
 
     BLOCKED_BEFORE_TARGET means a viable candidate exists but a current
     occupancy/reservation/lock conflict stopped acquisition. Per design_new.md
-    "Unreachable and broken task handling" the live path stays valid and Phase 1
+    "Unreachable and broken task handling" the live path stays valid and Plan
     retries later, so this must not latch a cancellation.
     """
     train_id = "T3"

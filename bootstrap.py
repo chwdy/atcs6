@@ -162,7 +162,7 @@ def setup_demo_train(
 ) -> None:
     """Set up the demo train(s) for the requested scene.
 
-    Per design_new.md ~line 1292, live operational state lives on
+    Per design_new.md "Ownership split", live operational state lives on
     `TrainController`; the demo bootstrap therefore needs the
     `SimulationController` (the controller-registry owner) so it can
     configure controller state directly rather than mirroring through
@@ -207,7 +207,7 @@ def bootstrap_runtime(
 
     # Construct SimulationController BEFORE the demo train setup so that
     # the scene module can configure controller state directly via the
-    # canonical controller registry (design_new.md ~line 1292).
+    # canonical controller registry (design_new.md "Ownership split").
     notification_center = NotificationCenter()
     # design_new.md "Event log" (Persistence): persist the NotificationCenter
     # stream to disk so a run's record outlives the session. Opt-in via
@@ -216,7 +216,7 @@ def bootstrap_runtime(
     if event_log_path:
         notification_center.enable_event_log(event_log_path)
 
-    # design_new.md "Power -> Hardware configuration": the hardware backend is
+    # design_new.md "Hardware setup": the hardware backend is
     # chosen once when the operation session is built. Load the persisted
     # selection from disk and resolve it to the interface overrides the session
     # wires. `None` in a slot means "use the simulated default". A real backend

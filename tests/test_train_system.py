@@ -331,8 +331,8 @@ class TestTrainPhase1:
     def test_power_on_off(self):
         """Test power_on_cmd and power_off_cmd via TrainController.
 
-        v1: power_off_cmd sets pending_power_off latch consumed in Phase 3.
-        Acceptance is immediate; OFF transition happens after Phase 3.
+        v1: power_off_cmd sets pending_power_off latch consumed in Action teardown.
+        Acceptance is immediate; OFF transition happens after Action teardown.
         """
         train, controller, network = create_test_train_with_controller(
             powered=False
@@ -846,8 +846,8 @@ class TestTrainStateTransitions:
     def test_power_off_when_stopped(self):
         """Test power_off_cmd() works when stopped.
 
-        v1: power_off_cmd is a Phase-3 latch (pending_power_off); the OFF
-        transition happens in Phase 3. Acceptance is immediate.
+        v1: power_off_cmd is an Action (teardown) latch (pending_power_off); the OFF
+        transition happens in Action teardown. Acceptance is immediate.
         """
         train, controller, network = create_test_train_with_controller(
             powered=True
@@ -1215,7 +1215,7 @@ class TestCompleteStateFlows:
     def test_shutdown_flow(self):
         """Test complete shutdown flow.
 
-        v1: power_off_cmd is a Phase-3 latch; OFF transition deferred.
+        v1: power_off_cmd is an Action (teardown) latch; OFF transition deferred.
         Train.target_speed was deleted.
         """
         train, controller, network = create_test_train_with_controller(
@@ -1230,7 +1230,7 @@ class TestCompleteStateFlows:
         # Stop first - simulate stopping
         controller.physics_sync.current_speed_kmh = 0.0
 
-        # Now can power off — acceptance is immediate, OFF deferred to Phase 3.
+        # Now can power off — acceptance is immediate, OFF deferred to Action teardown.
         result = controller.commands.power_off_cmd()
         assert result.success is True
         assert controller.route_hooks.phase_latches.power_off is True

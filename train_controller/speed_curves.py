@@ -276,7 +276,7 @@ class SpeedCurveCalculator:
         # Add block speed limits as restrictions (for braking curve calculation)
         # This creates braking curves to slow down BEFORE entering speed-limited blocks.
         # A CAUTION block always contributes the controller-owned global cap
-        # CAUTION_SPEED_LIMIT_KMH (design_new.md:1849), taking the lower of that
+        # CAUTION_SPEED_LIMIT_KMH (design_new.md, "ATC speed limit"), taking the lower of that
         # cap and any nominal block limit; this applies even when the block has
         # no nominal speed_limit_kmh of its own.
         if lookahead_blocks:
@@ -416,7 +416,7 @@ class SpeedCurveCalculator:
                         if is_caution:
                             inside_code = AtcLimitReasonCode.CAUTION
                             # CAUTION always caps at the global limit, lower of
-                            # it and any nominal block limit (design_new.md:1849).
+                            # it and any nominal block limit (design_new.md, "ATC speed limit").
                             inside_speed = (
                                 CAUTION_SPEED_LIMIT_KMH
                                 if block_speed is None

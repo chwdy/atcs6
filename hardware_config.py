@@ -1691,7 +1691,7 @@ def build_session_interfaces(
             track_polarity_of=track_polarity_of,
             switch_binding_of=switch_coil_ports,
             # A real session drives real track; arm the loss-of-control watchdog
-            # (design_new.md "Power -> Hardware interface boundary").
+            # (design_new.md "Hardware interface boundary").
             watchdog_timeout_s=DEFAULT_WATCHDOG_TIMEOUT_S,
         )
     except Exception as exc:

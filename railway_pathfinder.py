@@ -1,7 +1,7 @@
 """
 Railway Pathfinder
 
-Per design_new.md "Pathfinding home" (line 605, line 1610-1693):
+Per design_new.md "Pathfinding-home migration":
 this module is the canonical operational pathfinding home that
 `RouteExecutor` platform-end resolution, `PathDispatcher.create_path(...)`
 start-side selection, and `PathDispatcher.extend_path(...)` suffix
@@ -144,7 +144,7 @@ class RailwayPathfinder:
     ) -> List[GraphWalkCandidate]:
         """Canonical operational graph walk query.
 
-        Per design_new.md "Pathfinding home" (lines 1926–1942): accepts a
+        Per design_new.md "Pathfinding-home migration": accepts a
         ``GraphWalkQuery`` with tile-precise locators, skips disabled
         blocks/switches, searches topology-only regardless of current switch
         position, rejects candidates whose terminal

@@ -5,8 +5,8 @@ Handles saving and loading of track layouts to/from JSON files.
 Saves snapshot, steps, and hardware configuration in a single file:
 - Snapshot: Primary format for fast loading
 - Steps: Fallback for recovery if snapshot fails
-- Hardware: The whole hardware configuration (design_new.md "Power ->
-  Hardware configuration"), so a saved layout carries the wiring its
+- Hardware: The whole hardware configuration (design_new.md
+  "Hardware setup"), so a saved layout carries the wiring its
   logical ids are bound to
 """
 
@@ -70,7 +70,7 @@ class PersistenceManager:
 
         # The binding maps are keyed by `block_id` / `switch_id`, so the wiring
         # only means anything alongside the layout those ids come from — save it
-        # with the layout (design_new.md "Power -> Hardware configuration",
+        # with the layout (design_new.md "Hardware setup",
         # Saved with the layout).
         hardware_data = hardware_config.persisted_dict()
 
@@ -181,7 +181,7 @@ class PersistenceManager:
     def _restore_hardware(self, wrapper: Dict) -> Dict:
         """Adopt the layout's `hardware` section onto the hardware-configuration
         store, writing it to the app-managed config file so it applies on the
-        next session build (design_new.md "Power -> Hardware configuration",
+        next session build (design_new.md "Hardware setup",
         Persisted to disk; applies on the next session build, not live).
 
         Returns the `hardware` result keys to merge into the load result:

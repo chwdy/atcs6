@@ -1,7 +1,7 @@
 """
 Block occupancy detection (hardware current sensing).
 
-design_new.md "Power -> Block occupancy detection": each electrically-isolated
+design_new.md "Block occupancy detection": each electrically-isolated
 block has a current detector. Current present means a train sits on the block;
 an open circuit means it does not. This module is the read side of the hardware
 boundary for block occupancy, plus the debounce + attribution layer that turns a

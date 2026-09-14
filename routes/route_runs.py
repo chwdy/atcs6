@@ -144,7 +144,7 @@ def register(app, state: AppState) -> None:
             """Elapsed seconds on the route's timing basis, or `None`.
 
             Mirrors the basis `RouteExecutor` graded `delay_class` on
-            (design_new.md:3566): a `realtime` route reads the wall anchors, an
+            (design_new.md, "Route data"): a `realtime` route reads the wall anchors, an
             `operating` route reads the operating clock. Reading this figure off
             the operating clock for a `realtime` route made it disagree with the
             `delay_class` it is supposed to explain.
@@ -276,7 +276,7 @@ def register(app, state: AppState) -> None:
         Historical (FINISHED / DEACTIVATED) runs reject override edits with
         HTTP 409.
 
-        Per design_new.md "single-threaded runtime": the Flask worker holds
+        Per design_new.md "The runtime uses one thread": the Flask worker holds
         `state.simulation_lock` for the duration of the iteration + per-field
         write so the simulation tick cannot insert/archive `execution_states`
         mid-request (which would otherwise raise RuntimeError on the dict

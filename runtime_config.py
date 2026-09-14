@@ -93,7 +93,7 @@ _TARGETS: Dict[str, List[Tuple[str, str]]] = {
         ("train_controller", "CAUTION_SPEED_LIMIT_KMH"),
         ("train_controller.atc", "CAUTION_SPEED_LIMIT_KMH"),
         # speed_curves.py reads its own module-global copy in
-        # calculate_speed_curves (design_new.md:3855-3857): a live PUT must
+        # calculate_speed_curves (design_new.md, "Tunable fields"): a live PUT must
         # rebind it there too, or the ATC/ATO curve keeps the boot-time cap.
         ("train_controller.speed_curves", "CAUTION_SPEED_LIMIT_KMH"),
     ],

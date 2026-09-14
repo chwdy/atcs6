@@ -154,7 +154,7 @@ def update_track(
             # Runtime is wired: route the alignment change through the canonical
             # SwitchManager workflow (validate locks/occupancy/protection, write
             # Switch.position, notify BlockManager, drive the power throw +
-            # continuity check) per design_new.md line 680 — nothing writes
+            # continuity check) per design_new.md "Canonical `Switch.position` mutation workflow" — nothing writes
             # Switch.position directly while a runtime surface exists.
             success, message = switch_manager.request_position_change(
                 track.switch_id, int(data["switch_state"])
@@ -163,7 +163,7 @@ def update_track(
                 return {"status": "switch_change_rejected", "reason": message}
         elif switch_entity is not None and switch_entity.is_locked():
             # Pure editor (no runtime surface): keep the lock guard before the
-            # direct geometric write, which design_new.md line 680 exempts.
+            # direct geometric write, which design_new.md "Canonical `Switch.position` mutation workflow" exempts.
             lock_items = list(switch_entity.locks.items())
             holder_path = lock_items[0][0][0] if lock_items else None
             holder_state = lock_items[0][1][1] if lock_items else None
@@ -189,12 +189,12 @@ def update_track(
     if track.track_bits == 0 and len(track.dead_end_ports) == 0:
         state.network.remove_track(x, y)
         # Connectivity changed: refresh stored switch flank protection so it
-        # cannot go stale and corrupt acquisition (design_new.md:720).
+        # cannot go stale and corrupt acquisition (design_new.md, "Flank protection computation").
         state.network.recompute_all_flank_protection()
         return {"status": "removed"}
 
     # Connectivity changed: refresh stored switch flank protection
-    # (design_new.md:720).
+    # (design_new.md, "Flank protection computation").
     state.network.recompute_all_flank_protection()
     return {"status": "updated", "track": track}
 
@@ -209,7 +209,7 @@ def delete_track(state: AppState, x: int, y: int) -> bool:
         raise NotFoundError("Track not found")
     state.network.remove_track(x, y)
     # Connectivity changed: refresh stored switch flank protection
-    # (design_new.md:720).
+    # (design_new.md, "Flank protection computation").
     state.network.recompute_all_flank_protection()
     return True
 
@@ -262,7 +262,7 @@ def add_tracks_bulk(
             added.append(track)
 
     # Connectivity changed: refresh stored switch flank protection once for the
-    # whole batch (design_new.md:720).
+    # whole batch (design_new.md, "Flank protection computation").
     if added or updated:
         state.network.recompute_all_flank_protection()
     return {"added": added, "updated": updated}
@@ -325,7 +325,7 @@ def delete_tracks_bulk(
             deleted.append([px, py])
 
     # Connectivity changed: refresh stored switch flank protection once for the
-    # whole batch (design_new.md:720).
+    # whole batch (design_new.md, "Flank protection computation").
     if deleted:
         state.network.recompute_all_flank_protection()
     return {"status": "done", "deleted": deleted}

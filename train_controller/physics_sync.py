@@ -52,7 +52,7 @@ class PhysicsSync:
         self.head_progress_anchor: int = 0
         self.head_progress_anchor_path_id: Optional[str] = None
 
-        # Block occupancy detection (design_new.md "Power -> Block occupancy
+        # Block occupancy detection (design_new.md "Block occupancy
         # detection"). The global current detector confirms block entry/exit at
         # the top of each tick and writes this train's attributed slice here;
         # on_physics_updated drains it into the Observe progress report so the

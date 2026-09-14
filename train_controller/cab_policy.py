@@ -36,7 +36,7 @@ class CabFlipPolicy:
         a unit vector. We delegate edge resolution to
         ``RailwayNetwork.get_connection_edges(...)``, which already handles
         both grid adjacency and tunnel adjacency per design_new.md
-        "Pathfinding home" / "Tunnels".
+        "Pathfinding-home migration" / "Tunnels".
 
         Returns:
             True if cab should be flipped, False otherwise or if the check
@@ -97,7 +97,7 @@ class CabFlipPolicy:
         """Determine the required cab for the current path.
 
         The head is "the physical end of the current span on the authority side"
-        (design_new.md:150), so the required cab is the one that puts the head
+        (design_new.md, "Reservation-side head derivation"), so the required cab is the one that puts the head
         there. Both tests below answer that question off real geometry; only the
         last resort guesses from cardinal directions.
 
@@ -109,7 +109,7 @@ class CabFlipPolicy:
            answer. It can only answer when the head tile is itself enumerated by
            the path, which is *not* the common case at path-creation time — see
            below.
-        2. **Authority side** — the rule design_new.md:2213 states: compare
+        2. **Authority side** — the rule design_new.md, "Reservation-side head derivation" states: compare
            ``TrainSpan.end_a`` and ``TrainSpan.end_b`` against the ordered
            ``resource_sequence``, which runs tail-to-authority, and take the end
            that sits later in it. This is what answers for a train whose span
@@ -163,7 +163,7 @@ class CabFlipPolicy:
         if self._connectivity_check_was_conclusive(train):
             return current_cab
 
-        # --- Approach 2: authority side (design_new.md:2213) ---
+        # --- Approach 2: authority side (design_new.md, "Reservation-side head derivation") ---
         authority_side_cab = self._authority_side_cab()
         if authority_side_cab is not None:
             return authority_side_cab
@@ -225,11 +225,11 @@ class CabFlipPolicy:
         """The cab that puts the head on the span's authority-side end, or None
         when the two ends cannot be separated this way.
 
-        design_new.md:2213 defines the comparison: the ordered
+        design_new.md, "Reservation-side head derivation" defines the comparison: the ordered
         ``resource_sequence`` is the covered span plus forward authority in
         **tail-to-authority order**, so of the two physical span ends, the one
         whose resource sits *later* in that sequence is the authority side —
-        which is what ``head`` means (design_new.md:150).
+        which is what ``head`` means (design_new.md, "Reservation-side head derivation").
 
         This is the test that answers at path-creation time. ``create_path``
         seeds the start block's entry with the tile the train will *leave*

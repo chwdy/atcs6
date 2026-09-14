@@ -65,7 +65,7 @@ NOTIFICATION_RETENTION_ROWS: int = 10000
 # `task_time + tol` is "late", otherwise "on_time". Tunable; diagnostic only.
 DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS: float = 30.0
 
-# Block occupancy detection debounce per design_new.md "Power -> Block occupancy
+# Block occupancy detection debounce per design_new.md "Block occupancy
 # detection". Each electrically-isolated block has a current detector; current
 # present means a train is on the block. Real contacts flicker, so a momentary
 # open circuit inside the train's span must not immediately vacate the block.
@@ -104,7 +104,7 @@ OVERRUN_REPORT_MIN_BLOCKS: int = 2
 # How many consecutive reads the lighting zone's deciding source — the current
 # channel, or the '165 on a block that has no current channel — must call a
 # block clear before the driver stops holding it occupied (design_new.md
-# "Power -> Occupancy source follows drive state"). Counted in the same 10 Hz
+# "Occupancy source follows drive state"). Counted in the same 10 Hz
 # detection reads as the thresholds above, so this is ~3 s.
 #
 # This is the stopped-and-lit case the note above says no debounce can protect,
@@ -121,7 +121,7 @@ OVERRUN_REPORT_MIN_BLOCKS: int = 2
 LIGHTING_CLEAR_HOLD_READS: int = 30
 
 # How long an unidentified train that holds no blocks at all is held before it is
-# retired (design_new.md "Power -> Unidentified trains", The gap). Switch tiles carry no
+# retired (design_new.md "Unidentified trains", The gap). Switch tiles carry no
 # detection, so an unidentified train rolling through one holds nothing for a moment; within
 # this window a confirmed entry no existing train accounts for, on a block
 # reachable through undetected track, is that same unidentified train continuing its run and

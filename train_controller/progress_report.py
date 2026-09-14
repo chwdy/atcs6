@@ -63,7 +63,8 @@ class ProgressReportBuilder:
         if not self._c.powered:
             # Powered-off transactions append no dispatcher/route progress to the
             # mailbox BEYOND the block observations folded in from the
-            # detector-read detected sets (design_new.md ":2181"). Those observations are the
+            # detector-read detected sets (design_new.md, "Movement feedback runs only when
+            # movement is calculated; detection feedback always runs"). Those observations are the
             # only path by which a train that moves without power — pushed by
             # hand, or an unidentified train, which is always OFF — commits its block
             # entries and vacates, and the Observe commit runs for exactly those ticks.
@@ -78,7 +79,7 @@ class ProgressReportBuilder:
         # `received_path_plan.resource_sequence`; dispatcher must not search
         # by raw resource_id.
         plan = self._c.path_projection.received_path_plan
-        # Head-mapping rule (design_new.md :581-591): one resource_id may appear
+        # Head-mapping rule (design_new.md): one resource_id may appear
         # at more than one sequence_index in a single live resource_sequence (a
         # lapping path that takes authority back into a block it already passed
         # and released). Collect ALL occurrences per tile / block so the head and
@@ -206,7 +207,7 @@ class ProgressReportBuilder:
             )
 
         # Block entered/vacated events come from the global current detector
-        # (design_new.md "Power -> Block occupancy detection"), not the precise
+        # (design_new.md "Block occupancy detection"), not the precise
         # tile diff. Emit this tick's attributed slice once, on the final
         # no-boundary callback (added and removed both empty), enriched with
         # sequence_index / exit edge from the live plan.
@@ -238,7 +239,7 @@ class ProgressReportBuilder:
                 )
                 if seq_idx is None:
                     # The tile map missed, so ask the resource. The predicate is
-                    # about the head's RESOURCE, not its tile (design_new.md:608
+                    # about the head's RESOURCE, not its tile (design_new.md, "Head-mapping rule"
                     # — "the train head is in a resource that appears nowhere in
                     # the active resource_sequence"), and a path's stored
                     # `path_tiles` for a block hold only the tiles the train will
@@ -343,7 +344,7 @@ class ProgressReportBuilder:
         block_to_exit_edge: Dict[str, str],
     ) -> None:
         """Append this tick's detector-confirmed block entered/vacated events to
-        the progress report being built (design_new.md "Power -> Block occupancy
+        the progress report being built (design_new.md "Block occupancy
         detection").
 
         Blocks are ordered by path sequence_index so a multi-block tick advances

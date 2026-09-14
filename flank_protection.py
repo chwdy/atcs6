@@ -1,7 +1,7 @@
 """FlankProtectionCalculator — flank-protection graph walk pulled out of
 `RailwayNetwork`.
 
-Per design_new.md:683-687, 990: for each switch, find nearby switches whose
+Per design_new.md, "Flank protection computation": for each switch, find nearby switches whose
 active branch can point back at it (a head-on flank approach) and record the
 `blocking_state` acquisition must later lock away from. This module owns that
 self-contained graph walk; it reads the network graph through the back-reference
@@ -39,14 +39,14 @@ class FlankProtectionCalculator:
         self, switch: "Switch"
     ) -> List[Tuple[str, int]]:
         """Compute the `(neighbour_switch_id, blocking_state)` flank list for
-        one switch (design_new.md:683-687).
+        one switch (design_new.md, "Flank protection computation").
 
         Searches the network graph outward from the switch tile within
         `FLANK_PROTECTION_DISTANCE_CM` and, for every neighbour switch found
         within that radius, records the neighbour state whose active branch
         points back toward this switch — the `blocking_state` that would
         create a head-on flank approach. Acquisition later locks the
-        neighbour to the safe state `1 - blocking_state` (design_new.md:990).
+        neighbour to the safe state `1 - blocking_state` (design_new.md, "Flank protection computation").
 
         The walk accumulates per-tile length via `_get_tile_length_cm`.
         Because switch tiles are ~0 cm and ordinary block tiles are
@@ -121,7 +121,7 @@ class FlankProtectionCalculator:
     ) -> Optional[int]:
         """Return the neighbour switch state (0/1) whose active branch points
         back toward the `toward` tile through the connecting edge — the
-        `blocking_state` for flank protection (design_new.md:990).
+        `blocking_state` for flank protection (design_new.md, "Flank protection computation").
 
         Returns None when the neighbour is not track-connected toward the
         origin, or when the connecting edge is active in BOTH states. The

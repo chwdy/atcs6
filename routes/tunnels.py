@@ -32,7 +32,7 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": str(exc)}), 400
         # Adding a tunnel changes connectivity: refresh stored switch flank
         # protection so it cannot go stale and corrupt acquisition
-        # (design_new.md:720).
+        # (design_new.md, "Flank protection computation").
         state.network.recompute_all_flank_protection()
         return jsonify(state.network.tunnels_to_list()), 201
 
@@ -49,6 +49,6 @@ def register(app, state: AppState) -> None:
         if not removed:
             return jsonify({"error": "No tunnel at that endpoint"}), 404
         # Removing a tunnel changes connectivity: refresh stored switch flank
-        # protection (design_new.md:720).
+        # protection (design_new.md, "Flank protection computation").
         state.network.recompute_all_flank_protection()
         return jsonify(state.network.tunnels_to_list()), 200

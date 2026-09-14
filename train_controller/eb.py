@@ -92,7 +92,7 @@ class EBWorkflow:
     def release(self) -> CommandResult:
         """Release emergency stop.
 
-        Per design_new.md line 1385: accepts only when ``state != OFF``,
+        Per design_new.md "`TrainController.eb.release()`": accepts only when ``state != OFF``,
         ``active == True``, ``is_stopped() == True``, the controller's own
         ``pending_path_cancel_request`` is None (the EB cancel latch has
         been consumed by Action), and the controller's own
@@ -152,7 +152,7 @@ class EBWorkflow:
         return CommandResult(True, "Emergency stop released")
 
     def clear(self) -> None:
-        """Ungated EB-latch clear (design_new.md:1767, 1895).
+        """Ungated EB-latch clear (design_new.md, "EB workflow state machine").
 
         The EB Workflow is the single writer of ``active`` (module-boundary
         rule), so OFF-cleanup (``TrainController.complete_power_off()``) clears

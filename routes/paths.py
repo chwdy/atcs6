@@ -46,8 +46,8 @@ def register(app, state: AppState) -> None:
         manual_override,
     ):
         """Build a one-off operator route toward `destination_block_id` and
-        assign the train to it (design_new.md:655-656, Quick Route / operator
-        retarget).
+        assign the train to it (design_new.md, "Exact reservation-acquisition calls",
+        Quick Route / operator retarget).
 
         The handler never calls PathDispatcher.create_path / extend_path
         directly. It creates a RouteMode.ONE_OFF route with a single stop task,
@@ -135,7 +135,7 @@ def register(app, state: AppState) -> None:
                         404,
                     )
 
-                # design_new.md:655 (Quick Route): construct a one-off route and
+                # design_new.md, "Exact reservation-acquisition calls" (Quick Route): construct a one-off route and
                 # assign the train; Plan builds the path. The handler must NOT
                 # call PathDispatcher.create_path inline (request handlers do not
                 # change dispatcher path records — see "Layered responsibilities").
@@ -198,7 +198,7 @@ def register(app, state: AppState) -> None:
         status = request.args.get("status")
 
         with state.simulation_lock:
-            # Per design_new.md ~line 80, terminal (COMPLETED/CANCELLED)
+            # Per design_new.md "Retained path history", terminal (COMPLETED/CANCELLED)
             # rows are retained in `paths_by_id` for history. Read the
             # full registry here so the `status` filter can surface
             # historical paths as well.
@@ -227,7 +227,7 @@ def register(app, state: AppState) -> None:
     def cancel_path(path_id):
         """Request cancellation of a path.
 
-        v1 semantics (per `design_new.md` lines 270, 351-352, 1003): API
+        v1 semantics (per `design_new.md` "Operator-command processing slot"): API
         callers must not invoke `PathDispatcher.cancel_path(...)` inline.
         The handler writes `controller.route_hooks.phase_latches.path_cancel_request`
         and returns immediately with ``status: "queued"``. Action of the
@@ -237,7 +237,7 @@ def register(app, state: AppState) -> None:
         consumer; clients should refresh path state on a subsequent poll
         instead of mutating local UI state.
 
-        v1 paths always carry a `train_id` (per `design_new.md` line 870)
+        v1 paths always carry a `train_id` (per `design_new.md` "Path field schema")
         and every train has a `TrainController`. There is no inline fallback.
 
         Returns:
@@ -344,7 +344,7 @@ def register(app, state: AppState) -> None:
                 if not path:
                     return jsonify({"error": f"Path {path_id} not found"}), 404
 
-                # design_new.md:656 — operator retarget: abort the current run and
+                # design_new.md, "Route Edit And Reconciliation" — operator retarget: abort the current run and
                 # assign a fresh one-off route toward the new destination. The
                 # handler must NOT call PathDispatcher.extend_path inline;
                 # `assign_route(force=True)` writes the route-abort latch and the

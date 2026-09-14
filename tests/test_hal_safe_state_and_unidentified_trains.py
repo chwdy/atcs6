@@ -5,7 +5,7 @@ design_new.md "Power":
   and de-energizes every switch motor when it stops driving outputs (simulation
   stop or process shutdown).
 - Attribution + Unidentified trains: a confirmed block entry that matches no existing
-  train belongs to an unidentified train — a `Train` the Step-0 preamble creates, with
+  train belongs to an unidentified train — a `Train` Observe creates, with
   its own `train_id` and its own `TrainController` — so its entries and vacates
   commit through the ordinary per-train chain instead of a side channel into
   `Block.occupied_by`.

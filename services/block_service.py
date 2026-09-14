@@ -125,7 +125,7 @@ def delete_block(state: AppState, block_id: str) -> bool:
     """Dissolve a block grouping (ungroup). Returns True.
 
     Every member segment is re-homed into its own single-segment block, the
-    default one-feed-per-segment layout (design_new.md:777) —
+    default one-feed-per-segment layout (design_new.md, "Non-empty parent rule") —
     `BlockGroupingManager.delete_block`. This never deletes geometry; deleting a
     segment's tiles is a segment-geometry operation
     (``services.segment_service.delete_segment``).
@@ -246,7 +246,7 @@ def update_block(state: AppState, block_id: str, *, data: Dict[str, Any]):
             block.disabled = new_disabled
         if "manual" in data:
             block.manual = bool(data["manual"])
-        # Holding-point config flag (design_new.md "Block" line 848). No
+        # Holding-point config flag (design_new.md "Block"). No
         # precondition — it does not affect availability, reservation, or
         # runtime state; it only biases best-effort truncation.
         if "is_holding_point" in data:

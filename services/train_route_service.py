@@ -92,7 +92,7 @@ def _coerce_route_task(item: Any) -> RouteTask:
     """Build a RouteTask from a JSON request item."""
     if not isinstance(item, dict):
         raise ValidationError("task entry must be an object")
-    # Per design_new.md line 1280: task_kind is required at task creation;
+    # Per design_new.md "Route-definition validation": task_kind is required at task creation;
     # missing, null, or unrecognized task_kind is a validation error — the
     # creation path never infers a default kind. (RouteTask.from_dict stays
     # lenient for deserialization of already-validated persisted routes.)
@@ -103,7 +103,7 @@ def _coerce_route_task(item: Any) -> RouteTask:
             f"'dwell', or 'run' (got {raw_kind!r})"
         )
     if raw_kind == "run":
-        # Per design_new.md line 1726: a run is a timed roll — it requires a
+        # Per design_new.md "Task time semantics": a run is a timed roll — it requires a
         # finite task_time > 0 (the roll duration in simulated seconds) and must
         # omit target_time (a departure timestamp, meaningless for a run).
         task_time = item.get("task_time")
@@ -129,7 +129,7 @@ def _registry(state: AppState) -> dict:
 def _unassign_train_from_other_routes(
     state: AppState, keep_route_id: str, train_id: str
 ) -> None:
-    """Enforce the single-assignment rule (design_new.md:1219-1227): a train is
+    """Enforce the single-assignment rule (design_new.md, "Single-assignment rule"): a train is
     assigned to at most one route at a time. Before assigning `train_id` to
     `keep_route_id`, unassign it from every other route that currently lists it,
     so a route create/update never leaves a train in two routes' assignment
@@ -163,7 +163,7 @@ def require_route(state: AppState, route_id: str) -> Route:
 
 
 def _reject_leading_dwell(tasks) -> None:
-    """A route's first task must not be a dwell (design_new.md:1310).
+    """A route's first task must not be a dwell (design_new.md, "Route-definition validation").
 
     A dwell holds after a preceding task at that location; the initial walk has
     no predecessor, so there is nothing to hold after. The API rejects a
@@ -171,7 +171,7 @@ def _reject_leading_dwell(tasks) -> None:
     """
     if tasks and tasks[0].task_kind == "dwell":
         raise ValidationError(
-            "Route.tasks[0] must not be a dwell task (design_new.md:1310): a "
+            "Route.tasks[0] must not be a dwell task (design_new.md, 'Route-definition validation'): a "
             "dwell holds after a preceding task, but the first task has no "
             "predecessor."
         )
@@ -376,7 +376,7 @@ def update_route(
     definition_edit_touched = False
     # Set when the tasks edit changes the walk structure (waypoint set,
     # ordering, or task-kind / direction composition) — triggers RouteRun
-    # teardown per design_new.md lines 1467-1469. Timing-only task edits are
+    # teardown per design_new.md "Route Edit And Reconciliation". Timing-only task edits are
     # not structural and do not tear down running runs.
     tasks_structural_edit = False
     mode_structural_edit = False
@@ -421,7 +421,7 @@ def update_route(
         definition_edit_touched = True
 
     if mode is not None:
-        # Route.mode is structural (design_new.md line 2095): it selects the
+        # Route.mode is structural (design_new.md "Route Edit And Reconciliation"): it selects the
         # CIRCULAR wrap / ROUND_TRIP reflection / ONE_OFF terminal behaviour
         # that RouteRun._append_next_walk_task reads live on every append, so a
         # live mode flip could put a running walk into a shape route validation
@@ -460,7 +460,7 @@ def update_route(
         changed_overridable.append("priority")
 
     if manual_override is not None:
-        # Route-level operator override (design_new.md line 1208). Bumps
+        # Route-level operator override (design_new.md "`disabled` and `manual` availability flags"). Bumps
         # last_edited_at (it is in the EDIT_FIELDS set) but is NOT in
         # OVERRIDE_ALLOWLIST, so it never pushes onto running RouteRuns: edits
         # take effect on the next create/extend with no run teardown.
@@ -575,8 +575,7 @@ def update_route(
 def delete_route(state: AppState, route_id: str) -> bool:
     """Delete a route, deferring live teardown. Returns True on success.
 
-    Per design_new.md "Route deletion waits for live teardown" (lines
-    2098-2103): `DELETE /api/train-routes/<route_id>` never removes a route used
+    Per design_new.md "Route deletion waits for live teardown": `DELETE /api/train-routes/<route_id>` never removes a route used
     by a live or pending run inline. Instead it
 
       1. rejects further assignment/activation by setting `Route.is_active =
@@ -696,7 +695,7 @@ def deactivate_route(state: AppState, route_id: str) -> Route:
     """
     route = _require_route(state, route_id)
     # The per-train cancel-latch walk is the canonical job of
-    # RouteExecutor.deactivate_route(route_id) (design_new.md:2187); Route
+    # RouteExecutor.deactivate_route(route_id) (design_new.md, "Arrival detection"); Route
     # .deactivate() itself writes only is_active.
     state.sim_controller.route_executor.deactivate_route(route_id)
     return route

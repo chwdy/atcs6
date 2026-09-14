@@ -358,7 +358,7 @@ class TrainPhysics:
         profile = self._get_speed_profile()
         previous_speed = self._read_current_speed(train)
 
-        # Per design_new.md ~line 168, the controller publishes a
+        # Per design_new.md "Ownership split", the controller publishes a
         # `PhysicsCommand` each tick; physics dispatches on `kind` and never
         # inspects controller mode fields directly.
         command = self._read_physics_command(controller)
@@ -516,7 +516,7 @@ class TrainPhysics:
     ) -> PhysicsCommand:
         """Ask the controller for its per-tick PhysicsCommand.
 
-        Per design_new.md ~line 168, physics is an executor only and the
+        Per design_new.md "Ownership split", physics is an executor only and the
         controller owns mode/EB/ATC policy. Physics calls a single
         controller-side producer instead of inspecting `control_mode`,
         `manual_mode_type`, `eb_active`, `atc_speed_limit`, etc. directly.
@@ -611,7 +611,7 @@ class TrainPhysics:
         return cm_per_second * delta
 
     # =========================================================================
-    # Track voltage (canonical home per design_new.md "Power-controller role")
+    # Track voltage (canonical home per design_new.md "Block power-controller role")
     # =========================================================================
 
     def compute_track_voltage(
@@ -621,7 +621,7 @@ class TrainPhysics:
     ) -> float:
         """Canonical home for `track_voltage`.
 
-        Per design_new.md "Voltage behavior" and "Power-controller role",
+        Per design_new.md "Voltage behavior" and "Block power-controller role",
         `track_voltage` is per-tick derived state owned by `TrainPhysics`.
         Operational state (OFF / READY / RUNNING_MOVING)
         selects the voltage shape; for RUNNING_MOVING the speed scalar is
@@ -684,7 +684,7 @@ class TrainPhysics:
                 # voltage comes off voltage_power_curve directly. Deriving it
                 # from the calibrated speed instead would invert
                 # power_speed_curve, which does not round-trip once that curve
-                # is calibrated and non-linear (design_new.md:2424).
+                # is calibrated and non-linear (design_new.md, "Voltage behavior").
                 return speed_profile.power_to_voltage(float(source_percent))
             return speed_profile.speed_to_voltage_two_stage(voltage_speed)
         return self._linear_speed_to_voltage(voltage_speed)
@@ -1482,7 +1482,7 @@ class TrainPhysics:
         """Snap the calculated span forward to agree with the current detector.
 
         Physical detection outranks the calculated position (design_new.md
-        "Power -> Block occupancy detection"). When the detector has confirmed a
+        "Block occupancy detection"). When the detector has confirmed a
         block entered or vacated for this train but the calculated span still
         disagrees, slide the rigid span forward one tile at a time until the head
         has reached every confirmed-entered block and the tail has cleared every
@@ -1503,7 +1503,7 @@ class TrainPhysics:
             # Forward-only protects integrated motion from being snapped
             # backwards; an unidentified train integrates none of its own, so there is nothing
             # to protect and its corrected span is simply its confirmed-occupied
-            # blocks (design_new.md "Power -> Unidentified trains", Span).
+            # blocks (design_new.md "Unidentified trains", Span).
             # `UnidentifiedTrainTracker` owns that construction.
             tracker = self._unidentified_tracker()
             if tracker is None:
@@ -2135,7 +2135,7 @@ class TrainPhysics:
         """
         Output voltage to all blocks occupied by this train.
 
-        Per design_new.md ~line 168, voltage emission delegates to
+        Per design_new.md "Ownership split", voltage emission delegates to
         `compute_track_voltage(...)` so physics does not inspect controller
         mode fields. The EB-zero override is already baked into the
         controller-published `PhysicsCommand.voltage_source_speed_kmh`.

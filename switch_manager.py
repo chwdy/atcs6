@@ -255,7 +255,7 @@ class SwitchManager:
             # rollback journal, and a failure later in this segment must not
             # release it (design_new.md "SwitchManager").
             was_present = (path_id, req.source_switch_id) in switch.locks
-            # Fix #23 (design_new.md line 617): SwitchManager wraps the entity
+            # Fix #23 (design_new.md "Switch-manager model"): SwitchManager wraps the entity
             # bool into a structured LockAcquireResult so manager-level callers
             # always unpack .success. The entity returns bool for unit-test compat.
             ok = switch.acquire_lock(claim)
@@ -372,7 +372,7 @@ class SwitchManager:
         every `switch.flank_protection` neighbour to its safe state (the binary
         complement of the blocking state). Three exemptions suppress a flank
         lock that would be self-defeating or impossible (design_new.md "Flank
-        Protection Computation", design_new.md:1377):
+        Protection Computation"):
 
         - Route-point exemption: a neighbour that is itself a primary on this
           same path is governed by its own main claim; flank-locking it would
@@ -392,7 +392,7 @@ class SwitchManager:
           against and nothing to lock (and `Switch.acquire_lock` would reject
           the lock anyway, failing the whole segment). The skip reads each
           neighbour's live `disabled` flag at acquisition time, so the entry
-          deliberately stays in `flank_protection` (design_new.md:1377). The
+          deliberately stays in `flank_protection` (design_new.md, "Flank protection computation"). The
           `manual`-but-not-disabled neighbour is a distinct rule: it is claimed
           normally, carrying the segment's `manual_override`.
         """
@@ -980,7 +980,7 @@ class SwitchManager:
             )
             return False
 
-        # Intrusion check (design_new.md line 663): a train physically entering a
+        # Intrusion check (design_new.md "Switch entity"): a train physically entering a
         # switch must hold a compatible main lock for the route it occupies. The
         # main-lock key is `(path_id, None)`. If the entering train holds no such
         # lock — and is not already a recorded occupant of this switch (a
@@ -991,7 +991,7 @@ class SwitchManager:
             owner == train_id for owner in switch.route_owners.values()
         )
         # The held main lock must GRANT the route the train physically occupies
-        # (design_new.md:741 — "if the entering train holds no lock granting
+        # (design_new.md, "Switch entity" — "if the entering train holds no lock granting
         # `route`, the entry is a fatal intrusion"). A lock recorded for a
         # *different* route does not protect this traversal; holding the
         # `(path_id, None)` key alone is not enough. Only a lock with no recorded

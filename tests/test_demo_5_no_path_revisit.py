@@ -22,7 +22,7 @@ the south tunnel back through T3's start block) and used MAIN at the
 contested crossover, then DIVERGE at the *second* visit of that crossover
 after the loop. _best_effort_truncate truncated that candidate to the
 12-resource closed loop and appended it to T3's resource_sequence every
-Phase-1 tick — growing the path by 12 entries per tick (12,000+ entries
+Plan tick — growing the path by 12 entries per tick (12,000+ entries
 over a 1000-tick window) without the train moving.
 
 When the train finally entered the crossover, physics followed the
@@ -129,7 +129,7 @@ def test_t3_s_line_reassignment_does_not_grow_repeated_resource_path(dt, label):
     overrun_events: list = []
 
     # ~150 s of sim time at dt=0.1; enough for at least one full network
-    # loop and several Phase-1 extend cycles, but bounded so the test runs
+    # loop and several Plan extend cycles, but bounded so the test runs
     # quickly. Pre-fix the bug manifested by tick 800 (every tick added 12
     # entries).
     max_ticks = max(50, int(150.0 / dt))
@@ -198,7 +198,7 @@ def test_t3_s_line_reassignment_does_not_grow_repeated_resource_path(dt, label):
         f"T3's path.resource_sequence grew to {max_len_observed} entries "
         f"across {max_ticks} ticks (threshold "
         f"{MAX_RESONABLE_RESOURCE_SEQUENCE_LEN}). Pre-fix extend_path "
-        f"appended a closed-loop 12-resource segment every Phase-1 tick "
+        f"appended a closed-loop 12-resource segment every Plan tick "
         f"because find_ordered_walk returned candidates that re-enter the "
         f"path's start block via the south tunnel. Per design_new.md "
         f"lines 1040, 1041, 1083 extend_path must reject any extension "

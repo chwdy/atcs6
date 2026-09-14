@@ -11,7 +11,7 @@ admitted contender stays admitted until it clears the zone, and each held
 contender keeps the same ceiling until then.
 
 The assignment only caps how far authority is acquired (it feeds
-`reservation_cap_block_id` per the "Acquisition-cap rule", keeping the route
+`reservation_cap_block_id` per the "Reservation-cap rule", keeping the route
 target unchanged); it never reserves a resource. All acquisition still runs
 through the interlocked `BlockManager` / `SwitchManager` path, so a stale or
 wrong ceiling costs at most one tick of a train aiming one block short. Meet coordination is the proactive
@@ -141,7 +141,7 @@ class MeetCoordinator:
         if not zone:
             return  # routes do not conflict on any shared block
 
-        # Existing-commitment rule (design_new.md:1945 / Stability :1953): a
+        # Existing-commitment rule (design_new.md, "Meet coordination"): a
         # contender that already occupies or holds authority on any resource in
         # the contested zone stays admitted and the opposing contender is held,
         # regardless of priority — a priority edit cannot reverse authority or
@@ -174,7 +174,7 @@ class MeetCoordinator:
         ceiling = self._holding_point_ceiling(lo_route, lo_near)
         if ceiling is None:
             # No holding place to meet at: fall back to best-effort truncation
-            # and record one diagnostic (design_new.md line 1555).
+            # and record one diagnostic (design_new.md "Meet coordination").
             self._emit_no_holding_point(lo_id)
             return
         # Pin the held train to the exact candidate route this assignment was
@@ -398,7 +398,7 @@ class MeetCoordinator:
 
     def _emit_no_holding_point(self, train_id: str) -> None:
         """One NotificationCenter diagnostic: the layout offers no holding place
-        for this train to meet at (design_new.md line 1555).
+        for this train to meet at (design_new.md "Meet coordination").
 
         This is a live per-tick condition — `assign_meets` runs every Plan pass —
         so it carries a `condition_key`: `NotificationCenter` drops the repeat

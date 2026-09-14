@@ -270,7 +270,7 @@ def test_lost_train_cancels_path_and_releases_every_reserved_block():
     assert all(b.reserved_for_train is None for b in network.blocks.values())
 
     # Even authority attached between detector reads is contained before the
-    # next Phase-1 planning slot; an unknown identifier cannot be revived.
+    # next Plan slot; an unknown identifier cannot be revived.
     assert controller.commands.power_on_cmd().success
     recreated = dispatcher.create_path(
         train_id="T", requested_destination_block_id="BLK_0"

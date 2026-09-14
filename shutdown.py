@@ -1,6 +1,6 @@
 """Shutdown reporting and the loss-of-control fail-safe.
 
-design_new.md "Power -> Hardware interface boundary" requires that a process
+design_new.md "Hardware interface boundary" requires that a process
 shutdown drive outputs to their safe state (block track voltages 0, switch
 motors de-energized). `server.py` used to express that with a bare
 `atexit.register(sim_controller.enter_safe_state)`, which has a hole:

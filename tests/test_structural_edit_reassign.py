@@ -1,7 +1,7 @@
 """Regression: a same-route structural ``Route.tasks`` edit must re-allocate a
 fresh ``RouteRun`` for each assigned train.
 
-Pins design_new.md "Shared-route edit teardown". The Phase-3
+Pins design_new.md "Shared-route edit teardown". The Action (teardown)
 ``pending_route_deactivate`` consumer's ``remove_train_route_run(...)``
 UNASSIGNS the train from the run's ``route_id`` as part of the clear, so a
 same-route re-assignment cannot be applied up front -- it would be undone by
@@ -10,7 +10,7 @@ that unassign. The fix holds the re-assignment on
 AFTER the clear (``apply_pending_reassign``).
 
 Pre-fix, the train was left unassigned with no ``RUNNING`` run, so the next
-eligible Phase 1 found ``train_id not in Route.assigned_train_ids`` and never
+eligible Plan found ``train_id not in Route.assigned_train_ids`` and never
 allocated a fresh run -- the route was silently abandoned for that train.
 
 Run with: ``conda run -n general python -m pytest
@@ -82,7 +82,7 @@ def test_structural_edit_holds_then_reapplies_assignment(state_with_train):
     assert rex._pending_reassign == {"TRAIN_A": "R"}
     assert controller.route_hooks.phase_latches.route_deactivate is True
 
-    # Phase-3 deactivate consumer: remove (which UNASSIGNS) then re-apply.
+    # Action (teardown) deactivate consumer: remove (which UNASSIGNS) then re-apply.
     state.sim_controller._consume_pending_route_deactivate(controller, train)
 
     # The train ends up STILL assigned (pre-fix it was left unassigned).
