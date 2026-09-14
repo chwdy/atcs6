@@ -14,7 +14,7 @@ nothing moves until the operator powers it back up deliberately.
 
 import pytest
 
-from enums import HandlePosition, TrainState
+from enums import HandlePosition
 from runtime_payloads import FatalConflictKind, FatalPhysicalEntryConflict
 from services import ValidationError, train_service
 from tests.test_unidentified_adoption import _State, an_unidentified_on, adopt
@@ -68,12 +68,12 @@ def test_clearing_leaves_every_train_off_and_stopped():
     was rolling when the conflict hit does not carry on rolling."""
     network, sim, detector = a_halted_sim()
     controller = sim.controllers["T1"]
-    assert controller.ops.state is not TrainState.OFF
+    assert controller.powered
     assert controller.physics_sync.current_speed_kmh == 42.0
 
     sim.clear_failed_runtime()
 
-    assert controller.ops.state is TrainState.OFF
+    assert not controller.powered
     assert controller.ops.handle_position is HandlePosition.N
     assert controller.physics_sync.current_speed_kmh == 0.0
     assert controller.eb.active is False
@@ -101,7 +101,7 @@ def test_the_layout_survives_the_whole_round_trip():
     assert sorted(network.trains) == ["T1"]
     # Clearing the halt reaches `OFF` through `complete_power_off()`, which resets
     # the framed head end back to its default.
-    assert sim.controllers["T1"].ops.state == TrainState.OFF
+    assert not sim.controllers["T1"].powered
     assert sim.controllers["T1"]._framed_head_end == "end_a"
     # add_train seeds a model+instance profile pair and the train names the
     # instance (design_new.md "SpeedProfile", Model profiles and instance
@@ -124,7 +124,7 @@ def test_the_train_can_be_powered_back_up_after_clearing():
     result = sim.controllers["T1"].commands.power_on_cmd()
 
     assert result.success is True
-    assert sim.controllers["T1"].ops.state is not TrainState.OFF
+    assert sim.controllers["T1"].powered
 
 
 # --------------------------------------------------- service-layer behaviour

@@ -10,7 +10,7 @@ import pytest
 from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
-from enums import BlockState, Direction, TrainState, HandlePosition
+from enums import BlockState, Direction, HandlePosition
 from train import Train, TrainCar
 from tests.train_test_helpers import make_train_span
 from simulation import SimulationController
@@ -250,9 +250,8 @@ class TestTrainPhysicsDebugLogging:
         controller = sim._get_or_create_controller(train)
         physics = sim._get_or_create_physics(train)
 
-        # Per design_new.md: power_on is a read-only derived property; use
-        # controller.ops.state to power on.
-        controller.ops.state = TrainState.READY
+        # Per design_new.md: `power_on` is a read-only alias for `powered`.
+        controller.powered = True
         controller.ops.handle_position = HandlePosition.P2
         # v1: write canonical speed onto the controller; controller.physics_sync.current_speed_kmh mirrors.
         controller.physics_sync.current_speed_kmh = 12.0
@@ -285,7 +284,7 @@ class TestTrainPhysicsManualPowerPercent:
         controller = sim._get_or_create_controller(train)
         physics = sim._get_or_create_physics(train)
         controller.physics_sync.current_span = make_train_span((1, 0), Direction.EAST)
-        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.powered = True
         controller.commands.control_mode = "manual"
         controller.manual.manual_mode_type = "power_percent"
         controller.atc.speed_limit = 120.0

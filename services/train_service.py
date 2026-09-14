@@ -26,7 +26,7 @@ import functools
 from typing import Any, Dict, List, Optional, Tuple
 
 from app_state import AppState
-from enums import CommandResult, Direction, HandlePosition, TrainState
+from enums import CommandResult, Direction, HandlePosition
 from services.exceptions import ConflictError, NotFoundError, ValidationError
 from train import Train, TrainCar
 from train_route import RouteStartMode
@@ -426,9 +426,9 @@ def diagnose_stopped_train(state: AppState, train_id: str) -> dict:
          if getattr(train, "is_unidentified", False) else "a real train",
          "Set it up as a real train from its panel.")
 
-    powered = controller.ops.state is not TrainState.OFF
+    powered = controller.powered
     gate("powered", powered,
-         "the train is powered off" if not powered else f"state {controller.ops.state.name}",
+         "the train is powered off" if not powered else f"status {controller.train_status.name}",
          "Press Power On. While a train is OFF its route is never planned at all.")
 
     # 3. Authority. No path means no ATC limit, which means no voltage. There is
@@ -784,17 +784,12 @@ def release_emergency(state: AppState, train_id: str) -> CommandResult:
     latch-gated (stopped, EB cancellation committed, authority cleared). This
     is the operator surface for the "Release Emergency" / Reset button.
 
-    ``eb.release()`` clears only ``eb.active``; per design_new.md the reactive
-    evaluator owns the ``RUNNING_MOVING -> READY`` move. This API is
-    synchronous (no tick runs between the POST and its response), so run
-    ``evaluate_reactive_conditions()`` here right after the release, exactly as
-    the tick's step-``71ee`` call would, so the READY transition commits within
-    this request. The evaluator is idempotent and a no-op when the release was
-    rejected (``eb.active`` still latched keeps transition 2 from firing).
+    ``eb.release()`` clears only ``eb.active``; `train_status` is derived, so
+    once the latch clears a powered train reads `train_status == MANUAL` with no
+    further state write needed (design_new.md "EB release").
     """
     controller = _controller(state, require_train(state, train_id))
     result = controller.eb.release()
-    controller.ops.evaluate_reactive_conditions()
     return result
 
 
@@ -903,9 +898,9 @@ def _require_calibration_ready(state: AppState, train_id: str, train, sim) -> No
             "Speed calibration commands a power percent — switch the manual "
             "mode to power_percent"
         )
-    if controller.ops.state != TrainState.READY:
+    if not controller.powered:
         raise ConflictError(
-            f"Train must be READY to calibrate (currently {controller.ops.state.value})"
+            f"Train must be powered to calibrate (currently {controller.train_status.value})"
         )
     if not controller.is_stopped():
         raise ConflictError("Train must be stopped to start a calibration pass")
@@ -1090,10 +1085,10 @@ def _lighting_calibration_target(state: AppState, train_id: str):
         raise ConflictError(
             "Lighting calibration is a manual-mode pass — switch the train to manual"
         )
-    if controller.ops.state is not TrainState.READY:
+    if not controller.powered:
         raise ConflictError(
-            f"Train must be READY to calibrate lighting voltage "
-            f"(state {controller.ops.state.name})"
+            f"Train must be powered to calibrate lighting voltage "
+            f"(status {controller.train_status.name})"
         )
     if not controller.is_stopped():
         raise ConflictError("Train must be stopped to calibrate lighting voltage")

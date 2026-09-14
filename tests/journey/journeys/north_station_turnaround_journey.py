@@ -21,7 +21,7 @@ Two events:
      satisfied without any movement.
 """
 
-from enums import TrainState
+from ..harness import TrainState
 from train_route import RouteRunStatus
 
 from ..assertions import assert_state

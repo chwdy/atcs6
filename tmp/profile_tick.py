@@ -13,7 +13,6 @@ import sys
 import time
 
 import bootstrap
-from enums import TrainState
 
 DT = 0.1            # matches runtime.py cadence (time.sleep(0.1), 1x speed)
 WARMUP = 50         # let the first departures get going
@@ -24,7 +23,7 @@ PROFILE_TICKS = 400 # cProfile window length, taken at the busy tail
 def active_counts(sim):
     on = rolling = 0
     for c in sim.controllers.values():
-        if c.ops.state != TrainState.OFF:
+        if c.powered:
             on += 1
             if c.physics_sync.current_speed_kmh > 0.1:
                 rolling += 1

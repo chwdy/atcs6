@@ -8,7 +8,9 @@ consistency).
 from typing import Callable, Dict, Set
 
 from constants import OCCUPANCY_OFF_THRESHOLD
-from enums import BlockState, TrainState
+from enums import BlockState
+
+from .harness import TrainState
 
 from .events import Invariant
 from .harness import Snapshot

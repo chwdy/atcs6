@@ -54,7 +54,7 @@ from notification_center import Kind as _Kind
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from constants import STOPPED_SPEED_THRESHOLD_KMH
-from enums import BRAKE_MULTIPLIERS, HANDLE_POSITION_INDEX, INDEX_TO_HANDLE_POSITION, CommandResult, HandlePosition, TrainState
+from enums import BRAKE_MULTIPLIERS, HANDLE_POSITION_INDEX, INDEX_TO_HANDLE_POSITION, CommandResult, HandlePosition
 from model_scale import get_speed_conversion_factor
 from train_controller_types import ATOInfo
 

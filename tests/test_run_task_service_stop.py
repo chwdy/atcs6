@@ -17,7 +17,7 @@ in flight is the served completion projection with `task_kind == "run"`, which
 the stop-arrival check rejects; only an elapsed run presents as a stop.
 """
 
-from enums import Direction, TrainState
+from enums import Direction
 from network import RailwayNetwork
 from route_executor import ResolvedNextTaskProjection, RouteExecutionState, RouteExecutor
 from runtime_payloads import ResolvedRouteTarget
@@ -75,7 +75,7 @@ def _run_task_ready(task_time=20.0):
     controller = executor._get_controller(train)
     controller._apply_head_frame("end_a")
     controller.commands.control_mode = "ato"
-    controller.ops.state = TrainState.RUNNING_MOVING
+    controller.powered = True
     controller.ato.engaged = True
     set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
 

@@ -237,11 +237,6 @@ class TestExtendPathBug:
         controller.commands.power_on_cmd()
         controller._apply_head_frame("end_a")
         controller.ato.engage()
-        controller.ops.enter_running_moving()
-
-        # Sync train state
-        demo_train.state = controller.ops.state
-        demo_train.ato_running = controller.ato.engaged
 
         # Get initial lookahead
         initial_lookahead = controller.get_lookahead()
@@ -322,7 +317,6 @@ class TestExtendPathBug:
         controller.commands.power_on_cmd()
         controller._apply_head_frame("end_a")
         controller.ato.engage()
-        controller.ops.enter_running_moving()
 
         # Simulate train moving to BLOCK_B (middle of route). The live span
         # lives on the controller; the framed head (end_a, set above) is the

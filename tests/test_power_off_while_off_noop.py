@@ -12,7 +12,6 @@ tests/test_power_off_while_off_noop.py -q``
 
 from network import RailwayNetwork
 from train import Train, TrainCar
-from enums import TrainState
 from train_controller import create_controller_for_train
 
 
@@ -22,13 +21,13 @@ def _off_controller(train_id="T_OFF"):
     train = Train(train_id=train_id, consist=[car], max_speed=60.0)
     network.add_train(train)
     controller = create_controller_for_train(train_id, network)
-    controller.ops.state = TrainState.OFF
+    controller.powered = False
     return controller
 
 
 def test_power_off_while_off_is_accepted_noop():
     controller = _off_controller()
-    assert controller.ops.state == TrainState.OFF
+    assert not controller.powered
 
     result = controller.commands.power_off_cmd()
 
@@ -46,6 +45,6 @@ def test_power_off_then_power_on_while_off_does_not_tear_back_to_off():
     on = controller.commands.power_on_cmd()
 
     assert on.success is True
-    assert controller.ops.state == TrainState.READY
+    assert controller.powered
     # No stale latch left to drag the powered train back to OFF in Phase 3.
     assert controller.route_hooks.phase_latches.power_off is False

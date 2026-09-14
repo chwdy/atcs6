@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from enums import CommandResult, HandlePosition, TrainState
+from enums import CommandResult, HandlePosition
 from runtime_payloads import ErrorRecord
 
 if TYPE_CHECKING:
@@ -114,7 +114,7 @@ class EBWorkflow:
         if train is None:
             return CommandResult(False, "Train not found")
 
-        if c.ops.state == TrainState.OFF:
+        if not c.powered:
             return CommandResult(False, "Power is off")
         if not self.active:
             return CommandResult(False, "Emergency brake not active")

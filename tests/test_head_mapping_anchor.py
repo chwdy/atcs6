@@ -11,7 +11,7 @@ whose `resource_sequence` visits BLK_A twice (indices 0 and 2) and drive the rea
 """
 
 from block import Block
-from enums import Direction, PathStatus, TrainState
+from enums import Direction, PathStatus
 from entity_ids import segment_id_for_block
 from network import RailwayNetwork
 from path import Path, PathTileEntry, ResourceSequenceEntry
@@ -74,7 +74,7 @@ def _controller_on_lapping_path():
     controller = sim._get_or_create_controller(train)
     controller.commands.control_mode = "manual"
     controller._apply_head_frame("end_a")  # end_a is head
-    controller.ops.state = TrainState.RUNNING_MOVING
+    controller.powered = True
     controller.physics_sync.current_span = make_train_span(
         (0, 0), facing_direction=Direction.EAST, occupied_blocks=["BLK_A"]
     )

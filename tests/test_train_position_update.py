@@ -11,7 +11,7 @@ import pytest
 from train import Train, TrainCar
 from network import RailwayNetwork
 from track import Tile, TRACK_EW
-from enums import Direction, TrainState
+from enums import Direction
 from simulation import SimulationController
 
 

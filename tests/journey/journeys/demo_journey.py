@@ -17,8 +17,9 @@ Network layout reference (from `demo_main.py`):
                         top_speed_kmh=20 (block may auto-split around station)
 """
 
-from enums import AtcLimitReasonCode, BRAKE_MULTIPLIERS, HandlePosition, TrainState
+from enums import AtcLimitReasonCode, BRAKE_MULTIPLIERS, HandlePosition
 
+from ..harness import TrainState
 from ..actions import attempt_set_switch_position
 from ..assertions import (
     assert_atc_reason_not_in,

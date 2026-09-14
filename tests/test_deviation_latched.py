@@ -55,7 +55,7 @@ from typing import Tuple
 
 import pytest
 
-from enums import AtcLimitReasonCode, Direction, PathStatus, TrainState
+from enums import AtcLimitReasonCode, Direction, PathStatus, TrainStatus
 from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from runtime_payloads import PhysicsSpanUpdate
@@ -139,13 +139,11 @@ def _seed_rolling_train_on_live_path(
     assert result.success, f"create_path failed: {getattr(result, 'reason', None)}"
 
     # Bring the train under control with real forward authority: manual mode,
-    # cab A, moving EAST. Manual trains have no depart handshake; put the train
-    # in the moving state directly.
-    controller.ops.state = TrainState.READY
+    # cab A, EAST. Manual trains have no depart handshake; the driver drives.
+    controller.powered = True
     controller.commands.control_mode = "manual"
     controller._apply_head_frame("end_a")
-    controller.ops.enter_running_moving()
-    assert controller.ops.state == TrainState.RUNNING_MOVING
+    assert controller.train_status == TrainStatus.MANUAL
 
     return sim, dispatcher, controller, train, result.path_id
 

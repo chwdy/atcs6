@@ -27,7 +27,7 @@ from railway_signal import Signal, SignalType
 from station import Station
 from train import Train, TrainCar
 from switch import Switch
-from enums import Direction, BlockState, TrainState
+from enums import Direction, BlockState, TrainStatus
 from tests.train_test_helpers import set_train_span
 from tests.segment_test_helpers import make_segment_block, make_segment_block_with_tracks
 
@@ -978,12 +978,12 @@ class TestTrainRoutes:
         assert "manual mode" in bad.get_json()["error"].lower()
         assert controller.eb.active is True
 
-        # The NEW path releases EB and lands the controller in READY.
+        # The NEW path releases EB and leaves the controller powered and stopped.
         resp = client.post("/api/trains/TRAIN_001/release-emergency")
         assert resp.status_code == 200
         assert resp.get_json()["status"] == "success"
         assert controller.eb.active is False
-        assert controller.ops.state == TrainState.READY
+        assert controller.powered and controller.is_stopped()
 
     def test_release_emergency_rejected_while_moving(
         self, client, app_state, network_with_tracks
@@ -1005,16 +1005,15 @@ class TestTrainRoutes:
         assert "moving" in resp.get_json()["error"].lower()
         assert controller.eb.active is True
 
-    def test_release_emergency_lands_running_moving_in_ready_synchronously(
+    def test_release_emergency_lands_stopped_powered_synchronously(
         self, client, app_state, network_with_tracks
     ):
-        """The POST is synchronous: a train EB'd to a stop from RUNNING_MOVING
-        with no live authority lands in READY within the POST.
+        """The POST is synchronous: a train EB'd to a stop with no live
+        reservation reads a powered, non-EB status within the POST.
 
-        eb.release() no longer writes the operational state; the route runs the
-        reactive evaluator right after it (design_new.md "Reactive condition
-        evaluation"), so the READY transition commits before the response
-        without waiting for the next tick.
+        `train_status` is derived, so once `eb.release()` clears `eb.active`
+        the train reads its underlying mode with no separate state write
+        (design_new.md "Controller state machine").
         """
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0, max_speed=100.0)
         train = Train("TRAIN_003", consist=[car])
@@ -1023,18 +1022,18 @@ class TestTrainRoutes:
 
         controller = app_state.sim_controller.get_or_create_controller("TRAIN_003")
         controller.commands.power_on_cmd()
-        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.powered = True
         controller.physics_sync.current_speed_kmh = 0.0
         controller.eb.activate()  # stopped, no path -> clean latch
         assert controller.eb.active is True
-        # EB activation does not move the operational state.
-        assert controller.ops.state == TrainState.RUNNING_MOVING
+        # While EB is latched the derived status is EB.
+        assert controller.train_status == TrainStatus.EB
 
         resp = client.post("/api/trains/TRAIN_003/release-emergency")
         assert resp.status_code == 200
         assert controller.eb.active is False
-        # Synchronous: the evaluator committed READY within the POST.
-        assert controller.ops.state == TrainState.READY
+        # Derived: once the latch clears the train reads a powered, non-EB status.
+        assert controller.powered and controller.train_status != TrainStatus.EB
 
 # ============================================================================
 # Path Routes Tests (9 routes)
@@ -1407,7 +1406,7 @@ class TestRouteRedesignApis:
 
         controller = app_state.sim_controller.get_or_create_controller(train_id)
         controller.commands.control_mode = "ato"
-        controller.ops.state = TrainState.READY
+        controller.powered = True
         return train, controller
 
     def test_quick_route_three_call_flow_creates_path_via_phase1(self, client, app_state):

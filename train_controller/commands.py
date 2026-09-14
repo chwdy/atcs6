@@ -33,7 +33,7 @@ from runtime_payloads import ErrorRecord as _ErrorRecord
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from enums import CommandResult, HandlePosition, TrainState
+from enums import CommandResult, HandlePosition
 from runtime_payloads import Command
 
 if TYPE_CHECKING:
@@ -235,9 +235,9 @@ class OperatorCommands:
         train = c._get_train()
         if train is None:
             return CommandResult(False, "Train not found")
-        if c.ops.state != TrainState.OFF:
+        if c.powered:
             return CommandResult(False, "Power already on")
-        c.ops.state = TrainState.READY
+        c.powered = True
         c.ops.handle_position = HandlePosition.N
         return CommandResult(True, "Power on")
 
@@ -275,18 +275,20 @@ class OperatorCommands:
         """
         Turn on train power.
 
-        Per design_new.md: valid only when state == OFF. On accept, transitions
-        to READY.
+        Per design_new.md "Power/mode command contracts": valid only when power
+        is currently off. On accept it sets the stored `powered` flag, leaving
+        the train `train_status == MANUAL` (the stored `control_mode` is manual
+        from OFF cleanup) with no reservation. It does not touch `eb.active`.
         """
         c = self._c
         train = c._get_train()
         if train is None:
             return CommandResult(False, "Train not found")
 
-        if c.ops.state != TrainState.OFF:
+        if c.powered:
             return CommandResult(False, "Power already on")
 
-        c.ops.state = TrainState.READY
+        c.powered = True
         c.ops.handle_position = HandlePosition.N
 
         return CommandResult(True, "Power on")
@@ -311,11 +313,12 @@ class OperatorCommands:
         if not c.is_stopped():
             return CommandResult(False, "Cannot power off while moving")
 
-        # power_off while already OFF is a no-op (design_new.md:1783): the train
-        # is already off, so do NOT arm the `power_off` latch. A stale latch
-        # would survive a later `power_on_cmd()` and tear the freshly-powered
-        # train straight back to OFF in the next Action cleanup.
-        if c.ops.state == TrainState.OFF:
+        # power_off while already OFF is a no-op (design_new.md "Power/mode
+        # command contracts"): the train is already off, so do NOT arm the
+        # `power_off` latch. A stale latch would survive a later
+        # `power_on_cmd()` and tear the freshly-powered train straight back to
+        # OFF in the next Action cleanup.
+        if not c.powered:
             return CommandResult(True, "Power off (already off)")
 
         self._apply_power_off_request()
@@ -460,8 +463,10 @@ class OperatorCommands:
         # become the train's command after it with no fresh driver input.
         c.manual.reset_power_percent_for_safety()
 
-        # A stopped train lands in READY.
-        c.ops.state = TrainState.READY
+        # A stopped train issuing set_mode is brought under control: from OFF
+        # this powers the controller up as a side effect (design_new.md
+        # "Controller state machine": set_mode from OFF sets `powered = True`).
+        c.powered = True
         return CommandResult(True, f"Mode set to {mode}")
 
     def set_manual_mode_type(self, mode_type: str) -> CommandResult:

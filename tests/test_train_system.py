@@ -11,7 +11,7 @@ import pytest
 from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
 from train_route import PlatformTarget, Route, RouteTask, RouteMode
 from train import Train, TrainCar
-from enums import Direction, TrainState, BlockState, HandlePosition
+from enums import Direction, TrainStatus, BlockState, HandlePosition
 from network import RailwayNetwork
 from train_controller import TrainController, create_controller_for_train
 from runtime_payloads import PhysicsSpanUpdate
@@ -25,12 +25,16 @@ from tests.train_test_helpers import set_train_span
 
 def create_test_train_with_controller(
     train_id: str = "T001",
-    state: TrainState = TrainState.OFF,
+    powered: bool = False,
     current_speed: float = 0.0,
     max_speed: float = 100.0,
 ) -> tuple[Train, TrainController, RailwayNetwork]:
     """
     Create a train with a controller for testing.
+
+    `powered` sets the stored power flag (design_new.md "Controller state
+    machine"); `train_status` derives from it. `current_speed` seeds the live
+    speed used by the derived stopped/moving predicates.
 
     Returns:
         Tuple of (train, controller, network)
@@ -46,11 +50,7 @@ def create_test_train_with_controller(
     # Per design_new.md "Train ownership", live runtime state lives on the
     # controller; tests configure it directly there instead of mirroring
     # through Train.
-    controller.physics_sync.current_speed_kmh = current_speed
-    if state == TrainState.OFF:
-        controller.ops.state = TrainState.OFF
-    else:
-        controller.ops.state = state
+    controller.powered = bool(powered)
 
     # Sync controller speed (canonical per design_new.md)
     controller.physics_sync.current_speed_kmh = float(current_speed)
@@ -302,7 +302,7 @@ class TestTrainPhase1:
         controller = create_controller_for_train(train.train_id, network)
         set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
         controller._apply_head_frame("end_a")
-        controller.ops.state = TrainState.OFF
+        controller.powered = False
         return train, controller
 
     def test_new_properties_initialization(
@@ -335,14 +335,14 @@ class TestTrainPhase1:
         Acceptance is immediate; OFF transition happens after Phase 3.
         """
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.OFF
+            powered=False
         )
 
         # Power on
         result = controller.commands.power_on_cmd()
         assert result.success is True
-        assert controller.ops.state == TrainState.READY
-        assert controller.ops.state == TrainState.READY
+        assert controller.powered
+        assert controller.train_status != TrainStatus.OFF
 
         # Can't power on again
         result = controller.commands.power_on_cmd()
@@ -356,12 +356,12 @@ class TestTrainPhase1:
     def test_power_off_while_moving_fails(self):
         """Test power_off_cmd fails when train is moving."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.RUNNING_MOVING, current_speed=50.0
+            powered=True, current_speed=50.0
         )
 
         result = controller.commands.power_off_cmd()
         assert result.success is False
-        assert controller.ops.state == TrainState.RUNNING_MOVING
+        assert controller.powered and not controller.is_stopped()
 
 
     def test_from_dict_restores_new_properties(self):
@@ -406,15 +406,6 @@ class TestTrainPhase1:
         assert train.speed_profile_id is None
 
 
-# =============================================================================
-# TrainState Enum Tests
-# =============================================================================
-
-
-class TestTrainState:
-    """Tests for TrainState enum."""
-
-
 
 
 # =============================================================================
@@ -432,6 +423,58 @@ from train_controller import (
     TRACK_END_SAFETY_MARGIN_CM,
 )
 from block_power import MAX_TRACK_VOLTAGE
+
+
+def _make_fake_bp_controller(powered, has_reservation=False, target_speed=0.0):
+    """A stand-in controller for `TrainPhysics.compute_track_voltage`.
+
+    That method's voltage-shape branch reads the stored `powered` flag, the
+    stopped predicate, the live reservation (`received_path_plan`), and
+    `eb.active` (design_new.md "Power-controller role"). A powered, stopped
+    train with no reservation is the stopped-but-lit case; a train under a live
+    reservation drives the speed-derived voltage.
+    """
+    import types
+    from train_controller_types import PhysicsCommand, PHYSICS_KIND_HANDLE
+
+    class _FakeController:
+        def __init__(self):
+            self.powered = powered
+            self.control_mode = "ato"
+            self.manual_mode_type = "simulation"
+            self.manual_power_percent = 0
+            self.current_speed_kmh = 0.0
+            self.target_speed = target_speed
+            self.eb = types.SimpleNamespace(active=False)
+            self.path_projection = types.SimpleNamespace(
+                received_path_plan=(object() if has_reservation else None)
+            )
+
+        def is_stopped(self):
+            return self.current_speed_kmh <= 0.1
+
+        def produce_physics_command(self):
+            return PhysicsCommand(
+                kind=PHYSICS_KIND_HANDLE,
+                voltage_source_speed_kmh=self.target_speed,
+            )
+
+    return _FakeController()
+
+
+def _fake_bp_sim(powered, has_reservation=False, target_speed=0.0):
+    """A fake sim_controller that hands `BlockPowerController` a fake controller
+    (per `_make_fake_bp_controller`) plus a real `TrainPhysics`."""
+    from train_physics import TrainPhysics
+
+    class _FakeSim:
+        def get_or_create_controller(self, _train_id):
+            return _make_fake_bp_controller(powered, has_reservation, target_speed)
+
+        def get_or_create_physics(self, train_id):
+            return TrainPhysics(train_id=train_id)
+
+    return _FakeSim()
 
 
 class TestSimulatedTrackDriver:
@@ -487,25 +530,6 @@ class TestBlockPowerController:
         `TrainPhysics` instance that computes the canonical voltage.
         """
         from train_physics import TrainPhysics
-        from train_controller_types import (
-            PhysicsCommand,
-            PHYSICS_KIND_HANDLE,
-        )
-
-        class _FakeController:
-            def __init__(self, state):
-                self.state = state
-                self.control_mode = "ato"
-                self.manual_mode_type = "simulation"
-                self.manual_power_percent = 0
-                self.current_speed_kmh = 0.0
-                self.target_speed = 60.0
-
-            def produce_physics_command(self):
-                return PhysicsCommand(
-                    kind=PHYSICS_KIND_HANDLE,
-                    voltage_source_speed_kmh=self.target_speed,
-                )
 
         class _FakeSim:
             def __init__(self):
@@ -516,8 +540,13 @@ class TestBlockPowerController:
 
             def get_or_create_controller(self, train_id):
                 train = self._trains_by_id.get(train_id)
-                state = getattr(train, "state", TrainState.OFF) if train else TrainState.OFF
-                return _FakeController(state)
+                powered = bool(getattr(train, "_bp_powered", False)) if train else False
+                has_reservation = (
+                    bool(getattr(train, "_bp_has_reservation", False)) if train else False
+                )
+                return _make_fake_bp_controller(
+                    powered=powered, has_reservation=has_reservation, target_speed=60.0
+                )
 
             def get_or_create_physics(self, train_id):
                 return TrainPhysics(train_id=train_id)
@@ -530,28 +559,29 @@ class TestBlockPowerController:
 
     @pytest.fixture
     def train_off(self) -> Train:
-        """Create a train in OFF state."""
+        """A powered-off train."""
         train = Train(train_id="TRAIN_001")
-        train.state = TrainState.OFF
+        train._bp_powered = False
         return train
 
     @pytest.fixture
     def train_idle(self) -> Train:
-        """Create a train in IDLE state."""
+        """A powered, stopped train with no reservation (stopped-but-lit)."""
         train = Train(train_id="TRAIN_002")
-        train.state = TrainState.READY
+        train._bp_powered = True
         return train
 
     @pytest.fixture
     def train_running(self) -> Train:
-        """Create a train in RUNNING_MOVING state.
+        """A powered train under a live reservation (drives speed voltage).
 
         v1: target_speed lives on TrainController; tests pair this train with
         the `controller` fixture above which provides target_speed=60.0 via
         the fake sim_controller.
         """
         train = Train(train_id="TRAIN_003")
-        train.state = TrainState.RUNNING_MOVING
+        train._bp_powered = True
+        train._bp_has_reservation = True
         return train
 
     def test_set_block_voltage(self, controller: BlockPowerController):
@@ -797,21 +827,21 @@ class TestTrainStateTransitions:
     def test_power_on_transition(self):
         """Test power_on_cmd() transitions OFF -> IDLE."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.OFF
+            powered=False
         )
         result = controller.commands.power_on_cmd()
         assert result.success is True
-        assert controller.ops.state == TrainState.READY
-        assert controller.ops.state == TrainState.READY
+        assert controller.powered
+        assert controller.train_status != TrainStatus.OFF
 
     def test_power_on_fails_when_already_on(self):
         """Test power_on_cmd() fails when already powered."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.READY
+            powered=True
         )
         result = controller.commands.power_on_cmd()
         assert result.success is False
-        assert controller.ops.state == TrainState.READY
+        assert controller.powered
 
     def test_power_off_when_stopped(self):
         """Test power_off_cmd() works when stopped.
@@ -820,7 +850,7 @@ class TestTrainStateTransitions:
         transition happens in Phase 3. Acceptance is immediate.
         """
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.READY
+            powered=True
         )
         result = controller.commands.power_off_cmd()
         assert result.success is True
@@ -829,27 +859,24 @@ class TestTrainStateTransitions:
     def test_power_off_fails_when_moving(self):
         """Test power_off_cmd() fails when moving."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.RUNNING_MOVING, current_speed=50.0
+            powered=True, current_speed=50.0
         )
         result = controller.commands.power_off_cmd()
         assert result.success is False
-        assert controller.ops.state == TrainState.RUNNING_MOVING
+        assert controller.powered and not controller.is_stopped()
 
     def test_path_backed_manual_run_still_completes_to_standby(self):
-        """A path-backed run still completes to standby (READY) after ATO->manual.
+        """A path-backed run brakes to a stand after ATO->manual.
 
-        The RUNNING_MOVING -> READY transition for a stopped train with no live
-        authority is the reactive speed-based evaluation in
-        ``on_physics_updated()`` (design_new.md "Reactive speed-based state
-        evaluation"); per steps 89ba/32dd/90d3, ``tick()`` must not perform it.
-        This drives that canonical post-physics callback with a no-boundary
-        zero-speed update — the real per-tick order (tick() then physics).
+        `train_status` is derived, so there is no reactive state transition to
+        drive here; the post-physics callback just applies the zero-speed
+        update and the train reads stopped. This drives that callback with a
+        no-boundary zero-speed update — the real per-tick order (tick() then
+        physics).
         """
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.RUNNING_MOVING
+            powered=True
         )
-        train.state = TrainState.RUNNING_MOVING
-        controller.ops.state = TrainState.RUNNING_MOVING
         controller.commands.control_mode = "manual"
         controller._apply_head_frame("end_a")
         # `path_backed_run_active` is a derived projection (per design_new.md
@@ -870,13 +897,13 @@ class TestTrainStateTransitions:
             ),
         )
 
-        assert controller.ops.state == TrainState.READY
+        assert controller.is_stopped()
         assert controller.path_projection.path_backed_run_active is False
 
     def test_emergency_stop_cmd_from_running(self):
         """Test activate_emergency_cmd() from RUNNING_MOVING."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.RUNNING_MOVING
+            powered=True
         )
         # Per design_new.md "Train ownership", EB state lives on the controller;
         # set the speed via the controller (live runtime field) and assert
@@ -890,7 +917,7 @@ class TestTrainStateTransitions:
     def test_emergency_stop_cmd_always_allowed(self):
         """Test activate_emergency_cmd() works from any state."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.READY
+            powered=True
         )
         result = controller.eb.activate()
         assert result.success is True
@@ -900,7 +927,7 @@ class TestTrainStateTransitions:
     def test_set_mode_manual_fails_when_moving(self):
         """set_mode('manual') is rejected while moving."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.READY, current_speed=30.0
+            powered=True, current_speed=30.0
         )
         result = controller.commands.set_mode("manual")
         assert result.success is False
@@ -917,7 +944,7 @@ class TestTrainStateTransitions:
         that branch, which is the hole this closes.
         """
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.READY
+            powered=True
         )
         controller.commands.power_on_cmd()
         controller.commands.set_mode("manual")
@@ -952,7 +979,7 @@ class TestTrainStateTransitions:
         from types import SimpleNamespace
 
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.READY  # stopped -> passes the is_stopped() gate
+            powered=True  # stopped -> passes the is_stopped() gate
         )
         # An open pass returns a non-None override for this train. (A stopped
         # auto pass returns value=0.0 — still non-None — and a lighting run is
@@ -981,7 +1008,7 @@ class TestTrainStateTransitions:
         from types import SimpleNamespace
 
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.READY
+            powered=True
         )
         controller.simulation_controller = SimpleNamespace(
             speed_calibration=SimpleNamespace(
@@ -1004,83 +1031,55 @@ class TestStateBasedVoltageOutput:
     """
 
     @staticmethod
-    def _make_sim(state, target_speed=0.0):
-        from train_physics import TrainPhysics
-        from train_controller_types import (
-            PhysicsCommand,
-            PHYSICS_KIND_HANDLE,
-        )
-
-        class _FakeController:
-            def __init__(self):
-                self.state = state
-                self.control_mode = "ato"
-                self.manual_mode_type = "simulation"
-                self.manual_power_percent = 0
-                self.current_speed_kmh = 0.0
-                self.target_speed = target_speed
-
-            def produce_physics_command(self):
-                return PhysicsCommand(
-                    kind=PHYSICS_KIND_HANDLE,
-                    voltage_source_speed_kmh=self.target_speed,
-                )
-
-        class _FakeSim:
-            def get_or_create_controller(self, _train_id):
-                return _FakeController()
-
-            def get_or_create_physics(self, train_id):
-                return TrainPhysics(train_id=train_id)
-
-        return _FakeSim()
+    def _make_sim(powered, has_reservation=False, target_speed=0.0):
+        return _fake_bp_sim(powered, has_reservation, target_speed)
 
     def test_voltage_for_off_state(self):
-        """Test voltage is 0 for OFF state."""
+        """Test voltage is 0 for an unpowered train."""
         from block_power import BlockPowerController
         from train import Train
 
         train = Train(train_id="T001")
-        controller = BlockPowerController(_sim_controller=self._make_sim(TrainState.OFF))
+        controller = BlockPowerController(_sim_controller=self._make_sim(powered=False))
         voltage = controller._calculate_voltage_for_train(train)
         assert voltage == 0.0
 
     def test_voltage_for_idle_state(self):
-        """Test voltage is lighting voltage for IDLE state."""
+        """Test voltage is lighting voltage for a powered, stopped train."""
         from block_power import BlockPowerController
         from speed_profile import SpeedProfile
         from train import Train
 
         train = Train(train_id="T001")
-        controller = BlockPowerController(_sim_controller=self._make_sim(TrainState.READY))
+        controller = BlockPowerController(_sim_controller=self._make_sim(powered=True))
         profile = SpeedProfile(profile_id="t", name="T", lighting_voltage=2.5)
         voltage = controller._calculate_voltage_for_train(train, profile)
         assert voltage == 2.5
 
     def test_voltage_for_standby_state(self):
-        """Test voltage is lighting voltage for STANDBY state."""
+        """Test voltage is lighting voltage for a powered, stopped train."""
         from block_power import BlockPowerController
         from speed_profile import SpeedProfile
         from train import Train
 
         train = Train(train_id="T001")
-        controller = BlockPowerController(_sim_controller=self._make_sim(TrainState.READY))
+        controller = BlockPowerController(_sim_controller=self._make_sim(powered=True))
         profile = SpeedProfile(profile_id="t", name="T", lighting_voltage=2.5)
         voltage = controller._calculate_voltage_for_train(train, profile)
         assert voltage == 2.5
 
     def test_voltage_for_dwelling_ready_state(self):
-        """Voltage is lighting voltage for a stopped/dwelling train (READY)."""
+        """Voltage is lighting voltage for a stopped/dwelling train."""
         from block_power import BlockPowerController
         from speed_profile import SpeedProfile
         from train import Train
 
         train = Train(train_id="T001")
         controller = BlockPowerController(
-            _sim_controller=self._make_sim(TrainState.READY)
+            _sim_controller=self._make_sim(powered=True)
         )
         # Lighting voltage is a per-train property on the SpeedProfile; the
-        # controller emits it for a stopped train (a dwelling train is READY).
+        # controller emits it for a powered, stopped train with no reservation.
         profile = SpeedProfile(
             profile_id="t", name="T",
             lighting_voltage=2.0,
@@ -1089,14 +1088,15 @@ class TestStateBasedVoltageOutput:
         assert voltage == 2.0
 
     def test_voltage_for_running_moving_state_uses_speed(self):
-        """Voltage uses controller-derived target_speed for RUNNING_MOVING."""
+        """Voltage uses controller-derived target_speed for a train under a
+        live reservation."""
         from block_power import BlockPowerController
         from speed_profile import SpeedProfile
         from train import Train
 
         train = Train(train_id="T001")
         controller = BlockPowerController(
-            _sim_controller=self._make_sim(TrainState.RUNNING_MOVING, target_speed=60.0)
+            _sim_controller=self._make_sim(powered=True, has_reservation=True, target_speed=60.0)
         )
         profile = SpeedProfile(
             profile_id="test",
@@ -1112,69 +1112,54 @@ class TestStateBasedVoltageOutput:
 class TestCompleteStateFlows:
     """Integration tests for complete state transition flows via TrainController."""
 
-    def test_normal_startup_to_running_flow(self):
-        """Test complete flow: OFF -> IDLE -> STANDBY -> RUNNING_MOVING."""
+    def test_normal_startup_to_powered_flow(self):
+        """OFF -> powered; selecting manual leaves it MANUAL. `train_status` is
+        derived, so there is no separate READY/RUNNING_MOVING state to reach."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.OFF
+            powered=False
         )
 
         # Seed the controller span so a facing direction is available.
         set_train_span(controller, (0, 0), facing_direction=Direction.NORTH)
+        assert controller.train_status == TrainStatus.OFF
 
         # Power on
         result = controller.commands.power_on_cmd()
         assert result.success is True
-        assert controller.ops.state == TrainState.READY
+        assert controller.powered
 
-        # Frame the head end (manual mode); stays READY.
+        # Frame the head end (manual mode).
         controller.commands.control_mode = "manual"
         assert controller._apply_head_frame("end_a") is None
-        assert controller.ops.state == TrainState.READY
+        assert controller.train_status == TrainStatus.MANUAL
 
-        # Start moving (manual mode to bypass ATO auto-cab selection). Manual
-        # trains have no depart handshake; put the train in the moving state.
-        controller.commands.control_mode = "manual"
-        controller.ops.enter_running_moving()
-        assert controller.ops.state == TrainState.RUNNING_MOVING
-
-    def test_running_to_station_to_complete_flow(self):
-        """Test complete flow through station arrival and route completion.
+    def test_run_completion_writes_no_controller_state(self):
+        """Stop completion writes no controller state: `on_path_complete()` is a
+        no-op and the derived status is unaffected (design_new.md step `09b0`).
 
         v1: route assignment lives on `RouteExecutor.execution_states[train_id]`,
-        not on `Train`. This test only exercises controller state transitions;
-        route preservation is covered by `RouteExecutor` integration tests.
+        not on `Train`. This test only exercises the controller.
         """
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.RUNNING_MOVING
+            powered=True
         )
         controller._apply_head_frame("end_a")
 
-        # Stop completion lands the train in READY (on_path_complete). A dwell
-        # after a stop is not a controller state — the train stays READY while
-        # the planner withholds onward authority (design_new.md "ato.engaged").
         controller.on_path_complete()
-        assert controller.ops.state == TrainState.READY
+        assert controller.powered and controller.is_stopped()
 
-        # Simulate moving and arriving at a final station.
+        # Re-frame in manual and complete again: still a no-op.
         set_train_span(controller, (0, 0), facing_direction=Direction.NORTH)
-        # Use manual mode (not ATO auto-cab logic). Manual trains have no depart
-        # handshake; put the train in the moving state directly.
         controller.commands.control_mode = "manual"
         controller._apply_head_frame("end_a")
-        controller.ops.enter_running_moving()
-        assert controller.ops.state == TrainState.RUNNING_MOVING
-
-        # Arriving completes the path into READY. With no dispatcher wired, the
-        # live-authority read is already None, so the reactive evaluator moves
-        # to READY (design_new.md step `09b0`), and the train stays READY.
         controller.on_path_complete()
-        assert controller.ops.state == TrainState.READY
+        assert controller.powered and controller.is_stopped()
 
 
     def test_emergency_stop_flow(self):
         """Test emergency stop flow via TrainController."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.RUNNING_MOVING, current_speed=80.0
+            powered=True, current_speed=80.0
         )
 
         # Emergency stop
@@ -1198,7 +1183,7 @@ class TestCompleteStateFlows:
         re-zeros `manual_power_percent`, so no retained percentage survives to
         drive the train when EB lifts."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.READY, current_speed=0.0
+            powered=True, current_speed=0.0
         )
         assert controller.commands.set_mode("manual").success is True
         controller.manual.manual_mode_type = "power_percent"
@@ -1213,7 +1198,7 @@ class TestCompleteStateFlows:
         release reads only the physical-safety conditions (design_new.md
         "ato.engaged")."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.READY, current_speed=0.0
+            powered=True, current_speed=0.0
         )
         assert controller.commands.set_mode("manual").success is True
         controller.manual.manual_mode_type = "power_percent"
@@ -1234,18 +1219,16 @@ class TestCompleteStateFlows:
         Train.target_speed was deleted.
         """
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.RUNNING_MOVING, current_speed=50.0
+            powered=True, current_speed=50.0
         )
 
         # Cannot power off while moving
         result = controller.commands.power_off_cmd()
         assert result.success is False
-        assert controller.ops.state == TrainState.RUNNING_MOVING
+        assert controller.powered and not controller.is_stopped()
 
         # Stop first - simulate stopping
         controller.physics_sync.current_speed_kmh = 0.0
-        controller.ops.state = TrainState.READY
-        train.state = TrainState.READY
 
         # Now can power off — acceptance is immediate, OFF deferred to Phase 3.
         result = controller.commands.power_off_cmd()
@@ -1268,7 +1251,7 @@ class TestHandleUnderEmergencyBrake:
     def test_release_allows_eb_handle_when_stopped(self):
         """eb.release() succeeds when stopped even though the handle is EB."""
         train, controller, _ = create_test_train_with_controller(
-            state=TrainState.RUNNING_MOVING, current_speed=40.0
+            powered=True, current_speed=40.0
         )
 
         result = controller.eb.activate()
@@ -1280,32 +1263,27 @@ class TestHandleUnderEmergencyBrake:
         assert result.success is True
         assert controller.eb.active is False
 
-    def test_eb_release_defers_ready_to_reactive_evaluator(self):
-        """The fold: eb.release() clears only eb.active and does NOT write the
-        operational state. The reactive evaluator owns the
-        RUNNING_MOVING -> READY move (design_new.md "Reactive condition
-        evaluation"; the READY state row; EB-release notes at lines 1959,
-        2215)."""
+    def test_eb_release_writes_no_operational_state(self):
+        """eb.release() clears only eb.active. `train_status` is derived, so the
+        train immediately reads its underlying (non-EB) status with no separate
+        state write (design_new.md "EB release")."""
         train, controller, _ = create_test_train_with_controller(
-            state=TrainState.RUNNING_MOVING, current_speed=40.0
+            powered=True, current_speed=40.0
         )
         controller.eb.activate()  # no live authority -> clean latch
         controller.physics_sync.current_speed_kmh = 0.0
+        assert controller.train_status == TrainStatus.EB
 
         result = controller.eb.release()
         assert result.success is True
         assert controller.eb.active is False
-        # eb.release() no longer writes state itself: still RUNNING_MOVING here.
-        assert controller.ops.state == TrainState.RUNNING_MOVING
-
-        # The evaluator performs the transition once eb.active is clear.
-        controller.ops.evaluate_reactive_conditions()
-        assert controller.ops.state == TrainState.READY
+        # No separate state write: the derived status is no longer EB.
+        assert controller.train_status != TrainStatus.EB
 
     def test_set_handle_accepted_under_eb_does_not_release(self):
         """set_handle(N) is accepted while EB is latched but does NOT release EB."""
         train, controller, _ = create_test_train_with_controller(
-            state=TrainState.RUNNING_MOVING, current_speed=30.0
+            powered=True, current_speed=30.0
         )
         # set_handle is a manual-mode command (design_new.md "Power/cab/mode
         # command contracts"); put the
@@ -1328,7 +1306,7 @@ class TestHandleUnderEmergencyBrake:
     def test_set_handle_accepted_under_eb_while_moving(self):
         """set_handle is accepted under EB even while moving; EB still overrides motion."""
         train, controller, _ = create_test_train_with_controller(
-            state=TrainState.RUNNING_MOVING, current_speed=30.0
+            powered=True, current_speed=30.0
         )
         # set_handle is a manual-mode command (design_new.md "Power/cab/mode
         # command contracts").
@@ -1346,7 +1324,7 @@ class TestHandleUnderEmergencyBrake:
     def test_set_handle_power_position_accepted_under_eb(self):
         """A power position is accepted under EB (stored), but EB still overrides motion."""
         train, controller, _ = create_test_train_with_controller(
-            state=TrainState.RUNNING_MOVING, current_speed=0.0
+            powered=True, current_speed=0.0
         )
         # set_handle is a manual-mode command (design_new.md "Power/cab/mode
         # command contracts").

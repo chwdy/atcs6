@@ -12,7 +12,7 @@ below the profile's `max_voltage` and below the Hardware Setup's
 import pytest
 
 from constants import LIGHTING_VOLTAGE_STEP_V
-from enums import TrainState
+from enums import TrainStatus
 from hardware_config import DEFAULT_CURRENT_SENSE_MIN_DRIVE_V
 from speed_calibration import SpeedCalibration
 from speed_profile import make_default_speed_profile
@@ -196,19 +196,28 @@ def test_no_override_once_the_run_is_closed():
 # `test_open_run_drives_its_candidate_through_the_real_controller` below.
 
 
-class _StubOps:
-    state = TrainState.READY
+class _StubEB:
+    active = False
+
+
+class _StubPathProjection:
+    received_path_plan = None
 
 
 class _StubController:
-    """Enough of a controller for `compute_track_voltage`: the operational state
+    """Enough of a controller for `compute_track_voltage`: the stored `powered`
+    flag, the stopped/reservation/EB reads the voltage-shape branch consults,
     and the per-tick `PhysicsCommand` producer physics reads the voltage source
-    off of."""
+    off of. Powered + stopped + no reservation is the stopped-but-lit case."""
 
     def __init__(self, command):
-        self.state = TrainState.READY
-        self.ops = _StubOps()
+        self.powered = True
+        self.eb = _StubEB()
+        self.path_projection = _StubPathProjection()
         self._command = command
+
+    def is_stopped(self):
+        return True
 
     def produce_physics_command(self):
         return self._command
@@ -249,8 +258,7 @@ def test_a_powered_off_train_stays_dead_even_with_a_track_voltage_override():
     controller = _StubController(
         PhysicsCommand(kind=PHYSICS_KIND_HANDLE, voltage_source_track_voltage=3.0)
     )
-    controller.state = TrainState.OFF
-    controller.ops.state = TrainState.OFF
+    controller.powered = False
     assert physics.compute_track_voltage(controller, profile) == 0.0
 
 
@@ -305,7 +313,7 @@ def _ready_manual_with_cab(state):
     controller.commands.set_mode("manual")
     controller.commands.power_on_cmd()
     controller._apply_head_frame("end_a")
-    assert controller.ops.state is TrainState.READY
+    assert controller.train_status == TrainStatus.MANUAL and controller.is_stopped()
     assert controller._framed_head_end == "end_a"
     return train_service, controller
 

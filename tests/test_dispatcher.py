@@ -53,7 +53,7 @@ from tests.train_test_helpers import (
     attach_synthetic_path,
 )
 from train_route import Route, RouteMode, RouteTask
-from enums import BlockState, Direction, TrainState, HandlePosition
+from enums import BlockState, Direction, HandlePosition
 from simulation import SimulationController
 from route_executor import RouteExecutionState
 from datetime import datetime
@@ -1241,7 +1241,7 @@ class TestATODirectionDetection:
         controller._apply_head_frame("end_a")  # frame end_a as head (was ATO system-set cab)
 
         assert controller._framed_head_end == "end_a"
-        assert controller.ops.state == TrainState.READY
+        assert controller.powered and controller.is_stopped()
 
         # Assign a path going WEST (opposite)
         self._attach_live_path(controller, train, [(4, 0), (3, 0), (2, 0)], end_block_id="BLK_WEST")
@@ -1399,7 +1399,7 @@ class TestATODirectionDetection:
         sim = SimulationController(network, dispatcher)
         controller = sim._get_or_create_controller(train)
         controller.physics_sync.current_span = span
-        controller.ops.state = TrainState.READY
+        controller.powered = True
         controller.commands.control_mode = "ato"
         controller._apply_head_frame("end_a")
 
@@ -1837,7 +1837,7 @@ class TestStopArrivalHeadInTerminalBlock:
             occupied_blocks=occupied,
         )
         controller.physics_sync.current_speed_kmh = 0.0  # stopped
-        controller.ops.state = TrainState.RUNNING_MOVING  # manual voluntary stop
+        controller.powered = True  # manual voluntary stop under live reservation
         # Authority terminates at `authority_block`.
         path = make_synthetic_path(
             train_id="T_4B",

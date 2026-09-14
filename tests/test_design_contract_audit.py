@@ -40,7 +40,6 @@ import io
 import pytest
 
 from bootstrap import bootstrap_runtime
-from enums import TrainState
 
 pytestmark = pytest.mark.scene("demo_main")
 

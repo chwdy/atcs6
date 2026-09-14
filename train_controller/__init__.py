@@ -56,7 +56,7 @@ from constants import (
     TRACK_END_SAFETY_MARGIN_CM,
 )
 from runtime_payloads import ErrorRecord as _ErrorRecord
-from enums import AtcLimitReasonCode, BlockState, ControllerCondition, Direction, HandlePosition, SignalState, TrainState
+from enums import AtcLimitReasonCode, BlockState, ControllerCondition, Direction, HandlePosition, SignalState, TrainStatus
 from model_scale import get_speed_conversion_factor
 from runtime_payloads import (
     Command,
@@ -196,8 +196,12 @@ class TrainController:
     # -------------------------------------------------------------------------
     # Power & Safety State
     # -------------------------------------------------------------------------
-    # `power_on` is derived from `state != OFF` per design_new.md. It is
-    # exposed as a @property defined later in the class.
+    # `powered` is the single stored power flag (design_new.md "Controller
+    # state machine"): one of the three stored inputs the derived
+    # `train_status` reads. Written by `power_on_cmd()` / `complete_power_off()`
+    # (and by `set_mode(...)` powering an OFF train up as a side effect).
+    # `power_on` is a read-only alias for it, exposed as a @property below.
+    powered: bool = False
     #
     # EB latch and operator-EB activate / release live on the
     # `EBWorkflow` sub-module attached as `self.eb` in `__post_init__`.
@@ -227,9 +231,9 @@ class TrainController:
     # -------------------------------------------------------------------------
     # Operational State
     # -------------------------------------------------------------------------
-    # `state` and `handle_position` live on the `OperationalStateMachine`
-    # sub-module at `self.ops`. External readers use `controller.ops.state`
-    # and `controller.ops.handle_position`.
+    # The derived `train_status` read and `handle_position` live on the
+    # `OperationalStateMachine` sub-module at `self.ops`. External readers use
+    # `controller.ops.train_status` and `controller.ops.handle_position`.
     # `manual_power_percent` lives on the `ManualDriving` sub-module at
     # `self.manual` in `__post_init__`. External readers use
     # `controller.manual.manual_power_percent`.
@@ -504,15 +508,14 @@ class TrainController:
     # `controller.path_projection.<name>` directly.
 
     @property
-    def state(self) -> TrainState:
-        """Operational state, owned by the `ops` sub-state-machine.
+    def train_status(self) -> TrainStatus:
+        """The train's overall status (`OFF` / `MANUAL` / `ATO` / `EB`).
 
-        Exposed at the controller level so external readers (e.g.
-        `TrainPhysics.compute_track_voltage`) and test doubles can read
-        `controller.state` uniformly. The canonical store remains
-        `self.ops.state`; this is a read-only projection of it.
+        Shorthand for the derived `self.ops.train_status` read (design_new.md
+        "Controller state machine"): computed from `powered`, `eb.active`, and
+        `commands.control_mode`. Not stored; no writer.
         """
-        return self.ops.state
+        return self.ops.train_status
 
     @property
     def travel_direction(self) -> Optional[str]:
@@ -751,20 +754,12 @@ class TrainController:
         if after_command_drain is not None:
             after_command_drain()
 
-        # design_new.md Action step `71ee`: run the reactive condition
-        # evaluation against the post-command, post-cancel, post-transition
-        # controller state. This is the second of the evaluator's two call
-        # sites (the first is inside on_physics_updated during Observe). Running
-        # it here makes a just-released EB condition and a just-cleared
-        # authority visible to the ordinary transition rules without waiting for
-        # the next movement calculation. It is idempotent and a no-op for an OFF
-        # or EB-held controller (neither transition's source state matches), so
-        # it is safe to run ahead of the power and EB checks below.
-        self.ops.evaluate_reactive_conditions()
+        # design_new.md "Controller state machine": `train_status` is a pure
+        # derived read from `powered` / `eb.active` / `control_mode`; there is
+        # no reactive state machine to run and no `state` field to re-sync here.
 
         # ===== 0. POWER CHECK =====
-        if not self.power_on:
-            self.ops.state = TrainState.OFF
+        if not self.powered:
             # An OFF train computes no limit, so it has no reason code to
             # report. Forget the last one reported instead of holding it: the
             # code the train comes back on with is news whether or not it
@@ -936,7 +931,10 @@ class TrainController:
                     self.physics_sync.current_speed_kmh, 0.0
                 )
                 if self.physics_sync.current_speed_kmh <= STOPPED_SPEED_THRESHOLD_KMH:
-                    self.transition_to_ready()
+                    # Braked to a stand while not engaged (`ato_status == READY`):
+                    # the ATO output is `0` and the handle rests at neutral. There
+                    # is no operational-state write — `train_status` is derived
+                    # (design_new.md "ATO driving rule", Not engaged).
                     self.ops.handle_position = HandlePosition.N
         else:
             # Manual mode - ATC still enforces braking if overspeed
@@ -951,18 +949,14 @@ class TrainController:
 
         # `path_backed_run_active` is now a derived `@property`; no write here.
 
-        # ===== 8. STATE TRANSITIONS =====
-        # While RUNNING_MOVING, Action (tick()) makes no state transition here.
-        # A train at zero ATC clearance with live authority stays in
-        # RUNNING_MOVING with current_speed_kmh == 0. The reactive speed-based
-        # evaluation in on_physics_updated() handles the no-authority no-speed
-        # case (RUNNING_MOVING -> READY once stopped with no live authority and
-        # EB clear). Per design_new.md steps `89ba` / `32dd` / `90d3`, tick()
-        # must not latch path completion or call route callbacks itself: all
-        # completion flows through Plan settlement's try_complete_active_path(...). A
-        # dwelling train is READY; Plan holds its onward authority, so nothing
-        # here needs to distinguish it. Other states (READY, OFF) are handled by
-        # commands.
+        # ===== 8. NO STATE TRANSITIONS =====
+        # `train_status` is derived from `powered` / `eb.active` /
+        # `control_mode`; there is no stored operational state for tick() to
+        # transition. A train at zero ATC clearance with live reservation simply
+        # stands with `current_speed_kmh == 0` and keeps its reservation. Per
+        # design_new.md steps `89ba` / `32dd` / `90d3`, tick() must not latch
+        # path completion or call route callbacks itself: all completion flows
+        # through Plan settlement's try_complete_active_path(...).
 
     def produce_physics_command(self) -> PhysicsCommand:
         """Compute the per-tick command physics will execute — the **Propulsion
@@ -1976,8 +1970,10 @@ class TrainController:
 
     @property
     def power_on(self) -> bool:
-        """Convenience read derived from `state != OFF` per design_new.md."""
-        return self.ops.state != TrainState.OFF
+        """Read-only alias for the stored `powered` flag (design_new.md
+        "TrainController" owns the stored `powered` flag; `power_on` is its
+        convenience read)."""
+        return self.powered
 
     def is_stopped(self) -> bool:
         """Canonical stopped predicate per design_new.md.
@@ -1996,8 +1992,6 @@ class TrainController:
         each read from controller-stored fields. RouteExecutor.is_clean_for_create reads a subset of this set; readers must not duplicate the underlying field checks.
         """
         conditions: set[ControllerCondition] = set()
-        if self.path_projection.received_path_plan is not None:
-            conditions.add(ControllerCondition.HAS_AUTHORITY)
         if self.eb.active:
             conditions.add(ControllerCondition.EB_LATCHED)
         latches = self.route_hooks.phase_latches
@@ -2050,8 +2044,6 @@ class TrainController:
         authority end?".
         """
         if not self.is_stopped():
-            return False
-        if self.ops.state != TrainState.RUNNING_MOVING:
             return False
         if self.eb.active:
             return False
@@ -2361,23 +2353,6 @@ class TrainController:
     # `controller.ato.disengage()` directly.
 
     # -------------------------------------------------------------------------
-    # State Transitions
-    # -------------------------------------------------------------------------
-
-    def transition_to_ready(self) -> None:
-        """Transition to the READY state (powered, stopped, not dwelling).
-
-        Per design_new.md, READY is the unified powered-stopped state. The span
-        head frame and route assignment are orthogonal and are not cleared here;
-        the head frame follows the live authority (design_new.md "Authority-side
-        head derivation") and route assignment is owned by `RouteExecutor`.
-        """
-        self.ops.state = TrainState.READY
-        # Reaching READY at a stand does not clear ATO intent (design_new.md
-        # "ato.engaged"): an engaged train resumes when authority returns.
-        # path_backed_run_active is derived from path/route/destination context.
-
-    # -------------------------------------------------------------------------
     # Route Executor Commands (for RouteExecutor integration)
     # -------------------------------------------------------------------------
 
@@ -2421,29 +2396,16 @@ class TrainController:
     def on_path_complete(self) -> None:
         """Called by PathDispatcher.try_complete_active_path on accepted completion.
 
-        Per design_new.md the controller does NOT reach READY through a
-        dedicated completion state-write here. The dispatcher's terminal
-        teardown "makes no controller state-transition callback: the controller
-        reaches READY through its reactive stopped/no-authority rule when EB is
-        not latched, or remains held under EB until eb.release()" (step `09b0`,
-        design_new.md:486; the READY state row lists the evaluator applying the
-        stopped/no-authority rule "after authority release"). So this callback
-        ends the ATO run and defers the RUNNING_MOVING -> READY move to
-        OperationalStateMachine.evaluate_reactive_conditions().
-
-        The dispatcher has already transitioned Path.status away from ACTIVE, so
-        received_path_plan now reads None; the train is stopped at the authority
-        end in RUNNING_MOVING. The evaluator's transition 2 therefore fires here
-        in Observe (identical to the previous direct write in the normal case),
-        which also correctly leaves the controller held under EB when eb.active
-        is latched at completion, rather than forcing READY unconditionally.
-        Does not clear received_path_plan, does not enter dwell itself.
+        Per design_new.md step `09b0` the terminal teardown writes no controller
+        state: `train_status` and `ato_status` are derived, so once
+        `received_path_plan` reads `None` the train simply holds no live
+        reservation (a paused or idle ATO train reads `ato_status == READY`) or
+        stays held under EB (`train_status == EB`) until `eb.release()`. There is
+        nothing for this callback to write, so it is a no-op kept only so the
+        dispatcher's optional-callback lookup finds a callable. It does not clear
+        `received_path_plan` and does not enter dwell.
         """
-        # Path completion does not clear ATO intent (design_new.md "ato.engaged");
-        # the reactive rule lands the train in READY when it is stopped with no
-        # live authority and EB is not latched.
-        # path_backed_run_active is derived from path/route/destination context.
-        self.ops.evaluate_reactive_conditions()
+        return None
 
     def complete_power_off(self) -> None:
         """Controller-owned OFF-cleanup entry point (design_new.md:282, :1808).
@@ -2471,7 +2433,7 @@ class TrainController:
         actually consumed.
         """
         had_latch = self.route_hooks.phase_latches.power_off
-        self.ops.state = TrainState.OFF
+        self.powered = False
         self._reset_head_frame_to_default()
         self.ops.reset_handle_to_neutral()
         # design_new.md:1895 — clear the EB latch through the EB-owned helper so

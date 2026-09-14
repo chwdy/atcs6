@@ -10,7 +10,7 @@ import pytest
 from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
-from enums import BlockState, Direction, TrainState, HandlePosition, PathStatus
+from enums import BlockState, Direction, HandlePosition, PathStatus
 from train import Train, TrainCar
 from simulation import SimulationController
 from train_controller import TrainController, create_controller_for_train
@@ -150,7 +150,7 @@ class TestSimulationController:
             f"{getattr(dispatcher.get_path(captured_path_id), 'status', None)!r}, "
             f"head_block={controller._get_current_block_id()!r}, "
             f"speed={controller.physics_sync.current_speed_kmh:.2f}, "
-            f"state={controller.ops.state.value!r}. Per design_new.md, the "
+            f"train_status={controller.train_status.value!r}. Per design_new.md, the "
             f"Phase-3 usable-authority stop check must call "
             f"try_complete_active_path(...) once the train is stopped at the "
             f"end of its authority."

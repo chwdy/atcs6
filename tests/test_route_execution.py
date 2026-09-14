@@ -25,7 +25,7 @@ from train import Train
 from tests.train_test_helpers import set_train_span
 from network import RailwayNetwork
 from railway_platform import Platform
-from enums import Direction, TrainState
+from enums import Direction
 
 
 class TestRouteAndTask:
@@ -727,7 +727,7 @@ class TestBrokenDwellHandling:
         controller.commands.power_on_cmd()
         controller._apply_head_frame("end_a")
         set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
-        assert controller.state != TrainState.OFF
+        assert controller.powered
 
         del network.platforms["PLT_A"]
         executor.tick_train_plan("T_DWELL", 0.1)

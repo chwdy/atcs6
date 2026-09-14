@@ -27,7 +27,7 @@ from typing import Any, ClassVar, Dict, Iterable, List, Optional, Set, Tuple, TY
 from constants import (
     DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS,
 )
-from enums import AtcLimitReasonCode, ControllerCondition, Direction, TrainState
+from enums import AtcLimitReasonCode, ControllerCondition, Direction
 from train_controller import TrainController, create_controller_for_train
 from train_route import (
     RouteMode,
@@ -2201,7 +2201,7 @@ class RouteExecutor:
             controller = self._get_controller(train)
 
         # If controller is OFF, Plan is skipped entirely.
-        if controller.ops.state == TrainState.OFF:
+        if not controller.powered:
             return
 
         # This tick's elapsed time, read by the braking-distance cap for its
@@ -2755,7 +2755,7 @@ class RouteExecutor:
         controller = self._controller_by_id(train_id)
         if controller is None:
             return False
-        if controller.ops.state == TrainState.OFF:
+        if not controller.powered:
             return False
         if controller.eb.active:
             return False

@@ -24,7 +24,9 @@ A failure here is *not* a regression in the test — it surfaces a real
 divergence in the simulation core.
 """
 
-from enums import BlockState, TrainState
+from enums import BlockState
+
+from ..harness import TrainState
 
 from ..assertions import (
     assert_block_at_tile_occupied_by,
