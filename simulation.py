@@ -2968,7 +2968,6 @@ class SimulationController(SwitchOutputOwner):
         train_id: str,
         path_id: str,
         error: Optional[ErrorRecord] = None,
-        was_deviation: bool = False,
     ) -> None:
         """Deliver a committed path cancellation to the `RouteExecutor`.
 
@@ -2978,13 +2977,13 @@ class SimulationController(SwitchOutputOwner):
         It emits nothing of its own — the `cancel_path` event the dispatcher
         already emitted *is* the `path_cancel_request` consumption event
         (design_new.md "Latch consumption events"), and a second event here
-        would be a duplicate sink for the same commit.
+        would be a duplicate sink for the same commit. The deviation
+        classification is not forwarded — it rides that `cancel_path` event.
         """
         self.route_executor.handle_path_cancellation(
             train_id,
             path_id,
             error=error,
-            was_deviation=was_deviation,
         )
 
 

@@ -3822,17 +3822,15 @@ class RouteExecutor:
         train_id: str,
         path_id: str,
         error: Optional["ErrorRecord"] = None,
-        was_deviation: bool = False,
     ) -> None:
         """Action cancellation callback.
 
-        Per design_new.md "route path-event callback schema" the v1 callback
-        signature is ``(train_id, path_id, error, was_deviation=False)``. Every
-        cancellation kind shares the same body; ``was_deviation`` is the
-        classification bit ``PathDispatcher.cancel_path(...)`` derives from the
-        structured cancel-request field, never from anything inside ``error``,
-        and it is the only cancellation-kind detail that crosses this callback
-        boundary. ``error`` is diagnostic context only and must not be used for
+        Per design_new.md "route path-event callback schema" (design_new.md:2673)
+        the v1 callback signature is ``(train_id, path_id, error)``. Every
+        cancellation kind shares the same body; the deviation classification is
+        not passed here — it rides the ``cancel_path`` event payload (and
+        ``error.origin == "out_of_sequence"`` for a movement deviation), not this
+        callback. ``error`` is diagnostic context only and must not be used for
         branching. The callback is bookkeeping only: it must not choose a fresh
         target or create fresh authority.
         """

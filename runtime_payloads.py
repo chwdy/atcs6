@@ -1018,8 +1018,7 @@ class RouteExecutorForPathDispatcher(Protocol):
         self,
         train_id: str,
         path_id: str,
-        initiator: Optional[str] = None,
-        reason: Optional[str] = None,
+        error: Optional[ErrorRecord] = None,
     ) -> None: ...
 
     def handle_path_completion(

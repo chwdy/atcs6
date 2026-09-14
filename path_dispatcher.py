@@ -2030,11 +2030,11 @@ class PathDispatcher:
         path._set_status(PathStatus.CANCELLED, now)
 
         # Notify route executor (bookkeeping only). Per design_new.md "route
-        # path-event callback schema" the canonical signature is
-        # `handle_path_cancellation(train_id, path_id, error, was_deviation)`:
-        # the dispatcher derives the deviation classification from the
-        # structured cancel-request field, never from anything inside `error`,
-        # so the route side records the cancellation for the CANCELLED display projection.
+        # path-event callback schema" (design_new.md:2673) the canonical
+        # signature is `handle_path_cancellation(train_id, path_id, error)`. The
+        # deviation classification is not passed to the callback — it rides the
+        # `cancel_path` event emitted below (and `error.origin`), so the route
+        # side records nothing of it here.
         train_id = path.train_id
         if train_id:
             sc = self.simulation_controller
@@ -2043,7 +2043,6 @@ class PathDispatcher:
                     train_id,
                     path_id,
                     error=error,
-                    was_deviation=deviation,
                 )
             else:
                 # No `SimulationController` wired (isolated dispatcher tests):
@@ -2055,7 +2054,6 @@ class PathDispatcher:
                         train_id,
                         path_id,
                         error=error,
-                        was_deviation=deviation,
                     )
 
         # Emit the canonical `cancel_path` notification. Per design_new.md

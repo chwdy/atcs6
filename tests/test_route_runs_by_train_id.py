@@ -106,12 +106,12 @@ def test_handle_path_cancellation_records_last_cancellation_for_display():
     ex.execution_states["T1"] = run
 
     err = ErrorRecord("off-sequence", "out_of_sequence")
-    ex.handle_path_cancellation("T1", "P1", error=err, was_deviation=True)
+    ex.handle_path_cancellation("T1", "P1", error=err)
     assert run.last_cancellation is err
     assert run.display_state == "CANCELLED"
 
     # A later cancellation replaces the recorded diagnostic; still CANCELLED.
     err2 = ErrorRecord("operator stop", "operator_cancelled")
-    ex.handle_path_cancellation("T1", "P1", error=err2, was_deviation=False)
+    ex.handle_path_cancellation("T1", "P1", error=err2)
     assert run.last_cancellation is err2
     assert run.display_state == "CANCELLED"
