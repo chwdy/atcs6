@@ -32,7 +32,10 @@ def _executor():
 
 
 def _edge(waiting_block, waiter, holder, priority=5):
-    return ContentionEdge(waiting_block, waiter, holder, priority)
+    # `priority` is accepted for call-site compatibility but no longer stored on
+    # the edge: the snapshot carries edges only, and wedge/meet detection read
+    # priority fresh from the route registry.
+    return ContentionEdge(waiting_block, waiter, holder)
 
 
 # --- cycle finding (pure) --------------------------------------------------

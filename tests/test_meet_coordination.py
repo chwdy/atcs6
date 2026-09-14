@@ -13,7 +13,6 @@ from path_dispatcher import WaitingConflict
 from route_executor import (
     ContentionEdge,
     ContentionSnapshot,
-    ContentionWaiter,
     RouteExecutor,
 )
 
@@ -107,43 +106,39 @@ def _executor():
     return RouteExecutor(RailwayNetwork())
 
 
-def test_contention_snapshot_records_highest_priority_waiter():
+def test_contention_snapshot_emits_one_edge_per_waiter_holder():
     ex = _executor()
-    # T1 and T2 are both blocked on B_X (held by H); T2 outranks T1. T3 is not
-    # blocked. The snapshot emits one edge per (waiter, holder) in runnable
-    # order, and highest_waiter_by_block keeps the strictly-highest waiter.
+    # T1 and T2 are both blocked on B_X (held by H); T3 is not blocked. The
+    # snapshot emits one edge per (waiter, holder) in runnable order. The
+    # snapshot carries edges only; priority is read fresh from the registry by
+    # wedge/meet detection, not stored on the edge.
     conflicts = {
         "T1": WaitingConflict("B_X", "block", "B_X", ("H",)),
         "T2": WaitingConflict("B_X", "block", "B_X", ("H",)),
         "T3": None,
     }
-    pris = {"T1": 5, "T2": 8, "T3": 5, "H": 9}
     ex._waiting_conflict_for = lambda tid: conflicts.get(tid)
-    ex._effective_priority_for = lambda tid: pris.get(tid, 5)
     snap = ex._build_contention_snapshot(["T1", "T2", "T3"])
     assert snap.edges == [
-        ContentionEdge("B_X", "T1", "H", 5),
-        ContentionEdge("B_X", "T2", "H", 8),
+        ContentionEdge("B_X", "T1", "H"),
+        ContentionEdge("B_X", "T2", "H"),
     ]
-    assert snap.highest_waiter_by_block == {"B_X": ContentionWaiter("T2", 8)}
 
 
 def test_contention_snapshot_one_edge_per_holder():
     ex = _executor()
     # A single waiter blocked by two holders (e.g. two lock owners on a switch)
-    # yields one edge per holder; the map still records the single waiter.
+    # yields one edge per holder.
     ex._waiting_conflict_for = lambda tid: (
         WaitingConflict("B_HELD", "switch", "SW1", ("HA", "HB"))
         if tid == "T1"
         else None
     )
-    ex._effective_priority_for = lambda tid: 5
     snap = ex._build_contention_snapshot(["T1"])
     assert snap.edges == [
-        ContentionEdge("B_HELD", "T1", "HA", 5),
-        ContentionEdge("B_HELD", "T1", "HB", 5),
+        ContentionEdge("B_HELD", "T1", "HA"),
+        ContentionEdge("B_HELD", "T1", "HB"),
     ]
-    assert snap.highest_waiter_by_block == {"B_HELD": ContentionWaiter("T1", 5)}
 
 
 
@@ -197,7 +192,7 @@ def test_build_pins_held_train_to_its_selected_candidate_keys():
         _FakeStep("block", "MID", "reverse", "E", "W"),
     ]
     snapshot = ContentionSnapshot(
-        edges=[ContentionEdge("MID", "HI", "LO", 8)]
+        edges=[ContentionEdge("MID", "HI", "LO")]
     )
     stub = _MeetBuildStub(snapshot, {"LO": 5, "HI": 8})
     mc = MeetCoordinator(stub)

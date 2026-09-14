@@ -91,22 +91,15 @@ class ContentionEdge:
 
     `waiting_train_id` cannot grow its authority past `waiting_block_id` because
     `holding_train_id` is in the way of the first forward resource. There is one
-    edge per holder of each blocked waiter. `effective_priority` is the waiter's,
-    carried so the release rule and meet coordination read it without a re-lookup.
+    edge per holder of each blocked waiter. Priority is not carried on the edge:
+    wedge and meet detection read `RouteRun.effective_priority(route_registry)`
+    fresh from the registry when they need it (design_new.md "Contention
+    snapshot").
     """
 
     waiting_block_id: str
     waiting_train_id: str
     holding_train_id: str
-    effective_priority: int
-
-
-@dataclass(frozen=True)
-class ContentionWaiter:
-    """The single highest-priority waiter on a block, for the release-rule map."""
-
-    train_id: str
-    effective_priority: int
 
 
 @dataclass
@@ -116,17 +109,14 @@ class ContentionSnapshot:
 
     `edges` is the complete list, one per holder of each blocked waiter, in
     runnable-order (waiter) then holder-order; wedge and meet detection read it.
-    `highest_waiter_by_block` keeps only the highest-priority waiter per block
-    (runnable order breaks ties); the contention-driven release rule reads it. A
-    block with no waiter has no map entry. Rebuilt every tick, retained across
-    none — not a latch.
+    The documented snapshot shape is `edges` only. Rebuilt every tick, retained
+    across none — not a latch.
     """
 
     edges: List[ContentionEdge] = field(default_factory=list)
-    highest_waiter_by_block: Dict[str, ContentionWaiter] = field(default_factory=dict)
 
     def __bool__(self) -> bool:
-        return bool(self.edges or self.highest_waiter_by_block)
+        return bool(self.edges)
 
 
 # =============================================================================
@@ -721,9 +711,8 @@ class RouteExecutor:
         # per-train loop); retained across no ticks, so they are not latches and
         # hold no Latch-Table entry.
         #   contention_snapshot: the tick's ContentionSnapshot — `edges` (one per
-        #     holder of each blocked waiter, for wedge/meet detection) plus
-        #     `highest_waiter_by_block` (the release rule's per-block highest
-        #     waiter). Built from the full PathDispatcher.get_waiting_conflict(...).
+        #     holder of each blocked waiter, for wedge/meet detection). Built from
+        #     the full PathDispatcher.get_waiting_conflict(...).
         #   meet_assignment: train_id -> MeetCeiling capping how far it may
         #     reserve this tick and pinning which candidate it may acquire when a
         #     higher-priority train needs the same track.
@@ -1475,34 +1464,23 @@ class RouteExecutor:
         the snapshot measures the unconstrained live conflict meet coordination
         must resolve) and emit one edge per holder. Edges come out in
         runnable-order (the waiter loop) then holder-order (the conflict's holder
-        list). `highest_waiter_by_block` records the strictly-highest-priority
-        waiter per block, iterating edges in that same order so equal priority
-        keeps the earlier (stable `order_runnable_trains`) waiter.
+        list). The snapshot carries `edges` only; wedge and meet detection read
+        priority fresh from the route registry when they need it.
         """
         edges: List[ContentionEdge] = []
         for train_id in ordered_train_ids:
             conflict = self._waiting_conflict_for(train_id)
             if conflict is None or not conflict.holding_train_ids:
                 continue
-            eff_pri = self._effective_priority_for(train_id)
             for holder_id in conflict.holding_train_ids:
                 edges.append(
                     ContentionEdge(
                         waiting_block_id=conflict.waiting_block_id,
                         waiting_train_id=train_id,
                         holding_train_id=holder_id,
-                        effective_priority=eff_pri,
                     )
                 )
-
-        highest: Dict[str, ContentionWaiter] = {}
-        for edge in edges:
-            current = highest.get(edge.waiting_block_id)
-            if current is None or edge.effective_priority > current.effective_priority:
-                highest[edge.waiting_block_id] = ContentionWaiter(
-                    edge.waiting_train_id, edge.effective_priority
-                )
-        return ContentionSnapshot(edges=edges, highest_waiter_by_block=highest)
+        return ContentionSnapshot(edges=edges)
 
     def _build_meet_assignment(
         self, ordered_train_ids: List[str]
