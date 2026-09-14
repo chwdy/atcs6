@@ -220,6 +220,13 @@ class CalibrationRun:
     not run while acquisition is still in progress (design_new.md "Speed
     calibration", Plan acquires leg authority all-or-nothing)."""
     clock_started_at: Optional[float] = None
+    current_crossing_tainted: bool = False
+    """Whether an external ATC restriction (CAUTION / SPEED_LIMIT) lowered the
+    calibration drive during the crossing now being timed. Set by
+    `taint_current_crossing(...)`, reset when a fresh leg (crossing) arms. A
+    tainted crossing is discarded rather than banked and the step is re-measured
+    on the next crossing, so a transient restriction never fails the pass
+    (design_new.md:3047, "A capped crossing is discarded")."""
 
     safe_state_generation: int = 0
     failure_reason: str = ""
@@ -451,24 +458,25 @@ class SpeedCalibration:
         self._step0_entries.pop(run.train_id, None)
         return CalibrationCommand(power_percent=0.0, deactivate_route=True)
 
-    def abandon_speed_pass(self, train_id: str, reason: str) -> bool:
-        """Abandon an open auto speed-calibration pass because a braking override
-        (ATC / service-stop / EB) intervened during a measured crossing
-        (design_new.md "Speed calibration", A braking override voids the pass).
+    def taint_current_crossing(self, train_id: str, reason: str) -> bool:
+        """Mark the crossing now being timed as capped, so it is discarded
+        instead of banked (design_new.md:3047, "A capped crossing is discarded").
 
-        Marks the pass failed and reports the reason on the command-result
-        stream, leaving the profile's previous curve in place, and tears the leg
-        route down through the ordinary route-deactivate latch. Called by the
-        controller during Action (there is no Plan caller to apply `fail()`'s
-        returned deactivate command), so this method performs that teardown
-        itself. Idempotent: a pass that is finished, already failed, or not an
-        auto measuring pass is a no-op returning `False`.
+        Called by the controller during Action when the Propulsion cap step
+        lowered the calibration drive on this tick through an external ATC
+        restriction (a CAUTION block ahead, or a posted block SPEED_LIMIT). The
+        speed the pass would time is then not the speed the step commanded, so
+        the crossing is not a valid sample. Discarding never fails the pass: the
+        step is re-measured on the next crossing. The previous curve stays in
+        place. Idempotent within a crossing; a no-op returning `False` for a pass
+        that is finished, already failed, or not an auto measuring pass. EB and
+        power-off are not routed here — they end the whole pass through
+        `run_still_valid(...)` at Action step `26f5`.
         """
         run = self.runs.get(train_id)
         if run is None or not run.is_measuring or run.mode != "auto":
             return False
-        self.fail(run, reason)
-        self._deactivate_leg_route(train_id, run)
+        run.current_crossing_tainted = True
         return True
 
     # -- the pass ---------------------------------------------------------
@@ -514,6 +522,9 @@ class SpeedCalibration:
             run.leg_authority_seen = False
             run.leg_started_at = None
             run.clock_started_at = None
+            # A fresh crossing begins clean: any taint from the last one is spent
+            # (design_new.md:3047, "A capped crossing is discarded").
+            run.current_crossing_tainted = False
             # The head-frame reversal is one-shot per arm: the Plan translation
             # re-frames the span on each `reverse_cab=True`, so clear the flag
             # once emitted.
@@ -555,6 +566,17 @@ class SpeedCalibration:
         if far_block in obs.newly_confirmed and run.clock_started_at is not None:
             elapsed = obs.now - run.clock_started_at
             run.clock_started_at = None
+            if run.current_crossing_tainted:
+                # An external ATC restriction lowered the calibration drive
+                # during this crossing, so the timed speed is not the speed the
+                # step commanded. Discard the sample and re-measure on the next
+                # crossing (the step still needs `crossings_target` of them);
+                # discarding never fails the pass (design_new.md:3047, "A capped
+                # crossing is discarded"). The leg still ends through ordinary
+                # stop completion at the far block.
+                run.current_crossing_tainted = False
+                run.phase = PHASE_STOPPING
+                return CalibrationCommand(power_percent=0.0)
             if elapsed <= 0.0 or run.block_length_cm <= 0.0:
                 return self.fail(run, "measured block crossing timed at zero")
             run.crossings.append(

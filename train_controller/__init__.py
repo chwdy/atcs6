@@ -991,11 +991,12 @@ class TrainController:
           - everything else        → 0.0 (READY/AT_STATION/OFF use lighting
                                      or zero voltage and ignore this field)
         """
-        # design_new.md "Speed calibration" (A braking override voids the pass):
-        # ATC, service stopping, and EB outrank calibration output. When one
-        # applies during a measured crossing, abandon the pass before selecting
-        # output so a transient safety brake never corrupts the timed sample.
-        self._abandon_calibration_on_braking_override()
+        # design_new.md:3047 (A capped crossing is discarded): when the
+        # Propulsion cap step lowers the calibration drive through an external
+        # ATC restriction during a measured crossing, taint that crossing so it
+        # is discarded and re-measured rather than banked. EB and power-off end
+        # the whole pass separately, through run_still_valid at step `26f5`.
+        self._taint_calibration_crossing_on_cap()
         if not self.power_on:
             # Per design_new.md line 1755: clear manual_power_percent on
             # power-off so the set-and-forget contract holds.
@@ -1130,23 +1131,24 @@ class TrainController:
             voltage_source_speed_kmh=voltage_speed,
         )
 
-    def _abandon_calibration_on_braking_override(self) -> None:
-        """Void an open speed-calibration pass when ATC or EB overrides it during
-        a measured crossing (design_new.md "Speed calibration", A braking
-        override voids the pass).
+    def _taint_calibration_crossing_on_cap(self) -> None:
+        """Taint an open speed-calibration crossing when the Propulsion cap step
+        lowers the calibration drive through an external ATC restriction
+        (design_new.md:3047, "A capped crossing is discarded").
 
-        ATC and EB outrank calibration output; a transient one mid-crossing
-        would corrupt the timed sample, so the pass is abandoned (its previous
-        curve left in place) and its reason reported before this tick's output
-        is selected. Only a pass actively driving a crossing is abandoned.
+        The calibration drive goes through the cap step like every driving
+        source. When that step lowers it on a tick, the speed the pass would time
+        is not the speed the step commanded, so the crossing being timed is
+        marked capped; it is then discarded and re-measured on the next crossing
+        rather than banked, and the pass goes on. Only a pass actively driving a
+        crossing is affected.
 
-        EB always overrides — the pass never issues it while driving. An ATC
-        `CAUTION` restriction is external too: the leg reserves its stretch
-        clear, so a caution block ahead is anomalous. `RESERVATION_STOP` /
-        `NO_RESERVATION` are the leg's own reservation-end approach
-        and lifecycle — the ordinary end-of-leg deceleration (design_new.md:
-        "not an invalidating override") and the "ran out of authority"
-        resolution — so they are excluded.
+        An ATC `CAUTION` block ahead and a posted block `SPEED_LIMIT` are the two
+        external restrictions that lower the drive without ending the pass.
+        `RESERVATION_STOP` / `NO_RESERVATION` are the leg's own reservation-end
+        approach and lifecycle, not an external cap, so they are excluded. EB and
+        power-off are not handled here: they end the whole pass through
+        `SpeedCalibration.run_still_valid(...)` at Action step `26f5`.
         """
         sc = getattr(self, "simulation_controller", None)
         calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
@@ -1155,13 +1157,14 @@ class TrainController:
         driving_pct = self._calibration_power_percent_override()
         if driving_pct is None or driving_pct <= 0.0:
             return
-        if self.eb.active:
-            reason = "emergency brake during a measured crossing"
-        elif self.atc._last_limit_reason_code == AtcLimitReasonCode.CAUTION:
+        reason_code = self.atc._last_limit_reason_code
+        if reason_code == AtcLimitReasonCode.CAUTION:
             reason = "CAUTION restriction during a measured crossing"
+        elif reason_code == AtcLimitReasonCode.SPEED_LIMIT:
+            reason = "block speed limit during a measured crossing"
         else:
             return
-        calibration.abandon_speed_pass(self.train_id, reason)
+        calibration.taint_current_crossing(self.train_id, reason)
 
     def _calibration_power_percent_override(self) -> Optional[float]:
         """The percent an open speed-calibration pass commands this tick, or None.
