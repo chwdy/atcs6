@@ -492,6 +492,12 @@ class SimulationController(SwitchOutputOwner):
             # on_controller_progress flow, and the precise position is snapped to the
             # block seam where the hardware leads it.
             self._detect_block_occupancy()
+            # A detector read that failed just escalated to hardware failure and
+            # revoked output; a hardware-backed session must not run Plan/Action
+            # this tick (design_new.md "Power", The affected hardware-backed
+            # operation loop stops).
+            if self.occupancy_is_real and self.hardware_failure:
+                return
             # An open speed-calibration pass reads the calibration train's
             # detected-entry slice here, inside the global detector-read window:
             # attribution has just written it, and the train's own movement
@@ -850,6 +856,11 @@ class SimulationController(SwitchOutputOwner):
         net.bump_lookahead_world_version()
         try:
             self._detect_block_occupancy()
+            # A failed detector read escalated to hardware failure; a stopped
+            # hardware-backed poll then commits nothing (design_new.md "Power",
+            # The affected hardware-backed operation loop stops).
+            if self.occupancy_is_real and self.hardware_failure:
+                return
             # No calibration read here. A stopped pass runs the observing steps
             # and nothing else, so no physics callback follows to consume a stashed
             # slice; stashing one would leave a stale entry for the first tick
@@ -1160,7 +1171,27 @@ class SimulationController(SwitchOutputOwner):
             if block.occupied_by is not None
         )
 
-        entered, vacated = detector.step()
+        try:
+            entered, vacated = detector.step()
+        except Exception as exc:  # noqa: BLE001 - a failed detector read is fatal
+            # A failed detector transaction is a hardware I/O failure that enters
+            # the fail-closed hardware-failure lifecycle; a missing or unreadable
+            # source is never treated as a clear block (design_new.md "Power",
+            # Hardware I/O failure, and "Hardware setup", Missing never counts as
+            # clear). In Simulation the model detector never raises, so a raise
+            # there is a real defect that must surface, not be masked as hardware.
+            if not self.occupancy_is_real:
+                raise
+            self.enter_hardware_failure(
+                HardwareFailure(
+                    component="block_occupancy",
+                    operation="read",
+                    message=(
+                        f"block detector read failed: {type(exc).__name__}: {exc}"
+                    ),
+                )
+            )
+            return
         entered_by_train, vacated_by_train, unmatched = detector.attribute(
             entered, vacated
         )

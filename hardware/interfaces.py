@@ -708,9 +708,14 @@ class OccupancyDriver(OccupancyInput):
         try:
             current = chip.read_current(port + 1)   # port 0 -> sensor channel 1
         except Exception:
+            # A failed current-sense transaction is a hardware I/O failure, not a
+            # clear block: "Missing never counts as clear" (design_new.md
+            # "Hardware setup", Both occupancy sources are mandatory). Re-raise so
+            # the detector-read seam escalates it to enter_hardware_failure rather
+            # than silently reporting the block empty.
             if detail is not None:
                 detail["current_ma"] = None
-            return False
+            raise
         if detail is not None:
             detail["current_ma"] = round(current * 1000.0, 3)
             # The EFFECTIVE threshold — the number the verdict beside it was
