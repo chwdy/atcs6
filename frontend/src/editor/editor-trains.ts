@@ -1142,7 +1142,7 @@ export class TrainEditorHandler {
     // be gone (design_new.md "Power", Presence unknown). The span represents
     // nothing detected, so the panel says so and offers removal.
     const presenceUnknown = controller?.presence_unknown === true;
-    const atoEngaged = controller?.ato_engaged ?? false;
+    const atoEngaged = controller?.engaged ?? false;
     const handleClass = this.getHandleVisualClass(handlePosition);
     const obcStateClass = this.getObcStateClass(powerOn, emergencyActive);
     const manualModeType = controller?.manual_mode_type || 'simulation';
@@ -1366,7 +1366,6 @@ export class TrainEditorHandler {
                             <div class="tc-handle-readout">
                                 <span id="handle-position-label" class="tc-handle-pos handle-position-display ${handleClass}">${handlePosition}</span>
                                 <span id="handle-description" class="tc-handle-desc handle-description">${handleDescription}</span>
-                                <span id="handle-reason" class="tc-handle-reason train-handle-reason">${controller?.handle_reason || ''}</span>
                             </div>
                         </div>
 
@@ -1981,7 +1980,7 @@ export class TrainEditorHandler {
     const gateKey = [
       controller.state,
       controller.cab,
-      controller.ato_engaged,
+      controller.engaged,
       controller.handle_position,
       controller.assigned_path_id ?? controller.ato_path_id ?? null,
       (controller.current_speed || 0) > 0,
@@ -1995,7 +1994,7 @@ export class TrainEditorHandler {
     const powerOn = controller.power_on ?? false;
     const emergencyActive = controller.eb_active ?? false;
     const controlMode = controller.control_mode || 'ato';
-    const atoEngaged = controller.ato_engaged ?? false;
+    const atoEngaged = controller.engaged ?? false;
 
     // Update OBC status display
     const powerDisplay = document.querySelector('.obc-power-display');
@@ -2104,7 +2103,7 @@ export class TrainEditorHandler {
       const powerOn = controller.power_on ?? false;
       const controlMode = controller.control_mode || 'ato';
       const handlePosition = controller.handle_position || 'N';
-      const atoEngaged = controller.ato_engaged ?? false;
+      const atoEngaged = controller.engaged ?? false;
 
       if (powerDisplay) {
         powerDisplay.textContent = powerOn ? 'ON' : 'OFF';
@@ -2228,12 +2227,6 @@ export class TrainEditorHandler {
         } else {
           handleDesc.textContent = `Brake ${handlePosition.slice(1)} - Decelerating`;
         }
-      }
-
-      // Update handle reason (ATO diagnostic)
-      const handleReason = document.getElementById('handle-reason') as HTMLElement | null;
-      if (handleReason) {
-        handleReason.textContent = controller?.handle_reason || '';
       }
 
       // ── HMI live-updates: ATC / ATO / distance / ETA / alerts ──

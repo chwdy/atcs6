@@ -180,7 +180,7 @@ export class RouteRunEditorHandler {
     const accent = this._accentClass(display);
     const routeName = run.route_name || run.route_id;
     const isRunning = run.state === 'RUNNING';
-    const cancelled = !!run.last_cancellation;
+    const cancelled = display === 'CANCELLED';
     const startedText = this._formatTime(run.started_at);
 
     // §11 status header block — `--bg-hover` bg + dynamic 3px accent strip.
@@ -269,7 +269,7 @@ export class RouteRunEditorHandler {
     const deviatedBanner = cancelled
       ? `
             <div class="banner banner-warn">
-                Path cancelled — ${run.last_cancellation?.origin ?? 'cancelled'}. Cleared on the next path.
+                Path cancelled — ${run.last_error?.origin ?? 'cancelled'}. Cleared on the next path.
             </div>`
       : '';
 
