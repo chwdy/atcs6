@@ -67,6 +67,18 @@ _TEARDOWN_CONDITIONS = _PENDING_CANCEL_CONDITIONS | frozenset(
     {ControllerCondition.POWER_OFF_PENDING}
 )
 
+# design_new.md:1559 "A pending teardown holds the request": when any of these
+# is already active on a re-request, `request_route_assignment` writes no second
+# teardown latch — the teardown consumer already in flight applies the latest
+# held `_pending_route_assignments` entry when it removes the run.
+_HELD_REQUEST_TEARDOWN_CONDITIONS = frozenset(
+    {
+        ControllerCondition.ROUTE_ABORT_PENDING,
+        ControllerCondition.ROUTE_DEACTIVATE_PENDING,
+        ControllerCondition.POWER_OFF_PENDING,
+    }
+)
+
 
 # =============================================================================
 # Contention snapshot (design_new.md "Contention snapshot")
@@ -884,7 +896,15 @@ class RouteExecutor:
         # down through the canonical workflow, then hold the request; do NOT
         # mutate either route's `assigned_train_ids` yet.
         controller = self._controller_by_id(train_id)
-        if controller is not None:
+        # A pending teardown holds the request (design_new.md:1559): when a
+        # teardown latch is already in flight for this train, write no second
+        # teardown latch — the consumer already scheduled applies whatever
+        # `_pending_route_assignments` holds when it removes the run. Only the
+        # held request below is overwritten.
+        teardown_already_pending = controller is not None and bool(
+            controller.active_conditions & _HELD_REQUEST_TEARDOWN_CONDITIONS
+        )
+        if controller is not None and not teardown_already_pending:
             has_active_path = (
                 controller.path_projection.received_path_plan is not None
             )
@@ -2950,6 +2970,13 @@ class RouteExecutor:
                     requested_destination_block_id=end_block,
                     requested_destination_direction=direction or "forward",
                 )
+        else:
+            # No live reservation to arrive at. A `run` stop is position-
+            # agnostic (the train coasts to a stand wherever it is), and with
+            # no path the Stop-arrival check will never fire to finish this
+            # row — so finish it here, or the walk would wedge with the run row
+            # forever unfinished (design_new.md:1642, "Run task resolution").
+            self.advance_walk_position(exec_state, route, walk_pos)
         return True
 
     def _covered_task_index_advance(

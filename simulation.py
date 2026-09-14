@@ -1630,22 +1630,15 @@ class SimulationController(SwitchOutputOwner):
         route-abort, power-off, and route-deactivate. Calculating movement and
         committing occupancy already happened in Observe; Action only tears down.
 
-        Skipped, except the persistent-state sync, for an OFF train the global
-        detector read attributed no block change to — the command drain that just ran in
-        Action may have powered it on, in which case this runs (design_new.md
-        ":2181").
+        Skipped, except the persistent-state sync, for any train still OFF
+        after the command drain. The OFF gate reads power state alone
+        (design_new.md:504): a pending teardown latch or a detector-attributed
+        block change to an OFF train runs none of these steps — those teardown
+        latches wait for a later pass on which power-on has run. The command
+        drain that just ran in Action may have powered the train on, in which
+        case this runs.
         """
-        phase_latches = controller.route_hooks.phase_latches
-        teardown_pending = (
-            phase_latches.power_off
-            or phase_latches.route_abort
-            or phase_latches.route_deactivate
-        )
-        if (
-            controller.ops.state == TrainState.OFF
-            and train.train_id not in self._detected_change_train_ids
-            and not teardown_pending
-        ):
+        if controller.ops.state == TrainState.OFF:
             self._sync_persistent_train_state(train, controller)
             return
 
