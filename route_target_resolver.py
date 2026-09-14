@@ -270,11 +270,17 @@ class RouteTargetResolver:
 
         Read-only, like `find_next_task_target(...)`. Returns the resolved
         target `block_id` of the first `stop` / `waypoint` task at or after the
-        train's next planning index, or `None` when there is no such task or it
-        cannot be resolved. Best-effort truncation uses this to tell whether a
-        stopped occupant's next move would reverse back through a candidate
-        terminal block (see the reversal-trap exclusion under best-effort
-        `create_path()` in design_new.md).
+        train's next planning index; `None` when the occupant has no next move
+        at all (no `RUNNING` run, or a route-less parked train); and the
+        sentinel string `"unresolved"` when a next move task exists on a running
+        walk but its target cannot be resolved this tick. Best-effort truncation
+        uses this to tell whether a stopped occupant's next move would reverse
+        back through a candidate terminal block (see the reversal-trap exclusion
+        under best-effort `create_path()` in design_new.md). The `None` vs
+        `"unresolved"` split matters there: `None` means the occupant is exempt
+        (a parked train never reverses out on its own), while `"unresolved"` is
+        NOT exempt — a resolution failure does not prove the occupant will never
+        reverse out, so the terminal is barred conservatively.
 
         ROUND_TRIP direction flips at route ends are not modelled here; the
         walk steps forward (with CIRCULAR wraparound) from the next planning
@@ -309,6 +315,15 @@ class RouteTargetResolver:
             block, _reason = self.resolve_task_target_block_detailed(
                 task, train=train
             )
+            if block is None:
+                # A next move task exists on the running walk but its target
+                # cannot be resolved this tick (a blocked / disabled / missing
+                # target, or a stalled walk). Return the "unresolved" sentinel —
+                # distinct from the route-less `None` below — so the reversal-
+                # trap exclusion treats this occupant as NOT exempt
+                # (design_new.md "find_next_move_target" canonical definition,
+                # `"unresolved"` is not exempt).
+                return "unresolved"
             return block
         return None
 

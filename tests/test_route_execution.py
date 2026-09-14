@@ -819,3 +819,39 @@ def test_is_starting_is_false_for_a_terminal_one_off_run():
         task_runs=[RouteTaskRun(task_index=0)],
     )
     assert fresh.is_starting is True
+
+
+def test_find_next_move_target_distinguishes_route_less_from_unresolved():
+    """The reversal-trap exclusion's three-valued next-move read (design_new.md
+    "find_next_move_target" canonical definition): a route-less occupant returns
+    None (exempt — a parked train never reverses out on its own), while a
+    RUNNING occupant whose next move target cannot be resolved this tick returns
+    the "unresolved" sentinel (NOT exempt — a resolution failure does not prove
+    it leaves forward)."""
+    net = RailwayNetwork()
+    executor = RouteExecutor(net)
+
+    # (1) A parked train with no route → None (exempt).
+    net.trains["PARKED"] = Train(train_id="PARKED")
+    assert executor.find_next_move_target("PARKED") is None
+
+    # (2) A RUNNING train whose next move target will not resolve → "unresolved".
+    net.platforms["PLT_X"] = Platform(platform_id="PLT_X", name="X")
+    route = Route(
+        route_id="RX",
+        name="rx",
+        mode=RouteMode.ONE_OFF,
+        tasks=[RouteTask(task_kind="stop", task_location=PlatformTarget("PLT_X"))],
+    )
+    route.activate(0.0)
+    route.assign_train("RUN")
+    net.trains["RUN"] = Train(train_id="RUN")
+    executor.register_route(route)
+    executor.execution_states["RUN"] = RouteExecutionState(
+        train_id="RUN",
+        route_id="RX",
+        started_at=0.0,
+        task_runs=[RouteTaskRun(task_index=0)],
+    )
+    del net.platforms["PLT_X"]  # the next-move target is now unresolvable
+    assert executor.find_next_move_target("RUN") == "unresolved"

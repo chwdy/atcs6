@@ -2878,11 +2878,19 @@ class PathDispatcher:
         if route_executor is None:
             return False
         occ_target = route_executor.find_next_move_target(occ)
-        if not occ_target:
-            # The occupant has no scheduled next move to reverse through the
-            # terminal — a plain parked obstruction the follower waits behind,
-            # not a reversal trap.
+        if occ_target is None:
+            # The occupant has no scheduled next move (no RUNNING run, or a
+            # route-less parked train) to reverse through the terminal — a plain
+            # parked obstruction the follower waits behind, not a reversal trap.
             return False
+        if occ_target == "unresolved":
+            # A running occupant whose next move task exists but will not resolve
+            # this tick is NOT exempt: a resolution failure does not prove it
+            # leaves forward, so bar the terminal conservatively (design_new.md
+            # "find_next_move_target" canonical definition, `"unresolved"` is not
+            # exempt). This is the same not-exempt outcome as the no-walk case
+            # below.
+            return True
         candidates = self._find_walk_candidates(next_block_id, occ_target, occ)
         if not candidates:
             # A next-move target was supplied but no candidate walk resolves it.

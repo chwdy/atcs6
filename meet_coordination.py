@@ -186,7 +186,15 @@ class MeetCoordinator:
             ceiling, candidate_resource_keys=self._candidate_keys(lo_id, keys_cache)
         )
         # First (most-restrictive) assignment per train wins; do not overwrite.
-        assignment.setdefault(lo_id, ceiling)
+        # Emit the operator event at the moment a ceiling is written
+        # (design_new.md "Meet coordination", Plan consumption → Operator
+        # event), so the operator sees why the train is held. Emit-on-change via
+        # the shared meet-hold condition key; reconciled when the train is no
+        # longer held.
+        if lo_id not in assignment:
+            assignment[lo_id] = ceiling
+            if ceiling.block_id:
+                self._emit_meet_ceiling(lo_id, ceiling.block_id)
 
     def _committed_in_zone(self, train_id: str, zone: set) -> bool:
         """True when ``train_id`` already occupies or **locks** any block in the
@@ -424,6 +432,43 @@ class MeetCoordinator:
                 entities=[train_ref(train_id)],
                 error=ErrorRecord(
                     "no holding point before the contested zone", "meet_hold"
+                ),
+                condition_key=self._meet_hold_key(train_id),
+            )
+        except Exception:
+            pass
+
+    def _emit_meet_ceiling(self, train_id: str, ceiling_block: str) -> None:
+        """One NotificationCenter diagnostic when a train is held at a meet
+        ceiling (design_new.md "Meet coordination", Plan consumption → Operator
+        event).
+
+        Uses the shared per-train meet-hold condition key, so it is emit-on-
+        change (a hold that moves to a different ceiling block re-emits with the
+        new payload) and mutually exclusive with the no-holding-point event, and
+        is reconciled by `_reconcile_no_holding_point()` the first pass the train
+        is no longer held. The train is tracked in the same held-set so that
+        reconciliation resolves the condition."""
+        self._no_holding_point_trains.add(train_id)
+        sc = getattr(self._re, "simulation_controller", None)
+        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        if nc is None:
+            return
+        try:
+            from notification_center import Kind, train_ref
+            from runtime_payloads import ErrorRecord
+
+            nc.emit(
+                source="RouteExecutor",
+                operation="compute_meet_assignment",
+                kind=Kind.WARNING,
+                message=(
+                    f"meet coordination: train {train_id} held at meet ceiling "
+                    f"{ceiling_block}"
+                ),
+                entities=[train_ref(train_id)],
+                error=ErrorRecord(
+                    f"held at meet ceiling {ceiling_block}", "meet_hold"
                 ),
                 condition_key=self._meet_hold_key(train_id),
             )
