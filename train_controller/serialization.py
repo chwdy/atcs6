@@ -214,8 +214,8 @@ def controller_from_dict(
     controller = TrainController(
         train_id=data["train_id"],
         network=network,
-        # `ato_engaged` and `path_backed_run_active` are not constructor args:
-        # `ato.engaged` lives on the ATO sub-module (restored below) and
+        # `engaged` and `path_backed_run_active` are not constructor args: the
+        # ATO engage bit lives on `commands.engaged` (restored below) and
         # `path_backed_run_active` is a derived @property that recomputes from
         # path/route context, so any persisted value is ignored.
     )

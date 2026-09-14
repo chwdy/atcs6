@@ -4,9 +4,10 @@ EB Workflow sub-module of ``TrainController``.
 Per design_new.md "TrainController" sub-module decomposition: the EB
 Workflow owns the ``active`` latch and the operator-EB activation /
 release contract. Cross-sub-module state (``handle_position``,
-``ato.engaged``, ``phase_latches``, ``state``, ``received_path_plan``)
-is reached through the controller back-reference ``self._c`` so this
-class stays a single-purpose owner of EB-specific state and behavior.
+``control_mode`` / ``commands.engaged``, ``phase_latches``, ``powered``,
+``received_path_plan``) is reached through the controller back-reference
+``self._c`` so this class stays a single-purpose owner of EB-specific state
+and behavior.
 
 The ATC overspeed escalation path calls ``activate()`` from inside
 ``TrainController.tick(...)`` rather than writing ``self.eb.active``
@@ -99,20 +100,13 @@ class EBWorkflow:
         cleared by ``PathDispatcher``). Otherwise return success=False with
         controller state unchanged.
 
-        This method clears only ``active`` (and resets the handle to
-        neutral); it does NOT write the operational ``state``. Per
-        design_new.md (**Reactive condition evaluation**, the ``READY`` state
-        row, and the EB-interruption / EB-release notes at lines 1959 and
-        2215), the ``RUNNING_MOVING -> READY`` move is performed by
-        ``OperationalStateMachine.evaluate_reactive_conditions()`` once this
-        method has cleared ``active`` — the evaluator's transition 2 fires
-        because the train is stopped, has no live authority, and ``eb.active``
-        is now ``False``. Both of the evaluator's call sites pick a release up:
-        the tick's step-``71ee`` call (when a release is drained as an operator
-        command) and the ``release-emergency`` API route, which runs the
-        evaluator synchronously right after this method so the POST stays
-        synchronous. A dwelling train is READY, so a release while dwelling
-        clears only ``active`` and the train keeps holding at the stop.
+        This method clears only ``active``, and resets the handle to neutral.
+        It writes no ``train_status`` (that read is derived): once ``active``
+        clears, a powered train reads ``train_status == MANUAL`` (EB set
+        ``control_mode`` to manual) with no separate state write, per
+        design_new.md "EB release". It does not re-select ATO — the operator
+        does that with ``set_mode("ato")`` and then ``/ato/go``. A train
+        holding at a stop keeps holding after the release.
         """
         c = self._c
         train = c._get_train()
