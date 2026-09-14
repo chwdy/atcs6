@@ -977,15 +977,10 @@ class PathDispatcherForRouteExecutor(Protocol):
         manual_override: bool = False,
     ) -> "List[Any]": ...
 
-    # Stopped-run authority shrink (step `66aa`): RouteExecutor pulls a stopped
-    # run's forward authority back to its braking-distance floor
-    # (design_new.md "Stopped-run authority shrink").
-    def shrink_authority_to_cap(self, path_id: str, cap_block_id: str) -> bool: ...
-
     def create_path(
         self,
-        train_id: str = "",
         requested_destination_block_id: str = "",
+        train_id: str = "",
         requested_destination_direction: str = "forward",
         manual_override: bool = False,
         reservation_cap_block_id: Optional[str] = None,
