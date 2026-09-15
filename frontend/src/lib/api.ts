@@ -1418,7 +1418,7 @@ export class API implements LayoutDataClient, SimClient {
    *
    * In v1 power-off is latched: ``power_off_cmd()`` writes
    * ``phase_latches.power_off`` (and ``phase_latches.path_cancel_request``
-   * when there is a live path), and Phase 3 commits the OFF transition on
+   * when there is a live path), and Action commits the OFF transition on
    * a later tick. The response indicates the request was accepted; callers
    * must observe the controller sibling's ``power_on === false`` (e.g. via
    * ``stateManager.getController(trainId).power_on``) on a subsequent fetch
@@ -1675,7 +1675,7 @@ export class API implements LayoutDataClient, SimClient {
    * In v1 the backend latches API-driven cancellations: when the path has
    * a live train, the response resolves with ``status: "queued"`` once the
    * pending_path_cancel_request latch is written. The path is not actually
-   * removed and the train has not yet stopped at that point — Phase 3 of
+   * removed and the train has not yet stopped at that point — the Action stage of
    * the simulation tick commits the cancel after the train brakes to a
    * stop. Callers should refresh from /api/paths or /api/network on the
    * next tick rather than mutating local state synchronously.

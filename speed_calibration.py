@@ -22,11 +22,6 @@ step runs `CALIBRATION_ROUND_TRIPS` round trips and averages twice that many
 crossings, half in each direction: a stretch is rarely dead level, and equal
 counts each way cancel the grade.
 
-**Manual marking** is the fallback for a layout the detectors cannot time. The
-operator sets two marks a known distance apart and issues `record` at each; the
-operator also drives the shuttle, because nothing confirms a block entry for the
-pass to reverse on.
-
 Measuring every step does not commit the run. It holds its finished samples
 until the operator picks a target — replace the linked profile, or save a new
 one — which is what `commit(...)` writes. `CalibrationRun` is in-memory only;
@@ -736,7 +731,7 @@ class SpeedCalibration:
         clock is two confirmed entries).
 
         This is a read against an existing detector-read handoff, not an additional
-        one: it writes nothing into the slice (design_new.md "Phase handoff
+        one: it writes nothing into the slice (design_new.md "Stage handoff
         rule", A read is not a handoff).
         """
         if not self.runs:
@@ -1027,8 +1022,7 @@ class SpeedCalibration:
           - for a lighting run: `control_mode != "manual"`, or any route is
             assigned (a lighting run has no reservation)
           - for a speed pass: the assigned route is not the leg's own
-            `active_leg_route_id` (both `None` between legs), or a measurement
-            fault was recorded (`phase == PHASE_FAILED`)
+            `active_leg_route_id` (both `None` between legs)
         There is no cab condition for either kind — the head end is derived from
         the authority (a speed pass) or the candidate drives positive (a lighting
         run).

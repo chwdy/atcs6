@@ -344,7 +344,7 @@ def test_commit_rejects_a_curve_that_falls_with_power():
         cal.commit("T1", profile)
 
 
-# --- manual marking ----------------------------------------------------------
+# --- override drive while acquiring ------------------------------------------
 
 
 def test_pass_drives_a_zero_override_while_acquiring():

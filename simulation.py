@@ -840,7 +840,7 @@ class SimulationController(SwitchOutputOwner):
         to keep meaning stopped — queued operator commands still wait for the
         resume, no route is planned, no train is moved. What does run is the
         path design_new.md already defines for an occupant the app does not
-        drive (":2181"): the global detector read attributes the confirmed
+        drive ("Running and stopped"): the global detector read attributes the confirmed
         transitions, each affected train enqueues a detected-blocks-only report,
         and Observe commits that report alone (`observing_only`).
 

@@ -1970,7 +1970,7 @@ class TrainPhysics:
         (design_new.md "Block occupancy detection", A clear read from under the
         train is a detection fault). The tail has reached the seam when the
         block is no longer under the span (the tail has already passed it), or
-        the tail sits in the block within one seam epsilon of leaving it.
+        the tail sits in the block within two seam epsilons of leaving it.
         """
         controller = self.controller
         if controller is None or self.network is None:
@@ -1999,7 +1999,7 @@ class TrainPhysics:
 
         # The tail sits in the block: it has reached the exit seam when the next
         # tile forward belongs to a different block (or a switch tile, which
-        # belongs to none) within one seam epsilon.
+        # belongs to none) within two seam epsilons.
         limit_cm = 2 * _SEAM_HOLD_EPSILON_CM
         for next_tile, _travelled in self._walk_forward_tiles(
             tail_tile, tail_distance, tail_entry, limit_cm

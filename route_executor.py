@@ -59,7 +59,7 @@ _PENDING_CANCEL_CONDITIONS = frozenset(
 )
 
 # The four teardown latches that outrank normal Plan progress (design_new.md
-# "Teardown outranks normal progress", :1967): while any is set, steps
+# "Teardown outranks normal progress"): while any is set, steps
 # `70c3`/`6a0d`/`a5c6`/`3a37` make no write. This is the cancel set plus
 # `POWER_OFF_PENDING`; the acquisition-eligibility gate (steps `66aa`/`592a`)
 # uses only `_PENDING_CANCEL_CONDITIONS`.
@@ -1435,8 +1435,8 @@ class RouteExecutor:
 
     # ------------------------------------------------------------------
     # Per-tick coordination (design_new.md "Contention snapshot" +
-    # "Meet coordination"). Built in the tick preamble after
-    # order_runnable_trains and before the first train's Plan.
+    # "Meet coordination"). Built after order_runnable_trains and
+    # before the first train's Plan.
     # ------------------------------------------------------------------
 
     def build_tick_coordination(self, ordered_train_ids: List[str]) -> None:
@@ -2354,7 +2354,7 @@ class RouteExecutor:
         # fresh create at step `66aa` gives the run a live path again.
 
         # ---------- Teardown outranks normal progress ------------------------
-        # design_new.md "Teardown outranks normal progress" (:1967): while any
+        # design_new.md "Teardown outranks normal progress": while any
         # teardown latch (path_cancel_request / route_abort / power_off /
         # route_deactivate) is set, steps `70c3`, `6a0d`, `a5c6`, and the dwell
         # step make no timing, progress, dwell, departure, or authority write,
@@ -2858,11 +2858,14 @@ class RouteExecutor:
 
         Samples the dwell row's paired `started_at` / `started_at_operating` on
         the first pass so the hold is measured from when the train reached the
-        dwell, not from its predecessor's `finished_at`. EB suppresses
-        DEPARTURE, not the timer: `started_at` is untouched by EB, so the timer
-        keeps counting, but the walk does not advance while `eb.active` (a train
-        must not depart under EB); departure resumes once `eb.release()` clears
-        the latch.
+        dwell, not from its predecessor's `finished_at`. EB does not stop the
+        dwell clock and does not suppress departure: `started_at` is untouched
+        by EB and the walk advances when the timer expires. What waits under EB
+        is the later reservation grant, gated by `is_clean_for_create` (which
+        returns False under EB). A paused (not-engaged) ATO train behaves the
+        same way — its grant waits on the same engage gate — so EB and paused
+        ATO are not special-cased here (design_new.md "Planning Kernel", step
+        70c3).
         """
         # `current_waypoint_index` is the largest finished walk-position; the
         # dwell task currently in flight is the next planning index.
@@ -3572,7 +3575,7 @@ class RouteExecutor:
         # as `required_candidate_resource_keys` so the dispatcher acquires the
         # exact route meet coordination evaluated, and — when the entry also caps
         # short of the real route target — keep the request at that target and
-        # pass the ceiling as the acquisition cap. The dispatcher acquires toward
+        # pass the ceiling as the reservation cap. The dispatcher acquires toward
         # the real target but stores no authority past the cap, so
         # `reservation_end_block_id` lands on the ceiling while
         # `requested_destination_block_id` (and the `task_runs[...].resolved_target`
