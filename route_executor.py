@@ -2887,9 +2887,12 @@ class RouteExecutor:
             row.started_at = self._now()
             row.started_at_operating = self._now_operating()
 
-        # EB suppresses departure, not the timer.
-        if controller.eb.active:
-            return False
+        # EB does not stop the dwell clock and does not suppress departure: the
+        # walk advances when the timer expires, and the later reservation grant
+        # is gated by is_clean_for_create (which returns False under EB). A
+        # paused (not-engaged) ATO train behaves the same way — its grant waits
+        # on the same engage gate — so EB and paused ATO are not special-cased
+        # here (design_new.md "Planning Kernel", step 70c3, EB during a dwell).
 
         # Read the row's start on the route's own basis so the duration never
         # subtracts a wall instant from an operating one.

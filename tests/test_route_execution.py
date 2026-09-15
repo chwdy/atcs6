@@ -738,6 +738,60 @@ class TestBrokenDwellHandling:
         assert not hasattr(exec_state.task_runs[0], "last_error")
 
 
+class TestDwellUnderEb:
+    """EB does not freeze the dwell clock (design_new.md "Planning Kernel", step
+    70c3, EB during a dwell). The dwell advances under EB exactly as it does for
+    a paused (not-engaged) ATO train; the later reservation grant is gated
+    downstream by is_clean_for_create, which returns False under EB."""
+
+    def _executor_with_immediate_dwell(self):
+        network = RailwayNetwork()
+        network.platforms["PLT_A"] = Platform(platform_id="PLT_A", name="A")
+        route = Route(
+            route_id="R_DWELL",
+            name="dwell route",
+            mode=RouteMode.ONE_OFF,
+            tasks=[
+                RouteTask(
+                    task_kind="dwell",
+                    task_location=PlatformTarget(platform_id="PLT_A"),
+                ),
+            ],
+        )
+        route.activate(0.0)
+        route.assign_train("T_DWELL")
+        train = Train(train_id="T_DWELL")
+        network.trains[train.train_id] = train
+        executor = RouteExecutor(network)
+        executor.register_route(route)
+        executor.execution_states[train.train_id] = RouteExecutionState(
+            train_id=train.train_id,
+            route_id=route.route_id,
+            started_at=0.0,
+            task_runs=[RouteTaskRun(task_index=i) for i in range(len(route.tasks))],
+        )
+        return network, executor, route
+
+    def test_eb_does_not_freeze_the_dwell(self):
+        network, executor, _route = self._executor_with_immediate_dwell()
+        train = network.trains["T_DWELL"]
+        controller = executor._get_controller(train)
+        controller.commands.power_on_cmd()
+        controller._apply_head_frame("end_a")
+        set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
+        exec_state = executor.execution_states["T_DWELL"]
+
+        controller.eb.activate()
+        assert controller.eb.active
+
+        executor.tick_train_plan("T_DWELL", 0.1)
+
+        # The immediate dwell finished under EB — the timer was not frozen — and
+        # EB still blocks the onward reservation grant.
+        assert exec_state.task_runs[0].finished_at is not None
+        assert executor.is_clean_for_create("T_DWELL") is False
+
+
 class TestUngatedReleaseAndStall:
     """The stopped-run lock shrink and the non-dwell broken-skip / stall run on
     a pass where authority acquisition is gated off — a paused (not-engaged)

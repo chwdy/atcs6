@@ -2411,8 +2411,8 @@ The **`train_status`** enum (canonical home; referenced elsewhere by name) is th
   - `OFF` when `train_status != ATO`.
   - `READY` when `train_status == ATO` and either `commands.engaged` is `False` or the train has no `RUNNING` route run to pursue (freshly selected, paused by `/ato/stop`, or its route has finished or been torn down).
   - `DWELLING` when engaged with a `RUNNING` run whose current walk task is a started, unfinished `dwell` row (the route-owned "at station" read).
-  - `RUNNING` when engaged with a `RUNNING` run and `current_speed_kmh > 0`.
-  - `HELD` when engaged with a `RUNNING` run, stopped, and not at a station (target not yet reached).
+  - `RUNNING` when engaged with a `RUNNING` run and the train is not stopped (`TrainController.is_stopped()` is `False`; the speed-only stopped predicate).
+  - `HELD` when engaged with a `RUNNING` run, stopped (`TrainController.is_stopped()`), and not at a station (target not yet reached).
 - **`commands.engaged`** is the one stored bit that separates the engaged statuses from `READY`. These are the only sites that assign it:
   - `/ato/go` sets it `True` — the operator starts ATO driving (see **Operator command surface**). Accepted only when `train_status == ATO`; idempotent while already engaged.
   - `/ato/stop` sets it `False` — the operator pauses ATO driving. Accepted only when `train_status == ATO`; idempotent while already not engaged.
