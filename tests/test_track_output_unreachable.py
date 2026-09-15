@@ -178,10 +178,13 @@ def test_the_halt_gate_refuses_ticks_while_a_hardware_failure_is_latched():
     assert sim.runtime_halted is True
 
     before = sim.simulation_time
+    before_operating = sim.operating_clock()
     sim.update(1.0)
 
-    # Only the clock moves; no train phase runs.
-    assert sim.simulation_time > before
+    # A halted session is stopped, so neither clock advances and no train or
+    # stopped-observation pass runs behind the gate (design_new.md step `ee19`).
+    assert sim.simulation_time == before
+    assert sim.operating_clock() == before_operating
 
 
 def test_each_unreachable_block_gets_its_own_report():

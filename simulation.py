@@ -450,6 +450,32 @@ class SimulationController(SwitchOutputOwner):
              next train's Plan.
           5. After all trains have committed, refresh signals from blocks.
         """
+        # Consume a loss-of-control watchdog trip first: it is the sole
+        # operation allowed through the fatal/hardware gate below (design_new.md
+        # step `ee19`), because a failed safe-state drop must still escalate to
+        # hardware failure (design_new.md "Power", Trip-record consumption
+        # escalates a failed drop to hardware failure). It reads neither clock,
+        # so running it ahead of the clock advance changes nothing on a normal
+        # pass.
+        self._consume_watchdog_trip()
+
+        # A fatal physical-entry conflict (`failed_runtime`) halts train ticks
+        # (Observe/Plan/Action skipped) in every environment; its release path is
+        # the explicit `clear_failed_runtime()`. A hardware I/O failure
+        # (`hardware_failure`) halts only a hardware-backed environment:
+        # Simulation keeps running with a latched hardware_failure, so an operator
+        # whose hardware broke can work in Simulation while repairing it, then
+        # reactivate and explicitly clear the latch (design_new.md "Power",
+        # Recovery is reactivation followed by an explicit clear; Simulation is
+        # independent of Hardware Setup). When either gate applies neither clock
+        # advances (design_new.md step `ee19`): the clock advances sit past the
+        # gate, so a halted pass freezes both `simulation_time` and
+        # `AppState.operating_time`.
+        if not self.environment_active or self.failed_runtime:
+            return
+        if self.hardware_failure and self.operation_mode is not OperationMode.SIMULATION:
+            return
+
         self.simulation_time += delta_seconds
         # One running pass of the runtime loop; a stopped pass calls
         # `poll_hardware_occupancy()` instead and adds nothing, which is what
@@ -462,26 +488,6 @@ class SimulationController(SwitchOutputOwner):
             if operating_delta_seconds is not None
             else delta_seconds
         )
-
-        # Consume a loss-of-control watchdog trip. This runs even behind the
-        # fatal gate below, because a failed safe-state drop must still escalate
-        # to hardware failure (design_new.md "Power", Trip-record consumption
-        # escalates a failed drop to hardware failure).
-        self._consume_watchdog_trip()
-
-        # A fatal physical-entry conflict (`failed_runtime`) halts train ticks
-        # (Observe/Plan/Action skipped) in every environment; its release path is
-        # the explicit `clear_failed_runtime()`. A hardware I/O failure
-        # (`hardware_failure`) halts only a hardware-backed environment:
-        # Simulation keeps running with a latched hardware_failure, so an operator
-        # whose hardware broke can work in Simulation while repairing it, then
-        # reactivate and explicitly clear the latch (design_new.md "Power",
-        # Recovery is reactivation followed by an explicit clear; Simulation is
-        # independent of Hardware Setup).
-        if not self.environment_active or self.failed_runtime:
-            return
-        if self.hardware_failure and self.operation_mode is not OperationMode.SIMULATION:
-            return
 
         # The per-train lookahead memo is a tick-local optimization: it is only
         # ever read/written while this flag is True, so every between-tick /
