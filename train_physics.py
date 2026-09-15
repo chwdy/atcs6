@@ -1482,11 +1482,18 @@ class TrainPhysics:
         """Snap the calculated span forward to agree with the current detector.
 
         Physical detection outranks the calculated position (design_new.md
-        "Block occupancy detection"). When the detector has confirmed a
-        block entered or vacated for this train but the calculated span still
-        disagrees, slide the rigid span forward one tile at a time until the head
-        has reached every confirmed-entered block and the tail has cleared every
-        confirmed-vacated block — "snap to the seam at least".
+        "Block occupancy detection"). When the detector has confirmed a block
+        entered for this train but the calculated span still disagrees, slide the
+        rigid span forward one tile at a time until the head has reached every
+        confirmed-entered block — "snap to the seam at least".
+
+        A confirmed clear never moves the span (design_new.md "Block occupancy
+        detection", A confirmed clear never moves the span): a span moved by a
+        clear would claim head positions no detector reported. The clear is
+        handled by the vacate path instead, and the tail advances past the seam
+        through ordinary integration once its cap releases. An unidentified train
+        is the one exception — its span IS its confirmed-occupied blocks, so a
+        clear shrinks it directly (see the unidentified-train branch below).
 
         One-directional: it only advances the train forward, never backward, and
         is a no-op when the calculated span already agrees. Under the v1
@@ -1515,7 +1522,10 @@ class TrainPhysics:
         span = ps.current_span
         if span is None:
             return False
-        if not entered and not vacated:
+        # A confirmed clear never moves an ordinary train's span, so only a
+        # confirmed entry can drive the correction; a vacate-only read is a
+        # no-op here (the tail advances through ordinary integration).
+        if not entered:
             return False
 
         head_is_a = controller._head_end_label() == "end_a"
@@ -1529,17 +1539,13 @@ class TrainPhysics:
         # be marched across the layout hunting track it will never cover. Such a
         # block still belongs to the train; the span simply does not move for it.
         entered_ahead = self._entered_blocks_ahead(set(entered))
-        if not entered_ahead and not vacated:
+        if not entered_ahead:
             self._work = None
             return False
 
         def disagrees() -> bool:
             occupied = set(self._work.occupied_blocks or [])
-            if any(block_id not in occupied for block_id in entered_ahead):
-                return True
-            if any(block_id in occupied for block_id in vacated):
-                return True
-            return False
+            return any(block_id not in occupied for block_id in entered_ahead)
 
         blocks_before = set(self._work.occupied_blocks or [])
         moved = False
@@ -1954,6 +1960,53 @@ class TrainPhysics:
             if self._block_of_tile(next_tile) != tail_block:
                 return travelled
         return None
+
+    def tail_has_reached_exit_seam(self, train: "Train", block_id: str) -> bool:
+        """Whether this train's calculated tail has reached the exit seam of
+        `block_id` — the gate for vacating a block the detector reads clear.
+
+        A clear read from a block whose exit seam the tail has not reached is a
+        detection fault, not a vacate: the train still stands on the block
+        (design_new.md "Block occupancy detection", A clear read from under the
+        train is a detection fault). The tail has reached the seam when the
+        block is no longer under the span (the tail has already passed it), or
+        the tail sits in the block within one seam epsilon of leaving it.
+        """
+        controller = self.controller
+        if controller is None or self.network is None:
+            return True
+        span = controller.physics_sync.current_span
+        if span is None:
+            return True
+        head_is_a = controller._head_end_label() == "end_a"
+        if head_is_a:
+            tail_tile = tuple(span.end_b.tile)
+            tail_distance = float(span.end_b.distance_cm)
+            tail_entry = span.end_b.entry_edge
+        else:
+            tail_tile = tuple(span.end_a.tile)
+            tail_distance = float(span.end_a.distance_cm)
+            tail_entry = span.end_a.entry_edge
+
+        tail_block = self._block_of_tile(tail_tile)
+        if tail_block != block_id:
+            # The block is not the tail's own block: the tail has reached its
+            # seam only when the span no longer covers the block (the tail has
+            # already passed it). A block still under the head or middle of the
+            # span is one the train has not left.
+            occupied = set(span.occupied_blocks or [])
+            return block_id not in occupied
+
+        # The tail sits in the block: it has reached the exit seam when the next
+        # tile forward belongs to a different block (or a switch tile, which
+        # belongs to none) within one seam epsilon.
+        limit_cm = 2 * _SEAM_HOLD_EPSILON_CM
+        for next_tile, _travelled in self._walk_forward_tiles(
+            tail_tile, tail_distance, tail_entry, limit_cm
+        ):
+            if self._block_of_tile(next_tile) != block_id:
+                return True
+        return False
 
     def _walk_forward_tiles(
         self,

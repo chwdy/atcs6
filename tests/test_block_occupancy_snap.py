@@ -2,10 +2,13 @@
 TrainPhysics.reconcile_to_detected_occupancy.
 
 Physical detection outranks the calculated position: when the current detector
-confirms a block entered/vacated that the calculated span does not yet agree
-with, the span is slid forward to the seam. This is inert under the v1 simulated
-sensor (current is derived from the span), so these tests drive the detector
-slice directly to exercise the geometry as a real/early sensor would.
+confirms a block ENTERED that the calculated span does not yet agree with, the
+span is slid forward to the seam. A confirmed CLEAR never moves the span
+(design_new.md "Block occupancy detection", A confirmed clear never moves the
+span) — the tail advances past the seam through ordinary integration instead.
+This is inert under the v1 simulated sensor (current is derived from the span),
+so these tests drive the detector slice directly to exercise the geometry as a
+real/early sensor would.
 """
 
 from typing import Dict, Set
@@ -91,19 +94,23 @@ def test_snap_inert_when_span_already_covers_block():
     assert controller.physics_sync.current_span is before
 
 
-def test_snap_exit_slides_tail_out_of_block():
+def test_confirmed_clear_never_moves_the_span():
     network = build_line(6)
     # 250cm train with head at tile 2's exit edge spans BLK_2, BLK_1, BLK_0.
     sim, train, controller, physics = place(network, "T", head_x=2, length_cm=250.0)
     span = controller.physics_sync.current_span
     assert "BLK_0" in span.occupied_blocks
 
-    # Detector confirmed the tail cleared BLK_0 before the calculated tail did.
+    # A confirmed clear never moves an ordinary train's span (design_new.md
+    # "Block occupancy detection", A confirmed clear never moves the span): the
+    # span stays put and the tail advances past the seam through ordinary
+    # integration, not by the reconciliation snapping it forward.
     controller.physics_sync.pending_detected_vacated_blocks = {"BLK_0"}
     moved = physics.reconcile_to_detected_occupancy(train, controller)
 
-    assert moved is True
-    assert "BLK_0" not in controller.physics_sync.current_span.occupied_blocks
+    assert moved is False
+    assert controller.physics_sync.current_span is span
+    assert "BLK_0" in controller.physics_sync.current_span.occupied_blocks
 
 
 def test_snap_stops_at_a_detected_block_that_reads_clear():

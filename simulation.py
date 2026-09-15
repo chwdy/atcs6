@@ -190,6 +190,16 @@ class SimulationController(SwitchOutputOwner):
         # runs only when movement is calculated; detection feedback always runs").
         self._detected_change_train_ids: Set[str] = set()
 
+        # Blocks the detector confirmed clear while their holding train still
+        # stands on them (its calculated tail has not reached the block's exit
+        # seam) — a detection fault, not a vacate. Maps block_id -> holding
+        # train_id. The block is held (occupied_by and voltage kept) and
+        # re-offered each read until the tail reaches the seam or current
+        # returns (design_new.md "Block occupancy detection", A clear read from
+        # under the train is a detection fault; A held clear is re-offered until
+        # the tail reaches the seam). Used to report the fault once per block.
+        self._held_clear_blocks: Dict[str, str] = {}
+
         # Wall time of the previous pass of the runtime loop, running or
         # stopped. Every pass's `occupied_seconds` accrual measures the unscaled
         # wall seconds against it — running and stopped alike, never the
@@ -1164,11 +1174,16 @@ class SimulationController(SwitchOutputOwner):
         detector = self.block_occupancy_detector
 
         # Adopt externally-committed occupancy (place_train / restore) as already
-        # confirmed so a placed-on block does not read as a fresh entry.
+        # confirmed so a placed-on block does not read as a fresh entry. A
+        # held-clear block is excluded: the detector genuinely reads it clear and
+        # only the model still holds `Block.occupied_by` for it (design_new.md
+        # "Block occupancy detection", A clear read from under the train is a
+        # detection fault); re-seeding it would fight that clear read and reset
+        # the debounce every tick.
         detector.seed_occupied(
             block_id
             for block_id, block in self.network.blocks.items()
-            if block.occupied_by is not None
+            if block.occupied_by is not None and block_id not in self._held_clear_blocks
         )
 
         try:
@@ -1227,6 +1242,14 @@ class SimulationController(SwitchOutputOwner):
         # `reserved_for_other_train` fatal conflict.
         self._truncate_authority_at_occupied_reservations(entered_by_train)
 
+        # A confirmed clear is a real vacate only once the holder's calculated
+        # tail has reached the block's exit seam; a clear read from under a train
+        # is a detection fault that holds the block (design_new.md "Block
+        # occupancy detection", A clear read from under the train is a detection
+        # fault). This gates the raw clears into the truly-vacated set, holds the
+        # rest, reports each new fault once, and re-offers held clears.
+        vacated_by_train = self._gate_confirmed_clears(vacated_by_train)
+
         self._detected_change_train_ids = set(entered_by_train) | set(vacated_by_train)
 
         # Reset every train's slice, then write this tick's attributed sets.
@@ -1267,6 +1290,114 @@ class SimulationController(SwitchOutputOwner):
             )
 
         self._update_presence_unknown(detector)
+
+    def _gate_confirmed_clears(
+        self, vacated_by_train: Dict[str, Set[str]]
+    ) -> Dict[str, Set[str]]:
+        """Split this tick's confirmed clears into the truly vacated and the
+        held, and drive the detection-fault lifecycle.
+
+        A block is truly vacated for its holder only once that train's calculated
+        tail has reached the block's exit seam (or the train is ghosted, or it is
+        an unidentified train, whose clears commit at once). A clear read while
+        the train still stands on the block is a detection fault: the block is
+        held — `Block.occupied_by` and its `track voltage` stay — reported once,
+        and re-offered on every later read until the tail reaches the seam or the
+        block reads current again (design_new.md "Block occupancy detection",
+        A clear read from under the train is a detection fault; The fault is
+        reported once per block; A held clear is re-offered until the tail
+        reaches the seam)."""
+        confirmed = self.block_occupancy_detector.confirmed_occupied
+
+        # This tick's transitions plus the standing held-clear set, so a held
+        # clear is re-offered every read. block_id -> holding train_id.
+        candidates: Dict[str, str] = {}
+        for train_id, block_ids in vacated_by_train.items():
+            for block_id in block_ids:
+                candidates[block_id] = train_id
+        for block_id, train_id in list(self._held_clear_blocks.items()):
+            if block_id in confirmed:
+                # Current returned under the train: the fault is over, and a
+                # later clear reports it afresh.
+                del self._held_clear_blocks[block_id]
+                continue
+            block = self.network.blocks.get(block_id)
+            if getattr(block, "occupied_by", None) != train_id:
+                # The block was released elsewhere (ghost teardown, reservation
+                # truncation); drop the stale hold.
+                del self._held_clear_blocks[block_id]
+                continue
+            candidates.setdefault(block_id, train_id)
+
+        truly: Dict[str, Set[str]] = {}
+        for block_id, train_id in candidates.items():
+            if self._tail_reached_exit_seam(train_id, block_id) or (
+                not self._train_has_confirmed_evidence(train_id, confirmed)
+            ):
+                # Vacate: the tail has reached the seam, or no block in the
+                # train's evidence set reads occupied so the train is ghosted and
+                # the ghost teardown releases the rest (design_new.md "Block
+                # occupancy detection", the ghosted branch).
+                truly.setdefault(train_id, set()).add(block_id)
+                self._held_clear_blocks.pop(block_id, None)
+            elif block_id not in self._held_clear_blocks:
+                # A clear read from under the train: hold the block, report once.
+                self._held_clear_blocks[block_id] = train_id
+                self._emit_lost_detection_fault(train_id, block_id)
+        return truly
+
+    def _tail_reached_exit_seam(self, train_id: str, block_id: str) -> bool:
+        """Whether `train_id`'s calculated tail has reached `block_id`'s exit
+        seam — the gate for vacating a block the detector reads clear. An
+        unidentified train integrates no motion, so its clears commit at once
+        (design_new.md "Block occupancy detection", An unidentified train's
+        clears commit at once)."""
+        if self.unidentified_trains.is_unidentified(train_id):
+            return True
+        train = self.network.trains.get(train_id)
+        controller = self.controllers.get(train_id)
+        physics = self.physics_instances.get(train_id)
+        if train is None or controller is None or physics is None:
+            return True
+        return physics.tail_has_reached_exit_seam(train, block_id)
+
+    def _train_has_confirmed_evidence(
+        self, train_id: str, confirmed: Set[str]
+    ) -> bool:
+        """Whether any block in this train's evidence set — its span blocks plus
+        the blocks it holds through `Block.occupied_by` — still reads confirmed
+        occupied. When none does, the train is ghosted rather than standing on a
+        held-clear block (design_new.md "Block occupancy detection", the ghosted
+        branch, cross-referenced from Presence unknown)."""
+        controller = self.controllers.get(train_id)
+        if controller is None:
+            return False
+        span = controller.physics_sync.current_span
+        evidence = set(span.occupied_blocks or []) if span else set()
+        for block_id, block in self.network.blocks.items():
+            if getattr(block, "occupied_by", None) == train_id:
+                evidence.add(block_id)
+        return bool(evidence & confirmed)
+
+    def _emit_lost_detection_fault(self, train_id: str, block_id: str) -> None:
+        """Report a block that read clear while its holding train still stands on
+        it — once per fault (design_new.md "Block occupancy detection", The fault
+        is reported once per block)."""
+        self.notification_center.emit(
+            source="SimulationController",
+            operation="_detect_block_occupancy",
+            kind=Kind.WARNING,
+            message=(
+                f"block {block_id} read clear while {train_id} still stands on "
+                f"it; holding the block until the train's tail clears it"
+            ),
+            entities=[block_ref(block_id), train_ref(train_id)],
+            error=ErrorRecord(
+                f"detection lost under {train_id} on block {block_id}",
+                "detection_lost_under_train",
+            ),
+            event_time=time.time(),
+        )
 
     def _truncate_authority_at_occupied_reservations(
         self, entered_by_train: Dict[str, Set[str]]
