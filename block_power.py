@@ -241,23 +241,6 @@ class BlockPowerController:
             return 0.0
         return physics.compute_track_voltage(controller, speed_profile)
 
-    def _get_train_occupied_blocks(self, train: "Train") -> list:
-        """Get list of block IDs occupied by train.
-
-        Per design_new.md, physical occupancy is read from the controller-owned
-        canonical span (`TrainController.physics_sync.current_span.occupied_blocks`,
-        exposed via `get_current_span()`); authority-future blocks live on the
-        dispatcher's active path.
-        """
-        if self._sim_controller is not None:
-            getter = getattr(self._sim_controller, "get_controller", None)
-            ctrl = getter(train.train_id) if callable(getter) else None
-            if ctrl is not None:
-                span = ctrl.get_current_span()
-                if span is not None:
-                    return list(span.occupied_blocks)
-        return []
-
     def set_block_voltage(self, block_id: str, voltage: float) -> bool:
         """
         Set voltage for a specific block.
