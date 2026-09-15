@@ -969,7 +969,6 @@ export class SpeedProfileEditorHandler {
       startBtn.disabled = true;
       try {
         await this.api.startCalibration(train.id, {
-          mode: 'auto',
           measured_block_id: blockEl.value.trim(),
         });
       } catch (err: any) {

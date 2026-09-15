@@ -237,15 +237,6 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
-  /** Manual marking: the operator marks one pass of a marker. */
-  async recordCalibrationMark(trainId: string): Promise<any> {
-    return this._request(
-      `/trains/${trainId}/calibrate/record`,
-      { method: 'POST' },
-      'recordCalibrationMark'
-    );
-  }
-
   /** Write the measured pass onto a profile. `target` picks which:
    *  'locomotive' (Save to this locomotive) writes the two measured fields onto
    *  this locomotive's instance profile, so only this loco changes; 'model'

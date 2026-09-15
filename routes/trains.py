@@ -314,20 +314,16 @@ def register(app, state: AppState) -> None:
     def calibrate_train(train_id):
         """Open a speed-calibration pass (design_new.md "Speed calibration").
 
-        Body: ``{"mode": "auto"|"manual", "measured_block_id": str,
-        "marker_spacing_cm": float}``. Auto profiling names the measured block
-        and the pass resolves its two neighbours and drives itself; manual
-        marking names the marker spacing and the operator marks with
-        ``/calibrate/record``. The pass writes nothing until ``/calibrate/commit``.
+        Body: ``{"measured_block_id": str}``. The pass resolves the measured
+        block's two neighbours and drives itself. The pass writes nothing until
+        ``/calibrate/commit``.
         """
         data = request.get_json(silent=True) or {}
         try:
             run = train_service.calibrate_train(
                 state,
                 train_id,
-                mode=data.get("mode", "auto"),
                 measured_block_id=data.get("measured_block_id", ""),
-                marker_spacing_cm=float(data.get("marker_spacing_cm", 0) or 0),
             )
         except NotFoundError as exc:
             return jsonify({"error": str(exc)}), 404
@@ -351,20 +347,6 @@ def register(app, state: AppState) -> None:
         train_service.calibrate_cancel(state, train_id)
         return "", 204
 
-    @app.route("/api/trains/<train_id>/calibrate/record", methods=["POST"])
-    def calibrate_record(train_id):
-        """Manual marking: the operator marks one pass of a marker."""
-        try:
-            run = train_service.calibrate_record(state, train_id)
-        except NotFoundError as exc:
-            return jsonify({"error": str(exc)}), 404
-        except ConflictError as exc:
-            return jsonify({"error": str(exc)}), 409
-        except ValidationError as exc:
-            return jsonify({"error": str(exc)}), 400
-        if run is None:
-            return jsonify({"error": "No manual calibration pass is open"}), 409
-        return jsonify({"status": "success", **run.to_dict()})
 
     @app.route("/api/trains/<train_id>/calibrate/commit", methods=["POST"])
     def calibrate_commit(train_id):

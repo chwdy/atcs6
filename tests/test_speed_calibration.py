@@ -347,36 +347,15 @@ def test_commit_rejects_a_curve_that_falls_with_power():
 # --- manual marking ----------------------------------------------------------
 
 
-def test_manual_marks_pair_up_into_crossings():
-    cal, run, _profile = _open_run(mode="manual", marker_spacing_cm=200.0)
-    cal.record("T1", now=0.0)  # opens
-    cal.record("T1", now=4.0)  # closes
-    assert run.crossings == [pytest.approx(cm_per_sec_to_kmh(200.0 / 4.0))]
-    # The reversal dwell falls between pairs, so it is never timed.
-    cal.record("T1", now=30.0)
-    assert len(run.crossings) == 1
-
-
-def test_manual_marking_leaves_the_operators_manual_power_intact():
-    """design_new.md "Speed calibration", Manual marking: "The operator drives the
-    shuttle in this mode" and runs the train at the step's commanded power_percent.
-
-    So a measuring manual pass must put no propulsion override on the train:
-    `get_propulsion_override` returns None, leaving the operator's own manual power
-    in control. Returning a `power_percent = 0` override instead would replace that
-    manual power with zero (train_controller reads a 0 override as "calibration is
-    driving at 0%") and pin the train still, making the drive-it-yourself pass
-    impossible. An auto pass in the same unarmed opening state, by contrast, does
-    put an override on the train — the asymmetry this pass must preserve."""
-    manual_cal, manual_run, _p = _open_run(mode="manual", marker_spacing_cm=200.0)
-    assert manual_run.is_measuring  # the pass is live and would otherwise drive
-    assert manual_cal.get_propulsion_override("T1") is None
-
-    # Auto profiling in the same unarmed opening state DOES drive (a 0 while it
-    # acquires the leg): the override the manual pass must not emit.
-    auto_cal, _auto_run, _p2 = _open_run(mode="auto")
-    auto_override = auto_cal.get_propulsion_override("T1")
-    assert auto_override is not None and auto_override.kind == "power_percent"
+def test_pass_drives_a_zero_override_while_acquiring():
+    """A pass in the unarmed opening state puts a propulsion override on the
+    train — a 0 while it acquires the leg route — so the controller drives the
+    pass rather than the operator (design_new.md "Speed calibration", Where it
+    runs)."""
+    cal, run, _profile = _open_run()
+    assert run.is_measuring
+    override = cal.get_propulsion_override("T1")
+    assert override is not None and override.kind == "power_percent"
 
 
 # --- capped-crossing discard (design_new.md:3047, "A capped crossing is discarded") ---
@@ -411,9 +390,7 @@ def test_a_capped_crossing_is_discarded_and_the_pass_goes_on():
     assert profile.power_speed_curve == curve_before
 
 
-def test_taint_current_crossing_ignores_a_non_measuring_or_manual_pass():
-    # A manual pass drives nothing and is never tainted by this path.
-    cal, _run, _profile = _open_run(mode="manual")
-    assert cal.taint_current_crossing("T1", "caution") is False
+def test_taint_current_crossing_ignores_a_train_with_no_open_pass():
+    cal, _run, _profile = _open_run()
     # No open run for a train at all -> no-op.
     assert cal.taint_current_crossing("T_NONE", "caution") is False

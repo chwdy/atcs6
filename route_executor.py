@@ -2146,7 +2146,7 @@ class RouteExecutor:
         if calibration is None:
             return
         run = calibration.runs.get(train_id)
-        if run is None or getattr(run, "mode", None) != "auto" or not run.is_measuring:
+        if run is None or not run.is_measuring:
             return
 
         # Reconcile the stored leg route against the live run. When it is no

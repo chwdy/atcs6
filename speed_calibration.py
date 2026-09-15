@@ -178,21 +178,15 @@ class CalibrationRun:
 
     train_id: str
     profile_id: str
-    mode: str  # "auto" | "manual"
     power_steps: List[float]
 
-    # Auto profiling: the stretch. `outer_block_ids` is (A, C); `heading_to`
-    # indexes the one the train is currently running toward, so it names the
-    # stopping room this leg and the run-up the next.
+    # The stretch. `outer_block_ids` is (A, C); `heading_to` indexes the one the
+    # train is currently running toward, so it names the stopping room this leg
+    # and the run-up the next.
     measured_block_id: str = ""
     outer_block_ids: Tuple[str, str] = ("", "")
     block_length_cm: float = 0.0
     heading_to: int = 1
-
-    # Manual marking: the distance between the operator's two marks, and the
-    # open mark waiting for its pair.
-    marker_spacing_cm: float = 0.0
-    mark_opened_at: Optional[float] = None
 
     phase: str = PHASE_LEG
     leg_armed: bool = False
@@ -267,7 +261,6 @@ class CalibrationRun:
         return {
             "train_id": self.train_id,
             "profile_id": self.profile_id,
-            "mode": self.mode,
             "phase": self.phase,
             "measured_block_id": self.measured_block_id,
             "outer_block_ids": list(self.outer_block_ids),
@@ -341,23 +334,20 @@ class SpeedCalibration:
         train,
         profile,
         *,
-        mode: str = "auto",
         measured_block_id: str = "",
         outer_block_ids: Sequence[str] = (),
         block_length_cm: float = 0.0,
-        marker_spacing_cm: float = 0.0,
         heading_to: int = 1,
         safe_state_generation: int = 0,
         now: float = 0.0,
     ) -> CalibrationRun:
         """Open a pass over the power sweep.
 
-        Auto profiling needs the measured block, its two resolved neighbours,
-        and its length; manual marking needs the operator's marker spacing. The
-        caller resolves the stretch, because walking the track through the
-        points as they are aligned needs the network, and it passes `heading_to`
-        as the index of the outer block the train is running *toward* — the one
-        it is not already standing in.
+        The pass needs the measured block, its two resolved neighbours, and its
+        length. The caller resolves the stretch, because walking the track
+        through the points as they are aligned needs the network, and it passes
+        `heading_to` as the index of the outer block the train is running
+        *toward* — the one it is not already standing in.
         """
         outer = tuple(outer_block_ids)[:2]
         if len(outer) < 2:
@@ -365,12 +355,10 @@ class SpeedCalibration:
         run = CalibrationRun(
             train_id=train.train_id,
             profile_id=profile.profile_id,
-            mode="manual" if mode == "manual" else "auto",
             power_steps=power_sweep(),
             measured_block_id=measured_block_id,
             outer_block_ids=(outer[0], outer[1]),
             block_length_cm=float(block_length_cm or 0.0),
-            marker_spacing_cm=float(marker_spacing_cm or 0.0),
             heading_to=1 if int(heading_to) else 0,
             safe_state_generation=int(safe_state_generation),
         )
@@ -473,7 +461,7 @@ class SpeedCalibration:
         `run_still_valid(...)` at Action step `26f5`.
         """
         run = self.runs.get(train_id)
-        if run is None or not run.is_measuring or run.mode != "auto":
+        if run is None or not run.is_measuring:
             return False
         run.current_crossing_tainted = True
         return True
@@ -735,30 +723,6 @@ class SpeedCalibration:
         run.needs_reverse = False
         return CalibrationCommand(power_percent=0.0, deactivate_route=True)
 
-    def record(self, train_id: str, now: float) -> Optional[CalibrationRun]:
-        """Manual marking: the operator marks one pass of a marker.
-
-        Marks pair up. The first opens a crossing and the second closes it, so
-        the reversal dwell between round trips falls between pairs and is never
-        timed as a crossing.
-        """
-        run = self.runs.get(train_id)
-        if run is None or not run.is_measuring or run.mode != "manual":
-            return None
-        if run.mark_opened_at is None:
-            run.mark_opened_at = float(now)
-            return run
-
-        elapsed = float(now) - run.mark_opened_at
-        run.mark_opened_at = None
-        if elapsed <= 0.0 or run.marker_spacing_cm <= 0.0:
-            self.fail(run, "marker crossing timed at zero")
-            return run
-        run.crossings.append(cm_per_sec_to_kmh(run.marker_spacing_cm / elapsed))
-        if len(run.crossings) >= run.crossings_target:
-            self._close_step(run)
-        return run
-
     # -- runtime hook -----------------------------------------------------
 
     def observe_detected_entries(self) -> None:
@@ -778,7 +742,7 @@ class SpeedCalibration:
         if not self.runs:
             return
         for train_id, run in self.runs.items():
-            if run.mode != "auto" or not run.is_measuring:
+            if not run.is_measuring:
                 continue
             controller = self._controller(train_id)
             if controller is None:
@@ -808,7 +772,7 @@ class SpeedCalibration:
         run = self.runs.get(train_id)
         if sc is None or run is None:
             return None
-        if run.mode != "auto" or not run.is_measuring:
+        if not run.is_measuring:
             return None
         controller = self._controller(train_id)
         if controller is None:
@@ -898,16 +862,6 @@ class SpeedCalibration:
         None, handing the train back to its ordinary manual source (which the
         abandonment/finish paths zeroed).
 
-        A manual-marking pass drives nothing: the operator runs the train at the
-        step's commanded percent and issues the `record` marks the pass times
-        (design_new.md "Speed calibration", Manual marking — "The operator drives
-        the shuttle in this mode"). The auto machinery that arms legs and grants
-        authority never runs for a manual pass, so it never reaches the driving
-        state; returning a `power_percent = 0` override here would replace the
-        operator's own manual power with zero and pin the train still. So a
-        measuring manual pass returns None — the same defer-to-the-operator answer
-        a finished pass gives — leaving the operator's manual source in control.
-
         Lighting-voltage calibration is the other user of this accessor and
         returns the `track_voltage` variant of the union: while a lighting run is
         open, the controller drives its candidate as an exact voltage magnitude
@@ -918,9 +872,7 @@ class SpeedCalibration:
         lighting run only when none is measuring.
         """
         run = self.runs.get(train_id)
-        # Only an auto-profiling pass puts an override on the train; a manual
-        # pass defers to the operator's own manual power (see docstring).
-        if run is not None and run.is_measuring and run.mode == "auto":
+        if run is not None and run.is_measuring:
             driving = run.phase == PHASE_LEG and run.leg_armed
             if driving and not self._leg_authority_present(train_id):
                 driving = False
@@ -1106,10 +1058,9 @@ class SpeedCalibration:
                 return False
             return assigned is None
         # A speed pass. Only the leg's own one-off route may be assigned while it
-        # is open, and both are None between legs. A recorded measurement fault
-        # ends it too.
-        if speed.phase == PHASE_FAILED:
-            return False
+        # is open, and both are None between legs. A measurement fault ends the
+        # pass immediately in Plan through SpeedCalibration.fail(...), which pops
+        # the run, so run_still_valid never sees a PHASE_FAILED run here.
         return assigned == speed.active_leg_route_id
 
     def step_lighting(self, train_id: str, direction: int) -> Optional[LightingCalibrationRun]:

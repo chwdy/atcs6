@@ -346,7 +346,7 @@ def test_service_rejects_a_run_while_a_speed_pass_is_open(state_with_train):
     profile = state_with_train.network.speed_profiles.get(
         state_with_train.network.trains["TRAIN_A"].speed_profile_id
     )
-    calibration.start(state_with_train.network.trains["TRAIN_A"], profile, mode="manual")
+    calibration.start(state_with_train.network.trains["TRAIN_A"], profile)
 
     with pytest.raises(ConflictError, match="speed-calibration"):
         train_service.start_lighting_calibration(state_with_train, "TRAIN_A")
