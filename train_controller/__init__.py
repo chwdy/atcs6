@@ -791,10 +791,11 @@ class TrainController:
             # eb_active. This early-exit holds until the operator releases.
             return
 
-        # The reactive condition evaluation already ran above (Action step
-        # `71ee`), right after the command drain and the early departure /
-        # cancellation consumers, and also fires each Observe pass inside
-        # on_physics_updated(). Nothing below re-runs it.
+        # There is no reactive condition evaluation step in v1 (see the note
+        # above: `train_status` / `ato_status` are derived reads, not stored
+        # states a transition step maintains). The early-Action callback already
+        # consumed the stopped-gated path-cancel latch (Action step `7b40`).
+        # Nothing below re-runs any such step.
 
         # ===== 2. LOOKAHEAD (computed live; no caching) =====
         # Per design_new.md, lookahead is a pure derived value. We trigger one
@@ -856,7 +857,7 @@ class TrainController:
 
         if overspeed > OVERSPEED_EB_THRESHOLD_KMH or zero_limit_loss:
             # Raise EB through the canonical activation path (design_new.md "EB
-            # has two trigger paths" / step `826a`): `eb.activate()` performs
+            # has three trigger paths" / step `826a`): `eb.activate()` performs
             # every canonical EB effect — force handle to EB, disengage ATO
             # (`ato.engaged = False`), and (when a live path exists) latch the
             # `eb` cancel. ATC must not assign `eb.active` itself: no site

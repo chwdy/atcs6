@@ -1733,11 +1733,9 @@ class SimulationController(SwitchOutputOwner):
         # TrainController.tick(...) drains the queued operator commands, then —
         # through the after_command_drain callback, before its control decision —
         # consumes the stopped-gated `pending_path_cancel_request` (design_new.md
-        # Action step `7b40`) and then performs the departure / station-entry
-        # transitions Plan requested, and only then runs the control decision on
-        # that post-cancel, post-transition state. TrainPhysics.apply_track_voltage()
-        # then sets the block track voltage that drives the next tick's Observe
-        # movement.
+        # Action step `7b40`), and only then runs the control decision on that
+        # post-cancel state. TrainPhysics.apply_track_voltage() then sets the
+        # block track voltage that drives the next tick's Observe movement.
         controller.tick(
             delta_seconds,
             after_command_drain=lambda: self._consume_early_action_latches(
