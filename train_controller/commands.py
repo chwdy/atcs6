@@ -221,7 +221,6 @@ class OperatorCommands:
                     event_time=event_time,
                     payload={
                         "command_id": cmd.command_id,
-                        "command_name": kind,
                         "success": result.success,
                         "reason": result.message,
                     },
