@@ -3164,7 +3164,7 @@ class SimulationController(SwitchOutputOwner):
         Per design_new.md step `bc55`, the served row is the `walk_position`
         that `PathDispatcher.try_complete_active_path(...)` already resolved
         through `find_next_completion_task(...)`; `RouteExecutor` finishes that
-        row through `RouteRun.advance_walk_position(...)`. The single
+        row through `RouteExecutor.advance_walk_position(...)`. The single
         `handle_path_completion` event is emitted by
         `RouteExecutor.handle_path_completion(...)` itself (design_new.md "Event
         log", Emitter attribution), so this wrapper does not emit a second one.

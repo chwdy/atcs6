@@ -4127,14 +4127,14 @@ class PathDispatcher:
             on_complete()
 
         # Deliver completion to the injected route executor, which records the
-        # served stop through RouteRun.advance_walk_position(...) and emits the
+        # served stop through RouteExecutor.advance_walk_position(...) and emits the
         # canonical `path_completion` notification itself (the terminal-teardown
         # flow, step `09b0` in design_new.md "Core Runtime Loop"). The dispatcher
         # holds the route executor as an injected named dependency, not through a
         # SimulationController reference (design_new.md, "Dispatcher/route-executor inputs").
         #
         # Per design_new.md step `bc55`: the callback "records the stop as
-        # finished through `RouteRun.advance_walk_position(walk_position)`" for
+        # finished through `RouteExecutor.advance_walk_position(walk_position)`" for
         # the walk-position `find_next_completion_task(...)` already resolved
         # above. It is handed that `walk_position`, not the authority-end block
         # or the requested direction — the served row is already identified and

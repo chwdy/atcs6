@@ -4102,7 +4102,7 @@ class RouteExecutor:
 
         Per design_new.md step `bc55`: this records the served stop
         as finished by finishing exactly `walk_position` through
-        `RouteRun.advance_walk_position(...)`, which samples and writes the row's
+        `RouteExecutor.advance_walk_position(...)`, which samples and writes the row's
         wall and operating finish fields locally; the derived
         `current_waypoint_index` then advances to `walk_position`.
 
@@ -4217,7 +4217,7 @@ class RouteExecutor:
         """Advance one walk-position: write `task_runs[walk_position].finished_at`,
         classify `delay_class`, and append the next walk task.
 
-        This is `RouteRun.advance_walk_position(...)` per design_new.md
+        This is `RouteExecutor.advance_walk_position(...)` per design_new.md
         "Route-run state" — the single canonical writer of the
         finished_at + delay_class + walk-append sequence. Every completion site
         (stop arrival, head-advance, covered-task advance, dwell-complete)
@@ -4229,7 +4229,7 @@ class RouteExecutor:
         Callers pass no clock value: this call samples both clocks itself, so
         the wall and operating readings of one finish are always taken at the
         same moment and no caller can hand in a stale `now` (design_new.md
-        "`RouteRun.advance_walk_position(walk_position)`").
+        "`RouteExecutor.advance_walk_position(walk_position)`").
         """
         if not (0 <= walk_position < len(exec_state.task_runs)):
             return
