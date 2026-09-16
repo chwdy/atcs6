@@ -444,6 +444,12 @@ class ATCComputer:
         train = c._get_train()
         if not train or not c.network:
             return self.safety_margin_cm
+        # A speed-calibration leg brakes to the far seam of its far outer block,
+        # so the whole outer block is usable run-up / stopping room (design_new.md,
+        # "A calibration leg holds no reservation-end standoff").
+        plan = c.path_projection.received_path_plan
+        if plan is not None and getattr(plan, "zero_reservation_end_standoff", False):
+            return 0.0
         return effective_safety_margin_pure(
             ato_destination_block_id=c.path_projection.ato_destination_block_id,
             station_id_for_block=lambda bid: c._get_station_in_block(bid),

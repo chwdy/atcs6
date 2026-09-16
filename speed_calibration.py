@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from constants import (
+    CALIBRATION_CAP_RETRY_LIMIT,
     CALIBRATION_POWER_STEP_PERCENT,
     CALIBRATION_ROUND_TRIPS,
     CALIBRATION_STEP_TIMEOUT_S,
@@ -209,12 +210,18 @@ class CalibrationRun:
     calibration", Plan acquires leg authority all-or-nothing)."""
     clock_started_at: Optional[float] = None
     current_crossing_tainted: bool = False
-    """Whether an external ATC restriction (CAUTION / SPEED_LIMIT) lowered the
-    calibration drive during the crossing now being timed. Set by
-    `taint_current_crossing(...)`, reset when a fresh leg (crossing) arms. A
-    tainted crossing is discarded rather than banked and the step is re-measured
-    on the next crossing, so a transient restriction never fails the pass
-    (design_new.md, "A capped crossing is discarded")."""
+    """Whether an ATC restriction (CAUTION / SPEED_LIMIT / the leg's own
+    reservation end) lowered the calibration drive during the crossing now being
+    timed. Set by `taint_current_crossing(...)`, reset when a fresh leg
+    (crossing) arms. A tainted crossing is discarded rather than banked and the
+    step is re-measured on the next crossing, so a transient restriction never
+    fails the pass (design_new.md, "A capped crossing is discarded")."""
+    step_cap_retries: int = 0
+    """Consecutive discarded (capped) crossings of the current step. Reset to 0
+    by a clean measured crossing and at each step advance. When it reaches
+    `CALIBRATION_CAP_RETRY_LIMIT` the stretch is too short to measure this step
+    at its power, so the pass fails and reports (design_new.md, "A capped
+    crossing is discarded")."""
 
     safe_state_generation: int = 0
     failure_reason: str = ""
@@ -549,18 +556,30 @@ class SpeedCalibration:
             elapsed = obs.now - run.clock_started_at
             run.clock_started_at = None
             if run.current_crossing_tainted:
-                # An external ATC restriction lowered the calibration drive
-                # during this crossing, so the timed speed is not the speed the
-                # step commanded. Discard the sample and re-measure on the next
-                # crossing (the step still needs `crossings_target` of them);
-                # discarding never fails the pass (design_new.md, "A capped
-                # crossing is discarded"). The leg still ends through ordinary
-                # stop completion at the far block.
+                # An ATC restriction lowered the calibration drive during this
+                # crossing, so the timed speed is not the speed the step
+                # commanded. Discard the sample and re-measure on the next
+                # crossing (the step still needs `crossings_target` of them). The
+                # leg still ends through ordinary stop completion at the far
+                # block. Consecutive discards of one step count against
+                # CALIBRATION_CAP_RETRY_LIMIT: when a stretch caps every crossing
+                # — too short for this step even at the zero reservation-end
+                # standoff — the pass fails and reports rather than shuttling
+                # forever (design_new.md, "A capped crossing is discarded").
                 run.current_crossing_tainted = False
+                run.step_cap_retries += 1
+                if run.step_cap_retries >= CALIBRATION_CAP_RETRY_LIMIT:
+                    return self.fail(
+                        run,
+                        f"stretch too short to measure {run.current_power:.0f}% "
+                        f"at block {run.measured_block_id}",
+                    )
                 run.phase = PHASE_STOPPING
                 return CalibrationCommand(power_percent=0.0)
             if elapsed <= 0.0 or run.block_length_cm <= 0.0:
                 return self.fail(run, "measured block crossing timed at zero")
+            # A clean crossing measured: the cap-retry streak resets.
+            run.step_cap_retries = 0
             run.crossings.append(
                 cm_per_sec_to_kmh(run.block_length_cm / elapsed)
             )
@@ -651,6 +670,7 @@ class SpeedCalibration:
             CalibrationSample(power_percent=run.current_power, speed_kmh=mean_speed)
         )
         run.step_remeasured = False
+        run.step_cap_retries = 0
         run.step_index += 1
         if run.step_index >= len(run.power_steps):
             return self._finish_sweep(run)
@@ -703,6 +723,7 @@ class SpeedCalibration:
         """
         run.crossings = []
         run.step_remeasured = False
+        run.step_cap_retries = 0
         run.samples.append(
             CalibrationSample(power_percent=run.current_power, speed_kmh=0.0)
         )

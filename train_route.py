@@ -430,6 +430,12 @@ class Route:
     # `manual` availability flags canonical home. Route-level only — never a
     # per-run override.
     manual_override: bool = False
+    # When True, a path created for this route carries a zero reservation-end
+    # standoff, so TrainController lookahead brakes to the far seam of the far
+    # outer block (design_new.md, "A calibration leg holds no reservation-end
+    # standoff"). Set True only on a speed-calibration leg's one-off route;
+    # every other route leaves it False.
+    zero_reservation_end_standoff: bool = False
     # Which clock this route's task durations measure against (design_new.md
     # "Route data"). `"operating"` measures them against
     # `AppState.operating_time`, so an operator stop neither consumes a dwell
@@ -553,6 +559,7 @@ class Route:
             "last_edited_at": self.last_edited_at,
             "priority": self.priority,
             "manual_override": self.manual_override,
+            "zero_reservation_end_standoff": self.zero_reservation_end_standoff,
             "timing_basis": self.timing_basis,
             "start_mode": self.start_mode.value,
             "start_task_index": self.start_task_index,
@@ -594,6 +601,9 @@ class Route:
             started_at=data.get("started_at"),
             priority=int(data.get("priority", 5)),
             manual_override=bool(data.get("manual_override", False)),
+            zero_reservation_end_standoff=bool(
+                data.get("zero_reservation_end_standoff", False)
+            ),
             timing_basis=(
                 "realtime" if data.get("timing_basis") == "realtime" else "operating"
             ),

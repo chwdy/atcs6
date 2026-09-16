@@ -912,6 +912,7 @@ export class SpeedProfileEditorHandler {
         </div>
         <div class="app-modal-footer">
           <button class="btn btn-secondary btn-sm" id="sp-cal-close">Close</button>
+          <button class="btn btn-secondary btn-sm" id="sp-cal-takecontrol">Take control</button>
           <button class="btn btn-primary btn-sm" id="sp-cal-start" disabled>Start</button>
         </div>
       </div>`;
@@ -922,6 +923,7 @@ export class SpeedProfileEditorHandler {
     const progressEl = overlay.querySelector('#sp-cal-progress') as HTMLElement;
     const startBtn = overlay.querySelector('#sp-cal-start') as HTMLButtonElement;
     const closeBtn = overlay.querySelector('#sp-cal-close') as HTMLButtonElement;
+    const takeCtlBtn = overlay.querySelector('#sp-cal-takecontrol') as HTMLButtonElement;
 
     // Resolving the stretch before Start is what lets the operator see which
     // two blocks the points currently lead to, rather than finding out by
@@ -965,8 +967,40 @@ export class SpeedProfileEditorHandler {
       this.editor.enterMode(this._buildMeasuredBlockPickMode(overlay, blockEl, resolveStretch));
     };
 
+    // Take control puts the loco into the mode-and-power state a speed pass
+    // needs: manual control, the power_percent submode, powered on (design_new.md
+    // "Speed calibration", The panel — Take control sets manual mode and the
+    // power_percent submode, and powers the train up). set_mode("manual") powers
+    // a powered-off train up as its documented side effect, so no separate
+    // power-on call is needed. It does not clear an assigned route or stop a
+    // moving train; those the operator resolves.
+    const takeControl = async (): Promise<boolean> => {
+      try {
+        await this.api.setControlMode(train.id, 'manual');
+        await this.api.setManualModeType(train.id, 'power_percent');
+        return true;
+      } catch (err: any) {
+        showToast(err.message || 'Cannot take control of the train', 'error', 6000);
+        return false;
+      }
+    };
+    takeCtlBtn.onclick = async () => {
+      takeCtlBtn.disabled = true;
+      if (await takeControl()) {
+        showToast('Train ready: manual power-percent, powered on', 'success', 4000);
+      }
+      takeCtlBtn.disabled = false;
+    };
+
     startBtn.onclick = async () => {
       startBtn.disabled = true;
+      // Prepare the train itself rather than rejecting an unready one: a
+      // calibration pass is a computer-driven procedure, so Start takes control
+      // before it commands the run.
+      if (!(await takeControl())) {
+        startBtn.disabled = false;
+        return;
+      }
       try {
         await this.api.startCalibration(train.id, {
           measured_block_id: blockEl.value.trim(),

@@ -2227,6 +2227,10 @@ class RouteExecutor:
             name=f"speed-calibration leg {seq} for {train_id}",
             mode=RouteMode.ONE_OFF,
             manual_override=False,
+            # The leg drives to the far seam of its far outer block, so the whole
+            # outer block is run-up / stopping room (design_new.md, "A calibration
+            # leg holds no reservation-end standoff").
+            zero_reservation_end_standoff=True,
             tasks=[
                 RouteTask(
                     task_kind="stop",
@@ -3591,6 +3595,9 @@ class RouteExecutor:
         # route can serve `manual` resources. Route-level only (never a RouteRun
         # override); an automatic route leaves this False.
         manual_override = bool(getattr(route, "manual_override", False))
+        zero_reservation_end_standoff = bool(
+            getattr(route, "zero_reservation_end_standoff", False)
+        )
 
         # Reservation cap (design_new.md "Reservation-cap rule"): MEET-ONLY. The
         # braking distance sizes the lock (per "Braking-distance lock"), not this
@@ -3622,6 +3629,7 @@ class RouteExecutor:
                     requested_destination_block_id=target_block,
                     requested_destination_direction=target_dir,
                     manual_override=manual_override,
+                    zero_reservation_end_standoff=zero_reservation_end_standoff,
                     reservation_cap_block_id=reservation_cap_block_id,
                     required_candidate_resource_keys=required_candidate_resource_keys,
                 )

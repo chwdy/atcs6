@@ -146,6 +146,15 @@ CALIBRATION_ROUND_TRIPS: int = 2
 # bottom this leaves on the curve is that locomotive's real stall band.
 CALIBRATION_STEP_TIMEOUT_S: float = 30.0
 
+# When a measured crossing is capped by the leg's own reservation end (the
+# stretch is too short for this step's speed even at the zero reservation-end
+# standoff) or by a repeated conflict, that crossing is discarded and
+# re-measured. This many consecutive discarded crossings of one step ends the
+# pass with a "stretch too short" report, so a too-short stretch fails rather
+# than shuttling forever (design_new.md "Speed calibration", A capped crossing
+# is discarded).
+CALIBRATION_CAP_RETRY_LIMIT: int = 4
+
 # Lighting-voltage calibration (design_new.md "Lighting-voltage calibration").
 # One press of the panel's step control moves the candidate voltage by this
 # much and puts the new value on the rails at once, so the operator sees the

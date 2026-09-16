@@ -167,6 +167,13 @@ class Path:
     # change. Set on creation and on every transition.
     last_status_updated_time: float = 0.0
 
+    # When True, TrainController lookahead uses a zero safety margin at this
+    # path's reservation end in place of the terminus-type value (design_new.md,
+    # "A calibration leg holds no reservation-end standoff"). A speed-calibration
+    # leg's one-off route sets it; every other path leaves it False. Set once by
+    # create_path(...) and carried unchanged by extend_path(...).
+    zero_reservation_end_standoff: bool = False
+
     # Non-serialized runtime injection: the RailwayNetwork, set by
     # PathDispatcher when it creates or loads a path, so get_lock_end_block_id()
     # can read per-block `Block.locked_by_path`. Excluded from equality/repr and

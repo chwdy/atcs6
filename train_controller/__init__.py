@@ -1138,12 +1138,17 @@ class TrainController:
         rather than banked, and the pass goes on. Only a pass actively driving a
         crossing is affected.
 
-        An ATC `CAUTION` block ahead and a posted block `SPEED_LIMIT` are the two
-        external restrictions that lower the drive without ending the pass.
-        `RESERVATION_STOP` / `NO_RESERVATION` are the leg's own reservation-end
-        approach and lifecycle, not an external cap, so they are excluded. EB and
-        power-off are not handled here: they end the whole pass through
-        `SpeedCalibration.run_still_valid(...)` at Action step `26f5`.
+        An ATC `CAUTION` block ahead and a posted block `SPEED_LIMIT` lower the
+        drive without ending the pass, and so does the leg's own reservation-end
+        braking (`RESERVATION_STOP`): it reaches back into a crossing being timed
+        only when the stretch is too short for the step (the leg drives to the far
+        seam of its far outer block, per "A calibration leg holds no reservation-end
+        standoff"), so tainting it there is how a too-short stretch is caught —
+        `taint_current_crossing(...)` marks a crossing only while one is being
+        timed. `NO_RESERVATION` is the leg losing its authority, a lifecycle event
+        that ends the pass through `SpeedCalibration.run_still_valid(...)`, so it
+        is excluded, as are EB and power-off, which end the whole pass at Action
+        step `26f5`.
         """
         sc = getattr(self, "simulation_controller", None)
         calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
@@ -1157,6 +1162,8 @@ class TrainController:
             reason = "CAUTION restriction during a measured crossing"
         elif reason_code == AtcLimitReasonCode.SPEED_LIMIT:
             reason = "block speed limit during a measured crossing"
+        elif reason_code == AtcLimitReasonCode.RESERVATION_STOP:
+            reason = "reservation-end braking during a measured crossing"
         else:
             return
         calibration.taint_current_crossing(self.train_id, reason)

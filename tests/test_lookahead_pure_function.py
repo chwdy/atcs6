@@ -77,8 +77,8 @@ def test_received_path_plan_reads_live_from_dispatcher():
 
 def test_received_path_plan_projection_carries_only_canonical_fields():
     """The serialized received_path_plan exposes exactly the canonical
-    schema (path_id, resource_sequence, reservation_end_block_id) and must
-    NOT leak dispatcher-only fields
+    schema (path_id, resource_sequence, reservation_end_block_id,
+    zero_reservation_end_standoff) and must NOT leak dispatcher-only fields
     (design_new.md "received_path_plan schema"; gap #7)."""
     network = _build_three_block_network()
     car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
@@ -101,7 +101,12 @@ def test_received_path_plan_projection_carries_only_canonical_fields():
 
     # Both the projection serializer and the controller payload must carry
     # exactly the three canonical keys.
-    expected_keys = {"path_id", "resource_sequence", "reservation_end_block_id"}
+    expected_keys = {
+        "path_id",
+        "resource_sequence",
+        "reservation_end_block_id",
+        "zero_reservation_end_standoff",
+    }
     leaked = {
         "status",
         "requested_destination_block_id",
