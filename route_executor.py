@@ -323,6 +323,15 @@ class RouteExecutionState:
     # seeded position `s` for NEAREST / SPECIFIC. Written once at allocation by
     # `RouteExecutor._seed_start_position(...)`. Read only by `is_starting`.
     start_walk_position: int = 0
+    # Runtime-only set of walk-positions of `waypoint` rows the train's head has
+    # driven past while an earlier `run` task's timer was still the
+    # next-non-finished task (design_new.md "Covered-task index advance", a
+    # passed-behind waypoint). Head-entry (step `640a`) records them here because
+    # it cannot finish them in place — the `run`, not the waypoint, is the next
+    # task, and the walk finishes in order — and the covered-task index advance
+    # finishes them once the `run` completes and the walk reaches them. Not
+    # persisted; like all `RouteRun` movement state it is in-memory only.
+    run_passed_waypoint_positions: Set[int] = field(default_factory=set)
 
     @property
     def run_id(self) -> str:
@@ -3119,6 +3128,14 @@ class RouteExecutor:
                     break
                 if not self._is_train_at_block(train, target_block):
                     break
+            elif pos in exec_state.run_passed_waypoint_positions:
+                # A passed-behind waypoint (design_new.md "Covered-task index
+                # advance"): the head drove past this waypoint's block while an
+                # earlier `run`'s timer was still the next-non-finished task, so
+                # its block has long left the span and the span test below can no
+                # longer see it. Head-entry recorded the pass here; finish it now
+                # that the run has completed and the walk has reached it.
+                exec_state.run_passed_waypoint_positions.discard(pos)
             else:
                 # waypoint coverage (design_new.md "Covered-task index advance"): covered when the
                 # resolved target block is anywhere in the train's current span
@@ -4020,6 +4037,18 @@ class RouteExecutor:
         projection = self._find_next_task_target(train_id)
         if projection is None:
             return
+        if projection.task_kind == "run":
+            # A `run` reserves toward its own seed target, so its authority can
+            # carry the head past a `waypoint` authored after it before that
+            # waypoint is ever armed. The waypoint cannot be finished now — it is
+            # not the next task and the walk finishes in order — so record that
+            # the head passed it, and the covered-task index advance finishes it
+            # once the run completes (design_new.md "Covered-task index advance",
+            # a passed-behind waypoint).
+            self._record_run_passed_waypoint(
+                train_id, route, exec_state, projection.walk_position, resource_event
+            )
+            return
         if projection.task_kind != "waypoint":
             return
         if projection.resolved_target is None:
@@ -4048,6 +4077,49 @@ class RouteExecutor:
         idx = projection.walk_position
         self._sync_task_runs(route, exec_state)
         self.advance_walk_position(exec_state, route, idx)
+
+    def _record_run_passed_waypoint(
+        self,
+        train_id: str,
+        route: "Route",
+        exec_state: RouteExecutionState,
+        run_walk_position: int,
+        resource_event: ResourceEvent,
+    ) -> None:
+        """Record any `waypoint` the head just entered while an earlier `run` is
+        the next-non-finished task, so the covered-task index advance finishes it
+        once the run completes (design_new.md "Covered-task index advance", a
+        passed-behind waypoint).
+
+        Scans the consecutive `waypoint` tasks that follow the active `run` on
+        the walk — the ones the run's forward authority carries the train
+        through — and records the walk-position whose resolved target matches
+        this head entry on block AND direction, the same match head-entry uses to
+        finish an ordinary waypoint. The scan stops at the first following task
+        that is not a `waypoint`; a `run` never carries the train through a
+        `stop`, `dwell`, or a later `run`.
+        """
+        ahead = self._find_next_task_target(
+            train_id, after_walk_position=run_walk_position
+        )
+        # One route-length scan is the budget every walk scan in Plan uses.
+        for _ in range(route.get_task_count() or 1):
+            if ahead is None or ahead.task_kind != "waypoint":
+                return
+            resolved = ahead.resolved_target
+            if resolved is not None and (
+                resolved.requested_destination_block_id
+                == resource_event.resource_id
+            ) and (
+                resource_event.traversal_direction is None
+                or resolved.requested_destination_direction
+                == resource_event.traversal_direction
+            ):
+                exec_state.run_passed_waypoint_positions.add(ahead.walk_position)
+                return
+            ahead = self._find_next_task_target(
+                train_id, after_walk_position=ahead.walk_position
+            )
 
     def handle_path_cancellation(
         self,
