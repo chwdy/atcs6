@@ -320,6 +320,124 @@ def test_fatal_halt_clear_ends_an_open_speed_run(state):
     )
 
 
+@pytest.fixture
+def demo5_state():
+    """demo_5 behind an `AppState`. Its `BLK_S1_S_TO_X1` stretch has a far outer
+    block the train actually enters, so a real measured-block crossing is timed
+    and the leg finishes cleanly — unlike demo_6, whose far outer blocks are too
+    short to enter, so its legs always end "never reached" before a clean
+    leg-to-leg transition is ever reached."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        network, dispatcher, sim, persistence = bootstrap_runtime(
+            demo=True, setup_train=True, scene="demo_5"
+        )
+    return AppState(
+        network=network,
+        path_dispatcher=dispatcher,
+        sim_controller=sim,
+        persistence_manager=persistence,
+        simulation_lock=threading.Lock(),
+        simulation_running=False,
+        simulation_speed=1.0,
+        last_update_time=datetime.now(),
+    )
+
+
+@pytest.mark.scene("demo_5")
+def test_a_pass_survives_a_clean_leg_boundary(demo5_state):
+    """A clean leg completion must not end the pass.
+
+    On the tick a leg finishes through ordinary stop completion, Plan step `c9e1`
+    runs before Plan settlement, so it does not clear `CalibrationRun.
+    active_leg_route_id` that tick; settlement then completes the leg's path and
+    the terminal teardown unassigns the route, so `assigned_route_id_for(train_id)`
+    is already `None`. If `run_still_valid` required `assigned == active_leg_route_id`
+    it would read `None != <leg route>` and abandon the whole pass at the first
+    leg boundary, before the next leg could arm. The predicate instead ends the
+    pass only when a genuinely foreign route is assigned — `assigned is None` is
+    valid both between legs and on this completion tick (design_new.md "Speed
+    calibration", Where it runs).
+
+    This pins the boundary the only completion test cannot reach: demo_6's far
+    outer block is too short to enter, so its leg ends "never reached" (a Plan
+    `c9e1` measurement fault) before any clean crossing, and the abandon window
+    is never exercised there.
+    """
+    state = demo5_state
+    sim = state.sim_controller
+    train_id = _free_train(state)
+
+    # demo_5's first calibratable stretch (measured `BLK_S1_S_TO_X1`) has a far
+    # outer block the train enters, so a crossing is genuinely timed here.
+    measured_block_id = _first_calibratable_block(state, train_id)
+    assert measured_block_id == "BLK_S1_S_TO_X1", (
+        "this test relies on demo_5's BLK_S1_S_TO_X1 stretch, whose far outer "
+        "block the train enters so a crossing is timed"
+    )
+
+    _ready_manual_train(sim, state.network, train_id)
+    sim.update(0.1)
+    run = train_service.calibrate_train(
+        state, train_id, measured_block_id=measured_block_id
+    )
+
+    calibration = sim.speed_calibration
+    first_leg_id = None
+    crossing_tick = None
+    second_leg_id = None
+    valid_ever_false = False
+    survived_after_crossing = False
+
+    # Leg 1 times its crossing around tick ~175; the boundary and the next leg's
+    # arming land shortly after. 320 ticks is a comfortable margin.
+    for tick in range(320):
+        sim.update(0.1)
+        r = calibration.runs.get(train_id)
+        # The pass must never vanish: a clean boundary is not a pass-ending event.
+        assert r is not None, (
+            "the pass was abandoned at a clean leg boundary — `run_still_valid` "
+            "must treat `assigned_route_id_for(...) is None` as still valid"
+        )
+        if not calibration.run_still_valid(train_id):
+            valid_ever_false = True
+
+        leg_id = r.active_leg_route_id
+        if leg_id and first_leg_id is None:
+            first_leg_id = leg_id
+        if crossing_tick is None and len(r.crossings) >= 1:
+            crossing_tick = tick
+        # A distinct leg route id means the pass armed the next leg — it advanced
+        # past the boundary rather than dying on it.
+        if first_leg_id and leg_id and leg_id != first_leg_id and second_leg_id is None:
+            second_leg_id = leg_id
+        # Ten ticks past the banked crossing the run is still open and measuring:
+        # the completion tick and the boundary have been crossed alive.
+        if crossing_tick is not None and tick == crossing_tick + 10:
+            survived_after_crossing = r.is_measuring
+        if second_leg_id is not None and survived_after_crossing:
+            break
+
+    assert first_leg_id is not None and first_leg_id.startswith("CAL_LEG_"), (
+        "the pass must arm a first one-off leg route"
+    )
+    assert crossing_tick is not None, (
+        "the far outer block must be entered so a measured-block crossing is timed "
+        "(this is the clean-completion case demo_6 cannot reach)"
+    )
+    assert not valid_ever_false, (
+        "`run_still_valid` must stay true across the completion tick — a clean "
+        "leg boundary is not a pass-ending condition"
+    )
+    assert survived_after_crossing, (
+        "the run must still be open and measuring after the crossing and the "
+        "leg boundary, not abandoned"
+    )
+    assert second_leg_id is not None and second_leg_id != first_leg_id, (
+        "the pass must arm a new leg route after the boundary — proof it survived "
+        "and advanced rather than ending on the completed leg"
+    )
+
+
 def test_a_calibration_leg_completes_through_ordinary_stop_completion(state):
     """The `9d8b` gate, end to end: a calibration leg runs as a one-off route and
     finishes through ordinary stop completion — Observe step `9d8b`
