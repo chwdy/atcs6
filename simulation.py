@@ -782,6 +782,178 @@ class SimulationController(SwitchOutputOwner):
                 resolved = True
         return out
 
+    def _log_unmatched_attribution(
+        self, unmatched: Set[str], claimed: Dict[str, Set[str]]
+    ) -> None:
+        """Record why each controllable train declined a confirmed entry that is
+        about to be handed to an unidentified train.
+
+        Purely observational — it writes no model state and changes no
+        attribution. It exists to trace a ghost that should have been an existing
+        train: for each still-unmatched block it reports, per controllable train,
+        the one reason that train did not claim it — no calculated span at all
+        (`no_span`), no held/span block next to the entry (`not_adjacent`), or a
+        neighbour but the plausibility gate said no (`plausibility_veto`). The
+        distinction between `no_span` and the others is the whole point: a train
+        whose span went `None` around adoption, presence-unknown, or a stalled
+        tick declines every entry under it and loses each to a ghost.
+        """
+        center = getattr(self, "notification_center", None)
+        if center is None:
+            return
+        detector = self.block_occupancy_detector
+        reachable = getattr(detector, "reachable_blocks", None)
+        for block_id in sorted(unmatched):
+            neighbours = set(reachable(block_id)) if reachable is not None else set()
+            reserved_for = getattr(
+                self.network.blocks.get(block_id), "reserved_for_train", None
+            )
+            rows: List[Dict[str, object]] = []
+            for train_id, controller in self.controllers.items():
+                train = self.network.trains.get(train_id)
+                if train is None or getattr(train, "is_unidentified", False):
+                    continue
+                span = getattr(
+                    getattr(controller, "physics_sync", None), "current_span", None
+                )
+                span_blocks = (
+                    list(span.occupied_blocks or []) if span is not None else None
+                )
+                held = sorted(
+                    bid
+                    for bid, block in self.network.blocks.items()
+                    if getattr(block, "occupied_by", None) == train_id
+                )
+                covered = set(span_blocks or []) | set(held) | set(
+                    claimed.get(train_id, set())
+                )
+                adjacent = bool(neighbours & covered)
+                try:
+                    can_enter = (
+                        bool(detector.can_enter(train_id, block_id))
+                        if detector.can_enter is not None
+                        else None
+                    )
+                except Exception:
+                    can_enter = "error"
+                if span is None:
+                    reason = "no_span"
+                elif not adjacent:
+                    reason = "not_adjacent"
+                elif can_enter is False:
+                    reason = "plausibility_veto"
+                else:
+                    reason = "unexpected_would_match"
+                rows.append(
+                    {
+                        "train_id": train_id,
+                        "reason": reason,
+                        "span_blocks": span_blocks,
+                        "held_blocks": held,
+                        "adjacent": adjacent,
+                        "can_enter": can_enter,
+                    }
+                )
+            try:
+                center.emit(
+                    source="SimulationController",
+                    operation="_diagnose_unmatched_entry",
+                    kind=Kind.DEBUG,
+                    message=(
+                        f"confirmed entry on {block_id} matched no controllable "
+                        f"train; per-train decline reasons recorded"
+                    ),
+                    entities=[],
+                    payload={
+                        "block": block_id,
+                        "neighbours": sorted(neighbours),
+                        "reserved_for": reserved_for,
+                        "trains": rows,
+                    },
+                    event_time=time.time(),
+                )
+            except Exception:
+                pass
+
+    def _log_braking_approach(
+        self, train: Train, controller: TrainController, physics
+    ) -> None:
+        """Record a routed, moving train's profile and its braking approach so an
+        overrun can be tied to an uncalibrated speed profile.
+
+        Purely observational — writes no state. Fires only for a train that holds
+        a live path plan and is moving (or already past its authority), so an
+        idle train never logs. It answers, per tick: is the train on a default
+        (uncalibrated) profile, and is it still carrying speed as its head reaches
+        and crosses the authority end? A fast head at the authority end on an
+        uncalibrated profile is the overrun this exists to confirm.
+        """
+        center = getattr(self, "notification_center", None)
+        if center is None:
+            return
+        projection = getattr(controller, "path_projection", None)
+        plan = getattr(projection, "received_path_plan", None)
+        if plan is None:
+            return
+        try:
+            speed = float(
+                getattr(controller.physics_sync, "current_speed_kmh", 0.0) or 0.0
+            )
+            past = physics._head_past_authority(controller)
+            if speed <= 0.1 and not past:
+                return
+            profiles = getattr(self.network, "speed_profiles", None)
+            profile = profiles.get(train.speed_profile_id) if profiles else None
+            calibrated = (
+                getattr(profile, "calibrated_at", None) is not None
+                if profile is not None
+                else None
+            )
+            try:
+                target = float(controller.target_speed)
+            except Exception:
+                target = None
+            try:
+                voltage = float(physics.compute_track_voltage(controller, profile))
+            except Exception:
+                voltage = None
+            head_tile = controller._get_head_tile()
+            head_block = (
+                self.network.tile_to_block_id(head_tile[0], head_tile[1])
+                if head_tile
+                else None
+            )
+            span = getattr(controller.physics_sync, "current_span", None)
+            span_blocks = list(span.occupied_blocks or []) if span else None
+            authority_end = getattr(plan, "reservation_end_block_id", None)
+            center.emit(
+                source="SimulationController",
+                operation="_diagnose_braking_approach",
+                kind=Kind.DEBUG,
+                message=(
+                    f"{train.train_id} approach: speed={speed:.1f} "
+                    f"target={target} v={voltage} head={head_block} "
+                    f"authority_end={authority_end} past_authority={past} "
+                    f"calibrated={calibrated}"
+                ),
+                entities=[train_ref(train.train_id)],
+                payload={
+                    "train_id": train.train_id,
+                    "speed_profile_id": getattr(train, "speed_profile_id", None),
+                    "profile_calibrated": calibrated,
+                    "current_speed_kmh": speed,
+                    "commanded_target_speed": target,
+                    "track_voltage": voltage,
+                    "head_block": head_block,
+                    "span_blocks": span_blocks,
+                    "authority_end_block": authority_end,
+                    "head_past_authority": past,
+                },
+                event_time=time.time(),
+            )
+        except Exception:
+            pass
+
     def _calculated_hold_blocks(self) -> Set[str]:
         """Every block some controllable train energizes this tick, by
         calculation.
@@ -1244,6 +1416,9 @@ class SimulationController(SwitchOutputOwner):
         # the unidentified train is an ordinary train, so its slice is written and committed
         # exactly like every other train's.
         if unmatched:
+            # Observational only: record why each controllable train declined
+            # these entries before they become ghosts (no state written).
+            self._log_unmatched_attribution(unmatched, entered_by_train)
             for unidentified_id, block_ids in self.unidentified_trains.attribute_unmatched_entries(
                 unmatched, self._unidentified_clock()
             ).items():
@@ -1757,6 +1932,7 @@ class SimulationController(SwitchOutputOwner):
             ),
         )
         physics.apply_track_voltage()
+        self._log_braking_approach(train, controller, physics)
 
         self._commit_train_act(controller, train)
 
