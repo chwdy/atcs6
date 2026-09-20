@@ -1042,8 +1042,11 @@ class SpeedCalibration:
           - a power-off is pending — `phase_latches.power_off`
           - for a lighting run: `control_mode != "manual"`, or any route is
             assigned (a lighting run has no reservation)
-          - for a speed pass: the assigned route is not the leg's own
-            `active_leg_route_id` (both `None` between legs)
+          - for a speed pass: a non-calibration route is assigned — the
+            assigned route is neither `None` nor the leg's own
+            `active_leg_route_id`. `None` is the between-legs value and the
+            value on the tick a finished leg's route has been unassigned while
+            `active_leg_route_id` is not yet cleared, so it does not end the pass
         There is no cab condition for either kind — the head end is derived from
         the authority (a speed pass) or the candidate drives positive (a lighting
         run).
@@ -1072,11 +1075,16 @@ class SpeedCalibration:
             if getattr(controller.commands, "control_mode", None) != "manual":
                 return False
             return assigned is None
-        # A speed pass. Only the leg's own one-off route may be assigned while it
-        # is open, and both are None between legs. A measurement fault ends the
-        # pass immediately in Plan through SpeedCalibration.fail(...), which pops
-        # the run, so run_still_valid never sees a PHASE_FAILED run here.
-        return assigned == speed.active_leg_route_id
+        # A speed pass. The pass ends only when a non-calibration route is
+        # assigned — neither `None` nor the leg's own one-off route. `None` is
+        # the between-legs value, and also the value on the tick a finished
+        # leg's route has been unassigned by Plan settlement while
+        # `active_leg_route_id` is not yet cleared (that clear runs on the next
+        # `_prepare_calibration_leg`), so the pass survives the leg boundary
+        # rather than abandoning on it. A measurement fault ends the pass
+        # immediately in Plan through SpeedCalibration.fail(...), which pops the
+        # run, so run_still_valid never sees a PHASE_FAILED run here.
+        return assigned is None or assigned == speed.active_leg_route_id
 
     def step_lighting(self, train_id: str, direction: int) -> Optional[LightingCalibrationRun]:
         """Move the candidate one `LIGHTING_VOLTAGE_STEP_V` up or down.

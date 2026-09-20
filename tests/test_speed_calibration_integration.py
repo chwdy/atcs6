@@ -371,3 +371,46 @@ def test_a_calibration_leg_completes_through_ordinary_stop_completion(state):
     # The pass writes nothing to the profile until an operator commits.
     assert profile.power_speed_curve == curve_before
     assert profile.calibrated_at is None
+
+
+def test_run_still_valid_survives_the_leg_completion_window(state, monkeypatch):
+    """A clean multi-leg speed pass must survive a leg boundary.
+
+    On the tick a calibration leg completes, Plan settlement unassigns the leg's
+    one-off route (so `RouteExecutor.assigned_route_id_for(train_id)` returns
+    `None`) before `_prepare_calibration_leg` clears
+    `CalibrationRun.active_leg_route_id` (that clear runs on the next Plan step
+    `c9e1`). `run_still_valid` must treat `assigned is None` as "between legs" and
+    keep the pass open; otherwise the pass abandons on its first clean leg
+    boundary (design_new.md "Speed calibration", Where it runs — only a
+    non-calibration route ends the pass).
+    """
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    block_id = _first_calibratable_block(state, train_id)
+    _ready_manual_train(sim, state.network, train_id)
+    sim.update(0.1)
+    train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+    sim.update(0.1)  # arm the leg one-off route
+    run = sim.speed_calibration.runs.get(train_id)
+    assert run is not None and run.active_leg_route_id is not None
+    leg_route_id = run.active_leg_route_id
+    # While the leg's own route is assigned, the pass is valid.
+    assert sim.route_executor.assigned_route_id_for(train_id) == leg_route_id
+    assert sim.speed_calibration.run_still_valid(train_id) is True
+
+    # Reproduce the completion-tick window: the leg's route is unassigned
+    # (assigned -> None) but active_leg_route_id is not yet cleared.
+    sim.route_executor.remove_train_route_run(train_id)
+    assert sim.route_executor.assigned_route_id_for(train_id) is None
+    assert run.active_leg_route_id == leg_route_id  # cleared only on the next c9e1
+    assert sim.speed_calibration.run_still_valid(train_id) is True, (
+        "the pass must survive the leg-completion window (assigned None while "
+        "active_leg_route_id is still set), not abandon on it"
+    )
+
+    # A genuinely non-calibration route assigned still ends the pass.
+    monkeypatch.setattr(
+        sim.speed_calibration, "_assigned_route_id", lambda _tid: "OTHER_ROUTE"
+    )
+    assert sim.speed_calibration.run_still_valid(train_id) is False
