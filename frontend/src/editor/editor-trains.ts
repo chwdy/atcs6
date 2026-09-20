@@ -14,7 +14,7 @@ import { formatSpeedReadout, formatATOEta, formatSimClock, middleTruncate } from
 import { showToast } from '../lib/toast';
 import { copyIdButton } from '../lib/copy-id';
 import type { EditorHost } from './types';
-import { showConfirmModal, getTrackExits, getNeighborPosition, formatDuration, formatDistanceCm } from '../lib/helpers';
+import { showConfirmModal, getTrackExits, getNeighborPosition, formatDuration, formatDistanceCm, escapeAttr } from '../lib/helpers';
 
 /** Read the value of an input by id (empty string if missing). */
 function inputValue(id: string): string {
@@ -1093,6 +1093,30 @@ export class TrainEditorHandler {
     const trainState = trainDisplayStatus(controller);
     const trainStateClass = this.getTrainStateVisualClass(trainState);
 
+    // Speed-profile picker options. The panel lets the operator re-point a
+    // placed train at any registered profile; calibration then finds the train
+    // by this link. Failing to load the list is non-fatal — the current profile
+    // is always offered so the select still tells the truth.
+    const currentProfileId = String(train.speed_profile_id || 'default');
+    let profileOptions: Array<{ id: string; label: string }> = [];
+    try {
+      const profiles = await this.api.getSpeedProfiles();
+      profileOptions = (profiles || [])
+        .map((p: any) => ({ id: String(p?.profile_id ?? p?.id ?? ''), label: String(p?.name || p?.profile_id || p?.id || '') }))
+        .filter((o: { id: string; label: string }) => o.id);
+    } catch (err) {
+      console.debug('[TrainEditorHandler] speed profiles load failed:', err);
+    }
+    if (!profileOptions.some((o) => o.id === currentProfileId)) {
+      profileOptions.unshift({ id: currentProfileId, label: currentProfileId });
+    }
+    const profileOptionsHtml = profileOptions
+      .map(
+        (o) =>
+          `<option value="${escapeAttr(o.id)}"${o.id === currentProfileId ? ' selected' : ''}>${escapeAttr(o.label)}</option>`
+      )
+      .join('');
+
     // Get path and destination info for ATO section
     const onboardAto = controller?.ato_info;
     const assignedPathId = onboardAto?.path_id || controller?.assigned_path_id;
@@ -1490,6 +1514,10 @@ export class TrainEditorHandler {
                                 <label class="tc-row-label" for="train-max-speed-input">Max Speed</label>
                                 <input type="number" id="train-max-speed-input" value="${train.max_speed || 100}" min="1" max="500">
                             </div>
+                            <div class="tc-row">
+                                <label class="tc-row-label" for="train-speed-profile-input">Speed Profile</label>
+                                <select id="train-speed-profile-input" data-initial="${escapeAttr(currentProfileId)}">${profileOptionsHtml}</select>
+                            </div>
                             <div class="tc-footer">
                                 <button id="save-train-btn" class="tc-btn tc-btn-primary">Save</button>
                             </div>
@@ -1797,6 +1825,7 @@ export class TrainEditorHandler {
     const maxSpeedInput = document.getElementById('train-max-speed-input') as HTMLInputElement | null;
     const lengthInput = document.getElementById('train-length-input') as HTMLInputElement | null;
     const carNumberInput = document.getElementById('train-car-number-input') as HTMLInputElement | null;
+    const profileSelect = document.getElementById('train-speed-profile-input') as HTMLSelectElement | null;
 
     if (saveBtn) {
       saveBtn.onclick = async () => {
@@ -1818,8 +1847,17 @@ export class TrainEditorHandler {
           updates.car_number = carNumberInput.value;
         }
 
+        // The profile link lives behind its own validated endpoint, so it goes
+        // out as a separate call and only when the operator actually changed it.
+        const newProfileId = profileSelect?.value;
+        const profileChanged =
+          !!newProfileId && newProfileId !== (profileSelect?.dataset.initial ?? '');
+
         try {
           await this.api.updateTrain(trainId, updates);
+          if (profileChanged) {
+            await this.api.assignTrainSpeedProfile(trainId, newProfileId!);
+          }
           await window.app?.refreshNetwork();
           this.showTrainControlPanel(trainId);
           showToast('Train properties saved', 'success', 5000);
