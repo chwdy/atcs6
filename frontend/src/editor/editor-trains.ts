@@ -2548,10 +2548,16 @@ export class TrainEditorHandler {
     const clearDirBtn = document.getElementById('train-clear-dir-btn') as HTMLButtonElement | null;
     if (clearDirBtn) clearDirBtn.disabled = state !== 'standby';
 
-    const departBtn = document.getElementById('train-depart-btn') as HTMLButtonElement | null;
-    const stopBtn = document.getElementById('train-stop-btn') as HTMLButtonElement | null;
-    if (departBtn) departBtn.disabled = state !== 'standby';
-    if (stopBtn) stopBtn.disabled = !(state && state.startsWith('running'));
+    // ATO Go / Stop follow the controller's `engaged` bit (the ATO go/stop bit),
+    // with the same rule the panel draws them with. They are set here as well
+    // as at draw time so a Go or Stop takes effect on the buttons the moment
+    // the command reply or the next state update lands, instead of staying as
+    // they were when the panel opened.
+    const atoEngaged = controller?.engaged ?? false;
+    const atoGoBtn = document.getElementById('train-ato-go-btn') as HTMLButtonElement | null;
+    const atoStopBtn = document.getElementById('train-ato-stop-btn') as HTMLButtonElement | null;
+    if (atoGoBtn) atoGoBtn.disabled = !powerOn || atoEngaged;
+    if (atoStopBtn) atoStopBtn.disabled = !atoEngaged;
 
     const manualOnBtn = document.getElementById('train-manual-on-btn') as HTMLButtonElement | null;
     const manualOffBtn = document.getElementById('train-manual-off-btn') as HTMLButtonElement | null;
