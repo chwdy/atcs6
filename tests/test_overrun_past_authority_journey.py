@@ -211,11 +211,16 @@ def test_fast_loco_overruns_authority_and_is_cut_out(capsys):
     #    Observe raised the train's EMERGENCY CUT-OUT on that read (design_new.md
     #    "Block occupancy detection", An overrun entry or a conflict raises the
     #    emergency cut-out): the latch is set as a cut-out and the loco is held at
-    #    a stand.
+    #    a stand. The overrun block joins the calculated span and the head moves
+    #    to its seam, so the position stays true while the train is cut out
+    #    (design_new.md "Emergency cut-out"; "TrainPhysics", A train that overran
+    #    its authority is cut out).
     assert controller.eb.active and controller.eb.cut_out, \
         f"an overrun onto BLK_D must raise the emergency cut-out; got {log[-1]}"
     assert log[-1]["speed"] == 0.0, "the cut-out holds the loco at a stand"
     assert any(r["cut_out"] for r in log), "the cut-out latch must be seen set"
+    assert log[-1]["head"] == "BLK_D", \
+        f"the overrun block joins the span and the head moves to its seam; got {log[-1]}"
 
 
 def test_the_overrun_cut_out_drives_the_whole_train_to_0v():

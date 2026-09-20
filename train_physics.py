@@ -2739,10 +2739,19 @@ class TrainPhysics:
         if not possible_exits:
             return None
 
-        # If train has a path, follow the path
+        # If train has a path, follow the path — unless it has been cut out. A
+        # cut-out train is stopped and the detector has led it onto the block it
+        # overran past its authority end; the reconcile snap must follow past that
+        # end so the overrun block joins the calculated span and the head reaches
+        # its seam (design_new.md "Emergency cut-out"; "Block occupancy detection",
+        # An overrun entry or a conflict raises the emergency cut-out). The
+        # path-follow cap below would otherwise stop the forward walk at the
+        # authority end. This only affects the reconcile walk: a cut-out train
+        # moves zero distance, so its ordinary movement takes no exit here.
         train = self._get_train()
         path_tiles = self._get_path_tiles()
-        if train and path_tiles:
+        cut_out = bool(getattr(getattr(self.controller, "eb", None), "cut_out", False))
+        if train and path_tiles and not cut_out:
             if (path_tiles[-1][0], path_tiles[-1][1]) == tile:
                 return None
             next_tile_in_path = self._get_next_tile_in_path(path_tiles, tile)
