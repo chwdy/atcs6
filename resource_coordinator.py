@@ -239,23 +239,28 @@ class ResourceCoordinator:
         train_id: str,
         direction: Optional[str],
         route: Optional[frozenset] = None,
-    ) -> None:
+    ) -> bool:
         """Route a tail-vacate event to the correct manager.
 
         ``route`` is forwarded only to the switch manager (route-keyed
-        occupancy); block tail-vacate uses ``direction`` instead.
+        occupancy); block tail-vacate uses ``direction`` instead. Returns the
+        routed manager's ``bool`` (design_new.md "ResourceCoordinator"): ``True``
+        on a clean release, ``False`` on a no-op. `PathDispatcher` does not
+        branch on it — tail-vacate release is non-fatal — but the contract still
+        carries the manager's result.
         """
         if resource_type == "block":
             handler = getattr(self.block_manager, "on_block_tail_vacated", None)
             if not callable(handler):
-                return
-            handler(resource_id, train_id, direction)
-            return
+                return False
+            return bool(handler(resource_id, train_id, direction))
         if resource_type == "switch":
-            self.switch_manager.on_switch_tail_vacated(
-                resource_id, train_id, route=route
+            return bool(
+                self.switch_manager.on_switch_tail_vacated(
+                    resource_id, train_id, route=route
+                )
             )
-            return
+        return False
 
     def on_physical_entry(
         self,

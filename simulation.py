@@ -390,6 +390,7 @@ class SimulationController(SwitchOutputOwner):
                 self.notification_center, "BlockManager"
             )
             self.block_manager.fatal_conflict_reporter = self.enter_failed_runtime
+            self.block_manager.active_path_getter = self._active_path_for_train
         if self.switch_manager is not None:
             self.switch_manager.network = self.network
             self.switch_manager.notification_emitter = make_notification_emitter(

@@ -573,18 +573,31 @@ class SwitchManager:
         switch_id: str,
         train_id: str,
         route: Optional[frozenset] = None,
-    ) -> None:
+    ) -> bool:
         """Switch tail-vacate entry — called by PathDispatcher per event.
 
         ``route`` is the unordered frozenset of edges the train used through
         this switch (derived from the train's vacating `TileTraversal`).
         When provided, only that route's ownership is cleared from
         ``route_owners``; other routes (potentially held by other trains)
-        remain. When ``None``, the legacy whole-switch clear applies.
+        remain.
+
+        Returns ``bool``, mirroring ``BlockManager.on_block_tail_vacated(...)``
+        (design_new.md "SwitchManager"): ``True`` on a clean tail-vacate or a
+        route-drift salvage that still removed one owned entry; ``False`` only
+        when nothing was released — the switch is unknown, or the route-drift
+        fallback where ``train_id`` owns no entry on this switch. The train owns
+        an entry to release exactly when it owns one before the call (a clean
+        match and a salvage both remove one; only "owns nothing" removes
+        nothing), so that ownership check is the returned signal. No exception is
+        raised.
         """
         switch = self._switch_registry.get(switch_id)
         if switch is None:
-            return
+            return False
+        released = any(
+            owner == train_id for owner in (switch.route_owners or {}).values()
+        )
         fully_cleared, diagnostics = switch.on_train_tail_vacated(
             train_id, route=route
         )
@@ -606,6 +619,7 @@ class SwitchManager:
         # `Switch` cannot reach it, so the manager emits on its behalf.
         for message in diagnostics or ():
             self._emit_diagnostic(message, switch_id=switch_id, train_id=train_id)
+        return released
 
     # ------------------------------------------------------------------
     # Switch position change request (admin / API / UI)

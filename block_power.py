@@ -456,7 +456,13 @@ class BlockPowerController:
 
         An unidentified train is excluded from that test: it commands no voltage, so a
         block held only by an unidentified train is driven to ``0`` (design_new.md "Unidentified train
-        trains", Never energized).
+        trains", Never energized). A ghosted train (``presence_unknown``) is
+        excluded too — it is frozen inert and commands no voltage — so a block
+        held only by a ghost is driven to ``0`` as well, mirroring the per-tick
+        drain (design_new.md "Power", Ghosted trains). The ghost check needs the
+        live `TrainController`, reached through the `_sim_controller`
+        back-reference; a bare admin/test call with no back-reference falls back
+        to the unidentified-only test.
 
         The per-tick path is event-driven: `BlockManager` queues each block as
         its holder clears, `TrainPhysics` reports each block that left its
@@ -468,14 +474,23 @@ class BlockPowerController:
             return
         exempt = skip or set()
         trains = getattr(self.network, "trains", {}) or {}
+        controllers = (
+            getattr(self._sim_controller, "controllers", {}) or {}
+            if self._sim_controller is not None
+            else {}
+        )
         for block_id, block in self.network.blocks.items():
             if block_id in exempt:
                 continue
             occupant = getattr(block, "occupied_by", None)
             occupant_train = trains.get(occupant) if occupant else None
-            held = occupant is not None and not getattr(
-                occupant_train, "is_unidentified", False
+            is_unidentified = getattr(occupant_train, "is_unidentified", False)
+            ghost = (
+                bool(getattr(controllers.get(occupant), "presence_unknown", False))
+                if occupant is not None
+                else False
             )
+            held = occupant is not None and not is_unidentified and not ghost
             if not held and float(getattr(block, "current_voltage", 0.0)) != 0.0:
                 self.set_block_voltage(block_id, 0.0)
 

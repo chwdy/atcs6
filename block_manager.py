@@ -102,6 +102,7 @@ class BlockManager:
         *,
         notification_emitter: Optional[Callable] = None,
         fatal_conflict_reporter: Optional[Callable] = None,
+        active_path_getter: Optional[Callable[[str], object]] = None,
     ):
         """Initialize BlockManager with existing blocks.
 
@@ -127,11 +128,21 @@ class BlockManager:
                 `SimulationController.enter_failed_runtime(...)`. Stays `None`
                 in early bootstrap / isolated tests, where a conflict just
                 returns False without reporting.
+            active_path_getter: optional callback taking a `train_id` and
+                returning that train's active `Path` (or `None`) — the same one
+                `SwitchManager` receives. Used only to fill a fatal
+                block-conflict payload's `incoming_path_id` (always) and its
+                `prior_owner_path_id` for the physical-owner conflict; the
+                `reserved_for_other_train` conflict reads `prior_owner_path_id`
+                from `block.reservation.path_id` instead (design_new.md
+                "Block-manager model"). Stays `None` in setups that wired no
+                path lookup.
         """
         self.blocks = blocks
         self.network = network
         self.notification_emitter = notification_emitter
         self.fatal_conflict_reporter = fatal_conflict_reporter
+        self.active_path_getter = active_path_getter
         self.history: deque = deque(maxlen=100)
         # Reverse index: train_id -> set of block ids it has reserved ahead.
         # Maintained at every reservation mutation in this class so TrainPhysics
@@ -348,23 +359,50 @@ class BlockManager:
     ) -> None:
         """Build a `FatalPhysicalEntryConflict` and forward it to the runtime.
 
+        Fills `incoming_path_id` always from `active_path_getter(train_id)`, and
+        `prior_owner_path_id` for the physical-owner conflict
+        (`occupied_by_other_train`) from the prior owner's active path; the
+        `reserved_for_other_train` conflict reads it from `block.reservation`
+        instead (design_new.md "Block-manager model"). A disabled-entry conflict
+        has no prior owner, so both prior-owner fields stay `None`.
+
         Skips the call when no `fatal_conflict_reporter` is wired (early
         bootstrap / unit tests that exercise `BlockManager` in isolation).
         """
         if self.fatal_conflict_reporter is None:
             return
+        prior_owner_path_id: Optional[str] = None
+        if conflict_kind == FatalConflictKind.OCCUPIED_BY_OTHER_TRAIN:
+            prior_owner_path_id = self._active_path_id(prior_owner_train_id)
+        elif conflict_kind == FatalConflictKind.RESERVED_FOR_OTHER_TRAIN:
+            block = self._block_registry.get(block_id)
+            reservation = getattr(block, "reservation", None) if block else None
+            prior_owner_path_id = getattr(reservation, "path_id", None)
         payload = FatalPhysicalEntryConflict(
             resource_type="block",
             resource_id=block_id,
             incoming_train_id=train_id,
             prior_owner_train_id=prior_owner_train_id,
             conflict_kind=conflict_kind,
+            incoming_path_id=self._active_path_id(train_id),
+            prior_owner_path_id=prior_owner_path_id,
         )
         try:
             self.fatal_conflict_reporter(payload)
         except Exception:
             # Receiver issues must not mask the underlying conflict.
             pass
+
+    def _active_path_id(self, train_id: Optional[str]) -> Optional[str]:
+        """`train_id`'s active `Path.path_id`, or `None`.
+
+        `None` when no `active_path_getter` is wired, no `train_id` is given, or
+        the train holds no active path — matching the switch side.
+        """
+        if self.active_path_getter is None or train_id is None:
+            return None
+        path = self.active_path_getter(train_id)
+        return getattr(path, "path_id", None) if path else None
 
     def _block_is_held(self, block_id: str) -> bool:
         """True when `block_id` is still held — occupied or reserved by any

@@ -470,10 +470,31 @@ class MeetCoordinator:
                 error=ErrorRecord(
                     f"held at meet ceiling {ceiling_block}", "meet_hold"
                 ),
+                # The event carries the assigned ceiling and the run's requested
+                # destination so the operator can see why the train is stopped
+                # (design_new.md "Meet coordination", Operator event). A ceiling
+                # that moves is a changed payload and a new event.
+                payload={
+                    "meet_ceiling_block_id": ceiling_block,
+                    "requested_destination_block_id": self._run_requested_destination(
+                        train_id
+                    ),
+                },
                 condition_key=self._meet_hold_key(train_id),
             )
         except Exception:
             pass
+
+    def _run_requested_destination(self, train_id: str) -> Optional[str]:
+        """The run's `requested_destination_block_id` for the meet-hold event
+        (design_new.md "Meet coordination", Operator event), or `None` when it
+        cannot be resolved."""
+        try:
+            proj = self._re._find_next_task_target(train_id)
+        except Exception:
+            return None
+        resolved = getattr(proj, "resolved_target", None) if proj is not None else None
+        return getattr(resolved, "requested_destination_block_id", None)
 
     def _reconcile_no_holding_point(self) -> None:
         """Resolve the no-holding-point condition for every train that had it on

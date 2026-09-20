@@ -64,6 +64,22 @@ def register(app, state: AppState) -> None:
                     e,
                 )
 
+            # `ato_status` is a read-model projection assembled here, not a
+            # controller field (design_new.md "ATO status"): mirror the
+            # /api/network snapshot so a train fetched through this composite
+            # (e.g. GET /api/trains) carries it too, rather than the FE helper
+            # falling back to 'ready'.
+            if controller_dict is not None:
+                route_executor = getattr(state.sim_controller, "route_executor", None)
+                try:
+                    controller_dict["ato_status"] = (
+                        route_executor.ato_status_for(train.train_id)
+                        if route_executor is not None
+                        else None
+                    )
+                except Exception:
+                    controller_dict["ato_status"] = None
+
             dispatcher = getattr(state.sim_controller, "path_dispatcher", None)
             if dispatcher is not None:
                 try:
