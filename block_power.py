@@ -243,27 +243,6 @@ class BlockPowerController:
         finally:
             self.reconcile_recorded_voltages()
 
-    def _calculate_voltage_for_train(
-        self, train: "Train", speed_profile: Optional["SpeedProfile"] = None
-    ) -> float:
-        """Resolve the train's current `track_voltage` from `TrainPhysics`.
-
-        Per design_new.md "Block power-controller role", `TrainPhysics` owns
-        `track_voltage` and `BlockPowerController` is the software-to-
-        hardware emission layer. This method asks
-        `TrainPhysics.compute_track_voltage(...)` for the scalar; it does
-        not branch on `control_mode`, `manual_mode_type`, or any other
-        manual-mode policy.
-        """
-        if self._sim_controller is None:
-            return 0.0
-
-        controller = self._sim_controller.get_or_create_controller(train.train_id)
-        physics = self._sim_controller.get_or_create_physics(train.train_id)
-        if physics is None:
-            return 0.0
-        return physics.compute_track_voltage(controller, speed_profile)
-
     def set_block_voltage(self, block_id: str, voltage: float) -> bool:
         """
         Set voltage for a specific block.

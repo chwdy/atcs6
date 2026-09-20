@@ -462,21 +462,6 @@ def _make_fake_bp_controller(powered, has_reservation=False, target_speed=0.0):
     return _FakeController()
 
 
-def _fake_bp_sim(powered, has_reservation=False, target_speed=0.0):
-    """A fake sim_controller that hands `BlockPowerController` a fake controller
-    (per `_make_fake_bp_controller`) plus a real `TrainPhysics`."""
-    from train_physics import TrainPhysics
-
-    class _FakeSim:
-        def get_or_create_controller(self, _train_id):
-            return _make_fake_bp_controller(powered, has_reservation, target_speed)
-
-        def get_or_create_physics(self, train_id):
-            return TrainPhysics(train_id=train_id)
-
-    return _FakeSim()
-
-
 class TestSimulatedTrackDriver:
     """Tests for SimulatedTrackDriver."""
 
@@ -605,56 +590,6 @@ class TestBlockPowerController:
         """
         controller.set_block_voltage("BLK_001", -15.0)
         assert controller.get_block_voltage("BLK_001") == -MAX_TRACK_VOLTAGE
-
-    def test_calculate_voltage_for_off_train(
-        self, controller: BlockPowerController, train_off: Train
-    ):
-        """Test voltage calculation for OFF state."""
-        controller._fake_sim.register_train(train_off)
-        voltage = controller._calculate_voltage_for_train(train_off)
-        assert voltage == 0.0
-
-    def test_calculate_voltage_for_idle_train(
-        self, controller: BlockPowerController, train_idle: Train
-    ):
-        """Test voltage calculation for IDLE state."""
-        controller._fake_sim.register_train(train_idle)
-        # No SpeedProfile supplied; lighting voltage falls through to 0V at
-        # the physics layer (the fake controller has no profile reference).
-        # Pass the default lighting voltage through a minimal SpeedProfile.
-        profile = SpeedProfile(
-            profile_id="test",
-            name="Test",
-            lighting_voltage=2.0,
-        )
-        voltage = controller._calculate_voltage_for_train(train_idle, profile)
-        assert voltage == 2.0
-
-    def test_calculate_voltage_for_running_train(
-        self, controller: BlockPowerController, train_running: Train
-    ):
-        """Test voltage calculation for RUNNING_MOVING state."""
-        controller._fake_sim.register_train(train_running)
-        # Without speed profile, uses linear approximation
-        voltage = controller._calculate_voltage_for_train(train_running)
-        # 60 km/h / 10 = 6V (linear approximation)
-        assert voltage == 6.0
-
-    def test_calculate_voltage_with_speed_profile(
-        self, controller: BlockPowerController, train_running: Train
-    ):
-        """Test voltage calculation with speed profile."""
-        controller._fake_sim.register_train(train_running)
-        profile = SpeedProfile(
-            profile_id="test",
-            name="Test",
-        )
-        voltage = controller._calculate_voltage_for_train(train_running, profile)
-        # The default voltage->power curve is linear from this profile's own
-        # lighting_voltage (0%) to max_voltage (100%), so 60 km/h -> 60% power
-        # -> 1.5 + 0.6 * (12.0 - 1.5).
-        assert voltage == pytest.approx(7.8)
-
 
     def test_release_block(self, controller: BlockPowerController):
         """Test releasing a block sets voltage to 0."""
@@ -1018,95 +953,6 @@ class TestTrainStateTransitions:
         )
         assert controller.commands.set_mode("ato").success is True
 
-
-
-
-class TestStateBasedVoltageOutput:
-    """Tests for state-based voltage output in BlockPowerController.
-
-    v1: `track_voltage` is owned by `TrainPhysics` per design_new.md
-    "Power-controller role". `BlockPowerController` resolves the scalar
-    through `sim_controller.get_or_create_physics(...)`. These tests wire
-    a fake sim that returns a controller with the appropriate `state` and
-    a real `TrainPhysics` for the canonical computation.
-    """
-
-    @staticmethod
-    def _make_sim(powered, has_reservation=False, target_speed=0.0):
-        return _fake_bp_sim(powered, has_reservation, target_speed)
-
-    def test_voltage_for_off_state(self):
-        """Test voltage is 0 for an unpowered train."""
-        from block_power import BlockPowerController
-        from train import Train
-
-        train = Train(train_id="T001")
-        controller = BlockPowerController(_sim_controller=self._make_sim(powered=False))
-        voltage = controller._calculate_voltage_for_train(train)
-        assert voltage == 0.0
-
-    def test_voltage_for_idle_state(self):
-        """Test voltage is lighting voltage for a powered, stopped train."""
-        from block_power import BlockPowerController
-        from speed_profile import SpeedProfile
-        from train import Train
-
-        train = Train(train_id="T001")
-        controller = BlockPowerController(_sim_controller=self._make_sim(powered=True))
-        profile = SpeedProfile(profile_id="t", name="T", lighting_voltage=2.5)
-        voltage = controller._calculate_voltage_for_train(train, profile)
-        assert voltage == 2.5
-
-    def test_voltage_for_standby_state(self):
-        """Test voltage is lighting voltage for a powered, stopped train."""
-        from block_power import BlockPowerController
-        from speed_profile import SpeedProfile
-        from train import Train
-
-        train = Train(train_id="T001")
-        controller = BlockPowerController(_sim_controller=self._make_sim(powered=True))
-        profile = SpeedProfile(profile_id="t", name="T", lighting_voltage=2.5)
-        voltage = controller._calculate_voltage_for_train(train, profile)
-        assert voltage == 2.5
-
-    def test_voltage_for_dwelling_ready_state(self):
-        """Voltage is lighting voltage for a stopped/dwelling train."""
-        from block_power import BlockPowerController
-        from speed_profile import SpeedProfile
-        from train import Train
-
-        train = Train(train_id="T001")
-        controller = BlockPowerController(
-            _sim_controller=self._make_sim(powered=True)
-        )
-        # Lighting voltage is a per-train property on the SpeedProfile; the
-        # controller emits it for a powered, stopped train with no reservation.
-        profile = SpeedProfile(
-            profile_id="t", name="T",
-            lighting_voltage=2.0,
-        )
-        voltage = controller._calculate_voltage_for_train(train, profile)
-        assert voltage == 2.0
-
-    def test_voltage_for_running_moving_state_uses_speed(self):
-        """Voltage uses controller-derived target_speed for a train under a
-        live reservation."""
-        from block_power import BlockPowerController
-        from speed_profile import SpeedProfile
-        from train import Train
-
-        train = Train(train_id="T001")
-        controller = BlockPowerController(
-            _sim_controller=self._make_sim(powered=True, has_reservation=True, target_speed=60.0)
-        )
-        profile = SpeedProfile(
-            profile_id="test",
-            name="Test",
-        )
-        voltage = controller._calculate_voltage_for_train(train, profile)
-        # Default curve anchors: lighting_voltage 1.5 (0%) -> max_voltage 12.0
-        # (100%), so 60 km/h -> 60% power -> 7.8 V.
-        assert voltage == pytest.approx(7.8)
 
 
 
