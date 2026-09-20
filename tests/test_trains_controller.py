@@ -413,3 +413,27 @@ class TestATCOverspeedWarning:
         self._tick_at(sim, controller, 32.0)  # only 2 over: inside the margin
         assert self._warnings(controller) == []
         assert controller._overspeed_warned is False
+
+
+def test_power_on_lands_the_train_in_manual_mode():
+    """Power-on leaves the train in MANUAL, not ATO (design_new.md power-on
+    contract; gap-analysis 2026-09-20 M8). The operator selects ATO explicitly
+    with set_mode("ato")."""
+    from enums import TrainStatus
+
+    network = RailwayNetwork()
+    network.add_track(Tile(x=0, y=0, track_bits=TRACK_EW))
+    network.add_track(Tile(x=1, y=0, track_bits=TRACK_EW))
+    make_segment_block_with_tracks(network, "BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
+    car = TrainCar(car_id="CAR_M8", car_type="LOCOMOTIVE", length_cm=40.0)
+    train = Train(train_id="TRAIN_M8", consist=[car], max_speed=60.0)
+    network.add_train(train)
+    network.place_train(train, 0, 0, Direction.EAST)
+
+    controller = create_controller_for_train(train.train_id, network)
+    # A never-powered controller defaults to manual.
+    assert controller.commands.control_mode == "manual"
+
+    controller.commands.power_on_cmd()
+    assert controller.commands.control_mode == "manual"
+    assert controller.ops.train_status == TrainStatus.MANUAL

@@ -241,5 +241,5 @@ def controller_from_dict(
     # re-expressing (design_new.md "Reservation-side head derivation"; there is no
     # operator cab).
     controller._framed_head_end = "end_b" if data.get("cab") == "B" else "end_a"
-    controller.commands.control_mode = data.get("control_mode", "ato")
+    controller.commands.control_mode = data.get("control_mode", "manual")
     return controller

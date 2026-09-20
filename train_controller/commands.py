@@ -52,8 +52,13 @@ class OperatorCommands:
 
         # Operator mode selection. There is no operator cab: the head end is
         # derived from the live authority (design_new.md "Authority-side head
-        # derivation"), so no cab is stored or selected here.
-        self.control_mode: str = "ato"  # 'ato' or 'manual'
+        # derivation"), so no cab is stored or selected here. Defaults to
+        # `"manual"`: a powered-on train reads `train_status == MANUAL`
+        # (design_new.md "Controller state machine" / power-on contract) — the
+        # operator selects ATO with `set_mode("ato")`. A never-powered train
+        # that has run no OFF cleanup still starts here, so the default is the
+        # same MANUAL an OFF cleanup would leave.
+        self.control_mode: str = "manual"  # 'ato' or 'manual'
 
         # ATO engage bit — whether the operator has started ATO driving with
         # `/ato/go` (design_new.md "ATO status", `commands.engaged`). Written by

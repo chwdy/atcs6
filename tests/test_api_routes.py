@@ -966,7 +966,10 @@ class TestTrainRoutes:
         app_state.network.place_train(train, 0, 0, Direction.EAST)
 
         controller = app_state.sim_controller.get_or_create_controller("TRAIN_001")
-        controller.commands.power_on_cmd()  # OFF -> powered; ATO is the default mode
+        controller.commands.power_on_cmd()  # OFF -> powered, MANUAL (default)
+        # This case exercises EB activated from ATO, so select ATO explicitly
+        # (power-on lands the train in MANUAL, per design_new.md).
+        controller.commands.set_mode("ato")
         assert controller.commands.control_mode == "ato"
         controller.eb.activate()  # stopped, no path -> EB latches cleanly
         assert controller.eb.active is True
