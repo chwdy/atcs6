@@ -604,6 +604,26 @@ class TrainPhysics:
             drag_decel = profile.drag_coefficient * (speed_ratio**2) * delta
             new_speed = max(0.0, new_speed - drag_decel)
 
+        # ATC ceiling for a directly-driven handle (design_new.md,
+        # Driver/operator inputs). The raw driver notch may never raise the
+        # integrated speed above the live distance-0 `atc_limit`, and the
+        # controller does not rewrite `handle_position` to enforce it. When the
+        # notch would push the speed above the limit while the train is not yet
+        # over it, hold at the limit; when the train is already over it,
+        # decelerate toward the limit at the service brake rate rather than
+        # snapping the tick's speed down to it (a driver braking harder than the
+        # service rate keeps their steeper deceleration). Reached only for
+        # PHYSICS_KIND_HANDLE: `power_percent` is already capped in the
+        # Propulsion cap step, and EB / pending power-off arrive as their own
+        # command kinds.
+        atc_limit = command.atc_limit_kmh
+        if atc_limit is not None and new_speed > atc_limit:
+            if previous_speed > atc_limit:
+                atc_braked = previous_speed - operational_decel * delta
+                new_speed = max(atc_limit, min(new_speed, atc_braked))
+            else:
+                new_speed = atc_limit
+
         return new_speed
 
     def _speed_to_distance(self, speed_kmh: float, delta: float) -> float:

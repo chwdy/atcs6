@@ -253,8 +253,13 @@ class TestTrainPhysicsDebugLogging:
         # Per design_new.md: `power_on` is a read-only alias for `powered`.
         controller.powered = True
         controller.ops.handle_position = HandlePosition.P2
+        # A driving train has authority: give it an ATC limit above the current
+        # speed so the power notch accelerates. In manual `simulation` the
+        # controller carries this limit to physics as `PhysicsCommand.atc_limit_kmh`
+        # (design_new.md, Driver/operator inputs); without a live limit here it
+        # would default to 0 and physics would brake the train.
+        controller.atc.speed_limit = 60.0
         # v1: write canonical speed onto the controller; controller.physics_sync.current_speed_kmh mirrors.
-        controller.physics_sync.current_speed_kmh = 12.0
         controller.physics_sync.current_speed_kmh = 12.0
 
         initial_speed = controller.physics_sync.current_speed_kmh

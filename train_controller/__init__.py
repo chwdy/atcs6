@@ -937,12 +937,12 @@ class TrainController:
                     # is no operational-state write — `train_status` is derived
                     # (design_new.md "ATO driving rule", Not engaged).
                     self.ops.handle_position = HandlePosition.N
-        else:
-            # Manual mode - ATC still enforces braking if overspeed
-            if self.physics_sync.current_speed_kmh > self.atc.speed_limit:
-                self.ops.handle_position = self.ato.calculate_braking_notch_for_speed(
-                    self.physics_sync.current_speed_kmh, self.atc.speed_limit
-                )
+        # In manual mode nothing is written here: `handle_position` stays the raw
+        # driver notch. ATC enforcement is carried to physics as the HANDLE
+        # command's `atc_limit_kmh` ceiling (see `produce_physics_command`), so
+        # the driver's command is never rewritten — the train holds at the limit
+        # and auto-resumes when the limit lifts (design_new.md, Driver/operator
+        # inputs).
 
         # ===== 7. EFFECTIVE LIMIT (target_speed property reads from lookahead) =====
         # Per design_new.md, target_speed and speed_limit_reason are derived
@@ -1134,14 +1134,25 @@ class TrainController:
                 voltage_source_power_percent=voltage_pct,
             )
         # ATO and manual `simulation` submode: handle integration.
+        #
+        # For manual `simulation` the ATC ceiling is carried down to physics as
+        # `atc_limit_kmh` rather than rewritten into `handle_position`, so the
+        # raw driver notch is preserved and physics holds the train at the limit
+        # and auto-resumes when the limit lifts (design_new.md, Driver/operator
+        # inputs). ATO carries no `atc_limit_kmh`: its `compute_handle` already
+        # aims at an ATC-aware target, so it never commands above the limit and
+        # needs no physics cap.
         if self.commands.control_mode == "ato":
             voltage_speed = float(self.target_speed or 0.0)
+            atc_limit_kmh = None
         else:
             voltage_speed = float(self.physics_sync.current_speed_kmh or 0.0)
+            atc_limit_kmh = float(self.atc.speed_limit)
         return PhysicsCommand(
             kind=PHYSICS_KIND_HANDLE,
             handle=self.ops.handle_position,
             voltage_source_speed_kmh=voltage_speed,
+            atc_limit_kmh=atc_limit_kmh,
         )
 
     def _taint_calibration_crossing_on_cap(self) -> None:

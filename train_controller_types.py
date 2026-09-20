@@ -111,7 +111,13 @@ class PhysicsCommand:
     Fields used per kind:
       - PHYSICS_KIND_HANDLE: `handle` is integrated from the previous speed
         via the standard handle→accel mapping (used for ATO and the
-        manual `simulation` submode).
+        manual `simulation` submode). `atc_limit_kmh` is set only for manual
+        `simulation`: it is the live distance-0 ATC limit the integrated speed
+        may not exceed, and the raw driver notch is never rewritten, so physics
+        holds the train at the limit and decelerates toward it at the service
+        brake rate when it is already over, rather than snapping the speed down
+        (design_new.md, Driver/operator inputs). ATO leaves it `None` — its
+        handle already aims at an ATC-aware target, so it needs no physics cap.
       - PHYSICS_KIND_TARGET_SPEED: speed snaps directly to
         `target_speed_kmh` (used for the manual `power_percent` submode).
         The controller has already clamped this against the live ATC limit
@@ -145,3 +151,4 @@ class PhysicsCommand:
     voltage_source_speed_kmh: float = 0.0
     voltage_source_power_percent: Optional[float] = None
     voltage_source_track_voltage: Optional[float] = None
+    atc_limit_kmh: Optional[float] = None

@@ -15,6 +15,7 @@ from train_span import SpanEndLocator, TrainSpan
 from tests.train_test_helpers import set_train_span
 from simulation import SimulationController
 from train_controller import TrainController, create_controller_for_train
+from train_controller_types import PHYSICS_KIND_HANDLE
 from path_dispatcher import PathDispatcher
 from train_route import Route, RouteMode, RouteTask
 from switch import Switch
@@ -160,14 +161,21 @@ class TestTrainControllerBrakingNotches:
             controller.ato.calculate_braking_notch_for_speed(7.0, 6.0) == HandlePosition.B1
         )
 
-    def test_manual_mode_uses_atc_speed_braking(self, network, monkeypatch):
-        """Manual mode should brake toward ATC speed, not full stop.
+    def test_manual_mode_carries_atc_limit_to_physics_without_rewriting_handle(
+        self, network, monkeypatch
+    ):
+        """Manual `simulation` enforces the ATC limit through physics, not by
+        rewriting the driver's handle.
 
-        Per design_new.md step `826a`, service-braking against an ATC limit
-        requires live authority (a no-authority rolling train escalates to EB
-        instead). Wire a one-block synthetic path so this overspeed scenario
-        has authority, then force a positive ATC limit so the braking notch is
-        deterministic.
+        Per design_new.md (Driver/operator inputs, tick step `924d`), the driver
+        notch is the raw command: the controller does not overwrite
+        `handle_position` when the train is overspeed. Instead it carries the
+        live distance-0 `atc_limit` down to `TrainPhysics` on the HANDLE command
+        (`PhysicsCommand.atc_limit_kmh`), which caps the integrated speed while
+        leaving the raw notch untouched. Per step `826a`, service-braking
+        against an ATC limit requires live authority (a no-authority rolling
+        train escalates to EB instead), so wire a one-block synthetic path and
+        force a positive ATC limit.
         """
         from tests.train_test_helpers import (
             attach_synthetic_path,
@@ -195,11 +203,15 @@ class TestTrainControllerBrakingNotches:
             ),
         )
         controller.commands.control_mode = "manual"
+        controller.manual.manual_mode_type = "simulation"
         # Per design_new.md: power_on is a read-only derived property; use
         # controller.ops.state to power on.
         controller.powered = True
         controller._apply_head_frame("end_a")
         controller.physics_sync.current_speed_kmh = 16.0
+        # The raw driver command: a power notch that is overspeed against the
+        # 10 km/h limit forced below.
+        controller.ops.handle_position = HandlePosition.P5
 
         monkeypatch.setattr(controller.atc, "clearance_ahead", lambda: 200.0)
         monkeypatch.setattr(
@@ -210,8 +222,15 @@ class TestTrainControllerBrakingNotches:
 
         controller.tick(0.1)
 
-        # current=16, target=10, diff=6 → bucket >5 → B4 (new buckets).
-        assert controller.ops.handle_position == HandlePosition.B4
+        # The overspeed does NOT rewrite the raw driver notch.
+        assert controller.ops.handle_position == HandlePosition.P5
+        # ATC enforcement is carried to physics as the HANDLE command's
+        # `atc_limit_kmh` ceiling instead (design_new.md, Driver/operator
+        # inputs); physics caps the integrated speed at that limit.
+        command = controller.produce_physics_command()
+        assert command.kind == PHYSICS_KIND_HANDLE
+        assert command.handle == HandlePosition.P5
+        assert command.atc_limit_kmh == pytest.approx(10.0)
 
     def test_no_duplicate_controller_instances(self):
         """
