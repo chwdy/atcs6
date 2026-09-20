@@ -135,6 +135,25 @@ def register(app, state: AppState) -> None:
             records = records[-limit:]
         return jsonify({"events": records})
 
+    @app.route("/api/simulation/emergency-cut-out", methods=["POST"])
+    def emergency_cut_out():
+        """Raise the layout-wide emergency cut-out (canonical
+        ``SimulationController.layout_emergency_cut_out()``).
+
+        A resumable panic stop for the whole layout: every train's traction
+        voltage goes to ``0`` and every train stops on its next Action, without
+        stopping the session. Accepted only on a hardware environment; in
+        Simulation it returns 400 (design_new.md "Emergency cut-out", Layout
+        emergency cut-out).
+        """
+        sim = getattr(state, "sim_controller", None)
+        if sim is None:
+            return jsonify({"error": "No simulation running"}), 400
+        result = sim.layout_emergency_cut_out()
+        if result.success:
+            return jsonify({"status": "success", "message": result.message})
+        return jsonify({"error": result.message}), 400
+
     @app.route("/api/simulation/control", methods=["POST"])
     def control_simulation():
         data = request.json or {}

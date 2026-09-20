@@ -18,6 +18,7 @@ External callers access operator-command state and behavior as:
   - ``controller.commands.set_manual_mode_type(mode_type)``
   - ``controller.commands.set_handle(position)``
   - ``controller.commands.set_manual_power_percent(percent)``
+  - ``controller.commands.activate_cut_out_cmd()``
   - ``controller.commands.power_off_cmd()``
   - ``controller.commands.enqueue_command(kind, payload)``
 
@@ -77,6 +78,7 @@ class OperatorCommands:
             "set_handle",
             "set_manual_power_percent",
             "activate_emergency_cmd",
+            "activate_cut_out_cmd",
             "release_emergency_cmd",
             "power_off",
         )
@@ -124,9 +126,9 @@ class OperatorCommands:
         commands are drained in the order: power_on -> set_mode ->
         ato_go / ato_stop -> set_manual_mode_type -> set_handle /
         set_manual_power_percent -> activate_emergency_cmd ->
-        release_emergency_cmd -> power_off. set_mode (slot 2) drains before
-        ato_go / ato_stop (slot 3), so a same-tick "switch to ATO, then go"
-        batch is accepted in one drain.
+        activate_cut_out_cmd -> release_emergency_cmd -> power_off. set_mode
+        (slot 2) drains before ato_go / ato_stop (slot 3), so a same-tick "switch
+        to ATO, then go" batch is accepted in one drain.
 
         Each drained command re-checks acceptance gates by delegating to the
         existing inline command method. Rejected commands are silently dropped
@@ -173,6 +175,8 @@ class OperatorCommands:
                 result = self._execute_power_off(payload, event_time)
             elif kind == "activate_emergency_cmd":
                 result = self._execute_activate_emergency_cmd(payload, event_time)
+            elif kind == "activate_cut_out_cmd":
+                result = self._execute_activate_cut_out_cmd(payload, event_time)
             elif kind == "release_emergency_cmd":
                 result = self._execute_release_emergency_cmd(payload, event_time)
             elif kind == "set_mode":
@@ -265,6 +269,9 @@ class OperatorCommands:
     def _execute_activate_emergency_cmd(self, payload, event_time) -> CommandResult:
         return self._c.eb.activate()
 
+    def _execute_activate_cut_out_cmd(self, payload, event_time) -> CommandResult:
+        return self.activate_cut_out_cmd()
+
     def _execute_release_emergency_cmd(self, payload, event_time) -> CommandResult:
         return self._c.eb.release()
 
@@ -337,6 +344,29 @@ class OperatorCommands:
         self._apply_power_off_request()
 
         return CommandResult(True, "Power off accepted; shutdown deferred to Action")
+
+    def activate_cut_out_cmd(self) -> CommandResult:
+        """Operator-initiated emergency cut-out (design_new.md "Emergency
+        cut-out", The operator-initiated path is gated to hardware environments).
+
+        The operator-initiated cut-out is accepted only while the selected
+        operating environment is Virtual Hardware or Real Hardware; in Simulation
+        it is not offered — only the emergency brake exists — because there is no
+        physical locomotive to stop faster than the modelled brake curve and no
+        output boundary to de-energize. When accepted it runs
+        `eb.activate_cut_out()`. That method itself carries no environment gate,
+        so the Observe overrun/conflict trigger raises a cut-out in every
+        environment; this operator gate is the one place the hardware-only rule
+        lives.
+        """
+        import operation_environment
+        from enums import OperationMode
+
+        if operation_environment.get_selected() is OperationMode.SIMULATION:
+            return CommandResult(
+                False, "Emergency cut-out is only available on a hardware environment"
+            )
+        return self._c.eb.activate_cut_out()
 
     # -------------------------------------------------------------------------
     # Control-mode writer (design_new.md "ATO status")

@@ -1008,6 +1008,24 @@ class TrainController:
         # EB hold. Nothing drives under EB and no retained percentage survives.
         if self.eb.active:
             self.manual.reset_power_percent_for_safety()
+            if self.eb.cut_out:
+                # Emergency cut-out (design_new.md "Emergency cut-out", EB
+                # workflow state machine row `e67d`): the momentum-free zero
+                # applies THIS tick in EVERY submode — not the
+                # `emergency_brake_rate` deceleration a plain EB uses — and the
+                # emitted `track_voltage` is driven to `0` (fully de-energized),
+                # not the stopped-but-lit `lighting_voltage` a plain zero ceiling
+                # otherwise emits. Removing the traction power stops the
+                # locomotive in the shortest distance; the block then sits in the
+                # idle zone where its detector still reads it, so a cut-out train
+                # stays attributed rather than being ghosted.
+                return PhysicsCommand(
+                    kind=PHYSICS_KIND_TARGET_SPEED,
+                    handle=HandlePosition.EB,
+                    target_speed_kmh=0.0,
+                    voltage_source_speed_kmh=0.0,
+                    voltage_source_track_voltage=0.0,
+                )
             if (
                 self.commands.control_mode == "manual"
                 and self.manual.manual_mode_type == "power_percent"

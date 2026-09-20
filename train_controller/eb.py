@@ -40,26 +40,43 @@ class EBWorkflow:
     def __init__(self, controller: "TrainController") -> None:
         self._c = controller
         self.active: bool = False
+        # Whether the active latch is an emergency cut-out (traction voltage
+        # driven to `0`, immediate stop in every submode) rather than an
+        # emergency brake (deceleration at `SpeedProfile.emergency_brake_rate`).
+        # Only meaningful while `active`. Set `True` by `activate_cut_out()`;
+        # set `False` by `release()` and `clear()` alongside `active`. Serialized
+        # under the key `"eb_cut_out"` (design_new.md "Emergency cut-out").
+        self.cut_out: bool = False
 
-    def activate(self) -> CommandResult:
-        """Operator-issued emergency brake.
+    def _activate(self, *, cut_out: bool) -> CommandResult:
+        """Canonical EB activation effects (design_new.md "Canonical EB
+        activation effects"), shared by the emergency brake and the emergency
+        cut-out.
 
-        Per design_new.md "Canonical EB activation effects": the only acceptance
-        gate is ``active == False`` (idempotent rejection of a duplicate
-        activation). Valid in any motion state, any status including OFF, with
-        or without an active path. On acceptance: set ``active = True``, force
-        handle to EB, set ``control_mode = "manual"`` (which clears
+        The only acceptance gate is ``active == False`` (idempotent rejection of
+        a duplicate activation). Valid in any motion state, any status including
+        OFF, with or without an active path. On acceptance: set ``active =
+        True``, force handle to EB, set ``control_mode = "manual"`` (which clears
         ``commands.engaged``), reset the power notch, and (when an active path
-        exists) write ``pending_path_cancel_request(EB)``. A dwelling train
-        holds no live path, so it writes no cancel and its dwell timer keeps
-        counting.
+        exists) write ``pending_path_cancel_request(EB)``. A dwelling train holds
+        no live path, so it writes no cancel and its dwell timer keeps counting.
+
+        A cut-out (``cut_out=True``) performs every effect above and additionally
+        sets ``cut_out = True`` — the one difference an emergency cut-out adds to
+        an emergency brake (design_new.md "Emergency cut-out"). The method itself
+        carries no environment gate, so the Observe overrun/conflict trigger runs
+        in every environment; the operator-initiated cut-out's hardware-only gate
+        lives on the operator command path.
         """
+        kind_label = "emergency cut-out" if cut_out else "emergency brake"
         if self.active:
-            return CommandResult(False, "Emergency brake already active")
+            return CommandResult(False, f"{kind_label.capitalize()} already active")
 
         c = self._c
 
         self.active = True
+        if cut_out:
+            self.cut_out = True
         c.ops.handle_position = HandlePosition.EB
         # Canonical EB activation effect: EB leaves ATO, so control_mode goes
         # manual and the engage bit clears (design_new.md "Driving mode" /
@@ -77,17 +94,41 @@ class EBWorkflow:
             # which design_new.md reserves for the two fatal session entries.
             # A dwelling train is READY with no live authority, so this is never
             # taken while dwelling.
+            origin = "eb cut-out" if cut_out else "operator EB"
             c.route_hooks.phase_latches.set_path_cancel_request(
-                ErrorRecord("operator EB", "eb"), "warning"
+                ErrorRecord(origin, "eb"), "warning"
             )
 
         from notification_center import Kind
 
         c._emit_event(
-            "activate", f"emergency stop activated for {c.train_id}",
+            "activate", f"{kind_label} activated for {c.train_id}",
             kind=Kind.WARNING,
         )
-        return CommandResult(True, "Emergency stop activated")
+        return CommandResult(True, f"{kind_label.capitalize()} activated")
+
+    def activate(self) -> CommandResult:
+        """Operator-issued or ATC-escalated emergency brake.
+
+        Runs the **canonical EB activation effects** (design_new.md) with no
+        cut-out — the train decelerates down the ``emergency_brake_rate`` curve.
+        """
+        return self._activate(cut_out=False)
+
+    def activate_cut_out(self) -> CommandResult:
+        """Emergency cut-out — the emergency-brake latch with ``cut_out`` set.
+
+        Per design_new.md "Emergency cut-out": performs the **canonical EB
+        activation effects** and additionally sets ``cut_out = True``, so the
+        train's traction voltage is driven to ``0`` and it stops the same tick in
+        every submode instead of braking down the ``emergency_brake_rate`` curve.
+        The acceptance gate is ``active == False``, the same duplicate-rejection
+        as ``activate()``; it has no motion-state or OFF gate, and the method
+        carries no environment gate. Raised by the operator command drain (slot
+        7, hardware-only) and by Observe on an ``overrun_entry`` or ``conflict``
+        attribution result (ungated).
+        """
+        return self._activate(cut_out=True)
 
     def release(self) -> CommandResult:
         """Release emergency stop.
@@ -100,13 +141,14 @@ class EBWorkflow:
         cleared by ``PathDispatcher``). Otherwise return success=False with
         controller state unchanged.
 
-        This method clears only ``active``, and resets the handle to neutral.
-        It writes no ``train_status`` (that read is derived): once ``active``
-        clears, a powered train reads ``train_status == MANUAL`` (EB set
-        ``control_mode`` to manual) with no separate state write, per
-        design_new.md "EB release". It does not re-select ATO — the operator
-        does that with ``set_mode("ato")`` and then ``/ato/go``. A train
-        holding at a stop keeps holding after the release.
+        This method clears ``active`` and ``cut_out`` together (a cut-out resets
+        exactly as an emergency brake does, design_new.md "Emergency cut-out"),
+        and resets the handle to neutral. It writes no ``train_status`` (that
+        read is derived): once ``active`` clears, a powered train reads
+        ``train_status == MANUAL`` (EB set ``control_mode`` to manual) with no
+        separate state write, per design_new.md "EB release". It does not
+        re-select ATO — the operator does that with ``set_mode("ato")`` and then
+        ``/ato/go``. A train holding at a stop keeps holding after the release.
         """
         c = self._c
         train = c._get_train()
@@ -135,6 +177,9 @@ class EBWorkflow:
         # cross-check here (design_new.md "ato.engaged"). Release reads only the
         # physical-safety conditions above.
         self.active = False
+        # A cut-out resets back to normal exactly as an emergency brake does
+        # (design_new.md "Emergency cut-out").
+        self.cut_out = False
         # Non-driving reset goes through the Operational-state helper, not a raw
         # handle_position write (design_new.md Module boundaries rule 5).
         c.ops.reset_handle_to_neutral()
@@ -154,9 +199,11 @@ class EBWorkflow:
     def clear(self) -> None:
         """Ungated EB-latch clear (design_new.md, "EB workflow state machine").
 
-        The EB Workflow is the single writer of ``active`` (module-boundary
-        rule), so OFF-cleanup (``TrainController.complete_power_off()``) clears
-        the latch through this method rather than assigning ``eb.active``
-        directly. Unlike ``release()`` this has no preconditions — it is the
-        unconditional teardown clear used when the controller powers off."""
+        The EB Workflow is the single writer of ``active`` and ``cut_out``
+        (module-boundary rule), so OFF-cleanup
+        (``TrainController.complete_power_off()``) clears both latches through
+        this method rather than assigning them directly. Unlike ``release()``
+        this has no preconditions — it is the unconditional teardown clear used
+        when the controller powers off."""
         self.active = False
+        self.cut_out = False

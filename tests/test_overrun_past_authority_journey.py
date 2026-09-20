@@ -23,13 +23,13 @@ What the journey demonstrates, tick by tick, through the real
      to THIS train -- owned, not ghosted, no phantom train minted -- because a
      train at its authority end stays permissive (design_new.md, "Attribution is
      gated on plausibility").
-  4. Detection alone does NOT teleport the span past the authority end: the head
-     parks AT the authorized end with the overrun block owned-but-not-entered.
-     The head reaches a block outside the authorized path only through real
-     MOVEMENT (a loco driving faster than its profile), and THAT is the case the
-     0-V cut catches -- pinned by
-     tests/test_lighting_calibration.py::
-       test_a_train_that_overran_its_authority_is_cut_to_0v.
+  4. That attribution result -- a head-side block not reserved for the train --
+     is an overrun entry, so Observe raises the train's EMERGENCY CUT-OUT on the
+     same read (design_new.md "Block occupancy detection", An overrun entry or a
+     conflict raises the emergency cut-out). The cut-out drives every block the
+     train stands on to 0 V and stops it at once; the overrun block still joins
+     the block list and the head still moves to its seam, so the loco stops on
+     BLK_D rather than running on.
 
 This is not a unit test of one helper; it is the whole tick loop reacting to a
 detector that leads the model over many ticks.
@@ -113,13 +113,11 @@ def _run_phase(sim, network, controller, detector, physical, ticks, log):
         sim.update(0.1)
         span = controller.physics_sync.current_span
         head = _head_block(controller)
-        vphys = sim.physics_instances.get(controller.train_id)
-        past = vphys._head_past_authority(controller) if vphys else None
         log.append({
             "phys": sorted(physical),
             "model_occ": list(span.occupied_blocks or []) if span else [],
             "head": head,
-            "past_auth": past,
+            "cut_out": bool(controller.eb.cut_out),
             "v_head": round(_voltage(network, head), 2),
             "speed": round(float(getattr(controller.physics_sync, "current_speed_kmh", 0.0) or 0.0), 1),
             "eb": controller.eb.active,
@@ -162,37 +160,35 @@ def _make_fixture():
     return network, sim, controller, detector
 
 
-def test_fast_loco_overruns_authority_and_span_parks_at_authority_end(capsys):
+def test_fast_loco_overruns_authority_and_is_cut_out(capsys):
     network, sim, controller, detector = _make_fixture()
 
     log: List[dict] = []
     # The physical loco rolls forward, briefly straddling each seam as a real
-    # loco does. It reaches its authority end (BLK_C), then overruns onto BLK_D
-    # and BLK_E.
+    # loco does. It reaches its authority end (BLK_C), then overruns onto BLK_D.
+    # An overrun onto BLK_D raises the emergency cut-out, which stops the loco at
+    # once, so the physical loco does not run on to BLK_E.
     march = [
         {"BLK_A"}, {"BLK_A", "BLK_B"}, {"BLK_B"},
         {"BLK_B", "BLK_C"}, {"BLK_C"},
         {"BLK_C", "BLK_D"}, {"BLK_D"},            # crossing the AUTHORITY end
-        {"BLK_D", "BLK_E"}, {"BLK_E"},
     ]
     for physical in march:
         _run_phase(sim, network, controller, detector, physical, 4, log)
 
     # --- print the tick-by-tick table for the human ---
-    print("\n tick | physical | model span            | head  | past? | v_head | speed | warns | trains")
+    print("\n tick | physical | model span            | head  | cut?  | v_head | speed | warns | trains")
     print("-" * 100)
     for i, r in enumerate(log):
         print(f" {i:4d} | {','.join(b[-1] for b in r['phys']):8s} | "
               f"{str(r['model_occ']):22s}| {r['head']:5s} | "
-              f"{str(r['past_auth']):5s} | {r['v_head']:6.2f} | {r['speed']:5.1f} | "
+              f"{str(r['cut_out']):5s} | {r['v_head']:6.2f} | {r['speed']:5.1f} | "
               f"{r['warnings']:5d} | {r['ntrains']}")
 
     # --- assertions on the mechanism ---
     # 1. The model's span SNAPPED FORWARD to follow the detector, tick by tick,
-    #    all the way to the authority end (BLK_C). Physical detection outranks
+    #    from A through B toward the authority end. Physical detection outranks
     #    the calculated position (reconcile_to_detected_occupancy).
-    assert log[-1]["head"] == "BLK_C", \
-        f"the span should have tracked the detector to the authority end; got {log[-1]}"
     assert any(r["head"] == "BLK_A" for r in log) and any(r["head"] == "BLK_B" for r in log), \
         "the span should have been seen progressing A -> B -> C as the detector led it"
 
@@ -211,29 +207,28 @@ def test_fast_loco_overruns_authority_and_span_parks_at_authority_end(capsys):
     assert all(r["ntrains"] == 1 for r in log), \
         "no phantom (unidentified) train may be minted for the overrun block"
 
-    # 4. Detection alone does NOT teleport the calculated span past the authority
-    #    end: the head parks AT the authorized end (BLK_C) with the overrun block
-    #    owned-but-not-entered. The head only reaches a block outside the
-    #    authorized path by real MOVEMENT -- a locomotive driving faster than its
-    #    profile -- and that is the case the 0-V cut catches. That
-    #    movement-driven step is pinned by
-    #    tests/test_lighting_calibration.py::
-    #      test_a_train_that_overran_its_authority_is_cut_to_0v.
-    assert all(r["past_auth"] is False for r in log), \
-        "the span head must not cross past authority by detection reconciliation alone"
+    # 4. When the detector credits FAST a block not reserved for it (BLK_D),
+    #    Observe raised the train's EMERGENCY CUT-OUT on that read (design_new.md
+    #    "Block occupancy detection", An overrun entry or a conflict raises the
+    #    emergency cut-out): the latch is set as a cut-out and the loco is held at
+    #    a stand.
+    assert controller.eb.active and controller.eb.cut_out, \
+        f"an overrun onto BLK_D must raise the emergency cut-out; got {log[-1]}"
+    assert log[-1]["speed"] == 0.0, "the cut-out holds the loco at a stand"
+    assert any(r["cut_out"] for r in log), "the cut-out latch must be seen set"
 
 
-def test_the_block_overrun_past_authority_is_never_powered():
-    """The block the loco overran onto past its authority end stays dead rail.
-    It is still credited to the train — owned, not ghosted — but the emission
-    leaves it out, and so does the de-energize drain, so nothing keeps it live
-    (design_new.md "Power", A block past the authority end is never energized).
+def test_the_overrun_cut_out_drives_the_whole_train_to_0v():
+    """An overrun raises the emergency cut-out, which drives EVERY block the
+    train stands on to 0 V (design_new.md "Emergency cut-out": `eb.cut_out`
+    drives every block the train stands on to `0`). The overrun block is still
+    credited to the train — owned, not ghosted — but nothing keeps it, or any
+    block under the cut-out train, energized.
 
-    Powering it was the bug: its direction cannot be read off the path or the
-    span, which both stop at the authority end, so it was driven positive by
-    default — pushing the locomotive backwards wherever that block was drawn
-    against the travel direction — and any voltage there kept driving a
-    locomotive that had already run past where it may go."""
+    This replaces the pre-cut-out behaviour where only the single overrun block
+    was kept dead (via the emission-set exclusion) while the train kept its plan
+    and its authorized blocks stayed lit; the cut-out now stops the whole
+    train."""
     network, sim, controller, detector = _make_fixture()
     log: List[dict] = []
     march = [
@@ -244,11 +239,17 @@ def test_the_block_overrun_past_authority_is_never_powered():
     for physical in march:
         _run_phase(sim, network, controller, detector, physical, 4, log)
 
-    physics = sim.physics_instances["FAST"]
     train = network.trains["FAST"]
+    span = controller.physics_sync.current_span
+    span_blocks = list(span.occupied_blocks or []) if span else []
+
     assert network.blocks["BLK_D"].occupied_by == "FAST"
-    assert physics.blocks_past_authority == {"BLK_D"}
-    assert "BLK_D" not in physics._energized_blocks_for_train(train)
-    assert "BLK_D" not in sim._calculated_hold_blocks()
-    # The blocks it is authorized on are unaffected.
-    assert "BLK_C" in physics._energized_blocks_for_train(train)
+    # The overrun raised the cut-out, and a released path leaves no live plan.
+    assert controller.eb.cut_out is True
+    # Every block the cut-out train stands on reads 0 V — including the overrun
+    # block and any authorized block still under the train.
+    assert span_blocks, "the train must still stand on at least one block"
+    for bid in span_blocks:
+        assert _voltage(network, bid) == pytest.approx(0.0), \
+            f"cut-out block {bid} must be de-energized; got {_voltage(network, bid)}"
+    assert _voltage(network, "BLK_D") == pytest.approx(0.0)

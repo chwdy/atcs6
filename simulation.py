@@ -42,7 +42,7 @@ from typing import (
 from unidentified_trains import UnidentifiedTrainTracker
 from network import RailwayNetwork
 from train import Train, TrainCar
-from enums import Direction, HandlePosition, OperationMode
+from enums import CommandResult, Direction, HandlePosition, OperationMode
 import operation_environment
 from block_power import BlockPowerController
 from switch_power import (
@@ -899,8 +899,11 @@ class SimulationController(SwitchOutputOwner):
             speed = float(
                 getattr(controller.physics_sync, "current_speed_kmh", 0.0) or 0.0
             )
-            past = physics._head_past_authority(controller)
-            if speed <= 0.1 and not past:
+            # A cut-out train is stopped (speed 0) but is an abnormal state worth
+            # logging; an overrun now raises the cut-out rather than a physics
+            # overrun test (design_new.md "Emergency cut-out").
+            cut_out = bool(getattr(controller.eb, "cut_out", False))
+            if speed <= 0.1 and not cut_out:
                 return
             profiles = getattr(self.network, "speed_profiles", None)
             profile = profiles.get(train.speed_profile_id) if profiles else None
@@ -1128,6 +1131,44 @@ class SimulationController(SwitchOutputOwner):
         finally:
             if self.power_controller is not None:
                 self.power_controller.reconcile_recorded_voltages()
+
+    def layout_emergency_cut_out(self) -> CommandResult:
+        """The layout-wide emergency cut-out (design_new.md "Emergency cut-out",
+        Layout emergency cut-out).
+
+        Raises `TrainController.eb.activate_cut_out()` for every train, so every
+        train's traction voltage goes to `0` and every train stops immediately on
+        its next Action, exactly as a per-train cut-out does. It touches only
+        traction voltage — a switch coil carries no standing power, it is pulsed
+        only for the moment it throws and then holds mechanically, so a cut-out
+        has nothing to de-energize there. It does not stop the session
+        (`simulation_running` is unchanged), so the session keeps running and each
+        train is reset with its own `TrainController.eb.release()`. It is a
+        resumable panic stop for the whole layout, distinct from `stop`.
+
+        It shares the cut-out's acceptance gate: accepted only while the active
+        operating environment is Virtual Hardware or Real Hardware. In Simulation
+        it is not offered, because there is no physical locomotive to stop faster
+        than the modelled brake curve and no output boundary to de-energize.
+        """
+        if self.operation_mode is OperationMode.SIMULATION:
+            return CommandResult(
+                False, "Emergency cut-out is only available on a hardware environment"
+            )
+        train_ids = sorted(self.controllers)
+        for train_id in train_ids:
+            self.controllers[train_id].eb.activate_cut_out()
+        self.notification_center.emit(
+            source="SimulationController",
+            operation="layout_emergency_cut_out",
+            kind=Kind.WARNING,
+            message=f"layout emergency cut-out raised for {len(train_ids)} train(s)",
+            entities=[],
+            event_time=time.time(),
+        )
+        return CommandResult(
+            True, f"Layout emergency cut-out raised for {len(train_ids)} train(s)"
+        )
 
     def _consume_watchdog_trip(self) -> None:
         """Consume a loss-of-control watchdog trip once, on the runtime thread.
@@ -1431,6 +1472,13 @@ class SimulationController(SwitchOutputOwner):
         # `reserved_for_other_train` fatal conflict.
         self._truncate_authority_at_occupied_reservations(entered_by_train)
 
+        # An overrun entry raises the train's emergency cut-out on this same read
+        # (design_new.md "Block occupancy detection", An overrun entry or a
+        # conflict raises the emergency cut-out). Runs in Observe, before any
+        # train plans; the overrun block still joins the block list and the head
+        # still moves to its seam below.
+        self._raise_overrun_cut_outs(entered_by_train)
+
         # A confirmed clear is a real vacate only once the holder's calculated
         # tail has reached the block's exit seam; a clear read from under a train
         # is a detection fault that holds the block (design_new.md "Block
@@ -1567,6 +1615,76 @@ class SimulationController(SwitchOutputOwner):
             if getattr(block, "occupied_by", None) == train_id:
                 evidence.add(block_id)
         return bool(evidence & confirmed)
+
+    def _raise_overrun_cut_outs(self, entered_by_train: Dict[str, Set[str]]) -> None:
+        """Cut out every train whose attribution result this read is an overrun
+        entry (design_new.md "Block occupancy detection", An overrun entry or a
+        conflict raises the emergency cut-out).
+
+        An overrun entry is a block credited to a train, on its head side, that
+        is not reserved for that train, while the train holds a live plan — a
+        train with no authority cannot overrun one. Observe calls
+        `TrainController.eb.activate_cut_out()` for that train on the same read,
+        which drives its blocks to `0` and stops it at once. One warning event
+        names the overrun, with the block and train ids on the entities; it is
+        distinct from the span-correction event, which reports the forward-snap
+        magnitude, so both may fire for the same entry.
+
+        A train with an open speed-calibration pass is exempt: its overrun is a
+        speed-only measurement fault that the pass itself stops (design_new.md
+        "Speed calibration", A leg that overruns the stretch fails the pass), so
+        no cut-out is raised for it.
+        """
+        calibration = getattr(self, "speed_calibration", None)
+        for train_id in sorted(entered_by_train):
+            if self.unidentified_trains.is_unidentified(train_id):
+                continue
+            controller = self.controllers.get(train_id)
+            if controller is None:
+                continue
+            # A train with no authority cannot overrun one.
+            if controller.path_projection.received_path_plan is None:
+                continue
+            # A calibration pass drives the train at an unmeasured step into a
+            # stretch whose far end is dead rail by construction; the pass ends
+            # as a measurement fault on this same read and is the stop, so it
+            # raises no cut-out (design_new.md "Speed calibration").
+            if (
+                calibration is not None
+                and calibration.get_propulsion_override(train_id) is not None
+            ):
+                continue
+            overrun_blocks = sorted(
+                block_id
+                for block_id in entered_by_train[train_id]
+                if getattr(
+                    self.network.blocks.get(block_id), "reserved_for_train", None
+                )
+                != train_id
+            )
+            if not overrun_blocks:
+                continue
+            # `activate_cut_out()` no-ops on an already-latched train, so a train
+            # cut out on an earlier read stays cut out and re-emits no event.
+            if controller.eb.active:
+                continue
+            controller.eb.activate_cut_out()
+            block_id = overrun_blocks[0]
+            self.notification_center.emit(
+                source="SimulationController",
+                operation="_detect_block_occupancy",
+                kind=Kind.WARNING,
+                message=(
+                    f"{train_id} overran its authority onto block {block_id}; "
+                    f"emergency cut-out raised"
+                ),
+                entities=[block_ref(block_id), train_ref(train_id)],
+                error=ErrorRecord(
+                    f"overrun entry by {train_id} onto block {block_id}",
+                    "overrun_entry",
+                ),
+                event_time=time.time(),
+            )
 
     def _emit_lost_detection_fault(self, train_id: str, block_id: str) -> None:
         """Report a block that read clear while its holding train still stands on

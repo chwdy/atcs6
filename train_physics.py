@@ -684,19 +684,16 @@ class TrainPhysics:
         if stopped_but_lit:
             return lighting_voltage
 
-        # Overran its authority: the head has run onto a block outside its
-        # authorized path (`_head_past_authority`). Cut this train's drive to 0 V
-        # at once — every block it stands on goes dead, so no pickup keeps power
-        # and the locomotive is no longer driven onto track it may not be on.
-        # This loses live detection of the train (a block at 0 V draws no current
-        # and reads clear, so the train is held, then ghosted), which is the
-        # accepted cost: a train that has already run past where it may go must be
-        # stopped, not kept lit. Lighting voltage does not stop a rolling
-        # locomotive — its momentum carries it on — so it is not the safe response
-        # here (design_new.md "Power", A train that overran its authority is cut
-        # to 0 V).
-        if self._head_past_authority(controller):
-            return 0.0
+        # An overrun is handled by the emergency cut-out, not here:
+        # `compute_track_voltage` has no overrun test of its own (design_new.md
+        # "TrainPhysics", A train that overran its authority is cut out). When
+        # attribution credits a train a head-side block that is not reserved for
+        # it, Observe raises the train's emergency cut-out on that read, which
+        # sets `eb.cut_out` and drives the whole train to `0` through the
+        # Propulsion cap step (`voltage_source_track_voltage = 0`, handled by the
+        # command branch above). The one overrun that raises no cut-out is a
+        # calibration leg's, whose overrun block is kept dead by the separate
+        # emission-set exclusion `blocks_past_authority`, not by this method.
 
         # Moving, or stopped under a live reservation / EB (the old
         # RUNNING_MOVING case): the reference comes from the controller's
@@ -714,35 +711,6 @@ class TrainPhysics:
                 return speed_profile.power_to_voltage(float(source_percent))
             return speed_profile.speed_to_voltage_two_stage(voltage_speed)
         return self._linear_speed_to_voltage(voltage_speed)
-
-    def _head_past_authority(self, controller: Optional["TrainController"]) -> bool:
-        """Whether the head has run onto a block outside its authorized path — an
-        overrun past the authority end.
-
-        During normal travel the head is always on a block of the plan's
-        `resource_sequence` (the authorized route), so this is False; it turns
-        True only once the locomotive has physically crossed the authority end
-        onto unauthorized track. Requires a live plan — a train with no authority
-        cannot overrun one — and resolves the head block from the head tile the
-        same way the stop-arrival test does (`_get_head_tile`), never from an
-        `occupied_blocks` end, which is geometric rather than head-relative.
-        """
-        if controller is None or self.network is None:
-            return False
-        projection = getattr(controller, "path_projection", None)
-        plan = getattr(projection, "received_path_plan", None)
-        if plan is None:
-            return False
-        head_tile = controller._get_head_tile()
-        if head_tile is None:
-            return False
-        head_block = self.network.tile_to_block_id(head_tile[0], head_tile[1])
-        if head_block is None:
-            return False
-        authorized = {
-            entry.resource_id for entry in (plan.resource_sequence or [])
-        }
-        return head_block not in authorized
 
     @staticmethod
     def _linear_speed_to_voltage(speed_kmh: float) -> float:
@@ -1795,10 +1763,12 @@ class TrainPhysics:
             # every neighbour stays plausible. This is what lets the block the
             # locomotive overran past its authority end attribute to it on the
             # read that first confirms it, rather than minting an unidentified
-            # train for that current. Safe here only because the app cuts this
-            # train's drive to 0 V the moment its head is past authority (see
-            # `compute_track_voltage`, `_head_past_authority`), so it is not being
-            # driven further onto the block it claims. The authority test is the
+            # train for that current. Safe here only because Observe raises the
+            # train's emergency cut-out on the read that credits it a head-side
+            # block not reserved for it (design_new.md "Block occupancy
+            # detection", An overrun entry or a conflict raises the emergency
+            # cut-out), which drives the train to 0 V, so it is not being driven
+            # further onto the block it claims. The authority test is the
             # emission side's: a train that holds a path plan but has no reserved
             # block ahead of its head has run to its authority end
             # (`_resolve_next_reserved_block`).

@@ -784,6 +784,22 @@ def set_handle(state: AppState, train_id: str, *, position: Any) -> CommandResul
 
 
 @refuses_unidentified_trains()
+def activate_cut_out(state: AppState, train_id: str) -> CommandResult:
+    """Raise an operator-initiated emergency cut-out via the canonical
+    ``commands.activate_cut_out_cmd()`` command (design_new.md "Emergency
+    cut-out").
+
+    The operator-initiated cut-out is accepted only while the selected operating
+    environment is Virtual Hardware or Real Hardware; in Simulation it is not
+    offered — only the emergency brake exists — because there is no physical
+    locomotive to stop faster than the modelled brake curve. The hardware-only
+    gate lives on ``commands.activate_cut_out_cmd()``.
+    """
+    controller = _controller(state, require_train(state, train_id))
+    return controller.commands.activate_cut_out_cmd()
+
+
+@refuses_unidentified_trains()
 def release_emergency(state: AppState, train_id: str) -> CommandResult:
     """Release the emergency brake via the canonical ``eb.release()`` command.
 

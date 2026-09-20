@@ -582,6 +582,24 @@ def register(app, state: AppState) -> None:
             return jsonify({"status": "success", **_train_to_dict(train, state.network)})
         return jsonify({"error": result.message}), 400
 
+    @app.route("/api/trains/<train_id>/activate-cut-out", methods=["POST"])
+    def activate_cut_out(train_id):
+        """Raise an operator-initiated emergency cut-out (canonical
+        commands.activate_cut_out_cmd()).
+
+        Accepted only on a hardware environment; in Simulation it returns 400,
+        because only the emergency brake exists there (design_new.md "Emergency
+        cut-out", The operator-initiated path is gated to hardware environments).
+        """
+        train = train_service.get_train(state, train_id)
+        if not train:
+            return jsonify({"error": "Train not found"}), 404
+
+        result = train_service.activate_cut_out(state, train_id)
+        if result.success:
+            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
+        return jsonify({"error": result.message}), 400
+
     @app.route("/api/trains/<train_id>/release-emergency", methods=["POST"])
     def release_emergency(train_id):
         """Release the emergency brake (canonical eb.release()).

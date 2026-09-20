@@ -41,6 +41,9 @@ def controller_to_dict(controller: "TrainController") -> Dict[str, Any]:
         # (design_new.md "Controller state machine").
         "powered": controller.powered,
         "eb_active": controller.eb.active,
+        # Whether the active EB latch is an emergency cut-out (design_new.md
+        # "Emergency cut-out"); only meaningful while `eb_active`.
+        "eb_cut_out": controller.eb.cut_out,
         # `cab` on the wire is the physical end the span is framed head-forward
         # for ("A" == end_a, "B" == end_b); there is no operator cab (design_new.md
         # "Reservation-side head derivation").
@@ -228,6 +231,7 @@ def controller_from_dict(
     # Sub-module fields are created in `__post_init__`; restore
     # persisted values after construction.
     controller.eb.active = data.get("eb_active", False)
+    controller.eb.cut_out = data.get("eb_cut_out", False)
     controller.manual.manual_mode_type = data.get("manual_mode_type", "simulation")
     controller.manual.manual_power_percent = int(
         data.get("manual_power_percent", 0) or 0

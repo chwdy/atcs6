@@ -297,27 +297,16 @@ class _OverrunController:
         return PhysicsCommand(kind=PHYSICS_KIND_HANDLE, voltage_source_speed_kmh=20.0)
 
 
-def test_a_train_that_overran_its_authority_is_cut_to_0v():
-    """A train whose head has run onto a block outside its authorized path emits
-    0 V, not drive or lighting voltage: every block it stands on goes dead so no
-    pickup keeps power. Lighting voltage would not stop a rolling locomotive
-    (momentum carries it on), and the lost detection at 0 V is the accepted cost
-    of stopping a train already past where it may go."""
-    from tests.test_block_occupancy_cap import build_line
+def test_a_train_on_its_authorized_path_drives_normally():
+    """A head on a block that is on its authorized route is normal travel, so it
+    drives the speed-derived voltage.
 
-    network = build_line()  # BLK_0..BLK_5, one tile each at (x, 0)
-    profile = make_default_speed_profile("T", 100.0)
-    physics = TrainPhysics(train_id="T", network=network)
-
-    # Head on BLK_2, but the authority only covers BLK_0..BLK_1 -> overran.
-    overran = _OverrunController((2, 0), ["BLK_0", "BLK_1"])
-    assert physics._head_past_authority(overran) is True
-    assert physics.compute_track_voltage(overran, profile) == pytest.approx(0.0)
-
-
-def test_a_train_still_on_its_authorized_path_drives_normally():
-    """The contrast: a head on a block that is on its authorized route is normal
-    travel, not an overrun, so it drives the speed-derived voltage."""
+    An overrun no longer has a test of its own in `compute_track_voltage`: when a
+    train runs its head onto a block not reserved for it, Observe raises the
+    train's emergency cut-out, which drives the whole train to 0 V through the
+    Propulsion cap step (design_new.md "Emergency cut-out"). That end-to-end
+    cut-out is exercised by
+    tests/test_overrun_past_authority_journey.py."""
     from tests.test_block_occupancy_cap import build_line
 
     network = build_line()
@@ -325,7 +314,6 @@ def test_a_train_still_on_its_authorized_path_drives_normally():
     physics = TrainPhysics(train_id="T", network=network)
 
     normal = _OverrunController((1, 0), ["BLK_0", "BLK_1"])
-    assert physics._head_past_authority(normal) is False
     assert physics.compute_track_voltage(normal, profile) > profile.lighting_voltage
 
 
