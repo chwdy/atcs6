@@ -242,29 +242,26 @@ def test_the_sequence_drops_points_before_it_zeroes_track():
 
 
 def test_the_sequence_records_nothing_so_it_is_thread_safe():
-    """The device write must not touch `Block.current_voltage`: that is what
-    lets the `OutputWatchdog` daemon run the same sequence off-thread."""
+    """The device write must not touch the recorded (applied-output) voltage:
+    that is what lets the `OutputWatchdog` daemon run the same sequence
+    off-thread."""
     _dev, sim = hardware_session()
-    block = _recorded_block(sim)
     sim.power_controller.set_block_voltage("BLK_A", 9.0)
-    block.current_voltage = 9.0
 
     sim.enter_safe_state()
 
-    assert block.current_voltage == 9.0, (
-        "the sequence itself must leave the recorded field alone"
+    assert sim.power_controller.get_recorded_voltage("BLK_A") == 9.0, (
+        "the sequence itself must leave the recorded voltage alone"
     )
 
 
 def test_the_runtime_wrapper_reconciles_the_recorded_voltage():
     _dev, sim = hardware_session()
-    block = _recorded_block(sim)
     sim.power_controller.set_block_voltage("BLK_A", 9.0)
-    block.current_voltage = 9.0
 
     sim.enter_output_safe_state()
 
-    assert block.current_voltage == 0.0
+    assert sim.power_controller.get_recorded_voltage("BLK_A") == 0.0
 
 
 def test_the_runtime_wrapper_advances_the_safe_state_generation():

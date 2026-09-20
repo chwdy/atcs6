@@ -95,8 +95,8 @@ def _head_block(controller) -> str:
 
 
 def _voltage(network, bid: str) -> float:
-    blk = network.blocks.get(bid)
-    return float(getattr(blk, "current_voltage", 0.0)) if blk else 0.0
+    controller = getattr(network, "power_controller", None)
+    return float(controller.get_recorded_voltage(bid)) if controller else 0.0
 
 
 def _overrun_warnings(sim):

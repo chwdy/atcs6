@@ -116,7 +116,6 @@ class Block(TrackResource):
         locked_by_path: Optional[str] = None,
         disabled: bool = False,
         manual: bool = False,
-        current_voltage: float = 0.0,
         allowed_travel_directions: Optional[Set[str]] = None,
         ordered_tiles: Optional[List[SegmentTileEntry]] = None,
         segments: Optional[List[Segment]] = None,
@@ -161,8 +160,12 @@ class Block(TrackResource):
         self.disabled = disabled  # Static availability flag (physical-absence)
         self.manual = manual  # Virtual-disable flag (manual_override bypasses)
 
-        # Voltage control (DC analog control)
-        self.current_voltage = current_voltage
+        # Track voltage is not a `Block` field. Its canonical home is the
+        # per-tick derived `TrainPhysics.compute_track_voltage(...)`, and the
+        # applied-output mirror (what reached the rail) is owned by
+        # `BlockPowerController` (`get_recorded_voltage(block_id)`), which the
+        # live frontend payload sources through `RailwayNetwork.to_dict`
+        # (design_new.md "Power", Block power-controller role).
 
         # Static block-level travel policy. Defaults to both directions allowed.
         self.allowed_travel_directions: Set[str] = (
@@ -406,7 +409,9 @@ class Block(TrackResource):
             "is_locked": self.is_locked,
             "disabled": self.disabled,
             "manual": self.manual,
-            "current_voltage": self.current_voltage,
+            # `current_voltage` is not a `Block` field: the live frontend payload
+            # gets the applied-output mirror injected by `RailwayNetwork.to_dict`
+            # from `BlockPowerController.get_recorded_voltage(...)`.
             "allowed_travel_directions": sorted(self.allowed_travel_directions),
             "ordered_tiles": [
                 [int(x), int(y), str(edge)] for (x, y, edge) in self.ordered_tiles
@@ -424,8 +429,8 @@ class Block(TrackResource):
 
         Per design_new.md Out of Scope ("Persistence / save-load of runtime
         state | In-memory only"), this writes block geometry and config only.
-        Runtime fields (occupied_by, caution, reservation, current_voltage,
-        computed state) are excluded.
+        Runtime fields (occupied_by, caution, reservation, computed state) are
+        excluded; track voltage is not a `Block` field at all.
 
         Member segments nest under the block, so one `blocks` key carries the
         whole grouping — the block's power/occupancy identity plus each member
@@ -473,9 +478,9 @@ class Block(TrackResource):
     def from_dict(cls, data: Dict[str, Any]) -> "Block":
         """Reconstruct block from a layout snapshot.
 
-        Runtime fields (`occupied_by`, `caution`, `reservation`,
-        `current_voltage`, computed `state`) are not loaded from disk —
-        they default-initialize and the engine populates them at run time.
+        Runtime fields (`occupied_by`, `caution`, `reservation`, computed
+        `state`) are not loaded from disk — they default-initialize and the
+        engine populates them at run time; track voltage is not a `Block` field.
         Legacy snapshots that carry those keys are silently ignored.
 
         Member segments come from the nested `segments` list. A snapshot

@@ -46,8 +46,8 @@ _TOL = 0.02
 
 
 def _voltage(network, block_id: str) -> float:
-    block = network.blocks.get(block_id)
-    return float(getattr(block, "current_voltage", 0.0)) if block else 0.0
+    controller = getattr(network, "power_controller", None)
+    return float(controller.get_recorded_voltage(block_id)) if controller else 0.0
 
 
 def _occupied_blocks(sim, train_id):

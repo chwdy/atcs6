@@ -28,9 +28,21 @@ from services.notifications import emit_command_result
 def register(app, state: AppState) -> None:
     """Register block routes."""
 
+    def _inject_voltage(block_dict: dict, block_id: str) -> dict:
+        """Add the applied-output `current_voltage` mirror (owned by
+        `BlockPowerController`, not `Block`) to a block payload; `0` when no
+        controller is wired."""
+        controller = getattr(state.sim_controller, "power_controller", None)
+        block_dict["current_voltage"] = (
+            float(controller.get_recorded_voltage(block_id))
+            if controller is not None
+            else 0.0
+        )
+        return block_dict
+
     def _read_block_dict(block) -> dict:
         """Block runtime dict + track counts, positions and platform names."""
-        block_dict = block.to_dict()
+        block_dict = _inject_voltage(block.to_dict(), block.block_id)
         tracks = state.network.get_block_tracks(block.block_id)
         block_dict["track_count"] = len(tracks)
         block_dict["track_positions"] = state.network.get_block_positions(
@@ -73,7 +85,7 @@ def register(app, state: AppState) -> None:
             )
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
-        return jsonify(block.to_dict())
+        return jsonify(_inject_voltage(block.to_dict(), block.block_id))
 
     @app.route("/api/blocks/<block_id>", methods=["GET"])
     def get_block(block_id):
@@ -142,7 +154,7 @@ def register(app, state: AppState) -> None:
             state, source="Block", entity_id_key="block_id",
             entity_id=block_id, command_name="update_flags", success=True,
         )
-        return jsonify(block.to_dict())
+        return jsonify(_inject_voltage(block.to_dict(), block.block_id))
 
     @app.route("/api/blocks/<block_id>", methods=["DELETE"])
     def delete_block(block_id):
@@ -172,7 +184,7 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": str(exc)}), 404
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
-        return jsonify(block.to_dict())
+        return jsonify(_inject_voltage(block.to_dict(), block.block_id))
 
     @app.route(
         "/api/blocks/<block_id>/segments/<segment_id>", methods=["DELETE"]
@@ -199,7 +211,7 @@ def register(app, state: AppState) -> None:
                     "message": f"Block {block_id} dissolved (last member removed)",
                 }
             )
-        return jsonify(block.to_dict())
+        return jsonify(_inject_voltage(block.to_dict(), block.block_id))
 
     @app.route("/api/blocks/<block_id>/voltage", methods=["GET"])
     def get_block_voltage(block_id: str):

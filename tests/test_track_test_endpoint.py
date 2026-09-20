@@ -7,7 +7,8 @@ watched a loco run up and back while the layout drew the block at 0.0 V through
 the whole test — the same disagreement `POST /api/hardware/switch-test` was fixed
 for when a test throw moved the points and left `Switch.position` behind.
 
-So the sweep mirrors each leg onto `Block.current_voltage` as it starts, in the
+So the sweep mirrors each leg onto the applied-output store
+(`BlockPowerController.get_recorded_voltage`) as it starts, in the
 nominal sign the runtime commands for those rails, and drops it back to zero when
 the rails go dead. The sweep resolves the rail binding's `reversed` flag the way
 the driver does, so the first leg is nominally positive on every block and the
@@ -85,7 +86,7 @@ def client():
     app = create_app(state)
     app.config["TESTING"] = True
     with app.test_client() as test_client:
-        yield test_client, block
+        yield test_client, block, sim_controller.power_controller
 
 
 def _sweep(test_client, block_id="BLK_A", config=None):
@@ -109,10 +110,12 @@ class _Legs(list):
         return self[-3:]
 
 
-def _legs(monkeypatch, block):
+def _legs(monkeypatch, power_controller, block_id="BLK_A"):
     seen = _Legs()
     monkeypatch.setattr(
-        self_test.time, "sleep", lambda _s: seen.append(block.current_voltage)
+        self_test.time,
+        "sleep",
+        lambda _s: seen.append(power_controller.get_recorded_voltage(block_id)),
     )
     return seen
 
@@ -136,8 +139,8 @@ def _driven_channels(monkeypatch):
 
 
 def test_sweep_energizes_the_block_on_the_layout(client, monkeypatch):
-    test_client, block = client
-    seen = _legs(monkeypatch, block)
+    test_client, block, pc = client
+    seen = _legs(monkeypatch, pc)
 
     resp = _sweep(test_client)
 
@@ -146,9 +149,9 @@ def test_sweep_energizes_the_block_on_the_layout(client, monkeypatch):
 
 
 def test_sweep_leaves_the_block_de_energized(client):
-    test_client, block = client
+    test_client, block, pc = client
     assert _sweep(test_client).get_json()["ok"] is True
-    assert block.current_voltage == 0.0
+    assert pc.get_recorded_voltage("BLK_A") == 0.0
 
 
 def test_sweep_drives_a_reversed_block_the_way_the_driver_would(client, monkeypatch):
@@ -159,7 +162,7 @@ def test_sweep_drives_a_reversed_block_the_way_the_driver_would(client, monkeypa
     drives whichever rail a nominal positive drives, so it reads +12 V here too.
     The flag rides in on the rail binding of the config payload the sweep drives
     (design_new.md "Power", Rail polarity lives on the rail binding)."""
-    test_client, block = client
+    test_client, block, pc = client
     reversed_config = {
         **CONFIG,
         "block_track": {
@@ -167,7 +170,7 @@ def test_sweep_drives_a_reversed_block_the_way_the_driver_would(client, monkeypa
         },
     }
     driven = _driven_channels(monkeypatch)
-    seen = _legs(monkeypatch, block)
+    seen = _legs(monkeypatch, pc)
 
     assert _sweep(test_client, config=reversed_config).get_json()["ok"] is True
 
@@ -179,7 +182,7 @@ def test_sweep_drives_the_forward_rail_first_on_a_normal_block(client, monkeypat
     """The Normal counterpart, and the discovery case: a fresh binding is Normal,
     so a block wired the wrong way round names itself by running the loco
     backwards on the first leg."""
-    test_client, _block = client
+    test_client, _block, _pc = client
     driven = _driven_channels(monkeypatch)
 
     assert _sweep(test_client).get_json()["ok"] is True
@@ -188,10 +191,10 @@ def test_sweep_drives_the_forward_rail_first_on_a_normal_block(client, monkeypat
 
 
 def test_unbound_block_is_reported_and_touches_no_voltage(client):
-    test_client, block = client
-    block.current_voltage = 5.0
+    test_client, block, pc = client
+    pc.set_recorded_voltage("BLK_A", 5.0)
 
     resp = _sweep(test_client, block_id="BLK_A_MISSING")
 
     assert resp.get_json()["ok"] is False
-    assert block.current_voltage == 5.0
+    assert pc.get_recorded_voltage("BLK_A") == 5.0

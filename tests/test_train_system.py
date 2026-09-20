@@ -689,32 +689,33 @@ class TestBlockPowerController:
 
 
 class TestBlockCurrentVoltage:
-    """Tests for Block.current_voltage property."""
+    """`current_voltage` is not a `Block` field: voltage's canonical home is
+    `TrainPhysics.compute_track_voltage(...)`, and the applied-output mirror is
+    owned by `BlockPowerController` (gap-analysis 2026-09-20 M9)."""
 
-    def test_block_has_current_voltage(self):
-        """Test Block has current_voltage property."""
+    def test_block_has_no_current_voltage_field(self):
+        """A `Block` neither stores nor serializes `current_voltage` itself."""
         block = Block(block_id="BLK_001")
-        assert block.current_voltage == 0.0
+        assert not hasattr(block, "current_voltage")
+        assert "current_voltage" not in block.to_dict()
 
-    def test_block_current_voltage_in_frontend_payload_but_not_persisted(self):
-        """`current_voltage` is exposed in the live frontend payload (to_dict)
-        but is runtime state (design_new.md Out of Scope: "Persistence /
-        save-load of runtime state | In-memory only"), so from_dict must not
-        restore it from disk — voltage defaults back to 0.0.
-        """
-        block = Block(block_id="BLK_001")
-        block.current_voltage = 8.5
+    def test_current_voltage_is_injected_into_the_network_payload(self):
+        """The live frontend payload carries `current_voltage`, injected by
+        `RailwayNetwork.to_dict` from the `BlockPowerController` applied-output
+        mirror — not from a `Block` field, and not persisted."""
+        from network import RailwayNetwork
+        from block_power import BlockPowerController
 
-        # Frontend payload still carries the live value.
-        data = block.to_dict()
-        assert data["current_voltage"] == 8.5
+        network = RailwayNetwork()
+        network.blocks["BLK_001"] = Block(block_id="BLK_001")
+        network.power_controller = BlockPowerController(network=network)
+        network.power_controller.set_recorded_voltage("BLK_001", 8.5)
 
-        # Reload (the persistence path uses Block.to_layout_dict which omits
-        # current_voltage entirely; this stricter case feeds the legacy
-        # to_dict output through from_dict and confirms runtime fields are
-        # still dropped).
-        restored = Block.from_dict(data)
-        assert restored.current_voltage == 0.0
+        payload = network.to_dict()
+        assert payload["blocks"]["BLK_001"]["current_voltage"] == 8.5
+
+        # Persistence omits it entirely (runtime state, not on the block).
+        assert "current_voltage" not in network.blocks["BLK_001"].to_layout_dict()
 
 
 # =============================================================================

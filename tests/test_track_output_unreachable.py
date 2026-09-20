@@ -53,7 +53,7 @@ def test_a_refused_write_never_claims_the_block_is_energized():
     network, sim, pc = power_controller({"BLK_1"})
 
     assert pc.set_block_voltage("BLK_1", 10.0) is False
-    assert network.blocks["BLK_1"].current_voltage == 0.0
+    assert pc.get_recorded_voltage("BLK_1") == 0.0
     # A hardware failure latches its own flag, not the fatal-conflict one; both
     # sit on the one halt gate (design_new.md "Power", Hardware I/O failure).
     assert sim.hardware_failure is True
@@ -145,7 +145,7 @@ def test_a_landed_write_still_records_its_voltage():
     network, sim, pc = power_controller({"BLK_1"})
 
     assert pc.set_block_voltage("BLK_0", 10.0) is True
-    assert network.blocks["BLK_0"].current_voltage == 10.0
+    assert pc.get_recorded_voltage("BLK_0") == 10.0
 
 
 def test_a_refused_write_is_reported_once_not_every_tick():

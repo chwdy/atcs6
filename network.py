@@ -1796,6 +1796,18 @@ class RailwayNetwork(SwitchOutputOwner):
                         exc2,
                     )
 
+    def _recorded_block_voltage(self, block_id: str) -> float:
+        """The applied-output voltage recorded for `block_id`, or `0`.
+
+        Read from the `BlockPowerController` (voltage's applied-output mirror is
+        controller-owned, not a `Block` field); `0` when no controller is wired,
+        as in bootstrap or isolated tests.
+        """
+        controller = getattr(self, "power_controller", None)
+        if controller is None:
+            return 0.0
+        return float(controller.get_recorded_voltage(block_id))
+
     def to_dict(self) -> dict:
         """Convert network to dictionary for the live frontend payload.
 
@@ -1825,7 +1837,15 @@ class RailwayNetwork(SwitchOutputOwner):
             # panel that adopts it. The save payload is the one that leaves them
             # out; see `to_layout_dict`.
             "trains": [t.to_dict(self) for t in self.trains.values()],
-            "blocks": {k: v.to_dict() for k, v in self.blocks.items()},
+            # `current_voltage` is the applied-output mirror owned by
+            # `BlockPowerController`, not a `Block` field; inject it onto each
+            # block's live payload here (design_new.md "Power", Block
+            # power-controller role). It defaults to `0` when no controller is
+            # wired (bootstrap / isolated tests).
+            "blocks": {
+                k: {**v.to_dict(), "current_voltage": self._recorded_block_voltage(k)}
+                for k, v in self.blocks.items()
+            },
             "signals": {k: v.to_dict() for k, v in self.signals.items()},
             "platforms": [
                 p.to_dict_with_orientation(self) for p in self.platforms.values()

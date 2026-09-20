@@ -184,12 +184,36 @@ class BlockPowerController:
     # fault is a static wiring/configuration one, not a per-tick event.
     _unreachable_blocks: Set[str] = field(default_factory=set)
 
+    # The applied-output mirror: what actually reached each block's rail, keyed
+    # by block id. This is `BlockPowerController`-owned runtime state, not a
+    # `Block` field — voltage's canonical home is `TrainPhysics.compute_track_
+    # voltage(...)` and this controller only records what it drove (design_new.md
+    # "Power", Block power-controller role). It is exposed on the live frontend
+    # payload but never persisted (see `RailwayNetwork.to_dict`).
+    _recorded_voltages: Dict[str, float] = field(default_factory=dict)
+
+    def get_recorded_voltage(self, block_id: str) -> float:
+        """The last voltage recorded as having reached `block_id`'s rail, or `0`.
+
+        The applied-output mirror the drain and the frontend payload read; a
+        block with no recorded write reads `0`.
+        """
+        return float(self._recorded_voltages.get(block_id, 0.0))
+
+    def set_recorded_voltage(self, block_id: str, voltage: float) -> None:
+        """Record an applied voltage directly, without a device write.
+
+        Used by display-only mirrors (the hardware track test) that show a
+        voltage on the layout without routing it through `set_block_voltage`.
+        """
+        self._recorded_voltages[block_id] = float(voltage)
+
     def zero_device_outputs(self) -> None:
         """Command every block voltage to `0` on the device, recording nothing.
 
         This is the block half of the `OutputSafety.enter_safe_state()` sequence
         (design_new.md "Power", Safe state / fail-safe). It commands the device
-        transport directly and does not touch `Block.current_voltage` or any
+        transport directly and does not touch the recorded voltages or any
         other recorded model field, which is what makes the sequence safe to
         call from any thread — including the Real Hardware `OutputWatchdog`
         daemon. Reconciling the recorded fields is a separate, later step owned
@@ -198,14 +222,13 @@ class BlockPowerController:
         self.output_interface.enter_safe_state()
 
     def reconcile_recorded_voltages(self) -> None:
-        """Bring `Block.current_voltage` into line with a rail already at `0`.
+        """Bring the recorded voltages into line with a rail already at `0`.
 
         The runtime-thread half of a safe-state entry. Kept apart from
         `zero_device_outputs()` so the device write stays non-recording.
         """
-        if self.network is not None:
-            for block in self.network.blocks.values():
-                block.current_voltage = 0.0
+        for block_id in list(self._recorded_voltages):
+            self._recorded_voltages[block_id] = 0.0
 
     def enter_safe_state(self) -> None:
         """Zero the block outputs and reconcile the recorded voltages.
@@ -247,10 +270,11 @@ class BlockPowerController:
 
         A real driver refuses the write for a block it cannot reach — one with
         no `block_track` binding, or a binding naming a chip the session did not
-        build. `Block.current_voltage` records what actually reached the rail,
-        so a refused write leaves it at `0`: the model must not claim a block is
-        energized when the rail is dead, or the operator sees a train the app
-        believes is running and a locomotive that never moves.
+        build. The recorded applied voltage (`get_recorded_voltage(block_id)`)
+        records what actually reached the rail, so a refused write leaves it at
+        `0`: the model must not claim a block is energized when the rail is dead,
+        or the operator sees a train the app believes is running and a locomotive
+        that never moves.
 
         The first refusal per block is reported through `NotificationCenter`,
         because a silently dead rail is the hardest possible fault to diagnose
@@ -276,10 +300,11 @@ class BlockPowerController:
             landed = False
             failure_message = f"output write raised {type(exc).__name__}: {exc}"
 
-        if self.network:
-            block = self.network.blocks.get(block_id)
-            if block:
-                block.current_voltage = clamped if landed else 0.0
+        # Record what actually reached the rail: the clamped value on a landed
+        # write, `0` when the driver refused it (the model must not claim a block
+        # is energized when the rail is dead). This is the applied-output mirror,
+        # owned here rather than on `Block`.
+        self._recorded_voltages[block_id] = clamped if landed else 0.0
 
         if not landed and block_id not in self._unreachable_blocks:
             self._unreachable_blocks.add(block_id)
@@ -491,7 +516,7 @@ class BlockPowerController:
                 else False
             )
             held = occupant is not None and not is_unidentified and not ghost
-            if not held and float(getattr(block, "current_voltage", 0.0)) != 0.0:
+            if not held and self.get_recorded_voltage(block_id) != 0.0:
                 self.set_block_voltage(block_id, 0.0)
 
     def to_dict(self) -> Dict[str, Any]:

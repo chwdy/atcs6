@@ -19,7 +19,8 @@
   request may name its own width (`pulse_s`).
 - `POST /api/hardware/track-test` sweeps a block's two bound track channels
   through both polarities so a loco runs, stops, and reverses. Each leg is
-  mirrored onto `Block.current_voltage` while it is held, so the layout shows the
+  mirrored onto the applied-output store (`BlockPowerController`) while it is
+  held, so the layout shows the
   block energized instead of sitting at 0 V through a test driving real rails.
 - `POST /api/hardware/occupancy-test` reads both of one block's occupancy
   detectors and reports which one decides and what it says.
@@ -325,7 +326,8 @@ def register(app, state: AppState) -> None:
         not be writing over the runtime's. A stalled tick for the length of a
         test the operator deliberately started is the cheaper side of that.
 
-        The sweep is mirrored onto `Block.current_voltage` leg by leg, for the
+        The sweep is mirrored onto the applied-output store (`BlockPowerController`)
+        leg by leg, for the
         same reason the switch throw test writes `Switch.position`: a test that
         energizes real rails while the model still reads 0 V leaves the operator
         watching a layout that disagrees with the track in front of them. It is
@@ -345,10 +347,14 @@ def register(app, state: AppState) -> None:
         from hardware import self_test
 
         block = state.network.get_block(str(block_id)) if state.network else None
+        power_controller = getattr(state.sim_controller, "power_controller", None)
 
         def _mirror(volts: float) -> None:
-            if block is not None:
-                block.current_voltage = volts
+            # Mirror the sweep voltage onto the applied-output store so the layout
+            # shows it while the leg is held (design_new.md "Power"). Voltage is
+            # not a `Block` field; it is recorded on `BlockPowerController`.
+            if block is not None and power_controller is not None:
+                power_controller.set_recorded_voltage(str(block_id), volts)
 
         mirror = {
             "on_voltage": _mirror,
