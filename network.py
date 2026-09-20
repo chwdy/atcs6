@@ -764,7 +764,9 @@ class RailwayNetwork(SwitchOutputOwner):
             "removes_platform": removes_platform,
         }
 
-    def remove_track(self, x: int, y: int) -> bool:
+    def remove_track(
+        self, x: int, y: int, *, also_removing: Iterable[Tuple[int, int]] = ()
+    ) -> bool:
         """Remove track segment and propagate updates to neighbors.
 
         Cleans up entities anchored to this tile so the layout stays
@@ -772,12 +774,26 @@ class RailwayNetwork(SwitchOutputOwner):
         switch entity (if `track.switch_id` is set), and the owning
         platform (if `_tile_to_platform` has an entry) are removed first.
         Segment membership is reconciled via `remove_tile_from_segment`.
+
+        A tile that is a segment's last one takes the segment with it, so
+        erasing it is bound by the rule for deleting that segment (design_new.md,
+        "Segment deletion keeps its block connected"). That is judged first,
+        before the signals, switch or platform are touched, so a rejection
+        changes nothing. `also_removing` names the other tiles erased in the
+        same edit; a caller erasing a whole block's track passes them all, so
+        the block is judged as one edit and not one tile at a time.
+
+        Raises:
+            ValueError: when erasing this tile would empty a segment in the
+                middle of its block. Nothing is changed.
         """
         key = (x, y)
         if key not in self.tracks:
             return False
 
         track = self.tracks[key]
+
+        self.check_tile_removable(x, y, also_removing=also_removing)
 
         for sid in list(track.signal_ids):
             self.remove_signal(sid)
@@ -795,7 +811,7 @@ class RailwayNetwork(SwitchOutputOwner):
             # tile itself to be removed so the caller doesn't end up with
             # an orphan entry in self.tracks.
             try:
-                self.remove_tile_from_segment(x, y)
+                self.remove_tile_from_segment(x, y, also_removing=also_removing)
             except Exception:
                 logger.exception(
                     "Block reconciliation failed while removing track (%d, %d); "
@@ -839,8 +855,33 @@ class RailwayNetwork(SwitchOutputOwner):
         return self._get_segment_geometry_manager().extend_segment(*args, **kwargs)
 
     def delete_segment(self, segment_id: str) -> bool:
-        """Forward to `SegmentGeometryManager.delete_segment(segment_id)`."""
+        """Forward to `SegmentGeometryManager.delete_segment(segment_id)`.
+
+        Returns False for an unknown segment. Raises ValueError, and changes
+        nothing, when the segment is in the middle of a multi-segment block
+        (design_new.md, "Segment deletion keeps its block connected").
+        """
         return self._get_segment_geometry_manager().delete_segment(segment_id)
+
+    def check_tiles_removable(self, positions: Iterable[Tuple[int, int]]) -> None:
+        """Forward to `SegmentGeometryManager.check_tiles_removable(positions)`.
+
+        Raises ValueError when taking these tiles out of their segments would
+        empty a segment in the middle of a multi-segment block. Reads only.
+        """
+        return self._get_segment_geometry_manager().check_tiles_removable(positions)
+
+    def check_tile_removable(
+        self, x: int, y: int, *, also_removing: Iterable[Tuple[int, int]] = ()
+    ) -> None:
+        """Forward to `SegmentGeometryManager.check_tile_removable(x, y, ...)`.
+
+        The one-tile form of `check_tiles_removable`, for a caller that removes
+        a block's tiles one at a time after judging the whole edit up front.
+        """
+        return self._get_segment_geometry_manager().check_tile_removable(
+            x, y, also_removing=also_removing
+        )
 
     def create_block(self, block_id: str, segment_ids: List[str], name: str = "",
                      validate: bool = True) -> Block:
@@ -1347,9 +1388,19 @@ class RailwayNetwork(SwitchOutputOwner):
             block_id
         )
 
-    def remove_tile_from_segment(self, x: int, y: int) -> List[str]:
-        """Forward to `SegmentGeometryManager.remove_tile_from_segment(x, y)`."""
-        return self._get_segment_geometry_manager().remove_tile_from_segment(x, y)
+    def remove_tile_from_segment(
+        self, x: int, y: int, *, also_removing: Iterable[Tuple[int, int]] = ()
+    ) -> List[str]:
+        """Forward to `SegmentGeometryManager.remove_tile_from_segment(x, y)`.
+
+        `also_removing` names the other tiles leaving their segments in the
+        same edit, so the rule for emptying a segment is judged over all of
+        them. Raises ValueError, changing nothing, when the edit would empty a
+        segment in the middle of its block.
+        """
+        return self._get_segment_geometry_manager().remove_tile_from_segment(
+            x, y, also_removing=also_removing
+        )
 
     def remove_tiles_from_segment(self, positions: List[Tuple[int, int]]) -> List[str]:
         """Forward to `SegmentGeometryManager.remove_tiles_from_segment(positions)`."""

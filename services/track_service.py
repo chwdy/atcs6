@@ -25,10 +25,11 @@ knowing any status codes:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from app_state import AppState
 from services.exceptions import NotFoundError, ValidationError
+from services.segment_service import require_tiles_removable
 from switch import Switch
 from track import FORBIDDEN_TRACK_BITS, Tile, is_square_corner_switch
 
@@ -101,6 +102,16 @@ def update_track(
                 raise ValidationError("dead_end_ports must be a list of N/E/S/W")
         else:
             new_dead_ends = track.dead_end_ports
+
+        # A tile that becomes a switch, or is erased, leaves its segment. If it
+        # is the segment's last tile the segment goes with it, so the edit is
+        # bound by the rule for deleting a segment (design_new.md, "Segment
+        # deletion keeps its block connected"). Judged here, before anything
+        # below changes, so a rejection changes nothing.
+        becomes_switch = Tile(x=x, y=y, track_bits=new_bits).is_switch
+        is_erased = new_bits == 0 and not new_dead_ends
+        if track.segment_id and (becomes_switch or is_erased):
+            require_tiles_removable(state, [(x, y)])
 
         impact = state.network.compute_bit_change_impact(
             x, y, new_bits, new_dead_ends
@@ -204,9 +215,13 @@ def delete_track(state: AppState, x: int, y: int) -> bool:
 
     Raises:
         NotFoundError when the tile has no track.
+        ValidationError when erasing the tile would empty a segment in the
+        middle of its block (design_new.md, "Segment deletion keeps its block
+        connected"). Nothing is changed.
     """
     if not state.network.get_track(x, y):
         raise NotFoundError("Track not found")
+    require_tiles_removable(state, [(x, y)])
     state.network.remove_track(x, y)
     # Connectivity changed: refresh stored switch flank protection
     # (design_new.md, "Flank protection computation").
@@ -227,6 +242,28 @@ def add_tracks_bulk(
     added: List[Tile] = []
     updated: List[Tile] = []
 
+    # A tile that merges into a switch leaves its segment (a switch is never a
+    # segment member). If it is the segment's last tile the segment goes with
+    # it, so the tiles are bound by the rule for deleting a segment
+    # (design_new.md, "Segment deletion keeps its block connected"). They are
+    # judged together, before anything changes, so a rejection changes nothing.
+    becoming_switches: List[Tuple[int, int]] = []
+    for track_data in tracks_data:
+        tx = track_data.get("x")
+        ty = track_data.get("y")
+        if tx is None or ty is None:
+            continue
+        existing = state.network.get_track(tx, ty)
+        if existing is None or not existing.segment_id:
+            continue
+        merged = existing.track_bits | track_data.get("track_bits", 0)
+        if merged in FORBIDDEN_TRACK_BITS or is_square_corner_switch(merged):
+            continue
+        if Tile(x=tx, y=ty, track_bits=merged).is_switch:
+            becoming_switches.append((tx, ty))
+    require_tiles_removable(state, becoming_switches)
+    becoming_switches_set = frozenset(becoming_switches)
+
     for track_data in tracks_data:
         tx = track_data.get("x")
         ty = track_data.get("y")
@@ -246,7 +283,9 @@ def add_tracks_bulk(
             existing_track.set_track_bits(merged_bits)
 
             if existing_track.is_switch and existing_track.segment_id:
-                state.network.remove_tile_from_segment(tx, ty)
+                state.network.remove_tile_from_segment(
+                    tx, ty, also_removing=becoming_switches_set
+                )
             _ensure_switch_for_tile(state, existing_track, tx, ty)
 
             state.network.propagate_from_tile(tx, ty)
@@ -276,7 +315,23 @@ def delete_tracks_bulk(
     Returns ``{"status": "needs_confirmation", "impact": {...}}`` when the
     deletion would orphan switches/signals/platforms and ``force`` is
     False, otherwise ``{"status": "done", "deleted": [[x, y], ...]}``.
+
+    Raises:
+        ValidationError when the erase would empty a segment in the middle of
+        its block (design_new.md, "Segment deletion keeps its block
+        connected"). The tiles are judged together, before anything is asked
+        or erased, so a rejection changes nothing; erasing all of a block's
+        track together is allowed.
     """
+    doomed: List[Tuple[int, int]] = []
+    for pos in positions:
+        if not isinstance(pos, (list, tuple)) or len(pos) < 2:
+            continue
+        if state.network.get_track(pos[0], pos[1]):
+            doomed.append((pos[0], pos[1]))
+    require_tiles_removable(state, doomed)
+    doomed_set = frozenset(doomed)
+
     switches_set: List[str] = []
     signals_set: List[str] = []
     platforms_set: List[str] = []
@@ -321,7 +376,7 @@ def delete_tracks_bulk(
             continue
         px, py = pos[0], pos[1]
         if state.network.get_track(px, py):
-            state.network.remove_track(px, py)
+            state.network.remove_track(px, py, also_removing=doomed_set)
             deleted.append([px, py])
 
     # Connectivity changed: refresh stored switch flank protection once for the

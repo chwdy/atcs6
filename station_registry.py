@@ -119,6 +119,12 @@ class StationRegistry:
                 f"Tile ({x}, {y}) already belongs to station {track.station_id}"
             )
 
+        # The tile leaves its segment for the platform's own segment. If it is
+        # that segment's last tile the segment goes with it, and that must not
+        # split the block it sits in (design_new.md, "Segment deletion keeps
+        # its block connected"). Judged here, before anything changes.
+        self._n.check_tiles_removable([(x, y)])
+
         # Generate station ID if not provided
         if station_id is None:
             station_id = f"STA_{uuid.uuid4().hex[:6].upper()}"
@@ -412,6 +418,14 @@ class StationRegistry:
         if not is_continuous:
             raise ValueError(f"Station would not be continuous: {', '.join(errors)}")
 
+        # Every tile that joins leaves its segment, so the platform is bound by
+        # the rule for emptying a segment (design_new.md, "Segment deletion
+        # keeps its block connected"). The tiles are judged together, before
+        # anything changes, so a rejection changes nothing.
+        joining = [(x, y) for x, y in new_positions if (x, y) not in station.positions]
+        self._n.check_tiles_removable(joining)
+        joining_set = frozenset(joining)
+
         # Add positions to station. Tile ownership is a SEGMENT reference and
         # `block_assignments` is a BLOCK reference, so the two axes are named
         # by their own ids (`entity_ids`) rather than one shared string.
@@ -428,7 +442,9 @@ class StationRegistry:
                     if track.segment_id:
                         if track.segment_id != station_segment_id:
                             affected_segments.add(track.segment_id)
-                        self._n.remove_tile_from_segment(x, y)
+                        self._n.remove_tile_from_segment(
+                            x, y, also_removing=joining_set
+                        )
                     # Assign to the station's segment, mirroring the owning
                     # block onto the Platform's canonical block_assignments so
                     # ordered_blocks / get_all_assigned_blocks see this tile's

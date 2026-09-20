@@ -65,6 +65,8 @@ def register(app, state: AppState) -> None:
             track_service.delete_track(state, x, y)
         except NotFoundError:
             return jsonify({"error": "Track not found"}), 404
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
         return jsonify(
             {"status": "success", "message": f"Track at ({x}, {y}) removed"}
         )
@@ -72,9 +74,12 @@ def register(app, state: AppState) -> None:
     @app.route("/api/tracks/bulk", methods=["POST"])
     def add_tracks_bulk():
         data = request.json or {}
-        result = track_service.add_tracks_bulk(
-            state, tracks_data=data.get("tracks", [])
-        )
+        try:
+            result = track_service.add_tracks_bulk(
+                state, tracks_data=data.get("tracks", [])
+            )
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
         affected = result["added"] + result["updated"]
         return jsonify(
             {
@@ -89,9 +94,12 @@ def register(app, state: AppState) -> None:
     def delete_tracks_bulk():
         data = request.json or {}
         force = bool(data.get("force", False))
-        result = track_service.delete_tracks_bulk(
-            state, positions=data.get("positions", []), force=force
-        )
+        try:
+            result = track_service.delete_tracks_bulk(
+                state, positions=data.get("positions", []), force=force
+            )
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
         if result["status"] == "needs_confirmation":
             return jsonify(
                 {"requires_confirmation": True, "impact": result["impact"]}

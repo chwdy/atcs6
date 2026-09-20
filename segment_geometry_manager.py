@@ -13,7 +13,16 @@ scenario setup, tests) continue to work without change.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Optional, Set, Tuple
+from typing import (
+    TYPE_CHECKING,
+    Callable,
+    Collection,
+    Iterable,
+    List,
+    Optional,
+    Set,
+    Tuple,
+)
 
 from block import Block
 from entity_ids import block_id_for_segment, segment_id_for_block
@@ -565,6 +574,132 @@ class SegmentGeometryManager:
 
         return block
 
+    def _require_run_stays_connected(
+        self, block_id: str, going: Collection[str]
+    ) -> None:
+        """Raise ValueError when the segments in `going` leaving `block_id`
+        would split it in two.
+
+        design_new.md, **Tile** > **Non-empty parent rule**, "Segment deletion
+        keeps its block connected": the members a block keeps after an edit
+        must still be one connected run, so a segment can go only from either
+        end of `Block.segments`, or when it is the block's only member. This is
+        the same end-only rule `BlockGroupingManager.remove_segment_from_block`
+        applies to grouping edits.
+
+        `going` holds every segment of this block that the same edit empties.
+        They are judged together, so an edit that takes away a whole block's
+        track, or an end segment along with its neighbour, is allowed as long
+        as the members left behind are next to each other. Reads only.
+        """
+        members = self._n.blocks[block_id].segment_ids
+        if len(members) < 2:
+            return
+        kept = [i for i, member in enumerate(members) if member not in going]
+        if not kept:
+            return  # the whole block goes; nothing is left to split
+
+        # Members that go from between two that stay are the ones that split
+        # the block. A member going from either end never does.
+        between = [
+            members[i]
+            for i in range(kept[0], kept[-1] + 1)
+            if members[i] in going
+        ]
+        if not between:
+            return
+
+        if len(between) == 1:
+            message = (
+                f"Segment {between[0]} is in the middle of block {block_id}, "
+                "so removing it would split the block in two; only an end "
+                "segment can be removed. Take it out of the block's end "
+                "first, or delete the block."
+            )
+        else:
+            message = (
+                f"Segments {', '.join(between)} are in the middle of block "
+                f"{block_id}, so removing them would split the block in two; "
+                "only end segments can be removed. Take them out of the "
+                "block's ends first, or delete the block."
+            )
+        raise ValueError(message)
+
+    def _check_block_edit(
+        self, block_id: str, going: Callable[[Tuple[int, int]], bool]
+    ) -> None:
+        """Judge an edit against one block. `going(pos)` says whether the
+        tile at `pos` leaves its segment in this edit."""
+        members = self._n.blocks[block_id].segment_ids
+        if len(members) < 2:
+            return  # a lone segment cannot split its block
+        emptied = [
+            member
+            for member in members
+            if all(going(pos) for pos in self._n.get_segment_positions(member))
+        ]
+        if emptied:
+            self._require_run_stays_connected(block_id, emptied)
+
+    def check_tiles_removable(self, positions: Iterable[Tuple[int, int]]) -> None:
+        """Raise ValueError when taking these tiles out of their segments
+        would empty a segment whose block could not lose it.
+
+        An emptied segment is deleted in the same operation (design_new.md,
+        **Non-empty parent rule**, "Auto-delete on last-child removal"), so an
+        edit that empties one is bound by the same rule as `delete_segment`,
+        and a rejected delete rejects the whole edit ("Atomic commit"). Callers
+        that change anything else before they reach the tile removal (erasing
+        track, turning a tile into a switch, moving a tile into a platform) call
+        this first, so a rejection changes nothing. Tiles that belong to no
+        segment are ignored. Reads only.
+        """
+        leaving = frozenset((int(x), int(y)) for x, y in positions)
+        judged: Set[str] = set()
+        for x, y in leaving:
+            track = self._n.get_track(x, y)
+            if track is None or not track.segment_id:
+                continue
+            block_id = self._n.segment_to_block_id(track.segment_id)
+            if block_id is None or block_id in judged:
+                continue
+            judged.add(block_id)
+            self._check_block_edit(block_id, leaving.__contains__)
+
+    def check_tile_removable(
+        self, x: int, y: int, *, also_removing: Iterable[Tuple[int, int]] = ()
+    ) -> None:
+        """`check_tiles_removable` for one tile that leaves with `also_removing`.
+
+        For a caller that removes a block's tiles one at a time after judging
+        the whole edit up front. Only the block of this tile is judged, and only
+        when this tile is its segment's last one, so the per-tile cost does not
+        grow with the size of the edit. Pass `also_removing` as a `set` or
+        `frozenset` to avoid copying it on every call. Reads only.
+        """
+        track = self._n.get_track(x, y)
+        if track is None or not track.segment_id:
+            return
+        block_id = self._n.segment_to_block_id(track.segment_id)
+        if block_id is None or len(self._n.blocks[block_id].segment_ids) < 2:
+            # A lone segment cannot split its block. Almost every block is one,
+            # so this settles the common case without reading any tile index.
+            return
+        key = (x, y)
+        leaving = (
+            also_removing
+            if isinstance(also_removing, (set, frozenset))
+            else frozenset(also_removing)
+        )
+
+        def going(pos: Tuple[int, int]) -> bool:
+            return pos == key or pos in leaving
+
+        segment_positions = self._n.get_segment_positions(track.segment_id)
+        if not all(going(pos) for pos in segment_positions):
+            return  # the segment keeps a tile, so it is not deleted
+        self._check_block_edit(block_id, going)
+
     def delete_segment(self, segment_id: str) -> bool:
         """
         Delete a segment and clear its references from all tracks.
@@ -574,11 +709,34 @@ class SegmentGeometryManager:
         are disconnected; a block that still has other members survives and
         keeps its signals, because it is still a block those signals monitor.
 
+        design_new.md, **Tile** > **Non-empty parent rule**, "Segment deletion
+        keeps its block connected": a segment that is a non-terminal member of
+        a multi-segment block is not deleted, because the block would be left
+        as two pieces with a gap between them.
+
         Args:
             segment_id: ID of segment to delete
 
         Returns:
             True if deleted, False if not found
+
+        Raises:
+            ValueError: when the segment is in the middle of its block. Nothing
+                is changed.
+        """
+        block_id = self._n.segment_to_block_id(segment_id)
+        if block_id is None:
+            return False
+        self._require_run_stays_connected(block_id, {segment_id})
+        return self._delete_segment_unchecked(segment_id)
+
+    def _delete_segment_unchecked(self, segment_id: str) -> bool:
+        """Delete a segment without judging its block; see `delete_segment`.
+
+        For an edit that has already been judged as a whole by
+        `check_tiles_removable`, where the segments an edit empties are deleted
+        one after another and an earlier delete can leave a later one looking
+        like a middle member.
         """
         block_id = self._n.segment_to_block_id(segment_id)
         if block_id is None:
@@ -719,7 +877,9 @@ class SegmentGeometryManager:
 
         return True, []
 
-    def remove_tile_from_segment(self, x: int, y: int) -> List[str]:
+    def remove_tile_from_segment(
+        self, x: int, y: int, *, also_removing: Iterable[Tuple[int, int]] = ()
+    ) -> List[str]:
         """
         Remove a tile from its segment and handle the connectivity check.
 
@@ -730,15 +890,28 @@ class SegmentGeometryManager:
         2. Checks if the remaining segment tiles are still connected
         3. If disconnected, splits into new child segments
 
+        A segment left with no tiles is deleted, so taking a segment's last
+        tile is bound by the rule for deleting it (see `delete_segment`). The
+        edit is judged before anything changes, and a rejection changes nothing.
+
         Args:
             x, y: Tile position to remove from its segment
+            also_removing: other tiles leaving their segments in the same
+                edit. The rule is judged over the whole edit, so a caller that
+                removes a block's tiles one at a time passes them all here.
 
         Returns:
             List of affected ids (the original + any new child ids created)
+
+        Raises:
+            ValueError: when this would empty a segment in the middle of its
+                block. Nothing is changed.
         """
         track = self._n.get_track(x, y)
         if not track or not track.segment_id:
             return []
+
+        self.check_tile_removable(x, y, also_removing=also_removing)
 
         segment_id = track.segment_id
         track.segment_id = None
@@ -752,14 +925,23 @@ class SegmentGeometryManager:
 
         This is a batch version of remove_tile_from_segment for efficiency.
 
+        The batch is judged as one edit before anything changes (see
+        `check_tiles_removable`).
+
         Args:
             positions: List of (x, y) positions to remove
 
         Returns:
             List of affected ids
+
+        Raises:
+            ValueError: when the batch would empty a segment in the middle of
+                its block. Nothing is changed.
         """
         if not positions:
             return []
+
+        self.check_tiles_removable(positions)
 
         # Group positions by segment
         segments_affected = {}
@@ -811,7 +993,12 @@ class SegmentGeometryManager:
             was_last_member = len(block.segments) == 1
             if was_last_member:
                 self._disconnect_signals_for_block_of_segment(block_id)
-            self.delete_segment(segment_id)
+            # The edit that emptied it was judged as a whole before any tile
+            # left (`check_tiles_removable`), so this delete does not judge the
+            # block again: a batch that empties several segments deletes them
+            # one after another, and an earlier delete can leave a later one
+            # looking like a middle member.
+            self._delete_segment_unchecked(segment_id)
             return [segment_id]
 
         # Find connected components
