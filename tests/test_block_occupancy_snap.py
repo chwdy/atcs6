@@ -155,6 +155,56 @@ def test_snap_crosses_a_detected_block_that_reads_occupied():
     assert "BLK_2" in controller.physics_sync.current_span.occupied_blocks
 
 
+def test_snap_crosses_a_clear_block_the_train_still_holds():
+    """A badly lagging span catches up across the train's own clearing body.
+
+    The calculated span still sits on BLK_0 while the detector has confirmed the
+    train onto BLK_2 — a block ahead of the model, as an uncalibrated speed
+    profile leaves it. BLK_1 between them reads clear, but it is a block this
+    train still holds (`Block.occupied_by`, its confirmed clear not yet
+    committed): the train's own body clearing behind the head, not foreign
+    track. The snap crosses it and lands the head on BLK_2, rather than leaving
+    that confirmed block to be minted as an unidentified train.
+    """
+    network = build_line(6)
+    sim, train, controller, physics = place(network, "T", head_x=0, length_cm=40.0)
+    sim.block_occupancy_detector.input_interface = FakeDetectorInput(
+        detected={f"BLK_{i}" for i in range(6)}, live={"BLK_2"}
+    )
+    sim.block_occupancy_detector.seed_occupied({"BLK_2"})
+    # BLK_1 reads clear but is still tied to the train, exactly as a gated clear
+    # behind a lagging tail leaves it.
+    network.blocks["BLK_1"].occupy("T")
+
+    controller.physics_sync.pending_detected_entered_blocks = {"BLK_2"}
+    moved = physics.reconcile_to_detected_occupancy(train, controller)
+
+    assert moved is True
+    span = controller.physics_sync.current_span
+    assert "BLK_2" in span.occupied_blocks
+    assert span.end_a.tile == (2, 0)
+
+
+def test_snap_still_stops_at_a_clear_block_the_train_does_not_hold():
+    """The boundary the exception keeps: a clear block the train does NOT hold
+    still stops the walk. BLK_1 reads clear and belongs to no train, so reaching
+    BLK_2 would claim track the detector cannot vouch for. The span stays put."""
+    network = build_line(6)
+    sim, train, controller, physics = place(network, "T", head_x=0, length_cm=40.0)
+    sim.block_occupancy_detector.input_interface = FakeDetectorInput(
+        detected={f"BLK_{i}" for i in range(6)}, live={"BLK_2"}
+    )
+    sim.block_occupancy_detector.seed_occupied({"BLK_2"})
+    before = controller.physics_sync.current_span
+
+    controller.physics_sync.pending_detected_entered_blocks = {"BLK_2"}
+    moved = physics.reconcile_to_detected_occupancy(train, controller)
+
+    assert moved is False
+    assert controller.physics_sync.current_span is before
+    assert controller.physics_sync.current_span.occupied_blocks == ["BLK_0"]
+
+
 def test_snap_no_op_with_empty_slices():
     network = build_line(6)
     sim, train, controller, physics = place(network, "T", head_x=0, length_cm=40.0)
@@ -167,23 +217,37 @@ def test_snap_no_op_with_empty_slices():
 
 
 # ---------------------------------------------------------------------------
-# A large correction is reported (design_new.md "Power")
+# Every forward span correction is reported (design_new.md "Power")
 # ---------------------------------------------------------------------------
 
 
 def overrun_events(sim):
-    """The overrun warnings on the stream, newest last."""
+    """The overrun WARNINGS on the stream (a correction of 2+ blocks), newest
+    last."""
     return [
         n
         for n in sim.notification_center.peek_recent(200)
         if getattr(n, "operation", None) == "reconcile_to_detected_occupancy"
+        and getattr(n, "kind", None) == "warning"
     ]
 
 
-def test_an_ordinary_one_block_correction_is_not_reported():
+def divergence_events(sim):
+    """The one-block span-correction INFO records on the stream: the detector
+    led the calculated span by one block, newest last."""
+    return [
+        n
+        for n in sim.notification_center.peek_recent(200)
+        if getattr(n, "operation", None) == "reconcile_to_detected_occupancy"
+        and getattr(n, "kind", None) == "info"
+    ]
+
+
+def test_a_one_block_correction_is_reported_at_info_level():
     """The cap parks the head on the next block's entry seam, so every normal
-    entry gains exactly that one block once it confirms. Reporting it would
-    bury the stream in sensor latency."""
+    entry gains exactly that one block once it confirms. That is sensor latency,
+    recorded at info level (not as an overrun warning) so an operator can watch
+    the detector lead the calculated span block by block."""
     network = build_line(6)
     sim, train, controller, physics = place(network, "T", head_x=0, length_cm=40.0)
     sim.block_occupancy_detector.input_interface = FakeDetectorInput(
@@ -194,6 +258,19 @@ def test_an_ordinary_one_block_correction_is_not_reported():
 
     assert physics.reconcile_to_detected_occupancy(train, controller) is True
     assert overrun_events(sim) == []
+
+    events = divergence_events(sim)
+    assert len(events) == 1
+    event = events[0]
+    assert event.kind == "info"
+    assert event.error is None
+    assert event.payload["blocks_gained"] == ["BLK_1"]
+    assert event.payload["span_blocks_before"] == ["BLK_0"]
+    # The head already sat on the BLK_0/BLK_1 seam here, so this correction only
+    # re-represents it onto BLK_1 (0 cm made up); the distance-made-up case is
+    # covered by the two-block test.
+    assert event.payload["correction_cm"] >= 0
+    assert event.payload["train_id"] == "T"
 
 
 def test_a_two_block_correction_is_reported_as_an_overrun():
@@ -208,12 +285,15 @@ def test_a_two_block_correction_is_reported_as_an_overrun():
 
     assert physics.reconcile_to_detected_occupancy(train, controller) is True
 
+    # A 2+ block gain is the warning, not the info record.
+    assert divergence_events(sim) == []
     events = overrun_events(sim)
     assert len(events) == 1
     event = events[0]
     assert event.kind == "warning"
     assert event.error.origin == "span_overrun_correction"
     assert event.payload["blocks_gained"] == ["BLK_1", "BLK_2"]
+    assert event.payload["span_blocks_before"] == ["BLK_0"]
     assert event.payload["correction_cm"] > 0
     assert event.payload["train_id"] == "T"
 

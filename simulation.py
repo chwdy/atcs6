@@ -801,7 +801,13 @@ class SimulationController(SwitchOutputOwner):
         not energized, so it must not be held against the drain either. An
         unidentified train and a ghosted train (`presence_unknown`) are excluded
         because they command no `track_voltage`, so a block held only by such a
-        train is driven to `0`.
+        train is driven to `0`. So are the blocks a train's emission left
+        unpowered because they lie past its authority end
+        (`TrainPhysics.blocks_past_authority`): the emission side does not drive
+        them, so the drain must not hold them, or a block powered on the tick
+        before the train ran past its authority would keep that voltage
+        (design_new.md "Power", A block past the authority end is never
+        energized).
         """
         held: Set[str] = set()
         for train_id, physics in self.physics_instances.items():
@@ -811,22 +817,24 @@ class SimulationController(SwitchOutputOwner):
             controller = self.controllers.get(train_id)
             if getattr(controller, "presence_unknown", False):
                 continue
+            train_held: Set[str] = set()
             span = getattr(
                 getattr(controller, "physics_sync", None), "current_span", None
             )
             if span is not None:
-                held.update(span.occupied_blocks or [])
-            held.update(
+                train_held.update(span.occupied_blocks or [])
+            train_held.update(
                 block_id
                 for block_id, block in self.network.blocks.items()
                 if getattr(block, "occupied_by", None) == train_id
             )
             pending = physics.pending_entry_block
             if pending is not None:
-                held.add(pending)
+                train_held.add(pending)
             next_reserved = physics.next_reserved_block
             if next_reserved is not None:
-                held.add(next_reserved)
+                train_held.add(next_reserved)
+            held |= train_held - physics.blocks_past_authority
         return held
 
     def poll_hardware_occupancy(self) -> None:
