@@ -681,6 +681,27 @@ def activate_route(
     # that brings the train to rest: a `stop`, or a timed `run` (which ends at a
     # smooth ATC stop), optionally followed by dwell tasks.
     _validate_route_activatable(route.tasks, route.mode, route.priority)
+    # design_new.md "Route edit timestamps": activation refuses while an assigned
+    # train still holds `pending_route_deactivate`. Route.activate() is a pure
+    # data write with no controller reach, so this canonical activation entry
+    # enforces the refusal. Resurrecting a run scheduled for teardown would let
+    # a route the operator is tearing down re-allocate against that train; the
+    # latch clears on the train's next eligible Action, so the operator retries.
+    sim_controller = state.sim_controller
+    for train_id in list(route.assigned_train_ids):
+        controller = (
+            sim_controller.get_controller(train_id)
+            if sim_controller is not None
+            else None
+        )
+        if controller is None:
+            continue
+        if controller.route_hooks.phase_latches.route_deactivate:
+            raise ValidationError(
+                f"Cannot activate route while train {train_id} is still "
+                "deactivating a prior assignment. Retry once its teardown "
+                "completes."
+            )
     if simulation_time is None:
         simulation_time = state.sim_controller.simulation_time
     route.activate(simulation_time)

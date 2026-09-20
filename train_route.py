@@ -510,6 +510,12 @@ class Route:
         the route in wall time (design_new.md "Route" field schema) — not the
         simulation clock. The `simulation_time` argument is retained for
         call-site compatibility and is not used for the timestamp.
+
+        This writes only `is_active` / `started_at`, symmetric with
+        `deactivate()`. The documented refusal while an assigned train holds
+        `pending_route_deactivate` (design_new.md "Route edit timestamps") is
+        enforced by the canonical activation entry `train_route_service.
+        activate_route(...)`, which can reach the assigned trains' controllers.
         """
         self.is_active = True
         self.started_at = time.time()

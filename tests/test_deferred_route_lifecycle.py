@@ -35,7 +35,7 @@ from train import Train, TrainCar
 from train_route import RouteTask, RouteRunStatus, RouteStartMode
 
 from services import train_route_service, train_service
-from services.exceptions import NotFoundError
+from services.exceptions import NotFoundError, ValidationError
 
 
 @pytest.fixture
@@ -364,3 +364,36 @@ def test_delete_unknown_route_raises(state_with_train):
     state, _train = state_with_train
     with pytest.raises(NotFoundError):
         train_route_service.delete_route(state, "NEVER_EXISTED")
+
+
+# ---------------------------------------------------------------------------
+# H2 (gap-analysis 2026-09-20): Route activation refuses while an assigned
+# train still holds pending_route_deactivate (design_new.md "Route edit
+# timestamps").
+# ---------------------------------------------------------------------------
+
+def test_activate_route_refuses_while_assigned_train_is_deactivating(state_with_train):
+    state, train = state_with_train
+    route = _make_route(state, "R", "BLK_1")
+    route.assign_train(train.train_id)
+    controller = state.sim_controller.get_or_create_controller(train.train_id)
+
+    # The assigned train still holds the route-deactivate teardown latch.
+    controller.route_hooks.phase_latches.set_route_deactivate(
+        reason="test", has_active_path=False
+    )
+
+    with pytest.raises(ValidationError):
+        train_route_service.activate_route(state, "R")
+    # The route was not activated.
+    assert route.is_active is False
+
+
+def test_activate_route_succeeds_when_no_assigned_train_is_deactivating(state_with_train):
+    state, train = state_with_train
+    route = _make_route(state, "R", "BLK_1")
+    route.assign_train(train.train_id)
+    state.sim_controller.get_or_create_controller(train.train_id)
+
+    result = train_route_service.activate_route(state, "R")
+    assert result.is_active is True

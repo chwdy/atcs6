@@ -3023,12 +3023,20 @@ class RouteExecutor:
                     requested_destination_block_id=end_block,
                     requested_destination_direction=direction or "forward",
                 )
-        else:
+        elif self._eligible_for_authority_acquisition(controller, exec_state):
             # No live reservation to arrive at. A `run` stop is position-
             # agnostic (the train coasts to a stand wherever it is), and with
             # no path the Stop-arrival check will never fire to finish this
             # row — so finish it here, or the walk would wedge with the run row
             # forever unfinished (design_new.md, "Run task resolution").
+            #
+            # Gated by acquisition eligibility: the expired-run-with-no-live-
+            # reservation finish is step `66aa`'s, feeding on the target
+            # resolution step `592a` withholds when `is_clean_for_create` fails,
+            # so a pass under EB or a not-engaged ATO train finishes no expired
+            # run and waits for a later tick (design_new.md ~1994). The window is
+            # already elapsed, so a later eligible pass reaches this branch again
+            # and finishes it then.
             self.advance_walk_position(exec_state, route, walk_pos)
         return True
 
