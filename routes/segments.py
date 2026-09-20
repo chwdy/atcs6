@@ -92,11 +92,17 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/segments/<segment_id>", methods=["DELETE"])
     def delete_segment(segment_id: str):
-        """Delete a segment's geometry (and its owning block if last member)."""
+        """Delete a segment's geometry (and its owning block if last member).
+
+        A segment in the middle of a multi-segment block is refused with 400:
+        deleting it would leave the block as two pieces.
+        """
         try:
             segment_service.delete_segment(state, segment_id)
         except NotFoundError:
             return jsonify({"error": "Segment not found"}), 404
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
         return jsonify(
             {"status": "success", "message": f"Segment {segment_id} deleted"}
         )
@@ -180,6 +186,8 @@ def register(app, state: AppState) -> None:
             )
         except NotFoundError:
             return jsonify({"error": "Segment not found"}), 404
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
         return jsonify(result)
 
     @app.route("/api/segments/<segment_id>/end_tiles", methods=["GET"])

@@ -254,6 +254,8 @@ def remove_tracks_from_segment(
 
     Raises:
         NotFoundError when no segment has that id.
+        ValidationError when emptying the segment would split its block, in
+        which case no tile is removed.
     """
     require_segment(state, segment_id)
 
@@ -327,7 +329,16 @@ def remove_tracks_from_segment(
     # block's disappearance left with no assigned blocks.
     segment_deleted = False
     if len(state.network.get_segment_tracks(segment_id)) == 0:
-        delete_segment(state, segment_id)
+        try:
+            delete_segment(state, segment_id)
+        except ValidationError:
+            # The emptied segment sits in the middle of its block, so the
+            # delete is rejected and the edit with it (design_new.md, "Atomic
+            # commit"): give the detached tiles back to the segment. Detaching
+            # them was the only thing this call changed.
+            for x, y in removed:
+                state.network.get_track(x, y).segment_id = segment_id
+            raise
         segment_deleted = True
 
     return {
@@ -428,6 +439,28 @@ def reverse_segment(state: AppState, segment_id: str) -> bool:
 # ---------------------------------------------------------------- delete ----
 
 
+def require_tiles_removable(state: AppState, positions: List[Any]) -> None:
+    """Refuse an edit that would leave a block split in two.
+
+    Any edit that takes a segment's last tile out of it deletes that segment
+    in the same operation (design_new.md, "Non-empty parent rule", "Auto-delete
+    on last-child removal"), so it is bound by the rule for deleting one: a
+    segment in the middle of a multi-segment block stays (design_new.md,
+    "Segment deletion keeps its block connected"), and the rejection rejects
+    the whole edit ("Atomic commit"). Callers that change anything else before
+    they reach the tile removal (erasing track, turning a tile into a switch,
+    building a platform) call this first, so a rejection changes nothing.
+
+    Raises:
+        ValidationError when the edit would empty a segment in the middle of
+        its block. Reads only.
+    """
+    try:
+        state.network.check_tiles_removable(positions)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+
+
 def delete_segment(state: AppState, segment_id: str) -> bool:
     """Delete a segment's geometry and clear its tile references. Returns True.
 
@@ -437,14 +470,23 @@ def delete_segment(state: AppState, segment_id: str) -> bool:
     the downward platform cascade (design_new.md, "Non-empty parent rule") drops it from any owning
     `Platform.block_assignments` and deletes a platform left with no blocks.
 
+    A segment in the middle of a multi-segment block is not deleted, because
+    the block would be left as two pieces (design_new.md, "Segment deletion
+    keeps its block connected").
+
     Raises:
         NotFoundError when no segment has that id.
+        ValidationError when the segment is in the middle of its block. Nothing
+        is changed.
     """
     owning_block_id = state.network.segment_to_block_id(segment_id)
     if owning_block_id is None:
         raise NotFoundError("Segment not found")
 
-    state.network.delete_segment(segment_id)
+    try:
+        state.network.delete_segment(segment_id)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
 
     # Only cascade when the owning block itself disappeared (segment was its
     # last member). A block that still groups other members keeps its identity

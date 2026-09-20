@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 from app_state import AppState
 from enums import PlatformSide
 from services.exceptions import NotFoundError, ValidationError
+from services.segment_service import require_tiles_removable
 from services.validation import coerce_nonneg
 
 
@@ -200,6 +201,15 @@ def remove_tile(state: AppState, platform_id: str, *, x: int, y: int) -> Dict[st
         )
         if not is_continuous:
             return {"status": "continuity_error", "errors": errors}
+
+    # A tile that leaves the platform also leaves its segment. If it is that
+    # segment's last tile the segment goes with it, so the edit is bound by the
+    # rule for deleting a segment (design_new.md, "Segment deletion keeps its
+    # block connected"). Judged before the platform changes, so a rejection
+    # changes nothing.
+    leaving_tile = state.network.get_track(x, y)
+    if leaving_tile and leaving_tile.station_id == platform_id:
+        require_tiles_removable(state, [(x, y)])
 
     platform.remove_position(x, y)
     track = state.network.get_track(x, y)
