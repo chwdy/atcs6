@@ -791,10 +791,11 @@ class TrainController:
             # eb_active. This early-exit holds until the operator releases.
             return
 
-        # The reactive condition evaluation already ran above (Action step
-        # `71ee`), right after the command drain and the early departure /
-        # cancellation consumers, and also fires each Observe pass inside
-        # on_physics_updated(). Nothing below re-runs it.
+        # There is no reactive condition evaluation step in v1 (see the note
+        # above: `train_status` / `ato_status` are derived reads, not stored
+        # states a transition step maintains). The early-Action callback already
+        # consumed the stopped-gated path-cancel latch (Action step `7b40`).
+        # Nothing below re-runs any such step.
 
         # ===== 2. LOOKAHEAD (computed live; no caching) =====
         # Per design_new.md, lookahead is a pure derived value. We trigger one
@@ -856,7 +857,7 @@ class TrainController:
 
         if overspeed > OVERSPEED_EB_THRESHOLD_KMH or zero_limit_loss:
             # Raise EB through the canonical activation path (design_new.md "EB
-            # has two trigger paths" / step `826a`): `eb.activate()` performs
+            # has three trigger paths" / step `826a`): `eb.activate()` performs
             # every canonical EB effect — force handle to EB, disengage ATO
             # (`ato.engaged = False`), and (when a live path exists) latch the
             # `eb` cancel. ATC must not assign `eb.active` itself: no site
@@ -1137,12 +1138,17 @@ class TrainController:
         rather than banked, and the pass goes on. Only a pass actively driving a
         crossing is affected.
 
-        An ATC `CAUTION` block ahead and a posted block `SPEED_LIMIT` are the two
-        external restrictions that lower the drive without ending the pass.
-        `RESERVATION_STOP` / `NO_RESERVATION` are the leg's own reservation-end
-        approach and lifecycle, not an external cap, so they are excluded. EB and
-        power-off are not handled here: they end the whole pass through
-        `SpeedCalibration.run_still_valid(...)` at Action step `26f5`.
+        An ATC `CAUTION` block ahead and a posted block `SPEED_LIMIT` lower the
+        drive without ending the pass, and so does the leg's own reservation-end
+        braking (`RESERVATION_STOP`): it reaches back into a crossing being timed
+        only when the stretch is too short for the step (the leg drives to the far
+        seam of its far outer block, per "A calibration leg holds no reservation-end
+        standoff"), so tainting it there is how a too-short stretch is caught —
+        `taint_current_crossing(...)` marks a crossing only while one is being
+        timed. `NO_RESERVATION` is the leg losing its authority, a lifecycle event
+        that ends the pass through `SpeedCalibration.run_still_valid(...)`, so it
+        is excluded, as are EB and power-off, which end the whole pass at Action
+        step `26f5`.
         """
         sc = getattr(self, "simulation_controller", None)
         calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
@@ -1156,6 +1162,8 @@ class TrainController:
             reason = "CAUTION restriction during a measured crossing"
         elif reason_code == AtcLimitReasonCode.SPEED_LIMIT:
             reason = "block speed limit during a measured crossing"
+        elif reason_code == AtcLimitReasonCode.RESERVATION_STOP:
+            reason = "reservation-end braking during a measured crossing"
         else:
             return
         calibration.taint_current_crossing(self.train_id, reason)

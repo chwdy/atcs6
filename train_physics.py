@@ -84,6 +84,11 @@ _SEAM_HOLD_EPSILON_CM = 1e-6
 # Tile budget for one cap walk. A cap only ever looks one tick's travel
 # ahead, so this is a runaway-geometry backstop, not a reach limit.
 _CAP_WALK_MAX_TILES = 200
+# How many blocks past the head the line of travel is continued when signing a
+# block the detector credits to a train beyond its calculated span. Such a block
+# neighbours the span, so it is the first block past the head or, across a short
+# block, the one after.
+_LINE_OF_TRAVEL_BLOCKS = 2
 
 # Edge opposites for track geometry
 OPPOSITE_EDGES = {"N": "S", "S": "N", "E": "W", "W": "E"}
@@ -211,6 +216,12 @@ class TrainPhysics:
     # records it and `SimulationController` drains both together.
     _last_energized_blocks: Set[str] = field(default_factory=set)
     _blocks_dropped_from_energized: Set[str] = field(default_factory=set)
+    # The blocks the detector credits to this train that lie past the end of its
+    # authority, which the emission set leaves unpowered (design_new.md "Power",
+    # A block past the authority end is never energized). Per-tick derived
+    # state, resolved at emission and read back through `blocks_past_authority`
+    # so the de-energize drain does not hold them either.
+    _blocks_past_authority: Set[str] = field(default_factory=set)
 
     # =========================================================================
     # Internal Helpers
@@ -313,6 +324,7 @@ class TrainPhysics:
         # returns early has no cap at all.
         self._pending_entry_block = None
         self._next_reserved_block = None
+        self._blocks_past_authority = set()
 
         # 1. Skip movement if powered off, but still emit the canonical
         # no-boundary callback so controller-owned span/speed storage stays
@@ -672,6 +684,20 @@ class TrainPhysics:
         if stopped_but_lit:
             return lighting_voltage
 
+        # Overran its authority: the head has run onto a block outside its
+        # authorized path (`_head_past_authority`). Cut this train's drive to 0 V
+        # at once — every block it stands on goes dead, so no pickup keeps power
+        # and the locomotive is no longer driven onto track it may not be on.
+        # This loses live detection of the train (a block at 0 V draws no current
+        # and reads clear, so the train is held, then ghosted), which is the
+        # accepted cost: a train that has already run past where it may go must be
+        # stopped, not kept lit. Lighting voltage does not stop a rolling
+        # locomotive — its momentum carries it on — so it is not the safe response
+        # here (design_new.md "Power", A train that overran its authority is cut
+        # to 0 V).
+        if self._head_past_authority(controller):
+            return 0.0
+
         # Moving, or stopped under a live reservation / EB (the old
         # RUNNING_MOVING case): the reference comes from the controller's
         # PhysicsCommand. EB collapses voltage_source_speed_kmh to 0.0 in
@@ -688,6 +714,35 @@ class TrainPhysics:
                 return speed_profile.power_to_voltage(float(source_percent))
             return speed_profile.speed_to_voltage_two_stage(voltage_speed)
         return self._linear_speed_to_voltage(voltage_speed)
+
+    def _head_past_authority(self, controller: Optional["TrainController"]) -> bool:
+        """Whether the head has run onto a block outside its authorized path — an
+        overrun past the authority end.
+
+        During normal travel the head is always on a block of the plan's
+        `resource_sequence` (the authorized route), so this is False; it turns
+        True only once the locomotive has physically crossed the authority end
+        onto unauthorized track. Requires a live plan — a train with no authority
+        cannot overrun one — and resolves the head block from the head tile the
+        same way the stop-arrival test does (`_get_head_tile`), never from an
+        `occupied_blocks` end, which is geometric rather than head-relative.
+        """
+        if controller is None or self.network is None:
+            return False
+        projection = getattr(controller, "path_projection", None)
+        plan = getattr(projection, "received_path_plan", None)
+        if plan is None:
+            return False
+        head_tile = controller._get_head_tile()
+        if head_tile is None:
+            return False
+        head_block = self.network.tile_to_block_id(head_tile[0], head_tile[1])
+        if head_block is None:
+            return False
+        authorized = {
+            entry.resource_id for entry in (plan.resource_sequence or [])
+        }
+        return head_block not in authorized
 
     @staticmethod
     def _linear_speed_to_voltage(speed_kmh: float) -> float:
@@ -1538,7 +1593,9 @@ class TrainPhysics:
         # keep `disagrees()` true for every step of the walk, and the span would
         # be marched across the layout hunting track it will never cover. Such a
         # block still belongs to the train; the span simply does not move for it.
-        entered_ahead = self._entered_blocks_ahead(set(entered))
+        entered_ahead = self._entered_blocks_ahead(
+            set(entered), allow_crossing_own_body=True
+        )
         if not entered_ahead:
             self._work = None
             return False
@@ -1562,7 +1619,7 @@ class TrainPhysics:
         if moved:
             ps.current_span = _span_from_work(self._work)
             gained = set(self._work.occupied_blocks or []) - blocks_before
-            self._report_overrun(train, gained, moved_cm)
+            self._report_span_correction(train, gained, moved_cm, blocks_before)
         self._work = None
         return moved
 
@@ -1580,66 +1637,99 @@ class TrainPhysics:
         tile_length = self._get_tile_length_cm(tile)
         return max(0.0, tile_length - distance) if tile_length > 0 else 0.0
 
-    def _report_overrun(
-        self, train: "Train", gained: Set[str], moved_cm: float
+    def _report_span_correction(
+        self,
+        train: "Train",
+        gained: Set[str],
+        moved_cm: float,
+        span_blocks_before: Set[str],
     ) -> None:
-        """Report a span correction that gained `OVERRUN_REPORT_MIN_BLOCKS` or
-        more blocks (design_new.md "Power", A large correction is reported).
+        """Report a forward span correction — the app agreeing the detector found
+        the train further along the track than the model had it (design_new.md
+        "Power", Every forward span correction is reported).
 
-        A correction is the app agreeing the train is further along than it
-        thought, and it is silent by design at one block: the cap parks the head
-        on the entry seam of the block it is entering, so every ordinary block
-        entry gains exactly that one block once its detector confirms. That is
-        sensor latency, not news.
+        A gain of one block is routine sensor latency: the cap parks the head on
+        the entry seam of the block it is entering, so every ordinary block entry
+        gains exactly that one block once its detector confirms. It is reported at
+        info level so an operator can watch the detector lead the calculated span
+        block by block, without it reading as a fault.
 
-        Two or more blocks is different. It means the detector found the train a
-        whole block past where the model had it, which latency does not explain —
-        the locomotive is running faster than its speed profile says, and every
+        A gain of `OVERRUN_REPORT_MIN_BLOCKS` or more blocks is not latency: the
+        detector found the train a whole block past where the model had it, so the
+        locomotive is running faster than its speed profile says, and every
         estimate built on that profile (arrival time, braking distance, where the
-        train is inside its current block) is wrong in the same direction. The
-        app corrects the position either way; this is what stops it correcting
-        silently forever.
+        train sits inside its current block) is wrong in the same direction. That
+        gain is reported at warning level with an `ErrorRecord` naming the overrun.
+
+        Both levels carry the same payload: the blocks the detector read the train
+        onto, the blocks the calculated span held before the correction, and the
+        distance the span was moved forward. The correction itself is unchanged
+        either way; the report is what stops the app correcting silently.
         """
-        if len(gained) < OVERRUN_REPORT_MIN_BLOCKS:
+        if not gained:
             return
+        is_overrun = len(gained) >= OVERRUN_REPORT_MIN_BLOCKS
+        hardware_blocks = sorted(gained)
+        span_before = sorted(span_blocks_before)
         sc = getattr(self.controller, "simulation_controller", None)
         center = getattr(sc, "notification_center", None) if sc is not None else None
         if center is None:
-            logger.warning(
-                "[TrainPhysics %s] span correction gained %d blocks (%s) over "
-                "%.1fcm: the train is running ahead of its speed profile",
+            log = logger.warning if is_overrun else logger.info
+            log(
+                "[TrainPhysics %s] span corrected forward %.1fcm: detector led "
+                "the calculated span onto %s (span held %s)",
                 train.train_id,
-                len(gained),
-                sorted(gained),
                 moved_cm,
+                hardware_blocks,
+                span_before,
             )
             return
         from notification_center import Kind, train_ref
-        from runtime_payloads import ErrorRecord
 
+        payload = {
+            "train_id": train.train_id,
+            "blocks_gained": hardware_blocks,
+            "span_blocks_before": span_before,
+            "correction_cm": round(float(moved_cm), 1),
+        }
         try:
-            center.emit(
-                source="TrainPhysics",
-                operation="reconcile_to_detected_occupancy",
-                kind=Kind.WARNING,
-                message=(
-                    f"train {train.train_id} was detected {len(gained)} blocks "
-                    f"ahead of where the model had it ({', '.join(sorted(gained))}); "
-                    f"the span was corrected forward {moved_cm:.1f}cm. The "
-                    f"locomotive is running faster than its speed profile."
-                ),
-                entities=[train_ref(train.train_id)],
-                error=ErrorRecord(
-                    "the detector led the calculated span by more than one block",
-                    "span_overrun_correction",
-                ),
-                event_time=time.time(),
-                payload={
-                    "train_id": train.train_id,
-                    "blocks_gained": sorted(gained),
-                    "correction_cm": round(float(moved_cm), 1),
-                },
-            )
+            if is_overrun:
+                from runtime_payloads import ErrorRecord
+
+                center.emit(
+                    source="TrainPhysics",
+                    operation="reconcile_to_detected_occupancy",
+                    kind=Kind.WARNING,
+                    message=(
+                        f"train {train.train_id} was detected {len(gained)} blocks "
+                        f"ahead of where the model had it "
+                        f"({', '.join(hardware_blocks)}); the span was corrected "
+                        f"forward {moved_cm:.1f}cm. The locomotive is running "
+                        f"faster than its speed profile."
+                    ),
+                    entities=[train_ref(train.train_id)],
+                    error=ErrorRecord(
+                        "the detector led the calculated span by more than one block",
+                        "span_overrun_correction",
+                    ),
+                    event_time=time.time(),
+                    payload=payload,
+                )
+            else:
+                center.emit(
+                    source="TrainPhysics",
+                    operation="reconcile_to_detected_occupancy",
+                    kind=Kind.INFO,
+                    message=(
+                        f"detector read train {train.train_id} onto "
+                        f"{', '.join(hardware_blocks)} ahead of the calculated span "
+                        f"(span held {', '.join(span_before) or 'no block'}); the "
+                        f"span was corrected forward {moved_cm:.1f}cm."
+                    ),
+                    entities=[train_ref(train.train_id)],
+                    event_time=time.time(),
+                    payload=payload,
+                )
         except Exception:
             # A reporting failure must not undo a correction that already landed.
             logger.warning(
@@ -1663,7 +1753,10 @@ class TrainPhysics:
         `detected block` the detector has not confirmed. A train that genuinely
         crossed two blocks between reads has both confirmed, so the walk reaches
         both and both stay plausible; a block with a clear detected block in
-        between does not, which is the same line every other rule holds.
+        between does not, which is the same line every other rule holds. The lone
+        exception is a clear block this train still holds itself: that is its own
+        body clearing behind the head, not foreign track, so the walk crosses it
+        to reach a block confirmed just beyond (see `_entered_blocks_ahead`).
 
         **A train that is not moving is not being driven away from anything, so
         every neighbouring block stays plausible for it.** The model never knows
@@ -1696,11 +1789,36 @@ class TrainPhysics:
             self._work = _work_from_span(
                 span, self.controller._head_end_label() == "end_a"
             )
-            return bool(self._entered_blocks_ahead({block_id}))
+            # A train at or past the end of its authority is being brought to a
+            # stop, not driven onward, so — like a stopped train — its travel
+            # direction no longer reliably says which side it is leaving, and
+            # every neighbour stays plausible. This is what lets the block the
+            # locomotive overran past its authority end attribute to it on the
+            # read that first confirms it, rather than minting an unidentified
+            # train for that current. Safe here only because the app cuts this
+            # train's drive to 0 V the moment its head is past authority (see
+            # `compute_track_voltage`, `_head_past_authority`), so it is not being
+            # driven further onto the block it claims. The authority test is the
+            # emission side's: a train that holds a path plan but has no reserved
+            # block ahead of its head has run to its authority end
+            # (`_resolve_next_reserved_block`).
+            projection = getattr(self.controller, "path_projection", None)
+            has_plan = getattr(projection, "received_path_plan", None) is not None
+            if has_plan and self._resolve_next_reserved_block(
+                train, set(span.occupied_blocks or [])
+            ) is None:
+                return True
+            return bool(
+                self._entered_blocks_ahead(
+                    {block_id}, allow_crossing_own_body=True
+                )
+            )
         finally:
             self._work = previous_work
 
-    def _entered_blocks_ahead(self, entered: Set[str]) -> Set[str]:
+    def _entered_blocks_ahead(
+        self, entered: Set[str], *, allow_crossing_own_body: bool = False
+    ) -> Set[str]:
         """Of `entered`, the blocks the head reaches by travelling forward.
 
         A pure look — it walks the rail ahead of the head and reports which of
@@ -1716,6 +1834,17 @@ class TrainPhysics:
         clear, and a correction that drags the span over that track claims a
         position no detector supports. So the correction never crosses a
         boundary the cap would not let the train cross under power.
+
+        The one exception, taken only when `allow_crossing_own_body` is set, is a
+        clear detected block this train still holds — one its own span covers, or
+        one still tied to it by `Block.occupied_by` because its confirmed clear
+        has not committed yet. That block reading clear is the train's own body
+        clearing from behind the head as it rolls forward, not foreign track: the
+        detector already vouched for the train being there. So the walk may cross
+        it to reach a block confirmed just beyond, which is what lets a badly
+        lagging span catch up to a train that has pulled a block or more ahead
+        instead of losing that confirmed block to an unidentified train. A clear
+        block the train does not hold still stops the walk, exactly as before.
         """
         work = self._work
         if work is None or not entered:
@@ -1724,6 +1853,18 @@ class TrainPhysics:
         detector = self._block_occupancy_detector()
         detected = detector.detected_block_ids() if detector is not None else set()
         confirmed = detector.confirmed_occupied if detector is not None else set()
+
+        own_body: Set[str] = set()
+        if allow_crossing_own_body:
+            own_body = set(work.occupied_blocks or [])
+            train = self._get_train()
+            if train is not None and self.network is not None:
+                own_body |= {
+                    block_id
+                    for block_id, block in self.network.blocks.items()
+                    if getattr(block, "occupied_by", None) == train.train_id
+                }
+
         if work.head_is_a:
             tile, distance, entry = (
                 work.end_a_tile,
@@ -1749,9 +1890,13 @@ class TrainPhysics:
                 if not wanted:
                     break
                 continue
-            if block_id is not None and block_id in detected:
-                if block_id not in confirmed:
-                    break
+            if (
+                block_id is not None
+                and block_id in detected
+                and block_id not in confirmed
+                and block_id not in own_body
+            ):
+                break
         return found
 
     # =========================================================================
@@ -2238,7 +2383,7 @@ class TrainPhysics:
         self._blocks_dropped_from_energized -= energized
         self._last_energized_blocks = set(energized)
 
-        directions = self._block_traversal_directions()
+        directions = self._block_traversal_directions(energized)
         for block_id in energized:
             signed = -voltage if directions.get(block_id) == "reverse" else voltage
             power_controller.set_block_voltage(block_id, signed)
@@ -2256,17 +2401,23 @@ class TrainPhysics:
         self._blocks_dropped_from_energized = set()
         return dropped
 
-    def _block_traversal_directions(self) -> Dict[str, str]:
+    def _block_traversal_directions(
+        self, energized: Optional[Set[str]] = None
+    ) -> Dict[str, str]:
         """Block-relative direction for each block this train runs through.
 
-        Two sources, in this order. The active path's `resource_sequence` runs
+        Three sources, in this order. The active path's `resource_sequence` runs
         from the train's tail to its authority end, so its per-block directed
         tile slice covers the calculated span, the pending-entry block, and the
         whole reserved corridor in one read. A train driving without a path has
         no such record, so the directed span walk — ordered tail end to cab end
-        — answers for the blocks it covers. A block neither source can fix is
-        absent from the mapping and the caller drives it positive
-        (design_new.md "Power", A block voltage carries a direction).
+        — answers for the blocks it covers. A block in `energized` that neither
+        covers is one the detector credits to the train beyond its calculated
+        span; it takes the direction of the train's line of travel continued
+        forward from the head into it (`_directions_along_line_of_travel`). A
+        block none of the three can fix is absent from the mapping and the
+        caller drives it positive (design_new.md "Power", A block voltage
+        carries a direction).
         """
         directions: Dict[str, str] = {}
         if self.network is None:
@@ -2296,34 +2447,98 @@ class TrainPhysics:
                 directions[entry.resource_id] = resolved
 
         work = self._work
-        if work is not None and work.occupied_tiles:
-            # `occupied_tiles` is ordered end_a -> end_b and carries no head
-            # label; the line of travel runs tail -> head, so the walk is that
-            # list reversed when the cab selects end_a as the head.
-            walk = list(work.occupied_tiles)
-            if work.head_is_a:
-                walk.reverse()
-            head_tile = work.end_a_tile if work.head_is_a else work.end_b_tile
-            head_entry_edge = (
-                work.end_a_entry_edge if work.head_is_a else work.end_b_entry_edge
+        if work is None or not work.occupied_tiles:
+            return directions
+        # `occupied_tiles` is ordered end_a -> end_b and carries no head label;
+        # the line of travel runs tail -> head, so the walk is that list
+        # reversed when the cab selects end_a as the head.
+        walk = list(work.occupied_tiles)
+        if work.head_is_a:
+            walk.reverse()
+        head_tile = work.end_a_tile if work.head_is_a else work.end_b_tile
+        head_entry_edge = (
+            work.end_a_entry_edge if work.head_is_a else work.end_b_entry_edge
+        )
+        head_block_id = self.network.tile_to_block_id(*head_tile) if head_tile else None
+        for block_id in work.occupied_blocks:
+            if block_id in directions:
+                continue
+            block = blocks.get(block_id)
+            if block is None:
+                continue
+            resolved = block.block_direction_for_tile_walk(walk)
+            if resolved is None and block_id == head_block_id:
+                # The same one-tile gap as the path branch, with no path to
+                # supply the frame. The head's own entry edge supplies it, but
+                # only for the block the head stands in — and the helper answers
+                # only for single-tile blocks, which is the gap.
+                resolved = block.block_direction_for_compass_entry(head_entry_edge)
+            if resolved is not None:
+                directions[block_id] = resolved
+
+        leftover = {b for b in (energized or ()) if b not in directions}
+        if leftover:
+            directions.update(
+                self._directions_along_line_of_travel(work, walk, leftover)
             )
-            head_block_id = self.network.tile_to_block_id(*head_tile) if head_tile else None
-            for block_id in work.occupied_blocks:
-                if block_id in directions:
-                    continue
-                block = blocks.get(block_id)
-                if block is None:
-                    continue
-                resolved = block.block_direction_for_tile_walk(walk)
-                if resolved is None and block_id == head_block_id:
-                    # The same one-tile gap as the path branch, with no path to
-                    # supply the frame. The head's own entry edge supplies it,
-                    # but only for the block the head stands in — and the helper
-                    # answers only for single-tile blocks, which is the gap.
-                    resolved = block.block_direction_for_compass_entry(head_entry_edge)
-                if resolved is not None:
-                    directions[block_id] = resolved
         return directions
+
+    def _directions_along_line_of_travel(
+        self,
+        work: _SpanWorkState,
+        walk: List[Tuple[int, int]],
+        block_ids: Set[str],
+    ) -> Dict[str, str]:
+        """Directions for `block_ids` read off the train's line of travel
+        continued forward from its head: the tail-to-head span walk, extended by
+        the tiles the head would reach next.
+
+        A block the detector credits to a train just beyond its calculated span
+        sits on that continuation, so the extended walk runs through it the way
+        the locomotive is moving, and its sign keeps the locomotive going the
+        way it was going. The extension stops once it has passed through
+        `_LINE_OF_TRAVEL_BLOCKS` blocks beyond the head's own block. A block it
+        never runs through two tiles of stays unresolved, and keeps the
+        positive default.
+        """
+        if work.head_is_a:
+            tile, distance, entry = (
+                work.end_a_tile,
+                work.end_a_distance_cm,
+                work.end_a_entry_edge,
+            )
+        else:
+            tile, distance, entry = (
+                work.end_b_tile,
+                work.end_b_distance_cm,
+                work.end_b_entry_edge,
+            )
+        head_block_id = self._block_of_tile(tile) if tile else None
+        extended = list(walk)
+        passed: List[str] = []
+        for next_tile, _travelled in self._walk_forward_tiles(
+            tile, distance, entry, float("inf")
+        ):
+            block_id = self._block_of_tile(next_tile)
+            if (
+                block_id is not None
+                and block_id != head_block_id
+                and block_id not in passed
+            ):
+                if len(passed) == _LINE_OF_TRAVEL_BLOCKS:
+                    break
+                passed.append(block_id)
+            extended.append(next_tile)
+
+        out: Dict[str, str] = {}
+        for block_id in block_ids:
+            block = self.network.blocks.get(block_id) if self.network else None
+            if block is None:
+                continue
+            resolved = block.block_direction_for_tile_walk(extended)
+            if resolved is not None:
+                out[block_id] = resolved
+        return out
 
     def _standing_blocks_for_train(self, train: "Train") -> Set[str]:
         """The blocks this train is standing on: its calculated span, plus the
@@ -2467,6 +2682,7 @@ class TrainPhysics:
             self.controller, "presence_unknown", False
         ):
             self._next_reserved_block = None
+            self._blocks_past_authority = set()
             return set()
         energized = self._standing_blocks_for_train(train)
         if self._pending_entry_block is not None:
@@ -2476,7 +2692,50 @@ class TrainPhysics:
         )
         if self._next_reserved_block is not None:
             energized.add(self._next_reserved_block)
-        return energized
+        self._blocks_past_authority = self._detected_blocks_past_authority(
+            train, energized
+        )
+        return energized - self._blocks_past_authority
+
+    @property
+    def blocks_past_authority(self) -> Set[str]:
+        """The blocks this emission left unpowered because they lie past this
+        train's authority end, read back by `SimulationController` so the
+        de-energize drain does not hold them (design_new.md "Power", A block
+        past the authority end is never energized)."""
+        return set(self._blocks_past_authority)
+
+    def _detected_blocks_past_authority(
+        self, train: "Train", energized: Set[str]
+    ) -> Set[str]:
+        """Of `energized`, the blocks the detector credits to this train that lie
+        past the end of its authority.
+
+        A train past its authority end is one that holds a path plan but has no
+        reserved block ahead of its head — the same test attribution uses to let
+        the overrun block credit to it rather than to an unidentified train (see
+        `could_be_entering`). A block such a train stands on only by the
+        detector's say-so, and that is not on its authorized path, is a block it
+        overran onto. The rail there must stay dead: powering it keeps pushing
+        a locomotive that has already run past where it may go, and the block's
+        direction cannot be read off a path or a span that stop short of it, so
+        whichever sign it got could drive the locomotive either way.
+        """
+        projection = getattr(self.controller, "path_projection", None)
+        plan = getattr(projection, "received_path_plan", None)
+        if plan is None or self._next_reserved_block is not None:
+            return set()
+        authorized = {
+            entry.resource_id
+            for entry in (plan.resource_sequence or [])
+            if getattr(entry, "resource_type", None) == "block"
+        }
+        span_blocks = self._get_blocks_for_train(train)
+        return {
+            block_id
+            for block_id in energized
+            if block_id not in authorized and block_id not in span_blocks
+        }
 
     # =========================================================================
     # Track Geometry Helpers

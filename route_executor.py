@@ -1431,8 +1431,8 @@ class RouteExecutor:
                 # No current RouteRun (unrouted, or assigned-but-not-yet-
                 # allocated in the assign-to-allocation window): running tier at
                 # effective priority 5, whatever the assigned route's priority
-                # (design_new.md "Canonical ownership split": "Trains with no
-                # current RouteRun use effective priority 5").
+                # (design_new.md "Per-train tick transaction", No-`RouteRun`
+                # default: ordered like a running-tier run at effective priority 5).
                 priority = 5
                 starting = False
             # Ascending stable sort: tier 0 (running) before tier 1 (starting);
@@ -2236,6 +2236,10 @@ class RouteExecutor:
             name=f"speed-calibration leg {seq} for {train_id}",
             mode=RouteMode.ONE_OFF,
             manual_override=False,
+            # The leg drives to the far seam of its far outer block, so the whole
+            # outer block is run-up / stopping room (design_new.md, "A calibration
+            # leg holds no reservation-end standoff").
+            zero_reservation_end_standoff=True,
             tasks=[
                 RouteTask(
                     task_kind="stop",
@@ -2974,24 +2978,21 @@ class RouteExecutor:
         )
         train_id = train.train_id
 
-        # Accrue only while the direction-seed target resolves to a present
-        # usable target on this pass, EB is not latched, and the train is not a
-        # paused ATO train (design_new.md step `6a0d`): a missing seed
-        # (`projection.resolved_target is None`), an active EB, or a not-engaged
-        # ATO train (`train_status == ATO and not commands.engaged`) each pauses
-        # accrual for that pass — EB and a paused ATO train pause the run timer
-        # the same way.
+        # Accrue whenever the run task is not held: EB is not latched and the
+        # train is not a paused ATO train (design_new.md step `6a0d`). An active
+        # EB or a not-engaged ATO train (`train_status == ATO and not
+        # commands.engaged`) each pauses accrual for that pass — EB and a paused
+        # ATO train pause the run timer the same way. Accrual does not depend on
+        # the direction-seed target resolving this pass: a run is a stop timed by
+        # the clock, so the timer keeps counting even on a pass where the seed
+        # target is momentarily unavailable.
         from enums import TrainStatus
 
         paused_ato = (
             controller.ops.train_status == TrainStatus.ATO
             and not controller.commands.engaged
         )
-        if (
-            projection.resolved_target is not None
-            and not controller.eb.active
-            and not paused_ato
-        ):
+        if not controller.eb.active and not paused_ato:
             run_row.run_elapsed_seconds = min(
                 run_row.run_elapsed_seconds + max(0.0, delta_seconds), run_time
             )
@@ -3211,18 +3212,15 @@ class RouteExecutor:
         downstream — the `resolved_target` write, the `direction` write, and the
         extend retries — then uses the returned projection's `walk_position`.
 
-        NOTE ON THE LOCK-CATCH-UP GATE: design_new.md pairs the "authority
-        already reaches it" test with a second condition — that the lock end has
-        caught up to the reservation end, so the extend fires just-in-time
-        rather than eagerly. v1 arms the next target eagerly instead (as soon as
-        the authority reaches the current one). The eager form is what keeps the
-        reservation one waypoint ahead of the braking curve on a running lap: a
-        train slowing toward its reservation end never lets the braking-distance
-        lock reach that end, so a strict lock-end == reservation-end gate would
-        stall the reservation and brake the train short of the waypoint. The
-        only cost of the eager form is a slightly larger reserved footprint (a
-        Medium doc-vs-code note), not incorrect behavior — the dispatcher's
-        holding-point chunking still bounds each extend.
+        WHY EAGER: v1 arms the next target as soon as live authority reaches the
+        current one — it does not wait for the braking-distance lock end to catch
+        up to the reservation end (design_new.md "Waypoint lookahead"). Eager
+        arming keeps the reservation one waypoint ahead of the braking curve on a
+        running lap: a train slowing toward its reservation end never lets the
+        lock reach that end, so waiting for lock-end == reservation-end would
+        stall the reservation and brake the train short of the waypoint (and
+        deadlock a lapping train). The only cost is a slightly larger reserved
+        footprint, which the dispatcher's holding-point chunking still bounds.
         """
         # A waypoint, or a run whose timer is still running (a waypoint for
         # reservation growth), may reserve onward past its target.
@@ -3426,7 +3424,7 @@ class RouteExecutor:
         # stale. Fall through and let `extend_path(...)` receive the freshly
         # resolved direction. `extend_path(...)` still rejects a direction that
         # would require reversing at the current authority end
-        # (`failure_kind = invalid_reverse`, design_new.md "Path extension"),
+        # (`failure_kind = no_viable_path`, design_new.md "Path extension"),
         # and `_authority_acquisition_step` latches this same `revoked` cancel
         # through that structural-extend-failure path, so an actually
         # incompatible direction still gets cancelled and replanned.
@@ -3614,6 +3612,9 @@ class RouteExecutor:
         # route can serve `manual` resources. Route-level only (never a RouteRun
         # override); an automatic route leaves this False.
         manual_override = bool(getattr(route, "manual_override", False))
+        zero_reservation_end_standoff = bool(
+            getattr(route, "zero_reservation_end_standoff", False)
+        )
 
         # Reservation cap (design_new.md "Reservation-cap rule"): MEET-ONLY. The
         # braking distance sizes the lock (per "Braking-distance lock"), not this
@@ -3645,6 +3646,7 @@ class RouteExecutor:
                     requested_destination_block_id=target_block,
                     requested_destination_direction=target_dir,
                     manual_override=manual_override,
+                    zero_reservation_end_standoff=zero_reservation_end_standoff,
                     reservation_cap_block_id=reservation_cap_block_id,
                     required_candidate_resource_keys=required_candidate_resource_keys,
                 )
@@ -4161,25 +4163,14 @@ class RouteExecutor:
                 kind=_Kind.ERROR,
             )
             return
-        # This callback writes no `RouteRun` field (design_new.md "Route-run
-        # state"): `current_route_status` does not transition, and the
-        # cancellation's `ErrorRecord` rides the `cancel_path` event alone. The
-        # read-model `display_state` reads `"CANCELLED"` from that event and the
-        # terminated `Path` record while the run has no live path, and returns to
-        # `"RUNNING"` once a fresh create_path gives the run a live path again.
-        # Every cancellation kind is surfaced the same way — the reason lives on
-        # the ErrorRecord.origin.
-        from notification_center import Kind as _Kind
-        self._emit_run_error(
-            exec_state,
-            exec_state.current_waypoint_index,
-            error.origin if error is not None else "revoked",
-            f"cancelled: {error.text}" if error is not None and error.text
-            else "cancelled",
-            operation="handle_path_cancellation",
-            kind=_Kind.INFO,
-            latch_event=True,
-        )
+        # Ordinary cancellation: this callback writes no `RouteRun` field and
+        # emits no event route-side (design_new.md "Route-run state"). The
+        # cancellation's `ErrorRecord` rides the `cancel_path` event alone;
+        # `RouteRun.display_state` reads `"CANCELLED"` from that event and the
+        # terminated `Path` record while the run has no live path (with the
+        # reason on the event's `error.origin`), and returns to `"RUNNING"` once
+        # a fresh create_path gives the run a live path again.
+        return
 
     def handle_path_completion(
         self,
@@ -4191,7 +4182,7 @@ class RouteExecutor:
 
         Per design_new.md step `bc55`: this records the served stop
         as finished by finishing exactly `walk_position` through
-        `RouteRun.advance_walk_position(...)`, which samples and writes the row's
+        `RouteExecutor.advance_walk_position(...)`, which samples and writes the row's
         wall and operating finish fields locally; the derived
         `current_waypoint_index` then advances to `walk_position`.
 
@@ -4306,7 +4297,7 @@ class RouteExecutor:
         """Advance one walk-position: write `task_runs[walk_position].finished_at`,
         classify `delay_class`, and append the next walk task.
 
-        This is `RouteRun.advance_walk_position(...)` per design_new.md
+        This is `RouteExecutor.advance_walk_position(...)` per design_new.md
         "Route-run state" — the single canonical writer of the
         finished_at + delay_class + walk-append sequence. Every completion site
         (stop arrival, head-advance, covered-task advance, dwell-complete)
@@ -4318,7 +4309,7 @@ class RouteExecutor:
         Callers pass no clock value: this call samples both clocks itself, so
         the wall and operating readings of one finish are always taken at the
         same moment and no caller can hand in a stale `now` (design_new.md
-        "`RouteRun.advance_walk_position(walk_position)`").
+        "`RouteExecutor.advance_walk_position(walk_position)`").
         """
         if not (0 <= walk_position < len(exec_state.task_runs)):
             return

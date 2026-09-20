@@ -62,6 +62,7 @@ _SCENE_MODULES: dict[str, str] = {
     "demo_5": "demo_5",
     "demo_5.1": "demo_5_1",
     "demo_6": "demo_6",
+    "demo6_1": "demo6_1",
     "demo7": "demo7",
     "demo7_1": "demo7_1",
     "demo_test": "demo_test",

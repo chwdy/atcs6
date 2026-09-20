@@ -949,6 +949,7 @@ class PathDispatcher:
         train_id: str = "",
         requested_destination_direction: str = "forward",
         manual_override: bool = False,
+        zero_reservation_end_standoff: bool = False,
         reservation_cap_block_id: Optional[str] = None,
         required_candidate_resource_keys: Optional[List[CandidateResourceKey]] = None,
     ) -> PathAcquisitionResult:
@@ -1325,6 +1326,7 @@ class PathDispatcher:
                     train_id=train_id,
                     segment=truncated,
                     now=now,
+                    zero_reservation_end_standoff=zero_reservation_end_standoff,
                     ordered_walk=self._slice_ordered_walk(
                         ordered_walk, truncated.tiles
                     ),
@@ -1380,6 +1382,7 @@ class PathDispatcher:
                     train_id=train_id,
                     segment=truncated,
                     now=now,
+                    zero_reservation_end_standoff=zero_reservation_end_standoff,
                     ordered_walk=self._slice_ordered_walk(
                         ordered_walk, truncated.tiles
                     ),
@@ -1407,6 +1410,7 @@ class PathDispatcher:
                 train_id=train_id,
                 segment=segment,
                 now=now,
+                zero_reservation_end_standoff=zero_reservation_end_standoff,
                 ordered_walk=ordered_walk,
             )
             self.paths[path_id] = path
@@ -3737,6 +3741,7 @@ class PathDispatcher:
         segment: PathSegment,
         now: float,
         ordered_walk: Optional[List[GraphWalkStep]] = None,
+        zero_reservation_end_standoff: bool = False,
     ) -> Path:
         """Construct a v1 Path entity from a successfully acquired PathSegment.
 
@@ -3758,6 +3763,7 @@ class PathDispatcher:
             resource_sequence=sequence,
             current_resource_index=0,
             last_status_updated_time=now,
+            zero_reservation_end_standoff=zero_reservation_end_standoff,
             # Wire the network so Path.get_lock_end_block_id() can read
             # per-block Block.locked_by_path (design_new.md "Path field schema").
             network=self.network,
@@ -4127,14 +4133,14 @@ class PathDispatcher:
             on_complete()
 
         # Deliver completion to the injected route executor, which records the
-        # served stop through RouteRun.advance_walk_position(...) and emits the
+        # served stop through RouteExecutor.advance_walk_position(...) and emits the
         # canonical `path_completion` notification itself (the terminal-teardown
         # flow, step `09b0` in design_new.md "Core Runtime Loop"). The dispatcher
         # holds the route executor as an injected named dependency, not through a
         # SimulationController reference (design_new.md, "Dispatcher/route-executor inputs").
         #
         # Per design_new.md step `bc55`: the callback "records the stop as
-        # finished through `RouteRun.advance_walk_position(walk_position)`" for
+        # finished through `RouteExecutor.advance_walk_position(walk_position)`" for
         # the walk-position `find_next_completion_task(...)` already resolved
         # above. It is handed that `walk_position`, not the authority-end block
         # or the requested direction — the served row is already identified and

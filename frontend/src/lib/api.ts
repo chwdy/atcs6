@@ -318,6 +318,18 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
+  /** Point a train at a different speed profile (validated server-side). */
+  async assignTrainSpeedProfile(trainId: string, profileId: string): Promise<any> {
+    return this._request(
+      `/trains/${encodeURIComponent(trainId)}/speed-profile`,
+      {
+        method: 'PATCH',
+        body: { profile_id: profileId },
+      },
+      'assignTrainSpeedProfile'
+    );
+  }
+
   /**
    * Control simulation state.
    * @param action - 'start', 'stop', 'reset', 'set_speed'

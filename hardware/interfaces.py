@@ -14,6 +14,7 @@ leaves everything here unchanged.
 
 import logging
 import time
+from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from block_occupancy import OccupancyInput
@@ -61,6 +62,67 @@ _IDLE_DEADBAND_V = 0.25
 # `SpeedProfile.lighting_voltage`, because a lit-but-stationary train must land
 # in the lighting zone rather than be judged as driven.
 _CURRENT_SENSE_MIN_DRIVE_V = 4.0
+
+
+class DriveZone(Enum):
+    """How hard a block's rails are being driven, which decides which of the
+    block's two detectors can be believed (design_new.md "Hardware setup",
+    Occupancy source follows drive state).
+
+    `TrackDriver` owns this. It classifies each block's last commanded voltage
+    into a zone and reports it through `drive_zone(block_id)`; `OccupancyDriver`
+    asks for the zone rather than comparing a voltage against the levels itself,
+    so what a commanded voltage means for the rails and what it means for
+    detection are decided in one place.
+
+      - IDLE (|V| <= `idle_deadband_v`): nothing drives the rails. `TrackDriver`
+        holds both H-bridge inputs low, which a DRV8871 answers by letting both
+        outputs float, so the rails are undriven and the '165 detector decides.
+      - LIGHTING (between the two levels): a stopped-but-lit locomotive. The
+        current channel decides, and a clear is held for a run of reads.
+      - DRIVEN (|V| >= `current_sense_min_drive_v`): the current channel decides.
+    """
+
+    IDLE = "idle"
+    LIGHTING = "lighting"
+    DRIVEN = "driven"
+
+
+def classify_drive_zone(
+    volts: float, idle_deadband_v: float, current_sense_min_drive_v: float
+) -> DriveZone:
+    """The zone a commanded voltage puts a block in. The sign is direction and has
+    no bearing on it, so only the magnitude is compared.
+
+    The one definition of the rule: `TrackDriver` applies it to the voltage it
+    last commanded, and the block occupancy test applies it to the voltage it
+    reads back off the PWM chip, so the bench and the runtime cannot disagree
+    about a block."""
+    magnitude = abs(volts)
+    if magnitude <= idle_deadband_v:
+        return DriveZone.IDLE
+    if magnitude >= current_sense_min_drive_v:
+        return DriveZone.DRIVEN
+    return DriveZone.LIGHTING
+
+
+def deciding_source(zone: DriveZone, has_digital: bool, has_current: bool) -> str:
+    """Which detector answers for a block in `zone`: "current", "digital", or
+    "none" when the block has neither binding.
+
+    Whenever the rails are driven at all (lighting or driven) the current channel
+    decides if the block has one, because the '165 reads the drive rather than the
+    train there. Otherwise the '165 decides, and a block with only a current
+    channel falls back to it (it reads close to zero with no drive; best effort).
+    The one definition of the precedence, shared by the runtime read, the
+    both-sources diagnostic read, and the block occupancy test."""
+    if zone is not DriveZone.IDLE and has_current:
+        return "current"
+    if has_digital:
+        return "digital"
+    if has_current:
+        return "current"
+    return "none"
 
 
 def _resolved_bus(spec: Any, ck: Any) -> str:
@@ -157,6 +219,11 @@ class TrackDriver(TrackOutput):
     block in the editor takes effect on the next write, without rebuilding the
     session — the binding names two physical rails and stays put, which matters
     when the two are not interchangeable (one carries the idle detection rail).
+
+    It also owns each block's drive zone (see `DriveZone`). It is the one object
+    that knows what it last did to a block's rails, so it is the one that says
+    which zone the block is in; `OccupancyDriver` asks it through `drive_zone`.
+    The two zone levels are therefore handed to this driver, not to the detector.
     """
 
     def __init__(
@@ -167,6 +234,8 @@ class TrackDriver(TrackOutput):
         polarity_of: Optional[Callable[[str], bool]] = None,
         safety: Optional[OutputSafety] = None,
         readback_of: Optional[Callable[[str], Optional[float]]] = None,
+        idle_deadband_v: float = _IDLE_DEADBAND_V,
+        current_sense_min_drive_v: float = _CURRENT_SENSE_MIN_DRIVE_V,
     ) -> None:
         self._chips = chips_by_id
         self._bindings = bindings
@@ -174,6 +243,8 @@ class TrackDriver(TrackOutput):
         self._watchdog = watchdog
         self._polarity_of = polarity_of
         self._safety = safety
+        self._idle_deadband_v = idle_deadband_v
+        self._current_sense_min_drive_v = current_sense_min_drive_v
         # Reads the block's bound current-sense channel bus voltage (the actual
         # rail voltage), or None where the block has no such facility; raising on
         # a failed transaction. `None` when the rig has no current-sense chips at
@@ -192,7 +263,9 @@ class TrackDriver(TrackOutput):
             return False
         duty = min(abs(voltage) / MAX_TRACK_VOLTAGE, 1.0) if MAX_TRACK_VOLTAGE else 0.0
         # Drive the channel matching the sign; the other rests at zero, so the
-        # two H-bridge inputs are never driven together.
+        # two H-bridge inputs are never driven together. At zero both inputs rest
+        # low, so the bridge drives neither rail — that is how the idle zone is
+        # realized, and it is what lets the '165 read the block (see `DriveZone`).
         if voltage >= 0:
             chip.set_duty_cycle(reverse, 0.0)
             chip.set_duty_cycle(forward, duty)
@@ -207,10 +280,32 @@ class TrackDriver(TrackOutput):
 
     def get_actual_voltage(self, block_id: str) -> float:
         """The last voltage commanded for this block (its own output, read
-        back). The occupancy drive-zone logic reads this to decide whether a
-        block is being driven, so it must be the app's commanded value, not the
-        measured rail voltage — that is `get_readback_voltage(...)`."""
+        back). `drive_zone` classifies this value, so it must be the app's
+        commanded value, not the measured rail voltage — that is
+        `get_readback_voltage(...)`."""
         return self._voltages.get(block_id, 0.0)
+
+    def drive_zone(self, block_id: str) -> DriveZone:
+        """The zone this driver has put the block's rails in, from the voltage it
+        last commanded there. A block never written, and every block after a safe
+        state or a reconnect re-initialization, reads `DriveZone.IDLE`, because
+        its rails are then undriven."""
+        return classify_drive_zone(
+            self._voltages.get(block_id, 0.0),
+            self._idle_deadband_v,
+            self._current_sense_min_drive_v,
+        )
+
+    def forget_commanded_voltages(self) -> None:
+        """Record that every channel was driven to zero underneath this driver.
+
+        Called by the safe state and by the reconnect re-initialization, both of
+        which zero the PWM chips directly. Without it this driver would keep
+        reporting the old voltage and the old drive zone for rails that are now
+        undriven, and `OccupancyDriver` would read a dead block through the
+        current channel instead of the '165."""
+        for block_id in self._voltages:
+            self._voltages[block_id] = 0.0
 
     def get_readback_voltage(self, block_id: str) -> Optional[float]:
         """Read the block's bound current-sense channel bus voltage — the actual
@@ -235,8 +330,7 @@ class TrackDriver(TrackOutput):
         else:
             for chip in self._chips.values():
                 chip.all_off()
-        for block_id in self._voltages:
-            self._voltages[block_id] = 0.0
+        self.forget_commanded_voltages()
 
 
 class SwitchDriver(SwitchOutput):
@@ -367,9 +461,11 @@ class OccupancyDriver(OccupancyInput):
     channel (INA3221 or INA219), selected per block by how hard the block is
     being driven.
 
-    `voltage_of` reports the last commanded block voltage (from the real track
-    interface). Its magnitude puts the block in one of three zones, because the
-    two detectors are trustworthy in different ones:
+    `track` is the real `TrackDriver`, and this driver asks it which drive zone
+    each block is in (`TrackDriver.drive_zone`) rather than comparing a voltage
+    against the zone levels itself — the track driver is what put the rails in
+    that state, so it is the one that says so. The two detectors are trustworthy
+    in different zones:
 
       - **idle** (|V| <= `idle_deadband_v`): nothing is driving the rails, so
         there is no current to sense and the '165 detector decides.
@@ -414,7 +510,8 @@ class OccupancyDriver(OccupancyInput):
     `threshold_ma`, is what keeps a real lit loco above the floor; the window
     only decides how long a genuinely silent block waits.
 
-    A block may have both sources, only one, or neither:
+    A block may have both sources, only one, or neither (`deciding_source` is the
+    one definition of this precedence):
 
       - driven + has current    -> current channel
       - lighting + has current  -> current channel; clears only after sustained
@@ -443,20 +540,19 @@ class OccupancyDriver(OccupancyInput):
         digital_bindings: BindingMap,
         current_chips: Optional[Dict[str, Any]] = None,
         current_bindings: Optional[CurrentBindingMap] = None,
-        voltage_of: Optional[Callable[[str], float]] = None,
-        idle_deadband_v: float = _IDLE_DEADBAND_V,
+        track: Optional[TrackDriver] = None,
         digital_active_low: Optional[Dict[str, bool]] = None,
-        current_sense_min_drive_v: float = _CURRENT_SENSE_MIN_DRIVE_V,
         lighting_clear_hold_reads: int = LIGHTING_CLEAR_HOLD_READS,
     ) -> None:
         self._digital_chips = digital_chips
         self._digital = digital_bindings
         self._current_chips = current_chips or {}
         self._current = current_bindings or {}
-        self._voltage_of = voltage_of
-        self._idle_deadband_v = idle_deadband_v
+        # The track driver whose drive zone decides which detector answers.
+        # None when the rig has no track chips: nothing can drive the rails, so
+        # every block is idle.
+        self._track = track
         self._digital_active_low = digital_active_low or {}
-        self._current_sense_min_drive_v = current_sense_min_drive_v
         self._lighting_clear_hold_reads = lighting_clear_hold_reads
         # What this driver last reported per block. Read only in the lighting
         # zone, where it is what stops a blind read from clearing a block.
@@ -487,66 +583,51 @@ class OccupancyDriver(OccupancyInput):
         detail: Dict[str, Dict[str, Any]] = {}
         for block_id in set(self._digital) | set(self._current):
             zone = self._drive_zone(block_id)
-            if zone != "lighting":
+            if zone is not DriveZone.LIGHTING:
                 # The window counts unbroken agreement inside the zone only. A
                 # block that left it was answered by a source trusted to clear
                 # on its own, so nothing carries over when it comes back.
                 self._lighting_clear_counts[block_id] = 0
+            source = deciding_source(
+                zone, block_id in self._digital, block_id in self._current
+            )
             entry: Dict[str, Any] = {
-                "zone": zone,
-                "driven": zone == "driven",
-                "commanded_volts": (
-                    round(self._voltage_of(block_id), 2)
-                    if self._voltage_of is not None
-                    else None
-                ),
+                "zone": zone.value,
+                "driven": zone is DriveZone.DRIVEN,
+                "commanded_volts": self._commanded_volts(block_id),
+                "source": source,
             }
-            if zone == "lighting":
-                # The current channel decides here; the '165 is not read at all,
-                # because the rail its comparator watches is the rail being
-                # pulsed and its bit reports the duty cycle rather than the
-                # train (see the class docstring). A digital-only block has
-                # nothing else to ask, so it falls back to the '165.
-                # No single read can CLEAR a block in either case: the last
-                # reported value holds through a clear read until the deciding
-                # source has read clear for `_lighting_clear_hold_reads` running.
-                entry["held_zone"] = True
-                if block_id in self._current:
-                    entry["source"] = "current"
-                    present = self._read_current(block_id, entry)
-                else:
-                    entry["source"] = "digital"
-                    present = self._read_digital(block_id, digital_cache, entry)
-                held = self._last_reported.get(block_id, False)
-                if present:
-                    self._lighting_clear_counts[block_id] = 0
-                    entry["clear_count"] = 0
-                    entry["held_from_previous"] = False
-                    result[block_id] = True
-                else:
-                    count = self._lighting_clear_counts.get(block_id, 0) + 1
-                    released = count >= self._lighting_clear_hold_reads
-                    # Start the window over on release, so a block that
-                    # re-confirms and goes quiet again waits the full window
-                    # rather than dropping out on its next silent read.
-                    self._lighting_clear_counts[block_id] = 0 if released else count
-                    entry["clear_count"] = 0 if released else count
-                    entry["clear_hold_reads"] = self._lighting_clear_hold_reads
-                    entry["held_from_previous"] = held and not released
-                    result[block_id] = held and not released
-            elif zone == "driven" and block_id in self._current:
-                entry["source"] = "current"
-                result[block_id] = self._read_current(block_id, entry)
-            elif block_id in self._digital:
-                entry["source"] = "digital"
-                result[block_id] = self._read_digital(block_id, digital_cache, entry)
-            elif block_id in self._current:
-                entry["source"] = "current"
-                result[block_id] = self._read_current(block_id, entry)
-            else:
-                entry["source"] = "none"
-                result[block_id] = False
+            present = self._read_source(source, block_id, digital_cache, entry)
             detail[block_id] = entry
+            if zone is not DriveZone.LIGHTING:
+                result[block_id] = present
+                continue
+            # The lighting zone. The current channel decides and the '165 is not
+            # read at all, because the rail its comparator watches is the rail
+            # being pulsed and its bit reports the duty cycle rather than the
+            # train (see the class docstring); a digital-only block has nothing
+            # else to ask, so it falls back to the '165. No single read can
+            # CLEAR a block in either case: the last reported value holds
+            # through a clear read until the deciding source has read clear for
+            # `_lighting_clear_hold_reads` running.
+            entry["held_zone"] = True
+            held = self._last_reported.get(block_id, False)
+            if present:
+                self._lighting_clear_counts[block_id] = 0
+                entry["clear_count"] = 0
+                entry["held_from_previous"] = False
+                result[block_id] = True
+            else:
+                count = self._lighting_clear_counts.get(block_id, 0) + 1
+                released = count >= self._lighting_clear_hold_reads
+                # Start the window over on release, so a block that re-confirms
+                # and goes quiet again waits the full window rather than
+                # dropping out on its next silent read.
+                self._lighting_clear_counts[block_id] = 0 if released else count
+                entry["clear_count"] = 0 if released else count
+                entry["clear_hold_reads"] = self._lighting_clear_hold_reads
+                entry["held_from_previous"] = held and not released
+                result[block_id] = held and not released
         self._last_read_detail = detail
         self._last_reported = dict(result)
         return result
@@ -584,13 +665,10 @@ class OccupancyDriver(OccupancyInput):
         digital_cache: Dict[str, bytes] = {}
         out: Dict[str, Dict[str, Any]] = {}
         for block_id in set(self._digital) | set(self._current):
+            zone = self._drive_zone(block_id)
             entry: Dict[str, Any] = {
-                "zone": self._drive_zone(block_id),
-                "commanded_volts": (
-                    round(self._voltage_of(block_id), 2)
-                    if self._voltage_of is not None
-                    else None
-                ),
+                "zone": zone.value,
+                "commanded_volts": self._commanded_volts(block_id),
             }
             digital = (
                 self._read_digital(block_id, digital_cache, entry)
@@ -604,51 +682,44 @@ class OccupancyDriver(OccupancyInput):
             )
             entry["digital"] = digital
             entry["current"] = current
-            entry["driven"] = entry["zone"] == "driven"
-            if entry["zone"] == "lighting":
+            entry["driven"] = zone is DriveZone.DRIVEN
+            if zone is DriveZone.LIGHTING:
                 entry["held_zone"] = True
-                if current is not None:
-                    entry["source"] = "current"
-                    entry["overall"] = bool(current)
-                elif digital is not None:
-                    entry["source"] = "digital"
-                    entry["overall"] = bool(digital)
-                else:
-                    entry["source"] = "none"
-                    entry["overall"] = False
-            elif entry["zone"] == "driven" and current is not None:
-                entry["source"] = "current"
-                entry["overall"] = bool(current)
-            elif digital is not None:
-                entry["source"] = "digital"
-                entry["overall"] = bool(digital)
-            elif current is not None:
-                entry["source"] = "current"
-                entry["overall"] = bool(current)
-            else:
-                entry["source"] = "none"
-                entry["overall"] = False
+            source = deciding_source(zone, digital is not None, current is not None)
+            entry["source"] = source
+            entry["overall"] = bool({"digital": digital, "current": current}.get(source))
             out[block_id] = entry
         return out
 
-    def _drive_zone(self, block_id: str) -> str:
-        """Which detector regime this block's COMMANDED voltage puts it in:
-        "idle", "lighting", or "driven" (see the class docstring).
+    def _drive_zone(self, block_id: str) -> DriveZone:
+        """The zone the track driver reports for this block. Never re-derived
+        here from a voltage: the track driver put the rails in that state, and
+        it is the one place the zone levels are applied (see `DriveZone`)."""
+        if self._track is None:
+            return DriveZone.IDLE
+        return self._track.drive_zone(block_id)
 
-        Commanded, not measured: the question is how hard software is driving
-        the rails, which is what decides whether a detector can be believed.
-        """
-        if self._voltage_of is None:
-            return "idle"
-        volts = abs(self._voltage_of(block_id))
-        if volts <= self._idle_deadband_v:
-            return "idle"
-        if volts >= self._current_sense_min_drive_v:
-            return "driven"
-        return "lighting"
+    def _commanded_volts(self, block_id: str) -> Optional[float]:
+        """The track driver's last commanded voltage for this block, rounded, for
+        the diagnostic detail only — the decision is `_drive_zone`. None when the
+        rig has no track driver."""
+        if self._track is None:
+            return None
+        return round(self._track.get_actual_voltage(block_id), 2)
 
-    def _is_driven(self, block_id: str) -> bool:
-        return self._drive_zone(block_id) == "driven"
+    def _read_source(
+        self,
+        source: str,
+        block_id: str,
+        cache: Dict[str, bytes],
+        detail: Dict[str, Any],
+    ) -> bool:
+        """Read the one detector `deciding_source` chose for this block."""
+        if source == "current":
+            return self._read_current(block_id, detail)
+        if source == "digital":
+            return self._read_digital(block_id, cache, detail)
+        return False
 
     def _read_digital(
         self,
@@ -898,6 +969,8 @@ def build_real_interfaces(
             polarity_of=track_polarity_of,
             safety=safety,
             readback_of=_block_bus_voltage_readback,
+            idle_deadband_v=idle_deadband_v,
+            current_sense_min_drive_v=current_sense_min_drive_v,
         )
         if track_chips
         else None
@@ -936,7 +1009,9 @@ def build_real_interfaces(
 
         Track voltage is deliberately not restored: `configure()` leaves every
         PWM channel at zero, and the control loop re-commands voltage on its
-        next tick.
+        next tick. The track driver is told its channels were zeroed, so until
+        that tick it reports every block idle — the state the rails are really
+        in — and the detector reads each block through its '165.
 
         Raising out of here is deliberate. `Ch347Device._recover()` treats a
         hook that raises as a failed reconnect: it closes the handle and waits
@@ -946,6 +1021,8 @@ def build_real_interfaces(
         safety.enter_safe_state()
         for chip in track_chips.values():
             chip.configure()
+        if block_out is not None:
+            block_out.forget_commanded_voltages()
         for chip in current_chips.values():
             chip.configure()
         _assert_switch_ports_low(switch_chips, switch_output)
@@ -961,9 +1038,8 @@ def build_real_interfaces(
             block_occupancy,
             current_chips=current_chips,
             current_bindings=block_occupancy_current or {},
-            voltage_of=(block_out.get_actual_voltage if block_out is not None else None),
-            idle_deadband_v=idle_deadband_v,
-            current_sense_min_drive_v=current_sense_min_drive_v,
+            # The track driver owns the drive zone; the detector asks it.
+            track=block_out,
             lighting_clear_hold_reads=lighting_clear_hold_reads,
             # Which shift-in chains are wired active-low, so the interface can
             # normalize their bits (design_new.md Power, Block occupancy detection).

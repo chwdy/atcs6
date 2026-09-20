@@ -16,6 +16,7 @@ reversal each testable on their own.
 import pytest
 
 from constants import (
+    CALIBRATION_CAP_RETRY_LIMIT,
     CALIBRATION_POWER_STEP_PERCENT,
     CALIBRATION_ROUND_TRIPS,
     CALIBRATION_STEP_TIMEOUT_S,
@@ -387,6 +388,40 @@ def test_a_capped_crossing_is_discarded_and_the_pass_goes_on():
     assert run.crossings == []
     assert run.current_crossing_tainted is False
     assert run.phase != PHASE_FAILED
+    assert profile.power_speed_curve == curve_before
+
+
+def test_a_stretch_that_caps_every_crossing_fails_the_pass():
+    """When one step is capped on CALIBRATION_CAP_RETRY_LIMIT consecutive
+    crossings — the stretch is too short for that step even at the zero
+    reservation-end standoff — the pass fails and reports rather than shuttling
+    forever (design_new.md, "A capped crossing is discarded")."""
+    cal, run, profile = _open_run()
+    curve_before = list(profile.power_speed_curve)
+    clock = 0.0
+    for i in range(CALIBRATION_CAP_RETRY_LIMIT):
+        cal.advance(run, CalibrationObservation(now=clock))  # arm the leg
+        far = run.heading_toward_block_id
+        clock += 1.0
+        cal.advance(run, CalibrationObservation(now=clock, newly_confirmed=("B",)))
+        assert run.is_measuring
+        cal.taint_current_crossing(
+            "T1", "reservation-end braking during a measured crossing"
+        )
+        clock += 2.0
+        cal.advance(run, CalibrationObservation(now=clock, newly_confirmed=(far,)))
+        if i < CALIBRATION_CAP_RETRY_LIMIT - 1:
+            # Under the limit: the crossing is discarded, the pass continues, and
+            # the train stops so the next leg reverses.
+            assert run.phase != PHASE_FAILED
+            clock += 1.0
+            cal.advance(run, CalibrationObservation(now=clock, is_stopped=True))
+
+    # The limit-th consecutive capped crossing ends the pass with a report.
+    assert run.phase == PHASE_FAILED
+    assert "too short" in run.failure_reason
+    # Nothing was banked; the profile's curve is untouched.
+    assert run.samples == []
     assert profile.power_speed_curve == curve_before
 
 

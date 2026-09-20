@@ -139,10 +139,10 @@ class EBWorkflow:
         # handle_position write (design_new.md Module boundaries rule 5).
         c.ops.reset_handle_to_neutral()
 
-        # The READY move is intentionally not written here: the reactive
-        # evaluator owns the RUNNING_MOVING -> READY transition (see the
-        # docstring). The tick's step-`71ee` call and the release-emergency API
-        # route each run it right after this method.
+        # `train_status` / `ato_status` are derived reads (design_new.md
+        # "Controller state machine" / "ATO status"), so clearing `eb.active` is
+        # all that is written here: a powered train then reads
+        # `train_status == MANUAL` with no stored state transition to make.
         from notification_center import Kind
 
         c._emit_event(

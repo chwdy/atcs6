@@ -45,9 +45,10 @@ class PathProjection:
 
         Resolves to ``PathDispatcher.get_active_path(self.train_id)`` on every
         read and narrows it to the canonical **received_path_plan schema**
-        (design_new.md): ``path_id``, ``resource_sequence``, and
-        ``reservation_end_block_id``. The dispatcher-only fields on the ``Path``
-        record are not projected — the controller does not see them.
+        (design_new.md): ``path_id``, ``resource_sequence``,
+        ``reservation_end_block_id``, and ``zero_reservation_end_standoff``. The
+        dispatcher-only fields on the ``Path`` record are not projected — the
+        controller does not see them.
 
         There is no setter and no stored field. When the dispatcher transitions
         the path's status away from ``ACTIVE``, ``get_active_path`` returns
@@ -65,12 +66,16 @@ class PathProjection:
         return ReceivedPathPlan(
             path_id=getattr(path, "path_id", None) or getattr(path, "id", ""),
             resource_sequence=path.resource_sequence,
+            zero_reservation_end_standoff=getattr(
+                path, "zero_reservation_end_standoff", False
+            ),
         )
 
     def received_path_plan_dict(self) -> Optional[Dict[str, Any]]:
         """Serialize the active authority as the canonical
         **received_path_plan schema** (design_new.md): exactly
-        ``path_id``, ``resource_sequence``, and ``reservation_end_block_id``.
+        ``path_id``, ``resource_sequence``, ``reservation_end_block_id``, and
+        ``zero_reservation_end_standoff``.
 
         Dispatcher-only fields (``status`` / ``current_resource_index`` /
         ``last_status_updated_time``) stay on the ``Path`` record and are
@@ -90,6 +95,9 @@ class PathProjection:
             "path_id": getattr(plan, "path_id", None) or getattr(plan, "id", None),
             "reservation_end_block_id": plan.get_reservation_end_block_id() or None,
             "resource_sequence": [e.to_dict() for e in resource_sequence],
+            "zero_reservation_end_standoff": getattr(
+                plan, "zero_reservation_end_standoff", False
+            ),
         }
 
     @property

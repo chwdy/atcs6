@@ -106,7 +106,7 @@ def test_round_trip_bare_stop_apex_reflects_via_walk_direction():
     )
     assert ok is True
     # The apex stop is finished through the canonical writer, which samples both
-    # clocks itself (design_new.md "`RouteRun.advance_walk_position(...)`").
+    # clocks itself (design_new.md "`RouteExecutor.advance_walk_position(...)`").
     assert exec_state.task_runs[2].finished_at is not None
     assert exec_state.task_runs[2].finished_at_operating is not None
 

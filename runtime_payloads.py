@@ -226,7 +226,7 @@ class PendingPathCancelRequest:
         hands forward. Required (non-`None`) on every request. Its `origin`
         carries the free-form notification label (``"eb"``,
         ``"operator_cancelled"``, ``"power_off"``, ``"out_of_sequence"``,
-        ``"revoked"``, ``"calibration_leg_complete"``); the Action commit puts
+        ``"revoked"``); the Action commit puts
         the record in the cancellation event's `error` field.
       * `deviation: bool` — set only by the movement-derived deviation writer.
         It rides the latch payload so the Action commit can forward the

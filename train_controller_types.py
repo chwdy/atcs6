@@ -19,7 +19,8 @@ class ReceivedPathPlan:
     """The controller's read-only view of dispatcher-owned movement authority.
 
     design_new.md "received_path_plan schema": the projection carries exactly
-    `path_id`, `resource_sequence`, and `reservation_end_block_id`. The
+    `path_id`, `resource_sequence`, `reservation_end_block_id`, and
+    `zero_reservation_end_standoff`. The
     dispatcher-only fields on the `Path` record — `status`,
     `current_resource_index`, `last_status_updated_time` — are deliberately
     absent, because "the controller does not see those fields." The requested
@@ -32,6 +33,10 @@ class ReceivedPathPlan:
 
     path_id: str
     resource_sequence: List["ResourceSequenceEntry"] = field(default_factory=list)
+    # When True, TrainController lookahead selects a zero reservation-end safety
+    # margin for this path (a speed-calibration leg); design_new.md,
+    # "A calibration leg holds no reservation-end standoff".
+    zero_reservation_end_standoff: bool = False
 
     @property
     def reservation_end_block_id(self) -> str:

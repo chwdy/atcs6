@@ -37,10 +37,12 @@ from hardware.chips.ina3221 import INA3221
 from hardware.chips.pca9685 import PCA9685
 from hardware.fake import FakeCh347Device
 from hardware.interfaces import (
+    DriveZone,
     OccupancyDriver,
     SwitchDriver,
     TrackDriver,
     build_real_interfaces,
+    deciding_source,
 )
 
 
@@ -793,6 +795,119 @@ def test_lighting_zone_without_a_current_channel_falls_back_to_the_digital_bit()
     assert inp.read_block_currents()["B1"] is True     # 1st clear
     assert inp.read_block_currents()["B1"] is True     # 2nd
     assert inp.read_block_currents()["B1"] is False    # 3rd -> released
+
+
+# --- the track driver owns the drive zone ------------------------------------
+# design_new.md "Hardware setup", Occupancy source follows drive state: the
+# track driver classifies each block's commanded voltage into a zone and the
+# occupancy driver asks it, rather than comparing the voltage itself.
+
+
+@pytest.mark.parametrize("volts, zone", [
+    (0.0, DriveZone.IDLE),
+    (0.25, DriveZone.IDLE),          # at the deadband is still idle
+    (2.0, DriveZone.LIGHTING),
+    (-2.0, DriveZone.LIGHTING),      # the sign is direction, not drive strength
+    (4.0, DriveZone.DRIVEN),         # at the current-sense floor is driven
+    (-9.0, DriveZone.DRIVEN),
+])
+def test_the_track_driver_reports_the_zone_of_what_it_commanded(volts, zone):
+    _dev, _inp, blk = _lighting_zone_block()      # 0.25 V deadband, 4 V floor
+    blk.set_voltage("B1", volts)
+    assert blk.drive_zone("B1") is zone
+
+
+def test_a_block_never_written_is_idle():
+    _dev, _inp, blk = _lighting_zone_block()
+    assert blk.drive_zone("NEVER_WRITTEN") is DriveZone.IDLE
+
+
+def test_the_safe_state_puts_every_block_in_the_idle_zone():
+    _dev, _inp, blk = _lighting_zone_block()
+    blk.set_voltage("B1", 9.0)
+    assert blk.drive_zone("B1") is DriveZone.DRIVEN
+    blk.enter_safe_state()
+    assert blk.drive_zone("B1") is DriveZone.IDLE
+
+
+def test_the_detector_reads_the_zone_the_track_driver_reports():
+    # One owner: whatever zone the track driver says, the detector acts on — it
+    # does not keep a second copy of the levels to disagree with.
+    dev, inp, blk = _lighting_zone_block()
+    for volts in (0.0, 2.0, 9.0, -2.0, 0.0):
+        blk.set_voltage("B1", volts)
+        inp.read_block_currents()
+        assert inp.last_read_detail()["B1"]["zone"] == blk.drive_zone("B1").value
+        assert inp.read_all_sources()["B1"]["zone"] == blk.drive_zone("B1").value
+
+
+def test_zero_volts_is_read_through_the_digital_detector():
+    # A commanded 0 V is the idle zone: the rails are undriven, so the '165 —
+    # not the current channel — decides.
+    dev, inp, blk = _lighting_zone_block()
+    blk.set_voltage("B1", 0.0)
+    dev.set_input_bit("cs1", 3, True, width=1)     # '165 sees a locomotive
+    dev.set_ina3221_current(0x41, 1, 0.0)          # no drive, no current
+    assert inp.read_block_currents()["B1"] is True
+    assert inp.last_read_detail()["B1"]["source"] == "digital"
+
+
+class _ReconnectableFakeDevice(FakeCh347Device):
+    """A fake device that, like the real bridge, accepts a reconnect hook, so a
+    test can run the re-initialization a dropped USB link triggers."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.reconnect_hooks = []
+
+    def add_reconnect_hook(self, hook):
+        self.reconnect_hooks.append(hook)
+
+
+def test_a_reconnect_reinitialization_reports_every_block_idle():
+    # A reconnect re-initializes the PWM chips, which zeroes every channel under
+    # the track driver. The driver must then report the rails as the idle zone
+    # they are really in; if it kept reporting the old drive, the detector would
+    # read a dead block through the current channel and see nothing there.
+    dev = _ReconnectableFakeDevice(present_addresses={0x40, 0x41})
+    specs = [
+        ChipConfig("pwm1", "pca9685", i2c_address=0x40),
+        ChipConfig("in1", "hc165", spi_select="cs1"),
+        ChipConfig("cur1", "ina3221", i2c_address=0x41),
+    ]
+    inp, blk, _sw = build_real_interfaces(
+        dev, specs,
+        block_track={"B1": ("pwm1", 0, 1)},
+        block_occupancy={"B1": ("in1", 3)},
+        switch_output={},
+        block_occupancy_current={"B1": ("cur1", 0, 0.0, 0.015)},
+        idle_deadband_v=0.25,
+        current_sense_min_drive_v=4.0,
+    )
+    blk.set_voltage("B1", 9.0)
+    assert blk.drive_zone("B1") is DriveZone.DRIVEN
+
+    (resync,) = dev.reconnect_hooks
+    resync()
+
+    assert blk.drive_zone("B1") is DriveZone.IDLE
+    dev.set_input_bit("cs1", 3, True, width=1)     # the locomotive is still there
+    assert inp.read_block_currents()["B1"] is True
+    assert inp.last_read_detail()["B1"]["source"] == "digital"
+
+
+@pytest.mark.parametrize("zone, has_digital, has_current, source", [
+    (DriveZone.IDLE, True, True, "digital"),
+    (DriveZone.IDLE, False, True, "current"),     # best effort, no drive
+    (DriveZone.IDLE, True, False, "digital"),
+    (DriveZone.LIGHTING, True, True, "current"),  # the '165 reads the duty cycle
+    (DriveZone.LIGHTING, True, False, "digital"),
+    (DriveZone.DRIVEN, True, True, "current"),
+    (DriveZone.DRIVEN, True, False, "digital"),
+    (DriveZone.DRIVEN, False, False, "none"),
+])
+def test_deciding_source_precedence(zone, has_digital, has_current, source):
+    assert deciding_source(zone, has_digital, has_current) == source
 
 
 def test_lighting_voltage_default_stays_below_the_current_sense_floor():

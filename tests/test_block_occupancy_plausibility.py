@@ -102,6 +102,66 @@ def test_a_train_that_crossed_two_confirmed_blocks_stays_one_train():
     assert physics.could_be_entering("BLK_4") is True
 
 
+class _ActivePathStub:
+    """Minimal active path so `received_path_plan` resolves non-None."""
+
+    def __init__(self, resource_sequence):
+        self.path_id = "P"
+        self.resource_sequence = list(resource_sequence)
+        self.zero_reservation_end_standoff = False
+
+
+class _DispatcherStub:
+    def __init__(self, path):
+        self._path = path
+
+    def get_active_path(self, train_id):
+        return self._path
+
+
+def test_a_train_past_its_authority_end_is_permissive_like_a_stopped_train():
+    """A train at or past the end of its authority is being brought to a stop,
+    not driven onward, so — like a stopped train — its travel direction no longer
+    reliably says which side it is leaving, and every neighbour stays plausible.
+    This is what lets a block a train overran past its authority end attribute to
+    it (owned, not ghosted); the drive is cut to 0 V separately the moment the
+    head is past authority (see test_lighting_calibration)."""
+    network = build_line()
+    sim, train, controller, physics = place(network, head_x=2, length_cm=40.0)
+    wire_detector(sim, detected={f"BLK_{i}" for i in range(6)}, confirmed={"BLK_2"})
+    rolling(controller, 16.0)
+
+    # No authority record: a plain moving train still vetoes the block behind it.
+    assert physics.could_be_entering("BLK_1") is False
+
+    # It holds a path plan but nothing is reserved ahead of its head — it has run
+    # to its authority end, so the block behind (one it may have overrun onto)
+    # becomes plausible and attributes to it.
+    controller.path_dispatcher = _DispatcherStub(_ActivePathStub(["BLK_2"]))
+    assert physics.could_be_entering("BLK_1") is True
+    assert sim.block_occupancy_detector.adjacent_train_for_block("BLK_1") == "T"
+
+
+def test_the_walk_crosses_a_clear_block_the_train_still_holds():
+    """The train pulled ahead onto BLK_4 while the model still shows it on BLK_2.
+    BLK_3 between them reads clear, but the train still holds it
+    (`Block.occupied_by`, its confirmed clear not yet committed) — its own body
+    clearing behind the head, not foreign track. The walk crosses it, so BLK_4
+    stays this train's rather than becoming a second object the app then loses
+    the real train to."""
+    network = build_line()
+    sim, train, controller, physics = place(network, head_x=2, length_cm=40.0)
+    wire_detector(
+        sim,
+        detected={f"BLK_{i}" for i in range(6)},
+        confirmed={"BLK_2", "BLK_4"},
+    )
+    network.blocks["BLK_3"].occupy("T")
+    rolling(controller, 16.0)
+
+    assert physics.could_be_entering("BLK_4") is True
+
+
 # ---------------------------------------------------------------------------
 # The gate as attribution sees it
 # ---------------------------------------------------------------------------

@@ -191,6 +191,36 @@ def test_a_block_no_source_can_fix_is_driven_positive():
     assert power.get_block_voltage("BLK_B") == 9.0
 
 
+def test_a_block_past_the_span_takes_the_line_of_travel():
+    """A block the detector credits to a train just past its calculated span is
+    in neither the path nor the span walk. It is signed by the train's line of
+    travel continued into it, so the locomotive keeps going the way it was
+    going. Driving it positive by default would, on a block drawn against the
+    travel as `BLK_B` is here, push the locomotive backwards."""
+    net = _line_network(flip_b=True)
+    physics = _physics(net, controller=None)
+    # The span covers BLK_A only; the cab is at end_b (1, 0), which the head
+    # entered through its west edge, so the train travels west to east and
+    # BLK_B is the next block along.
+    physics._work = _SpanWorkState(
+        head_is_a=False,
+        end_a_tile=(0, 0),
+        end_a_distance_cm=0.0,
+        end_a_entry_edge="E",
+        end_b_tile=(1, 0),
+        end_b_distance_cm=0.0,
+        end_b_entry_edge="W",
+        occupied_tiles=[(0, 0), (1, 0)],
+        occupied_blocks=["BLK_A"],
+    )
+
+    physics._set_voltage_for_blocks(SimpleNamespace(train_id="T1"), 6.0)
+
+    power = physics._get_power_controller()
+    assert power.get_block_voltage("BLK_A") == 6.0
+    assert power.get_block_voltage("BLK_B") == -6.0
+
+
 # --------------------------------------------------- the span-walk fallback
 
 
