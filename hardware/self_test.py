@@ -29,7 +29,12 @@ from hardware.catalog import (
     PORT_TEST_PULSE_S,
 )
 from hardware.chips.hc595 import sleep_holding
-from hardware.interfaces import build_chip
+from hardware.interfaces import (
+    DriveZone,
+    build_chip,
+    classify_drive_zone,
+    deciding_source,
+)
 
 # How long the track direction test holds each leg of its sequence. Long enough
 # that a loco visibly moves one way, stops, and moves back the other way.
@@ -354,25 +359,18 @@ def run_occupancy_test(
         digital = _read_digital_detector(device, cfg, block_id)
         current = _read_current_detector(device, cfg, block_id)
 
-        volts = abs(track["volts"]) if track["bound"] else 0.0
-        zone = "idle" if volts <= deadband else (
-            "driven" if volts >= min_drive else "lighting"
+        # The same zone rule and detector precedence the runtime uses — one
+        # definition of each, in `hardware.interfaces` — applied to the voltage
+        # read back off the PWM chip, since a test builds no track driver. The
+        # lighting zone decides on the current channel exactly as the driven
+        # zone does, and differs only in that a clear takes a sustained run of
+        # reads.
+        zone = classify_drive_zone(
+            track["volts"] if track["bound"] else 0.0, deadband, min_drive
         )
-        driven = zone == "driven"
-        # The same precedence the runtime interface uses. The lighting zone
-        # decides on the current channel exactly as the driven zone does — the
-        # '165's rail is the one being pulsed there, so its bit reports the duty
-        # cycle rather than the train — and differs only in that a clear takes a
-        # sustained run of reads.
-        held_zone = zone == "lighting"
-        if (driven or held_zone) and current["bound"]:
-            source = "current"
-        elif digital["bound"]:
-            source = "digital"
-        elif current["bound"]:
-            source = "current"
-        else:
-            source = "none"
+        driven = zone is DriveZone.DRIVEN
+        held_zone = zone is DriveZone.LIGHTING
+        source = deciding_source(zone, digital["bound"], current["bound"])
 
         decided = {"digital": digital, "current": current}.get(source)
         occupied = bool(decided and decided.get("occupied"))
@@ -381,7 +379,7 @@ def run_occupancy_test(
             "block_id": block_id,
             "track": track,
             "driven": driven,
-            "zone": zone,
+            "zone": zone.value,
             # A test is a one-shot read with no previous value to hold and no
             # window to count, so in the lighting zone it reports what the
             # deciding source sees right now. `held_zone` tells the UI that a
@@ -408,7 +406,7 @@ def _idle_deadband_v(cfg: Any) -> float:
     """The drive-state deadband the runtime uses, taken from the configuration
     the session was built with — both zone thresholds are per-configuration
     tunables, and `build_real_interfaces` hands these same two values to
-    `OccupancyDriver`. Reading the module default instead would make the bench
+    `TrackDriver`, which owns the zone. Reading the module default instead would make the bench
     test disagree with the running session on any block whose operator tuned
     them, which is the one case the settings exist for.
 
