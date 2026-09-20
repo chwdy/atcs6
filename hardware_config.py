@@ -366,21 +366,6 @@ def close_live_device() -> None:
             pass
 
 
-def is_real(cfg: Optional[HardwareConfig] = None) -> bool:
-    """Compatibility projection of the separately selected environment."""
-    return operation_environment.get_selected() is OperationMode.REAL_HARDWARE
-
-
-def is_develop(cfg: Optional[HardwareConfig] = None) -> bool:
-    """Compatibility projection: old develop mode is Virtual Hardware."""
-    return operation_environment.get_selected() is OperationMode.VIRTUAL_HARDWARE
-
-
-def derive_operation_mode(cfg: Optional[HardwareConfig] = None) -> OperationMode:
-    """Compatibility name for the separate environment selection."""
-    return operation_environment.get_selected()
-
-
 # ---------------------------------------------------------------------------
 # Serialization
 # ---------------------------------------------------------------------------

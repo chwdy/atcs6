@@ -76,7 +76,8 @@ def _develop_opener(cfg):
     supplies the flag — the setup panel puts it on each payload, and `as_dict`
     carries it for the per-entity block / switch editors.
 
-    NOT `is_develop`, because commissioning runs on the fake BEFORE the user can
+    Reads the requested environment directly (not a gate that also demands
+    `enabled`), because commissioning runs on the fake BEFORE the user can
     enable hardware (enabling requires every chip proven), so it must not also
     require `enabled`."""
     requested = getattr(cfg, "_requested_environment", None)

@@ -107,17 +107,17 @@ def test_as_dict_enriches_chips_with_derived_fields():
 # --- operation-mode derivation --------------------------------------------
 def test_enabled_with_chip_is_real():
     hardware_config.apply_updates(_real_payload(), persist=False)
-    assert hardware_config.derive_operation_mode() == OperationMode.REAL
+    assert operation_environment.get_selected() == OperationMode.REAL
 
 
 def test_environment_selection_is_independent_of_setup_completeness():
     hardware_config.apply_updates({"enabled": True, "chips": []}, persist=False)
-    assert hardware_config.derive_operation_mode() == OperationMode.REAL_HARDWARE
+    assert operation_environment.get_selected() == OperationMode.REAL_HARDWARE
 
 
 def test_chips_but_not_enabled_is_sim():
     hardware_config.apply_updates(_real_payload(enabled=False), persist=False)
-    assert hardware_config.derive_operation_mode() == OperationMode.SIM
+    assert operation_environment.get_selected() == OperationMode.SIM
 
 
 # --- validation ------------------------------------------------------------
@@ -489,9 +489,9 @@ def test_apply_updates_persists_and_round_trips():
     assert {c["chip_id"] for c in on_disk["chips"]} == {"pwm1", "sw1", "in1"}
     # a fresh load reproduces it
     hardware_config.reset_to_defaults()
-    assert hardware_config.is_real() is False
+    assert operation_environment.get_selected() is not OperationMode.REAL_HARDWARE
     hardware_config.load_from_disk()
-    assert hardware_config.is_real() is False
+    assert operation_environment.get_selected() is not OperationMode.REAL_HARDWARE
     assert len(hardware_config.get_hardware_config().chips) == 3
 
 
@@ -521,14 +521,14 @@ def test_apply_updates_persist_false_does_not_write():
 
 def test_load_missing_file_keeps_defaults():
     hardware_config.load_from_disk()
-    assert hardware_config.derive_operation_mode() == OperationMode.SIM
+    assert operation_environment.get_selected() == OperationMode.SIM
 
 
 def test_load_corrupt_file_keeps_defaults():
     with open(hardware_config.CONFIG_PATH, "w") as fh:
         fh.write("{ not json ]")
     hardware_config.load_from_disk()
-    assert hardware_config.derive_operation_mode() == OperationMode.SIM
+    assert operation_environment.get_selected() == OperationMode.SIM
 
 
 def test_load_invalid_config_keeps_defaults():
@@ -540,7 +540,7 @@ def test_load_invalid_config_keeps_defaults():
                        "SW": {"chip_id": "unidentified train", "port_main": 0, "port_diverge": 1},
                    }}, fh)
     hardware_config.load_from_disk()
-    assert hardware_config.derive_operation_mode() == OperationMode.SIM
+    assert operation_environment.get_selected() == OperationMode.SIM
 
 
 def test_legacy_flat_file_loads_as_sim():
@@ -549,7 +549,7 @@ def test_legacy_flat_file_loads_as_sim():
     with open(hardware_config.CONFIG_PATH, "w") as fh:
         json.dump({"output_backend": "gpio", "device_target": "ch347"}, fh)
     hardware_config.load_from_disk()
-    assert hardware_config.derive_operation_mode() == OperationMode.SIM
+    assert operation_environment.get_selected() == OperationMode.SIM
 
 
 # --- interface factory -----------------------------------------------------
@@ -743,7 +743,7 @@ def test_put_invalid_config_returns_400_and_writes_nothing(client):
     )
     assert resp.status_code == 400
     assert resp.get_json()["status"] == "error"
-    assert hardware_config.is_real() is False
+    assert operation_environment.get_selected() is not OperationMode.REAL_HARDWARE
     assert not os.path.exists(hardware_config.CONFIG_PATH)
 
 

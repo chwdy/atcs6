@@ -92,7 +92,7 @@ def _develop_payload(**overrides):
 # --- config round-trip ------------------------------------------------------
 def test_develop_defaults_false():
     assert operation_environment.get_selected() is OperationMode.SIMULATION
-    assert hardware_config.is_develop() is False
+    assert operation_environment.get_selected() is not OperationMode.VIRTUAL_HARDWARE
 
 
 def test_virtual_hardware_round_trips_in_its_separate_store():
@@ -105,15 +105,15 @@ def test_virtual_hardware_round_trips_in_its_separate_store():
     hardware_config.reset_to_defaults()
     assert operation_environment.get_selected() is OperationMode.SIMULATION
     hardware_config.load_from_disk()
-    assert hardware_config.is_develop() is False
+    assert operation_environment.get_selected() is not OperationMode.VIRTUAL_HARDWARE
     operation_environment.load_from_disk()
-    assert hardware_config.is_develop() is True
+    assert operation_environment.get_selected() is OperationMode.VIRTUAL_HARDWARE
 
 
 def test_legacy_develop_flag_selects_virtual_hardware_independently():
     hardware_config.apply_updates({"develop": True}, persist=False)
-    assert hardware_config.is_develop() is True
-    assert hardware_config.derive_operation_mode() == OperationMode.VIRTUAL_HARDWARE
+    assert operation_environment.get_selected() is OperationMode.VIRTUAL_HARDWARE
+    assert operation_environment.get_selected() == OperationMode.VIRTUAL_HARDWARE
 
 
 # --- factory ---------------------------------------------------------------
@@ -130,7 +130,7 @@ def test_factory_develop_wires_interfaces_on_fake_without_driver():
     assert isinstance(blk, TrackDriver)
     assert isinstance(sw, SwitchDriver)
     assert isinstance(inp, OccupancyDriver)
-    assert hardware_config.derive_operation_mode() == OperationMode.VIRTUAL_HARDWARE
+    assert operation_environment.get_selected() == OperationMode.VIRTUAL_HARDWARE
     # The session device is the opened fake, reachable for the debug endpoints.
     device = hardware_config.get_session_device()
     assert isinstance(device, FakeCh347Device)
@@ -602,7 +602,7 @@ def test_scan_runs_on_fake_before_enable(client):
     test_client, _ = client
     payload = _develop_payload(enabled=False)
     hardware_config.apply_updates(payload, persist=False)
-    assert hardware_config.is_develop() is False   # not a running develop session yet
+    assert operation_environment.get_selected() is not OperationMode.VIRTUAL_HARDWARE   # not a running develop session yet
     resp = test_client.post("/api/hardware/scan", json={"config": payload})
     data = resp.get_json()
     assert data["ok"] is True
@@ -626,7 +626,7 @@ def test_scan_still_fails_without_develop(client):
 def test_scan_follows_payload_develop_off_over_persisted_on(client):
     test_client, _ = client
     hardware_config.apply_updates(_develop_payload(), persist=False)
-    assert hardware_config.is_develop() is True
+    assert operation_environment.get_selected() is OperationMode.VIRTUAL_HARDWARE
     resp = test_client.post(
         "/api/hardware/scan", json={"config": _develop_payload(develop=False)}
     )
@@ -638,7 +638,7 @@ def test_scan_follows_payload_develop_off_over_persisted_on(client):
 def test_scan_follows_payload_develop_on_over_persisted_off(client):
     test_client, _ = client
     hardware_config.apply_updates(_develop_payload(develop=False), persist=False)
-    assert hardware_config.is_develop() is False
+    assert operation_environment.get_selected() is not OperationMode.VIRTUAL_HARDWARE
     resp = test_client.post(
         "/api/hardware/scan", json={"config": _develop_payload(develop=True)}
     )

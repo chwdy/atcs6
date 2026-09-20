@@ -637,11 +637,12 @@ def assign_route(
 
     ``start_mode`` / ``start_task_index`` are an optional per-assignment
     one-shot start-mode input (per design_new.md "Run start-mode seeding").
-    When provided on a genuine assign/retarget, they are stashed on
-    ``RouteExecutor.set_pending_start_override(...)`` and consumed by the
-    next fresh ``RouteRun`` allocation; ``None`` means "use the route default."
-    The pending bundle is cleared at the top of every call so a stale choice
-    can never leak onto a different route's run.
+    When provided on a genuine assign/retarget, they are coerced into a
+    ``start_override`` bundle and passed to
+    ``RouteExecutor.request_route_assignment(..., start_override=...)``, which
+    stashes it for the next fresh ``RouteRun`` allocation; ``None`` means "use
+    the route default." The pending bundle is cleared when the assignment
+    commits so a stale choice can never leak onto a different route's run.
 
     Raises:
         NotFoundError when the train or the target route does not exist.

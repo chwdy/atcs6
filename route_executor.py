@@ -2014,20 +2014,6 @@ class RouteExecutor:
             exec_state.task_runs.append(RouteTaskRun(task_index=i))
 
     # ------------------------------------------------------------------ start mode
-    def set_pending_start_override(
-        self,
-        train_id: str,
-        start_mode: RouteStartMode,
-        start_task_index: Optional[int],
-    ) -> None:
-        """Stash a one-shot start-mode override consumed by `train_id`'s next
-        fresh `RouteRun` (design_new.md "Run start-mode seeding"). Canonical
-        writer for the pending start-override bundle."""
-        self._pending_start_overrides[train_id] = {
-            "start_mode": start_mode,
-            "start_task_index": start_task_index,
-        }
-
     def clear_pending_start_override(self, train_id: str) -> None:
         """Drop any stashed start-mode override for `train_id` (no-op if none),
         so an assign/retarget/unassign never reuses an earlier choice."""

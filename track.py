@@ -996,16 +996,6 @@ class Tile:
                 # Entry is via main path, but switch is set to DIVERGE -> blocked
                 return []
 
-    def get_exit_directions(
-        self, entry_direction: Direction, use_switch_state: bool = True
-    ) -> List[Direction]:
-        """Return exit Directions for a given entry Direction."""
-        entry_edge = DIR_TO_EDGE.get(entry_direction)
-        if not entry_edge:
-            return []
-        edges = self.get_exits(entry_edge, use_switch_state=use_switch_state)
-        return [EDGE_TO_DIR[e] for e in edges if e in EDGE_TO_DIR]
-
     def get_entry_for_exit(
         self, exit_edge: str, use_switch_state: bool = True
     ) -> Optional[str]:

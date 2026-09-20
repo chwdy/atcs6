@@ -1382,12 +1382,6 @@ class RailwayNetwork(SwitchOutputOwner):
 
         return True, []
 
-    def _disconnect_signals_for_block(self, block_id: str) -> None:
-        """Forward to `SegmentGeometryManager._disconnect_signals_for_block_of_segment`."""
-        return self._get_segment_geometry_manager()._disconnect_signals_for_block_of_segment(
-            block_id
-        )
-
     def remove_tile_from_segment(
         self, x: int, y: int, *, also_removing: Iterable[Tuple[int, int]] = ()
     ) -> List[str]:

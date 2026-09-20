@@ -105,7 +105,7 @@ def test_loading_a_layout_adopts_and_persists_its_wiring(manager):
     hardware_config.apply_updates(_wired_payload(), persist=False)
     _save(manager)
     hardware_config.reset_to_defaults()
-    assert hardware_config.is_real() is False
+    assert operation_environment.get_selected() is not OperationMode.REAL_HARDWARE
     operation_environment.select(OperationMode.REAL_HARDWARE, persist=False)
 
     result = manager.load_layout_with_fallback("wired", RailwayNetwork())
@@ -113,7 +113,7 @@ def test_loading_a_layout_adopts_and_persists_its_wiring(manager):
     assert result["success"] is True
     assert result["hardware"] == "applied"
     cfg = hardware_config.get_hardware_config()
-    assert hardware_config.is_real() is True
+    assert operation_environment.get_selected() is OperationMode.REAL_HARDWARE
     assert cfg.block_track["B1"].forward == 0
     assert cfg.switch_output["SW_A"].port_diverge == 6
     # written through to the app-managed file, so it survives the restart that
@@ -133,7 +133,7 @@ def test_loading_replaces_rather_than_merges(manager):
     cfg = hardware_config.get_hardware_config()
     assert cfg.chips == []
     assert cfg.block_track == {}
-    assert hardware_config.is_real() is False
+    assert operation_environment.get_selected() is not OperationMode.REAL_HARDWARE
 
 
 def test_layout_without_a_hardware_section_leaves_the_configuration_alone(manager):
@@ -148,7 +148,7 @@ def test_layout_without_a_hardware_section_leaves_the_configuration_alone(manage
     result = manager.load_layout_with_fallback("legacy", RailwayNetwork())
 
     assert result["hardware"] == "absent"
-    assert hardware_config.is_develop() is True
+    assert operation_environment.get_selected() is OperationMode.VIRTUAL_HARDWARE
     assert hardware_config.get_hardware_config().block_track["B1"].reverse == 1
 
 
