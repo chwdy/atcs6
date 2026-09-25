@@ -71,6 +71,17 @@ Flag prose that drifts from these even where the local rule is internally consis
   direct call; coupling tighter than necessary.
 - **LOW** — non-blocking ambiguity, weak cross-reference, dead branch, vague failure text.
 
+**The HIGH gate.** A finding is HIGH only when **all three hold**:
+
+- the concept's canonical home is itself wrong or incomplete, or two canonical homes disagree — a
+  restatement that drifts from a complete, explicit canonical home is MEDIUM at most, because the
+  engineer follows the home;
+- the failure scenario can actually happen using only rules the doc states — trace it step by step;
+- an engineer who reads the canonical home still has to make a judgment call.
+
+A sentence that reads two ways is LOW. A place where the doc is **silent** is under-specified (MEDIUM at
+most); never report it as "the doc says X happens", and never fill the silence from code.
+
 Categories: `H-CONTRADICTION`, `H-SIGNATURE`, `H-API-CHAIN`, `H-GUARD`, `H-DEAD-BRANCH`,
 `H-UNREACHABLE-STATE`, `H-PHASE-BOUNDARY`, `H-SPECIAL-CASE`, `H-PRECONDITION`, `M-PAYLOAD`, `M-OWNER`,
 `M-CHAIN-CONTRACT`, `M-STATE-TRIGGER`, `M-BYPASS-CONSISTENCY`, `M-TERMINOLOGY`, `M-RATIONALE`,
@@ -134,11 +145,20 @@ use them — the lists are only useful if you know what you're testing.
 One subagent per partition. Send them in a single message so they run concurrently. Give each one:
 
 - its line range and the sections it owns;
-- the review standard, the six tenets, the severity ladder, and the categories above;
+- the review standard, the seven tenets, the severity ladder with its HIGH gate, and the categories above;
 - an instruction to **grep the whole document**, not just its range — a rule stated in its section is
   usually restated, and drifted, three sections away;
 - an instruction to **verify each finding by re-reading the cited lines and grepping for restatements
   before reporting it**, because a false positive costs more than a miss;
+- an instruction that every finding must carry four more things:
+  - **the concept's canonical home**, quoted: its bold "(canonical home…)" label, state-machine table
+    row, Latch Table row, or Observe, Plan, and Action Table row;
+  - **the refutation search it ran**: the sentence that would make the finding false, what it grepped
+    for, and what it found;
+  - **the scenario, traced with doc rules only**, showing each step can happen;
+  - **whether any step used code.** Code may show an omission is safe, never supply the failure. A
+    finding that needs code to reach its conclusion goes under External-Context Dependencies or to the
+    `gap-analysis` skill;
 - an instruction to also return a short list of what it checked and believes is **clean**, with line
   refs. You are going to re-test those;
 - an instruction to **return its findings as its final message**, not to write a file. Subagents here
@@ -199,10 +219,38 @@ This is the step that separates a real review from a summary of six opinions.
 
 - **Never relay a finding you have not re-read the cited lines for.** Readers mis-cite, over-state, and
   occasionally invent.
+- **Verify the conclusion, not the quotes.** Confirming that the quoted sentences exist proves nothing
+  about whether the finding is true. The 2026-09-22 sweep reported nine HIGHs; seven fell apart on a
+  strict re-check, and every one of them had accurate quotes. Run these checks on every HIGH and MEDIUM,
+  your own spine findings included:
+  - **Read the canonical home in full, not the grep hit.** Ask whether it already answers the finding.
+    Example: "nothing emits the cut-out's 0 V on later EB ticks" was reported from the EB-hold step and
+    the cap step. The EB workflow state machine row `e67d` names `TrainPhysics.integrate_movement()` as
+    the actor on every rolling EB tick.
+  - **Try to refute before relaying.** Search for the retry rule, the exception, or the other gate that
+    would make the finding false. Example: "the holding-point hold can never release" ignored the
+    unconditional `extend_path(...)` retry, which names holding-point chunking explicitly.
+  - **Trace the scenario with doc rules and check every step can occur.** Example: "the drain leaves a
+    block past the authority end at its old voltage" — that block was never reserved, so never powered,
+    so there is nothing to drain. Another: "a still-rolling ghost train" — a ghost is frozen at speed 0.
+  - **Keep code out of the argument.** When the doc is silent, report it as silent. The same sweep
+    claimed an `OFF` train "never counts as stopped" because of what the code's `OFF` path does; the doc
+    never says what speed that path reports.
+  - **Treat memory as a hint, not evidence.** A test name or past ruling recalled from memory must be
+    re-checked before it is cited. `test_demo7_circular_lap_seam` was cited from memory and does not
+    exist.
+  - **Re-read before retracting, too.** Flipping a verdict on a quick read is the same mistake in
+    reverse; one retraction in that sweep had to be retracted again.
 - **Re-test the "clean" claims.** Subagents declare sections clean that aren't. Spot-check each reader's
   clean list against the closure-claim worklist. Two of six were wrong on the last run — one had missed a
   dead enum value, another had certified an EB state-pair enumeration that was provably incomplete.
-- **Re-grade severity yourself.** A reader's MEDIUM is often a HIGH once you see the site it contradicts.
+- **Re-grade severity yourself, in both directions.** A reader's MEDIUM is often a HIGH once you see the
+  site it contradicts, and a reader's HIGH is often a MEDIUM once you read the canonical home. Apply the
+  HIGH gate to every one.
+- **Check the count against history.** Before writing the report, compare the HIGH count with the last
+  sweeps recorded in memory. The three sweeps before 2026-09-22 found 0 HIGH on nearly the same doc; a
+  jump to nine should have triggered a second pass whose only goal was to disprove each HIGH. When the
+  count jumps, run that pass.
 - **Kill backward-compat findings**, restatements of unchanged local behavior, and demands for greenfield
   completeness.
 - Deduplicate: the same root issue surfaces from three readers with different line refs. Merge, keep the
@@ -227,7 +275,8 @@ For each finding use exactly this header line:
 Then four labeled parts:
 
 - the canonical changed rule **the doc must state**;
-- the conflicting or incomplete locations, with line numbers and short quotes;
+- the conflicting or incomplete locations, with line numbers and short quotes — name the canonical home
+  first and say whether it is itself wrong or only a restatement drifted from it;
 - why it blocks a repo-aware refactor engineer — frame it as *judgment call* versus *low-severity
   question they could just ask*;
 - the exact fix needed in `design_new.md`.
@@ -327,6 +376,9 @@ a term used across sections but defined nowhere is `M-TERMINOLOGY`.
   and confirm deletions with `grep -F`.
 - The user edits `design_new.md` in parallel with your review. Re-run `doc_map.py` if a citation looks off,
   and cite line numbers from the version you actually read.
+- Other sessions commit to `design_new.md` mid-review, too: commit `7d53a7c` landed during the
+  2026-09-22 sweep and shifted every line after 112. Run `git log -1 -- design_new.md` before the final
+  report, and drop any finding that commit already fixed.
 - Section IDs (`9c4f`, `66aa`, …) are stable handles. Grep them to find every site that references a step.
 
 # Adjudicated — do not re-flag
@@ -342,6 +394,24 @@ These were raised in earlier reviews and settled as intentional. Re-raising them
 - The latch fan-out shape, the `c481`→`592a` re-resolve, and `display_state` as a derived projection: these
   are descriptions, not design bugs. Don't redesign them.
 - `path_backed_run_active` means "has live authority", not "has a route".
+
+False positives from the 2026-09-22 sweep, disproved on a strict re-check:
+
+- **The cut-out's per-tick 0 V is not a dead branch.** EB workflow state machine row `e67d` names
+  `TrainPhysics.integrate_movement()` as the actor. What remains is wording: the Emergency cut-out text
+  credits the Propulsion cap step instead. Flag that as LOW wording, not a missing output.
+- **The holding-point chunk hold is not unreachable.** The ordinary `extend_path(...)` retry is its exit.
+  What remains is wording: the chunking text states a lock-catch-up trigger that the retry rule does not
+  repeat.
+- **The drain's missing `blocks_past_authority` exemption on the span term has no safety effect.** The
+  block was never powered. Flag it as LOW wording only.
+- **The `simulation_running` writer list** (**Running and stopped**) is correct. Activation and
+  commissioning entry refuse while running; only their "stops operation" wording is loose.
+- **Commissioning:** "no environment is active" alongside "the detectors keep being read" is not a
+  contradiction, because the stopped pass covers it.
+- **Row `4c64` of the procedure ownership table** already names the Observe cut-out.
+- **The `ONE_OFF` finish cascade** listed as a `route_deactivate` writer is fine; its walk is empty by
+  construction.
 
 Conversely, one thing that *is* a real doc bug and has been mistaken for a code bug before: tightening
 `create_path()`'s covered-destination rejection from **head block** to **span coverage** breaks turnarounds,
