@@ -624,8 +624,6 @@ export class RouteRunEditorHandler {
     switch (displayState) {
       case 'RUNNING':
         return 'success';
-      case 'FINISHED':
-        return 'info';
       case 'DEACTIVATED':
         return 'muted';
       case 'CANCELLED':

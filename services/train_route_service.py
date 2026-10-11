@@ -182,15 +182,13 @@ def _validate_route_definition(tasks, mode, priority) -> None:
     "Route-definition validation").
 
     Takes the proposed `tasks` / `mode` / `priority` (not a live `Route`) so a
-    caller can validate an edit before committing it. Covers the rules the doc
-    puts at creation/update time: the priority range, the CIRCULAR / ROUND_TRIP
-    distinct-location guard, and the dwell-follow rule. It deliberately does NOT
-    check that a non-dwell task exists or that a non-circular route ends in a
-    stop/run — those are completeness checks the doc gates at activation
-    ("before a RouteRun may be created"), so an incomplete route may still be
-    saved as a draft. Per-task shape (`task_kind`, run `task_time` /
-    `target_time`) is validated by `_coerce_route_task`, and the leading-dwell
-    rule by `_reject_leading_dwell`.
+    caller can validate an edit before committing it. Covers every rule the
+    doc puts at creation/update time: the priority range, at least one
+    non-dwell task, the terminal-task requirement for a non-circular route, the
+    CIRCULAR / ROUND_TRIP distinct-location guard, and the dwell-follow rule.
+    Every stored route is therefore complete enough to run. Per-task shape
+    (`task_kind`, run `task_time` / `target_time`) is validated by
+    `_coerce_route_task`, and the leading-dwell rule by `_reject_leading_dwell`.
     """
     if not 0 <= int(priority) <= 9:
         raise ValidationError(
@@ -203,9 +201,7 @@ def _validate_route_definition(tasks, mode, priority) -> None:
     # CIRCULAR / ROUND_TRIP need two distinct non-dwell locations to travel /
     # reflect between (design_new.md, the CIRCULAR distinct-location rule and
     # the ROUND_TRIP degenerate-route guard); a loop whose moves all name one
-    # location has nothing to travel between. Only checked once the route has
-    # non-dwell tasks — an empty draft defers to the activation-time
-    # non-dwell-exists check rather than being rejected as "one location".
+    # location has nothing to travel between.
     if (
         mode in (RouteMode.CIRCULAR, RouteMode.ROUND_TRIP)
         and non_dwell
@@ -236,28 +232,22 @@ def _validate_route_definition(tasks, mode, priority) -> None:
                 "run task it follows."
             )
 
-
-def _validate_route_activatable(tasks, mode, priority) -> None:
-    """Activation-time validation (design_new.md): the create/update definition
-    rules plus the completeness checks the doc gates at activation — a non-dwell
-    task must exist, and a non-circular route must end in a stop or run
-    (optionally followed by dwell tasks) so the run has a defined place to come
-    to rest."""
-    _validate_route_definition(tasks, mode, priority)
-
-    non_dwell = [t for t in tasks if t.task_kind != "dwell"]
+    # Completeness last, so a route that breaks a specific rule above reports
+    # that rule rather than the general one.
     if not non_dwell:
         raise ValidationError(
             "A route must contain at least one non-dwell task (waypoint, stop, "
-            "or run) before activation."
+            "or run)."
         )
+    # A non-circular route needs a defined place for the run to come to rest
+    # (design_new.md, Terminal-task requirement); CIRCULAR never terminates.
     if mode != RouteMode.CIRCULAR and non_dwell[-1].task_kind not in (
         "stop",
         "run",
     ):
         raise ValidationError(
             "A non-circular route must end in a stop or run task "
-            "(optionally followed by dwell tasks) before activation."
+            "(optionally followed by dwell tasks)."
         )
 
 
@@ -403,8 +393,7 @@ def update_route(
 
     # Validate the PROPOSED (tasks, mode, priority) before mutating the live
     # route, so a rejected edit leaves the existing route unchanged
-    # (design_new.md "Route-definition validation" requires create/update to
-    # reject the same structural violations activation does).
+    # (design_new.md "Route-definition validation").
     proposed_tasks = new_tasks if tasks is not None else route.tasks
     proposed_mode = _coerce_mode(mode) if mode is not None else route.mode
     if priority is not None:
@@ -513,9 +502,15 @@ def update_route(
             else None
         )
         if executor is not None:
+            added = requested_train_ids - current_train_ids
+            if added and route.route_id in executor.pending_route_deletions:
+                raise ValidationError(
+                    f"Route {route.route_id!r} is being deleted and accepts no "
+                    "new assignment."
+                )
             for train_id in current_train_ids - requested_train_ids:
                 executor.request_route_assignment(train_id, None)
-            for train_id in requested_train_ids - current_train_ids:
+            for train_id in added:
                 if train_id in state.network.trains:
                     executor.request_route_assignment(train_id, route.route_id)
         else:
@@ -578,8 +573,10 @@ def delete_route(state: AppState, route_id: str) -> bool:
     Per design_new.md "Route deletion waits for live teardown": `DELETE /api/train-routes/<route_id>` never removes a route used
     by a live or pending run inline. Instead it
 
-      1. rejects further assignment/activation by setting `Route.is_active =
-         False` and recording the id in `RouteExecutor.pending_route_deletions`;
+      1. rejects further assignment by recording the id in
+         `RouteExecutor.pending_route_deletions` through
+         `RouteExecutor.request_route_deletion(route_id)`; Plan then allocates
+         no fresh run on it;
       2. for every assigned train, clears any held same-route re-assignment
          (a route pending deletion is never re-applied by `_pending_reassign`).
          A train with a live controller then gets its per-train
@@ -615,10 +612,9 @@ def delete_route(state: AppState, route_id: str) -> bool:
         raise NotFoundError(f"Route {route_id!r} not found")
 
     route = registry[route_id]
-    # Reject further assignment/activation, and record the deferred-deletion
-    # intent. The registry retains the Route until nothing holds it.
-    route.is_active = False
-    executor.pending_route_deletions.add(route_id)
+    # Reject further assignment, and record the deferred-deletion intent. The
+    # registry retains the Route until nothing holds it.
+    executor.request_route_deletion(route_id)
 
     # Fan out the per-train deactivate teardown; never unassign inline. Each
     # assigned train's later Action deactivate consumer runs
@@ -647,76 +643,3 @@ def delete_route(state: AppState, route_id: str) -> bool:
     # finalization once they release it.
     executor.finalize_pending_route_deletions()
     return True
-
-
-def activate_route(
-    state: AppState, route_id: str, simulation_time: Optional[float] = None
-) -> Route:
-    """Activate the route at simulation_time (defaults to controller now).
-
-    A route with no tasks would be terminal on the first eligible Plan
-    tick: ``_find_next_task_target`` returns ``None`` for an empty walk,
-    which makes Plan call ``finish_route_run(train_id)`` immediately,
-    which for ``RouteMode.ONE_OFF`` then calls ``deactivate_route(route_id)``
-    again. The user-visible result is an "activated" toast followed by an
-    auto-deactivation a few ticks later, plus any assigned train silently
-    unassigned. Reject activation on a 0-task route up front so this
-    sequence is impossible.
-
-    Raises:
-        NotFoundError when the route does not exist.
-        ValidationError when the route has no tasks.
-    """
-    route = _require_route(state, route_id)
-    if not route.tasks:
-        raise ValidationError(
-            "Cannot activate a route with no tasks. Add at least one "
-            "task before activating."
-        )
-    # Per design_new.md "Route-definition validation": a route must carry at
-    # least one non-dwell task and an in-range priority, enforced at activation.
-    # A CIRCULAR route never terminates, so it may run continuously with no stop
-    # (e.g. a waypoint-only loop, or a run/dwell loop) — there is no terminal
-    # task to "complete". A ONE_OFF / ROUND_TRIP route must still end at a task
-    # that brings the train to rest: a `stop`, or a timed `run` (which ends at a
-    # smooth ATC stop), optionally followed by dwell tasks.
-    _validate_route_activatable(route.tasks, route.mode, route.priority)
-    # design_new.md "Route edit timestamps": activation refuses while an assigned
-    # train still holds `pending_route_deactivate`. Route.activate() is a pure
-    # data write with no controller reach, so this canonical activation entry
-    # enforces the refusal. Resurrecting a run scheduled for teardown would let
-    # a route the operator is tearing down re-allocate against that train; the
-    # latch clears on the train's next eligible Action, so the operator retries.
-    sim_controller = state.sim_controller
-    for train_id in list(route.assigned_train_ids):
-        controller = (
-            sim_controller.get_controller(train_id)
-            if sim_controller is not None
-            else None
-        )
-        if controller is None:
-            continue
-        if controller.route_hooks.phase_latches.route_deactivate:
-            raise ValidationError(
-                f"Cannot activate route while train {train_id} is still "
-                "deactivating a prior assignment. Retry once its teardown "
-                "completes."
-            )
-    if simulation_time is None:
-        simulation_time = state.sim_controller.simulation_time
-    route.activate(simulation_time)
-    return route
-
-
-def deactivate_route(state: AppState, route_id: str) -> Route:
-    """Deactivate the route, fanning out per-train cancel latches.
-
-    Raises:
-        NotFoundError when the route does not exist.
-    """
-    route = _require_route(state, route_id)
-    # The per-train cancel-latch walk is the canonical job of
-    # RouteExecutor.deactivate_route(route_id) (design_new.md, "Arrival detection"); Route
-    # .deactivate() itself writes only is_active.
-    state.sim_controller.route_executor.deactivate_route(route_id)
-    return route

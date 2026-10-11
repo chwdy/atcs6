@@ -39,7 +39,6 @@ class EastBranchTerminalScene:
         for rid in ("DEMO_ROUTE_V1", "DEMO_ROUTE_V2"):
             r = sim.route_executor.route_registry.get(rid)
             if r is not None:
-                r.is_active = False
                 r.unassign_train(train_id)
 
         stations_by_name = {s.name: s for s in network.stations.values()}
@@ -50,7 +49,6 @@ class EastBranchTerminalScene:
             route_id=self.route_id,
             name="origin → East Terminal → east branch Station (no dwell)",
             mode=RouteMode.ONE_OFF,
-            is_active=True,
         )
         route.add_task(
             RouteTask(

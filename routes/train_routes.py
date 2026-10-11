@@ -160,24 +160,6 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": "Route not found"}), 404
         return jsonify({"status": "success", "message": f"Route {route_id} deleted"})
 
-    @app.route("/api/train-routes/<route_id>/activate", methods=["POST"])
-    def activate_train_route(route_id):
-        try:
-            route = train_route_service.activate_route(state, route_id)
-        except NotFoundError:
-            return jsonify({"error": "Route not found"}), 404
-        except ValidationError as exc:
-            return jsonify({"error": str(exc)}), 400
-        return jsonify({"status": "success", "route": route.to_dict()})
-
-    @app.route("/api/train-routes/<route_id>/deactivate", methods=["POST"])
-    def deactivate_train_route(route_id):
-        try:
-            route = train_route_service.deactivate_route(state, route_id)
-        except NotFoundError:
-            return jsonify({"error": "Route not found"}), 404
-        return jsonify({"status": "success", "route": route.to_dict()})
-
     @app.route("/api/train-routes/<route_id>/status", methods=["GET"])
     def get_train_route_status(route_id):
         """Get per-train execution status for a route."""
@@ -252,7 +234,6 @@ def register(app, state: AppState) -> None:
         return jsonify(
             {
                 "route_id": route.route_id,
-                "is_active": route.is_active,
                 "mode": route.mode.value,
                 "trains": trains_status,
             }
@@ -297,10 +278,8 @@ def register(app, state: AppState) -> None:
         return jsonify(
             {
                 "route_id": route.route_id,
-                "activated_at": route.started_at,
                 "created_at": route.created_at,
                 "last_edited_at": route.last_edited_at,
-                "is_active": route.is_active,
                 "runs": runs_out,
             }
         )

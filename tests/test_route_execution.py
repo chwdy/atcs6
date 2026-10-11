@@ -51,16 +51,6 @@ class TestRouteAndTask:
         assert simple_route.route_id == "ROUTE_001"
         assert simple_route.mode.value == "one_off"
         assert len(simple_route.tasks) == 3
-        assert simple_route.is_active is False
-
-    def test_route_activation(self, simple_route):
-        """Test activating a route."""
-        simple_route.activate(100.0)
-        assert simple_route.is_active is True
-        # started_at is system-time Unix seconds (design_new.md "Route"), not the
-        # simulation clock, so the passed value is not the stamp.
-        assert simple_route.started_at is not None
-        assert simple_route.started_at > 1_000_000_000
 
     def test_dwell_task_should_depart_relative(self):
         """`task_time` with no `target_time` holds for that many seconds of the
@@ -136,7 +126,9 @@ class TestRouteAndTask:
         assert data["mode"] == "one_off"
         assert len(data["tasks"]) == 3
         assert data["assigned_train_ids"] == []
-        assert data["is_active"] is False
+        # A route has no on/off state (design_new.md "Route data").
+        assert "is_active" not in data
+        assert "started_at" not in data
 
     def test_route_from_dict(self, simple_route):
         """Test route deserialization."""
@@ -303,9 +295,6 @@ class TestRouteExecutorCompatibilityBugFixes:
     `Train` persistent-only migration there is only one canonical store
     (`Route.assigned_train_ids`); this test verifies that every assigned
     train still surfaces.
-
-    BUG 2: `deactivate_route()` deleted owned controllers and then called
-    `_get_controller()`, which recreated a controller entry immediately.
     """
 
     @pytest.fixture
@@ -321,7 +310,7 @@ class TestRouteExecutorCompatibilityBugFixes:
         return network
 
     def test_get_active_pairs_lists_every_assigned_train(self, simple_network):
-        """Every train assigned to an active route surfaces as a (train, route) pair."""
+        """Every train assigned to a route surfaces as a (train, route) pair."""
         executor = RouteExecutor(simple_network)
 
         route_a = Route(
@@ -334,8 +323,6 @@ class TestRouteExecutorCompatibilityBugFixes:
             name="Route B",
             tasks=[RouteTask(task_kind="dwell", task_location="STA_B")],
         )
-        route_a.activate(0.0)
-        route_b.activate(0.0)
         route_a.assign_train("T_A")
         route_b.assign_train("T_B")
 
@@ -400,7 +387,6 @@ class TestRouteCallbacksWrapAround:
                 ),
             ],
         )
-        route.activate(0.0)
         route.assign_train("T_WRAP")
 
         train = Train(train_id="T_WRAP")
@@ -514,7 +500,6 @@ class TestRouteCallbacksWrapAround:
                 ),
             ],
         )
-        route.activate(0.0)
         route.assign_train("T_WP")
 
         train = Train(train_id="T_WP")
@@ -598,7 +583,6 @@ class TestRouteCallbacksWrapAround:
                 ),
             ],
         )
-        route.activate(0.0)
         route.assign_train("T_DIR")
 
         train = Train(train_id="T_DIR")
@@ -684,7 +668,6 @@ class TestBrokenDwellHandling:
                 *extra_tasks,
             ],
         )
-        route.activate(0.0)
         route.assign_train("T_DWELL")
 
         train = Train(train_id="T_DWELL")
@@ -758,7 +741,6 @@ class TestDwellUnderEb:
                 ),
             ],
         )
-        route.activate(0.0)
         route.assign_train("T_DWELL")
         train = Train(train_id="T_DWELL")
         network.trains[train.train_id] = train
@@ -817,7 +799,6 @@ class TestUngatedReleaseAndStall:
                 RouteTask(task_kind="stop", task_location=PlatformTarget("PLT_B")),
             ],
         )
-        route.activate(0.0)
         route.assign_train("T2")
         network.trains["T2"] = Train(train_id="T2")
         executor = RouteExecutor(network)
@@ -897,7 +878,6 @@ def test_find_next_move_target_distinguishes_route_less_from_unresolved():
         mode=RouteMode.ONE_OFF,
         tasks=[RouteTask(task_kind="stop", task_location=PlatformTarget("PLT_X"))],
     )
-    route.activate(0.0)
     route.assign_train("RUN")
     net.trains["RUN"] = Train(train_id="RUN")
     executor.register_route(route)

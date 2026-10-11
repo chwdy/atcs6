@@ -189,8 +189,6 @@ export interface SimClient {
   createRoute(routeData: unknown): Promise<any>;
   updateRoute(routeId: string, updates: unknown): Promise<any>;
   deleteRoute(routeId: string): Promise<any>;
-  activateRoute(routeId: string): Promise<any>;
-  deactivateRoute(routeId: string): Promise<any>;
   getRouteStatus(routeId: string): Promise<any>;
   checkViability(pairs: unknown): Promise<any>;
   getReachableFrom(type: string, id: string): Promise<any>;

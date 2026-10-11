@@ -63,7 +63,6 @@ def _run_task_ready(task_time=20.0):
         mode=RouteMode.ONE_OFF,
         tasks=[task],
     )
-    route.activate(0.0)
     route.assign_train("T_RUN")
 
     train = Train(train_id="T_RUN")

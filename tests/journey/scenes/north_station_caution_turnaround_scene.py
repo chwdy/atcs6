@@ -46,7 +46,6 @@ class NorthStationCautionTurnaroundScene:
         for rid in ("DEMO_ROUTE_V1", "DEMO_ROUTE_V2"):
             r = sim.route_executor.route_registry.get(rid)
             if r is not None:
-                r.is_active = False
                 r.unassign_train(train_id)
 
         north_platform = next(
@@ -57,7 +56,6 @@ class NorthStationCautionTurnaroundScene:
             route_id=self.route_id,
             name="origin -> North Station -> BLOCK_BRANCH_2 -> back",
             mode=RouteMode.ONE_OFF,
-            is_active=True,
         )
         route.add_task(
             RouteTask(

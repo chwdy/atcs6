@@ -664,7 +664,6 @@ List all defined train routes in the network.
         }
       ],
       "mode": "loop",
-      "is_active": true,
       "current_waypoint_index": 0
     }
   ]
@@ -800,40 +799,6 @@ Assign a travel plan route to a specific train.
 ```
 
 **Error (404):** `{"error": "Train not found"}` or `{"error": "Route not found"}`
-
-### POST /api/train-routes/{route_id}/activate
-
-Start or resume route execution for any trains assigned to this route.
-
-**Response:**
-
-```json
-{
-  "status": "success",
-  "route": {
-    "route_id": "ROUTE-ABC123",
-    "is_active": true,
-    ...
-  }
-}
-```
-
-### POST /api/train-routes/{route_id}/deactivate
-
-Pause route execution.
-
-**Response:**
-
-```json
-{
-  "status": "success",
-  "route": {
-    "route_id": "ROUTE-ABC123",
-    "is_active": false,
-    ...
-  }
-}
-```
 
 ---
 

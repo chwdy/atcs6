@@ -21,7 +21,6 @@ from persistence import PersistenceManager
 from simulation import SimulationController
 from track import Tile
 from train import Train, TrainCar
-from train_route import RouteTask
 
 from entity_ids import block_id_for_segment, segment_id_for_block
 from services import ConflictError, GoneError, NotFoundError, ValidationError
@@ -78,6 +77,7 @@ class TestTrainRouteService:
             route_id="ROUTE_T1",
             name="Test Route",
             mode="one_off",
+            tasks=[{"task_kind": "stop", "task_location": "STA_X"}],
         )
 
         assert route.route_id == "ROUTE_T1"
@@ -98,7 +98,8 @@ class TestTrainRouteService:
     def test_update_then_delete_route(self, state_with_train):
         """`update_route` flips name; `delete_route` clears the registry."""
         train_route_service.create_route(
-            state_with_train, route_id="ROUTE_T2", name="Initial"
+            state_with_train, route_id="ROUTE_T2", name="Initial",
+            tasks=[{"task_kind": "stop", "task_location": "STA_X"}],
         )
         updated = train_route_service.update_route(
             state_with_train, "ROUTE_T2", name="Renamed"
@@ -117,14 +118,14 @@ class TestTrainRouteService:
         double-assignment across routes)."""
         r1 = train_route_service.create_route(
             state_with_train, route_id="ROUTE_R1", name="r1",
-            assigned_train_ids=["TRAIN_A"],
+            assigned_train_ids=["TRAIN_A"], tasks=[{"task_kind": "stop", "task_location": "STA_X"}],
         )
         assert "TRAIN_A" in r1.assigned_train_ids
 
         # Creating a second route assigned to the same train moves the assignment.
         r2 = train_route_service.create_route(
             state_with_train, route_id="ROUTE_R2", name="r2",
-            assigned_train_ids=["TRAIN_A"],
+            assigned_train_ids=["TRAIN_A"], tasks=[{"task_kind": "stop", "task_location": "STA_X"}],
         )
         assert "TRAIN_A" in r2.assigned_train_ids
         assert "TRAIN_A" not in r1.assigned_train_ids
@@ -142,30 +143,23 @@ class TestTrainRouteService:
         with pytest.raises(NotFoundError):
             train_route_service.require_route(state, "MISSING")
 
-    def test_activate_route_with_no_tasks_rejected(self, state):
-        """`activate_route` rejects 0-task routes with ValidationError.
-
-        Pins the fix for the empty-route auto-finish bug: Phase 1 step
-        `9c4f` would otherwise allocate a RouteRun for an empty walk,
-        `_find_next_task_target` would return None on the first tick,
-        and `finish_route_run` would immediately deactivate the route
-        (for ONE_OFF mode) and unassign all its trains — leaving the
-        user with a "successfully activated" toast and a silently
-        broken route.
-        """
-        train_route_service.create_route(
-            state, route_id="ROUTE_EMPTY", name="empty", mode="one_off"
-        )
-        with pytest.raises(ValidationError, match="no tasks"):
-            train_route_service.activate_route(state, "ROUTE_EMPTY")
+    def test_create_route_with_no_tasks_rejected(self, state):
+        """The server stores only complete routes (design_new.md
+        "Route-definition validation"): a route with no tasks is rejected at
+        creation, so no train can be assigned to an empty walk that would
+        finish on the first tick."""
+        with pytest.raises(ValidationError, match="at least one non-dwell task"):
+            train_route_service.create_route(
+                state, route_id="ROUTE_EMPTY", name="empty", mode="one_off"
+            )
+        assert train_route_service.get_route(state, "ROUTE_EMPTY") is None
 
 
 class TestRouteDefinitionValidation:
-    """design_new.md "Route-definition validation": the dwell-follow rule, the
-    CIRCULAR / ROUND_TRIP distinct-location guard, and the priority range are
-    enforced at create/update; non-dwell-exists and the terminal-task
-    requirement are enforced at activation (an incomplete draft may still be
-    saved)."""
+    """design_new.md "Route-definition validation": every rule — the
+    dwell-follow rule, the CIRCULAR / ROUND_TRIP distinct-location guard, the
+    priority range, non-dwell-exists, and the terminal-task requirement — is
+    enforced at create/update, so every stored route is complete."""
 
     def _stop(self, loc):
         return {"task_kind": "stop", "task_location": loc}
@@ -223,21 +217,28 @@ class TestRouteDefinitionValidation:
             tasks=[self._stop("A"), self._stop("B")],
         )
 
-    def test_create_allows_incomplete_draft(self, state):
-        # A waypoint-only ONE_OFF has no terminal stop/run, but that is an
-        # activation-time completeness check — the draft may still be created.
-        train_route_service.create_route(
-            state, route_id="R", mode="one_off",
-            tasks=[self._waypoint("A")],
-        )
+    def test_create_rejects_non_circular_without_terminal_stop(self, state):
+        with pytest.raises(ValidationError, match="end in a stop or run"):
+            train_route_service.create_route(
+                state, route_id="R", mode="one_off",
+                tasks=[self._waypoint("A"), self._waypoint("B")],
+            )
 
-    def test_activate_rejects_non_circular_without_terminal_stop(self, state):
+    def test_create_accepts_waypoint_only_circular(self, state):
+        # A CIRCULAR route never terminates, so it needs no stop.
         train_route_service.create_route(
-            state, route_id="R", mode="one_off",
+            state, route_id="R", mode="circular",
             tasks=[self._waypoint("A"), self._waypoint("B")],
         )
+
+    def test_update_rejects_removing_the_terminal_stop(self, state):
+        train_route_service.create_route(
+            state, route_id="R", mode="one_off", tasks=[self._stop("A")],
+        )
         with pytest.raises(ValidationError, match="end in a stop or run"):
-            train_route_service.activate_route(state, "R")
+            train_route_service.update_route(
+                state, "R", tasks=[self._waypoint("A")],
+            )
 
 
 # ------------------------------------------------- speed_profile_service ----
@@ -499,8 +500,12 @@ class TestTrainService:
             train_service.assign_route(state_with_train, "TRAIN_A", route_id="UNIDENTIFIED")
 
     def test_assign_route_empty_route_raises_validation(self, state_with_train):
-        train_route_service.create_route(
-            state_with_train, route_id="R_EMPTY", name="empty"
+        # The service never stores an empty route, so register one directly to
+        # exercise the assignment guard.
+        from train_route import Route
+
+        state_with_train.sim_controller.route_executor.register_route(
+            Route(route_id="R_EMPTY", name="empty")
         )
         with pytest.raises(ValidationError, match="no tasks"):
             train_service.assign_route(state_with_train, "TRAIN_A", route_id="R_EMPTY")
@@ -508,10 +513,14 @@ class TestTrainService:
     def test_assign_route_success_conflict_and_force(self, state_with_train):
         """Assign succeeds; reassign needs force; same-route is idempotent."""
         state = state_with_train
-        r1 = train_route_service.create_route(state, route_id="R1", name="r1")
-        r1.add_task(RouteTask(task_kind="dwell", task_location="STA_X"))
-        r2 = train_route_service.create_route(state, route_id="R2", name="r2")
-        r2.add_task(RouteTask(task_kind="dwell", task_location="STA_Y"))
+        train_route_service.create_route(
+            state, route_id="R1", name="r1",
+            tasks=[{"task_kind": "stop", "task_location": "STA_X"}],
+        )
+        train_route_service.create_route(
+            state, route_id="R2", name="r2",
+            tasks=[{"task_kind": "stop", "task_location": "STA_Y"}],
+        )
 
         train_service.assign_route(state, "TRAIN_A", route_id="R1")
         executor = state.sim_controller.route_executor

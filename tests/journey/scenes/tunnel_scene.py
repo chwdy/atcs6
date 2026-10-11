@@ -73,7 +73,6 @@ class TunnelScene:
             route_id=self.route_id,
             name="Tunnel test route",
             mode=RouteMode.ONE_OFF,
-            is_active=True,
         )
         route.add_task(
             RouteTask(

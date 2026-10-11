@@ -122,7 +122,6 @@ class TestSimulationController:
         route = Route(route_id="ROUTE_AC", name="A to C", mode=RouteMode.ONE_OFF)
         route.add_task(RouteTask(task_kind="stop", task_location="STA_C"))
         route.assign_train("TRAIN_1")
-        route.activate(simulation.simulation_time)
         simulation.route_executor.register_route(route)
         train.assigned_route_id = "ROUTE_AC"
 
@@ -234,7 +233,6 @@ class TestSimulationController:
         route = Route(route_id="ROUTE_AC_WP", name="A to C (waypoint)", mode=RouteMode.ONE_OFF)
         route.add_task(RouteTask(task_kind="waypoint", task_location="STA_C"))
         route.assign_train("TRAIN_1")
-        route.activate(simulation.simulation_time)
         simulation.route_executor.register_route(route)
         train.assigned_route_id = "ROUTE_AC_WP"
 

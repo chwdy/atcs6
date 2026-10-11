@@ -12,8 +12,9 @@ stage rather than performing it inline in the HTTP/service handler:
 
 2. **Deferred route-deletion / `pending_route_deletions` / `_historical_routes`**
    (lines 2098-2103). `DELETE /api/train-routes/<id>` never removes a route
-   used by a live or pending run inline: it marks the route inactive + pending,
-   fans out per-train `route_deactivate`, and lets
+   used by a live or pending run inline: it records the route as pending
+   deletion (`request_route_deletion`), fans out per-train `route_deactivate`,
+   and lets
    `finalize_pending_route_deletions()` archive + unregister it once nothing
    holds it. The archived definition stays resolvable through `get_route(...)`.
 
@@ -32,7 +33,7 @@ from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from simulation import SimulationController
 from train import Train, TrainCar
-from train_route import RouteTask, RouteRunStatus, RouteStartMode
+from train_route import RouteRunStatus, RouteStartMode
 
 from services import train_route_service, train_service
 from services.exceptions import NotFoundError, ValidationError
@@ -61,9 +62,12 @@ def state_with_train():
 
 
 def _make_route(state, route_id, stop_block):
-    route = train_route_service.create_route(state, route_id=route_id, name=route_id)
-    route.add_task(RouteTask(task_kind="stop", task_location=stop_block))
-    return route
+    return train_route_service.create_route(
+        state,
+        route_id=route_id,
+        name=route_id,
+        tasks=[{"task_kind": "stop", "task_location": stop_block}],
+    )
 
 
 def _setup_running_run(state, train, *, route_id="R", stop_block="BLK_1"):
@@ -256,9 +260,8 @@ def test_delete_route_with_live_run_defers_until_teardown(state_with_train):
 
     assert train_route_service.delete_route(state, "R") is True
 
-    # Deferred: retained + inactive + pending; train still assigned; latch armed.
+    # Deferred: retained + pending; train still assigned; latch armed.
     assert "R" in rex.route_registry
-    assert route.is_active is False
     assert "R" in rex.pending_route_deletions
     assert "TRAIN_A" in route.assigned_train_ids
     assert controller.route_hooks.phase_latches.route_deactivate is True
@@ -312,7 +315,7 @@ def test_delete_route_with_assigned_never_ticked_train_finalizes_now(
     `remove_train_route_run(...)` so `finalize_pending_route_deletions()` archives
     the route in the same call. Regression: previously the no-controller train was
     skipped, the train stayed in `assigned_train_ids`, and the route lingered
-    forever with `is_active=False` while DELETE returned True.
+    forever while DELETE returned True.
     """
     state, _train = state_with_train
     route = _make_route(state, "R", "BLK_1")
@@ -367,33 +370,66 @@ def test_delete_unknown_route_raises(state_with_train):
 
 
 # ---------------------------------------------------------------------------
-# H2 (gap-analysis 2026-09-20): Route activation refuses while an assigned
-# train still holds pending_route_deactivate (design_new.md "Route edit
-# timestamps").
+# A finished run is deleted, and an unassigned one-off route goes with it
+# (design_new.md "Terminal route completion"). A route pending deletion gets no
+# fresh run and no new assignment (step `9c4f`, "Route deletion waits for live
+# teardown").
 # ---------------------------------------------------------------------------
 
-def test_activate_route_refuses_while_assigned_train_is_deactivating(state_with_train):
+
+def test_finish_deletes_the_run_and_the_unassigned_one_off_route(state_with_train):
+    state, train = state_with_train
+    route, rex = _setup_running_run(state, train, route_id="R", stop_block="BLK_1")
+    run = rex.execution_state_for("TRAIN_A")
+    assert run is not None
+
+    rex.finish_route_run("TRAIN_A")
+
+    assert rex.execution_state_for("TRAIN_A") is None
+    assert run not in rex.history_for_train("TRAIN_A")
+    assert rex.assigned_route_id_for("TRAIN_A") is None
+    assert "R" not in rex.route_registry
+    assert "R" not in rex.pending_route_deletions
+    assert rex.get_historical_route("R") is route
+
+
+def test_finish_keeps_a_one_off_route_another_train_still_uses(state_with_train):
+    state, train = state_with_train
+    route, rex = _setup_running_run(state, train, route_id="R", stop_block="BLK_1")
+    route.assign_train("TRAIN_B")
+
+    rex.finish_route_run("TRAIN_A")
+
+    assert rex.execution_state_for("TRAIN_A") is None
+    assert "R" in rex.route_registry
+    assert "R" not in rex.pending_route_deletions
+    assert route.assigned_train_ids == ["TRAIN_B"]
+
+
+def test_plan_allocates_no_run_on_a_route_pending_deletion(state_with_train):
     state, train = state_with_train
     route = _make_route(state, "R", "BLK_1")
-    route.assign_train(train.train_id)
-    controller = state.sim_controller.get_or_create_controller(train.train_id)
+    route.assign_train("TRAIN_A")
+    rex = state.sim_controller.route_executor
+    state.sim_controller.get_or_create_controller("TRAIN_A").powered = True
 
-    # The assigned train still holds the route-deactivate teardown latch.
-    controller.route_hooks.phase_latches.set_route_deactivate(
-        reason="test", has_active_path=False
-    )
+    rex.request_route_deletion("R")
+    rex.tick_train_plan("TRAIN_A", 0.1)
+    assert rex.execution_state_for("TRAIN_A") is None
 
-    with pytest.raises(ValidationError):
-        train_route_service.activate_route(state, "R")
-    # The route was not activated.
-    assert route.is_active is False
+    # Control: the same route with no deletion pending does get a run.
+    rex.pending_route_deletions.discard("R")
+    rex.tick_train_plan("TRAIN_A", 0.1)
+    assert rex.execution_state_for("TRAIN_A") is not None
 
 
-def test_activate_route_succeeds_when_no_assigned_train_is_deactivating(state_with_train):
-    state, train = state_with_train
-    route = _make_route(state, "R", "BLK_1")
-    route.assign_train(train.train_id)
-    state.sim_controller.get_or_create_controller(train.train_id)
+def test_a_route_pending_deletion_accepts_no_new_assignment(state_with_train):
+    state, _train = state_with_train
+    _make_route(state, "R", "BLK_1")
+    state.sim_controller.route_executor.request_route_deletion("R")
 
-    result = train_route_service.activate_route(state, "R")
-    assert result.is_active is True
+    with pytest.raises(ValidationError, match="being deleted"):
+        train_service.assign_route(state, "TRAIN_A", route_id="R")
+    with pytest.raises(ValidationError, match="being deleted"):
+        train_route_service.update_route(state, "R", assigned_train_ids=["TRAIN_A"])
+    assert state.sim_controller.route_executor.assigned_route_id_for("TRAIN_A") is None

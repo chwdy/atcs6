@@ -568,7 +568,6 @@ def setup_demo_train(
         route_id="R_DEMO5_LOOP",
         name="Demo 5: Four-Station Loop",
         mode=RouteMode.CIRCULAR,
-        is_active=True,
     )
     tasks = [
         # S1 (any platform) — terminus, train reverses here
@@ -612,7 +611,6 @@ def setup_demo_train(
         route_id="R_DEMO5_S_LINE",
         name="Demo 5: S-Track 4-Stop",
         mode=RouteMode.CIRCULAR,
-        is_active=True,
     )
     for plat in ("PLT_S1_S", "PLT_S2_S", "PLT_S3_S", "PLT_S4_S"):
         s_line_route.add_task(

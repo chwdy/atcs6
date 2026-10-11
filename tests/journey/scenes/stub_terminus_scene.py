@@ -208,7 +208,6 @@ class StubTerminusScene:
             route_id=self.route_id,
             name="B -> Terminus",
             mode=RouteMode.ONE_OFF,
-            is_active=True,
         )
         route.add_task(
             RouteTask(

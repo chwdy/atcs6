@@ -247,23 +247,9 @@ class TestRoute:
         assert simple_route.name == "Test Route"
         assert len(simple_route.tasks) == 3
         assert simple_route.mode == RouteMode.ONE_OFF
-        assert simple_route.is_active is False
-
-    def test_activate_deactivate(self, simple_route: Route):
-        """Test route activation."""
-        simple_route.activate(100.0)
-        assert simple_route.is_active is True
-        # started_at is system-time Unix seconds (design_new.md "Route"), not the
-        # simulation clock, so the passed value is not the stamp.
-        assert simple_route.started_at is not None
-        assert simple_route.started_at > 1_000_000_000
-
-        simple_route.deactivate()
-        assert simple_route.is_active is False
 
     def test_to_dict_from_dict_roundtrip(self, simple_route: Route):
         """Test route serialization."""
-        simple_route.activate(100.0)
 
         data = simple_route.to_dict()
         restored = Route.from_dict(data)
@@ -272,8 +258,6 @@ class TestRoute:
         assert restored.name == simple_route.name
         assert len(restored.tasks) == len(simple_route.tasks)
         assert restored.mode == simple_route.mode
-        assert restored.is_active == simple_route.is_active
-        assert restored.started_at == simple_route.started_at
 
 
 # =============================================================================

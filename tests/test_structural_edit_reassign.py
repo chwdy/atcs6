@@ -28,7 +28,7 @@ from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from simulation import SimulationController
 from train import Train, TrainCar
-from train_route import RouteTask, RouteRunStatus
+from train_route import RouteRunStatus
 
 from services import train_route_service
 
@@ -58,8 +58,12 @@ def state_with_train():
 def _setup_running_run(state, train, *, route_id="R", stop_block="BLK_1"):
     """Register `route_id` with one stop, assign the train, allocate a RUNNING
     run, and ensure the controller exists for the deactivate consumer."""
-    route = train_route_service.create_route(state, route_id=route_id, name="R")
-    route.add_task(RouteTask(task_kind="stop", task_location=stop_block))
+    route = train_route_service.create_route(
+        state,
+        route_id=route_id,
+        name="R",
+        tasks=[{"task_kind": "stop", "task_location": stop_block}],
+    )
     route.assign_train(train.train_id)
     rex = state.sim_controller.route_executor
     rex._ensure_run_for(train, route)

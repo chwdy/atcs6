@@ -1143,7 +1143,7 @@ def setup_demo_train(
     # first stop. task_direction="either" lets a train reverse out of its road.
     def _build_route(route_id, name, stops):
         route = Route(route_id=route_id, name=name, mode=RouteMode.CIRCULAR,
-                      is_active=True, start_mode=RouteStartMode.NEAREST)
+                      start_mode=RouteStartMode.NEAREST)
         for stop_id in stops:
             # A stop id is either a platform (PLT_*) or a whole station group
             # (STN_*). Targeting the station group lets the resolver pick

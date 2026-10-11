@@ -16,13 +16,13 @@ route hung indefinitely.
 Two events:
   1. setup_route_completes — the initial setup route (origin → North Station)
      finishes; an action assigns the turnaround route.
-  2. turnaround_route_completes — the turnaround route appears in the executor's
-     historical archive as FINISHED, proving the same-block stop was immediately
-     satisfied without any movement.
+  2. turnaround_route_completes — the turnaround route's run finishes, so the
+     one-off route is deleted into the executor's historical route archive,
+     proving the same-block stop was immediately satisfied without any
+     movement.
 """
 
 from ..harness import TrainState
-from train_route import RouteRunStatus
 
 from ..assertions import assert_state
 from ..events import Event, Journey
@@ -41,13 +41,14 @@ def _assign_turnaround_route(s) -> None:
     route.assign_train(s.fixture.train_id)
 
 
-def _turnaround_finished_in_archive():
-    """Trigger: fires once the turnaround route run appears as FINISHED in the
-    executor's historical archive.
+def _turnaround_finished():
+    """Trigger: fires once the turnaround route's run has finished.
 
-    This handles the fast-completion case where the route finishes within one
-    Phase 1 tick (the run is moved to _historical_runs before the next snapshot
-    can see it in the live execution_states slot).
+    A finished run is deleted, and a one-off route left with no train is deleted
+    with it into the executor's historical route archive (design_new.md
+    "Terminal route completion", `ONE_OFF` cascade). Reading the archive handles
+    the fast-completion case where the run finishes within one Plan pass, before
+    any snapshot sees it in the live `execution_states` slot.
     """
     state = {"fired": False}
 
@@ -55,13 +56,9 @@ def _turnaround_finished_in_archive():
         if state["fired"]:
             return True
         executor = s.sim_controller.route_executor
-        for run in executor._historical_runs:
-            if (
-                run.route_id == _TURNAROUND_ROUTE_ID
-                and run.current_route_status == RouteRunStatus.FINISHED
-            ):
-                state["fired"] = True
-                return True
+        if executor.get_historical_route(_TURNAROUND_ROUTE_ID) is not None:
+            state["fired"] = True
+            return True
         return False
 
     return trigger
@@ -80,7 +77,7 @@ def build_north_station_turnaround_journey(
             ),
             Event(
                 name="turnaround_route_completes",
-                trigger=_turnaround_finished_in_archive(),
+                trigger=_turnaround_finished(),
                 assertions=[
                     assert_state(TrainState.READY),
                 ],

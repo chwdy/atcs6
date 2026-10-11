@@ -304,8 +304,6 @@ export class PathEditorHandler {
       });
       routeCreated = true;
 
-      await this.api.activateRoute(routeId);
-
       const outcome = await this.assignQuickRouteWithConfirm(trainId, routeId);
       if (outcome === 'cancelled') {
         await this.deleteRouteBestEffort(routeId);

@@ -155,7 +155,8 @@ class RouteRunStatus(Enum):
     """Per-run lifecycle state.
 
     Per design_new.md `current_route_status` enum. v1 stores exactly
-    these three states; a cancellation stores no field — the read-model
+    these two states; a finished run is deleted rather than kept, and a
+    cancellation stores no field — the read-model
     `display_state` derives "CANCELLED" from the `cancel_path` event and the
     train's terminated `Path` record while the run has no live path. Runtime
     branching keys on controller state, latches, and current span coverage, not
@@ -163,8 +164,7 @@ class RouteRunStatus(Enum):
     """
 
     RUNNING = "RUNNING"  # Ordinary execution (incl. dwell, between-legs)
-    FINISHED = "FINISHED"  # Terminal walk complete
-    DEACTIVATED = "DEACTIVATED"  # Shared route deactivated mid-run
+    DEACTIVATED = "DEACTIVATED"  # Torn down mid-run (abort, edit, deletion)
 
 
 @dataclass
@@ -395,8 +395,6 @@ class Route:
         tasks: Ordered list of RouteTask entries.
         mode: How to traverse tasks (ONE_OFF, CIRCULAR, ROUND_TRIP).
         assigned_train_ids: Trains assigned to this shared route.
-        is_active: Whether route is enabled for execution.
-        started_at: System-time Unix seconds when route was activated.
         priority: Route-executor scheduling priority (0..9, default 5).
         timing_basis: Which clock task durations measure against —
             ``"operating"`` (default) or ``"realtime"``.
@@ -415,10 +413,6 @@ class Route:
 
     # Assignment
     assigned_train_ids: List[str] = field(default_factory=list)
-
-    # Activation state
-    is_active: bool = False
-    started_at: Optional[float] = None
 
     # Route-level policy (v1)
     priority: int = 5
@@ -500,39 +494,6 @@ class Route:
                 groups.append([i])
         return groups
 
-    # ── Activation Methods ─────────────────────────────────────────
-
-    def activate(self, simulation_time: Optional[float] = None) -> None:
-        """Activate the route for execution (per-run cursors are managed by
-        RouteExecutor).
-
-        `started_at` is system-time Unix seconds — when the operator activated
-        the route in wall time (design_new.md "Route" field schema) — not the
-        simulation clock. The `simulation_time` argument is retained for
-        call-site compatibility and is not used for the timestamp.
-
-        This writes only `is_active` / `started_at`, symmetric with
-        `deactivate()`. The documented refusal while an assigned train holds
-        `pending_route_deactivate` (design_new.md "Route edit timestamps") is
-        enforced by the canonical activation entry `train_route_service.
-        activate_route(...)`, which can reach the assigned trains' controllers.
-        """
-        self.is_active = True
-        self.started_at = time.time()
-
-    def deactivate(self) -> None:
-        """Deactivate the route: write only ``Route.is_active = False``.
-
-        Per design_new.md, "Arrival detection", ``Route.deactivate()`` writes no latch itself. The
-        per-train latch walk — ``set_route_deactivate(...)`` on each assigned
-        train's controller — is the canonical job of
-        ``RouteExecutor.deactivate_route(route_id)``, which every latch-writing
-        deactivation (admin/UI, shared-route structural edit, and the
-        ``ONE_OFF`` finish cascade) reaches. This is symmetric with
-        ``Route.activate()``, which writes only ``is_active`` / ``started_at``.
-        """
-        self.is_active = False
-
     # ── Assignment Methods ─────────────────────────────────────────
 
     def assign_train(self, train_id: str) -> bool:
@@ -559,8 +520,6 @@ class Route:
             "tasks": [t.to_dict() for t in self.tasks],
             "mode": self.mode.value,
             "assigned_train_ids": list(self.assigned_train_ids),
-            "is_active": self.is_active,
-            "started_at": self.started_at,
             "created_at": self.created_at,
             "last_edited_at": self.last_edited_at,
             "priority": self.priority,
@@ -603,8 +562,6 @@ class Route:
             tasks=tasks,
             mode=mode,
             assigned_train_ids=list(data.get("assigned_train_ids", [])),
-            is_active=bool(data.get("is_active", False)),
-            started_at=data.get("started_at"),
             priority=int(data.get("priority", 5)),
             manual_override=bool(data.get("manual_override", False)),
             zero_reservation_end_standoff=bool(

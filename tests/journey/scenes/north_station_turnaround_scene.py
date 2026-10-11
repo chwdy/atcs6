@@ -38,7 +38,6 @@ class NorthStationTurnaroundScene:
         for rid in ("DEMO_ROUTE_V1", "DEMO_ROUTE_V2"):
             r = sim.route_executor.route_registry.get(rid)
             if r is not None:
-                r.is_active = False
                 r.unassign_train(train_id)
 
         north_platform_obj = next(
@@ -51,7 +50,6 @@ class NorthStationTurnaroundScene:
             route_id=self.setup_route_id,
             name="Setup: origin → North Station",
             mode=RouteMode.ONE_OFF,
-            is_active=True,
         )
         setup_route.add_task(
             RouteTask(
@@ -69,7 +67,6 @@ class NorthStationTurnaroundScene:
             route_id=self.turnaround_route_id,
             name="Turnaround: same-block stop at North Station",
             mode=RouteMode.ONE_OFF,
-            is_active=True,
         )
         turnaround_route.add_task(
             RouteTask(

@@ -335,7 +335,6 @@ def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
         route_id="DEMO_TEST_ROUTE",
         name="Demo Test: p1 to p2",
         mode=RouteMode.ONE_OFF,
-        is_active=True,
     )
     route.add_task(
         RouteTask(

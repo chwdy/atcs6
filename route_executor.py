@@ -298,7 +298,7 @@ class RouteExecutionState:
     # "Unreachable and broken task handling".
     no_reachable_task: bool = False
     # Per-run lifecycle state. Stored as the canonical `RouteRunStatus` enum
-    # (RUNNING / FINISHED / DEACTIVATED). Deviation is NOT a stored state;
+    # (RUNNING / DEACTIVATED). Deviation is NOT a stored state;
     # consumers that need the diagnostic read `display_state` instead.
     current_route_status: RouteRunStatus = RouteRunStatus.RUNNING
 
@@ -408,8 +408,8 @@ class RouteExecutionState:
         """The run-only part of the UI display projection.
 
         Per design_new.md ``Route-run state`` (the ``display_state`` row), in
-        priority order: (1) when ``current_route_status`` is terminal
-        (``FINISHED`` / ``DEACTIVATED``), the terminal state; (2) else
+        priority order: (1) when ``current_route_status`` is ``DEACTIVATED``,
+        that state; (2) else
         ``"STALLED"`` when ``no_reachable_task``; (3) otherwise
         ``current_route_status.value`` (``"RUNNING"``).
 
@@ -422,10 +422,7 @@ class RouteExecutionState:
         Not a stored field; no writers. Runtime branching never keys on this
         value.
         """
-        if self.current_route_status in (
-            RouteRunStatus.FINISHED,
-            RouteRunStatus.DEACTIVATED,
-        ):
+        if self.current_route_status == RouteRunStatus.DEACTIVATED:
             return self.current_route_status.value
         if self.no_reachable_task:
             return "STALLED"
@@ -638,10 +635,10 @@ class RouteExecutor:
         # Keyed by route_id. Mutated only via register_route / unregister_route.
         self.route_registry: Dict[str, "Route"] = {}
         # `execution_states` holds the currently-RUNNING run for each train
-        # (keyed by train_id; one slot per train). Per design_new.md, a run is
-        # not deleted on teardown — its state flips to FINISHED / DEACTIVATED
-        # and the row is moved to `_historical_runs` so a subsequent fresh run
-        # for the same train can occupy the slot. The active-run derived read
+        # (keyed by train_id; one slot per train). Per design_new.md, a run torn
+        # down mid-route flips to DEACTIVATED and moves to `_historical_runs` so
+        # a subsequent fresh run for the same train can occupy the slot; a run
+        # that finishes its walk is deleted (`finish_route_run`). The active-run derived read
         # is `execution_state_for(train_id)`; UI/log consumers read history
         # via `history_for_train(train_id)`.
         self.execution_states: Dict[str, RouteExecutionState] = {}
@@ -698,9 +695,10 @@ class RouteExecutor:
         self._pending_route_assignments: Dict[str, Dict[str, Any]] = {}
         # Routes awaiting deferred deletion (per design_new.md "Route deletion
         # waits for live teardown"). `DELETE /api/train-routes`
-        # never removes a route used by a live or pending run inline: it sets
-        # `Route.is_active = False`, records the id here, and fans out the
-        # per-train deactivate teardown. The registry retains the `Route` while
+        # never removes a route used by a live or pending run inline: it
+        # records the id here through `request_route_deletion(...)`, and fans
+        # out the per-train deactivate teardown. A route recorded here accepts
+        # no new assignment and Plan allocates no run on it (step `9c4f`). The registry retains the `Route` while
         # any train remains assigned or any RUNNING run names it, so
         # `get_route(...)` keeps resolving for every live run during Plan and
         # Action. `finalize_pending_route_deletions()` -- called after each
@@ -786,7 +784,7 @@ class RouteExecutor:
         Per design_new.md: a derived read keyed on
         ``current_route_status == RUNNING``. Observe, Plan, Action, and route
         callbacks all use this accessor (rather than reading the underlying
-        dict slot directly) so a stale DEACTIVATED/FINISHED row in the
+        dict slot directly) so a stale DEACTIVATED row in the
         registry is never observed as the active run.
         """
         state = self.execution_states.get(train_id)
@@ -1141,8 +1139,8 @@ class RouteExecutor:
     def history_for_train(self, train_id: str) -> List[RouteExecutionState]:
         """Return every `RouteRun` for `train_id`, sorted by `run_number`.
 
-        Per design_new.md "RouteExecutor.history_for_train": includes RUNNING,
-        FINISHED, and DEACTIVATED rows across all routes the train has been
+        Per design_new.md "RouteExecutor.history_for_train": includes RUNNING
+        and DEACTIVATED rows across all routes the train has been
         assigned to. `run_number` is the global monotonic creation counter, so
         ascending `run_number` is chronological creation order, not
         route-index-major.
@@ -1158,8 +1156,8 @@ class RouteExecutor:
     def history_for_route(self, route_id: str) -> List[RouteExecutionState]:
         """Return every `RouteRun` for `route_id`, sorted by start.
 
-        The route-keyed counterpart of `history_for_train`: includes RUNNING,
-        FINISHED, and DEACTIVATED rows for the route across every train that
+        The route-keyed counterpart of `history_for_train`: includes RUNNING
+        and DEACTIVATED rows for the route across every train that
         has run it (archived rows plus any live run still in a slot). A
         read-only aggregation — touches no run state.
         """
@@ -1882,7 +1880,7 @@ class RouteExecutor:
 
         Per design_new.md "RouteRun overrides" canonical home: only the v1
         allowlist (`priority`) is accepted. Validation is per-field.
-        Historical (FINISHED / DEACTIVATED)
+        Historical (DEACTIVATED)
         runs reject override edits because their snapshot is part of the
         historical record.
 
@@ -2196,7 +2194,7 @@ class RouteExecutor:
     def _arm_calibration_leg(
         self, train_id: str, controller, run, far_block_id: str
     ) -> None:
-        """Build, activate, and assign the one-off route for a new leg, and store
+        """Build and assign the one-off route for a new leg, and store
         its id on the run (design_new.md "Speed calibration", Each leg runs as its
         own one-off route).
 
@@ -2235,7 +2233,6 @@ class RouteExecutor:
             ],
         )
         self.register_route(route)
-        route.activate(self._now())
         route.assign_train(train_id)
         run.active_leg_route_id = route_id
 
@@ -2345,7 +2342,15 @@ class RouteExecutor:
             route = self.route_registry.get(route_id)
 
         # No route assignment → no Plan work for this train.
-        if route is None or not getattr(route, "is_active", False):
+        if route is None:
+            return
+
+        # Step `9c4f`: a route pending deletion gets no fresh run. A RUNNING run
+        # already on it keeps running until its teardown ends it.
+        live = self.execution_state_for(train_id)
+        if (live is None or live.route_id != route_id) and (
+            route_id in self.pending_route_deletions
+        ):
             return
 
         if train_id not in route.assigned_train_ids:
@@ -2353,10 +2358,7 @@ class RouteExecutor:
         exec_state = self._ensure_run_for(train, route)
 
         # Terminal runs do nothing in Plan.
-        if exec_state.current_route_status in (
-            RouteRunStatus.FINISHED,
-            RouteRunStatus.DEACTIVATED,
-        ):
+        if exec_state.current_route_status == RouteRunStatus.DEACTIVATED:
             return
 
         # ---------- Plan settlement (steps 640a, 9d8b) -----------------------
@@ -3920,16 +3922,16 @@ class RouteExecutor:
         self.finish_route_run(train_id)
 
     def finish_route_run(self, train_id: str) -> None:
-        """Plan terminal-walk handler.
+        """Plan terminal-walk handler (design_new.md "Terminal route
+        completion", What `finish_route_run(...)` does).
 
-        Per design_new.md ``current_route_status`` write contract:
-          * sets ``RouteRun.current_route_status = FINISHED``
-          * calls ``route.unassign_train(train_id)``
-          * archives the run as a historical FINISHED row (``execution_states``
-            slot frees up so a later route assignment can populate a fresh run)
-          * for ``RouteMode.ONE_OFF`` routes with no remaining assigned trains,
-            also calls ``self.deactivate_route(route_id)`` (its latch walk is
-            empty because no assigned trains remain)
+        Calls ``route.unassign_train(train_id)`` and deletes the run: it leaves
+        ``execution_states`` and is not kept in ``_historical_runs``. When the
+        route is ``RouteMode.ONE_OFF`` and the unassign left it with no assigned
+        trains, the route is deleted too, through the ordinary route-deletion
+        finalization: ``request_route_deletion(route_id)`` records it and
+        ``finalize_pending_route_deletions()`` removes it at once, since no
+        assignment or live run remains. Writes no controller state.
         """
         exec_state = self.execution_state_for(train_id)
         if exec_state is None:
@@ -3938,55 +3940,36 @@ class RouteExecutor:
         route_id = exec_state.route_id
         route = self.route_registry.get(route_id)
 
-        exec_state.current_route_status = RouteRunStatus.FINISHED
-
         if route is not None:
             route.unassign_train(train_id)
 
-        # Move the now-FINISHED run to the historical archive so the live slot
-        # is free for a later assignment of the same train.
-        self._archive_run(exec_state)
+        if self.execution_states.get(train_id) is exec_state:
+            del self.execution_states[train_id]
 
         if (
             route is not None
             and getattr(route, "mode", None) == RouteMode.ONE_OFF
             and not getattr(route, "assigned_train_ids", [])
         ):
-            self.deactivate_route(route_id)
+            self.request_route_deletion(route_id)
 
         # A natural finish may have removed this route's last assignment / live
         # run, satisfying a deferred deletion that was waiting on it
-        # (design_new.md "Route Edit And Reconciliation").
+        # (design_new.md "Route deletion waits for live teardown").
         self.finalize_pending_route_deletions()
 
-    def deactivate_route(self, route_id: str) -> None:
-        """Canonical latch-writing route deactivation (design_new.md, "Arrival detection").
+    def request_route_deletion(self, route_id: str) -> None:
+        """Record `route_id` in the pending-deletion stash (design_new.md
+        "Route deletion waits for live teardown").
 
-        Calls ``Route.deactivate()`` (which writes only ``Route.is_active =
-        False``), then walks every assigned train and writes
-        ``pending_route_deactivate`` through
-        ``controller.route_hooks.phase_latches.set_route_deactivate(...)`` per the
-        inclusive-latch rule. This is the one home every latch-writing
-        deactivation reaches — admin/UI, shared-route structural edit, and the
-        ``ONE_OFF`` finish cascade. Idempotent: an already-inactive route with no
-        assigned trains is a no-op with an empty walk. Does not delete any
-        ``RouteRun``; the per-train teardown (to ``DEACTIVATED``) happens later in
-        each train's Action ``pending_route_deactivate`` consumer.
+        A route in `pending_route_deletions` accepts no new assignment, and Plan
+        allocates no fresh run on it (step `9c4f`). It writes no latch: the
+        DELETE service fans out `set_route_deactivate(...)` per assigned train,
+        and `finalize_pending_route_deletions()` removes the route once nothing
+        holds it. Idempotent.
         """
-        route = self.route_registry.get(route_id)
-        if route is None:
-            return
-        route.deactivate()
-        diagnostic = f"route_deactivated:{route_id}"
-        for train_id in list(getattr(route, "assigned_train_ids", [])):
-            controller = self._controller_by_id(train_id)
-            if controller is None:
-                continue
-            controller.route_hooks.phase_latches.set_route_deactivate(
-                reason=diagnostic,
-                has_active_path=controller.path_projection.received_path_plan
-                is not None,
-            )
+        if route_id in self.route_registry:
+            self.pending_route_deletions.add(route_id)
 
     def _archive_run(self, exec_state: RouteExecutionState) -> None:
         """Move a now-terminal `RouteRun` to `_historical_runs`.
@@ -4128,7 +4111,7 @@ class RouteExecutor:
         target or create fresh authority.
         """
         # Read the RUNNING run via the canonical accessor so a stale
-        # DEACTIVATED/FINISHED slot is never treated as live (design_new.md
+        # DEACTIVATED slot is never treated as live (design_new.md
         # "Route-run state"). A committed cancellation with no RUNNING run is an
         # invariant violation — "every live path is backed by a RouteRun"
         # (design_new.md, "route path-event callback schema") — so surface it on the event stream rather
@@ -4627,7 +4610,7 @@ class RouteExecutor:
         routes = self.route_registry
 
         for route in routes.values():
-            if not route.is_active:
+            if route.route_id in self.pending_route_deletions:
                 continue
             for train_id in route.assigned_train_ids:
                 train = self.network.trains.get(train_id)

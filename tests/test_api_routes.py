@@ -1415,10 +1415,10 @@ class TestRouteRedesignApis:
         return train, controller
 
     def test_quick_route_three_call_flow_creates_path_via_phase1(self, client, app_state):
-        """The Quick Route tool's three-call sequence — POST /api/train-routes
-        (one-off, single stop task) + POST /train-routes/<id>/activate
-        + PUT /api/trains/<id>/assign-route — should cause Phase 1 to
-        allocate a dispatcher path on a subsequent sim tick.
+        """The Quick Route tool's two-call sequence — POST /api/train-routes
+        (one-off, single stop task) + PUT /api/trains/<id>/assign-route —
+        should cause Phase 1 to allocate a dispatcher path on a subsequent sim
+        tick. A route runs as soon as a train is assigned to it.
         """
         self._place_powered_train_on_two_block_line(app_state)
 
@@ -1436,9 +1436,6 @@ class TestRouteRedesignApis:
             },
         )
         assert create_resp.status_code == 200, create_resp.get_json()
-
-        activate_resp = client.post("/api/train-routes/ROUTE_QR_TEST/activate")
-        assert activate_resp.status_code == 200, activate_resp.get_json()
 
         assign_resp = client.put(
             "/api/trains/TRAIN_QR/assign-route",
@@ -1493,7 +1490,6 @@ class TestRouteRedesignApis:
                 }],
             },
         ).status_code == 200
-        assert client.post("/api/train-routes/ROUTE_WD/activate").status_code == 200
         assert client.put(
             "/api/trains/TRAIN_QR/assign-route", json={"route_id": "ROUTE_WD"}
         ).status_code == 200
@@ -1765,7 +1761,9 @@ class TestMigratedTrainRouteCrud:
                 "route_id": "ROUTE_MIGRATED",
                 "name": "Migrated route",
                 "mode": "one_way",
-                "tasks": [],
+                "tasks": [
+                    {"task_kind": "stop", "task_location": {"block_id": "BLK_A"}}
+                ],
             },
         )
         assert created.status_code == 200

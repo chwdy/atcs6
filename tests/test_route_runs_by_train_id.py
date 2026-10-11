@@ -74,8 +74,8 @@ def test_display_state_reads_cancelled_from_a_terminated_path_record():
     sim.path_dispatcher.paths["P3"] = active
     assert ex.route_run_summary_for("T1")["display_state"] == "RUNNING"
 
-    # A terminal (FINISHED) run is not reported as a RUNNING summary.
-    run.current_route_status = RouteRunStatus.FINISHED
+    # A torn-down (DEACTIVATED) run is not reported as a RUNNING summary.
+    run.current_route_status = RouteRunStatus.DEACTIVATED
     assert ex.route_run_summary_for("T1") is None
 
     # Train with no run at all.

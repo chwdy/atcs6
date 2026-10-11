@@ -31,11 +31,9 @@ class DemoScene:
         registry = sim_controller.route_executor.route_registry
         v2 = registry.get("DEMO_ROUTE_V2")
         if v2 is not None:
-            v2.is_active = False
             v2.unassign_train(self.train_id)
         v1 = registry.get("DEMO_ROUTE_V1")
         if v1 is not None:
-            v1.is_active = True
             v1.assign_train(self.train_id)
 
         return SceneFixture(

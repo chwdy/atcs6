@@ -80,7 +80,6 @@ class TunnelWNScene:
             route_id=self.route_id,
             name="WN tunnel destination route",
             mode=RouteMode.ONE_OFF,
-            is_active=True,
         )
         route.add_task(
             RouteTask(

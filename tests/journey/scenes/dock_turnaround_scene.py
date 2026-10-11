@@ -44,7 +44,6 @@ class DockTurnaroundScene:
         for default_route_id in ("DEMO_ROUTE_V1", "DEMO_ROUTE_V2"):
             default_route = sim.route_executor.route_registry.get(default_route_id)
             if default_route is not None:
-                default_route.is_active = False
                 default_route.unassign_train(train_id)
 
         east_block_id = network.get_track(5, 0).block_id
@@ -59,7 +58,6 @@ class DockTurnaroundScene:
             route_id=self.route_id,
             name="Dock turnaround: east block -> (0,0) dock -> North Station",
             mode=RouteMode.ONE_OFF,
-            is_active=True,
         )
         route.add_task(
             RouteTask(

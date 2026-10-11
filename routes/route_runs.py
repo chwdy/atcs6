@@ -253,7 +253,7 @@ def register(app, state: AppState) -> None:
         """Locate the train_id of a currently-RUNNING RouteRun by run_number.
 
         Returns ``None`` for any run that exists in the registry but is not
-        currently RUNNING (FINISHED / DEACTIVATED). Caller maps
+        currently RUNNING (DEACTIVATED). Caller maps
         ``None`` to HTTP 409 per design_new.md "RouteRun overrides" canonical
         home: historical runs reject override edits.
         """
@@ -273,7 +273,7 @@ def register(app, state: AppState) -> None:
         Per design_new.md "RouteRun overrides" canonical home: accepts either
         a single-field body `{field: value}` (when `field` is one of the v1
         allowlist) or a batched body `{"overrides": {field: value, ...}}`.
-        Historical (FINISHED / DEACTIVATED) runs reject override edits with
+        Historical (DEACTIVATED) runs reject override edits with
         HTTP 409.
 
         Per design_new.md "The runtime uses one thread": the Flask worker holds

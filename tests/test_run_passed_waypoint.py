@@ -63,7 +63,7 @@ def _linear_scene():
 
 def _drive(sim, tasks, max_ticks=2500):
     ex = sim.route_executor
-    route = Route(route_id="R", name="run-wp", mode=RouteMode.ONE_OFF, is_active=True)
+    route = Route(route_id="R", name="run-wp", mode=RouteMode.ONE_OFF)
     for task in tasks:
         route.add_task(task)
     ex.register_route(route)
@@ -85,7 +85,7 @@ def _drive(sim, tasks, max_ticks=2500):
                 # The RouteRun is allocated on a later tick than assignment;
                 # give it a few ticks before treating an empty slot as terminal.
                 continue
-            # A ONE_OFF run that FINISHED is archived out of the slot.
+            # A ONE_OFF run that finishes is deleted from the slot.
             route_finished = True
             break
         saw_run = True
@@ -96,10 +96,6 @@ def _drive(sim, tasks, max_ticks=2500):
                     run_finished = True
                 elif kind == "waypoint":
                     waypoint_finished = True
-        status = getattr(es.current_route_status, "value", es.current_route_status)
-        if status in ("finished", "FINISHED"):
-            route_finished = True
-            break
     return run_finished, waypoint_finished, route_finished
 
 

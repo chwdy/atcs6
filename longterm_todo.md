@@ -39,7 +39,7 @@ callers invoke the same functions directly — see `tests/test_services.py`.
 services/
     exceptions.py            # the typed ServiceError hierarchy
     layout_service.py        # save/load/delete; owns the pause-and-lock multi-write
-    train_route_service.py   # route CRUD + activate/deactivate; RouteRun lifecycle
+    train_route_service.py   # route CRUD + deferred deletion; RouteRun lifecycle
     speed_profile_service.py # profile CRUD; owns simulation_lock + default/in-use guards
     switch_service.py        # switch CRUD + availability flags + SwitchManager position changes
     train_service.py         # train CRUD + placement + route assignment + operator commands

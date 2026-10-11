@@ -60,7 +60,6 @@ def _apex_ready_round_trip():
         mode=RouteMode.ROUND_TRIP,
         tasks=[_stop("BLK_A"), _stop("BLK_B"), _stop("BLK_C")],
     )
-    route.activate(0.0)
     route.assign_train("T_RT")
 
     train = Train(train_id="T_RT")

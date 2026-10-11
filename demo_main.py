@@ -484,13 +484,12 @@ def setup_demo_train(
     west_dock_target = BlockTarget(block_id="BLOCK_MAIN_WEST")
 
     # 5. V1 route — preserved single-stop "origin → East Terminal" route.
-    #    Registered for tests and manual reassignment; left inactive by
-    #    default so the route panel shows it as INACTIVE (no train assigned).
+    #    Registered for tests and manual reassignment; no train is assigned
+    #    to it by default.
     demo_route_v1 = Route(
         route_id="DEMO_ROUTE_V1",
         name="Demo v1: Origin to East Terminal",
         mode=RouteMode.ONE_OFF,
-        is_active=False,
     )
     demo_route_v1.add_task(
         RouteTask(
@@ -510,7 +509,6 @@ def setup_demo_train(
             "BLOCK_BRANCH_2 turnaround → back at North Station facing south"
         ),
         mode=RouteMode.ONE_OFF,
-        is_active=True,
     )
     for task in (
         RouteTask(

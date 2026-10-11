@@ -50,8 +50,8 @@ def register(app, state: AppState) -> None:
         Quick Route / operator retarget).
 
         The handler never calls PathDispatcher.create_path / extend_path
-        directly. It creates a RouteMode.ONE_OFF route with a single stop task,
-        activates it, and assigns the train through
+        directly. It creates a RouteMode.ONE_OFF route with a single stop task
+        and assigns the train through
         `train_service.assign_route(force=True)` — which writes the Action
         route-abort latch for any current run so Action tears it down, and the
         next eligible Plan builds the path, passing the route's
@@ -70,7 +70,6 @@ def register(app, state: AppState) -> None:
             ],
             manual_override=manual_override,
         )
-        train_route_service.activate_route(state, route.route_id)
         train_service.assign_route(
             state, train_id, route_id=route.route_id, force=True
         )

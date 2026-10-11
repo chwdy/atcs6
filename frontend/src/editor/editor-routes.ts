@@ -31,6 +31,10 @@ export class RouteEditorHandler {
   _routesListInterval: ReturnType<typeof setInterval> | null;
   _routesListIntervalMs: number;
   _savedTasksSerialized: string | null;
+  /** A new route that has not been saved yet. The server stores only complete
+   *  routes (design_new.md "Route-definition validation"), so "New route"
+   *  edits a local draft and the first Save creates it. */
+  _draftRoute: any | null;
 
   constructor(editor: EditorHost) {
     this.editor = editor;
@@ -50,6 +54,16 @@ export class RouteEditorHandler {
     this._routesListInterval = null;
     this._routesListIntervalMs = 1500;
     this._savedTasksSerialized = null;
+    this._draftRoute = null;
+  }
+
+  /** True while the open route is an unsaved draft. */
+  _isDraft(): boolean {
+    return (
+      this._draftRoute != null &&
+      this.currentRoute != null &&
+      this._draftRoute.route_id === this.currentRoute.route_id
+    );
   }
 
   get api(): any {
@@ -144,7 +158,6 @@ export class RouteEditorHandler {
     return JSON.stringify(
       (routes || []).map((r) => [
         r.route_id,
-        r.is_active,
         r.name,
         r.mode,
         r.assigned_train_ids || [],
@@ -171,10 +184,42 @@ export class RouteEditorHandler {
     this._stopRoutesListPoller();
   }
 
+  /** First Save of a draft: create the route on the server. The server
+   *  rejects an incomplete route, so the draft stays local until it passes. */
+  async _createDraftOnServer(payload: Record<string, unknown>): Promise<boolean> {
+    const priority = payload.priority as { value?: number } | undefined;
+    const createPayload = {
+      ...payload,
+      route_id: this.currentRoute.route_id,
+      priority: priority?.value,
+      assigned_train_ids: [],
+    };
+    try {
+      const resp = await this.api.createRoute(createPayload);
+      this._draftRoute = null;
+      if (resp?.route) {
+        this.currentRoute = resp.route;
+      }
+      if (!Array.isArray(this.currentRoute.tasks)) {
+        this.currentRoute.tasks = [];
+      }
+      this.currentRouteStatus = await this.api.getRouteStatus(this.currentRoute.route_id);
+      showToast('Route created', 'success', 3000);
+      this._refreshSavedTasksBaseline();
+      this.rerenderRouteEditor();
+      this._startRouteSyncPoller();
+      return true;
+    } catch (err: any) {
+      console.error('[RouteEditor] Failed to create route:', err);
+      showToast('Failed to save route: ' + err.message, 'error', 5000);
+      return false;
+    }
+  }
+
   /** Pull server-truth for the currently-open route. */
   async _syncRouteFromServer(): Promise<void> {
     const routeId = this.currentRoute?.route_id;
-    if (!routeId) return;
+    if (!routeId || this._isDraft()) return;
     if (
       this.editor._currentEditorType !== 'route-editor' ||
       this.editor._currentEditorId !== routeId
@@ -198,16 +243,12 @@ export class RouteEditorHandler {
       throw err;
     }
     const changed =
-      this.currentRoute.is_active !== route.is_active ||
-      this.currentRoute.started_at !== route.started_at ||
       !this._arraysEqual(
         this.currentRoute.assigned_train_ids || [],
         route.assigned_train_ids || []
       ) ||
       JSON.stringify(this.currentRouteStatus?.trains) !== JSON.stringify(status?.trains);
     // Sync only server-controlled fields.
-    this.currentRoute.is_active = route.is_active;
-    this.currentRoute.started_at = route.started_at;
     this.currentRoute.assigned_train_ids = route.assigned_train_ids;
     this.currentRouteStatus = status;
     if (changed) {
@@ -329,11 +370,11 @@ export class RouteEditorHandler {
   }
 
   renderRouteListItem(route: any): string {
-    const isActive = route.is_active;
-    const statusText = isActive ? 'ACTIVE' : 'INACTIVE';
-    const accent = isActive ? 'success' : 'muted';
     const trainIds = Array.isArray(route.assigned_train_ids) ? route.assigned_train_ids : [];
     const trainCount = trainIds.length;
+    // A route runs whenever a train is assigned to it; there is no separate
+    // on/off switch, so the accent tracks assignment.
+    const accent = trainCount > 0 ? 'success' : 'muted';
     const taskCount = route.tasks?.length || 0;
     const modeText = (route.mode || 'one_off').replaceAll('_', ' ');
     const routeName = route.name || route.route_id;
@@ -343,7 +384,7 @@ export class RouteEditorHandler {
 
     // Reuses the canonical .rr-card list-card shell (DESIGN_LANGUAGE.md §11),
     // matching the active-paths list (.path-row): a title row (route name +
-    // flat-ghost Edit/Delete) then a chip row (state · mode · trains · tasks).
+    // flat-ghost Edit/Delete) then a chip row (mode · trains · tasks).
     // The §6 status accent is the 3px left border via .accent-{success,muted};
     // the route name wraps because it is a display name (§5 "Overflow").
     return `
@@ -358,7 +399,6 @@ export class RouteEditorHandler {
                     </div>
                 </div>
                 <div class="chip-row">
-                    <span class="chip chip-state chip-${accent}">${statusText}</span>
                     <span class="chip uppercase">${this._esc(modeText)}</span>
                     <span class="chip" title="${this._esc(trainsTitle)}">${trainsChip}</span>
                     <span class="chip">${taskCount} task${taskCount !== 1 ? 's' : ''}</span>
@@ -407,26 +447,20 @@ export class RouteEditorHandler {
     });
   }
 
-  /** Create a new route (inactive, empty) and open the editor. */
+  /** Open the editor on a new, unsaved route. Nothing reaches the server
+   *  until the first Save, because the server stores only complete routes. */
   async createNewRoute(): Promise<void> {
-    const routeId = `ROUTE_${Date.now()}`;
-    const newRoute = {
-      route_id: routeId,
+    this._draftRoute = {
+      route_id: `ROUTE_${Date.now()}`,
       name: `Route ${(this.routes?.length || 0) + 1}`,
       mode: 'one_off',
       tasks: [],
       assigned_train_ids: [],
-      is_active: false,
+      priority: 5,
+      start_mode: 'first',
+      start_task_index: null,
     };
-
-    try {
-      await this.api.createRoute(newRoute);
-      showToast('Route created', 'success', 3000);
-      await this.showRouteEditor(routeId);
-    } catch (err: any) {
-      console.error('[RouteEditor] Failed to create route:', err);
-      showToast('Failed to create route: ' + err.message, 'error', 5000);
-    }
+    await this.showRouteEditor(this._draftRoute.route_id);
   }
 
   /** Show the route editor for a specific route. */
@@ -435,8 +469,13 @@ export class RouteEditorHandler {
     this.editor._currentEditorId = routeId;
 
     try {
-      this.currentRoute = await this.api.getRoute(routeId);
-      this.currentRouteStatus = await this.api.getRouteStatus(routeId);
+      if (this._draftRoute != null && this._draftRoute.route_id === routeId) {
+        this.currentRoute = this._draftRoute;
+        this.currentRouteStatus = { trains: [] };
+      } else {
+        this.currentRoute = await this.api.getRoute(routeId);
+        this.currentRouteStatus = await this.api.getRouteStatus(routeId);
+      }
     } catch (err: any) {
       if (err && err.status === 404) {
         // Stale tab — the route was removed. Close it silently.
@@ -472,13 +511,15 @@ export class RouteEditorHandler {
     await this.checkAllViability();
 
     this.rerenderRouteEditor();
-    this._startRouteSyncPoller();
+    if (!this._isDraft()) {
+      this._startRouteSyncPoller();
+    }
   }
 
   /** Build the route editor HTML. */
   buildRouteEditorHTML(): string {
     const route = this.currentRoute;
-    const isActive = route.is_active;
+    const isDraft = this._isDraft();
     const tasks = route.tasks || [];
 
     let tasksHtml = '';
@@ -533,23 +574,24 @@ export class RouteEditorHandler {
 
                 <div class="control-section mb-16">
                     <h4 class="text-sm text-muted mb-12">Assigned Trains</h4>
-                    ${trainAssignmentHtml}
+                    ${
+                      isDraft
+                        ? '<div class="text-muted text-sm mb-12">Save the route before assigning trains.</div>'
+                        : trainAssignmentHtml
+                    }
                 </div>
 
                 <div class="control-section">
                     <h4 class="text-sm text-muted mb-12">Controls</h4>
                     ${this.renderRouteStatusPill()}
                     <div class="flex gap-8 mt-12">
-                        ${
-                          isActive
-                            ? `<button id="deactivate-route-btn" class="btn btn-danger btn-sm flex-1">Deactivate</button>`
-                            : `<button id="activate-route-btn" class="btn btn-success btn-sm flex-1">Activate</button>`
-                        }
-                        <button id="delete-route-btn" class="btn btn-danger btn-sm flex-1">Delete Route</button>
+                        <button id="delete-route-btn" class="btn btn-danger btn-sm flex-1">${
+                          isDraft ? 'Discard Route' : 'Delete Route'
+                        }</button>
                     </div>
                 </div>
 
-                ${this.renderHistorySection()}
+                ${isDraft ? '' : this.renderHistorySection()}
             </div>
         `;
   }
@@ -615,13 +657,6 @@ export class RouteEditorHandler {
     if (data.last_edited_at != null) {
       metaRows.push(`<div>Last edited ${this._formatTime(data.last_edited_at)}</div>`);
     }
-    metaRows.push(
-      `<div>${
-        data.activated_at != null
-          ? `Last activated ${this._formatTime(data.activated_at)}`
-          : 'Never activated'
-      }</div>`
-    );
 
     const allRuns = (data.runs || []).slice().reverse(); // newest first
     const perTrainCap = this._historyMaxRunsPerTrain;
@@ -655,12 +690,7 @@ export class RouteEditorHandler {
   }
 
   renderHistoryRun(run: any): string {
-    const statusClass =
-      run.status === 'FINISHED'
-        ? 'is-finished'
-        : run.status === 'DEACTIVATED'
-          ? 'is-deactivated'
-          : 'is-running';
+    const statusClass = run.status === 'DEACTIVATED' ? 'is-deactivated' : 'is-running';
     const tasksHtml = (run.tasks || [])
       .map((t: any) => {
         const task = this.currentRoute?.tasks?.[t.task_index];
@@ -687,7 +717,7 @@ export class RouteEditorHandler {
     return `
             <div class="route-history-run">
                 <div class="route-history-run-head">
-                    <span class="chip chip-state chip-${statusClass === 'is-finished' ? 'success' : statusClass === 'is-deactivated' ? 'muted' : 'info'}">${run.status}</span>
+                    <span class="chip chip-state chip-${statusClass === 'is-deactivated' ? 'muted' : 'info'}">${run.status}</span>
                     <span class="font-mono text-xs">${run.train_id}</span>
                     <span class="text-xs text-muted">${this._formatTime(run.started_at)}</span>
                 </div>
@@ -855,14 +885,15 @@ export class RouteEditorHandler {
   }
 
   renderRouteStatusPill(): string {
-    if (!this.currentRoute?.is_active) {
-      return `<div class="route-status-box is-inactive"><span class="route-status-dot"></span>Inactive</div>`;
+    if (this._isDraft()) {
+      return `<div class="route-status-box is-inactive"><span class="route-status-dot"></span>Not saved yet</div>`;
     }
-    const trainCount = (this.currentRouteStatus?.trains || []).length;
+    // A route runs whenever a train is assigned to it (no on/off switch).
+    const trainCount = (this.currentRoute?.assigned_train_ids || []).length;
     if (trainCount === 0) {
-      return `<div class="route-status-box is-info"><span class="route-status-dot"></span>Active · no trains</div>`;
+      return `<div class="route-status-box is-inactive"><span class="route-status-dot"></span>No trains assigned</div>`;
     }
-    return `<div class="route-status-box is-active"><span class="route-status-dot"></span>Active · ${trainCount} train${trainCount !== 1 ? 's' : ''}</div>`;
+    return `<div class="route-status-box is-active"><span class="route-status-dot"></span>In use · ${trainCount} train${trainCount !== 1 ? 's' : ''}</div>`;
   }
 
   /** Render one task row (1:1 with a RouteTask). */
@@ -1343,6 +1374,12 @@ export class RouteEditorHandler {
     const deleteRouteBtn = document.getElementById('delete-route-btn') as HTMLButtonElement | null;
     if (deleteRouteBtn) {
       deleteRouteBtn.onclick = async () => {
+        if (this._isDraft()) {
+          // Never saved, so there is nothing on the server to delete.
+          this._draftRoute = null;
+          await this.showRoutesPanel();
+          return;
+        }
         const confirmed = await showConfirmModal({
           title: 'Delete Route',
           message: `Delete route "${this.currentRoute?.name || this.currentRoute?.route_id}"?`,
@@ -1372,17 +1409,6 @@ export class RouteEditorHandler {
     const addTaskMapBtn = document.getElementById('add-task-map-btn') as HTMLButtonElement | null;
     if (addTaskMapBtn) {
       addTaskMapBtn.onclick = () => this.editor.enterMode(this.buildWaypointAddMode());
-    }
-
-    // Activate/Deactivate buttons
-    const activateBtn = document.getElementById('activate-route-btn') as HTMLButtonElement | null;
-    if (activateBtn) {
-      activateBtn.onclick = () => this.activateRoute();
-    }
-
-    const deactivateBtn = document.getElementById('deactivate-route-btn') as HTMLButtonElement | null;
-    if (deactivateBtn) {
-      deactivateBtn.onclick = () => this.deactivateRoute();
     }
 
     const toggleHistoryBtn = document.getElementById('toggle-history-btn') as HTMLButtonElement | null;
@@ -2047,6 +2073,10 @@ export class RouteEditorHandler {
       if (!ok) return false;
     }
 
+    if (this._isDraft()) {
+      return this._createDraftOnServer(payload);
+    }
+
     try {
       await this.api.updateRoute(this.currentRoute.route_id, payload);
       showToast('Route saved', 'success', 3000);
@@ -2056,40 +2086,6 @@ export class RouteEditorHandler {
       console.error('[RouteEditor] Failed to save route:', err);
       showToast('Failed to save route: ' + err.message, 'error', 5000);
       return false;
-    }
-  }
-
-  /** Activate the route. */
-  async activateRoute(): Promise<void> {
-    const dirtyOk = await this._promptSaveIfDirty('Activate route');
-    if (!dirtyOk) return;
-
-    const ok = await this._confirmRuntimePreconditions('Activate route');
-    if (!ok) return;
-
-    try {
-      const resp = await this.api.activateRoute(this.currentRoute.route_id);
-      this._mergeServerRoute(resp?.route);
-      showToast('Route activated', 'success', 3000);
-      this.currentRouteStatus = await this.api.getRouteStatus(this.currentRoute.route_id);
-      this.rerenderRouteEditor();
-    } catch (err: any) {
-      console.error('[RouteEditor] Failed to activate route:', err);
-      showToast('Failed to activate route: ' + err.message, 'error', 5000);
-    }
-  }
-
-  /** Deactivate the route. */
-  async deactivateRoute(): Promise<void> {
-    try {
-      const resp = await this.api.deactivateRoute(this.currentRoute.route_id);
-      this._mergeServerRoute(resp?.route);
-      showToast('Route deactivated', 'success', 3000);
-      this.currentRouteStatus = await this.api.getRouteStatus(this.currentRoute.route_id);
-      this.rerenderRouteEditor();
-    } catch (err: any) {
-      console.error('[RouteEditor] Failed to deactivate route:', err);
-      showToast('Failed to deactivate route: ' + err.message, 'error', 5000);
     }
   }
 
@@ -2212,8 +2208,6 @@ export class RouteEditorHandler {
   /** Copy server-controlled fields from a freshly-fetched `route` onto currentRoute. */
   _mergeServerRoute(route: any): void {
     if (!route || !this.currentRoute) return;
-    this.currentRoute.is_active = route.is_active;
-    this.currentRoute.started_at = route.started_at;
     this.currentRoute.assigned_train_ids = route.assigned_train_ids;
     if ('last_edited_at' in route) {
       this.currentRoute.last_edited_at = route.last_edited_at;

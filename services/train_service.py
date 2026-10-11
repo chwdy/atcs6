@@ -675,10 +675,17 @@ def assign_route(
     if not route:
         raise NotFoundError("Route not found")
 
+    # A route pending deletion accepts no new assignment (design_new.md "Route
+    # deletion waits for live teardown").
+    if route_executor is not None and route_id in route_executor.pending_route_deletions:
+        raise ValidationError(
+            f"Route {route_id!r} is being deleted and accepts no new assignment."
+        )
+
     # Reject a 0-task route up front: Plan would otherwise allocate a
     # RouteRun, find no target for the empty walk, and immediately finish
-    # the run (unassigning the train and, for ONE_OFF, deactivating the
-    # route) -- a "success" that silently goes idle a few ticks later.
+    # the run (unassigning the train and, for ONE_OFF, deleting the route) --
+    # a "success" that silently goes idle a few ticks later.
     if not route.tasks:
         raise ValidationError(
             f"Route {route_id!r} has no tasks. Add at least one task "

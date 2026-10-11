@@ -291,7 +291,6 @@ def setup_demo_train(
         route_id="R_DEMO3_LOOP",
         name="Demo 3: Four-Station Loop",
         mode=RouteMode.CIRCULAR,
-        is_active=True,
     )
     tasks = [
         # S1 (any platform) — terminus, train reverses here

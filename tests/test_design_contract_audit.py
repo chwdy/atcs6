@@ -65,11 +65,9 @@ def _run_demo_until_stopped(max_ticks: int = 2000, dt: float = 0.1):
     registry = sim_controller.route_executor.route_registry
     v2 = registry.get("DEMO_ROUTE_V2")
     if v2 is not None:
-        v2.is_active = False
         v2.unassign_train(train_id)
     v1 = registry.get("DEMO_ROUTE_V1")
     if v1 is not None:
-        v1.is_active = True
         v1.assign_train(train_id)
     controller = sim_controller.get_or_create_controller(train_id)
     stopped_streak = 0
@@ -126,9 +124,8 @@ def test_F6_route_finishes_after_terminal_stop():
     """design_new.md step `879a` and the "Active-path completion procedure"
     steps `09b0`/`29c5`/`d843`: after the train stops at its terminal,
     Plan-settlement completion → `RouteExecutor.handle_path_completion(...)` →
-    Plan-settlement `finish_route_run(train_id)` must run, which sets
-    `RouteRun.current_route_status = FINISHED` and makes
-    `assigned_route_id_for(train_id)` return None.
+    Plan-settlement `finish_route_run(train_id)` must run, which deletes the
+    `RouteRun` and makes `assigned_route_id_for(train_id)` return None.
 
     Currently the route remains assigned forever because F4 stops the
     chain at the completion handshake.

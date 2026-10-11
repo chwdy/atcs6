@@ -1867,28 +1867,6 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
-  /** Activate a route. */
-  async activateRoute(routeId: string): Promise<any> {
-    return this._request(
-      `/train-routes/${encodeURIComponent(routeId)}/activate`,
-      {
-        method: 'POST',
-      },
-      'activateRoute'
-    );
-  }
-
-  /** Deactivate a route. */
-  async deactivateRoute(routeId: string): Promise<any> {
-    return this._request(
-      `/train-routes/${encodeURIComponent(routeId)}/deactivate`,
-      {
-        method: 'POST',
-      },
-      'deactivateRoute'
-    );
-  }
-
   /** Get route execution status. */
   async getRouteStatus(routeId: string): Promise<any> {
     return this._request(`/train-routes/${encodeURIComponent(routeId)}/status`, {}, 'getRouteStatus');

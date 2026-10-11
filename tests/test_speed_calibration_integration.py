@@ -163,7 +163,6 @@ def test_the_runtime_tick_arms_the_pass_as_a_one_off_route(state):
     leg_route = executor.route_registry.get(run.active_leg_route_id)
     assert leg_route is not None
     assert leg_route.mode == RouteMode.ONE_OFF
-    assert leg_route.is_active is True
     assert train_id in leg_route.assigned_train_ids
     assert leg_route.manual_override is False
     # One task: a stop at the far outer block.

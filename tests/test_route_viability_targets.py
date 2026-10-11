@@ -143,22 +143,20 @@ def test_route_tasks_create_save_reload_roundtrip(client, connected_network):
     empty body and then read/wrote a `waypoints` key the backend never spoke,
     so saved task content vanished and reloads always showed an empty route.
     The editor now POSTs/PUTs `tasks` and reads `route.tasks`.
-    """
-    # createNewRoute payload (editor sends an empty `tasks` list).
-    create = client.post(
-        "/api/train-routes",
-        json={
-            "route_id": "RT_TEST",
-            "name": "RT",
-            "mode": "one_off",
-            "tasks": [],
-            "assigned_train_ids": [],
-            "is_active": False,
-        },
-    )
-    assert create.status_code == 200
 
-    # saveRoute payload: stop + dwell + waypoint, canonical task_location.
+    The server stores only complete routes (design_new.md "Route-definition
+    validation"), so the editor keeps a new route as a local draft and its first
+    Save POSTs the complete route; later Saves PUT edits.
+    """
+    # An empty route is rejected: nothing incomplete reaches the server.
+    empty = client.post(
+        "/api/train-routes",
+        json={"route_id": "RT_TEST", "name": "RT", "mode": "one_off", "tasks": []},
+    )
+    assert empty.status_code == 400
+    assert client.get("/api/train-routes/RT_TEST").status_code == 404
+
+    # First Save of the draft: stop + dwell + waypoint + terminal stop.
     tasks = [
         {
             "task_kind": "stop",
@@ -182,9 +180,9 @@ def test_route_tasks_create_save_reload_roundtrip(client, connected_network):
             "target_time": None,
         },
         {
-            # Terminal stop so the route is activatable (design_new.md
-            # "Route-definition validation": the task list must end in a
-            # stop, optionally followed by dwell).
+            # Terminal stop (design_new.md "Route-definition validation": a
+            # non-circular task list must end in a stop or run, optionally
+            # followed by dwell).
             "task_kind": "stop",
             "task_location": {"platform_id": "PLT_A"},
             "task_direction": "forward",
@@ -192,23 +190,33 @@ def test_route_tasks_create_save_reload_roundtrip(client, connected_network):
             "target_time": None,
         },
     ]
+    create = client.post(
+        "/api/train-routes",
+        json={
+            "route_id": "RT_TEST",
+            "name": "RT",
+            "mode": "one_off",
+            "tasks": tasks,
+            "assigned_train_ids": [],
+        },
+    )
+    assert create.status_code == 200
+
+    # A later Save edits it in place.
     upd = client.put(
         "/api/train-routes/RT_TEST",
-        json={"name": "RT", "mode": "one_off", "tasks": tasks},
+        json={"name": "RT renamed", "mode": "one_off", "tasks": tasks},
     )
     assert upd.status_code == 200
 
     # The reload that used to come back empty must now echo the saved tasks.
     got = client.get("/api/train-routes/RT_TEST").get_json()
+    assert got["name"] == "RT renamed"
     assert len(got["tasks"]) == 4
     assert got["tasks"][0]["task_kind"] == "stop"
     assert got["tasks"][0]["task_location"] == {"platform_id": "PLT_A"}
     assert got["tasks"][0]["task_time"] == 60
     assert got["tasks"][2]["task_location"] == {"block_id": "BLK_B"}
-
-    # activate -> is_active flips True (so Phase 1 will pick the route up).
-    assert client.post("/api/train-routes/RT_TEST/activate").status_code == 200
-    assert client.get("/api/train-routes/RT_TEST").get_json()["is_active"] is True
 
 
 # --------------------------------------------------------------------------
@@ -262,45 +270,30 @@ def test_reachable_from_unresolvable_id_is_404(client, connected_network):
 def test_history_shape_for_fresh_route(client, connected_network):
     client.post(
         "/api/train-routes",
-        json={"route_id": "RT_HIST", "name": "H", "mode": "one_off", "tasks": []},
-    )
-    resp = client.get("/api/train-routes/RT_HIST/history")
-    assert resp.status_code == 200
-    body = resp.get_json()
-    assert set(body.keys()) == {
-        "route_id",
-        "activated_at",
-        "created_at",
-        "last_edited_at",
-        "is_active",
-        "runs",
-    }
-    # A route that has never run nor activated: no activation timestamp,
-    # no runs. created_at is set at construction; last_edited_at is set
-    # because the POST request supplied definition fields (name/mode/tasks).
-    assert body["activated_at"] is None
-    assert body["created_at"] is not None and body["created_at"] > 0
-    assert body["last_edited_at"] is not None and body["last_edited_at"] > 0
-    assert body["is_active"] is False
-    assert body["runs"] == []
-
-
-def test_history_records_activation_time(client, connected_network):
-    client.post(
-        "/api/train-routes",
         json={
-            "route_id": "RT_HIST2",
-            "name": "H2",
+            "route_id": "RT_HIST",
+            "name": "H",
             "mode": "one_off",
             "tasks": [
                 {"task_kind": "stop", "task_location": {"block_id": "BLK_B"}}
             ],
         },
     )
-    assert client.post("/api/train-routes/RT_HIST2/activate").status_code == 200
-    body = client.get("/api/train-routes/RT_HIST2/history").get_json()
-    assert body["is_active"] is True
-    assert isinstance(body["activated_at"], (int, float))
+    resp = client.get("/api/train-routes/RT_HIST/history")
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert set(body.keys()) == {
+        "route_id",
+        "created_at",
+        "last_edited_at",
+        "runs",
+    }
+    # A route that has never run: no runs. created_at is set at construction;
+    # last_edited_at is set because the POST request supplied definition
+    # fields (name/mode/tasks).
+    assert body["created_at"] is not None and body["created_at"] > 0
+    assert body["last_edited_at"] is not None and body["last_edited_at"] > 0
+    assert body["runs"] == []
 
 
 def test_history_unknown_route_is_404(client, connected_network):

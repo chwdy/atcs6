@@ -333,7 +333,7 @@ def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
     # AA62D2, holds HOLD_SECONDS, and the CIRCULAR wrap sends it round again.
     route = Route(
         route_id="ROUTE_LOOP", name="Loop", mode=RouteMode.CIRCULAR,
-        is_active=True, start_mode=RouteStartMode.NEAREST,
+        start_mode=RouteStartMode.NEAREST,
     )
     if DEMO7_MODE == "continuous":
         for block_id in LOOP_ORDER:
