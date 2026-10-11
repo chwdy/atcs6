@@ -139,7 +139,7 @@ def test_a_train_past_its_authority_end_is_permissive_like_a_stopped_train():
     # becomes plausible and attributes to it.
     controller.path_dispatcher = _DispatcherStub(_ActivePathStub(["BLK_2"]))
     assert physics.could_be_entering("BLK_1") is True
-    assert sim.block_occupancy_detector.adjacent_train_for_block("BLK_1") == "T"
+    assert sim.block_occupancy_detector.touching_trains_for_block("BLK_1") == ["T"]
 
 
 def test_the_walk_crosses_a_clear_block_the_train_still_holds():
@@ -174,7 +174,7 @@ def test_attribution_refuses_a_block_behind_a_moving_train():
     rolling(controller, 16.0)
 
     detector = sim.block_occupancy_detector
-    assert detector.adjacent_train_for_block("BLK_1") is None
+    assert detector.touching_trains_for_block("BLK_1") == []
 
 
 def test_attribution_accepts_a_block_behind_a_stopped_train():
@@ -184,7 +184,7 @@ def test_attribution_accepts_a_block_behind_a_stopped_train():
     rolling(controller, 0.0)
 
     detector = sim.block_occupancy_detector
-    assert detector.adjacent_train_for_block("BLK_1") == "T"
+    assert detector.touching_trains_for_block("BLK_1") == ["T"]
 
 
 def test_an_unwired_gate_credits_nothing():
@@ -198,4 +198,4 @@ def test_an_unwired_gate_credits_nothing():
     detector = sim.block_occupancy_detector
     detector.can_enter = None
 
-    assert detector.adjacent_train_for_block("BLK_1") is None
+    assert detector.touching_trains_for_block("BLK_1") == []

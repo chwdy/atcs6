@@ -26,7 +26,7 @@ authority and their precise-traversal entry/exit.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Iterable, Optional, Set, Tuple, TYPE_CHECKING
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from constants import (
     OCCUPANCY_OFF_THRESHOLD,
@@ -141,7 +141,7 @@ class BlockOccupancyDetector:
     notify: Optional[Callable[[str, str], None]] = None
     # Blocks reachable from a given block through undetected track only, the
     # walk `UnidentifiedTrainTracker.reachable_blocks` owns. `attribute()` and
-    # `adjacent_train_for_block()` both need it to decide whether a train could
+    # `touching_trains_for_block()` both need it to decide whether a train could
     # physically be standing on a block, so `SimulationController` wires it at
     # construction. Without it no entry is ever credited to a train it is not
     # standing next to, which is the fail-safe reading.
@@ -245,13 +245,24 @@ class BlockOccupancyDetector:
                 self._off_counts[block_id] = 0
 
     def attribute(
-        self, entered: Set[str], vacated: Set[str]
+        self,
+        entered: Set[str],
+        vacated: Set[str],
+        reoffered: Iterable[str] = (),
     ) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]], Set[str]]:
         """Attribute confirmed transitions to trains.
 
         Returns (entered_by_train, vacated_by_train, unmatched_entries): the two
         maps are train_id -> set of block_ids, and `unmatched_entries` holds the
         entered blocks that match no existing train.
+
+        `reoffered` holds blocks that stay confirmed occupied while no train is
+        credited with them — a standing `conflict` block (design_new.md "Block
+        occupancy detection", An overrun entry or a conflict raises the emergency
+        cut-out). Each is matched again on every read exactly as a fresh entry
+        is. It is not a fresh entry, so when it is still unmatched here it raises
+        no unidentified-train warning: the caller's adjacency step decides it,
+        and the conflict was reported when it first arose.
 
         Entered blocks attribute to `Block.reserved_for_train` (the train that
         reserved the block it is entering) **only when that train is standing
@@ -298,8 +309,9 @@ class BlockOccupancyDetector:
         commit and nothing here needs a side channel into
         `Block.occupied_by`.
         """
+        reoffered = set(reoffered)
         entered_by_train: Dict[str, Set[str]] = {}
-        pending: Set[str] = set(entered)
+        pending: Set[str] = set(entered) | reoffered
         resolved = True
         while pending and resolved:
             resolved = False
@@ -312,7 +324,7 @@ class BlockOccupancyDetector:
                 resolved = True
 
         unmatched_entries: Set[str] = pending
-        for block_id in sorted(unmatched_entries):
+        for block_id in sorted(unmatched_entries - reoffered):
             # design_new.md "Attribution": a confirmed entry that matches no
             # existing train is an unidentified train. Unreachable under the
             # simulated detector, which builds current from live spans.
@@ -348,50 +360,57 @@ class BlockOccupancyDetector:
             return reserved_for
         return self._span_owner(block_id)
 
-    def adjacent_train_for_block(
+    def touching_trains_for_block(
         self, block_id: str, claimed: Optional[Dict[str, Set[str]]] = None
-    ) -> Optional[str]:
-        """The ordinary train standing next to `block_id`, or None.
+    ) -> List[str]:
+        """Every ordinary train that touches `block_id`, sorted by train id.
 
-        Next to means reachable through undetected track — bare switch tiles and
-        any tile no block owns — with no other block in between, which is what
-        `reachable_blocks` walks. A locomotive standing across a block boundary
-        draws current on both blocks, and the far one matches no reservation and
-        no span; this is what keeps that second reading one train rather than
-        two objects.
+        A train touches the block when it holds a block next to it and could be
+        entering it (`_could_enter`). Next to means reachable through undetected
+        track — bare switch tiles and any tile no block owns — with no other
+        block in between, which is what `reachable_blocks` walks. A train holds a
+        block through its calculated span, through `Block.occupied_by`, or
+        through `claimed`, this read's already-attributed entries — so a train
+        crossing several blocks between two reads stays one train. The span
+        counts because it is where the app is driving the train and it leads
+        confirmed occupancy on entry.
 
-        The calculated span is tried before `Block.occupied_by` because the span
-        is where the app is driving the train and it leads confirmed occupancy on
-        entry — the block a train has just been given may not have confirmed yet.
-        `claimed` adds this tick's already-attributed entries to the same
-        evidence, so a train crossing several blocks between two reads stays one
-        train.
+        A locomotive standing across a block boundary draws current on both
+        blocks, and the far one matches no reservation and no span; one touching
+        train is what keeps that second reading one train rather than two
+        objects. More than one touching train is a `conflict` (design_new.md
+        "Block occupancy detection", Attribution, rank 5): the block goes to no
+        train. An unidentified train never touches a block, because it is never
+        energized and integrates no motion, so it enters nothing.
         """
         if self.reachable_blocks is None:
-            return None
-        for neighbour_id in sorted(self.reachable_blocks(block_id)):
-            for train_id in sorted(self.controllers):
-                if self._is_unidentified(train_id):
-                    continue
-                span = getattr(
-                    getattr(self.controllers[train_id], "physics_sync", None),
-                    "current_span",
-                    None,
-                )
-                covered = set(span.occupied_blocks or []) if span is not None else set()
-                if claimed:
-                    covered |= claimed.get(train_id, set())
-                if neighbour_id in covered and self._could_enter(train_id, block_id):
-                    return train_id
+            return []
+        neighbours = set(self.reachable_blocks(block_id))
+        touching: Set[str] = set()
+        for train_id in sorted(self.controllers):
+            if self._is_unidentified(train_id):
+                continue
+            span = getattr(
+                getattr(self.controllers[train_id], "physics_sync", None),
+                "current_span",
+                None,
+            )
+            held = set(span.occupied_blocks or []) if span is not None else set()
+            if claimed:
+                held |= claimed.get(train_id, set())
+            if held & neighbours and self._could_enter(train_id, block_id):
+                touching.add(train_id)
+        for neighbour_id in neighbours:
             block = self.network.blocks.get(neighbour_id)
             owner = getattr(block, "occupied_by", None) if block else None
             if (
                 owner is not None
+                and owner not in touching
                 and not self._is_unidentified(owner)
                 and self._could_enter(owner, block_id)
             ):
-                return owner
-        return None
+                touching.add(owner)
+        return sorted(touching)
 
     def _could_enter(self, train_id: str, block_id: str) -> bool:
         """Whether `train_id` could be the current that just appeared on
@@ -414,10 +433,10 @@ class BlockOccupancyDetector:
         """Whether `train_id` in particular is standing next to `block_id` and
         could be entering it.
 
-        `adjacent_train_for_block` answers with one train, picked by its own
-        preference order; the reservation gate needs the answer for the
-        reserving train specifically, because a block may sit next to a
-        different train than the one that reserved it.
+        `touching_trains_for_block` answers for every train at once; the
+        reservation gate needs the answer for the reserving train specifically,
+        because a block may sit next to a different train than the one that
+        reserved it.
 
         A reservation is the weakest evidence of the three, so it carries the
         plausibility gate too: a train stopped at the end of its authority still
