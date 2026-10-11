@@ -176,13 +176,23 @@ def test_layout_emergency_cut_out_is_gated_and_cuts_every_train(monkeypatch):
     assert result.success is False
     assert controller.eb.cut_out is False
 
-    # Virtual Hardware: every train is cut out.
+    assert controller.commands.command_inbox == []
+
+    # Virtual Hardware: the cut-out is enqueued for every train and applied by
+    # that train's own command drain on its next Action (design_new.md
+    # "Emergency cut-out", Layout emergency cut-out).
     monkeypatch.setattr(
         operation_environment, "_selected", OperationMode.VIRTUAL_HARDWARE
     )
     sim.operation_mode = OperationMode.VIRTUAL_HARDWARE
     result = sim.layout_emergency_cut_out()
     assert result.success
+    assert [cmd.kind for cmd in controller.commands.command_inbox] == [
+        "activate_cut_out_cmd"
+    ]
+    assert controller.eb.active is False
+
+    controller.commands._drain_command_inbox(0.0)
     assert controller.eb.active is True
     assert controller.eb.cut_out is True
 

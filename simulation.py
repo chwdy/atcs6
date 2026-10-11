@@ -1137,9 +1137,11 @@ class SimulationController(SwitchOutputOwner):
         """The layout-wide emergency cut-out (design_new.md "Emergency cut-out",
         Layout emergency cut-out).
 
-        Raises `TrainController.eb.activate_cut_out()` for every train, so every
-        train's traction voltage goes to `0` and every train stops immediately on
-        its next Action, exactly as a per-train cut-out does. It touches only
+        Enqueues the operator cut-out command (`activate_cut_out_cmd`, drain
+        slot 7) for every train, so each train's own Action command drain runs
+        `TrainController.eb.activate_cut_out()`: every train's traction voltage
+        goes to `0` and every train stops immediately on its next Action,
+        exactly as a per-train cut-out does. It touches only
         traction voltage — a switch coil carries no standing power, it is pulsed
         only for the moment it throws and then holds mechanically, so a cut-out
         has nothing to de-energize there. It does not stop the session
@@ -1158,7 +1160,7 @@ class SimulationController(SwitchOutputOwner):
             )
         train_ids = sorted(self.controllers)
         for train_id in train_ids:
-            self.controllers[train_id].eb.activate_cut_out()
+            self.controllers[train_id].commands.enqueue_command("activate_cut_out_cmd")
         self.notification_center.emit(
             source="SimulationController",
             operation="layout_emergency_cut_out",
