@@ -1211,9 +1211,14 @@ class PathDispatcher:
             # cap, then let the ordinary validate/acquire path below handle any
             # within-cap conflict (best-effort truncation pulls it back further)
             # and report `reached_target = False` via the cap-aware success return.
+            # Holding-point chunking bounds the same acquisition at the first
+            # holding point ahead; the nearer of the two wins.
             cap_status, capped_segment, capped_walk = self._truncate_segment_to_cap(
                 segment, ordered_walk,
-                reservation_cap_block_id, requested_destination_block_id,
+                self._effective_reservation_cap(
+                    segment, reservation_cap_block_id, requested_destination_block_id
+                ),
+                requested_destination_block_id,
             )
             if cap_status == "hold":
                 # The cap is the train's current block: no forward authority can
@@ -1732,10 +1737,15 @@ class PathDispatcher:
             # Meet-coordination acquisition cap (design_new.md, "Reservation-cap rule"): never append
             # authority past the cap block. The forward suffix's first block is
             # the current authority end; a cap there (or off this suffix) means
-            # the train already holds at the cap -> no growth.
+            # the train already holds at the cap -> no growth. Holding-point
+            # chunking bounds the same append at the next holding point past the
+            # current authority end; the nearer of the two wins.
             cap_status, capped_segment, capped_walk = self._truncate_segment_to_cap(
                 segment, ordered_walk,
-                reservation_cap_block_id, requested_destination_block_id,
+                self._effective_reservation_cap(
+                    segment, reservation_cap_block_id, requested_destination_block_id
+                ),
+                requested_destination_block_id,
             )
             if cap_status == "hold":
                 had_occupancy_blocker = True
@@ -2310,9 +2320,8 @@ class PathDispatcher:
         contested = path.resource_sequence[cut_index]
 
         # Lock-end floor: the cut never enters the locked span, so the terminal
-        # search bottoms out at this path's lock end. When the path locks
-        # nothing, the floor is the first block ahead of the head so a minimal
-        # reservation always survives.
+        # search bottoms out at this path's lock end — the head's own block when
+        # nothing ahead of it is locked.
         lock_floor_index = self._lock_floor_index(path)
 
         # Truncation-terminal rules (design_new.md "truncation-terminal rules"):
@@ -2392,15 +2401,17 @@ class PathDispatcher:
 
     def _lock_floor_index(self, path) -> Optional[int]:
         """The `resource_sequence` index the cut floor bottoms out at for a
-        Reservation truncation of `path` — the lock end when the path holds a
-        lock, else the first block ahead of the head.
+        Reservation truncation of `path` — the path's lock end.
 
         The truncation cut never enters the locked span, so the furthest a cut
         may pull back is this path's lock end (`Path.lock_end_block_id`, the last
         locked block, which the braking-distance lock guarantees the train can
-        stop within). When the path locks nothing, the floor is the first block
-        strictly ahead of the head so a minimal reservation still survives.
-        Returns `None` only when no block lies ahead of the head at all.
+        stop within). When nothing ahead of the head is locked, the lock end is
+        the head's own block, so the cut may pull the reservation back to the
+        block the train stands in. When the head's block entry sits behind
+        `current_resource_index` (the head index anchors on a switch), the floor
+        is the first block ahead of the head. Returns `None` only when no such
+        block exists.
         """
         lock_end_id = path.get_lock_end_block_id()
         if lock_end_id:
@@ -2992,6 +3003,41 @@ class PathDispatcher:
             prev_index >= 0
             and path.resource_sequence[prev_index].resource_type == "switch"
         )
+
+    def _effective_reservation_cap(
+        self,
+        segment: PathSegment,
+        reservation_cap_block_id: Optional[str],
+        requested_destination_block_id: str,
+    ) -> Optional[str]:
+        """The block an acquisition along `segment` may not reserve past: the
+        nearer of the meet ceiling and the first holding point past the walk's
+        start block (design_new.md "Holding-point chunking").
+
+        The dispatcher treats a holding point as an implicit waypoint terminal,
+        so each create or extend reserves at most up to the next holding point,
+        even when the track past it is clear. The walk's start block is the
+        train's leading block for a create and the current authority end for an
+        extend, so it is never its own chunk terminal. A holding point at or
+        past the requested target adds no bound. Returns `None` when neither
+        bound applies.
+        """
+        meet_index: Optional[int] = None
+        if reservation_cap_block_id and reservation_cap_block_id in segment.blocks:
+            meet_index = segment.blocks.index(reservation_cap_block_id)
+        for index in range(1, len(segment.blocks)):
+            block_id = segment.blocks[index]
+            if block_id == requested_destination_block_id:
+                break
+            if meet_index is not None and index >= meet_index:
+                break
+            # A lapping walk may pass its own start block again; the start is
+            # never its own chunk terminal.
+            if block_id != segment.blocks[0] and self._block_is_holding_point(
+                block_id
+            ):
+                return block_id
+        return reservation_cap_block_id
 
     def _truncate_segment_to_cap(
         self,

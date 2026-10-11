@@ -297,6 +297,31 @@ def test_truncation_is_a_noop_at_the_head_index():
     assert path.get_reservation_end_block_id() == "BLK_C"
 
 
+def test_with_nothing_locked_ahead_the_cut_falls_back_to_the_head_block():
+    """When no block ahead of the head is locked, the lock end is the head's own
+    block (design_new.md "Path field schema", `lock_end_block_id`), so a cut at
+    the next block pulls the reservation back to the head's block and releases
+    the contested block (design_new.md "Reservation truncation", Where the cut
+    lands)."""
+    network = build_abc()
+    sim, dispatcher, controller, train, path_id = rolling_train_with_authority_to_c(
+        network
+    )
+    path = dispatcher.paths[path_id]
+    for block_id in ("BLK_A", "BLK_B", "BLK_C"):
+        network.blocks[block_id].locked_by_path = None
+    assert path.get_lock_end_block_id() == "BLK_A"
+    next_index = next(
+        i for i, e in enumerate(path.resource_sequence)
+        if i > path.current_resource_index and e.resource_id == "BLK_B"
+    )
+
+    assert dispatcher.truncate_path_before_resource(path_id, next_index, "test") == "BLK_A"
+    assert path.get_reservation_end_block_id() == "BLK_A"
+    assert network.blocks["BLK_B"].reserved_by_path is None
+    assert network.blocks["BLK_C"].reserved_by_path is None
+
+
 # ---------------------------------------------------------------------------
 # item-11 truncation-terminal rules (design_new.md line 1366)
 # ---------------------------------------------------------------------------

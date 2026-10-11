@@ -3451,6 +3451,14 @@ class RouteExecutor:
                 )
                 return False
 
+        # Holding-point chunking (design_new.md "Holding-point chunking"): step
+        # `66aa` owns the hold. A live reservation that ends at a holding point
+        # is not extended past it until the lock end reaches it; a train standing
+        # in the terminal reaches it through the lock end's head-block fallback.
+        # Nothing is created or extended this pass, and nothing failed.
+        if self._held_at_holding_point(train_id):
+            return False
+
         # Per design_new.md (fix #14, part a): wrap authority acquisition in a
         # retry loop that accumulates previously-failed resolved_target values
         # into an `exclude` set and re-calls `_find_next_task_target(train_id,
@@ -3511,6 +3519,21 @@ class RouteExecutor:
                 # Terminal walk — no later task on the directed walk.
                 break
         return any_success
+
+    def _held_at_holding_point(self, train_id: str) -> bool:
+        """True while the train's live reservation ends at a holding point the
+        lock end has not reached yet (design_new.md "Holding-point chunking").
+        """
+        if self.path_dispatcher is None:
+            return False
+        path = self.path_dispatcher.get_active_path(train_id)
+        if path is None:
+            return False
+        end_block_id = path.get_reservation_end_block_id()
+        block = self.network.blocks.get(end_block_id) if end_block_id else None
+        if block is None or not getattr(block, "is_holding_point", False):
+            return False
+        return path.get_lock_end_block_id() != end_block_id
 
     def _authority_acquisition_step(
         self,

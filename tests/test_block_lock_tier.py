@@ -147,9 +147,26 @@ def test_lock_end_ignores_other_paths_and_blocks_behind_the_head():
         network=network,
     )
     assert path.get_lock_end_block_id() == "BLK_2"
-    # Blocks behind current_resource_index never count.
+    # Blocks behind current_resource_index never count. With nothing of this
+    # path's locked ahead, the lock end falls back to the head's block.
     path.current_resource_index = 2
-    assert path.get_lock_end_block_id() is None
+    assert path.get_lock_end_block_id() == "BLK_3"
+
+
+def test_lock_end_falls_back_to_the_head_block_when_nothing_ahead_is_locked():
+    """design_new.md "Path field schema", `lock_end_block_id`: entering a block
+    clears its lock flag, so a train standing in its reservation-end block still
+    has a lock end — its own block."""
+    network, bm = _line()
+    _reserve(bm, ["BLK_1", "BLK_2"])
+    path = Path(
+        path_id="P1",
+        resource_sequence=_block_seq(["BLK_1", "BLK_2"]),
+        current_resource_index=1,
+        network=network,
+    )
+    assert path.get_lock_end_block_id() == "BLK_2"
+    assert path.get_lock_end_block_id() == path.get_reservation_end_block_id()
 
 
 def test_lock_end_is_none_without_a_wired_network():

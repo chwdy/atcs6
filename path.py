@@ -228,8 +228,12 @@ class Path:
 
         Per design_new.md "Path field schema": returns the furthest-forward
         block in `resource_sequence` (at or after `current_resource_index`)
-        whose `Block.locked_by_path == path_id`, or `None` when the path locks
-        no block. Not a stored field; it derives live from the per-block
+        whose `Block.locked_by_path == path_id`. When no block ahead of the head
+        is locked, it returns the head's block instead — the last `block` entry
+        at or before `current_resource_index` — because entering a block clears
+        that block's lock flag, so a train standing in its reservation-end block
+        still has a lock end. Returns `None` only for a path with no block at or
+        before the head. Not a stored field; it derives live from the per-block
         `Block.locked_by_path` flags, so it reflects the current lock
         automatically and is always at or behind `reservation_end_block_id`.
 
@@ -239,15 +243,18 @@ class Path:
         if self.network is None:
             return None
         result: Optional[str] = None
+        head_block: Optional[str] = None
         for entry in self.resource_sequence:
-            if entry.sequence_index < self.current_resource_index:
-                continue
             if entry.resource_type != "block":
+                continue
+            if entry.sequence_index <= self.current_resource_index:
+                head_block = entry.resource_id
+            if entry.sequence_index < self.current_resource_index:
                 continue
             block = self.network.blocks.get(entry.resource_id)
             if block is not None and block.locked_by_path == self.path_id:
                 result = entry.resource_id
-        return result
+        return result if result is not None else head_block
 
     def reaches_target(self, block_id: str) -> bool:
         """Whether the live authority reaches `block_id`.
