@@ -79,7 +79,7 @@ _CONTROLLER_DERIVED_FIELDS: List[str] = [
 ]
 
 # Direct controller fields (queued_progress_reports) remain attached to
-# TrainController. The four Action latches live nested under
+# TrainController. The five Action latches live nested under
 # `controller.route_hooks.phase_latches`. Each resolver path is set in
 # `_LATCH_META`'s `path` key. There is no toast queue to inspect: the
 # `Notifications` sub-module writes straight through to the one
@@ -90,6 +90,7 @@ _CONTROLLER_LATCH_FIELDS: List[str] = [
     "pending_route_abort",
     "pending_power_off",
     "pending_route_deactivate",
+    "pending_emergency_request",
 ]
 
 
@@ -206,6 +207,11 @@ _LATCH_META: Dict[str, Dict[str, str]] = {
         "path": "route_hooks.phase_latches.route_deactivate",
         "writer": "API / route executor",
         "consumer": "Action — route-deactivate step",
+    },
+    "pending_emergency_request": {
+        "path": "route_hooks.phase_latches.emergency_request",
+        "writer": "Observe — locked-foreign-entry brake / overrun cut-out",
+        "consumer": "Action — command drain (eb.activate / eb.activate_cut_out)",
     },
 }
 

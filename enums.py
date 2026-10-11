@@ -176,6 +176,7 @@ class ControllerCondition(Enum):
     EB_LATCHED = "eb_latched"
     POWER_OFF_PENDING = "power_off_pending"
     PATH_CANCEL_PENDING = "path_cancel_pending"
+    EMERGENCY_PENDING = "emergency_pending"
     ROUTE_ABORT_PENDING = "route_abort_pending"
     ROUTE_DEACTIVATE_PENDING = "route_deactivate_pending"
 

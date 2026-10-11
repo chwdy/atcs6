@@ -2782,8 +2782,9 @@ class RouteExecutor:
         """The one Plan create-branch gate (design_new.md "is_clean_for_create").
 
         True when the driving source is ready to be granted authority: the
-        controller is not OFF, EB is not active, no power-off is pending, no
-        path cancel is pending, and the selected driving source is ready — ATO
+        controller is not OFF, EB is not active, no emergency request is
+        pending, no power-off is pending, no path cancel is pending, and the
+        selected driving source is ready — ATO
         engaged, or a manual train (with no further condition; design_new.md, "Planning Kernel"
         "In `manual` mode there is no fifth condition ... There is no cab
         condition — the head end is derived from the authority"). It does NOT
@@ -2798,6 +2799,8 @@ class RouteExecutor:
         if not controller.powered:
             return False
         if controller.eb.active:
+            return False
+        if controller.route_hooks.phase_latches.emergency_request is not None:
             return False
         if controller.route_hooks.phase_latches.power_off:
             return False
@@ -2830,8 +2833,13 @@ class RouteExecutor:
         except Exception:
             has_active_path = False
         if has_active_path:
-            # Extend branch — a not-engaged ATO train keeps its reservation but
+            # Extend branch — a train Observe asked to emergency-brake this
+            # tick extends nothing before Action applies the request
+            # (design_new.md "is_clean_for_create", no emergency request
+            # pending). A not-engaged ATO train keeps its reservation but
             # extends nothing (ATO engage gate); manual has no such condition.
+            if ControllerCondition.EMERGENCY_PENDING in controller.active_conditions:
+                return False
             if (
                 controller.commands.control_mode == "ato"
                 and not controller.commands.engaged

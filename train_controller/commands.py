@@ -139,27 +139,55 @@ class OperatorCommands:
         existing inline command method. Rejected commands are silently dropped
         (their inline method's CommandResult.success=False is observed via
         notifications, not by the caller).
+
+        The drain ends by applying any emergency request Observe latched this
+        tick (`_apply_emergency_request`), after every queued operator command,
+        so an `eb.release()` queued on the same tick cannot undo it.
         """
-        if not self.command_inbox:
+        try:
+            # Bucket commands by kind preserving FIFO within each bucket.
+            buckets: Dict[str, List[Command]] = {}
+            for cmd in self.command_inbox:
+                buckets.setdefault(cmd.kind, []).append(cmd)
+            self.command_inbox.clear()
+
+            for kind in self.drain_order:
+                cmds = buckets.pop(kind, [])
+                for cmd in cmds:
+                    self._execute_drained_command(cmd, event_time)
+            # Any unknown kinds left over: drop with a notification.
+            for kind, cmds in buckets.items():
+                for cmd in cmds:
+                    self._c.notifications.emit(
+                        f"Unknown command kind: {kind}",
+                        operation="_drain_command_inbox",
+                    )
+        finally:
+            # An emergency stop must never be lost to a failing operator command.
+            self._apply_emergency_request()
+
+    def _apply_emergency_request(self) -> None:
+        """Apply the emergency request Observe latched this tick, then clear it
+        (design_new.md "Operator-command processing slot", The drain ends by
+        applying any emergency request; Latch Table row `e9c7`).
+
+        `"cut_out"` calls `eb.activate_cut_out()` and `"brake"` calls
+        `eb.activate()`. The request is not an operator command, so it carries no
+        operating-environment gate; both methods no-op on a train whose
+        emergency brake is already latched.
+        """
+        c = self._c
+        latches = c.route_hooks.phase_latches
+        request = latches.emergency_request
+        if request is None:
             return
-
-        # Bucket commands by kind preserving FIFO within each bucket.
-        buckets: Dict[str, List[Command]] = {}
-        for cmd in self.command_inbox:
-            buckets.setdefault(cmd.kind, []).append(cmd)
-        self.command_inbox.clear()
-
-        for kind in self.drain_order:
-            cmds = buckets.pop(kind, [])
-            for cmd in cmds:
-                self._execute_drained_command(cmd, event_time)
-        # Any unknown kinds left over: drop with a notification.
-        for kind, cmds in buckets.items():
-            for cmd in cmds:
-                self._c.notifications.emit(
-                    f"Unknown command kind: {kind}",
-                    operation="_drain_command_inbox",
-                )
+        try:
+            if request == "cut_out":
+                c.eb.activate_cut_out()
+            else:
+                c.eb.activate()
+        finally:
+            latches.clear("emergency_request")
 
     def _execute_drained_command(self, cmd: Command, event_time: float) -> None:
         """Dispatch one drained command to its inline executor.
@@ -360,9 +388,9 @@ class OperatorCommands:
         physical locomotive to stop faster than the modelled brake curve and no
         output boundary to de-energize. When accepted it runs
         `eb.activate_cut_out()`. That method itself carries no environment gate,
-        so the Observe overrun/conflict trigger raises a cut-out in every
-        environment; this operator gate is the one place the hardware-only rule
-        lives.
+        so the cut-out request Observe latches on an overrun is applied by the
+        drain in every environment; this operator gate is the one place the
+        hardware-only rule lives.
         """
         import operation_environment
         from enums import OperationMode
@@ -393,7 +421,7 @@ class OperatorCommands:
     # Power-off request side effects
     # -------------------------------------------------------------------------
     #
-    # The four Action latches themselves live on
+    # The five Action latches themselves live on
     # `self._c.route_hooks.phase_latches` (see
     # `runtime_payloads.PhaseLatches`). Power-off acceptance also sets
     # `control_mode = "manual"` (which clears `commands.engaged`); that

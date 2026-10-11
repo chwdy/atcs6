@@ -1618,18 +1618,20 @@ class SimulationController(SwitchOutputOwner):
         return bool(evidence & confirmed)
 
     def _raise_overrun_cut_outs(self, entered_by_train: Dict[str, Set[str]]) -> None:
-        """Cut out every train whose attribution result this read is an overrun
-        entry (design_new.md "Block occupancy detection", An overrun entry or a
-        conflict raises the emergency cut-out).
+        """Latch a cut-out request for every train whose attribution result this
+        read is an overrun entry (design_new.md "Block occupancy detection", An
+        overrun entry or a conflict raises the emergency cut-out).
 
         An overrun entry is a block credited to a train, on its head side, that
         is not reserved for that train, while the train holds a live plan — a
-        train with no authority cannot overrun one. Observe calls
-        `TrainController.eb.activate_cut_out()` for that train on the same read,
-        which drives its blocks to `0` and stops it at once. One warning event
-        names the overrun, with the block and train ids on the entities; it is
-        distinct from the span-correction event, which reports the forward-snap
-        magnitude, so both may fire for the same entry.
+        train with no authority cannot overrun one. Observe latches
+        `phase_latches.emergency_request = "cut_out"` for that train; the same
+        tick's Action command drain applies it through
+        `TrainController.eb.activate_cut_out()`, which de-energizes its blocks
+        and stops it at once. One warning event names the overrun, with the
+        block and train ids on the entities; it is distinct from the
+        span-correction event, which reports the forward-snap magnitude, so both
+        may fire for the same entry.
 
         A train with an open speed-calibration pass is exempt: its overrun is a
         speed-only measurement fault that the pass itself stops (design_new.md
@@ -1665,12 +1667,20 @@ class SimulationController(SwitchOutputOwner):
             )
             if not overrun_blocks:
                 continue
-            # `activate_cut_out()` no-ops on an already-latched train, so a train
-            # cut out on an earlier read stays cut out and re-emits no event.
-            if controller.eb.active:
+            # A train already cut out, or already holding a cut-out request
+            # from an earlier stopped-pass read, stays that way and re-emits no
+            # event.
+            latches = controller.route_hooks.phase_latches
+            if controller.eb.active or latches.emergency_request == "cut_out":
                 continue
-            controller.eb.activate_cut_out()
             block_id = overrun_blocks[0]
+            latches.set_emergency_request(
+                "cut_out",
+                ErrorRecord(
+                    f"overrun entry by {train_id} onto block {block_id}",
+                    "overrun_entry",
+                ),
+            )
             self.notification_center.emit(
                 source="SimulationController",
                 operation="_detect_block_occupancy",
@@ -1805,16 +1815,23 @@ class SimulationController(SwitchOutputOwner):
                         )
                 controller = self.controllers.get(reserved_for)
                 if controller is not None and path_id:
-                    # Canonical EB activation effects (design_new.md, "Reservation
-                    # truncation", Observe caller, Locked branch): set `eb.active`,
-                    # force `control_mode = "manual"`, spring the notch to zero,
-                    # and — because a live path exists — latch
-                    # `pending_path_cancel_request` with `error.origin = "eb"`,
-                    # which Action commits once the train has stopped. This is
-                    # what actually forces the reserving train to a stand; a soft
-                    # cancel alone would not, and the train is inside its braking
-                    # distance of an occupied block.
-                    controller.eb.activate()
+                    # Latch an emergency brake request on the reserving train
+                    # (design_new.md "Reservation truncation", Observe caller,
+                    # Locked branch). The same tick's Action command drain
+                    # applies it through the canonical EB activation effects,
+                    # which latch `pending_path_cancel_request` with
+                    # `error.origin = "eb"` for Action to commit once the train
+                    # has stopped. This is what forces the reserving train to a
+                    # stand; a soft cancel alone would not, and the train is
+                    # inside its braking distance of an occupied block.
+                    controller.route_hooks.phase_latches.set_emergency_request(
+                        "brake",
+                        ErrorRecord(
+                            f"{reserved_for}'s locked block {block_id} was "
+                            f"entered by another train",
+                            "locked_foreign_entry",
+                        ),
+                    )
 
     def _update_presence_unknown(self, detector) -> None:
         """Flag each train whose calculated position no physical reading backs

@@ -1,10 +1,10 @@
 """Unit tests for `runtime_payloads.PhaseLatches`.
 
-Covers the four canonical setters (path_cancel_request leaf + the three
-composite setters that fan out via the inclusive-latch rule), the
-`is_any_pending` predicate, and the `clear(...)` field clear each Phase-3
-consumer step uses. Per design_new.md "Latch Table" (No shared consume
-accessor) this aggregate exposes no `consume_*()` accessor for these four.
+Covers the canonical setters (the path_cancel_request and emergency_request
+leaves + the three composite setters that fan out via the inclusive-latch
+rule), the `is_any_pending` predicate, and the `clear(...)` field clear each
+Phase-3 consumer step uses. Per design_new.md "Latch Table" (No shared consume
+accessor) this aggregate exposes no `consume_*()` accessor for these five.
 """
 
 import pytest
@@ -23,6 +23,7 @@ def test_default_is_empty():
     assert latches.route_abort is False
     assert latches.power_off is False
     assert latches.route_deactivate is False
+    assert latches.emergency_request is None
     assert latches.is_any_pending() is False
 
 
@@ -228,4 +229,59 @@ def test_clearing_one_latch_does_not_touch_the_other_three():
     # Clearing route_abort now empties the last latch.
     latches.clear("route_abort")
     assert latches.route_abort is False
+    assert latches.is_any_pending() is False
+
+
+# ---------------------------------------------------------------------------
+# emergency_request (design_new.md Latch Table row `e9c7`)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("kind", ["brake", "cut_out"])
+def test_set_emergency_request_writes_the_kind(kind):
+    latches = PhaseLatches()
+    latches.set_emergency_request(kind, ErrorRecord("why", "overrun_entry"))
+    assert latches.emergency_request == kind
+    assert latches.is_any_pending() is True
+
+
+def test_a_cut_out_request_replaces_a_pending_brake():
+    latches = PhaseLatches()
+    latches.set_emergency_request("brake", ErrorRecord("a", "locked_foreign_entry"))
+    latches.set_emergency_request("cut_out", ErrorRecord("b", "overrun_entry"))
+    assert latches.emergency_request == "cut_out"
+
+
+def test_a_brake_request_never_replaces_a_pending_cut_out():
+    latches = PhaseLatches()
+    latches.set_emergency_request("cut_out", ErrorRecord("a", "overrun_entry"))
+    latches.set_emergency_request("brake", ErrorRecord("b", "locked_foreign_entry"))
+    assert latches.emergency_request == "cut_out"
+
+
+def test_set_emergency_request_rejects_an_unknown_kind():
+    latches = PhaseLatches()
+    with pytest.raises(ValueError):
+        latches.set_emergency_request("stop", ErrorRecord("x", "overrun_entry"))
+    assert latches.emergency_request is None
+
+
+def test_set_emergency_request_emits_a_warning_latch_event():
+    seen = []
+    latches = PhaseLatches()
+    latches.notify = lambda message, **kw: seen.append((message, kw))
+    latches.set_emergency_request("cut_out", ErrorRecord("x", "overrun_entry"))
+    assert len(seen) == 1
+    _, kw = seen[0]
+    assert kw["operation"] == "set_emergency_request"
+    assert kw["kind"] == "warning"
+    assert kw["latch_event"] is True
+    assert kw["payload"]["request"] == "cut_out"
+
+
+def test_clear_emergency_request_resets_it_to_none():
+    latches = PhaseLatches()
+    latches.set_emergency_request("brake", ErrorRecord("x", "locked_foreign_entry"))
+    latches.clear("emergency_request")
+    assert latches.emergency_request is None
     assert latches.is_any_pending() is False

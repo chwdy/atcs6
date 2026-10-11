@@ -284,13 +284,13 @@ class TrainController:
     # attached as `self.physics_sync` in `__post_init__`. External
     # callers read via `controller.physics_sync.queued_progress_reports`.
     #
-    # The four Action latches (`path_cancel_request`, `route_abort`,
-    # `power_off`, `route_deactivate`) are bundled into `PhaseLatches` and
-    # live on the `RouteHooks` sub-module attached as `self.route_hooks` in
-    # `__post_init__`. External callers reach them through
-    # `controller.route_hooks.phase_latches`. Writers go through the
-    # `set_*` helpers on that aggregate; consumers (`simulation.py`) call
-    # the matching `consume_*()` methods. See runtime_payloads.PhaseLatches.
+    # The five Action latches (`path_cancel_request`, `route_abort`,
+    # `power_off`, `route_deactivate`, `emergency_request`) are bundled into
+    # `PhaseLatches` and live on the `RouteHooks` sub-module attached as
+    # `self.route_hooks` in `__post_init__`. External callers reach them
+    # through `controller.route_hooks.phase_latches`. Writers go through the
+    # `set_*` helpers on that aggregate; each latch's own Action consumer step
+    # clears it with `clear(...)`. See runtime_payloads.PhaseLatches.
 
     # -------------------------------------------------------------------------
     # Operator Command Inbox (per design_new.md "Operator-command processing slot")
@@ -2039,6 +2039,8 @@ class TrainController:
             conditions.add(ControllerCondition.POWER_OFF_PENDING)
         if latches.path_cancel_request is not None:
             conditions.add(ControllerCondition.PATH_CANCEL_PENDING)
+        if latches.emergency_request is not None:
+            conditions.add(ControllerCondition.EMERGENCY_PENDING)
         if latches.route_abort:
             conditions.add(ControllerCondition.ROUTE_ABORT_PENDING)
         if latches.route_deactivate:

@@ -64,6 +64,7 @@ export interface PhaseLatches {
   route_abort: boolean;
   power_off: boolean;
   route_deactivate: boolean;
+  emergency_request: string | null;
 }
 
 export interface PathCompletionResult {

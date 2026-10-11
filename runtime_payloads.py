@@ -255,13 +255,15 @@ class PendingPathCancelRequest:
 
 @dataclass
 class PhaseLatches:
-    """Aggregate of the four Action latches owned by `TrainController`.
+    """Aggregate of the five Action latches owned by `TrainController`.
 
     Per design_new.md (Latch Table) each latch shares the same lifecycle rule: a
     writer sets a latch and its named Action consumer consumes-and-clears it once
-    the consumer's gate passes. All four carry the teardown/cancel requests.
-    Bundling all four fields plus their canonical writers / consumers into one
-    data class keeps the latch discipline in a single place.
+    the consumer's gate passes. The first four carry the teardown/cancel
+    requests; `emergency_request` carries an emergency brake or cut-out that
+    Observe decided and the Action command drain applies. Bundling all five
+    fields plus their canonical writers / consumers into one data class keeps
+    the latch discipline in a single place.
 
     The leaf writer is `set_path_cancel_request(...)`; the three composite
     setters (`set_route_abort`, `set_power_off`, `set_route_deactivate`) own
@@ -270,12 +272,13 @@ class PhaseLatches:
     value (`"operator_cancelled"`, `"power_off"`, `"revoked"`).
 
     Per design_new.md "Latch Table" (No shared consume accessor) this aggregate
-    exposes no `consume_*()` accessor for the four fields. Each is cleared by
+    exposes no `consume_*()` accessor for the five fields. Each is cleared by
     its own named Action consumer step, and the consume-side event is emitted
     by that step's own consume-side call (`PathDispatcher.cancel_path(...)`,
-    `RouteExecutor.remove_train_route_run(...)`, or
-    `TrainController.complete_power_off()`) per the Latch consumption events
-    table.
+    `RouteExecutor.remove_train_route_run(...)`,
+    `TrainController.complete_power_off()`, or the `eb.activate()` /
+    `eb.activate_cut_out()` call the command drain makes) per the Latch
+    consumption events table.
 
     The cross-field side effect of `power_off` (disengaging
     `TrainController.ato.engaged`) does NOT live here — that is a controller
@@ -286,6 +289,8 @@ class PhaseLatches:
     route_abort: bool = False
     power_off: bool = False
     route_deactivate: bool = False
+    #: `"brake"` or `"cut_out"` (design_new.md Latch Table row `e9c7`).
+    emergency_request: Optional[str] = None
 
     #: Emit hook onto the one `NotificationCenter` stream, attached by
     #: `RouteHooks` to `controller.notifications.emit`. Injected rather than
@@ -456,17 +461,47 @@ class PhaseLatches:
                 ErrorRecord(reason, "revoked"), _KIND_INFO
             )
 
+    def set_emergency_request(self, kind: str, error: ErrorRecord) -> None:
+        """Leaf writer for `emergency_request` (design_new.md Latch Table row
+        `e9c7`).
+
+        Observe calls it for the locked-foreign-entry brake (`"brake"`) and the
+        overrun cut-out (`"cut_out"`); the Action command drain applies it. A
+        `"cut_out"` replaces a pending `"brake"`; a `"brake"` never replaces a
+        pending `"cut_out"`, because the cut-out is the faster stop.
+        """
+        if kind not in ("brake", "cut_out"):
+            raise ValueError(f"unknown emergency request kind: {kind!r}")
+        if error is None:
+            raise ValueError("every emergency request must carry an ErrorRecord")
+        if self.emergency_request == "cut_out" and kind == "brake":
+            return
+        self.emergency_request = kind
+        self._emit(
+            "set_emergency_request",
+            f"emergency {kind.replace('_', ' ')} requested by {error.origin}"
+            + (f": {error.text}" if error.text else ""),
+            kind=_KIND_WARNING,
+            error=error,
+            payload={
+                "latch": "emergency_request",
+                "request": kind,
+                "origin": error.origin,
+            },
+        )
+
     # ------------------------------------------------------------------
     # Read predicates
     # ------------------------------------------------------------------
 
     def is_any_pending(self) -> bool:
-        """True if any of the four latches is currently set."""
+        """True if any of the five latches is currently set."""
         return (
             self.path_cancel_request is not None
             or self.route_abort
             or self.power_off
             or self.route_deactivate
+            or self.emergency_request is not None
         )
 
     def is_route_teardown_pending(self) -> bool:
@@ -485,13 +520,14 @@ class PhaseLatches:
     # ------------------------------------------------------------------
 
     # Per design_new.md "Latch Table" (No shared consume accessor) there is no
-    # `consume_*()` accessor for these four fields — `TrainController
+    # `consume_*()` accessor for these five fields — `TrainController
     # .consume_service_stop()` is the only one in v1, and it owns the one latch
     # outside this aggregate. Each field is cleared by its own named Action
     # consumer step through `clear(...)` below, and the consume-side event is
     # emitted by that step's own consume-side call, not from here: `cancel_path`
     # for `path_cancel_request`, `remove_train_route_run` for `route_abort` and
-    # `route_deactivate`, and `complete_power_off` for `power_off` (Latch
+    # `route_deactivate`, `complete_power_off` for `power_off`, and the drain's
+    # `eb.activate()` / `eb.activate_cut_out()` for `emergency_request` (Latch
     # consumption events).
 
     def clear(self, field_name: str) -> None:
@@ -506,11 +542,11 @@ class PhaseLatches:
             "route_abort",
             "power_off",
             "route_deactivate",
+            "emergency_request",
         ):
             raise ValueError(f"{field_name} is not a PhaseLatches field")
-        setattr(
-            self, field_name, None if field_name == "path_cancel_request" else False
-        )
+        optional_fields = ("path_cancel_request", "emergency_request")
+        setattr(self, field_name, None if field_name in optional_fields else False)
 
 
 # =============================================================================

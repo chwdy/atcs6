@@ -2759,18 +2759,24 @@ class TrainPhysics:
         if not possible_exits:
             return None
 
-        # If train has a path, follow the path — unless it has been cut out. A
-        # cut-out train is stopped and the detector has led it onto the block it
-        # overran past its authority end; the reconcile snap must follow past that
-        # end so the overrun block joins the calculated span and the head reaches
-        # its seam (design_new.md "Emergency cut-out"; "Block occupancy detection",
-        # An overrun entry or a conflict raises the emergency cut-out). The
-        # path-follow cap below would otherwise stop the forward walk at the
-        # authority end. This only affects the reconcile walk: a cut-out train
-        # moves zero distance, so its ordinary movement takes no exit here.
+        # If train has a path, follow the path — unless it has been cut out, or
+        # Observe has latched a cut-out request for it on this read. Either way
+        # the detector has led it onto the block it overran past its authority
+        # end; the reconcile snap must follow past that end so the overrun block
+        # joins the calculated span and the head reaches its seam on the same
+        # read, before Action applies the request (design_new.md "Emergency
+        # cut-out"; "Block occupancy detection", An overrun entry or a conflict
+        # raises the emergency cut-out). The path-follow cap below would
+        # otherwise stop the forward walk at the authority end. Past that end the
+        # path offers no next tile anyway, so ordinary movement is unaffected.
         train = self._get_train()
         path_tiles = self._get_path_tiles()
-        cut_out = bool(getattr(getattr(self.controller, "eb", None), "cut_out", False))
+        eb = getattr(self.controller, "eb", None)
+        hooks = getattr(self.controller, "route_hooks", None)
+        latches = getattr(hooks, "phase_latches", None)
+        cut_out = bool(getattr(eb, "cut_out", False)) or (
+            getattr(latches, "emergency_request", None) == "cut_out"
+        )
         if train and path_tiles and not cut_out:
             if (path_tiles[-1][0], path_tiles[-1][1]) == tile:
                 return None

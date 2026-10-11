@@ -64,9 +64,9 @@ class EBWorkflow:
         A cut-out (``cut_out=True``) performs every effect above and additionally
         sets ``cut_out = True`` — the one difference an emergency cut-out adds to
         an emergency brake (design_new.md "Emergency cut-out"). The method itself
-        carries no environment gate, so the Observe overrun/conflict trigger runs
-        in every environment; the operator-initiated cut-out's hardware-only gate
-        lives on the operator command path.
+        carries no environment gate, so the cut-out request Observe latches on an
+        overrun is applied in every environment; the operator-initiated
+        cut-out's hardware-only gate lives on the operator command path.
         """
         kind_label = "emergency cut-out" if cut_out else "emergency brake"
         if self.active:
@@ -124,9 +124,9 @@ class EBWorkflow:
         every submode instead of braking down the ``emergency_brake_rate`` curve.
         The acceptance gate is ``active == False``, the same duplicate-rejection
         as ``activate()``; it has no motion-state or OFF gate, and the method
-        carries no environment gate. Raised by the operator command drain (slot
-        7, hardware-only) and by Observe on an ``overrun_entry`` or ``conflict``
-        attribution result (ungated).
+        carries no environment gate. Called by the operator command drain (slot
+        7, hardware-only) and, at the end of the drain, for a cut-out request
+        Observe latched on an ``overrun_entry`` attribution result (ungated).
         """
         return self._activate(cut_out=True)
 
