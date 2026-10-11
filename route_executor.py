@@ -3981,6 +3981,19 @@ class RouteExecutor:
         # (design_new.md "Route deletion waits for live teardown").
         self.finalize_pending_route_deletions()
 
+    def end_running_runs(self) -> None:
+        """Move every `RUNNING` run to history as `DEACTIVATED`, keeping each
+        route's assignments (design_new.md "Activation starts the railway
+        over"). Called only by environment activation, between ticks while
+        operation is stopped; the next eligible Plan after the train is powered
+        on allocates a fresh run.
+        """
+        for exec_state in list(self.execution_states.values()):
+            if exec_state.current_route_status != RouteRunStatus.RUNNING:
+                continue
+            exec_state.current_route_status = RouteRunStatus.DEACTIVATED
+            self._archive_run(exec_state)
+
     def request_route_deletion(self, route_id: str) -> None:
         """Record `route_id` in the pending-deletion stash (design_new.md
         "Route deletion waits for live teardown").

@@ -1498,6 +1498,11 @@ def register(app, state: AppState) -> None:
         selected = operation_environment.get_selected()
         with state.simulation_lock:
             blocked = _activate_locked(selected)
+            if blocked is None:
+                # design_new.md "Activation starts the railway over": before the
+                # new environment's first tick, drop live paths, running runs,
+                # and train power; keep the layout, setup, trains, and routes.
+                state.sim_controller.start_railway_over()
         if blocked is not None:
             return jsonify(blocked), 409
         return jsonify({

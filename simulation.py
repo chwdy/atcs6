@@ -42,7 +42,7 @@ from typing import (
 from unidentified_trains import UnidentifiedTrainTracker
 from network import RailwayNetwork
 from train import Train, TrainCar
-from enums import CommandResult, Direction, HandlePosition, OperationMode
+from enums import CommandResult, Direction, HandlePosition, OperationMode, PathStatus
 import operation_environment
 from block_power import BlockPowerController
 from switch_power import (
@@ -3392,6 +3392,42 @@ class SimulationController(SwitchOutputOwner):
             ),
             event_time=time.time(),
         )
+
+    def start_railway_over(self) -> None:
+        """Drop the railway's runtime state after a successful environment
+        activation (design_new.md "Activation starts the railway over").
+
+        Runs between ticks while operation is stopped, so it resets state
+        directly rather than through latches. It keeps the layout, the Hardware
+        Setup, every train with its last position, and every `Route` with its
+        assignments, and drops the rest in this order:
+
+          1. every live `Path`, cancelled with `error.origin = "revoked"`, which
+             releases its block reservations, locks, and switch claims;
+          2. every `RUNNING` `RouteRun`, moved to history as `DEACTIVATED` with
+             the route assignment kept, so a fresh run starts once the train is
+             powered on again;
+          3. every train's power, through `TrainController.complete_power_off()`.
+             A train still rolling stops by itself on its next running pass.
+
+        Pending latches and held assignment requests are left alone.
+        """
+        dispatcher = self.path_dispatcher
+        if dispatcher is not None:
+            live_path_ids = [
+                path_id
+                for path_id, path in dispatcher.paths.items()
+                if path.status == PathStatus.ACTIVE
+            ]
+            for path_id in live_path_ids:
+                dispatcher.cancel_path(
+                    path_id,
+                    ErrorRecord("environment activated", "revoked"),
+                    kind=Kind.INFO,
+                )
+        self.route_executor.end_running_runs()
+        for controller in self.controllers.values():
+            controller.complete_power_off()
 
     def clear_failed_runtime(self) -> FatalPhysicalEntryConflict:
         """Release the halt so the session can carry on, with every train off.
