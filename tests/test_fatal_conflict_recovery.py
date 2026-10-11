@@ -8,8 +8,10 @@ operator goes and sorts the conflict out on the layout, and the whole layout
 state should still be there when they come back.
 
 `SimulationController.clear_failed_runtime()` reopens the gate. It does not
-resume mid-motion: every train is written straight to OFF at zero speed, so
-nothing moves until the operator powers it back up deliberately.
+resume mid-motion: every train is written straight to OFF, so nothing moves
+until the operator powers it back up deliberately. It writes no speed: a train
+the halt froze while rolling stops by itself on its next running pass, whose
+OFF branch reports speed 0 (design_new.md step `7c41`).
 """
 
 import pytest
@@ -75,9 +77,16 @@ def test_clearing_leaves_every_train_off_and_stopped():
 
     assert not controller.powered
     assert controller.ops.handle_position is HandlePosition.N
-    assert controller.physics_sync.current_speed_kmh == 0.0
     assert controller.eb.active is False
     assert controller.ato.engaged is False
+    # The clear writes no speed; the frozen value stands until the next pass.
+    assert controller.physics_sync.current_speed_kmh == 42.0
+
+    # The next running pass takes the OFF branch, which reports speed 0: the
+    # rails float, so the train stops by itself.
+    tick(sim, times=1)
+    assert controller.physics_sync.current_speed_kmh == 0.0
+    assert not controller.powered
 
 
 def test_the_runtime_ticks_again_after_clearing():
@@ -149,3 +158,31 @@ def test_the_service_layer_turns_an_unhalted_runtime_into_a_validation_error():
 
     with pytest.raises(ValidationError, match="not halted"):
         train_service.clear_failed_runtime(_State(network, sim))
+
+
+def test_a_train_rolling_on_a_live_path_keeps_it_after_the_clear():
+    """design_new.md step `7c41` and "Authority to run is live reservation": an
+    OFF train keeps the path the halt left live until an ordinary cancel or
+    route teardown ends it, and stops by itself on its next running pass."""
+    from tests.test_reserved_block_taken_by_another_train import (
+        build_abc,
+        rolling_train_with_authority_to_c,
+    )
+
+    network = build_abc()
+    sim, dispatcher, controller, train, path_id = rolling_train_with_authority_to_c(
+        network
+    )
+    assert controller.physics_sync.current_speed_kmh > 1.0
+    sim.enter_failed_runtime(a_conflict(train_id="T1", block_id="BLK_B"))
+
+    sim.clear_failed_runtime()
+
+    assert not controller.powered
+    assert dispatcher.active_path_id_by_train("T1") == path_id
+
+    sim.update(0.1)
+
+    assert controller.physics_sync.current_speed_kmh == 0.0
+    assert not controller.powered
+    assert dispatcher.active_path_id_by_train("T1") == path_id

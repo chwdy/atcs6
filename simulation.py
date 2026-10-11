@@ -3404,8 +3404,13 @@ class SimulationController(SwitchOutputOwner):
         a gate that reopens rather than a session-ending error.
 
         Reopening it does not resume mid-motion. Every train is written straight
-        to `OFF` at zero speed with its handle at `N` and any EB cleared, so
-        nothing moves until the operator powers it back up deliberately. The OFF
+        to `OFF` with its handle at `N` and any EB cleared, so nothing moves
+        until the operator powers it back up deliberately. No speed is written:
+        a train the halt froze while rolling stops by itself on its next running
+        pass, whose OFF branch reports speed 0 (design_new.md step `7c41`). Each
+        train keeps its live path and its route run until an ordinary cancel or
+        route teardown ends it (design_new.md "Authority to run is live
+        reservation"). The OFF
         transition goes through `TrainController.complete_power_off()` — the
         canonical `OFF` writer for every entry but the startup default — rather
         than a queued `power_off_cmd()`, for two reasons: the command is
@@ -3430,10 +3435,6 @@ class SimulationController(SwitchOutputOwner):
         payload = self.failed_runtime_payload
         for train_id, controller in self.controllers.items():
             controller.complete_power_off()
-            # The halt froze each train at whatever speed it was carrying, and
-            # `complete_power_off()` writes no speed; zero it here so nothing
-            # resumes mid-motion.
-            controller.physics_sync.current_speed_kmh = 0.0
             # This fan-out is not an Action pass, so step `26f5` does not run
             # for it — end every open calibration run here instead (design_new.md
             # "Speed calibration", Where it runs: a fatal-halt clear ends every
@@ -3454,7 +3455,7 @@ class SimulationController(SwitchOutputOwner):
             kind=Kind.INFO,
             message=(
                 "fatal conflict cleared by the operator; every train is off "
-                "and the runtime is running again"
+                "and the runtime is no longer halted"
             ),
             entities=(
                 [train_ref(payload.incoming_train_id)]

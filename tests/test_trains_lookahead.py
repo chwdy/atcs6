@@ -265,11 +265,11 @@ class TestTrainAssignedPathSerializationBugFix:
     """
 
 
-    def test_train_physics_power_off_does_not_update_speed(self):
-        """TrainPhysics.tick should not update speed when power is off.
-
-        v1: controller owns canonical current_speed_kmh; physics reads from
-        controller.physics_sync.current_speed_kmh, not controller.physics_sync.current_speed_kmh.
+    def test_train_physics_power_off_reports_zero_speed(self):
+        """An OFF train's movement pass reports speed 0: its rails float and a
+        model locomotive stops as soon as its power is removed (design_new.md
+        "Movement feedback runs only when movement is calculated; detection
+        feedback always runs", Running pass, OFF controller).
         """
         network = RailwayNetwork()
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
@@ -279,16 +279,12 @@ class TestTrainAssignedPathSerializationBugFix:
         sim = SimulationController(network)
         controller = sim._get_or_create_controller(train)
         physics = sim._get_or_create_physics(train)
-        # v1: write canonical speed onto the controller; controller.physics_sync.current_speed_kmh is mirrored.
         controller.physics_sync.current_speed_kmh = 10.0
-        controller.physics_sync.current_speed_kmh = 10.0
+        assert not controller.powered
 
-        initial_speed = controller.physics_sync.current_speed_kmh
         physics.tick(0.1)
 
-        # Speed should remain unchanged when power is off
-        assert controller.physics_sync.current_speed_kmh == initial_speed
-        assert controller.physics_sync.current_speed_kmh == initial_speed
+        assert controller.physics_sync.current_speed_kmh == 0.0
 
 
 

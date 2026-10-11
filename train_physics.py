@@ -328,13 +328,16 @@ class TrainPhysics:
 
         # 1. Skip movement if powered off, but still emit the canonical
         # no-boundary callback so controller-owned span/speed storage stays
-        # canonical even on OFF ticks. Driving the blocks to 0 V is the voltage
-        # half's job (`apply_track_voltage()`).
+        # canonical even on OFF ticks. The reported speed is 0: an OFF train's
+        # rails float and a model locomotive stops as soon as its power is
+        # removed — the same momentum-free stop the emergency cut-out uses
+        # (design_new.md "Movement feedback runs only when movement is
+        # calculated; detection feedback always runs", Running pass, OFF
+        # controller). So a train turned OFF while rolling stops by itself here.
+        # Driving the blocks to 0 V is the voltage half's job
+        # (`apply_track_voltage()`).
         if not controller.power_on:
-            current_speed_kmh = self._read_current_speed(train)
-            self._emit_final_no_boundary_callback(
-                controller, train, event_time, current_speed_kmh
-            )
+            self._emit_final_no_boundary_callback(controller, train, event_time, 0.0)
             return
 
         # Maintenance counter: accumulate powered-on run time (see design_new.md
