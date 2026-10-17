@@ -24,6 +24,15 @@ STOPPED_SPEED_THRESHOLD_KMH: float = 0.1
 TRACK_END_SAFETY_MARGIN_CM: float = 25.0
 PLATFORM_SAFETY_MARGIN_CM: float = 5.0
 
+# Stop-arrival tolerance per design_new.md step `8df5` (Stop-arrival check),
+# arrival condition 4a. A train that braked to rest at the end of its
+# reservation stops a fraction of a centimetre short of the braking target
+# (`target_stop_cm`), because a discrete tick cannot land exactly on it: under
+# 0.4 cm at the 0.1 s runtime tick, under 1 cm at the 1 s tick cap. 4a counts the
+# train as arrived only while `target_stop_cm` is at or below this value, so a
+# train standing with real clearance left in front of it has not arrived.
+RESERVATION_STOP_ARRIVAL_TOLERANCE_CM: float = 2.0
+
 # Flank protection global per design_new.md "Flank Protection Computation".
 # Used at switch placement time to decide which neighbours require mutual
 # locking.

@@ -52,6 +52,7 @@ from constants import (
     BRAKING_LOCK_LIMIT_MARGIN_KMH,
     CAUTION_SPEED_LIMIT_KMH,
     PLATFORM_SAFETY_MARGIN_CM,
+    RESERVATION_STOP_ARRIVAL_TOLERANCE_CM,
     STOPPED_SPEED_THRESHOLD_KMH,
     TRACK_END_SAFETY_MARGIN_CM,
 )
@@ -2059,21 +2060,25 @@ class TrainController:
         distance is too short to grant additional positive clearance after
         applying the controller safety margin" (it braked to rest at the
         safety-margin boundary short of that block — common when the
-        authority-end block is very short or zero-length). Both cases surface
-        identically at distance 0: the lookahead curve's dominant restriction
-        becomes the path-end stop, so its reason code is `RESERVATION_STOP`. The
-        literal `atc_limit == 0` the spec mentions is unreachable under
-        forward-Euler integration (a step cannot land exactly on the boundary,
-        so the value reads a few km/h); the `RESERVATION_STOP` reason code is the
-        reachable expression of the same intent.
+        authority-end block is very short or zero-length). The literal
+        `atc_limit == 0` is unreachable under forward-Euler integration (a step
+        cannot land exactly on the boundary, so the value reads a few km/h), so
+        the second case is read from the lookahead's `target_stop_cm` — the
+        distance left to the braking target — rather than from the limit.
 
         The gate fires on `is_stopped()` plus **either** of the step-`8df5`
         arrival conditions:
           - **4a** — the distance-0 lookahead's dominant restriction is the
-            authority-end stop (reason code `RESERVATION_STOP`). This covers a
-            train braked to rest at the safety-margin boundary short of a very
-            short or zero-length final block; requiring head occupancy alone
-            would strand it, since it never enters that block.
+            authority-end stop (reason code `RESERVATION_STOP`) **and**
+            `target_stop_cm` is at or below
+            `RESERVATION_STOP_ARRIVAL_TOLERANCE_CM`. This covers a train braked
+            to rest at the safety-margin boundary short of a very short or
+            zero-length final block; requiring head occupancy alone would strand
+            it, since it never enters that block. The reason code alone is not
+            enough: it reads `RESERVATION_STOP` whenever the reservation end is
+            in view, so a train still standing at the start of a fresh
+            reservation — a manual train before the driver notches up, or a
+            paused ATO train — would otherwise count as arrived.
           - **4b** — the head is physically in the authority-end (terminal)
             block. This covers a train held at rest inside its target block by
             something other than the authority end, such as a manual driver's
@@ -2092,13 +2097,18 @@ class TrainController:
         plan = self.path_projection.received_path_plan
         if plan is None:
             return False
-        # 4a: the ATO curve has collapsed to the path-end stop at distance 0, so
-        # the dominant restriction's reason code is RESERVATION_STOP.
+        # 4a: the dominant distance-0 restriction is the path-end stop and the
+        # braking target is (within one tick's overshoot) already reached.
         payload = self._compute_canonical_lookahead()
-        curves = (payload or {}).get("lookahead", {}).get("speed_curves") or []
-        reason_4a = bool(curves) and (
-            curves[0].get("atc_limit_reason_code")
+        lookahead = (payload or {}).get("lookahead", {})
+        curves = lookahead.get("speed_curves") or []
+        target_stop_cm = lookahead.get("target_stop_cm")
+        reason_4a = (
+            bool(curves)
+            and curves[0].get("atc_limit_reason_code")
             == AtcLimitReasonCode.RESERVATION_STOP.value
+            and target_stop_cm is not None
+            and target_stop_cm <= RESERVATION_STOP_ARRIVAL_TOLERANCE_CM
         )
         # 4b: the head is physically in the authority-end (terminal) block.
         # Derive the head tile from (cab, span) via `_get_head_tile()` and map it
