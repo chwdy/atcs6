@@ -150,6 +150,7 @@ class FakeCh347Device:
     def open(self) -> None:
         self._raise_if_fault("open_error")
         self.opened = True
+        self.closed = False
 
     def close(self) -> None:
         self.closed = True
@@ -173,6 +174,7 @@ class FakeCh347Device:
 
     # -- I2C -------------------------------------------------------------
     def i2c_write(self, addr: int, data: bytes) -> bool:
+        self._raise_if_closed("i2c_write")
         self._raise_if_fault("i2c_write_error")
         if "stuck_i2c_output" in self._active_transport_faults():
             return True
@@ -193,6 +195,7 @@ class FakeCh347Device:
         return True
 
     def i2c_read(self, addr: int, length: int) -> Tuple[bool, bytes]:
+        self._raise_if_closed("i2c_read")
         self._raise_if_fault("i2c_read_error")
         if addr not in self.present:
             return False, b""
@@ -214,17 +217,20 @@ class FakeCh347Device:
         return True, bytes(length)   # benign zeros; enough for a MODE1 probe
 
     def i2c_scan(self) -> List[int]:
+        self._raise_if_closed("i2c_scan")
         self._raise_if_fault("i2c_read_error")
         return sorted(self.present)
 
     # -- SPI shift registers --------------------------------------------
     def latch_out(self, data: bytes, select: str) -> None:
+        self._raise_if_closed("latch_out")
         self._raise_if_fault("shift_write_error")
         if "stuck_shift_output" in self._active_transport_faults():
             return
         self.latched[select] = bytes(data)
 
     def load_in(self, count: int, select: str) -> bytes:
+        self._raise_if_closed("load_in")
         self._raise_if_fault("shift_read_error")
         raw = bytes(self.inputs.get(select, bytearray(count)))
         return (raw + bytes(count))[:count]
@@ -259,6 +265,17 @@ class FakeCh347Device:
 
     def fault_status(self) -> Dict[str, bool]:
         return {kind: kind in self.faults for kind in sorted(self.ALLOWED_FAULTS)}
+
+    def _raise_if_closed(self, what: str) -> None:
+        """Refuse a bus operation after `close()`, with `Ch347Device`'s message.
+
+        A device that kept answering after close would hide, in Virtual
+        Hardware, a write sent through a handle Real Hardware has already let
+        go of -- which is how a shutdown once reported the outputs safed in
+        Virtual Hardware and failed to safe them on the rig.
+        """
+        if self.closed:
+            raise RuntimeError(f"{what}: the CH347 is not open")
 
     def _raise_if_fault(self, operation_fault: str) -> None:
         active = self._active_transport_faults()

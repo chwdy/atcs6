@@ -104,6 +104,24 @@ def test_virtual_device_can_inject_transport_and_stuck_output_faults():
     assert 0.49 < dev.duty_cycle(0x40, 0) < 0.51
 
 
+def test_virtual_device_refuses_the_bus_after_close_like_the_real_one():
+    """`Ch347Device` refuses every transaction once closed. The fake must too,
+    or Virtual Hardware reports a write through a closed handle as landed."""
+    dev = FakeCh347Device(present_addresses={0x40})
+    dev.open()
+    dev.close()
+
+    with pytest.raises(RuntimeError, match="i2c_write: the CH347 is not open"):
+        dev.i2c_write(0x40, b"\x00")
+    with pytest.raises(RuntimeError, match="latch_out: the CH347 is not open"):
+        dev.latch_out(b"\x00", "cs0")
+    with pytest.raises(RuntimeError, match="load_in: the CH347 is not open"):
+        dev.load_in(1, "cs1")
+
+    dev.open()
+    assert dev.i2c_write(0x40, b"\x00") is True
+
+
 def test_virtual_transport_fault_enters_the_runtime_hardware_failure_path():
     from tests.test_unidentified_trains import build_sim
 

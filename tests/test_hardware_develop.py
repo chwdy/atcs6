@@ -27,8 +27,7 @@ from hardware.fake import FakeCh347Device
 
 @pytest.fixture(autouse=True)
 def _isolated_hw_config(tmp_path, monkeypatch):
-    """Point the store's file at a temp path, reset the singleton, and stub
-    atexit so factory tests do not leak process-exit handlers."""
+    """Point the store's file at a temp path and reset the singleton."""
     monkeypatch.setattr(
         hardware_config, "CONFIG_PATH", str(tmp_path / "hardware_config.json")
     )
@@ -37,7 +36,6 @@ def _isolated_hw_config(tmp_path, monkeypatch):
         "ENVIRONMENT_PATH",
         str(tmp_path / "operation_environment.json"),
     )
-    monkeypatch.setattr(hardware_config.atexit, "register", lambda *a, **k: None)
     hardware_config.reset_to_defaults()
     yield
     from hardware import commission

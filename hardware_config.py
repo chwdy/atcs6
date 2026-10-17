@@ -24,7 +24,6 @@ JSON file (`CONFIG_PATH`) written only through the `PUT /api/hardware/config`
 API so the selection survives the restart that applies it.
 """
 
-import atexit
 from dataclasses import dataclass, field, fields
 import json
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
@@ -1643,7 +1642,6 @@ def build_session_interfaces(
         _session_device = device
         _live_device = device
         note_activated_setup(cfg)
-        atexit.register(device.close)
         return interfaces
 
     try:
@@ -1688,12 +1686,14 @@ def build_session_interfaces(
             f"failed to initialize hardware chips: {exc}"
         ) from exc
 
-    # The device holds a USB handle for the life of the session; release it at
-    # process exit, after the safe-state zeroing that other atexit hooks issue
-    # (they are registered later, so they run first under atexit's LIFO order).
+    # The device holds a USB handle for the life of the session. It is closed
+    # only through `close_live_device`: by the next activation, by commissioning
+    # or the occupancy bench taking the rig, or at process exit by shutdown.py
+    # once the safe state has been written through it. No atexit hook is registered here -- atexit runs
+    # the newest hook first, so a close registered by an activation after boot
+    # would run before the shutdown safe state and leave every write refused.
     # Publishing it as the live device is what lets the commissioning tests run
     # against the rig instead of failing to open a second handle for it.
     _live_device = device
     note_activated_setup(cfg)
-    atexit.register(device.close)
     return interfaces
