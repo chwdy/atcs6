@@ -757,7 +757,7 @@ def ato_go(state: AppState, train_id: str) -> CommandResult:
     """Start ATO driving so the train drives toward its destination.
 
     The canonical `/ato/go` operator command (design_new.md "ATO go"):
-    accepted only when `train_status == ATO`.
+    accepted only when `train_status == ATO` and the train has a route assigned.
     """
     return _controller(state, require_train(state, train_id)).commands.ato_go()
 

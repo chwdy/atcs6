@@ -62,7 +62,8 @@ class OperatorCommands:
 
         # ATO engage bit — whether the operator has started ATO driving with
         # `/ato/go` (design_new.md "ATO status", `commands.engaged`). Written by
-        # `ato_go()` / `ato_stop()` (accepted only when `train_status == ATO`),
+        # `ato_go()` / `ato_stop()` (accepted only when `train_status == ATO`;
+        # `ato_go()` also needs a route assigned to the train),
         # cleared by any `control_mode` write (`_write_control_mode`) and by a
         # new route assignment. Read only in ATO, by the derived `ato_status`
         # and the ATO driving rule. Serialized under the key `"engaged"`.
@@ -500,18 +501,28 @@ class OperatorCommands:
     def ato_go(self) -> CommandResult:
         """Start ATO driving (design_new.md "ATO go").
 
-        Accepted only when `train_status == ATO`; otherwise (not powered, under
-        EB, or in manual) it returns `success=False` and changes nothing. On
-        acceptance it sets `commands.engaged = True` (the canonical `/ato/go`
-        writer). It creates no reservation itself: the next Plan pass acquires
-        reservation once the ATO engage gate is open. Idempotent while already
-        engaged.
+        Accepted only when `train_status == ATO` and the train has a route
+        assigned (`RouteExecutor.assigned_route_id_for(train_id)` is not None);
+        otherwise (not powered, under EB, in manual, or with no route to drive)
+        it returns `success=False` and changes nothing. Like a real ATO start
+        button, Go is offered only once there is a trip to drive: with no route
+        the engage bit would drive nothing, and the next route assignment clears
+        it anyway. On acceptance it sets `commands.engaged = True` (the
+        canonical `/ato/go` writer). It creates no reservation itself: the next
+        Plan pass acquires reservation once the ATO engage gate is open.
+        Idempotent while already engaged.
         """
         from enums import TrainStatus
 
         c = self._c
         if c.ops.train_status != TrainStatus.ATO:
             return CommandResult(False, "ATO go requires the train in ATO mode")
+        route_executor = c.route_executor
+        if (
+            route_executor is None
+            or route_executor.assigned_route_id_for(c.train_id) is None
+        ):
+            return CommandResult(False, "ATO go requires a route assigned to the train")
         self.engaged = True
         return CommandResult(True, "ATO go")
 

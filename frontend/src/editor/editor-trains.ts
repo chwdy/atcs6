@@ -9,7 +9,7 @@
 // `updateCabButtons`; keep those names.
 
 import { stateManager } from '../lib/state-manager';
-import { trainDisplayStatus } from '../lib/train-status';
+import { atoGoUnavailableReason, trainDisplayStatus } from '../lib/train-status';
 import { formatSpeedReadout, formatATOEta, formatSimClock, middleTruncate } from './train-format';
 import { showToast } from '../lib/toast';
 import { copyIdButton } from '../lib/copy-id';
@@ -1175,6 +1175,7 @@ export class TrainEditorHandler {
     // nothing detected, so the panel says so and offers removal.
     const presenceUnknown = controller?.presence_unknown === true;
     const atoEngaged = controller?.engaged ?? false;
+    const atoGoBlockedReason = atoGoUnavailableReason(controller, stateManager.getAssignedRouteId(trainId));
     const handleClass = this.getHandleVisualClass(handlePosition);
     const obcStateClass = this.getObcStateClass(powerOn, emergencyActive);
     const manualModeType = controller?.manual_mode_type || 'simulation';
@@ -1364,7 +1365,7 @@ export class TrainEditorHandler {
 
                     <div id="ato-controls" class="tc-branch tc-ato-display ${isATO ? '' : 'hidden'}">
                         <div class="tc-actions tc-ato-actions">
-                            <button id="train-ato-go-btn" class="tc-btn tc-btn-success tc-btn-hero" ${!powerOn || atoEngaged ? 'disabled' : ''}>
+                            <button id="train-ato-go-btn" class="tc-btn tc-btn-success tc-btn-hero" ${atoGoBlockedReason ? `disabled title="${escapeAttr(atoGoBlockedReason)}"` : ''}>
                                 <span class="tc-btn-glyph">▶</span><span class="tc-btn-text">Go</span>
                             </button>
                             <button id="train-ato-stop-btn" class="tc-btn tc-btn-danger tc-btn-hero" ${!atoEngaged ? 'disabled' : ''}>
@@ -2548,15 +2549,20 @@ export class TrainEditorHandler {
     const clearDirBtn = document.getElementById('train-clear-dir-btn') as HTMLButtonElement | null;
     if (clearDirBtn) clearDirBtn.disabled = state !== 'standby';
 
-    // ATO Go / Stop follow the controller's `engaged` bit (the ATO go/stop bit),
-    // with the same rule the panel draws them with. They are set here as well
-    // as at draw time so a Go or Stop takes effect on the buttons the moment
-    // the command reply or the next state update lands, instead of staying as
-    // they were when the panel opened.
+    // ATO Go / Stop follow the controller's `engaged` bit (the ATO go/stop bit)
+    // and, for Go, whether the train has a route to drive, with the same rule
+    // the panel draws them with. They are set here as well as at draw time so
+    // a Go, a Stop, or a route assignment takes effect on the buttons the
+    // moment the command reply or the next state update lands, instead of
+    // staying as they were when the panel opened.
     const atoEngaged = controller?.engaged ?? false;
+    const atoGoBlockedReason = atoGoUnavailableReason(controller, stateManager.getAssignedRouteId(train.id));
     const atoGoBtn = document.getElementById('train-ato-go-btn') as HTMLButtonElement | null;
     const atoStopBtn = document.getElementById('train-ato-stop-btn') as HTMLButtonElement | null;
-    if (atoGoBtn) atoGoBtn.disabled = !powerOn || atoEngaged;
+    if (atoGoBtn) {
+      atoGoBtn.disabled = atoGoBlockedReason !== null;
+      atoGoBtn.title = atoGoBlockedReason ?? '';
+    }
     if (atoStopBtn) atoStopBtn.disabled = !atoEngaged;
 
     const manualOnBtn = document.getElementById('train-manual-on-btn') as HTMLButtonElement | null;
