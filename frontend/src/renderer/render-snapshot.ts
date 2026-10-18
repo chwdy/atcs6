@@ -30,7 +30,6 @@ export interface TrainController {
   cab?: unknown;
   facing_direction?: unknown;
   control_mode?: unknown;
-  route_teardown_pending?: unknown;
   eb_active?: unknown;
   presence_unknown?: unknown;
   span?: ControllerSpan | null;
@@ -40,10 +39,28 @@ export interface DispatcherProgress {
   waiting_for_block_id?: unknown;
 }
 
-/** The slice of StateManager buildRenderSnapshot reads (both methods optional). */
+/** The operator status read model, as far as the renderer reads it. */
+export interface OperatorStatus {
+  pending_actions?: ReadonlyArray<{ latch?: string | null }> | null;
+}
+
+/** The slice of StateManager buildRenderSnapshot reads (every method optional). */
 export interface SnapshotStateManager {
   getController?(trainId: string): TrainController | null | undefined;
   getDispatcherProgress?(trainId: string): DispatcherProgress | null | undefined;
+  getOperatorStatus?(trainId: string): OperatorStatus | null | undefined;
+}
+
+/**
+ * Whether an operator route teardown — a route abort or a route deactivate —
+ * is waiting for the train to stop. Read from the train's pending actions
+ * (design_new.md "Pending actions"), so the renderer keeps no copy of the
+ * latch rules.
+ */
+export function routeTeardownPending(status: OperatorStatus | null | undefined): boolean {
+  return (status?.pending_actions || []).some(
+    (p) => p?.latch === 'route_abort' || p?.latch === 'route_deactivate'
+  );
 }
 
 export interface SnapshotNetwork {
@@ -113,7 +130,7 @@ export function buildRenderSnapshot(
       cab: controller.cab ?? null,
       facing: controller.facing_direction ?? null,
       controlMode: controller.control_mode ?? null,
-      teardownPending: controller.route_teardown_pending === true,
+      teardownPending: routeTeardownPending(stateManager.getOperatorStatus?.(train.id)),
       ebActive: controller.eb_active === true,
       isUnidentified: train.is_unidentified === true,
       presenceUnknown: controller.presence_unknown === true,

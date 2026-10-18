@@ -32,3 +32,30 @@ export function atoGoUnavailableReason(controller: any, assignedRouteId: unknown
   if (!assignedRouteId) return 'Assign a route first';
   return null;
 }
+
+/**
+ * Why Start route cannot be pressed right now, or null when it can.
+ *
+ * Mirrors design_new.md "Start route": the server accepts it only when the
+ * train is stopped, has no EB latched, has no calibration run open, has no
+ * power-off pending, and has a route assigned. It powers an OFF train up,
+ * selects ATO, and engages it, so it is also pointless on an ATO train that is
+ * already engaged. `operatorStatus` is the train's entry in
+ * `operator_status_by_train_id`; its pending actions say whether a power-off
+ * is waiting.
+ */
+export function startRouteUnavailableReason(
+  controller: any,
+  assignedRouteId: unknown,
+  operatorStatus?: any
+): string | null {
+  const trainStatus = controller?.train_status || 'off';
+  if (!(controller?.is_stopped ?? true)) return 'Stop the train first';
+  if (trainStatus === 'eb') return 'Release the emergency brake first';
+  if (trainStatus === 'calibrating') return 'A calibration run is driving the train';
+  const pending = operatorStatus?.pending_actions || [];
+  if (pending.some((p: any) => p?.latch === 'power_off')) return 'A power-off is pending';
+  if (!assignedRouteId) return 'Assign a route first';
+  if (trainStatus === 'ato' && (controller?.engaged ?? false)) return 'The route is already running';
+  return null;
+}

@@ -85,6 +85,7 @@
 .tc-state-badge.train-state-station,
 .tc-state-badge.train-state-waiting { color: var(--info-color); border-color: var(--info-color); }
 .tc-state-badge.train-state-manual  { color: var(--warning-color); border-color: var(--warning-color); }
+.tc-state-badge.train-state-calibrating { color: var(--info-color); border-color: var(--info-color); }
 
 .tc-running-badge {
     font-size: 10px;
@@ -689,6 +690,24 @@
 .tc-banner {
     overflow: hidden;
     word-break: break-word;
+}
+
+/* Pending actions: what the train accepted but can only finish once it stops
+   (design_new.md "Pending actions"), listed under the hold-reason banner. */
+.tc-pending-actions {
+    margin: 6px 0 0;
+    padding-left: 16px;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+.tc-pending-actions[hidden] {
+    display: none;
+}
+
+/* Start route sits on its own row above the Power / Mode pair: it is the one
+   command that powers up, selects ATO and starts the assigned route. */
+.tc-start-route-row {
+    margin-bottom: 8px;
 }
 
 /* ============================================================================

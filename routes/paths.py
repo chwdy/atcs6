@@ -56,7 +56,15 @@ def register(app, state: AppState) -> None:
         route-abort latch for any current run so Action tears it down, and the
         next eligible Plan builds the path, passing the route's
         `manual_override` down the acquisition chain. Returns the new route_id.
+
+        A train with a calibration run open refuses route assignment, so it is
+        refused here before the one-off route is created, leaving no orphan
+        route behind (design_new.md "Route assignment writers").
         """
+        executor = state.sim_controller.route_executor if state.sim_controller else None
+        refusal = executor.calibration_refusal(train_id) if executor is not None else None
+        if refusal is not None:
+            raise ConflictError(refusal)
         route = train_route_service.create_route(
             state,
             name=f"Quick: {train_id} -> {destination_block_id}",

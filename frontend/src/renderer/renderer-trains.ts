@@ -25,6 +25,7 @@ import {
   DIRECTION_PREFERRED_QUADRANTS,
 } from '../lib/constants';
 import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
+import { routeTeardownPending } from './render-snapshot';
 
 // Train body fill, chosen by EB / route-teardown / control-mode state. The
 // dark border (the canvas ink color) is unchanged; only the inner fill is
@@ -244,7 +245,7 @@ export class RendererTrainHandler {
       cab: controller.cab ?? null,
       facing: controller.facing_direction ?? null,
       controlMode: controller.control_mode ?? null,
-      teardownPending: controller.route_teardown_pending === true,
+      teardownPending: routeTeardownPending(stateManager?.getOperatorStatus(train.id)),
       ebActive: controller.eb_active === true,
       isUnidentified: train.is_unidentified === true,
       presenceUnknown: (controller as { presence_unknown?: unknown }).presence_unknown === true,

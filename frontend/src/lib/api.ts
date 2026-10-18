@@ -225,6 +225,23 @@ export class API implements LayoutDataClient, SimClient {
   }
 
   /** Progress of the open pass; `{open: false}` when there is none. */
+  /** Every opening condition the train does not yet meet, for the panel's
+   *  readiness line: `{ready, unmet}` (design_new.md "Speed calibration",
+   *  Opening a run takes control of the train). */
+  async getCalibrationReadiness(
+    trainId: string,
+    kind: 'speed' | 'lighting',
+    measuredBlockId = ''
+  ): Promise<{ ready: boolean; unmet: string[] }> {
+    const query = new URLSearchParams({ kind });
+    if (measuredBlockId) query.set('measured_block_id', measuredBlockId);
+    return this._request(
+      `/trains/${trainId}/calibrate/readiness?${query.toString()}`,
+      {},
+      'getCalibrationReadiness'
+    );
+  }
+
   async getCalibration(trainId: string): Promise<any> {
     return this._request(`/trains/${trainId}/calibrate`, {}, 'getCalibration');
   }

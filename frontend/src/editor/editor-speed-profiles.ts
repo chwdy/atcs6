@@ -908,11 +908,12 @@ export class SpeedProfileEditorHandler {
             <button id="sp-cal-pick" class="btn btn-secondary btn-sm" title="Click the block on the layout">Pick on layout</button>
           </div>
           <div class="text-muted text-xs mb-8" id="sp-cal-stretch">Choose a block to see the stretch.</div>
+          <div class="text-xs mb-8" id="sp-cal-readiness"></div>
           <div id="sp-cal-progress" class="text-muted text-xs mb-8"></div>
         </div>
         <div class="app-modal-footer">
           <button class="btn btn-secondary btn-sm" id="sp-cal-close">Close</button>
-          <button class="btn btn-secondary btn-sm" id="sp-cal-takecontrol">Take control</button>
+          <button class="btn btn-secondary btn-sm hidden" id="sp-cal-stop">Stop</button>
           <button class="btn btn-primary btn-sm" id="sp-cal-start" disabled>Start</button>
         </div>
       </div>`;
@@ -923,7 +924,31 @@ export class SpeedProfileEditorHandler {
     const progressEl = overlay.querySelector('#sp-cal-progress') as HTMLElement;
     const startBtn = overlay.querySelector('#sp-cal-start') as HTMLButtonElement;
     const closeBtn = overlay.querySelector('#sp-cal-close') as HTMLButtonElement;
-    const takeCtlBtn = overlay.querySelector('#sp-cal-takecontrol') as HTMLButtonElement;
+    const stopBtn = overlay.querySelector('#sp-cal-stop') as HTMLButtonElement;
+    const readinessEl = overlay.querySelector('#sp-cal-readiness') as HTMLElement;
+
+    // Start is offered only when the stretch resolved and every opening
+    // condition holds; the readiness line names every one the train does not
+    // yet meet, so the operator reads them together.
+    let stretchOk = false;
+    let ready = false;
+    let passOpen = false;
+    const updateStart = () => {
+      startBtn.disabled = passOpen || !stretchOk || !ready;
+    };
+    const refreshReadiness = async () => {
+      try {
+        const r = await this.api.getCalibrationReadiness(train.id, 'speed', blockEl.value.trim());
+        ready = r.ready;
+        readinessEl.textContent = r.ready
+          ? 'Ready: Start takes control of the train and runs the pass.'
+          : `Not ready: ${r.unmet.join('; ')}.`;
+      } catch (err: any) {
+        ready = false;
+        readinessEl.textContent = err.message || 'Cannot check the train';
+      }
+      updateStart();
+    };
 
     // Resolving the stretch before Start is what lets the operator see which
     // two blocks the points currently lead to, rather than finding out by
@@ -932,7 +957,9 @@ export class SpeedProfileEditorHandler {
     // rather than by reading three ids.
     const resolveStretch = async () => {
       const blockId = blockEl.value.trim();
-      startBtn.disabled = true;
+      stretchOk = false;
+      updateStart();
+      void refreshReadiness();
       this.editor.highlighter.clear('reachable');
       if (!blockId) {
         stretchEl.textContent = 'Choose a block to see the stretch.';
@@ -945,7 +972,8 @@ export class SpeedProfileEditorHandler {
         stretchEl.textContent =
           `Run-up / stopping room: ${s.outer_block_ids.join(' ↔ ')} · ` +
           `measured length ${s.length_cm} cm`;
-        startBtn.disabled = false;
+        stretchOk = true;
+        updateStart();
         for (const outer of s.outer_block_ids) {
           this._blockTiles(outer).forEach((k: string) => lit.add(k));
         }
@@ -967,64 +995,90 @@ export class SpeedProfileEditorHandler {
       this.editor.enterMode(this._buildMeasuredBlockPickMode(overlay, blockEl, resolveStretch));
     };
 
-    // Take control puts the loco into the mode-and-power state a speed pass
-    // needs: manual control, the power_percent submode, powered on (design_new.md
-    // "Speed calibration", The panel — Take control sets manual mode and the
-    // power_percent submode, and powers the train up). set_mode("manual") powers
-    // a powered-off train up as its documented side effect, so no separate
-    // power-on call is needed. It does not clear an assigned route or stop a
-    // moving train; those the operator resolves.
-    const takeControl = async (): Promise<boolean> => {
-      try {
-        await this.api.setControlMode(train.id, 'manual');
-        await this.api.setManualModeType(train.id, 'power_percent');
-        return true;
-      } catch (err: any) {
-        showToast(err.message || 'Cannot take control of the train', 'error', 6000);
-        return false;
-      }
-    };
-    takeCtlBtn.onclick = async () => {
-      takeCtlBtn.disabled = true;
-      if (await takeControl()) {
-        showToast('Train ready: manual power-percent, powered on', 'success', 4000);
-      }
-      takeCtlBtn.disabled = false;
-    };
-
+    // Start opens the pass; the server takes control of the train itself —
+    // powering it up if off and selecting manual — once every opening
+    // condition holds (design_new.md "Speed calibration", Opening a run takes
+    // control of the train).
     startBtn.onclick = async () => {
       startBtn.disabled = true;
-      // Prepare the train itself rather than rejecting an unready one: a
-      // calibration pass is a computer-driven procedure, so Start takes control
-      // before it commands the run.
-      if (!(await takeControl())) {
-        startBtn.disabled = false;
-        return;
-      }
       try {
         await this.api.startCalibration(train.id, {
           measured_block_id: blockEl.value.trim(),
         });
       } catch (err: any) {
         showToast(err.message || 'Cannot start calibration', 'error', 6000);
-        startBtn.disabled = false;
+        await refreshReadiness();
         return;
       }
+      passOpen = true;
       blockEl.disabled = true;
-      this._pollCalibration(train, overlay, progressEl);
+      pickBtn.disabled = true;
+      readinessEl.textContent = '';
+      startBtn.classList.add('hidden');
+      stopBtn.classList.remove('hidden');
+      this._pollCalibration(train, overlay, progressEl, () => {
+        passOpen = false;
+        stopBtn.classList.add('hidden');
+      });
     };
 
-    const close = () => {
+    const stopPolling = () => {
       if (this._calPoll !== null) {
         window.clearInterval(this._calPoll);
         this._calPoll = null;
       }
+    };
+
+    // Stop ends the pass through `SpeedCalibration.abandon(...)`: it commands
+    // 0% power, tears the leg route down, and writes nothing.
+    stopBtn.onclick = async () => {
+      stopBtn.disabled = true;
+      stopPolling();
+      await this.api.cancelCalibration(train.id).catch(() => {});
+      passOpen = false;
+      stopBtn.classList.add('hidden');
+      progressEl.textContent = 'Stopped. Nothing was written.';
+    };
+
+    // Closing the panel mid-run ends the pass exactly like Stop.
+    const close = () => {
+      stopPolling();
+      if (passOpen) void this.api.cancelCalibration(train.id).catch(() => {});
       this.editor.highlighter.clear('reachable');
       this.editor.renderer?.requestRedraw();
       overlay.remove();
     };
     closeBtn.onclick = close;
     document.body.appendChild(overlay);
+
+    // A pass already open for this train, or a finished result waiting to be
+    // committed (for example after a page reload), is picked up here rather
+    // than left to block a new run with nothing on screen to end it.
+    void (async () => {
+      let run: any = null;
+      try {
+        run = await this.api.getCalibration(train.id);
+      } catch {
+        /* no pass to pick up */
+      }
+      if (run?.open && run.phase === 'measured') {
+        this._showCommitControls(train, overlay, run);
+        return;
+      }
+      if (run?.open) {
+        passOpen = true;
+        blockEl.disabled = true;
+        pickBtn.disabled = true;
+        startBtn.classList.add('hidden');
+        stopBtn.classList.remove('hidden');
+        this._pollCalibration(train, overlay, progressEl, () => {
+          passOpen = false;
+          stopBtn.classList.add('hidden');
+        });
+        return;
+      }
+      await refreshReadiness();
+    })();
   }
 
   /**
@@ -1078,7 +1132,12 @@ export class SpeedProfileEditorHandler {
   }
 
   /** Poll the open pass and render its progress, then its commit controls. */
-  private _pollCalibration(train: any, overlay: HTMLElement, progressEl: HTMLElement): void {
+  private _pollCalibration(
+    train: any,
+    overlay: HTMLElement,
+    progressEl: HTMLElement,
+    onEnded: () => void
+  ): void {
     if (this._calPoll !== null) window.clearInterval(this._calPoll);
     this._calPoll = window.setInterval(async () => {
       let run: any;
@@ -1088,20 +1147,25 @@ export class SpeedProfileEditorHandler {
         return;
       }
       if (!run.open) {
-        progressEl.textContent = 'The pass ended.';
+        // EB, a power-off, a session stop, or a measurement fault ended it
+        // (design_new.md "What ends a calibration run").
+        progressEl.textContent = 'The pass ended. Nothing was written.';
         window.clearInterval(this._calPoll!);
         this._calPoll = null;
+        onEnded();
         return;
       }
       if (run.phase === 'failed') {
         progressEl.textContent = `Failed: ${run.failure_reason}`;
         window.clearInterval(this._calPoll!);
         this._calPoll = null;
+        onEnded();
         return;
       }
       if (run.phase === 'measured') {
         window.clearInterval(this._calPoll!);
         this._calPoll = null;
+        onEnded();
         this._showCommitControls(train, overlay, run);
         return;
       }

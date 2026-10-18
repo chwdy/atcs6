@@ -125,13 +125,6 @@ def controller_to_dict(controller: "TrainController") -> Dict[str, Any]:
             and controller.route_executor.execution_state_for(controller.train_id) is not None
             else None
         ),
-        # UI projection: True while an operator route teardown (abort or
-        # deactivate) is latched but not yet consumed in Action. The layout
-        # renderer tints the train light purple during this window. Excludes
-        # power_off (ends in OFF, not a route teardown).
-        "route_teardown_pending": (
-            controller.route_hooks.phase_latches.is_route_teardown_pending()
-        ),
         # True while no wired block backs this train's calculated position —
         # every block its span or its holdings could show current on reads
         # confirmed clear, so the train may physically be gone. The UI marks

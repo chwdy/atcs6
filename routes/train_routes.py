@@ -16,7 +16,7 @@ from typing import Optional
 from flask import jsonify, request
 
 from app_state import AppState
-from services import NotFoundError, ValidationError
+from services import ConflictError, NotFoundError, ValidationError
 from services import train_route_service
 from train_route import RouteTask
 
@@ -56,6 +56,8 @@ def register(app, state: AppState) -> None:
             )
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
+        except ConflictError as exc:
+            return jsonify({"error": str(exc)}), 409
 
         return jsonify({"status": "success", "route": route.to_dict()})
 
@@ -140,6 +142,8 @@ def register(app, state: AppState) -> None:
                 return jsonify({"error": str(exc)}), 404
             except ValidationError as exc:
                 return jsonify({"error": str(exc)}), 400
+            except ConflictError as exc:
+                return jsonify({"error": str(exc)}), 409
 
         # Per design_new.md "Route Edit And Reconciliation", structural route edits should
         # tear down active `RouteRun`s and let Plan allocate fresh

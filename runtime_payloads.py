@@ -504,17 +504,6 @@ class PhaseLatches:
             or self.emergency_request is not None
         )
 
-    def is_route_teardown_pending(self) -> bool:
-        """True while an operator route teardown (abort or deactivate) is
-        latched but not yet consumed in Action.
-
-        Excludes `power_off` (that path ends in OFF, not a route teardown)
-        and the inclusive `path_cancel_request` leaf. Used only as a UI
-        projection on `TrainController.to_dict()`; runtime branching never
-        keys on it.
-        """
-        return self.route_abort or self.route_deactivate
-
     # ------------------------------------------------------------------
     # Clearing
     # ------------------------------------------------------------------

@@ -503,3 +503,35 @@ def test_run_still_valid_survives_the_leg_completion_window(state):
     assert sim.route_executor.assigned_route_id_for(train_id) is None
     assert run.active_leg_route_id == leg_route_id
     assert sim.speed_calibration.run_still_valid(train_id) is True
+
+
+def test_route_requests_for_a_calibrating_train_leave_no_route_behind(state):
+    """A calibrating train refuses assignment (design_new.md "Route assignment
+    writers"); the create-route and Quick Route requests refuse before they
+    register a route, so nothing is left behind."""
+    from app_factory import create_app
+
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    block_id = _first_calibratable_block(state, train_id)
+    train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+    routes_before = set(sim.route_executor.route_registry)
+    app = create_app(state)
+    app.config["TESTING"] = True
+    with app.test_client() as client:
+        created = client.post(
+            "/api/train-routes",
+            json={
+                "route_id": "R_CAL_REFUSED",
+                "tasks": [{"task_kind": "stop", "task_location": {"block_id": block_id}}],
+                "assigned_train_ids": [train_id],
+            },
+        )
+        quick = client.post(
+            "/api/paths",
+            json={"train_id": train_id, "requested_destination_block_id": block_id},
+        )
+    assert created.status_code == 409
+    assert quick.status_code == 400
+    assert "calibration" in quick.get_json()["error"]
+    assert set(sim.route_executor.route_registry) == routes_before

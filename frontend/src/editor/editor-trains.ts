@@ -9,7 +9,11 @@
 // `updateCabButtons`; keep those names.
 
 import { stateManager } from '../lib/state-manager';
-import { atoGoUnavailableReason, trainDisplayStatus } from '../lib/train-status';
+import {
+  atoGoUnavailableReason,
+  startRouteUnavailableReason,
+  trainDisplayStatus,
+} from '../lib/train-status';
 import { holdReasonText } from '../lib/hold-reason';
 import { formatSpeedReadout, formatATOEta, formatSimClock, middleTruncate } from './train-format';
 import { showToast } from '../lib/toast';
@@ -955,6 +959,7 @@ export class TrainEditorHandler {
     const map: Record<string, string> = {
       off: 'train-state-off',
       manual: 'train-state-manual',
+      calibrating: 'train-state-calibrating',
       eb: 'train-state-off',
       ready: 'train-state-idle',
       running: 'train-state-running',
@@ -972,6 +977,7 @@ export class TrainEditorHandler {
     const map: Record<string, string> = {
       off: 'muted',
       manual: 'info',
+      calibrating: 'info',
       eb: 'danger',
       ready: 'muted',
       running: 'success',
@@ -1161,12 +1167,17 @@ export class TrainEditorHandler {
       }
     }
 
-    // Use Controller state for mode determination
-    const controlMode = controller?.control_mode || 'ato';
+    // Use Controller state for mode determination. A train with no payload yet
+    // reads as manual, the construction default.
+    const controlMode = controller?.control_mode || 'manual';
     const isATO = controlMode === 'ato';
     const isManual = controlMode === 'manual';
     const isStopped = controller?.is_stopped ?? true;
-    const canSwitchModes = isStopped;
+    // While a calibration run is open the run drives the train, so the mode,
+    // submode and driver inputs are refused (design_new.md "Controller state
+    // machine", CALIBRATING).
+    const isCalibrating = controller?.train_status === 'calibrating';
+    const canSwitchModes = isStopped && !isCalibrating;
     const handlePosition = controller?.handle_position || 'N';
     const powerOn = controller?.power_on ?? false;
     const emergencyActive = controller?.eb_active ?? false;
@@ -1176,6 +1187,11 @@ export class TrainEditorHandler {
     const presenceUnknown = controller?.presence_unknown === true;
     const atoEngaged = controller?.engaged ?? false;
     const atoGoBlockedReason = atoGoUnavailableReason(controller, stateManager.getAssignedRouteId(trainId));
+    const startRouteBlockedReason = startRouteUnavailableReason(
+      controller,
+      stateManager.getAssignedRouteId(trainId),
+      operatorStatus
+    );
     const handleClass = this.getHandleVisualClass(handlePosition);
     const obcStateClass = this.getObcStateClass(powerOn, emergencyActive);
     const manualModeType = controller?.manual_mode_type || 'simulation';
@@ -1281,6 +1297,7 @@ export class TrainEditorHandler {
                          looks reasonable, so a standing train otherwise explains
                          nothing at all. -->
                     <div id="train-why-stopped" class="banner banner-warn tc-banner" hidden></div>
+                    <ul id="train-pending-actions" class="tc-pending-actions" hidden></ul>
                     ${presenceUnknown ? `
                     <div id="train-presence-unknown-banner" class="banner banner-warn tc-banner">
                         <div>? No occupancy detected under this train — nothing on the track backs its position. It may have been picked up or run somewhere undetected.</div>
@@ -1328,7 +1345,7 @@ export class TrainEditorHandler {
                             <div id="hmi-dwell-remaining" class="tc-hmi-dwell-rem hidden"></div>
                             <div id="hmi-dwell-until" class="tc-hmi-dwell-until hidden"></div>
                             <div id="hmi-handle" class="col-l rows-2 tc-hmi-handle ${handleClass}">${handlePosition}</div>
-                            <div id="hmi-cab-run" class="col-r rows-1 tc-hmi-cab-run">CAB ${controller?.cab || '—'}${runId ? ` · RUN ${runId}` : ''}</div>
+                            <div id="hmi-cab-run" class="col-r rows-1 tc-hmi-cab-run">${runId ? `RUN ${runId}` : ''}</div>
                         </div>
 
                         <div class="tc-hmi-footer">
@@ -1342,6 +1359,11 @@ export class TrainEditorHandler {
                 <!-- ZONE 3: CONTROLS -->
                 <section class="tc-section tc-section-controls">
                     <div class="tc-section-title">Controls</div>
+                    <div class="tc-actions tc-start-route-row">
+                        <button id="train-start-route-btn" type="button" class="tc-btn tc-btn-success tc-btn-hero" title="${escapeAttr(startRouteBlockedReason ?? 'Power up if off, select ATO, and start the assigned route')}" ${startRouteBlockedReason ? 'disabled' : ''}>
+                            <span class="tc-btn-glyph">▶</span><span class="tc-btn-text">Start route</span>
+                        </button>
+                    </div>
                     <div class="tc-controls-pair">
                         <div class="tc-row">
                             <span class="tc-row-label">Power</span>
@@ -1378,8 +1400,8 @@ export class TrainEditorHandler {
                         <div class="tc-row">
                             <span class="tc-row-label">Input</span>
                             <div class="tc-segment" role="group" aria-label="Manual input mode">
-                                <button type="button" id="train-manual-mode-handle-btn" class="tc-seg-btn ${isHandleMode ? 'active' : ''}" ${!isManual || !isStopped ? 'disabled' : ''}>Handle</button>
-                                <button type="button" id="train-manual-mode-power-btn" class="tc-seg-btn ${isPowerPercent ? 'active' : ''}" ${!isManual || !isStopped ? 'disabled' : ''}>Power %</button>
+                                <button type="button" id="train-manual-mode-handle-btn" class="tc-seg-btn ${isHandleMode ? 'active' : ''}" ${!isManual || !isStopped || isCalibrating ? 'disabled' : ''}>Handle</button>
+                                <button type="button" id="train-manual-mode-power-btn" class="tc-seg-btn ${isPowerPercent ? 'active' : ''}" ${!isManual || !isStopped || isCalibrating ? 'disabled' : ''}>Power %</button>
                             </div>
                         </div>
 
@@ -1395,7 +1417,7 @@ export class TrainEditorHandler {
                             </div>
                             <input type="range" id="train-handle-slider" class="tc-handle-slider"
                                 min="0" max="14" step="1" value="${handleIndex >= 0 ? handleIndex : 5}"
-                                ${!isManual || emergencyActive ? 'disabled' : ''}>
+                                ${!isManual || emergencyActive || isCalibrating ? 'disabled' : ''}>
                             <div class="tc-handle-readout">
                                 <span id="handle-position-label" class="tc-handle-pos handle-position-display ${handleClass}">${handlePosition}</span>
                                 <span id="handle-description" class="tc-handle-desc handle-description">${handleDescription}</span>
@@ -1409,7 +1431,7 @@ export class TrainEditorHandler {
                             </div>
                             <input type="range" id="train-power-percent-slider" class="tc-power-slider"
                                 min="0" max="100" step="1" value="${manualPowerPercent}"
-                                ${!isManual || !isPowerPercent || emergencyActive ? 'disabled' : ''}>
+                                ${!isManual || !isPowerPercent || emergencyActive || isCalibrating ? 'disabled' : ''}>
                             <div class="tc-power-bar">
                                 <div class="tc-power-fill" id="train-power-percent-fill" style="width: ${manualPowerPercent}%"></div>
                             </div>
@@ -1556,7 +1578,9 @@ export class TrainEditorHandler {
     const el = document.getElementById('train-why-stopped');
     if (!el) return;
     if (this._trainId && this._trainId !== trainId) return;
-    const text = holdReasonText(stateManager?.getOperatorStatus(trainId)?.hold_reason);
+    const status = stateManager?.getOperatorStatus(trainId);
+    this._renderPendingActions(status?.pending_actions || []);
+    const text = holdReasonText(status?.hold_reason);
     if (!text) {
       el.hidden = true;
       return;
@@ -1566,6 +1590,21 @@ export class TrainEditorHandler {
     label.textContent = 'Not moving:';
     el.append(label, ` ${text}`);
     el.hidden = false;
+  }
+
+  /** List what the train has accepted but can only finish once it stops
+   *  (design_new.md "Pending actions"), e.g. "stopping to power off". */
+  _renderPendingActions(pending: Array<{ label?: string }>): void {
+    const list = document.getElementById('train-pending-actions');
+    if (!list) return;
+    list.textContent = '';
+    for (const entry of pending) {
+      if (!entry?.label) continue;
+      const item = document.createElement('li');
+      item.textContent = entry.label;
+      list.appendChild(item);
+    }
+    list.hidden = list.childElementCount === 0;
   }
 
   async initTrainControlHandlers(trainId: string): Promise<void> {
@@ -1597,6 +1636,28 @@ export class TrainEditorHandler {
       };
     }
 
+    /** Push a command reply's train status into StateManager, so the
+     *  subscription patches the panel on the same frame. Train command replies
+     *  carry the train, controller, dispatcher progress and operator status on
+     *  acceptance and refusal alike (design_new.md "Operator-command
+     *  processing slot"). */
+    const applyReply = (reply: any): boolean => {
+      if (!reply || !(reply.controller || reply.train)) return false;
+      if (reply.train) {
+        stateManager?.updateEntity('trains', trainId, reply.train);
+      }
+      if (reply.controller) {
+        stateManager?.updateEntity('controllers', trainId, reply.controller);
+      }
+      if (reply.dispatcher_progress !== undefined) {
+        stateManager?.updateEntity('dispatcherProgress', trainId, reply.dispatcher_progress);
+      }
+      if (reply.operator_status) {
+        stateManager?.updateEntity('operatorStatus', trainId, reply.operator_status);
+      }
+      return true;
+    };
+
     /** Execute a button action with consistent error handling and feedback. */
     const executeAction = async (
       actionName: string,
@@ -1610,35 +1671,23 @@ export class TrainEditorHandler {
 
         if (result && result.status === 'success') {
           showToast(`${actionName}: Success`, 'success', 2000);
-        } else if (result && result.error) {
-          showToast(`${actionName}: ${result.error}`, 'error', 5000);
-          return;
         }
 
         if (!refreshOnSuccess) return;
-
-        // Train mutation endpoints return the freshly-updated train, controller,
-        // and dispatcher progress; push into StateManager directly so the
-        // subscription patches the panel on the same frame.
-        if (result && (result.controller || result.train)) {
-          if (result.train) {
-            stateManager?.updateEntity('trains', trainId, result.train);
-          }
-          if (result.controller) {
-            stateManager?.updateEntity('controllers', trainId, result.controller);
-          }
-          if (result.dispatcher_progress !== undefined) {
-            stateManager?.updateEntity('dispatcherProgress', trainId, result.dispatcher_progress);
-          }
-          if (result.operator_status) {
-            stateManager?.updateEntity('operatorStatus', trainId, result.operator_status);
-          }
-          return;
-        }
+        if (applyReply(result)) return;
 
         // Fallback for endpoints that do not echo the post-mutation state.
         await window.app?.refreshNetwork();
       } catch (err: any) {
+        // A refused train command replies 400 with `{success: false, reason}`
+        // and the train's status, so the panel shows why and the hold reason
+        // straight away instead of on the next refresh.
+        const reply = err?.data;
+        if (reply && reply.success === false) {
+          applyReply(reply);
+          showToast(`${actionName}: ${reply.reason || err.message}`, 'warning', 5000);
+          return;
+        }
         console.error(`[TrainControl] ${actionName} failed:`, err);
         showToast(`${actionName}: ${err.message}`, 'error', 5000);
       }
@@ -1688,6 +1737,13 @@ export class TrainEditorHandler {
     if (modeManualBtn) {
       modeManualBtn.onclick = () =>
         executeAction('Switch to Manual', () => api.setControlMode(trainId, 'manual'));
+    }
+
+    // ── START ROUTE ── one command: power up if OFF, select ATO, engage
+    // (design_new.md "Start route").
+    const startRouteBtn = document.getElementById('train-start-route-btn') as HTMLButtonElement | null;
+    if (startRouteBtn) {
+      startRouteBtn.onclick = () => executeAction('Start route', () => api.startRoute(trainId));
     }
 
     // ── ATO CONTROLS (Go / Stop) ──
@@ -2036,7 +2092,7 @@ export class TrainEditorHandler {
     const handlePosition = controller.handle_position || 'N';
     const powerOn = controller.power_on ?? false;
     const emergencyActive = controller.eb_active ?? false;
-    const controlMode = controller.control_mode || 'ato';
+    const controlMode = controller.control_mode || 'manual';
     const atoEngaged = controller.engaged ?? false;
 
     // Update OBC status display
@@ -2148,7 +2204,7 @@ export class TrainEditorHandler {
       const handleDisplay = panel.querySelector('.obc-handle-display');
 
       const powerOn = controller.power_on ?? false;
-      const controlMode = controller.control_mode || 'ato';
+      const controlMode = controller.control_mode || 'manual';
       const handlePosition = controller.handle_position || 'N';
       const atoEngaged = controller.engaged ?? false;
 
@@ -2396,11 +2452,11 @@ export class TrainEditorHandler {
       }
       const cabRunEl = panel.querySelector('#hmi-cab-run');
       if (cabRunEl) {
-        const cab = controller.cab || '—';
+        // There is no operator cab: the head end follows the live reservation.
         const liveRunSuffix = (controller.route_run_id || '').includes('#')
           ? `#${controller.route_run_id.split('#')[1] || ''}`
           : '';
-        cabRunEl.textContent = liveRunSuffix ? `CAB ${cab} · RUN ${liveRunSuffix}` : `CAB ${cab}`;
+        cabRunEl.textContent = liveRunSuffix ? `RUN ${liveRunSuffix}` : '';
       }
 
       const nextStopEl = panel.querySelector('#hmi-next-stop') as HTMLElement | null;
@@ -2472,13 +2528,11 @@ export class TrainEditorHandler {
     const maxSpeedEl = panel.querySelector('#train-status-maxspeed-val');
     if (maxSpeedEl) maxSpeedEl.textContent = `${train.max_speed || 100} km/h`;
 
-    const powerOn = controller?.power_on ?? false;
-    const controlMode = controller?.control_mode || 'ato';
+    const controlMode = controller?.control_mode || 'manual';
     const isStopped = controller?.is_stopped ?? true;
-    const activeCab = controller?.cab || null;
+    const isCalibrating = controller?.train_status === 'calibrating';
 
-    this.updateCabButtons(panel, powerOn, isStopped, activeCab);
-    this.updateModeButtons(panel, isStopped, controlMode);
+    this.updateModeButtons(panel, isStopped && !isCalibrating, controlMode);
 
     this.updateButtonStates(train);
 
@@ -2488,46 +2542,26 @@ export class TrainEditorHandler {
     }
   }
 
-  updateCabButtons(panel: HTMLElement, powerOn: boolean, isStopped: boolean, activeCab: any): void {
-    const cabABtn = panel.querySelector('#train-cab-a-btn') as HTMLButtonElement | null;
-    const cabBBtn = panel.querySelector('#train-cab-b-btn') as HTMLButtonElement | null;
-    const cabOffBtn = panel.querySelector('#train-cab-off-btn') as HTMLButtonElement | null;
-
-    if (cabABtn) {
-      cabABtn.disabled = !powerOn || !isStopped;
-      cabABtn.classList.toggle('active', activeCab === 'A');
-    }
-    if (cabBBtn) {
-      cabBBtn.disabled = !powerOn || !isStopped;
-      cabBBtn.classList.toggle('active', activeCab === 'B');
-    }
-    if (cabOffBtn) {
-      const isOff = !activeCab;
-      cabOffBtn.disabled = !powerOn || !isStopped || isOff;
-      cabOffBtn.classList.toggle('active', isOff);
-    }
-  }
-
-  updateModeButtons(panel: HTMLElement, isStopped: boolean, controlMode: string): void {
+  /** `canSwitch` is false while the train moves or a calibration run drives it. */
+  updateModeButtons(panel: HTMLElement, canSwitch: boolean, controlMode: string): void {
     const modeATOBtn = panel.querySelector('#train-mode-ato-btn') as HTMLButtonElement | null;
     const modeManualBtn = panel.querySelector('#train-mode-manual-btn') as HTMLButtonElement | null;
 
     if (modeATOBtn) {
-      modeATOBtn.disabled = !isStopped;
+      modeATOBtn.disabled = !canSwitch;
       modeATOBtn.classList.toggle('active', controlMode === 'ato');
     }
     if (modeManualBtn) {
-      modeManualBtn.disabled = !isStopped;
+      modeManualBtn.disabled = !canSwitch;
       modeManualBtn.classList.toggle('active', controlMode === 'manual');
     }
   }
 
   updateButtonStates(train: any): void {
     const controller: any = stateManager?.getController(train.id) || null;
-    const state = trainDisplayStatus(controller, stateManager?.getOperatorStatus(train.id));
+    const operatorStatus: any = stateManager?.getOperatorStatus(train.id) || null;
     const powerOn = controller?.power_on ?? false;
-    // In v1, manual is a control mode (controller.control_mode), not a state.
-    const isManual = controller?.control_mode === 'manual';
+    const isCalibrating = controller?.train_status === 'calibrating';
 
     const powerOnBtn = document.getElementById('train-power-on-btn') as HTMLButtonElement | null;
     const powerOffBtn = document.getElementById('train-power-off-btn') as HTMLButtonElement | null;
@@ -2540,22 +2574,21 @@ export class TrainEditorHandler {
       powerOffBtn.classList.toggle('active', !powerOn);
     }
 
-    ['north', 'east', 'south', 'west'].forEach((dir) => {
-      const btn = document.getElementById(`train-dir-${dir}-btn`) as HTMLButtonElement | null;
-      if (btn) btn.disabled = state !== 'idle';
-    });
+    // Start route, Go and Stop follow the same rules the panel draws them with,
+    // set here too so a command reply or the next state update takes effect on
+    // the buttons at once instead of leaving them as they were when the panel
+    // opened.
+    const assignedRouteId = stateManager.getAssignedRouteId(train.id);
+    const startRouteBlockedReason = startRouteUnavailableReason(controller, assignedRouteId, operatorStatus);
+    const startRouteBtn = document.getElementById('train-start-route-btn') as HTMLButtonElement | null;
+    if (startRouteBtn) {
+      startRouteBtn.disabled = startRouteBlockedReason !== null;
+      startRouteBtn.title =
+        startRouteBlockedReason ?? 'Power up if off, select ATO, and start the assigned route';
+    }
 
-    const clearDirBtn = document.getElementById('train-clear-dir-btn') as HTMLButtonElement | null;
-    if (clearDirBtn) clearDirBtn.disabled = state !== 'standby';
-
-    // ATO Go / Stop follow the controller's `engaged` bit (the ATO go/stop bit)
-    // and, for Go, whether the train has a route to drive, with the same rule
-    // the panel draws them with. They are set here as well as at draw time so
-    // a Go, a Stop, or a route assignment takes effect on the buttons the
-    // moment the command reply or the next state update lands, instead of
-    // staying as they were when the panel opened.
     const atoEngaged = controller?.engaged ?? false;
-    const atoGoBlockedReason = atoGoUnavailableReason(controller, stateManager.getAssignedRouteId(train.id));
+    const atoGoBlockedReason = atoGoUnavailableReason(controller, assignedRouteId);
     const atoGoBtn = document.getElementById('train-ato-go-btn') as HTMLButtonElement | null;
     const atoStopBtn = document.getElementById('train-ato-stop-btn') as HTMLButtonElement | null;
     if (atoGoBtn) {
@@ -2564,9 +2597,18 @@ export class TrainEditorHandler {
     }
     if (atoStopBtn) atoStopBtn.disabled = !atoEngaged;
 
-    const manualOnBtn = document.getElementById('train-manual-on-btn') as HTMLButtonElement | null;
-    const manualOffBtn = document.getElementById('train-manual-off-btn') as HTMLButtonElement | null;
-    if (manualOnBtn) manualOnBtn.disabled = isManual;
-    if (manualOffBtn) manualOffBtn.disabled = !isManual;
+    // A calibration run drives the train, so driver input is refused while it
+    // is open (design_new.md "Driver input acceptance").
+    if (isCalibrating) {
+      for (const id of [
+        'train-manual-mode-handle-btn',
+        'train-manual-mode-power-btn',
+        'train-handle-slider',
+        'train-power-percent-slider',
+      ]) {
+        const el = document.getElementById(id) as HTMLButtonElement | HTMLInputElement | null;
+        if (el) el.disabled = true;
+      }
+    }
   }
 }
