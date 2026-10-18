@@ -111,25 +111,30 @@ def register(app, state: AppState) -> None:
         `operator_status_by_train_id` as sibling collections, from the same
         builder `/api/network` uses.
         """
-        maps = build_train_runtime_maps(
-            state.network,
-            state.sim_controller,
-            session_running=bool(state.simulation_running),
-            commissioning=bool(getattr(state, "commissioning_active", False)),
-        )
-        trains_list = [
-            train.to_dict(network=state.network)
-            for train in train_service.list_trains(state)
-        ]
+        # Read under the lock, between ticks, like `/api/network`: a layout
+        # load replaces the trains under the same lock.
+        with state.simulation_lock:
+            maps = build_train_runtime_maps(
+                state.network,
+                state.sim_controller,
+                session_running=bool(state.simulation_running),
+                commissioning=bool(getattr(state, "commissioning_active", False)),
+            )
+            trains_list = [
+                train.to_dict(network=state.network)
+                for train in train_service.list_trains(state)
+            ]
         return jsonify({"trains": trains_list, **maps})
 
     @app.route("/api/trains/<train_id>", methods=["GET"])
     def get_train(train_id):
         """Get details for a single train."""
-        train = train_service.get_train(state, train_id)
-        if not train:
-            return jsonify({"error": "Train not found"}), 404
-        return jsonify(_train_to_dict(train, state.network))
+        with state.simulation_lock:
+            train = train_service.get_train(state, train_id)
+            if not train:
+                return jsonify({"error": "Train not found"}), 404
+            payload = _train_to_dict(train, state.network)
+        return jsonify(payload)
 
     @app.route("/api/trains/<train_id>", methods=["PATCH"])
     def update_train(train_id):
