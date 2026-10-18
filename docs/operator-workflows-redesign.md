@@ -585,13 +585,24 @@ default the user did not object to. Any decision can be reopened.
      transition table.
      Doc written 2026-10-17: `CALIBRATING`, EB keeps the mode, Start route,
      commands between ticks under the lock, the Latch Table's pending-action
-     column, and the **Pending actions** and **Hold reason** read models. The
-     code is not started.
+     column, and the **Pending actions** and **Hold reason** read models.
+     Code done 2026-10-18, in commits `80fb778` to `b0b1907`: commands run
+     between ticks under the lock, `CALIBRATING`, EB keeps the mode, Start
+     route, the read models in `operator_status_by_train_id`, and the panel
+     (Start route button, pending actions, the hold-reason banner).
+     `/why-stopped` is gone. Still open: the hold-reason table has no row for
+     an operating environment that is not active, so a train in that state
+     reads `no_reservation`; that row belongs with the session state (B3).
    - **Calibrating a locomotive** second (B2).
      Doc written 2026-10-18: opening a run takes control of the train (no Take
      control), commands refused while `CALIBRATING`, one list in **What ends a
-     calibration run**, and a session stop ends a run (D5). The code is not
-     started.
+     calibration run**, and a session stop ends a run (D5).
+     Code done 2026-10-18, in `6df4ec8` and the panel part of `b0b1907`: the
+     readiness check and taking control, the safe-state entry ending runs,
+     route assignment refused while calibrating, and Stop / cancel-on-close /
+     the readiness line in the speed panel. Still open: the shared locomotive
+     row with its train picker, the lighting run in place on its row, and the
+     measured curve drawn against the stored one.
    - **The session state, hardware setup, the kill switch and Hold all** third: B3, B4,
      and the B5 work for question 1. This can run in parallel with calibration, because it touches
      different code.
