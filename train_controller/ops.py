@@ -51,16 +51,18 @@ class OperationalStateMachine:
     def train_status(self) -> TrainStatus:
         """The train's overall status, derived each read.
 
-        Per design_new.md "Controller state machine": computed from the stored
-        ``powered`` flag, the ``eb.active`` latch, and
-        ``commands.control_mode``. There is no stored ``train_status`` field
-        and no writer.
+        Per design_new.md "Controller state machine": computed in precedence
+        order from the stored ``powered`` flag, the ``eb.active`` latch, whether
+        a calibration run is open for the train, and ``commands.control_mode``.
+        There is no stored ``train_status`` field and no writer.
         """
         c = self._c
         if not c.powered:
             return TrainStatus.OFF
         if c.eb.active:
             return TrainStatus.EB
+        if c.calibration_run_open():
+            return TrainStatus.CALIBRATING
         if c.commands.control_mode == "ato":
             return TrainStatus.ATO
         return TrainStatus.MANUAL

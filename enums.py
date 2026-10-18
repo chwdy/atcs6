@@ -127,12 +127,15 @@ class TrainStatus(Enum):
     """Overall train status, derived (never stored) per design_new.md
     "Controller state machine".
 
-    Computed each read from the three stored inputs `powered`, `eb.active`,
-    and `commands.control_mode`:
+    Computed each read, in precedence order, from `powered`, `eb.active`,
+    whether a calibration run is open for the train, and
+    `commands.control_mode`:
       - OFF: not powered.
       - EB: powered and the emergency brake is latched.
-      - ATO: powered, not under EB, control_mode == "ato".
-      - MANUAL: powered, not under EB, control_mode == "manual".
+      - CALIBRATING: powered, not under EB, a calibration run is open
+        (`SpeedCalibration.get_propulsion_override(train_id) is not None`).
+      - ATO: powered, not under EB, no run open, control_mode == "ato".
+      - MANUAL: powered, not under EB, no run open, control_mode == "manual".
 
     The ATO-mode detail (READY / RUNNING / HELD / DWELLING) is the read-model
     `ato_status` projection (see `AtoStatus` and design_new.md "ATO status"),
@@ -143,6 +146,7 @@ class TrainStatus(Enum):
     OFF = "off"
     MANUAL = "manual"
     ATO = "ato"
+    CALIBRATING = "calibrating"
     EB = "eb"
 
 

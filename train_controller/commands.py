@@ -211,9 +211,9 @@ class OperatorCommands:
 
         Any write of `control_mode` clears the ATO engage bit (design_new.md
         "ATO status": "Any write of `control_mode` sets it `False`"), so
-        `set_mode(...)`, EB activation, and both power-off paths all route
-        through here and a re-selected or released-into ATO train lands not
-        engaged (`ato_status == READY`).
+        `set_mode(...)` and both power-off paths route through here and a
+        re-selected ATO train lands not engaged (`ato_status == READY`). EB
+        does not write `control_mode`; it clears the engage bit itself.
         """
         self.control_mode = mode
         self.engaged = False
@@ -286,6 +286,10 @@ class OperatorCommands:
         if position == HandlePosition.EB:
             return c.eb.activate()
 
+        # design_new.md "Driver input acceptance": driver input is refused while
+        # a calibration run is open; the EB bypass above skips this check.
+        if c.calibration_run_open():
+            return CommandResult(False, "Driver input is refused during calibration")
         if c.manual.manual_mode_type != "simulation":
             return CommandResult(
                 False, "Handle input requires the manual 'simulation' submode"
@@ -382,12 +386,7 @@ class OperatorCommands:
         # where no pass can be open. `get_propulsion_override(...) is not None`
         # (not the power-percent-only read) so an open lighting run is covered
         # too — a stopped auto pass returns value=0.0, still non-None.
-        sc = getattr(c, "simulation_controller", None)
-        calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
-        if (
-            calibration is not None
-            and calibration.get_propulsion_override(c.train_id) is not None
-        ):
+        if c.calibration_run_open():
             return CommandResult(False, "Cannot switch mode during calibration")
 
         # Select the driving source. Any control_mode write clears the ATO
@@ -423,6 +422,10 @@ class OperatorCommands:
             return CommandResult(False, "Power is off")
         if self.control_mode != "manual":
             return CommandResult(False, "Not in manual mode")
+        # design_new.md "Controller state machine", CALIBRATING: a calibration
+        # run owns how the train is driven until it ends.
+        if c.calibration_run_open():
+            return CommandResult(False, "Cannot change the submode during calibration")
         if not c.is_stopped():
             return CommandResult(False, "Cannot change manual mode type while moving")
         if mode_type not in ("simulation", "power_percent"):
@@ -453,6 +456,8 @@ class OperatorCommands:
             return CommandResult(False, "Power is off")
         if self.control_mode != "manual":
             return CommandResult(False, "Not in manual mode")
+        if c.calibration_run_open():
+            return CommandResult(False, "Driver input is refused during calibration")
         if c.manual.manual_mode_type != "power_percent":
             return CommandResult(False, "Manual mode type is not power_percent")
 

@@ -1703,7 +1703,7 @@ class SimulationController(SwitchOutputOwner):
 
         The request is latched for a candidate on every such read unless that
         train is already under an emergency brake or already holds a cut-out
-        request: the drain would apply it as a no-op there (the
+        request: Action step 01f2 would apply it as a no-op there (the
         `eb.active == False` gate), and a latch write is never suppressed, so
         latching it again would only repeat the latch event every read. A
         candidate whose brake the operator released while the conflict stands

@@ -160,8 +160,8 @@ class CalibrationPropulsionOverride:
       stopped-but-lit / speed-derived voltage; the speed pass never returns it.
 
     The controller reads this through `SpeedCalibration.get_propulsion_override`.
-    It is never copied into `manual.manual_power_percent`, `handle_position`, or
-    the operator-command inbox.
+    It is never copied into `manual.manual_power_percent` or `handle_position`, and
+    no operator command carries it.
     """
 
     kind: str

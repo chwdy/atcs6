@@ -1023,20 +1023,19 @@ class TrainController:
                 voltage_source_speed_kmh=0.0,
                 voltage_source_track_voltage=lighting_track_voltage,
             )
-        if (
+        # design_new.md "Speed calibration", Controller owns calibration output,
+        # and the driving-source selection order: an open speed-calibration pass
+        # supplies the commanded percent through get_propulsion_override and is
+        # the selected source ahead of every ordinary branch, whatever the manual
+        # submode. It is reached below EB and pending power-off (both returned
+        # earlier), stays below the ATC cap applied just below, and is never
+        # copied into manual.manual_power_percent.
+        calibration_pct = self._calibration_power_percent_override()
+        if calibration_pct is not None or (
             self.commands.control_mode == "manual"
             and self.manual.manual_mode_type == "power_percent"
         ):
             profile = self._get_speed_profile()
-            # design_new.md "Speed calibration", Controller owns calibration
-            # output: an open speed-calibration pass supplies the commanded
-            # percent through get_propulsion_override, replacing the ordinary
-            # manual power source. It reaches this branch already below EB and
-            # pending power-off (both returned earlier) and stays below the
-            # ATC / service-stop cap applied just below, and it is never copied
-            # into manual.manual_power_percent. A pass runs in manual
-            # power_percent submode, so it lands here.
-            calibration_pct = self._calibration_power_percent_override()
             driven_by_calibration = calibration_pct is not None
             pct = (
                 float(calibration_pct)
@@ -1143,14 +1142,28 @@ class TrainController:
             return
         calibration.taint_current_crossing(self.train_id, reason)
 
+    def calibration_run_open(self) -> bool:
+        """Whether a calibration leg or run is open for this train — the train
+        reads `CALIBRATING` (design_new.md "Controller state machine").
+
+        `SpeedCalibration.get_propulsion_override(train_id) is not None`, read
+        through the `simulation_controller` back-reference; False when the
+        runtime is absent (unit-test controllers), where no run can be open.
+        """
+        sc = getattr(self, "simulation_controller", None)
+        calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
+        if calibration is None:
+            return False
+        return calibration.get_propulsion_override(self.train_id) is not None
+
     def _calibration_power_percent_override(self) -> Optional[float]:
         """The percent an open speed-calibration pass commands this tick, or None.
 
         design_new.md "Speed calibration", Controller owns calibration output: a
         calibration pass drives through `SpeedCalibration.get_propulsion_override`
-        rather than by queuing operator commands. Reached through the
-        `simulation_controller` back-reference — the same channel the command-drain
-        error path and `TrainPhysics`'s lighting-voltage read already use. Returns
+        rather than through operator commands. Reached through the
+        `simulation_controller` back-reference — the same channel
+        `TrainPhysics`'s lighting-voltage read already uses. Returns
         None off-pass, when the runtime is absent (unit-test controllers), or for
         the union's `track_voltage` variant (a lighting run, which still drives
         through its own physics read), so the ordinary manual source drives in

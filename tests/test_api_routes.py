@@ -973,9 +973,10 @@ class TestTrainRoutes:
         assert controller.commands.control_mode == "ato"
         controller.eb.activate()  # stopped, no path -> EB latches cleanly
         assert controller.eb.active is True
-        # EB activation sets control_mode to manual (design_new.md "Canonical EB
-        # activation effects").
-        assert controller.commands.control_mode == "manual"
+        # EB activation keeps control_mode and clears the engage bit
+        # (design_new.md "Canonical EB activation effects").
+        assert controller.commands.control_mode == "ato"
+        assert controller.commands.engaged is False
 
         # The OLD button path (handle 'N') never releases EB — the handle and EB
         # are separate — so EB stays latched however the handle command is

@@ -526,7 +526,7 @@ class PhaseLatches:
     # consumer step through `clear(...)` below, and the consume-side event is
     # emitted by that step's own consume-side call, not from here: `cancel_path`
     # for `path_cancel_request`, `remove_train_route_run` for `route_abort` and
-    # `route_deactivate`, `complete_power_off` for `power_off`, and the drain's
+    # `route_deactivate`, `complete_power_off` for `power_off`, and Action step 01f2's
     # `eb.activate()` / `eb.activate_cut_out()` for `emergency_request` (Latch
     # consumption events).
 

@@ -58,7 +58,8 @@ def test_activate_cut_out_sets_latch_and_canonical_effects():
     assert controller.eb.cut_out is True
     # Shares every emergency-brake effect (design_new.md "Emergency cut-out").
     assert controller.ops.handle_position == HandlePosition.EB
-    assert controller.commands.control_mode == "manual"
+    # EB keeps control_mode and clears the engage bit.
+    assert controller.commands.control_mode == "ato"
     assert controller.commands.engaged is False
 
 
@@ -102,7 +103,7 @@ def test_cap_step_cut_out_de_energizes_in_every_submode(control_mode, manual_mod
     _network, controller = _make_powered_controller()
     controller.eb.activate_cut_out()
     # Set the submode directly to prove the cut-out branch is submode-independent
-    # (activation itself forces control_mode = manual).
+    # (activation leaves control_mode as it was).
     controller.commands.control_mode = control_mode
     controller.manual.manual_mode_type = manual_mode_type
 

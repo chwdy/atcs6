@@ -56,9 +56,9 @@ class EBWorkflow:
         The only acceptance gate is ``active == False`` (idempotent rejection of
         a duplicate activation). Valid in any motion state, any status including
         OFF, with or without an active path. On acceptance: set ``active =
-        True``, force handle to EB, set ``control_mode = "manual"`` (which clears
-        ``commands.engaged``), reset the power notch, and (when an active path
-        exists) write ``pending_path_cancel_request(EB)``. A dwelling train holds
+        True``, force handle to EB, clear ``commands.engaged`` while leaving
+        ``control_mode`` unchanged, reset the power notch, and (when an active
+        path exists) write ``pending_path_cancel_request(EB)``. A dwelling train holds
         no live path, so it writes no cancel and its dwell timer keeps counting.
 
         A cut-out (``cut_out=True``) performs every effect above and additionally
@@ -78,11 +78,11 @@ class EBWorkflow:
         if cut_out:
             self.cut_out = True
         c.ops.handle_position = HandlePosition.EB
-        # Canonical EB activation effect: EB leaves ATO, so control_mode goes
-        # manual and the engage bit clears (design_new.md "Driving mode" /
-        # "ATO status"). A released EB then leaves the train in manual until the
-        # operator re-selects ATO.
-        c.commands._write_control_mode("manual")
+        # Canonical EB activation effect: EB stops ATO driving, so the engage
+        # bit clears, but `control_mode` is left as it was (design_new.md
+        # "Canonical EB activation effects"). A released ATO train reads
+        # `ato_status == READY` and drives again only after `/ato/go`.
+        c.commands.engaged = False
         # EB springs both driver inputs to their safe rest: the handle is pinned
         # to EB above and the power notch is zeroed here, symmetric with the
         # per-tick EB hold. Nothing drives under EB, and no retained percentage
@@ -144,10 +144,10 @@ class EBWorkflow:
         This method clears ``active`` and ``cut_out`` together (a cut-out resets
         exactly as an emergency brake does, design_new.md "Emergency cut-out"),
         and resets the handle to neutral. It writes no ``train_status`` (that
-        read is derived): once ``active`` clears, a powered train reads
-        ``train_status == MANUAL`` (EB set ``control_mode`` to manual) with no
-        separate state write, per design_new.md "EB release". It does not
-        re-select ATO — the operator does that with ``set_mode("ato")`` and then
+        read is derived): once ``active`` clears, a powered train reads its
+        stored ``control_mode`` again, which EB left unchanged — ``MANUAL``, or
+        ``ATO`` with ``commands.engaged`` cleared, per design_new.md "EB
+        release". It writes no ``control_mode``; an ATO train drives again after
         ``/ato/go``. A train holding at a stop keeps holding after the release.
         """
         c = self._c

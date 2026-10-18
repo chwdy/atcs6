@@ -92,7 +92,7 @@ def test_a_block_two_trains_touch_goes_to_neither_and_cuts_both_out():
     assert network.blocks["BLK_1"].occupied_by == "T_W"
     assert network.blocks["BLK_3"].occupied_by == "T_E"
 
-    # Every candidate holds a cut-out request; the drain applies it.
+    # Every candidate holds a cut-out request; Action step 01f2 applies it.
     assert cut_out_requested(sim, "T_W")
     assert cut_out_requested(sim, "T_E")
     for train_id in ("T_W", "T_E"):
@@ -121,7 +121,7 @@ def test_a_standing_conflict_re_latches_on_every_read_and_reports_once():
     read(sim)
 
     # The block still resolves as a conflict, so T_W is cut out again. T_E is
-    # still cut out, and the drain would apply a fresh request as a no-op.
+    # still cut out, and step 01f2 would apply a fresh request as a no-op.
     assert network.blocks["BLK_2"].occupied_by is None
     assert cut_out_requested(sim, "T_W")
     sim.controllers["T_W"].commands.apply_emergency_request()

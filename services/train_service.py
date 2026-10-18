@@ -862,9 +862,10 @@ def release_emergency(state: AppState, train_id: str) -> CommandResult:
     latch-gated (stopped, EB cancellation committed, authority cleared). This
     is the operator surface for the "Release Emergency" / Reset button.
 
-    ``eb.release()`` clears only ``eb.active``; `train_status` is derived, so
-    once the latch clears a powered train reads `train_status == MANUAL` with no
-    further state write needed (design_new.md "EB release").
+    ``eb.release()`` clears ``eb.active``; `train_status` is derived, so once
+    the latch clears a powered train reads its stored `control_mode` again —
+    `MANUAL`, or `ATO` waiting for `/ato/go` — with no further state write
+    (design_new.md "EB release").
     """
     controller = _controller(state, require_train(state, train_id))
     result = controller.eb.release()
