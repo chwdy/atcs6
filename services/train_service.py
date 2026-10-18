@@ -796,6 +796,16 @@ def ato_go(state: AppState, train_id: str) -> CommandResult:
     return _controller(state, require_train(state, train_id)).commands.ato_go()
 
 
+@operator_command("start_route")
+def start_route(state: AppState, train_id: str) -> CommandResult:
+    """Start a stopped train on its assigned route under ATO in one command.
+
+    The Start route button (design_new.md "Start route"): powers the train up
+    when OFF, selects ATO, and engages it.
+    """
+    return _controller(state, require_train(state, train_id)).commands.start_route()
+
+
 @operator_command("ato_stop")
 def ato_stop(state: AppState, train_id: str) -> CommandResult:
     """Pause ATO driving (train holds; used by both /stop and /ato-stop).

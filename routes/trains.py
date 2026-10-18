@@ -711,6 +711,16 @@ def register(app, state: AppState) -> None:
         result = train_service.ato_go(state, train_id)
         return _command_response(train, result)
 
+    @app.route("/api/trains/<train_id>/start-route", methods=["POST"])
+    def start_route(train_id):
+        """Start the train on its assigned route under ATO (design_new.md
+        "Start route"): power up when OFF, select ATO, and engage."""
+        train = train_service.get_train(state, train_id)
+        if not train:
+            return jsonify({"error": "Train not found"}), 404
+        result = train_service.start_route(state, train_id)
+        return _command_response(train, result)
+
     @app.route("/api/trains/<train_id>/ato-stop", methods=["POST"])
     def ato_stop(train_id):
         """Stop ATO movement (service stop)."""

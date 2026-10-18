@@ -1541,6 +1541,16 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
+  /** Start the train on its assigned route under ATO in one command:
+   *  power up when OFF, select ATO, and engage (design_new.md "Start route"). */
+  async startRoute(trainId: string): Promise<any> {
+    return this._request(
+      `/trains/${encodeURIComponent(trainId)}/start-route`,
+      { method: 'POST' },
+      'startRoute'
+    );
+  }
+
   /** Start ATO movement via OnboardComputer. */
   async atoGo(trainId: string): Promise<any> {
     return this._request(

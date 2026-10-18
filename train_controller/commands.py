@@ -349,6 +349,49 @@ class OperatorCommands:
         self.engaged = False
         return CommandResult(True, "ATO stop")
 
+    def start_route(self) -> CommandResult:
+        """Start a stopped train on its assigned route under ATO in one command
+        (design_new.md "Start route").
+
+        Accepted only when all five hold: the train is stopped, `eb.active` is
+        False, no calibration run is open for it, no power-off is pending, and a
+        route is assigned. Otherwise it returns `success=False` and changes
+        nothing. On acceptance it runs, in order, `power_on_cmd()` (only when the
+        train is OFF), `set_mode("ato")`, and `ato_go()`, so each write is the one
+        its own command makes and Start route adds none of its own. Issued on an
+        ATO train that is already engaged, it changes nothing.
+        """
+        from enums import TrainStatus
+
+        c = self._c
+        if c._get_train() is None:
+            return CommandResult(False, "Train not found")
+        if not c.is_stopped():
+            return CommandResult(False, "Cannot start a route while moving")
+        if c.eb.active:
+            return CommandResult(False, "Release the emergency brake first")
+        if c.calibration_run_open():
+            return CommandResult(False, "Cannot start a route during calibration")
+        if c.route_hooks.phase_latches.power_off:
+            return CommandResult(False, "Cannot start a route while a power-off is pending")
+        route_executor = c.route_executor
+        if (
+            route_executor is None
+            or route_executor.assigned_route_id_for(c.train_id) is None
+        ):
+            return CommandResult(False, "Start route requires a route assigned to the train")
+
+        if c.ops.train_status == TrainStatus.ATO and self.engaged:
+            return CommandResult(True, "Route already started")
+
+        # The five checks above cover every refusal of the three commands below,
+        # so each one is accepted here.
+        if not c.powered:
+            self.power_on_cmd()
+        self.set_mode("ato")
+        self.ato_go()
+        return CommandResult(True, "Route started")
+
     def set_mode(self, mode: str) -> CommandResult:
         """
         Set control mode (ATO or Manual).
