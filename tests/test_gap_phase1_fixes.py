@@ -128,7 +128,8 @@ def test_api_trains_composite_carries_ato_status(tmp_path):
 
     resp = client.get("/api/trains")
     assert resp.status_code == 200
-    controller_payload = resp.get_json()["controllers_by_train_id"]["T"]
-    # The key must be present (previously omitted, so the FE fell back to
-    # 'ready'); its value is a read-model projection, possibly None with no route.
-    assert "ato_status" in controller_payload
+    # `/api/trains` and `/api/network` share one builder, so the read model is
+    # served here too, in `operator_status_by_train_id` (design_new.md "Data
+    # Flow To UI").
+    status = resp.get_json()["operator_status_by_train_id"]["T"]
+    assert set(status) == {"ato_status", "pending_actions", "hold_reason"}

@@ -18,7 +18,12 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/network", methods=["GET"])
     def get_network():
-        payload = build_network_payload(state.network, state.sim_controller)
+        payload = build_network_payload(
+            state.network,
+            state.sim_controller,
+            session_running=bool(state.simulation_running),
+            commissioning=bool(getattr(state, "commissioning_active", False)),
+        )
         payload["simulation_running"] = state.simulation_running
         payload["simulation_speed"] = state.simulation_speed
         return jsonify(payload)

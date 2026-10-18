@@ -9,7 +9,6 @@ controller's `CommandResult`; a non-success result maps to 400.
 """
 
 import time
-from typing import Dict
 
 from flask import jsonify, request
 
@@ -17,6 +16,7 @@ from app_state import AppState
 from constants import LIGHTING_VOLTAGE_STEP_V
 from services import ConflictError, NotFoundError, ValidationError
 from services import train_service
+from simulation import build_train_runtime_maps, train_runtime_entry
 
 
 def register(app, state: AppState) -> None:
@@ -31,7 +31,8 @@ def register(app, state: AppState) -> None:
 
         Per `design_new.md` "Data Flow To UI", live runtime state belongs to
         the TrainController and PathDispatcher rather than to Train itself.
-        This helper returns three sibling sub-payloads:
+        This helper returns four sibling sub-payloads, built by the shared
+        `simulation.train_runtime_entry(...)`:
 
           - ``train``: persistent/configuration state from `Train.to_dict()`
           - ``controller``: live runtime state from `TrainController.to_dict()`
@@ -39,6 +40,8 @@ def register(app, state: AppState) -> None:
           - ``dispatcher_progress``: dispatcher-owned path projection from
             `PathDispatcher.get_active_path_progress(train_id)` (or None
             when no active path exists)
+          - ``operator_status``: `{ato_status, pending_actions, hold_reason}`,
+            so a command reply, refused or not, carries the train's hold reason
 
         Args:
             train: Train instance to serialize.
@@ -47,81 +50,24 @@ def register(app, state: AppState) -> None:
         Returns:
             Sibling-payload dict.
         """
-        controller_dict = None
-        dispatcher_dict = None
-
-        if state.sim_controller:
-            try:
-                controller = _get_train_controller(train)
-                if controller is not None:
-                    controller_dict = controller.to_dict()
-            except Exception as e:
-                import logging
-
-                logging.getLogger(__name__).debug(
-                    "Failed to serialize controller for train %s: %s",
-                    train.train_id,
-                    e,
-                )
-
-            # `ato_status` is a read-model projection assembled here, not a
-            # controller field (design_new.md "ATO status"): mirror the
-            # /api/network snapshot so a train fetched through this composite
-            # (e.g. GET /api/trains) carries it too, rather than the FE helper
-            # falling back to 'ready'.
-            if controller_dict is not None:
-                route_executor = getattr(state.sim_controller, "route_executor", None)
-                try:
-                    controller_dict["ato_status"] = (
-                        route_executor.ato_status_for(train.train_id)
-                        if route_executor is not None
-                        else None
-                    )
-                except Exception:
-                    controller_dict["ato_status"] = None
-
-            dispatcher = getattr(state.sim_controller, "path_dispatcher", None)
-            if dispatcher is not None:
-                try:
-                    dispatcher_dict = dispatcher.get_active_path_progress(
-                        train.train_id
-                    )
-                except Exception as e:
-                    import logging
-
-                    logging.getLogger(__name__).debug(
-                        "Failed to read dispatcher progress for train %s: %s",
-                        train.train_id,
-                        e,
-                    )
-                # design_new.md "Data Flow To UI": `waiting_for_block_id` is
-                # composed here from the route-supplied
-                # `get_waiting_for_block_id(...)` call, not inside
-                # `get_active_path_progress(...)`.
-                if dispatcher_dict is not None:
-                    route_executor = getattr(
-                        state.sim_controller, "route_executor", None
-                    )
-                    try:
-                        dispatcher_dict["waiting_for_block_id"] = (
-                            route_executor.waiting_for_block_id_for(train.train_id)
-                            if route_executor is not None
-                            else None
-                        )
-                    except Exception as e:
-                        import logging
-
-                        logging.getLogger(__name__).debug(
-                            "Failed to compose waiting_for_block_id for train %s: %s",
-                            train.train_id,
-                            e,
-                        )
-                        dispatcher_dict["waiting_for_block_id"] = None
-
+        if not state.sim_controller:
+            return {
+                "train": train.to_dict(network=network),
+                "controller": None,
+                "dispatcher_progress": None,
+                "operator_status": None,
+            }
+        entry = train_runtime_entry(
+            state.sim_controller,
+            train,
+            session_running=bool(state.simulation_running),
+            commissioning=bool(getattr(state, "commissioning_active", False)),
+        )
         return {
             "train": train.to_dict(network=network),
-            "controller": controller_dict,
-            "dispatcher_progress": dispatcher_dict,
+            "controller": entry["controller"],
+            "dispatcher_progress": entry["dispatcher_progress"],
+            "operator_status": entry["operator_status"],
         }
 
     # ============================================================================
@@ -161,41 +107,21 @@ def register(app, state: AppState) -> None:
 
         Per design_new.md "Data Flow To UI": expose `trains`,
         `controllers_by_train_id`, `dispatcher_progress_by_train_id`,
-        `assigned_routes_by_train_id`, and `route_runs_by_train_id` as sibling
-        collections.
+        `assigned_routes_by_train_id`, `route_runs_by_train_id`, and
+        `operator_status_by_train_id` as sibling collections, from the same
+        builder `/api/network` uses.
         """
-        trains_list = []
-        controllers_by_train_id: Dict[str, object] = {}
-        dispatcher_by_train_id: Dict[str, object] = {}
-        assigned_routes_by_train_id: Dict[str, object] = {}
-        route_runs_by_train_id: Dict[str, object] = {}
-        route_executor = (
-            state.sim_controller.route_executor if state.sim_controller else None
+        maps = build_train_runtime_maps(
+            state.network,
+            state.sim_controller,
+            session_running=bool(state.simulation_running),
+            commissioning=bool(getattr(state, "commissioning_active", False)),
         )
-        for train in train_service.list_trains(state):
-            payload = _train_to_dict(train, state.network)
-            trains_list.append(payload["train"])
-            controllers_by_train_id[train.train_id] = payload["controller"]
-            dispatcher_by_train_id[train.train_id] = payload["dispatcher_progress"]
-            assigned_routes_by_train_id[train.train_id] = (
-                route_executor.assigned_route_id_for(train.train_id)
-                if route_executor
-                else None
-            )
-            route_runs_by_train_id[train.train_id] = (
-                route_executor.route_run_summary_for(train.train_id)
-                if route_executor
-                else None
-            )
-        return jsonify(
-            {
-                "trains": trains_list,
-                "controllers_by_train_id": controllers_by_train_id,
-                "dispatcher_progress_by_train_id": dispatcher_by_train_id,
-                "assigned_routes_by_train_id": assigned_routes_by_train_id,
-                "route_runs_by_train_id": route_runs_by_train_id,
-            }
-        )
+        trains_list = [
+            train.to_dict(network=state.network)
+            for train in train_service.list_trains(state)
+        ]
+        return jsonify({"trains": trains_list, **maps})
 
     @app.route("/api/trains/<train_id>", methods=["GET"])
     def get_train(train_id):
@@ -272,18 +198,6 @@ def register(app, state: AppState) -> None:
                 **_train_to_dict(train, state.network),
             }
         )
-
-    @app.route("/api/trains/<train_id>/why-stopped", methods=["GET"])
-    def why_stopped(train_id):
-        """Explain why a train is not moving, one gate at a time.
-
-        The gates are ordered the way they actually bite; `blocking_gate` names
-        the first one that is shut, which is the only one worth fixing.
-        """
-        try:
-            return jsonify(train_service.diagnose_stopped_train(state, train_id))
-        except NotFoundError:
-            return jsonify({"error": "Train not found"}), 404
 
     # ============================================================================
     # Train Power and Direction Control

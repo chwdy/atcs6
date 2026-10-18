@@ -2464,7 +2464,10 @@ export class Editor {
                 ${trainsAtTile
                   .map((train: any) => {
                     const controller: any = this.stateManager?.getController(train.id);
-                    const status = trainDisplayStatus(controller);
+                    const status = trainDisplayStatus(
+                      controller,
+                      this.stateManager?.getOperatorStatus(train.id),
+                    );
                     const dotColor =
                       status === 'eb'
                         ? 'var(--danger-color)'

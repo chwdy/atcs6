@@ -3693,30 +3693,139 @@ class SimulationController(SwitchOutputOwner):
         )
 
 
+def train_runtime_entry(
+    sim_controller: "SimulationController",
+    train: Train,
+    *,
+    session_running: bool,
+    commissioning: bool,
+) -> Dict[str, Any]:
+    """One train's live runtime data, in the sibling-payload shape.
+
+    The one builder for a train's live data (design_new.md "Data Flow To UI"):
+    `/api/network`, `/api/trains`, and every command reply read it, so they
+    cannot drift. Returns `{controller, dispatcher_progress, assigned_route_id,
+    route_run, operator_status}`:
+
+      - `controller`: `TrainController.to_dict()`
+      - `dispatcher_progress`: `PathDispatcher.get_active_path_progress(...)`
+        with the route-supplied `waiting_for_block_id`, or None
+      - `assigned_route_id`: `RouteExecutor.assigned_route_id_for(...)`
+      - `route_run`: the RouteExecutor 5-field summary of the RUNNING run, or None
+      - `operator_status`: `{ato_status, pending_actions, hold_reason}`, the
+        read models that need controller and route state together
+    """
+    from operator_status import operator_status_for
+
+    train_id = train.train_id
+    controller = sim_controller._get_or_create_controller(train)
+    path_dispatcher = getattr(sim_controller, "path_dispatcher", None)
+    route_executor = getattr(sim_controller, "route_executor", None)
+
+    progress = (
+        path_dispatcher.get_active_path_progress(train_id)
+        if path_dispatcher is not None
+        else None
+    )
+    # design_new.md "Data Flow To UI": `waiting_for_block_id` is composed here
+    # from the route-supplied `get_waiting_for_block_id(...)` call, not inside
+    # `get_active_path_progress(...)`. It needs the run's `resolved_target` plus
+    # manual override, which `RouteExecutor.waiting_for_block_id_for(...)`
+    # assembles.
+    if progress is not None:
+        progress["waiting_for_block_id"] = (
+            route_executor.waiting_for_block_id_for(train_id)
+            if route_executor is not None
+            else None
+        )
+
+    return {
+        "controller": controller.to_dict(),
+        "dispatcher_progress": progress,
+        "assigned_route_id": (
+            route_executor.assigned_route_id_for(train_id)
+            if route_executor is not None
+            else None
+        ),
+        "route_run": (
+            route_executor.route_run_summary_for(train_id)
+            if route_executor is not None
+            else None
+        ),
+        "operator_status": operator_status_for(
+            sim_controller,
+            train,
+            session_running=session_running,
+            commissioning=commissioning,
+        ),
+    }
+
+
+def build_train_runtime_maps(
+    network: RailwayNetwork,
+    sim_controller: Optional["SimulationController"],
+    *,
+    session_running: bool,
+    commissioning: bool,
+) -> Dict[str, Dict[str, Any]]:
+    """The five per-train sibling maps, keyed by `train_id` (design_new.md
+    "Data Flow To UI"): `controllers_by_train_id`,
+    `dispatcher_progress_by_train_id`, `assigned_routes_by_train_id`,
+    `route_runs_by_train_id`, and `operator_status_by_train_id`. Empty maps
+    when there is no runtime."""
+    maps: Dict[str, Dict[str, Any]] = {
+        "controllers_by_train_id": {},
+        "dispatcher_progress_by_train_id": {},
+        "assigned_routes_by_train_id": {},
+        "route_runs_by_train_id": {},
+        "operator_status_by_train_id": {},
+    }
+    if not sim_controller:
+        return maps
+    for train_id, train in network.trains.items():
+        entry = train_runtime_entry(
+            sim_controller,
+            train,
+            session_running=session_running,
+            commissioning=commissioning,
+        )
+        maps["controllers_by_train_id"][train_id] = entry["controller"]
+        maps["dispatcher_progress_by_train_id"][train_id] = entry["dispatcher_progress"]
+        maps["assigned_routes_by_train_id"][train_id] = entry["assigned_route_id"]
+        maps["route_runs_by_train_id"][train_id] = entry["route_run"]
+        maps["operator_status_by_train_id"][train_id] = entry["operator_status"]
+    return maps
+
+
 def build_network_payload(
     network: RailwayNetwork,
     sim_controller: Optional["SimulationController"],
+    *,
+    session_running: bool = True,
+    commissioning: bool = False,
 ) -> Dict[str, Any]:
     """Build network payload in the canonical sibling-payload shape.
 
-    Per design_new.md "Data Flow To UI", live runtime data
-    is exposed as sibling maps alongside the persistent `trains` list,
-    never merged into Train.to_dict() output:
+    Per design_new.md "Data Flow To UI", live runtime data is exposed as
+    sibling maps alongside the persistent `trains` list, never merged into
+    Train.to_dict() output (see `build_train_runtime_maps`).
 
-      - `controllers_by_train_id`: TrainController.to_dict() per train
-      - `dispatcher_progress_by_train_id`: PathDispatcher progress per train
-      - `assigned_routes_by_train_id`: RouteExecutor-derived route id per train
-      - `route_runs_by_train_id`: RouteExecutor 5-field summary
-        ({route_id, run_number, state, display_state, last_error}) of the
-        train's currently-RUNNING RouteRun, or None
+    `session_running` and `commissioning` are the session state on `AppState`
+    that the hold reason's first question reads. The HTTP snapshot passes them;
+    a caller with no `AppState` (the scenario runner) is ticking the runtime
+    itself, so the defaults read it as running and not commissioning.
     """
     payload = network.to_dict()
+    payload.update(
+        build_train_runtime_maps(
+            network,
+            sim_controller,
+            session_running=session_running,
+            commissioning=commissioning,
+        )
+    )
 
     if not sim_controller:
-        payload["controllers_by_train_id"] = {}
-        payload["dispatcher_progress_by_train_id"] = {}
-        payload["assigned_routes_by_train_id"] = {}
-        payload["route_runs_by_train_id"] = {}
         payload["simulation_time"] = 0.0
         payload["failed_runtime"] = False
         payload["failed_runtime_conflict"] = None
@@ -3730,74 +3839,6 @@ def build_network_payload(
         return payload
 
     payload["simulation_time"] = float(sim_controller.simulation_time)
-
-    path_dispatcher = getattr(sim_controller, "path_dispatcher", None)
-    route_executor = getattr(sim_controller, "route_executor", None)
-
-    controllers_by_train_id: Dict[str, Any] = {}
-    dispatcher_progress_by_train_id: Dict[str, Any] = {}
-    assigned_routes_by_train_id: Dict[str, Any] = {}
-    route_runs_by_train_id: Dict[str, Any] = {}
-
-    for train_id, train in network.trains.items():
-        controller = sim_controller._get_or_create_controller(train)
-        controller_payload = controller.to_dict()
-        # `ato_status` is a read-model projection, not a controller field
-        # (design_new.md "ATO status"): the read model assembles it here from the
-        # controller's derived `train_status` / `commands.engaged` /
-        # stopped-predicate plus the train's route-run state, then exposes it on
-        # the controller payload alongside the derived `train_status`.
-        if route_executor is not None:
-            try:
-                controller_payload["ato_status"] = route_executor.ato_status_for(train_id)
-            except Exception:
-                controller_payload["ato_status"] = None
-        controllers_by_train_id[train_id] = controller_payload
-
-        if path_dispatcher is not None:
-            try:
-                progress = path_dispatcher.get_active_path_progress(train_id)
-            except Exception as e:
-                progress = None
-            # design_new.md "Data Flow To UI": `waiting_for_block_id` is composed
-            # here from the route-supplied `get_waiting_for_block_id(...)` call,
-            # not inside `get_active_path_progress(...)`. It needs the run's
-            # `resolved_target` plus manual override, which
-            # `RouteExecutor.waiting_for_block_id_for(...)` assembles.
-            if progress is not None:
-                try:
-                    progress["waiting_for_block_id"] = (
-                        route_executor.waiting_for_block_id_for(train_id)
-                        if route_executor is not None
-                        else None
-                    )
-                except Exception:
-                    progress["waiting_for_block_id"] = None
-            dispatcher_progress_by_train_id[train_id] = progress
-        else:
-            dispatcher_progress_by_train_id[train_id] = None
-
-        if route_executor is not None:
-            try:
-                assigned_routes_by_train_id[train_id] = (
-                    route_executor.assigned_route_id_for(train_id)
-                )
-            except Exception as e:
-                assigned_routes_by_train_id[train_id] = None
-            try:
-                route_runs_by_train_id[train_id] = (
-                    route_executor.route_run_summary_for(train_id)
-                )
-            except Exception as e:
-                route_runs_by_train_id[train_id] = None
-        else:
-            assigned_routes_by_train_id[train_id] = None
-            route_runs_by_train_id[train_id] = None
-
-    payload["controllers_by_train_id"] = controllers_by_train_id
-    payload["dispatcher_progress_by_train_id"] = dispatcher_progress_by_train_id
-    payload["assigned_routes_by_train_id"] = assigned_routes_by_train_id
-    payload["route_runs_by_train_id"] = route_runs_by_train_id
 
     # Run mode (design_new.md "Session mode and operating environment"). The UI reads these to stop calling a
     # railway with real hardware on it a simulation, and to decide whether the

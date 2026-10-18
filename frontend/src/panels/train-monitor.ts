@@ -538,7 +538,7 @@ class TrainMonitor {
 
         this.lookaheadData = {
             current_speed_kmh: controller?.current_speed ?? 0,
-            state: trainDisplayStatus(controller),
+            state: trainDisplayStatus(controller, stateManager?.getOperatorStatus(train.id)),
             speed_limit_reason: speedLimitReason,
             blocks: lookahead?.blocks || [],
             signals: lookahead?.signals || [],

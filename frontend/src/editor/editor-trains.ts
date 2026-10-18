@@ -10,6 +10,7 @@
 
 import { stateManager } from '../lib/state-manager';
 import { atoGoUnavailableReason, trainDisplayStatus } from '../lib/train-status';
+import { holdReasonText } from '../lib/hold-reason';
 import { formatSpeedReadout, formatATOEta, formatSimClock, middleTruncate } from './train-format';
 import { showToast } from '../lib/toast';
 import { copyIdButton } from '../lib/copy-id';
@@ -42,9 +43,6 @@ export class TrainEditorHandler {
   _adoptHeadTile: { x: number; y: number } | null;
   _adoptFacing: string | null;
   _adoptClaimedTiles: Array<[number, number]>;
-  // Last gate-relevant controller state the why-stopped banner was refreshed
-  // for, so a live controller push does not re-ask on every tick.
-  _lastGateKey: string | null;
 
   constructor(editor: EditorHost) {
     this.editor = editor;
@@ -61,7 +59,6 @@ export class TrainEditorHandler {
     this._adoptHeadTile = null;
     this._adoptFacing = null;
     this._adoptClaimedTiles = [];
-    this._lastGateKey = null;
   }
 
   get api(): any {
@@ -603,7 +600,7 @@ export class TrainEditorHandler {
   renderTrainListItem(train: any): string {
     if (train.is_unidentified) return this.renderUnidentifiedTrainListItem(train);
     const controller: any = stateManager?.getController(train.id);
-    const state = trainDisplayStatus(controller);
+    const state = trainDisplayStatus(controller, stateManager?.getOperatorStatus(train.id));
     const accent = this.getTrainAccent(state);
     const stateLabel = state.toUpperCase();
 
@@ -1055,11 +1052,14 @@ export class TrainEditorHandler {
     let train;
     let controller: any;
     let dispatcher: any;
+    let operatorStatus: any;
     try {
       const trainResp = await this.api.getTrain(trainId);
       train = trainResp?.train;
       controller = trainResp?.controller;
       dispatcher = trainResp?.dispatcher_progress;
+      operatorStatus = trainResp?.operator_status;
+      if (operatorStatus) stateManager?.updateEntity('operatorStatus', trainId, operatorStatus);
     } catch (err: any) {
       // A 404 means this train isn't in the current scene (typically a
       // persisted tab restored against a scene that lacks it). That's not an
@@ -1090,7 +1090,7 @@ export class TrainEditorHandler {
       return;
     }
 
-    const trainState = trainDisplayStatus(controller);
+    const trainState = trainDisplayStatus(controller, operatorStatus);
     const trainStateClass = this.getTrainStateVisualClass(trainState);
 
     // Speed-profile picker options. The panel lets the operator re-point a
@@ -1547,36 +1547,24 @@ export class TrainEditorHandler {
     this._refreshWhyStopped(trainId);
   }
 
-  /** Fill the "why isn't it moving" banner from the runtime's gate walk.
+  /** Fill the "why isn't it moving" banner from the train's hold reason.
    *
-   *  Only shown while the train is standing still and something is actually
-   *  holding it: a moving train needs no explanation, and a train the operator
-   *  has deliberately parked should not nag. */
-  async _refreshWhyStopped(trainId: string): Promise<void> {
+   *  The server assembles `hold_reason` in the operator status read model
+   *  (design_new.md "Hold reason"); it is null while the train moves or when
+   *  nothing holds it, and the banner is hidden then. */
+  _refreshWhyStopped(trainId: string): void {
     const el = document.getElementById('train-why-stopped');
     if (!el) return;
-    let report: any;
-    try {
-      report = await this.api.getWhyStopped(trainId);
-    } catch (err) {
-      console.debug('[TrainEditorHandler] why-stopped unavailable:', err);
-      el.hidden = true;
-      return;
-    }
-    // The panel may have been swapped for another train while this was in
-    // flight; a stale answer is worse than none.
     if (this._trainId && this._trainId !== trainId) return;
-    if (report?.moving || !report?.blocking_gate) {
+    const text = holdReasonText(stateManager?.getOperatorStatus(trainId)?.hold_reason);
+    if (!text) {
       el.hidden = true;
       return;
     }
-    const gate = (report.gates || []).find((g: any) => g.name === report.blocking_gate);
-    if (!gate) {
-      el.hidden = true;
-      return;
-    }
-    el.innerHTML =
-      `<strong>Not moving:</strong> ${gate.detail}.` + (gate.fix ? ` ${gate.fix}` : '');
+    el.textContent = '';
+    const label = document.createElement('strong');
+    label.textContent = 'Not moving:';
+    el.append(label, ` ${text}`);
     el.hidden = false;
   }
 
@@ -1641,6 +1629,9 @@ export class TrainEditorHandler {
           }
           if (result.dispatcher_progress !== undefined) {
             stateManager?.updateEntity('dispatcherProgress', trainId, result.dispatcher_progress);
+          }
+          if (result.operator_status) {
+            stateManager?.updateEntity('operatorStatus', trainId, result.operator_status);
           }
           return;
         }
@@ -1937,6 +1928,21 @@ export class TrainEditorHandler {
       { immediate: false }
     );
 
+    // The operator status read model (ato_status, pending actions, hold
+    // reason) can change while the controller payload does not, e.g. when the
+    // session starts, so the panel follows it on its own.
+    const unsubOperatorStatus = stateManager?.subscribe(
+      'operatorStatus',
+      trainId,
+      () => {
+        const train = stateManager?.get('trains', trainId);
+        if (train) {
+          this._onTrainUpdate(train, train);
+        }
+      },
+      { immediate: false }
+    );
+
     const unsubClock = stateManager?.subscribeSimClock((simTime: number) => {
       const panel = document.querySelector(`.tc-panel[data-train-id="${trainId}"]`);
       const simTimeEl = panel?.querySelector('#hmi-time');
@@ -1981,6 +1987,11 @@ export class TrainEditorHandler {
         /* ignore */
       }
       try {
+        unsubOperatorStatus && unsubOperatorStatus();
+      } catch (e) {
+        /* ignore */
+      }
+      try {
         unsubClock && unsubClock();
       } catch (e) {
         /* ignore */
@@ -2021,22 +2032,6 @@ export class TrainEditorHandler {
   _updateControllerDisplay(controller: any): void {
     if (!controller) return;
 
-    // Re-ask why it is standing still, but only on a state change worth
-    // re-asking on — the answer only moves when power, cab, ATO or authority
-    // does, and this runs on every live controller push.
-    const gateKey = [
-      controller.train_status,
-      controller.ato_status,
-      controller.cab,
-      controller.engaged,
-      controller.handle_position,
-      controller.assigned_path_id ?? controller.ato_path_id ?? null,
-      (controller.current_speed || 0) > 0,
-    ].join('|');
-    if (this._trainId && gateKey !== this._lastGateKey) {
-      this._lastGateKey = gateKey;
-      this._refreshWhyStopped(this._trainId);
-    }
 
     const handlePosition = controller.handle_position || 'N';
     const powerOn = controller.power_on ?? false;
@@ -2110,7 +2105,11 @@ export class TrainEditorHandler {
     if (!panel) return;
 
     const controller: any = stateManager?.getController(train.id) || null;
-    const trainState = trainDisplayStatus(controller);
+    const trainState = trainDisplayStatus(controller, stateManager?.getOperatorStatus(train.id));
+
+    // The hold reason arrives with every snapshot; re-render the banner from
+    // the cached read model on each live update.
+    this._refreshWhyStopped(train.id);
 
     const stateEl = panel.querySelector('.train-state-display');
     if (stateEl) {
@@ -2525,7 +2524,7 @@ export class TrainEditorHandler {
 
   updateButtonStates(train: any): void {
     const controller: any = stateManager?.getController(train.id) || null;
-    const state = trainDisplayStatus(controller);
+    const state = trainDisplayStatus(controller, stateManager?.getOperatorStatus(train.id));
     const powerOn = controller?.power_on ?? false;
     // In v1, manual is a control mode (controller.control_mode), not a state.
     const isManual = controller?.control_mode === 'manual';

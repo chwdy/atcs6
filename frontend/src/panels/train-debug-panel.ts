@@ -51,7 +51,10 @@ export function updateTrainDebugPanel(train: any): void {
   }
 
   panel!.querySelector('[data-debug-field="train-id"]')!.textContent = train.id;
-  panel!.querySelector('[data-debug-field="state"]')!.textContent = trainDisplayStatus(controller);
+  panel!.querySelector('[data-debug-field="state"]')!.textContent = trainDisplayStatus(
+    controller,
+    stateManager.getOperatorStatus(train.id),
+  );
 
   // Resource sequence: rebuild children only when the sequence identity
   // changes (path reassigned / extended). Otherwise just toggle the

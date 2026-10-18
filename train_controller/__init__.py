@@ -2588,6 +2588,12 @@ class TrainController:
         """
         return self.physics_sync.current_span
 
+    def atc_limit_at_distance_zero(self) -> Tuple[float, Optional[AtcLimitReasonCode]]:
+        """The distance-`0` ATC limit and its reason code from the canonical
+        lookahead payload — the read the `reservation_end` and `atc_limit` hold
+        reasons use (design_new.md "Hold reason")."""
+        return self._distance_zero_atc_anchor()
+
     def _distance_zero_atc_anchor(
         self,
     ) -> Tuple[float, Optional[AtcLimitReasonCode]]:

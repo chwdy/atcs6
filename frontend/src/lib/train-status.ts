@@ -1,16 +1,18 @@
 /**
- * Collapse the two-field controller status into one display token.
+ * Collapse the train's status into one display token.
  *
- * The overall status is `controller.train_status` (off / manual / ato / eb). An
- * ATO train additionally carries its ATO-motion detail in the read-model
- * `controller.ato_status` (ready / running / held / dwelling), so an ATO train
- * displays that detail while every other train displays its overall status.
- * Mirrors design_new.md "Controller state machine" and "ATO status". Replaces
- * the removed single `controller.state`.
+ * The overall status is `controller.train_status` (off / manual / ato / eb /
+ * calibrating). An ATO train additionally carries its ATO-motion detail in the
+ * read model's `ato_status` (ready / running / held / dwelling), served in
+ * `operator_status_by_train_id`, so an ATO train displays that detail while
+ * every other train displays its overall status. Mirrors design_new.md
+ * "Controller state machine" and "ATO status".
  */
-export function trainDisplayStatus(controller: any): string {
+export function trainDisplayStatus(controller: any, operatorStatus?: any): string {
   const trainStatus = controller?.train_status || 'off';
-  if (trainStatus === 'ato') return controller?.ato_status || 'ready';
+  // `ato_status` values are upper case (`READY`, `RUNNING`, ...); display
+  // tokens are lower case like `train_status`.
+  if (trainStatus === 'ato') return String(operatorStatus?.ato_status || 'ready').toLowerCase();
   return trainStatus;
 }
 

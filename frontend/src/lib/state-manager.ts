@@ -51,6 +51,7 @@ export class StateManager {
       controllers: new Map(), // trainId → TrainController.to_dict()
       dispatcherProgress: new Map(), // trainId → dispatcher progress dict | null
       assignedRoutes: new Map(), // trainId → assigned route_id | null
+      operatorStatus: new Map(), // trainId → {ato_status, pending_actions, hold_reason}
       blocks: new Map(), // blockId → block data object
       signals: new Map(), // signalId → signal data object
       switches: new Map(), // switchId → switch data object
@@ -70,6 +71,7 @@ export class StateManager {
       controllers: new Map(),
       dispatcherProgress: new Map(),
       assignedRoutes: new Map(),
+      operatorStatus: new Map(),
       blocks: new Map(),
       signals: new Map(),
       switches: new Map(),
@@ -235,6 +237,15 @@ export class StateManager {
     return this.state.assignedRoutes.get(trainId);
   }
 
+  /**
+   * Get the operator status read model for a train (or undefined).
+   * Source: `operator_status_by_train_id`: `{ato_status, pending_actions,
+   * hold_reason}` (design_new.md "Data Flow To UI").
+   */
+  getOperatorStatus(trainId: string): EntityData | undefined {
+    return this.state.operatorStatus.get(trainId);
+  }
+
   // ═══════════════════════════════════════════════════════════════════
   // DATA UPDATE API
   // ═══════════════════════════════════════════════════════════════════
@@ -365,6 +376,18 @@ export class StateManager {
       }
       for (const deletedId of currentAssignedRouteIds) {
         this.removeEntity('assignedRoutes', deletedId);
+      }
+
+      // ─────────────────────────────────────────────────────────
+      // UPDATE OPERATOR STATUS (read model per train)
+      // ─────────────────────────────────────────────────────────
+      const currentOperatorStatusIds = new Set(this.state.operatorStatus.keys());
+      for (const [tid, status] of Object.entries(network.operator_status_by_train_id || {})) {
+        this.updateEntity('operatorStatus', tid, status);
+        currentOperatorStatusIds.delete(tid);
+      }
+      for (const deletedId of currentOperatorStatusIds) {
+        this.removeEntity('operatorStatus', deletedId);
       }
 
       // ─────────────────────────────────────────────────────────
@@ -504,6 +527,7 @@ export class StateManager {
         controllers: this.state.controllers.size,
         dispatcherProgress: this.state.dispatcherProgress.size,
         assignedRoutes: this.state.assignedRoutes.size,
+        operatorStatus: this.state.operatorStatus.size,
         blocks: this.state.blocks.size,
         signals: this.state.signals.size,
         switches: this.state.switches.size,
@@ -515,6 +539,7 @@ export class StateManager {
         controllers: this._countSubscribers('controllers'),
         dispatcherProgress: this._countSubscribers('dispatcherProgress'),
         assignedRoutes: this._countSubscribers('assignedRoutes'),
+        operatorStatus: this._countSubscribers('operatorStatus'),
         blocks: this._countSubscribers('blocks'),
         signals: this._countSubscribers('signals'),
         switches: this._countSubscribers('switches'),

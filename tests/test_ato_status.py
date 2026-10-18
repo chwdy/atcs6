@@ -107,4 +107,7 @@ def test_composite_payload_exposes_ato_status():
     _running_run(sim, "TR")
 
     payload = build_network_payload(net, sim)
-    assert payload["controllers_by_train_id"]["TR"]["ato_status"] == AtoStatus.RUNNING.value
+    # `ato_status` is a read model, served in `operator_status_by_train_id`, not
+    # on the controller payload (design_new.md "Data Flow To UI").
+    assert payload["operator_status_by_train_id"]["TR"]["ato_status"] == AtoStatus.RUNNING.value
+    assert "ato_status" not in payload["controllers_by_train_id"]["TR"]

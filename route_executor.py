@@ -1056,6 +1056,22 @@ class RouteExecutor:
         task = route.get_task_at(row.task_index) if hasattr(route, "get_task_at") else None
         return task is not None and getattr(task, "task_kind", None) == "dwell"
 
+    def run_is_dwelling(self, train_id: str) -> bool:
+        """Whether the train's RUNNING run is at a started, unfinished `dwell`
+        row — the "at station" read the `dwelling` hold reason uses
+        (design_new.md "Hold reason")."""
+        run = self.execution_states.get(train_id)
+        if run is None or run.current_route_status != RouteRunStatus.RUNNING:
+            return False
+        return self._run_is_at_started_dwell(run)
+
+    def pending_route_assignment_for(self, train_id: str) -> Optional[Dict[str, Any]]:
+        """The route request held for this train until its run tears down, as
+        `{requested_route_id, start_override}`, or None (design_new.md "Route
+        assignment writers"). Read by the pending-actions read model."""
+        held = self._pending_route_assignments.get(train_id)
+        return dict(held) if held is not None else None
+
     def ato_status_for(self, train_id: str) -> str:
         """Assemble the read-model `ato_status` projection for a train
         (design_new.md "ATO status").

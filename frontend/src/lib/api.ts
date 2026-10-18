@@ -1381,21 +1381,6 @@ export class API implements LayoutDataClient, SimClient {
   }
 
   /**
-   * Explain why a train is not moving.
-   *
-   * Returns `{blocking_gate, gates: [{name, ok, detail, fix}]}` with the gates
-   * in the order they actually bite — `blocking_gate` names the first shut one,
-   * which is the only one worth fixing.
-   */
-  async getWhyStopped(trainId: string): Promise<any> {
-    return this._request(
-      `/trains/${encodeURIComponent(trainId)}/why-stopped`,
-      {},
-      'getWhyStopped'
-    );
-  }
-
-  /**
    * Release a fatal-conflict halt, leaving every train off.
    *
    * The operator has sorted the conflict out on the layout; this reopens the
