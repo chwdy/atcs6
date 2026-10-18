@@ -588,6 +588,10 @@ default the user did not object to. Any decision can be reopened.
      column, and the **Pending actions** and **Hold reason** read models. The
      code is not started.
    - **Calibrating a locomotive** second (B2).
+     Doc written 2026-10-18: opening a run takes control of the train (no Take
+     control), commands refused while `CALIBRATING`, one list in **What ends a
+     calibration run**, and a session stop ends a run (D5). The code is not
+     started.
    - **The session state, hardware setup, the kill switch and Hold all** third: B3, B4,
      and the B5 work for question 1. This can run in parallel with calibration, because it touches
      different code.
