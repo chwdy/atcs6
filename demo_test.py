@@ -346,10 +346,10 @@ def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
     sim_controller.route_executor.register_route(route)
     route.assign_train(train.train_id)
 
-    # Queue the operator start-up: power on, then engage ATO. Plan acquires the
+    # Issue the operator start-up: power on, then engage ATO. Plan acquires the
     # route's path on the first powered tick and the engaged driving rule moves
     # the train.
     controller = sim_controller.get_or_create_controller(train.train_id)
-    controller.commands.enqueue_command("power_on")
-    controller.commands.enqueue_command("set_mode", {"mode": "ato"})
-    controller.commands.enqueue_command("ato_go")
+    controller.commands.power_on_cmd()
+    controller.commands.set_mode("ato")
+    controller.commands.ato_go()

@@ -289,6 +289,21 @@ def register(app, state: AppState) -> None:
     # Train Power and Direction Control
     # ============================================================================
 
+    def _command_response(train, result):
+        """Reply to an operator command (design_new.md "Operator-command
+        processing slot", A command's result is its return value): the reply
+        carries the command's own `{success, reason}` and the train's status
+        payload, on acceptance and on refusal alike, so the panel updates
+        without waiting for the next refresh."""
+        body = {
+            "success": bool(result.success),
+            "reason": result.message,
+            **_train_to_dict(train, state.network),
+        }
+        if result.success:
+            return jsonify({"status": "success", **body})
+        return jsonify({"error": result.message, **body}), 400
+
     @app.route("/api/trains/<train_id>/power-on", methods=["POST"])
     def train_power_on(train_id):
         """Power on a train (OFF -> READY)."""
@@ -296,9 +311,7 @@ def register(app, state: AppState) -> None:
         if not train:
             return jsonify({"error": "Train not found"}), 404
         result = train_service.power_on(state, train_id)
-        if result.success:
-            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
-        return jsonify({"error": result.message}), 400
+        return _command_response(train, result)
 
     @app.route("/api/trains/<train_id>/power-off", methods=["POST"])
     def train_power_off(train_id):
@@ -307,9 +320,7 @@ def register(app, state: AppState) -> None:
         if not train:
             return jsonify({"error": "Train not found"}), 404
         result = train_service.power_off(state, train_id)
-        if result.success:
-            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
-        return jsonify({"error": result.message}), 400
+        return _command_response(train, result)
 
     # ============================================================================
     # Emergency and Stop Control
@@ -322,9 +333,7 @@ def register(app, state: AppState) -> None:
         if not train:
             return jsonify({"error": "Train not found"}), 404
         result = train_service.ato_stop(state, train_id)
-        if result.success:
-            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
-        return jsonify({"error": result.message}), 400
+        return _command_response(train, result)
 
     @app.route("/api/trains/<train_id>/calibrate", methods=["POST"])
     def calibrate_train(train_id):
@@ -594,9 +603,7 @@ def register(app, state: AppState) -> None:
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
 
-        if result.success:
-            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
-        return jsonify({"error": result.message}), 400
+        return _command_response(train, result)
 
     @app.route("/api/trains/<train_id>/activate-cut-out", methods=["POST"])
     def activate_cut_out(train_id):
@@ -612,9 +619,20 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": "Train not found"}), 404
 
         result = train_service.activate_cut_out(state, train_id)
-        if result.success:
-            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
-        return jsonify({"error": result.message}), 400
+        return _command_response(train, result)
+
+    @app.route("/api/trains/<train_id>/emergency-brake", methods=["POST"])
+    def emergency_brake(train_id):
+        """Raise the operator emergency brake (canonical eb.activate()).
+
+        Valid for every train in any state (design_new.md "EB activation");
+        `/handle` with `EB` is accepted only on a manual train.
+        """
+        train = train_service.get_train(state, train_id)
+        if not train:
+            return jsonify({"error": "Train not found"}), 404
+        result = train_service.emergency_brake(state, train_id)
+        return _command_response(train, result)
 
     @app.route("/api/trains/<train_id>/release-emergency", methods=["POST"])
     def release_emergency(train_id):
@@ -630,9 +648,7 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": "Train not found"}), 404
 
         result = train_service.release_emergency(state, train_id)
-        if result.success:
-            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
-        return jsonify({"error": result.message}), 400
+        return _command_response(train, result)
 
     @app.route("/api/trains/<train_id>/mode", methods=["POST"])
     def set_control_mode(train_id):
@@ -647,9 +663,7 @@ def register(app, state: AppState) -> None:
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
 
-        if result.success:
-            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
-        return jsonify({"error": result.message}), 400
+        return _command_response(train, result)
 
     @app.route("/api/trains/<train_id>/manual-mode-type", methods=["POST"])
     def set_manual_mode_type(train_id):
@@ -666,9 +680,7 @@ def register(app, state: AppState) -> None:
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
 
-        if result.success:
-            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
-        return jsonify({"error": result.message}), 400
+        return _command_response(train, result)
 
     @app.route("/api/trains/<train_id>/manual-power-percent", methods=["POST"])
     def set_manual_power_percent(train_id):
@@ -684,9 +696,7 @@ def register(app, state: AppState) -> None:
         result = train_service.set_manual_power_percent(
             state, train_id, percent=data.get("percent")
         )
-        if result.success:
-            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
-        return jsonify({"error": result.message}), 400
+        return _command_response(train, result)
 
     # ============================================================================
     # ATO Control
@@ -699,9 +709,7 @@ def register(app, state: AppState) -> None:
         if not train:
             return jsonify({"error": "Train not found"}), 404
         result = train_service.ato_go(state, train_id)
-        if result.success:
-            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
-        return jsonify({"error": result.message}), 400
+        return _command_response(train, result)
 
     @app.route("/api/trains/<train_id>/ato-stop", methods=["POST"])
     def ato_stop(train_id):
@@ -710,9 +718,7 @@ def register(app, state: AppState) -> None:
         if not train:
             return jsonify({"error": "Train not found"}), 404
         result = train_service.ato_stop(state, train_id)
-        if result.success:
-            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
-        return jsonify({"error": result.message}), 400
+        return _command_response(train, result)
 
     # ============================================================================
     # Train Position and Properties

@@ -1802,7 +1802,7 @@ export class TrainEditorHandler {
     if (emergencyBtn) {
       emergencyBtn.onclick = async () => {
         try {
-          await executeAction('Emergency Stop', () => api.setHandle(trainId, 'EB'));
+          await executeAction('Emergency Stop', () => api.emergencyBrake(trainId));
         } catch (err: any) {
           console.error('[TrainControl] Emergency toggle failed:', err);
           showToast(`Emergency: ${err.message}`, 'error', 5000);

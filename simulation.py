@@ -455,7 +455,7 @@ class SimulationController(SwitchOutputOwner):
              occupancy via _observe_train(...), before any train plans, so each
              train plans against where every other train really is.
           4. For each ordered train, PLAN (RouteExecutor planning, skipped while
-             controller is OFF) then ACTION (command drain, control, voltage, and
+             controller is OFF) then ACTION (emergency-request step, control, voltage, and
              teardown via _act_train(...)) — one train fully commits before the
              next train's Plan.
           5. After all trains have committed, refresh signals from blocks.
@@ -1072,7 +1072,7 @@ class SimulationController(SwitchOutputOwner):
         it — including at boot, which is stopped by definition.
 
         This is the tick's Observe read and commit, and nothing else: no Plan
-        planning, no Action command drain, no physics integration. Stopped has
+        planning, no Action, no physics integration. Stopped has
         to keep meaning stopped — queued operator commands still wait for the
         resume, no route is planned, no train is moved. What does run is the
         path design_new.md already defines for an occupant the app does not
@@ -1183,10 +1183,10 @@ class SimulationController(SwitchOutputOwner):
         """The layout-wide emergency cut-out (design_new.md "Emergency cut-out",
         Layout emergency cut-out).
 
-        Enqueues the operator cut-out command (`activate_cut_out_cmd`, drain
-        slot 7) for every train, so each train's own Action command drain runs
-        `TrainController.eb.activate_cut_out()`: every train's traction voltage
-        goes to `0` and every train stops immediately on its next Action,
+        Calls `TrainController.eb.activate_cut_out()` on every train between
+        ticks, skipping a ghosted or unidentified train, which accepts no
+        operator command: every train's traction voltage goes to `0` and every
+        train stops immediately on its next Action,
         exactly as a per-train cut-out does. It touches only
         traction voltage — a switch coil carries no standing power, it is pulsed
         only for the moment it throws and then holds mechanically, so a cut-out
@@ -1204,9 +1204,20 @@ class SimulationController(SwitchOutputOwner):
             return CommandResult(
                 False, "Emergency cut-out is only available on a hardware environment"
             )
-        train_ids = sorted(self.controllers)
-        for train_id in train_ids:
-            self.controllers[train_id].commands.enqueue_command("activate_cut_out_cmd")
+        # design_new.md "Emergency cut-out", Layout emergency cut-out: the cut-out
+        # is called on every train between ticks, like any operator command. A
+        # ghosted or unidentified train accepts no operator command, so it is
+        # skipped (design_new.md "Operator-command processing slot").
+        train_ids = []
+        for train_id in sorted(self.controllers):
+            controller = self.controllers[train_id]
+            train = self.network.trains.get(train_id)
+            if getattr(controller, "presence_unknown", False):
+                continue
+            if train is not None and getattr(train, "is_unidentified", False):
+                continue
+            controller.eb.activate_cut_out()
+            train_ids.append(train_id)
         self.notification_center.emit(
             source="SimulationController",
             operation="layout_emergency_cut_out",
@@ -1749,7 +1760,7 @@ class SimulationController(SwitchOutputOwner):
         is not reserved for that train, while the train holds a live plan — a
         train with no authority cannot overrun one. Observe latches
         `phase_latches.emergency_request = "cut_out"` for that train; the same
-        tick's Action command drain applies it through
+        tick's Action step `01f2` applies it through
         `TrainController.eb.activate_cut_out()`, which de-energizes its blocks
         and stops it at once. One warning event names the overrun, with the
         block and train ids on the entities; it is distinct from the
@@ -1940,7 +1951,7 @@ class SimulationController(SwitchOutputOwner):
                 if controller is not None and path_id:
                     # Latch an emergency brake request on the reserving train
                     # (design_new.md "Reservation truncation", Observe caller,
-                    # Locked branch). The same tick's Action command drain
+                    # Locked branch). The same tick's Action step `01f2`
                     # applies it through the canonical EB activation effects,
                     # which latch `pending_path_cancel_request` with
                     # `error.origin = "eb"` for Action to commit once the train
@@ -2094,9 +2105,10 @@ class SimulationController(SwitchOutputOwner):
         """Keep an unconfirmed identifier inert until detection returns.
 
         Observe calls this on the rising edge and again every tick while
-        ``presence_unknown`` remains true. Reapplying it matters: a command
-        accepted just before the detector read must not revive a record that no
-        longer represents a detected train.
+        ``presence_unknown`` remains true, which keeps the record at a stand for
+        as long as no detector backs it. Operator commands to the train are
+        refused at the request handler while the flag holds
+        (design_new.md "Operator-command processing slot").
 
         This is Observe-only containment — it neither writes `state` nor clears
         the EB / ATO run flags. Those are the operational-state machine's and
@@ -2108,7 +2120,6 @@ class SimulationController(SwitchOutputOwner):
         write, and it is what lets the stopped-gated Action cancel commit on the
         same tick the flag rose.
         """
-        controller.commands.command_inbox.clear()
         controller.ops.handle_position = HandlePosition.N
         controller.manual.reset_power_percent_for_safety()
         controller.physics_sync.current_speed_kmh = 0.0
@@ -2178,15 +2189,15 @@ class SimulationController(SwitchOutputOwner):
         # down each leg's one-off route (design_new.md "Speed calibration", Where
         # it runs). Action only reads the step's power back off the run through
         # get_propulsion_override(...) during the control decision below.
-        # TrainController.tick(...) drains the queued operator commands, then —
-        # through the after_command_drain callback, before its control decision —
-        # consumes the stopped-gated `pending_path_cancel_request` (design_new.md
-        # Action step `7b40`), and only then runs the control decision on that
+        # TrainController.tick(...) applies any emergency request Observe latched
+        # (step `01f2`), then — through the early_action_callback, before its
+        # control decision — consumes the stopped-gated
+        # `pending_path_cancel_request` (design_new.md Action step `7b40`), and only then runs the control decision on that
         # post-cancel state. TrainPhysics.apply_track_voltage() then sets the
         # block track voltage that drives the next tick's Observe movement.
         controller.tick(
             delta_seconds,
-            after_command_drain=lambda: self._consume_early_action_latches(
+            early_action_callback=lambda: self._consume_early_action_latches(
                 controller, train
             ),
         )
@@ -2199,7 +2210,7 @@ class SimulationController(SwitchOutputOwner):
         self, controller: TrainController, train: Train
     ) -> None:
         """Action early slot, run inside `TrainController.tick(...,
-        after_command_drain=...)` before the control decision.
+        early_action_callback=...)` before the control decision.
 
         Consumes the stopped-gated `pending_path_cancel_request` (design_new.md
         Action step `7b40`) before the control decision, so the decision
@@ -2286,7 +2297,7 @@ class SimulationController(SwitchOutputOwner):
         committing occupancy already happened in Observe; Action only tears down.
 
         Skipped, except the persistent-state sync, for any train still OFF
-        after the command drain. The OFF gate reads power state alone
+        after step `01f2`. The OFF gate reads power state alone
         (design_new.md, "Observe, Plan, and Action structure"): a pending teardown latch or a detector-attributed
         block change to an OFF train runs none of these steps — those teardown
         latches wait for a later pass on which power-on has run. The command

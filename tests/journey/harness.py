@@ -152,7 +152,6 @@ class Snapshot:
     tail_tile: Optional[Tuple[int, int]]
     occupied_tiles: List[Tuple[int, int]]
     occupied_blocks: List[str]
-    command_inbox_kinds: List[str]
 
     # Action-teardown latch view (booleans + cancel-request payload presence)
     latch_path_cancel_request: bool
@@ -228,7 +227,6 @@ def _capture_snapshot(
         occupied_blocks = list(span.occupied_blocks or [])
 
     latches = controller.route_hooks.phase_latches
-    cmd_kinds = [getattr(c, "kind", None) for c in (controller.commands.command_inbox or [])]
 
     # Path
     active_path_id = None
@@ -279,7 +277,6 @@ def _capture_snapshot(
         tail_tile=tail_tile,
         occupied_tiles=occupied_tiles,
         occupied_blocks=occupied_blocks,
-        command_inbox_kinds=cmd_kinds,
         latch_path_cancel_request=latches.path_cancel_request is not None,
         latch_route_abort=bool(latches.route_abort),
         latch_power_off=bool(latches.power_off),
@@ -357,7 +354,6 @@ class Failure:
                 f"power_off={snap.latch_power_off} "
                 f"route_deactivate={snap.latch_route_deactivate}"
             )
-            lines.append(f"  command_inbox={snap.command_inbox_kinds}")
             if snap.tracker is not None:
                 lines.append(
                     f"  tracker.blocks_entered={sorted(snap.tracker.blocks_entered)}"

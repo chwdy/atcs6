@@ -94,13 +94,6 @@ export interface CancellationResult {
   reason: string | null;
 }
 
-export interface Command {
-  kind: string;
-  payload: Record<string, unknown>;
-  command_id: string;
-  accepted_at: number;
-}
-
 export interface FatalPhysicalEntryConflict {
   resource_type: string;
   resource_id: string;

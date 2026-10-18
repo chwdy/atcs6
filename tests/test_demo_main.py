@@ -154,28 +154,27 @@ def test_bootstrap_writes_current_span_before_first_tick():
     )
 
 
-def test_bootstrap_queues_power_on_for_first_tick_drain():
-    """Bootstrap must enqueue the operator start-up: power_on then set_mode(ato)
-    to engage. Phase 2 drains both; an engaged ATO train then drives once Phase 1
-    grants authority (design_new.md "ato.engaged")."""
+def test_bootstrap_runs_the_operator_start_up_before_the_first_tick():
+    """Bootstrap issues the operator start-up — power_on, set_mode(ato), ato_go —
+    and each runs at once, so an engaged ATO train drives once Plan grants
+    reservation (design_new.md "Operator-command processing slot")."""
     with contextlib.redirect_stdout(io.StringIO()):
         network, _, sim_controller, _ = bootstrap_runtime(demo=True, setup_train=True)
 
     controller = sim_controller.get_or_create_controller("DEMO_TRAIN")
 
-    # Before first tick: power_on + set_mode queued, controller still OFF, head
-    # frame pre-set by add_train's `initial_cab="A"` placement input.
-    queued_kinds = [cmd.kind for cmd in controller.commands.command_inbox]
-    assert queued_kinds == ["power_on", "set_mode", "ato_go"], (
-        f"Expected queued [power_on, set_mode, ato_go]; got {queued_kinds}"
-    )
-    assert not controller.powered
+    # Before the first tick the start-up commands have already run, because
+    # operator commands run at once between ticks (design_new.md
+    # "Operator-command processing slot"): the train is powered, in ATO, and
+    # engaged. The head frame is pre-set by add_train's `initial_cab="A"`
+    # placement input.
+    assert controller.powered
+    assert controller.commands.control_mode == "ato"
+    assert controller.commands.engaged is True
     assert controller._framed_head_end == "end_a"
 
-    # One tick should drain the queue and power the train on.
     sim_controller.update(0.0)
 
-    assert controller.commands.command_inbox == []
     assert controller.powered
 
 
@@ -190,11 +189,9 @@ def test_bootstrap_creates_path_during_phase1_after_power_on():
     # Before any tick: no path exists yet.
     assert path_dispatcher.active_path_id_by_train("DEMO_TRAIN") is None
 
-    # Tick 1: Phase 1 sees OFF and skips; Phase 2 drains power_on. Still no path.
-    sim_controller.update(0.0)
-    assert path_dispatcher.active_path_id_by_train("DEMO_TRAIN") is None
-
-    # Tick 2: Phase 1 sees READY, acquires authority for DEMO_ROUTE_V2.
+    # Tick 1: the start-up commands already ran between ticks, so the train
+    # starts the tick powered and engaged, and Plan acquires reservation for
+    # DEMO_ROUTE_V2 (design_new.md "Operator-command processing slot").
     sim_controller.update(0.0)
     assert path_dispatcher.active_path_id_by_train("DEMO_TRAIN") is not None
 

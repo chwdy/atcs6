@@ -326,8 +326,10 @@ def test_hold_set_includes_confirmed_occupancy_outside_the_span():
     assert "BLK_3" in held
 
 
-def test_lost_train_drops_queued_commands_and_never_runs_physics():
-    """An old power command cannot revive an identifier backed by no train."""
+def test_lost_train_refuses_commands_and_never_runs_physics():
+    """A power command cannot revive an identifier backed by no train: a ghosted
+    train refuses every operator command (design_new.md "Operator-command
+    processing slot")."""
 
     network = build_line()
     sim, train, controller = place(network)
@@ -338,7 +340,16 @@ def test_lost_train_drops_queued_commands_and_never_runs_physics():
     sim._detect_block_occupancy()
     assert controller.presence_unknown is True
 
-    controller.commands.enqueue_command("power_on")
+    import threading
+    from types import SimpleNamespace
+    from services import train_service
+
+    state = SimpleNamespace(
+        network=network, sim_controller=sim, simulation_lock=threading.Lock()
+    )
+    result = train_service.power_on(state, train.train_id)
+    assert result.success is False
+    assert "lost detection" in result.message
     physics = sim._get_or_create_physics(train)
     old_span = controller.physics_sync.current_span
     old_frame = (
@@ -350,7 +361,6 @@ def test_lost_train_drops_queued_commands_and_never_runs_physics():
 
     sim.update(1.0)
 
-    assert controller.commands.command_inbox == []
     assert not controller.powered
     assert controller.physics_sync.current_speed_kmh == 0.0
     assert physics.pending_entry_block is None

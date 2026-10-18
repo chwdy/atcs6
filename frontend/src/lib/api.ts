@@ -1476,6 +1476,18 @@ export class API implements LayoutDataClient, SimClient {
    * The handle never releases EB; this is the only way to clear the EB latch.
    * Latch-gated: fails until the train is stopped and the EB cancel committed.
    */
+  /**
+   * Raise the operator emergency brake (canonical eb.activate()). Valid for
+   * every train in any state, ATO included (design_new.md "EB activation").
+   */
+  async emergencyBrake(trainId: string): Promise<any> {
+    return this._request(
+      `/trains/${encodeURIComponent(trainId)}/emergency-brake`,
+      { method: 'POST' },
+      'emergencyBrake'
+    );
+  }
+
   async releaseEmergency(trainId: string): Promise<any> {
     return this._request(
       `/trains/${encodeURIComponent(trainId)}/release-emergency`,

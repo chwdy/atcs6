@@ -135,29 +135,6 @@ def test_a_stopped_poll_does_not_advance_the_simulation_clock():
     assert sim.simulation_time == 0.0
 
 
-def test_a_stopped_poll_does_not_drain_the_command_inbox():
-    """Stop has to keep meaning stop: the poll runs Observe and its occupancy commit, not
-    Action, so an inbox command still waits for the resume that drains it."""
-    from train import Train
-
-    network, sim, detector = build_sim()
-    network.add_train(Train(train_id="T1"))
-    controller = sim.get_or_create_controller("T1")
-    controller.commands.enqueue_command("power_on")
-    assert not controller.powered
-
-    detector.current = {"BLK_1": True}
-    sim.poll_hardware_occupancy()
-
-    assert len(controller.commands.command_inbox) == 1
-    assert not controller.powered
-
-    # ... and the resume drains it, so nothing was lost either.
-    sim.update(0.1)
-    assert controller.commands.command_inbox == []
-    assert controller.powered
-
-
 def test_a_stopped_poll_does_not_move_a_train():
     from train import Train
 

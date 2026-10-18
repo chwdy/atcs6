@@ -388,29 +388,6 @@ def assert_route_not_assigned() -> Check:
 
 
 # --------------------------------------------------------------------------- #
-# Command inbox
-# --------------------------------------------------------------------------- #
-
-
-def assert_command_inbox_contains(kind: str) -> Check:
-    def check(s: Snapshot) -> None:
-        assert kind in s.command_inbox_kinds, (
-            f"command_inbox {s.command_inbox_kinds} does not contain {kind!r}"
-        )
-
-    return check
-
-
-def assert_command_inbox_empty() -> Check:
-    def check(s: Snapshot) -> None:
-        assert not s.command_inbox_kinds, (
-            f"command_inbox not empty: {s.command_inbox_kinds}"
-        )
-
-    return check
-
-
-# --------------------------------------------------------------------------- #
 # ATC reason
 # --------------------------------------------------------------------------- #
 

@@ -719,24 +719,6 @@ class CancellationResult:
         }
 
 
-@dataclass
-class Command:
-    """Operator command queued on TrainController.command_inbox.
-
-    `kind` is one of the canonical command kind strings, in drain order:
-    power_on, set_mode, ato_go, ato_stop, set_manual_mode_type, set_handle,
-    set_manual_power_percent, activate_emergency_cmd, release_emergency_cmd,
-    power_off. Each is dispatched to its handler by
-    `OperatorCommands._drain_command_inbox`. `payload` carries kind-specific
-    args.
-    """
-
-    kind: str
-    payload: Dict[str, Any] = field(default_factory=dict)
-    command_id: str = ""
-    accepted_at: float = 0.0
-
-
 # =============================================================================
 # Fatal conflict diagnostic schemas
 # =============================================================================

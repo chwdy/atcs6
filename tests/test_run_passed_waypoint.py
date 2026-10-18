@@ -69,9 +69,9 @@ def _drive(sim, tasks, max_ticks=2500):
     ex.register_route(route)
     route.assign_train("T")
     controller = sim.get_or_create_controller("T")
-    controller.commands.enqueue_command("power_on")
-    controller.commands.enqueue_command("set_mode", {"mode": "ato"})
-    controller.commands.enqueue_command("ato_go")
+    controller.commands.power_on_cmd()
+    controller.commands.set_mode("ato")
+    controller.commands.ato_go()
 
     run_finished = False
     waypoint_finished = False

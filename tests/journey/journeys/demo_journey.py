@@ -26,7 +26,6 @@ from ..assertions import (
     assert_block_at_tile_occupied_by,
     assert_block_at_tile_unoccupied,
     assert_cab,
-    assert_command_inbox_contains,
     assert_eb,
     assert_has_active_path,
     assert_head_in,
@@ -153,31 +152,22 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
             name="E0_pre_first_tick",
             trigger=at_tick(0),
             assertions=[
-                assert_state(TrainState.OFF),
+                # The start-up commands run at once, between ticks, so before
+                # the first tick the train is powered and engaged with no path
+                # yet (design_new.md "Operator-command processing slot").
+                assert_state(TrainState.READY),
                 assert_cab("A"),
                 assert_eb(False),
                 # Span head should be at origin tile (0,0).
                 assert_head_in([(0, 0)]),
                 assert_no_active_path(),
-                assert_command_inbox_contains("power_on"),
                 # Route already registered + assigned at bootstrap.
                 assert_route_assigned("DEMO_ROUTE_V1"),
             ],
         ),
         Event(
-            name="E1_after_power_on_drained",
-            trigger=at_tick(1),
-            assertions=[
-                assert_state(TrainState.READY),
-                assert_cab("A"),
-                # Plan was skipped while OFF; no path yet.
-                assert_no_active_path(),
-                assert_eb(False),
-            ],
-        ),
-        Event(
             name="E2_after_path_acquired",
-            trigger=at_tick(2),
+            trigger=at_tick(1),
             assertions=[
                 # Authority is acquired and the engaged ATO train is commanding
                 # power, but it has not physically moved yet, so it is still

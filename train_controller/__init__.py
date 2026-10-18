@@ -60,7 +60,6 @@ from runtime_payloads import ErrorRecord as _ErrorRecord
 from enums import AtcLimitReasonCode, BlockState, ControllerCondition, Direction, HandlePosition, SignalState, TrainStatus
 from model_scale import get_speed_conversion_factor
 from runtime_payloads import (
-    Command,
     ControllerProgressReport,
     PhaseLatches,
     PhysicsSpanUpdate,
@@ -294,20 +293,11 @@ class TrainController:
     # clears it with `clear(...)`. See runtime_payloads.PhaseLatches.
 
     # -------------------------------------------------------------------------
-    # Operator Command Inbox (per design_new.md "Operator-command processing slot")
+    # Operator commands (per design_new.md "Operator-command processing slot")
     # -------------------------------------------------------------------------
-    # Operator commands enter the controller via the public command methods
-    # (power_on_cmd, set_mode, etc.). Each command is enqueued into
-    # `command_inbox` and then drained by `_drain_command_inbox(...)` at the
-    # very top of `tick(...)`. Commands are processed in the canonical kind
-    # order (power_on -> set_mode -> set_manual_mode_type ->
-    # set_handle/set_manual_power_percent -> activate_emergency_cmd ->
-    # release_emergency_cmd -> power_off), with FIFO order within each kind
-    # bucket.
-    # `command_inbox` and the canonical drain order live on the
-    # `OperatorCommands` sub-module at `self.commands`. External readers
-    # use `controller.commands.command_inbox` and
-    # `controller.commands.drain_order`.
+    # Operator commands run between ticks through the public methods on the
+    # `OperatorCommands` sub-module at `self.commands`; the request handler
+    # holds `AppState.simulation_lock` while one runs. There is no queue.
 
     # -------------------------------------------------------------------------
     # Controller-owned live span / speed (per design_new.md)
@@ -674,86 +664,41 @@ class TrainController:
     # -------------------------------------------------------------------------
 
     def tick(
-        self, delta: float, after_command_drain: Optional[Callable[[], None]] = None
+        self, delta: float, early_action_callback: Optional[Callable[[], None]] = None
     ) -> None:
         """
-        Called each simulation tick by SimulationController.
+        Called each simulation tick by SimulationController (the Action stage).
 
-        Workflow:
-        0. Drain operator command inbox (per design_new.md)
-        0a. Power check
-        1. Emergency brake (EB) check
-        2. Lookahead calculation (shared)
-        3. ATC info collection
-        4. ATC action (warning/EB on overspeed)
-        5. ATO info
-        6. ATO action (cab correction, handle calculation)
-        7. Effective limit & target speed
-        8. State transitions
+        Workflow (design_new.md "Controller tick order"):
+        01f2. Apply any emergency request Observe latched this tick
+        7b40. Invoke `early_action_callback` (the stopped-gated cancel consumer)
+        3ec8. Train / power check
+        then EB hold, lookahead, ATC, ATO, the driving-source selection, and the
+        Propulsion cap step.
+
+        Operator commands are not part of the tick: they run between ticks
+        (design_new.md "Operator-command processing slot").
 
         Does NOT move the train - that's TrainPhysics.tick().
 
         Args:
             delta: Time elapsed since last tick (seconds)
         """
-        # ===== 0. DRAIN OPERATOR COMMAND INBOX =====
-        # Process any commands enqueued by power_on_cmd / set_mode / etc. in the
-        # canonical drain order before running the rest of the tick. Without
-        # this, queued commands would never take effect.
-        try:
-            self.commands._drain_command_inbox(self.commands._estimate_event_time())
-        except Exception as exc:
-            # Defensive: do not let a single bad command crash the tick.
-            # Surface via NotificationCenter so operators see the failure;
-            # fall back to logger only if the canonical sink is itself broken.
-            import traceback as _tb
+        # ===== 01f2. APPLY ANY OBSERVE EMERGENCY REQUEST =====
+        self.commands.apply_emergency_request()
 
-            event_time = self.commands._estimate_event_time()
-            # Reach the NotificationCenter through the controller's own
-            # `simulation_controller` back-reference (wired by the runtime in
-            # SimulationController._get_or_create_controller); fully guarded so
-            # this error handler never raises a second error.
-            sc = getattr(self, "simulation_controller", None)
-            nc = (
-                getattr(sc, "notification_center", None) if sc is not None else None
-            )
-            emitted = False
-            if nc is not None:
-                try:
-                    from notification_center import Kind as _Kind, train_ref as _tref
-                    from runtime_payloads import ErrorRecord as _ErrRec
+        # ===== 7b40. EARLY-ACTION CALLBACK =====
+        # SimulationController's narrow callback consumes the stopped-gated
+        # `pending_path_cancel_request`, so the control decision below evaluates
+        # the post-cancel state. It runs exactly once, even for an OFF train.
+        # The callback exposes no dispatcher object to the controller.
+        if early_action_callback is not None:
+            early_action_callback()
 
-                    nc.emit(
-                        source="TrainController",
-                        operation="_drain_command_inbox",
-                        kind=_Kind.WARNING,
-                        message=f"command drain raised for {self.train_id}",
-                        entities=[_tref(self.train_id)],
-                        error=_ErrRec(str(exc), "command_drain_failed"),
-                        event_time=event_time,
-                        payload={"traceback": _tb.format_exc()},
-                    )
-                    emitted = True
-                except Exception:
-                    pass
-            if not emitted:
-                logger.exception(
-                    "command-drain raised for train %s; continuing tick "
-                    "(NotificationCenter unavailable)",
-                    self.train_id,
-                )
-
+        # ===== 3ec8. TRAIN CHECK =====
         train = self._get_train()
         if not train:
             return
-
-        # design_new.md Action step `7b40`: immediately after the command drain,
-        # SimulationController's narrow callback consumes the stopped-gated
-        # `pending_path_cancel_request`, so the control decision below evaluates
-        # the post-cancel state. The callback exposes no dispatcher object to the
-        # controller.
-        if after_command_drain is not None:
-            after_command_drain()
 
         # design_new.md "Controller state machine": `train_status` is a pure
         # derived read from `powered` / `eb.active` / `control_mode`; there is
@@ -2394,11 +2339,9 @@ class TrainController:
     # over that stream (design_new.md "Runtime notifications").
 
     # Operator commands (power_on_cmd, power_off_cmd, set_mode,
-    # set_handle, set_manual_mode_type, set_manual_power_percent, enqueue_command)
-    # and the per-tick command inbox / drain live on the `OperatorCommands`
-    # sub-module attached as `self.commands`. External callers use
-    # `controller.commands.<method>(...)`. The drain itself is invoked at the
-    # top of `tick(...)` as `self.commands._drain_command_inbox(...)`.
+    # set_handle, set_manual_mode_type, set_manual_power_percent) live on the
+    # `OperatorCommands` sub-module attached as `self.commands`. External
+    # callers use `controller.commands.<method>(...)` between ticks.
 
     # ATO intent (`engage`, `disengage`) lives on the `ATOComputer` sub-module
     # at `self.ato`. Callers use `controller.ato.engage()` /
@@ -2435,7 +2378,6 @@ class TrainController:
                 kind=kind if kind is not None else _Kind.INFO,
                 message=message,
                 entities=entities,
-                event_time=self.commands._estimate_event_time(),
                 payload=payload or {},
                 # `_emit_event` callers are latch-consume / event-log events, so
                 # per the Latch consumption events table (design_new.md, "Latch consumption events") it

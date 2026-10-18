@@ -43,17 +43,16 @@ def _drive_manual_into_atc_limit(dt: float):
             sim.update(dt)
 
     # Enter manual `simulation` from rest (set_mode requires the train stopped),
-    # replacing the demo's ATO start-up commands.
-    c.commands.command_inbox.clear()
-    c.commands.enqueue_command("power_on")
-    c.commands.enqueue_command("set_mode", {"mode": "manual"})
-    c.commands.enqueue_command("set_manual_mode_type", {"mode_type": "simulation"})
-    step_seconds(1.0)  # drain commands + let Plan acquire route authority
+    # replacing the demo's ATO start-up.
+    c.commands.power_on_cmd()
+    c.commands.set_mode("manual")
+    c.commands.set_manual_mode_type("simulation")
+    step_seconds(1.0)  # let Plan acquire route authority
     assert c.commands.control_mode == "manual"
     assert c.manual.manual_mode_type == "simulation"
 
     # Drive on power to a steady cruise under authority.
-    c.commands.enqueue_command("set_handle", {"position": HandlePosition.P5})
+    c.commands.set_handle(HandlePosition.P5)
     step_seconds(4.5)
     cruise = c.physics_sync.current_speed_kmh
     assert cruise > 10.0, f"train did not reach a manual cruise (got {cruise:.1f})"

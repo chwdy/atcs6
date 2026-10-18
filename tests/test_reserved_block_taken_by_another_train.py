@@ -242,7 +242,7 @@ def test_a_foreign_train_taking_a_locked_block_emergency_brakes_the_reserver():
     assert controller.eb.active is False
 
     # The Action command drain applies it and clears the request.
-    controller.commands._drain_command_inbox(0.0)
+    controller.commands.apply_emergency_request()
     assert latches.emergency_request is None
 
     # The reserving train is emergency-braked, with the EB cancel latched.

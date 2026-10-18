@@ -8,11 +8,12 @@ this layer owns the domain mutations behind every train endpoint:
   * Placement -- reposition, speed-profile assignment.
   * Route assignment / retarget -- the abort-latch + assign/unassign
     transaction per design_new.md "Operator retargeting / route swap".
-  * Operator commands -- power, cab, handle, mode, ATO go/stop. These
-    validate their input here and delegate to ``TrainController``; they
-    return the controller's ``CommandResult`` so the caller can surface
-    ``success`` / ``message`` (HTTP 400 on failure). ``depart`` returns
-    the controller's ``(success, reason)`` tuple unchanged.
+  * Operator commands -- power, handle, mode, ATO go/stop, EB. Each runs
+    between ticks through ``operator_command``: it holds
+    ``state.simulation_lock``, refuses an unidentified or ghosted train, runs
+    the controller command, reports its result event, and returns the
+    controller's ``CommandResult`` so the caller can surface ``success`` /
+    ``message`` (design_new.md "Operator-command processing slot").
 
 Lookup raises ``NotFoundError``; bad input raises ``ValidationError``;
 an already-assigned route without ``force`` raises ``ConflictError``.
@@ -22,6 +23,7 @@ an already-assigned route without ``force`` raises ``ConflictError``.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -60,25 +62,57 @@ def _unidentified_refusal_message(train_id: str) -> str:
     )
 
 
-def refuses_unidentified_trains(refusal=None):
-    """Refuse every operator command aimed at an unidentified train.
+def _ghost_refusal_message(train_id: str) -> str:
+    return (
+        f"Train {train_id} has lost detection: no detector backs its position, so it "
+        f"accepts no command until detection returns."
+    )
 
-    design_new.md "Unidentified trains", Never driven: an unidentified train is never assigned a
-    route, never given a `Path`, never given a cab, and never accepts an operator
-    command — driving a train needs a cab, a speed profile and a route, and a
-    unidentified train was never set up with any of them. The decorated command returns its own
-    failure shape, so the HTTP layer maps it to 400 like any other refused
-    command; `refusal` builds that shape from the message (default: a failed
-    `CommandResult`).
+
+@contextlib.contextmanager
+def _runtime_lock(state: AppState):
+    """Hold ``state.simulation_lock`` so the caller runs between two ticks."""
+    lock = getattr(state, "simulation_lock", None)
+    if lock is None:
+        yield
+        return
+    with lock:
+        yield
+
+
+def operator_command(operation: str):
+    """Run an operator train command between ticks (design_new.md
+    "Operator-command processing slot").
+
+    The wrapper:
+      * refuses an unidentified train, which never accepts an operator command
+        (design_new.md "Unidentified trains", Never driven);
+      * holds ``state.simulation_lock`` — the runtime loop holds the same lock
+        for every whole tick, so the command never runs inside one;
+      * refuses a ghosted train (``presence_unknown``), which accepts no
+        command until detection returns;
+      * runs the command, reports its command-result event once through
+        ``controller.commands.report_result``, and returns its ``CommandResult``.
     """
-    build = refusal or (lambda message: CommandResult(success=False, message=message))
 
     def decorate(func):
         @functools.wraps(func)
         def wrapper(state: AppState, train_id: str, *args, **kwargs):
-            if getattr(require_train(state, train_id), "is_unidentified", False):
-                return build(_unidentified_refusal_message(train_id))
-            return func(state, train_id, *args, **kwargs)
+            train = require_train(state, train_id)
+            if getattr(train, "is_unidentified", False):
+                return CommandResult(
+                    success=False, message=_unidentified_refusal_message(train_id)
+                )
+            with _runtime_lock(state):
+                controller = _controller(state, train)
+                if getattr(controller, "presence_unknown", False):
+                    result = CommandResult(
+                        success=False, message=_ghost_refusal_message(train_id)
+                    )
+                else:
+                    result = func(state, train_id, *args, **kwargs)
+                controller.commands.report_result(operation, result)
+            return result
 
         return wrapper
 
@@ -740,19 +774,19 @@ def assign_route(
 # tuple) unchanged. The caller maps a non-success result to HTTP 400.
 
 
-@refuses_unidentified_trains()
+@operator_command("power_on_cmd")
 def power_on(state: AppState, train_id: str) -> CommandResult:
     """Power on a train (OFF -> READY)."""
     return _controller(state, require_train(state, train_id)).commands.power_on_cmd()
 
 
-@refuses_unidentified_trains()
+@operator_command("power_off_cmd")
 def power_off(state: AppState, train_id: str) -> CommandResult:
     """Power off a train (any state -> OFF; must be stopped)."""
     return _controller(state, require_train(state, train_id)).commands.power_off_cmd()
 
 
-@refuses_unidentified_trains()
+@operator_command("ato_go")
 def ato_go(state: AppState, train_id: str) -> CommandResult:
     """Start ATO driving so the train drives toward its destination.
 
@@ -762,7 +796,7 @@ def ato_go(state: AppState, train_id: str) -> CommandResult:
     return _controller(state, require_train(state, train_id)).commands.ato_go()
 
 
-@refuses_unidentified_trains()
+@operator_command("ato_stop")
 def ato_stop(state: AppState, train_id: str) -> CommandResult:
     """Pause ATO driving (train holds; used by both /stop and /ato-stop).
 
@@ -772,7 +806,7 @@ def ato_stop(state: AppState, train_id: str) -> CommandResult:
     return _controller(state, require_train(state, train_id)).commands.ato_stop()
 
 
-@refuses_unidentified_trains()
+@operator_command("set_handle")
 def set_handle(state: AppState, train_id: str, *, position: Any) -> CommandResult:
     """Set the throttle/brake handle position.
 
@@ -791,7 +825,19 @@ def set_handle(state: AppState, train_id: str, *, position: Any) -> CommandResul
     )
 
 
-@refuses_unidentified_trains()
+@operator_command("eb.activate")
+def emergency_brake(state: AppState, train_id: str) -> CommandResult:
+    """Raise the operator emergency brake via ``eb.activate()``.
+
+    design_new.md "EB activation": the canonical operator EB command. Its only
+    gate is ``eb.active == False``; it is valid in any motion state and any
+    operational state, ATO included, so it is the EB route for every train
+    (``set_handle(EB)`` is accepted only on a manual train).
+    """
+    return _controller(state, require_train(state, train_id)).eb.activate()
+
+
+@operator_command("activate_cut_out_cmd")
 def activate_cut_out(state: AppState, train_id: str) -> CommandResult:
     """Raise an operator-initiated emergency cut-out via the canonical
     ``commands.activate_cut_out_cmd()`` command (design_new.md "Emergency
@@ -807,7 +853,7 @@ def activate_cut_out(state: AppState, train_id: str) -> CommandResult:
     return controller.commands.activate_cut_out_cmd()
 
 
-@refuses_unidentified_trains()
+@operator_command("eb.release")
 def release_emergency(state: AppState, train_id: str) -> CommandResult:
     """Release the emergency brake via the canonical ``eb.release()`` command.
 
@@ -825,7 +871,7 @@ def release_emergency(state: AppState, train_id: str) -> CommandResult:
     return result
 
 
-@refuses_unidentified_trains()
+@operator_command("set_mode")
 def set_mode(state: AppState, train_id: str, *, mode: Any) -> CommandResult:
     """Set the control mode ('ato' or 'manual')."""
     if mode not in ("ato", "manual"):
@@ -833,7 +879,7 @@ def set_mode(state: AppState, train_id: str, *, mode: Any) -> CommandResult:
     return _controller(state, require_train(state, train_id)).commands.set_mode(mode)
 
 
-@refuses_unidentified_trains()
+@operator_command("set_manual_mode_type")
 def set_manual_mode_type(
     state: AppState, train_id: str, *, mode_type: Any
 ) -> CommandResult:
@@ -848,7 +894,7 @@ def set_manual_mode_type(
     ).commands.set_manual_mode_type(mode_type)
 
 
-@refuses_unidentified_trains()
+@operator_command("set_manual_power_percent")
 def set_manual_power_percent(
     state: AppState, train_id: str, *, percent: Any
 ) -> CommandResult:

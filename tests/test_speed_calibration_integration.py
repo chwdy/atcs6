@@ -31,6 +31,11 @@ def state():
         network, dispatcher, sim, persistence = bootstrap_runtime(
             demo=True, setup_train=True, scene="demo_6"
         )
+    # The scene's start-up commands run at once, so its ATO trains would start
+    # moving on the first tick and throw points under the stretch a test picks.
+    # Pause ATO on every train: nothing moves but the train under calibration.
+    for controller in sim.controllers.values():
+        controller.commands.ato_stop()
     return AppState(
         network=network,
         path_dispatcher=dispatcher,
@@ -64,10 +69,8 @@ def _free_train(state):
 def _ready_manual_train(sim, network, train_id):
     """Put a placed train under manual power-percent control, stopped."""
     controller = sim.get_or_create_controller(train_id)
-    # Drop the scene's queued start-up commands (power_on + set_mode("ato")):
-    # they would otherwise drain on a later tick and flip the train back to ATO,
-    # which calibration refuses. This helper sets power and mode directly.
-    controller.commands.command_inbox.clear()
+    # The scene's start-up already ran; this helper sets power and mode
+    # directly for calibration.
     controller.commands.power_on_cmd()
     controller.commands.set_mode("manual")
     controller.commands.set_manual_mode_type("power_percent")

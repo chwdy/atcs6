@@ -3,39 +3,42 @@ Operator Command Surface sub-module of ``TrainController``.
 
 Per design_new.md "TrainController" sub-module decomposition: the
 Operator command surface owns the operator-side configuration state
-(``control_mode``), the per-tick command inbox / canonical drain order,
-and the operator-facing setter / queue methods themselves. There is no
-operator cab: the head end is derived from the live authority
-(design_new.md "Reservation-side head derivation").
+(``control_mode``, ``engaged``) and the operator-facing command methods
+themselves. There is no operator cab: the head end is derived from the live
+authority (design_new.md "Reservation-side head derivation").
+
+Operator commands run between ticks (design_new.md "Operator-command
+processing slot"): the request handler calls the command while holding
+``AppState.simulation_lock``, the command checks its own preconditions against
+the controller state at that moment, and returns its ``CommandResult``. There
+is no command queue. Action's first substep (step ``01f2``) only applies the
+emergency request Observe latched (``apply_emergency_request``).
 
 External callers access operator-command state and behavior as:
 
   - ``controller.commands.control_mode`` (``'ato'`` / ``'manual'``)
-  - ``controller.commands.command_inbox`` (list of pending ``Command``s)
-  - ``controller.commands.drain_order`` (canonical FIFO drain order)
+  - ``controller.commands.engaged``
   - ``controller.commands.power_on_cmd()``
   - ``controller.commands.set_mode(mode)``
+  - ``controller.commands.ato_go()`` / ``controller.commands.ato_stop()``
   - ``controller.commands.set_manual_mode_type(mode_type)``
   - ``controller.commands.set_handle(position)``
   - ``controller.commands.set_manual_power_percent(percent)``
   - ``controller.commands.activate_cut_out_cmd()``
   - ``controller.commands.power_off_cmd()``
-  - ``controller.commands.enqueue_command(kind, payload)``
+  - ``controller.commands.report_result(operation, result)``
 
-The setters orchestrate writes across multiple sub-modules
+The command methods orchestrate writes across multiple sub-modules
 (``eb``, ``ato``, ``manual``, ``route_hooks``, ``physics_sync``,
 ``ops``) through the controller back-reference ``self._c``.
 """
 
 from __future__ import annotations
 
-from runtime_payloads import ErrorRecord as _ErrorRecord
-
 import logging
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING
 
 from enums import CommandResult, HandlePosition
-from runtime_payloads import Command
 
 if TYPE_CHECKING:
     from train_controller import TrainController
@@ -45,13 +48,13 @@ logger = logging.getLogger(__name__)
 
 
 class OperatorCommands:
-    """Owns operator-side configuration state and the command inbox."""
+    """Owns operator-side configuration state and the operator commands."""
 
     def __init__(self, controller: "TrainController") -> None:
         self._c = controller
 
         # Operator mode selection. There is no operator cab: the head end is
-        # derived from the live authority (design_new.md "Authority-side head
+        # derived from the live authority (design_new.md "Reservation-side head
         # derivation"), so no cab is stored or selected here. Defaults to
         # `"manual"`: a powered-on train reads `train_status == MANUAL`
         # (design_new.md "Controller state machine" / power-on contract) — the
@@ -64,113 +67,21 @@ class OperatorCommands:
         # `/ato/go` (design_new.md "ATO status", `commands.engaged`). Written by
         # `ato_go()` / `ato_stop()` (accepted only when `train_status == ATO`;
         # `ato_go()` also needs a route assigned to the train),
-        # cleared by any `control_mode` write (`_write_control_mode`) and by a
-        # new route assignment. Read only in ATO, by the derived `ato_status`
-        # and the ATO driving rule. Serialized under the key `"engaged"`.
+        # cleared by any `control_mode` write (`_write_control_mode`), by the
+        # canonical EB activation effects, and by a new route assignment. Read
+        # only in ATO, by the derived `ato_status` and the ATO driving rule.
+        # Serialized under the key `"engaged"`.
         self.engaged: bool = False
 
-        # Per design_new.md "Operator-command processing slot": operator commands
-        # land here and the tick-entry drain processes them in canonical
-        # ``drain_order``. `set_mode` (slot 2) drains before `ato_go` / `ato_stop`
-        # (slot 3), so a same-tick "switch to ATO, then go" batch is accepted in
-        # one drain.
-        self.command_inbox: List[Any] = []
-        self.drain_order: tuple = (
-            "power_on",
-            "set_mode",
-            "ato_go",
-            "ato_stop",
-            "set_manual_mode_type",
-            "set_handle",
-            "set_manual_power_percent",
-            "activate_emergency_cmd",
-            "activate_cut_out_cmd",
-            "release_emergency_cmd",
-            "power_off",
-        )
-
     # -------------------------------------------------------------------------
-    # Command inbox plumbing
+    # Action step 01f2 and command-result reporting
     # -------------------------------------------------------------------------
 
-    def _estimate_event_time(self) -> float:
-        """Best-effort current event time for drain bookkeeping."""
-        c = self._c
-        sc = getattr(c, "simulation_controller", None)
-        getter = getattr(sc, "current_event_time", None) if sc is not None else None
-        if callable(getter):
-            try:
-                return float(getter())
-            except Exception:
-                pass
-        try:
-            import time as _time
-            return _time.time()
-        except Exception:
-            return 0.0
-
-    def _enqueue_command(self, kind: str, payload: Optional[Dict[str, Any]] = None) -> Command:
-        """Push a Command onto command_inbox and return it."""
-        import uuid as _uuid
-        cmd = Command(
-            kind=kind,
-            payload=dict(payload or {}),
-            command_id=_uuid.uuid4().hex,
-            accepted_at=self._estimate_event_time(),
-        )
-        self.command_inbox.append(cmd)
-        return cmd
-
-    def enqueue_command(self, kind: str, payload: Optional[Dict[str, Any]] = None) -> Command:
-        """Public alias for `_enqueue_command` (used by bootstrap and external callers)."""
-        return self._enqueue_command(kind, payload)
-
-    def _drain_command_inbox(self, event_time: float) -> None:
-        """Drain the command inbox in canonical kind order, FIFO within each.
-
-        Per design_new.md "Per-train tick transaction" / "Driver/operator inputs",
-        commands are drained in the order: power_on -> set_mode ->
-        ato_go / ato_stop -> set_manual_mode_type -> set_handle /
-        set_manual_power_percent -> activate_emergency_cmd ->
-        activate_cut_out_cmd -> release_emergency_cmd -> power_off. set_mode
-        (slot 2) drains before ato_go / ato_stop (slot 3), so a same-tick "switch
-        to ATO, then go" batch is accepted in one drain.
-
-        Each drained command re-checks acceptance gates by delegating to the
-        existing inline command method. Rejected commands are silently dropped
-        (their inline method's CommandResult.success=False is observed via
-        notifications, not by the caller).
-
-        The drain ends by applying any emergency request Observe latched this
-        tick (`_apply_emergency_request`), after every queued operator command,
-        so an `eb.release()` queued on the same tick cannot undo it.
-        """
-        try:
-            # Bucket commands by kind preserving FIFO within each bucket.
-            buckets: Dict[str, List[Command]] = {}
-            for cmd in self.command_inbox:
-                buckets.setdefault(cmd.kind, []).append(cmd)
-            self.command_inbox.clear()
-
-            for kind in self.drain_order:
-                cmds = buckets.pop(kind, [])
-                for cmd in cmds:
-                    self._execute_drained_command(cmd, event_time)
-            # Any unknown kinds left over: drop with a notification.
-            for kind, cmds in buckets.items():
-                for cmd in cmds:
-                    self._c.notifications.emit(
-                        f"Unknown command kind: {kind}",
-                        operation="_drain_command_inbox",
-                    )
-        finally:
-            # An emergency stop must never be lost to a failing operator command.
-            self._apply_emergency_request()
-
-    def _apply_emergency_request(self) -> None:
-        """Apply the emergency request Observe latched this tick, then clear it
-        (design_new.md "Operator-command processing slot", The drain ends by
-        applying any emergency request; Latch Table row `e9c7`).
+    def apply_emergency_request(self) -> None:
+        """Action step `01f2`: apply the emergency request Observe latched this
+        tick, then clear it (design_new.md "Operator-command processing slot",
+        Action begins by applying any emergency request; Latch Table row
+        `e9c7`).
 
         `"cut_out"` calls `eb.activate_cut_out()` and `"brake"` calls
         `eb.activate()`. The request is not an operator command, so it carries no
@@ -190,136 +101,25 @@ class OperatorCommands:
         finally:
             latches.clear("emergency_request")
 
-    def _execute_drained_command(self, cmd: Command, event_time: float) -> None:
-        """Dispatch one drained command to its inline executor.
+    def report_result(self, operation: str, result: CommandResult) -> None:
+        """Emit one command-result event for an operator command
+        (design_new.md "Operator-command processing slot", A command's result is
+        its return value; "Runtime notifications").
 
-        Re-checks acceptance gates inside the inline method. Notifies the
-        operator on failure via pending_notifications. When wired, also emits
-        a `command_result` notification through the simulation controller's
-        notification center.
+        `operation` is the command's own name; the event is `info` on acceptance
+        and `warning` on rejection, with `{success, reason}` in its payload. The
+        request handler calls this once per operator command it ran, so internal
+        callers (ATC escalation, step `01f2`) report nothing here.
         """
-        c = self._c
-        kind = cmd.kind
-        payload = cmd.payload or {}
-        result: Optional[CommandResult] = None
-        try:
-            if kind == "power_on":
-                result = self._execute_power_on(payload, event_time)
-            elif kind == "power_off":
-                result = self._execute_power_off(payload, event_time)
-            elif kind == "activate_emergency_cmd":
-                result = self._execute_activate_emergency_cmd(payload, event_time)
-            elif kind == "activate_cut_out_cmd":
-                result = self._execute_activate_cut_out_cmd(payload, event_time)
-            elif kind == "release_emergency_cmd":
-                result = self._execute_release_emergency_cmd(payload, event_time)
-            elif kind == "set_mode":
-                result = self._execute_set_mode(payload, event_time)
-            elif kind == "ato_go":
-                result = self.ato_go()
-            elif kind == "ato_stop":
-                result = self.ato_stop()
-            elif kind == "set_manual_mode_type":
-                result = self._execute_set_manual_mode_type(payload, event_time)
-            elif kind == "set_handle":
-                result = self._execute_set_handle(payload, event_time)
-            elif kind == "set_manual_power_percent":
-                result = self._execute_set_manual_power_percent(payload, event_time)
-        except Exception as exc:
-            c.notifications.emit(
-                f"Command {kind} raised: {exc}",
-                operation=kind,
-                error=_ErrorRecord(str(exc), "command_raised"),
-            )
-            return
+        from notification_center import Kind
 
-        if result is None:
-            return
-
-        # Emit a command_result notification through the simulation
-        # controller's notification center.
-        sc = getattr(c, "simulation_controller", None)
-        nc = getattr(sc, "notification_center", None) if sc is not None else None
-        if nc is not None:
-            try:
-                from notification_center import Kind as _Kind, train_ref as _tref
-
-                # A command result is an ordinary event: `operation` is the
-                # command's own function name, `kind` is `info` on acceptance
-                # and `warning` on rejection (design_new.md "Runtime
-                # notifications").
-                nc.emit(
-                    source="TrainController",
-                    operation=kind,
-                    kind=_Kind.INFO if result.success else _Kind.WARNING,
-                    message=result.message or (
-                        f"{kind} accepted" if result.success else f"{kind} rejected"
-                    ),
-                    entities=[_tref(c.train_id)],
-                    event_time=event_time,
-                    payload={
-                        "command_id": cmd.command_id,
-                        "success": result.success,
-                        "reason": result.message,
-                    },
-                )
-            except Exception:
-                logger.warning(
-                    "NotificationCenter.emit() failed for command_result "
-                    "(train=%s, kind=%s); the command itself completed",
-                    c.train_id,
-                    kind,
-                    exc_info=True,
-                )
-        # The single command_result event above (operation=kind, kind=warning on
-        # rejection) is the canonical per-command notification; a rejected
-        # command does not additionally emit a second bare warning
-        # (design_new.md "Runtime notifications").
-
-    # Inline executors — these contain the actual command bodies. The public
-    # methods below (`power_on_cmd` etc.) call them after enqueuing so the
-    # behaviour is identical when no drain is needed (e.g. tests that call
-    # the command directly without ever ticking).
-
-    def _execute_power_on(self, payload, event_time) -> CommandResult:
-        c = self._c
-        train = c._get_train()
-        if train is None:
-            return CommandResult(False, "Train not found")
-        if c.powered:
-            return CommandResult(False, "Power already on")
-        c.powered = True
-        c.ops.handle_position = HandlePosition.N
-        return CommandResult(True, "Power on")
-
-    def _execute_power_off(self, payload, event_time) -> CommandResult:
-        # The drained-queue path delegates to the canonical command method so
-        # the stopped-only check AND the already-OFF no-op guard
-        # (design_new.md, "Power/mode command contracts") stay in one place. Otherwise an enqueued
-        # `power_off` drained on an already-OFF train would arm a stale
-        # `power_off` latch that tears a later freshly-powered train back to OFF.
-        return self.power_off_cmd()
-
-    def _execute_activate_emergency_cmd(self, payload, event_time) -> CommandResult:
-        return self._c.eb.activate()
-
-    def _execute_activate_cut_out_cmd(self, payload, event_time) -> CommandResult:
-        return self.activate_cut_out_cmd()
-
-    def _execute_release_emergency_cmd(self, payload, event_time) -> CommandResult:
-        return self._c.eb.release()
-
-    def _execute_set_mode(self, payload, event_time) -> CommandResult:
-        return self.set_mode(payload.get("mode"))
-
-    def _execute_set_manual_mode_type(self, payload, event_time) -> CommandResult:
-        return self.set_manual_mode_type(payload.get("mode_type"))
-
-    def _execute_set_handle(self, payload, event_time) -> CommandResult:
-        return self.set_handle(payload.get("position"))
-
-    def _execute_set_manual_power_percent(self, payload, event_time) -> CommandResult:
-        return self.set_manual_power_percent(payload.get("percent"))
+        self._c.notifications.emit(
+            result.message
+            or (f"{operation} accepted" if result.success else f"{operation} rejected"),
+            operation=operation,
+            kind=Kind.INFO if result.success else Kind.WARNING,
+            payload={"success": result.success, "reason": result.message},
+        )
 
     # -------------------------------------------------------------------------
     # Power Commands
@@ -471,21 +271,21 @@ class OperatorCommands:
           ``eb.release()``
         """
         c = self._c
+        # design_new.md "Driver input acceptance": the `powered` and
+        # `control_mode == "manual"` checks run first, for every position.
         if not c.power_on:
             return CommandResult(False, "Power is off")
+        if self.control_mode != "manual":
+            return CommandResult(False, "Handle input requires manual mode")
 
+        # The `set_handle(EB)` bypass: an EB handle activates the emergency brake
+        # whatever the submode. Only the submode check is bypassed; an ATO
+        # train reaches EB through the ungated `eb.activate()` instead. There is
+        # no cab gate — the head end is derived from the live authority
+        # (design_new.md "Reservation-side head derivation").
         if position == HandlePosition.EB:
             return c.eb.activate()
 
-        # Per design_new.md "Driver input acceptance": set_handle() accepts only when
-        # control_mode == manual and manual_mode_type == simulation; it is
-        # rejected in the power_percent submode (that submode is driven by
-        # set_manual_power_percent()). The EB activation above is the one
-        # always-available exception and returns before this gate. There is no
-        # cab gate — the head end is derived from the live authority
-        # (design_new.md "Reservation-side head derivation").
-        if self.control_mode != "manual":
-            return CommandResult(False, "Handle input requires manual mode")
         if c.manual.manual_mode_type != "simulation":
             return CommandResult(
                 False, "Handle input requires the manual 'simulation' submode"

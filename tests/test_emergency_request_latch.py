@@ -3,9 +3,8 @@
 design_new.md Latch Table row `e9c7` and "Operator-command processing slot":
 Observe never calls an EB method itself. It latches a `"brake"` or `"cut_out"`
 request, the planning gate refuses to create or extend reservation while the
-request is pending (`EMERGENCY_PENDING`), and the Action command drain applies
-it after every queued operator command — so an `eb.release()` queued on the
-same tick cannot undo it.
+request is pending (`EMERGENCY_PENDING`), and Action step `01f2` applies
+it as the first substep of `TrainController.tick(...)`.
 """
 
 from enums import ControllerCondition
@@ -45,32 +44,17 @@ def test_a_pending_request_is_an_active_condition_and_blocks_planning():
     assert executor._eligible_for_authority_acquisition(controller, _RunStub()) is False
 
 
-def test_the_drain_applies_a_cut_out_request_and_clears_it():
+def test_step_01f2_applies_a_cut_out_request_and_clears_it():
     sim, controller = _rolling()
     latches = controller.route_hooks.phase_latches
     latches.set_emergency_request("cut_out", ErrorRecord("test", "overrun_entry"))
 
-    controller.commands._drain_command_inbox(0.0)
+    controller.commands.apply_emergency_request()
 
     assert latches.emergency_request is None
     assert controller.eb.active is True
     assert controller.eb.cut_out is True
     assert ControllerCondition.EMERGENCY_PENDING not in controller.active_conditions
-
-
-def test_the_request_is_applied_after_a_same_tick_release():
-    """The release runs in drain slot 8; the request is applied after it, so the
-    train ends the drain emergency-braked."""
-    sim, controller = _rolling()
-    controller.commands.enqueue_command("release_emergency_cmd")
-    controller.route_hooks.phase_latches.set_emergency_request(
-        "brake", ErrorRecord("test", "locked_foreign_entry")
-    )
-
-    controller.commands._drain_command_inbox(0.0)
-
-    assert controller.eb.active is True
-    assert controller.eb.cut_out is False
 
 
 def test_a_request_on_an_already_braked_train_is_cleared_as_a_no_op():
@@ -79,7 +63,7 @@ def test_a_request_on_an_already_braked_train_is_cleared_as_a_no_op():
     latches = controller.route_hooks.phase_latches
     latches.set_emergency_request("cut_out", ErrorRecord("test", "overrun_entry"))
 
-    controller.commands._drain_command_inbox(0.0)
+    controller.commands.apply_emergency_request()
 
     assert latches.emergency_request is None
     assert controller.eb.active is True

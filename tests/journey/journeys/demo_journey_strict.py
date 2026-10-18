@@ -89,7 +89,8 @@ def build_strict_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
             name="E0_boot_state",
             trigger=at_tick(0),
             assertions=[
-                assert_state(TrainState.OFF),
+                # The start-up commands ran at once, between ticks.
+                assert_state(TrainState.READY),
                 assert_block_at_tile_occupied_by((0, 0), train_id),
                 assert_block_id_state("BLOCK_MAIN_WEST", BlockState.OCCUPIED),
                 assert_route_assigned("DEMO_ROUTE_V1"),
@@ -99,7 +100,7 @@ def build_strict_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
         # demo path id (resolved dynamically; the path id is generated).
         Event(
             name="E1_path_acquired_reservations_present",
-            trigger=at_tick(3),
+            trigger=at_tick(2),
             assertions=[
                 assert_has_active_path(),
                 # Tile (4,0) lives in BLOCK_MAIN_EAST_1; it is the next

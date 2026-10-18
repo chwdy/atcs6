@@ -153,10 +153,9 @@ def _make_fixture():
     sim.block_occupancy_detector.input_interface = detector
     sim.block_occupancy_detector.seed_occupied({"BLK_A"})
 
-    controller.commands.enqueue_command("power_on")
-    controller.commands.enqueue_command("set_cab", {"cab": "A"})
-    controller.commands.enqueue_command("set_mode", {"mode": "manual"})
-    controller.commands.enqueue_command("set_manual_power_percent", {"percent": 80.0})
+    controller.commands.power_on_cmd()
+    controller.commands.set_mode("manual")
+    controller.commands.set_manual_power_percent(80.0)
     return network, sim, controller, detector
 
 

@@ -10,7 +10,6 @@ from ..harness import TrainState
 
 from ..assertions import (
     assert_cab,
-    assert_command_inbox_contains,
     assert_eb,
     assert_has_active_path,
     assert_head_at,
@@ -62,22 +61,15 @@ def build_tunnel_journey(
             name="E0_pre_first_tick",
             trigger=at_tick(0),
             assertions=[
-                assert_state(TrainState.OFF),
+                # The start-up commands run at once, between ticks, so before
+                # the first tick the train is powered and engaged with no path
+                # yet (design_new.md "Operator-command processing slot").
+                assert_state(TrainState.READY),
                 assert_cab("A"),
                 assert_eb(False),
                 assert_head_in([west_block_tile]),
                 assert_no_active_path(),
-                assert_command_inbox_contains("power_on"),
                 assert_route_assigned(route_id),
-            ],
-        ),
-        Event(
-            name="E1_after_power_on_drained",
-            trigger=at_tick(1),
-            assertions=[
-                assert_state(TrainState.READY),
-                assert_cab("A"),
-                assert_eb(False),
             ],
         ),
         Event(

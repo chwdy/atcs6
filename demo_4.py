@@ -448,9 +448,9 @@ def setup_demo_train(
         executor.execution_states[train_id] = exec_state
 
         controller = sim_controller.get_or_create_controller(train.train_id)
-        controller.commands.enqueue_command("power_on")
-        controller.commands.enqueue_command("set_mode", {"mode": "ato"})
-        controller.commands.enqueue_command("ato_go")
+        controller.commands.power_on_cmd()
+        controller.commands.set_mode("ato")
+        controller.commands.ato_go()
 
     print(f"  ✓ Registered route {route.route_id!r} with {len(route.tasks)} tasks")
     print(f"  ✓ Placed 4 trains (phase-shifted): {[s[0] for s in train_specs]}")

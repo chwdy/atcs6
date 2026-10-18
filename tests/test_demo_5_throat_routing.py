@@ -49,8 +49,8 @@ def _single_train_demo5(start_block, facing):
             train_type="LOCOMOTIVE", initial_cab="A", start_tile=None,
         )
         _t3 = sim.get_or_create_controller("T3")
-        _t3.commands.enqueue_command("power_on")
-        _t3.commands.enqueue_command("set_mode", {"mode": "ato"})
+        _t3.commands.power_on_cmd()
+        _t3.commands.set_mode("ato")
     state = AppState(
         network=network, path_dispatcher=dispatcher, sim_controller=sim,
         persistence_manager=persistence,

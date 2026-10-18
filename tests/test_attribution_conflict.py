@@ -97,7 +97,7 @@ def test_a_block_two_trains_touch_goes_to_neither_and_cuts_both_out():
     assert cut_out_requested(sim, "T_E")
     for train_id in ("T_W", "T_E"):
         controller = sim.controllers[train_id]
-        controller.commands._drain_command_inbox(0.0)
+        controller.commands.apply_emergency_request()
         assert controller.eb.active is True
         assert controller.eb.cut_out is True
 
@@ -112,7 +112,7 @@ def test_a_standing_conflict_re_latches_on_every_read_and_reports_once():
     detector_input.live.add("BLK_2")
     read(sim, OCCUPANCY_ON_THRESHOLD)
     for train_id in ("T_W", "T_E"):
-        sim.controllers[train_id].commands._drain_command_inbox(0.0)
+        sim.controllers[train_id].commands.apply_emergency_request()
 
     # The operator releases T_W's brake while the conflict still stands.
     released = sim.controllers["T_W"].eb.release()
@@ -124,7 +124,7 @@ def test_a_standing_conflict_re_latches_on_every_read_and_reports_once():
     # still cut out, and the drain would apply a fresh request as a no-op.
     assert network.blocks["BLK_2"].occupied_by is None
     assert cut_out_requested(sim, "T_W")
-    sim.controllers["T_W"].commands._drain_command_inbox(0.0)
+    sim.controllers["T_W"].commands.apply_emergency_request()
     assert sim.controllers["T_W"].eb.cut_out is True
     # Reported once, not on every read it stands.
     assert len(conflict_events(sim)) == 1

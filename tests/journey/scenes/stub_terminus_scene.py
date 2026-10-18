@@ -177,7 +177,7 @@ class StubTerminusScene:
         )
         occupant.speed_profile_id = profile.profile_id
         occ_ctrl = sim.get_or_create_controller(occupant.train_id)
-        occ_ctrl.commands.enqueue_command("power_on")  # manual, no route -> sits
+        occ_ctrl.commands.power_on_cmd()  # manual, no route -> sits
 
         # -- C: optional parked route-less occupant of P_NORTH --
         if self.occupy_north:
@@ -194,9 +194,7 @@ class StubTerminusScene:
                 start_tile=(4, 1),
             )
             north.speed_profile_id = profile.profile_id
-            sim.get_or_create_controller(
-                north.train_id
-            ).commands.enqueue_command("power_on")
+            sim.get_or_create_controller(north.train_id).commands.power_on_cmd()
 
         # -- B: hero, ATO, routed to the station (or a specific platform) --
         task_location = (
@@ -231,9 +229,9 @@ class StubTerminusScene:
         hero.speed_profile_id = profile.profile_id
         route.assign_train(hero.train_id)
         hero_ctrl = sim.get_or_create_controller(hero.train_id)
-        hero_ctrl.commands.enqueue_command("power_on")
-        hero_ctrl.commands.enqueue_command("set_mode", {"mode": "ato"})
-        hero_ctrl.commands.enqueue_command("ato_go")
+        hero_ctrl.commands.power_on_cmd()
+        hero_ctrl.commands.set_mode("ato")
+        hero_ctrl.commands.ato_go()
 
         return SceneFixture(
             network=network,

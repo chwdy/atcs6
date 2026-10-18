@@ -82,8 +82,8 @@ def test_a_queued_power_up_ato_go_batch_is_accepted_with_a_route():
     `ato_go` (slot 3) in one drain, for a train already on a route."""
     sim, controller = _ato_train(powered=False)
     _assign_stop_route(sim)
-    controller.commands.enqueue_command("set_mode", {"mode": "ato"})
-    controller.commands.enqueue_command("ato_go")
+    controller.commands.set_mode("ato")
+    controller.commands.ato_go()
 
     sim.update(0.1)
 
