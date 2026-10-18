@@ -583,6 +583,10 @@ default the user did not object to. Any decision can be reopened.
    - **Running a train** first: B1, plus Part C rules 1 and 3, plus the B5 work for
      questions 2, 3 and 4. It has the most churn, and `CALIBRATING` depends on its
      transition table.
+     Doc written 2026-10-17: `CALIBRATING`, EB keeps the mode, Start route,
+     commands between ticks under the lock, the Latch Table's pending-action
+     column, and the **Pending actions** and **Hold reason** read models. The
+     code is not started.
    - **Calibrating a locomotive** second (B2).
    - **The session state, hardware setup, the kill switch and Hold all** third: B3, B4,
      and the B5 work for question 1. This can run in parallel with calibration, because it touches
