@@ -803,7 +803,7 @@ class TestTrainStateTransitions:
         # ~line 161, no controller-owned setter); the assertion below confirms
         # the projection reads False when no path/route/destination context
         # exists for this stub controller.
-        controller.ato.engaged = False
+        controller.commands.engaged = False
 
         span = set_train_span(controller, (0, 0), facing_direction=Direction.NORTH)
         controller.tick(0.1)
@@ -854,7 +854,7 @@ class TestTrainStateTransitions:
 
     def test_set_mode_clears_retained_manual_power_percent(self):
         """A mode change clears `manual.manual_power_percent` (design_new.md
-        "ato.engaged").
+        "ATO status").
 
         The percentage is set-and-forget: nothing re-asserts it per tick, so a
         value parked before the mode change would become the train's command
@@ -1010,7 +1010,7 @@ class TestCompleteStateFlows:
 
     def test_eb_springs_the_drivers_retained_power_percent(self):
         """EB is a supervisory brake-only override that springs both driver
-        inputs to their safe rest (design_new.md "ato.engaged"): activation
+        inputs to their safe rest (design_new.md "ATO status"): activation
         re-zeros `manual_power_percent`, so no retained percentage survives to
         drive the train when EB lifts."""
         train, controller, network = create_test_train_with_controller(
@@ -1027,7 +1027,7 @@ class TestCompleteStateFlows:
     def test_eb_release_is_not_gated_on_the_power_notch(self):
         """There is no driver-control interlock: EB springs the notch to 0, so a
         release reads only the physical-safety conditions (design_new.md
-        "ato.engaged")."""
+        "ATO status")."""
         train, controller, network = create_test_train_with_controller(
             powered=True, current_speed=0.0
         )

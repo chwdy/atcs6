@@ -277,11 +277,11 @@ class PhaseLatches:
     by that step's own consume-side call (`PathDispatcher.cancel_path(...)`,
     `RouteExecutor.remove_train_route_run(...)`,
     `TrainController.complete_power_off()`, or the `eb.activate()` /
-    `eb.activate_cut_out()` call the command drain makes) per the Latch
+    `eb.activate_cut_out()` call Action step 01f2 makes) per the Latch
     consumption events table.
 
     The cross-field side effect of `power_off` (disengaging
-    `TrainController.ato.engaged`) does NOT live here — that is a controller
+    `TrainController.commands.engaged`) does NOT live here — that is a controller
     concern and the caller wires it together with `set_power_off(...)`.
     """
 

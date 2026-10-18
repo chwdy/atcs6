@@ -78,7 +78,7 @@ def test_clearing_leaves_every_train_off_and_stopped():
     assert not controller.powered
     assert controller.ops.handle_position is HandlePosition.N
     assert controller.eb.active is False
-    assert controller.ato.engaged is False
+    assert controller.commands.engaged is False
     # The clear writes no speed; the frozen value stands until the next pass.
     assert controller.physics_sync.current_speed_kmh == 42.0
 

@@ -2452,7 +2452,7 @@ class SimulationController(SwitchOutputOwner):
         # Controller-owned OFF cleanup. `complete_power_off()` is the single
         # OFF-writing entry point besides startup (design_new.md, "Power/mode command contracts"):
         # it sets `state = OFF`, resets the span head frame to end_a, clears
-        # eb.active / ato.engaged, and consumes `pending_power_off`.
+        # eb.active / commands.engaged, and consumes `pending_power_off`.
         controller.complete_power_off()
 
     def _consume_pending_route_deactivate(
@@ -2560,7 +2560,7 @@ class SimulationController(SwitchOutputOwner):
             # NotificationCenter and other simulation services.
             controller.simulation_controller = self
             # Per design_new.md "Ownership split", live operational state
-            # (`state`, `active_cab`, `ato.engaged`, `control_mode`) lives
+            # (`state`, `active_cab`, `commands.engaged`, `control_mode`) lives
             # exclusively on the controller; we no longer inherit it from
             # `Train`. Tests and demo bootstrap that need pre-armed state
             # configure it on the controller directly after this call.

@@ -2442,7 +2442,7 @@ class RouteExecutor:
                 return
 
         # ---------- dwell: withhold onward authority until departure time ----
-        # A dwell is not a controller state (design_new.md "ato.engaged"): the
+        # A dwell is not a controller state (design_new.md "ATO status"): the
         # train sits in READY while Plan holds onward authority, until the dwell
         # timer elapses. When it does, the walk advances past the dwell and the
         # pass continues so onward authority is acquired this same tick.
@@ -2868,7 +2868,7 @@ class RouteExecutor:
         now); False while the train is still dwelling (Plan returns for this
         tick).
 
-        A dwell is not a controller state (design_new.md "ato.engaged"): the
+        A dwell is not a controller state (design_new.md "ATO status"): the
         train sits in READY, stopped at its arrival authority end, and Plan
         simply does not acquire onward authority until the dwell timer elapses.
 
@@ -3551,7 +3551,7 @@ class RouteExecutor:
 
         On a successful create/extend, write
         ``task_runs[projection.walk_position].resolved_target`` (Plan-only
-        writer). There is no departure handshake (design_new.md "ato.engaged"):
+        writer). There is no departure handshake (design_new.md "ATO status"):
         an engaged ATO train, or a manual train with a command, drives on its
         own once authority exists, and the reactive rule moves it
         READY -> RUNNING_MOVING from the observed motion.
@@ -3898,7 +3898,7 @@ class RouteExecutor:
         if projection.direction in ("forward", "reverse"):
             exec_state.direction = projection.direction
 
-        # design_new.md "ato.engaged": there is no departure handshake. Once
+        # design_new.md "ATO status": there is no departure handshake. Once
         # authority is acquired, an engaged ATO train (or a manual train with a
         # command) drives on its own through the Action driving rule, and the
         # reactive rule moves READY -> RUNNING_MOVING from the observed motion.

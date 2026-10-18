@@ -1251,9 +1251,8 @@ class TestATODirectionDetection:
         controller.ato.info = controller.ato.compute_info()
         assert controller.ato.info.required_cab == "B"
 
-        result = controller.ato.engage()
-        assert result.success, f"engage failed: {result.message}"
-        assert controller.ato.engaged is True
+        controller.commands.engaged = True
+        assert controller.commands.engaged is True
 
         # The tick's authority-side reframe corrects the head end to end_b.
         controller._reframe_span_to_authority_head()
@@ -1278,8 +1277,7 @@ class TestATODirectionDetection:
         controller.ato.info = controller.ato.compute_info()
         assert controller.ato.info.required_cab == "A"
 
-        result = controller.ato.engage()
-        assert result.success
+        controller.commands.engaged = True
         # The authority-side reframe leaves the head on end_a (path matches).
         controller._reframe_span_to_authority_head()
         assert controller._framed_head_end == "end_a"  # unchanged
@@ -1426,7 +1424,7 @@ class TestATODirectionDetection:
         assert controller.cab_policy.required_cab_for_path() == "A"
 
         # And the whole way through: no flip, the path survives departure.
-        assert controller.ato.engage().success
+        controller.commands.engaged = True
         assert controller._framed_head_end == "end_a"
         for _ in range(20):
             sim.update(0.05)
@@ -1527,8 +1525,7 @@ class TestATODirectionDetection:
         # Head must NOT have changed yet — path assignment no longer reframes.
         assert controller._framed_head_end == "end_a"
 
-        result = controller.ato.engage()
-        assert result.success, f"engage failed: {result.message}"
+        controller.commands.engaged = True
 
         # The authority-side reframe corrects the head to end_b.
         controller._reframe_span_to_authority_head()
@@ -1552,8 +1549,7 @@ class TestATODirectionDetection:
         # Assign forward path going EAST
         self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)], end_block_id="BLK_EAST")
 
-        result = controller.ato.engage()
-        assert result.success
+        controller.commands.engaged = True
         # The authority-side reframe leaves the head on end_a (path matches).
         controller._reframe_span_to_authority_head()
         assert controller._framed_head_end == "end_a"

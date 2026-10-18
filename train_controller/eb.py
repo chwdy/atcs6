@@ -174,7 +174,7 @@ class EBWorkflow:
         # No power-notch check at release: EB springs both driver inputs to
         # their safe rest for as long as the latch is set (the per-tick EB hold
         # re-zeros `manual_power_percent`), so there is no retained percentage to
-        # cross-check here (design_new.md "ato.engaged"). Release reads only the
+        # cross-check here (design_new.md "ATO status"). Release reads only the
         # physical-safety conditions above.
         self.active = False
         # A cut-out resets back to normal exactly as an emergency brake does

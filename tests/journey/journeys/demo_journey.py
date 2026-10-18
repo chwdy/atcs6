@@ -173,7 +173,7 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
                 # power, but it has not physically moved yet, so it is still
                 # READY this tick. RUNNING_MOVING is movement-derived and lands
                 # on the next tick (asserted by E3_accelerating), since there is
-                # no depart handshake (design_new.md "ato.engaged").
+                # no depart handshake (design_new.md "ATO status").
                 assert_state(TrainState.READY),
                 assert_has_active_path(),
                 assert_active_path_authority_acquired_forward(),
@@ -340,7 +340,7 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
                 assert_eb(False),
                 assert_cab("A"),
                 # ATO intent stays engaged through a scheduled stop (design_new.md
-                # "ato.engaged"): the train is held by the absence of authority,
+                # "ATO status"): the train is held by the absence of authority,
                 # not by a cleared flag, and resumes on its own when authority
                 # returns. So nothing is asserted about ato_engaged here.
                 # Action-teardown latches all clear (covered by invariants too).

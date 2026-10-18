@@ -246,9 +246,8 @@ class TrainController:
     # the per-tick debug payload (`debug`), and the diagnostic
     # `_previous_speed` tracker live on the `ATOComputer` sub-module
     # attached as `self.ato` in `__post_init__`. External callers read
-    # `controller.ato.engaged`, `controller.ato.info`,
-    # `controller.ato.debug`; the intent methods are
-    # `controller.ato.engage()` and `controller.ato.disengage()`.
+    # `controller.ato.info` and `controller.ato.debug`. The ATO engage bit is
+    # `controller.commands.engaged`, written by the operator commands.
     #
     # `path_backed_run_active` was a stored field in earlier code; per the
     # design's "Latch Table" canonical home it is not part of the schema. It
@@ -719,10 +718,10 @@ class TrainController:
             self.atc.speed_limit = 0.0
             # EB is a supervisory brake-only override: it springs both driver
             # inputs to their safe rest every latched tick (design_new.md
-            # "ato.engaged" / EB-hold step `d483`). The handle is pinned to EB
+            # "ATO status" / EB-hold step `d483`). The handle is pinned to EB
             # above; the power notch is re-zeroed here, so a percentage
-            # re-commanded under EB is accepted by the tick-entry drain but
-            # wiped back to 0 before the tick ends. This is what keeps a
+            # re-commanded under EB is accepted between ticks but wiped back
+            # to 0 before the tick ends. This is what keeps a
             # retained percentage from driving the train the moment EB lifts.
             self.manual.reset_power_percent_for_safety()
             # Reported before the early return, because a latched EB is exactly
@@ -805,7 +804,7 @@ class TrainController:
             # Raise EB through the canonical activation path (design_new.md "EB
             # has three trigger paths" / step `826a`): `eb.activate()` performs
             # every canonical EB effect — force handle to EB, disengage ATO
-            # (`ato.engaged = False`), and (when a live path exists) latch the
+            # (`commands.engaged = False`), and (when a live path exists) latch the
             # `eb` cancel. ATC must not assign `eb.active` itself: no site
             # outside `train_controller/eb.py` assigns `eb.active`.
             self.eb.activate()
@@ -837,9 +836,9 @@ class TrainController:
         self.ato.info = self.ato.compute_info()
 
         # ===== 6. ATO ACTION (skip if manual) =====
-        # `ato.engaged` is operator intent, not a run-in-progress flag: losing
-        # path authority mid-motion does not clear it (design_new.md
-        # "ato.engaged"). An engaged train with no live authority holds at a
+        # `commands.engaged` is operator intent, not a run-in-progress flag:
+        # losing path authority mid-motion does not clear it (design_new.md
+        # "ATO status"). An engaged train with no live authority holds at a
         # stand and resumes on its own when authority returns, so nothing is
         # cleared here.
 
@@ -863,7 +862,7 @@ class TrainController:
             # authority end — no cab to align.
 
             # Drive while ATO intent is engaged; otherwise brake to a stand.
-            if self.ato.engaged:
+            if self.commands.engaged:
                 # Engaged - calculate handle to reach target speed. compute_handle
                 # returns neutral / a brake when there is no live authority, so an
                 # engaged train with no path simply holds at a stand.
@@ -2355,10 +2354,6 @@ class TrainController:
     # set_handle, set_manual_mode_type, set_manual_power_percent) live on the
     # `OperatorCommands` sub-module attached as `self.commands`. External
     # callers use `controller.commands.<method>(...)` between ticks.
-
-    # ATO intent (`engage`, `disengage`) lives on the `ATOComputer` sub-module
-    # at `self.ato`. Callers use `controller.ato.engage()` /
-    # `controller.ato.disengage()` directly.
 
     # -------------------------------------------------------------------------
     # Route Executor Commands (for RouteExecutor integration)

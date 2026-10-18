@@ -51,7 +51,7 @@ _CONTROLLER_STORED_FIELDS: List[str] = [
     "physics_sync.current_span",
     "physics_sync.current_speed_kmh",
     "eb.active",
-    "ato.engaged",
+    "commands.engaged",
     "commands.control_mode",
     "manual.manual_mode_type",
     "ops.handle_position",

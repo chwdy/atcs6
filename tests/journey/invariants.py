@@ -112,8 +112,8 @@ def state_cab_pair_valid() -> Invariant:
 
 
 def ato_engaged_implies_powered() -> Invariant:
-    """`ato.engaged` is operator intent, decoupled from movement (design_new.md
-    "ato.engaged"): it can be True while the train is stopped in READY waiting
+    """`commands.engaged` is operator intent, decoupled from movement (design_new.md
+    "ATO status"): it can be True while the train is stopped in READY waiting
     for authority, moving in RUNNING_MOVING, or holding a dwell. The one state
     it must never coexist with is OFF, because power-off is one of the three
     events that disengage ATO.

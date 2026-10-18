@@ -32,12 +32,9 @@ Algorithm summary (kinematic, single pass):
 
 External callers access ATO state and behavior as:
 
-  - ``controller.ato.engaged`` (bool — does the operator intend ATO to drive?)
   - ``controller.ato.info`` (Optional[ATOInfo] — destination snapshot)
   - ``controller.ato.debug`` (Optional[dict] — per-tick debug snapshot
     consumed by the debug inspector panel)
-  - ``controller.ato.engage()`` (set ATO intent — the set_mode("ato") path)
-  - ``controller.ato.disengage()`` (clear ATO intent; EB / power-off / manual)
   - ``controller.ato.compute_handle(delta_seconds)`` (per-tick handle
     selection)
   - ``controller.ato.compute_info()`` (rebuild destination snapshot)
@@ -54,7 +51,7 @@ from notification_center import Kind as _Kind
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from constants import STOPPED_SPEED_THRESHOLD_KMH
-from enums import BRAKE_MULTIPLIERS, HANDLE_POSITION_INDEX, INDEX_TO_HANDLE_POSITION, CommandResult, HandlePosition
+from enums import BRAKE_MULTIPLIERS, HANDLE_POSITION_INDEX, INDEX_TO_HANDLE_POSITION, HandlePosition
 from model_scale import get_speed_conversion_factor
 from train_controller_types import ATOInfo
 
@@ -192,52 +189,6 @@ class ATOComputer:
     # ATO engage bit (stored on OperatorCommands; see design_new.md
     # "ATO status")
     # ------------------------------------------------------------------
-
-    @property
-    def engaged(self) -> bool:
-        """The operator's ATO engage bit — whether ATO driving has been started
-        with `/ato/go`.
-
-        Canonical storage is `commands.engaged` (design_new.md "ATO status");
-        this is a convenience read/write alias. The `/ato/go` and `/ato/stop`
-        writers live on `OperatorCommands.ato_go()` / `ato_stop()`, and any
-        write of `control_mode` clears it.
-        """
-        return self._c.commands.engaged
-
-    @engaged.setter
-    def engaged(self, value: bool) -> None:
-        self._c.commands.engaged = bool(value)
-
-    def engage(self) -> CommandResult:
-        """Set the ATO engage bit (internal / test helper).
-
-        The operator surface for starting ATO is `commands.ato_go()` (wired to
-        `/ato/go`); this helper is retained for internal callers and tests. It
-        keeps the same preconditions — the train exists, is in ATO mode, and is
-        powered — and writes the canonical `commands.engaged` bit. Idempotent.
-        """
-        c = self._c
-        train = c._get_train()
-        if train is None:
-            return CommandResult(False, "Train not found")
-        if c.commands.control_mode != "ato":
-            return CommandResult(False, "Not in ATO mode")
-        if not c.powered:
-            return CommandResult(False, "Power is off")
-        self.info = self.compute_info()
-        self.engaged = True
-        return CommandResult(True, "ATO engaged")
-
-    def disengage(self) -> CommandResult:
-        """Clear the ATO engage bit (internal / test helper).
-
-        The operator surface for pausing ATO is `commands.ato_stop()` (wired to
-        `/ato/stop`); this helper is retained for internal callers and tests.
-        Idempotent.
-        """
-        self.engaged = False
-        return CommandResult(True, "ATO disengaged")
 
     # ------------------------------------------------------------------
     # Destination info (used by tick() for display)

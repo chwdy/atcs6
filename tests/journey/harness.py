@@ -267,7 +267,7 @@ def _capture_snapshot(
         cab=("B" if controller._framed_head_end == "end_b" else "A"),
         speed_kmh=float(controller.physics_sync.current_speed_kmh),
         eb_active=bool(controller.eb.active),
-        ato_engaged=bool(controller.ato.engaged),
+        ato_engaged=bool(controller.commands.engaged),
         handle_position=controller.ops.handle_position,
         handle_reason=controller.ops.handle_reason or "",
         atc_limit_kmh=float(controller.atc.speed_limit),

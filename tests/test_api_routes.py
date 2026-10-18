@@ -1477,7 +1477,7 @@ class TestRouteRedesignApis:
         To UI", the `tasks` projection). Regression: the endpoint emitted
         `task_direction` where the doc names `walk_direction`."""
         self._place_powered_train_on_two_block_line(app_state)
-        app_state.sim_controller.get_or_create_controller("TRAIN_QR").ato.engaged = True
+        app_state.sim_controller.get_or_create_controller("TRAIN_QR").commands.engaged = True
 
         assert client.post(
             "/api/train-routes",

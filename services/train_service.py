@@ -484,8 +484,8 @@ def diagnose_stopped_train(state: AppState, train_id: str) -> dict:
     # 4. Told to go.
     mode = controller.commands.control_mode
     if mode == "ato":
-        gate("told_to_go", bool(controller.ato.engaged),
-             "ATO is not engaged" if not controller.ato.engaged else "ATO engaged",
+        gate("told_to_go", bool(controller.commands.engaged),
+             "ATO is not engaged" if not controller.commands.engaged else "ATO engaged",
              "Engage ATO (set mode to ATO).")
     else:
         at_neutral = controller.ops.handle_position is HandlePosition.N

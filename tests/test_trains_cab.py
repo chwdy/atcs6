@@ -513,7 +513,7 @@ class TestHeadFrameDoubleFlip:
         # Simulate: train was running, ATO stopped, route cancelled -> powered
         # and stopped with no reservation.
         controller.powered = True
-        controller.ato.engaged = False
+        controller.commands.engaged = False
         controller.physics_sync.current_speed_kmh = 0.0
 
         # The frame is retained (route cancellation doesn't reset it).

@@ -75,7 +75,7 @@ def _run_task_ready(task_time=20.0):
     controller._apply_head_frame("end_a")
     controller.commands.control_mode = "ato"
     controller.powered = True
-    controller.ato.engaged = True
+    controller.commands.engaged = True
     set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
 
     stub = _StubDispatcher()
@@ -120,7 +120,7 @@ def test_run_task_accrues_timer_and_keeps_rolling_within_window():
 
     assert still_rolling is False  # caller falls through to authority acquisition
     assert row.run_elapsed_seconds == 8.0
-    assert controller.ato.engaged is True  # intent untouched while still rolling
+    assert controller.commands.engaged is True  # intent untouched while still rolling
 
 
 def test_run_task_timer_elapses_freezes_authority_end_without_cancelling():
@@ -140,8 +140,8 @@ def test_run_task_timer_elapses_freezes_authority_end_without_cancelling():
 
     assert done is True  # caller must not acquire fresh authority
     assert row.run_elapsed_seconds == 20.0  # capped at task_time, not 23.0
-    # A timed-run stop does not clear ATO intent (design_new.md "ato.engaged").
-    assert controller.ato.engaged is True
+    # A timed-run stop does not clear ATO intent (design_new.md "ATO status").
+    assert controller.commands.engaged is True
     # Completion is dispatcher-side stop-arrival, not this step.
     assert row.finished_at is None
 
