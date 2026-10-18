@@ -16,7 +16,342 @@ AI agents (and human reviewers) use this document to write code for a train cont
 - **v1 means v1.** Anything that is not in v1 must not appear in this document, not even as "removed," "legacy," or "deprecated" text. If a row is missing from a schema table, that absence is the statement that the thing does not exist. Use git for design history.
 - **Performance is already checked for the v1 scope.** The compute-live patterns (`lookahead`, the `received_path_plan` projection, derived properties) are there on purpose. They are not performance bugs to optimize away.
 - **Tests are out of scope for this document.** This document sets the contracts that generated code must meet. Test plans live elsewhere.
+- **Start with Operator workflows.** The **Operator workflows** chapter walks through the three jobs an operator does: setting up the hardware and going live, calibrating a locomotive, and running a train. It takes them step by step and names the section behind each step. Read it first to see what each mechanism is for.
 - **This document changes often.** When a design changes, every cross-reference is updated in the same edit. You will never see a half-updated doc. If you find one, that is a bug, not history.
+
+## Operator workflows
+
+This chapter walks through the three jobs an operator does, in the order the operator does them:
+
+- setting up the hardware and going live,
+- calibrating a locomotive,
+- running a train.
+
+Each step says what the operator does, what is true afterwards, and what is refused. It also names the section that defines each rule. The chapter defines no rule of its own. Every contract it mentions has its one canonical home in the section it names. When this chapter and that section differ, the section is right, and the difference is a bug in this chapter.
+
+The chapter ends with two sections that all three jobs share:
+
+- the four questions that decide whether a train moves,
+- the changes the system makes to a train without an operator command.
+
+### Setting up the hardware and going live
+
+Simulation needs none of these steps: it never reads the Hardware Setup, so a broken or missing setup cannot stop it from running (see **Power**, Hardware setup, Simulation is independent of Hardware Setup). The steps below are for Virtual Hardware and Real Hardware, which share one setup. Virtual Hardware runs every step against its fake device (see **Power**, Hardware setup, Virtual Hardware).
+
+1. **Choose the environment.**
+   - **What the operator does.** The operator selects Simulation, Virtual Hardware or Real Hardware with `PUT /api/operation/environment`.
+   - **What is true afterwards.** The environment is selected, not activated. For a hardware environment, the response lists the readiness blockers that would stop activation.
+   - **Where it is stored.** The selected environment is stored apart from the setup, so loading a layout never selects or activates Real Hardware.
+   - See **Session mode and operating environment** and **Power**, Hardware REST payload schemas, REST surface.
+2. **Build the setup.**
+   - **What the operator does.** The operator enters the controller, the chips, a binding for every block and switch, the detector calibration, and the two drive-zone levels. The operator saves it with `PUT /api/hardware/config`.
+   - **What a save checks.** A save rejects malformed fields, incompatible chips, out-of-range or duplicate ports, and references to deleted entities. It accepts a setup that is incomplete.
+   - **When changes reach the rig.** Coil ports, the `reversed` flag and `switch_track_source` are read on every write, so a saved change to them reaches the rig on the next write. Everything else is captured at activation, and a saved change to it never rewires a running session in place.
+   - **Saving with a layout.** Saving a layout also saves the setup into the layout file. Loading a layout never activates physical output.
+   - See **Power**, Hardware setup: Controller, Chips, Bindings, A binding must name a valid, uniquely-used chip port, An incomplete setup may be saved and commissioned, but not activated, A binding is read per write, and Saved with the layout. See also **Power**, Hardware REST payload schemas, REST surface.
+3. **Enter commissioning.**
+   - **What the operator does.** The operator enters commissioning with `POST /api/operation/commissioning/enter`, then opens the session with `POST /api/hardware/commission/open`.
+   - **When it is refused.** Entering is refused while operation runs. The operator stops operation first.
+   - **What is true while it is open.** The outputs go to the safe state, and one bounded commissioning session owns them. The detectors keep being read. The operational loop moves no train, but a commissioning test may move a locomotive on purpose, as the track direction sweep does.
+   - See **Power**, Hardware setup: Commissioning, Commissioning owns the writes; the detectors stay shared, and The operational loop moves no train during commissioning.
+4. **Prove each chip and each wire.** Each test carries a setup in its request body.
+   - **Self-test** (`POST /api/hardware/scan`) shows that each I²C chip answers at its address. A shift register cannot be found this way. The port test proves it instead.
+   - **Port-test** (`POST /api/hardware/port-test`) pulses one output port or reads one input port. That confirms a single wire before it is bound.
+   - **Track direction sweep** (`POST /api/hardware/track-test`) drives one block forward, then off, then reverse. It leaves the block de-energized. It is how the operator finds the block's `reversed` flag.
+   - **Switch throw test** (`POST /api/hardware/switch-test`) pulses one coil to throw one switch to a named position, then records the result in `Switch.position`. For a `manual` switch the recording is rejected, so `Switch.position` is not updated.
+   - **Block occupancy test** (`POST /api/hardware/occupancy-test`) drives nothing. It reports both occupancy sources, the drive zone, and the verdict.
+   - See **Power**, Hardware setup: Self-test, Port-test, Track direction sweep, Switch throw test, and Block occupancy test. See also **Power**, Hardware REST payload schemas, REST surface.
+5. **Leave commissioning.**
+   - **What the operator does.** The operator closes the session and calls `POST /api/operation/commissioning/exit`.
+   - **Other ways it ends.** A timeout, a disconnect or a failure also ends it.
+   - **What is true afterwards.** Every ending completes the safe-state sequence before ordinary operation may activate again.
+   - See **Power**, Hardware setup: Exit conditions, and Exiting commissioning restores the safe state and returns the writes.
+6. **Check readiness.**
+   - **What the operator does.** The operator reads the readiness report with `GET /api/operation/readiness`. Reading it activates nothing.
+   - **What the report lists.** It lists every blocker:
+     - a missing binding,
+     - a binding that names a missing or incompatible chip,
+     - a bad or reused port,
+     - a binding to a deleted entity,
+     - an unreachable device,
+     - a placed train whose `lighting_voltage` is not below `current_sense_min_drive_v`.
+   - See **Power**, Hardware setup: Completeness is activation policy, not edit policy, and This constraint is enforced by the shared readiness evaluator.
+7. **Activate.**
+   - **What the operator does.** The operator calls `POST /api/operation/activate`.
+   - **When it is refused.** It is refused unless operation is stopped. It runs the readiness check again and refuses on any blocker.
+   - **What it does.** It builds the hardware interfaces, verifies the environment, and starts the railway over:
+     - it cancels every live path,
+     - it ends every running `RouteRun`,
+     - it powers every train off.
+   - **What it keeps.** The layout, the setup, every train at its last position, and every route with its assigned trains.
+   - **When a hardware environment fails to activate.** It stays blocked. It never falls back to Simulation.
+   - **What it does not do.** Activation does not start operation.
+   - See **Activation starts the railway over**; **Session mode and operating environment**, Fail-closed environment lifecycle; and **Power**, Recovery is reactivation followed by an explicit clear.
+8. **Start the session.**
+   - **What the operator does.** The operator starts the session with `POST /api/simulation/control` and the `start` action.
+   - **When it is refused.** Start is refused in either of these cases:
+     - `failed_runtime` is set, in any environment;
+     - `hardware_failure` is set, while a hardware environment is active.
+   - **What is true afterwards.** The session is running, and the tick's authoring steps run. Every train is `OFF` after activation, so **Running a train** starts from step 2.
+   - See **Running and stopped**; **Fatal physical-entry conflict procedure**, step `ee19`; and **Power**, Hardware REST payload schemas, REST surface.
+9. **Stop the session.**
+   - **What the operator does.** The operator stops the session with the `stop` action.
+   - **What Stop does.** It enters the safe state: every block voltage goes to `0` and every point motor is de-energized. A train under power coasts to a stand.
+   - **What stays.** The environment stays active, and the detectors keep being read. Latches wait for the next start.
+   - **What Start does next.** The next `start` drives the layout again, with no reactivation.
+   - See **Running and stopped**: Stopping is a physical act, The stopped pass, and Latches wait for the resume. See also **Power**, Safe state is a de-energize, not a lock.
+
+**What can interrupt it**
+
+- **Hardware failure.**
+  - **What causes it.** Any of these halts a hardware session:
+    - an output write fails,
+    - a detector read fails,
+    - the controller is lost,
+    - the safe state cannot be completed.
+  - **What happens.** The session stops, the outputs go to the safe state, and `hardware_failure` is latched. While the latch is set, a Virtual Hardware or Real Hardware session runs no further tick. The latch does not block an active Simulation environment, which may still start and run.
+  - **The way back.** Each step in this order:
+    1. Repair the device.
+    2. Activate again, which starts the railway over.
+    3. Clear the halt with `POST /api/runtime/clear-hardware-failure`.
+    4. Start the session.
+  - See **Power**: Hardware I/O failure is fatal to the physical session, The affected hardware-backed operation loop stops, and Recovery is reactivation followed by an explicit clear.
+- **Fatal runtime conflict.**
+  - **What causes it.** A fatal physical-entry conflict.
+  - **What happens.** The session stops in every environment, the outputs go to the safe state, and the runtime state is kept for inspection.
+  - **The way back.** `POST /api/runtime/clear-fatal` powers every train off, ends every open calibration run, and leaves the session stopped. The operator then starts the session.
+  - See **Fatal physical-entry conflict procedure**, Clearing the halt.
+- **Loss-of-control watchdog.**
+  - **Where it applies.** Real Hardware only.
+  - **What causes it.** The runtime stops writing to the outputs for too long.
+  - **What happens.** A watchdog drives the outputs to the safe state.
+  - **What it leads to.** A drop that succeeds does not end the session. A drop that fails becomes a hardware failure.
+  - See **Power**, Loss-of-control watchdog, and A successful drop does not end the session.
+- **Layout emergency cut-out.**
+  - **Where it applies.** Virtual Hardware and Real Hardware only.
+  - **What it does.** The operator cuts out every train at once without stopping the session.
+  - **The way back.** Each train is recovered on its own, as in **Running a train**.
+  - See **Emergency cut-out**, Layout emergency cut-out.
+
+### Calibrating a locomotive
+
+A locomotive is calibrated in two runs, in this order:
+
+1. **Lighting-voltage calibration** finds the voltage at which the train is lit but does not yet move.
+2. **Speed calibration** measures how fast the train goes at each power step.
+
+The lighting voltage comes first because it is the `0%` point of the range that every power step of the speed pass is a percentage of. Both runs are opened from the calibration group of the Speed Profile panel. Only one run of either kind may be open for a train at a time. A run is kept only in memory. Only its committed result is saved, through ordinary `SpeedProfile` persistence. See **SpeedProfile**, **Speed calibration** and **Lighting-voltage calibration**.
+
+1. **Name the locomotive.**
+   - **What the operator does.** The operator picks the train in the calibration group's locomotive row. The row lists every placed train whose resolved profile is the profile on screen.
+   - **What the panel shows.** A readiness line names every opening condition the train does not yet meet.
+   - **What the panel does not do.** Neither run picks a train for itself.
+   - See **Speed calibration**, The panel.
+2. **Take control.**
+   - **What it does.** Take control puts the train in `manual` control mode with the `power_percent` submode. If the train is off, it also powers the train up.
+   - **When it is refused.** It issues the ordinary `set_mode(...)` and `set_manual_mode_type(...)` commands, and each one is refused whenever its own contract refuses it. For example, `set_mode(...)` is refused while the train is moving, or while a calibration leg or run is open for it.
+   - **What it leaves alone.** It does not unassign a route or end an open run of the other kind. Those stay on the readiness line, and the operator decides.
+   - See **Speed calibration**, The panel, and **Power/mode command contracts**.
+3. **Find the lighting voltage.**
+   - **What the operator does.** The operator presses Calibrate on the lighting-voltage row.
+   - **When the run may open.** All six of these must hold:
+     - the train is placed,
+     - it is powered on,
+     - it is in `manual` mode,
+     - it is stopped and holds no live reservation,
+     - it has no route assigned,
+     - no other calibration run is open for it.
+   - **Stepping.** Each step press puts the new candidate voltage on the rails at once. The operator steps up until the locomotive creeps, steps back down one, and saves. Stepping up stops below `max_voltage`. In a hardware environment it also stops below `current_sense_min_drive_v`.
+   - **Save.** Save writes `lighting_voltage` to this locomotive's instance profile only.
+   - **Discard.** Any of these discards the run: Revert, leaving the profile, closing the panel, or picking another train.
+   - **Where the reading means something.** Only Real Hardware measures something new. In Simulation and Virtual Hardware the run reads back the value already stored.
+   - See **Lighting-voltage calibration**: The panel, Opening preconditions, What a candidate may be, Save and discard are the two operator-driven endings, What Save writes, and Where it lives.
+4. **Name the measured block and start the speed pass.**
+   - **What the operator does.** The operator presses Calibrate speed and names one block, B. B must have a length greater than zero.
+   - **The outer blocks.** The panel shows the two outer blocks, A and C. The pass finds them by following the track out of each end of B, through the points as they are set.
+   - **When the pass may open.** All of these must hold:
+     - the train stands in A or C,
+     - it is powered on,
+     - it is in `manual` mode with the `power_percent` submode,
+     - it is stopped and holds no live reservation,
+     - it has no route assigned,
+     - no lighting run is open for it.
+   - **Start.** Start begins the sweep.
+   - See **Speed calibration**, Auto profiling: The operator names the measured block, The outer blocks are the run-up and the stopping room, and The train must be standing in one of the two outer blocks. See also **Speed calibration**, The panel, and Where it runs.
+5. **Let the pass run.**
+   - **The sweep.** The pass commands each power step from `10%` to `100%`.
+   - **Each step.** For each step the train runs `CALIBRATION_ROUND_TRIPS` round trips across B. Each crossing is timed from the moment B is confirmed occupied to the moment the far outer block is. At each end the pass stops the train and gives it a new one-off route back the other way. The step's sample is the mean of both directions.
+   - **The stall band.** When the train does not reach B within `CALIBRATION_STEP_TIMEOUT_S`, the step records `0 km/h`, and the pass moves to the next step without turning the train around. That is the locomotive's stall band.
+   - **What the panel shows.** The step being measured, the crossings done, and the points so far. It also offers Stop, which ends the pass and writes nothing.
+   - See **Speed calibration**: The sweep runs in `CALIBRATION_POWER_STEP_PERCENT` increments up to `100%`, and The panel. See also **Speed calibration**, Auto profiling: The clock is two confirmed entries, The pass turns the train around at each end, Both directions are measured, and a step's sample is their mean, and A step that does not move the train records `0 km/h`.
+6. **Commit the result.**
+   - **What the panel offers.** When every step is measured, the panel shows the measured curve and two choices: **Save to this locomotive** and **Promote to model**.
+   - **When nothing is written.** Nothing is written until the operator picks one. Closing the panel discards the pass.
+   - **Save to this locomotive.** It writes `power_speed_curve` and `calibrated_at` to this locomotive's instance profile.
+   - **Promote to model.** It writes them to the model profile and clears them from the instance profile. Every locomotive whose instance profile derives from that model profile and leaves both fields unset then runs on the new curve, the calibrated one included.
+   - **What a commit refuses.** A commit is all or nothing. It refuses a curve that is not invertible.
+   - **A second locomotive of the same model.** A roster entry that names no `speed_profile_id` is matched to a model profile when it is created or its `model` is edited. The match needs the model profile's `model` to equal the entry's `model` exactly. On a match the entry gets a new empty instance profile derived from that model profile, so a locomotive placed from it starts from the promoted curve. A model profile seeded at train creation has a blank `model` until the operator sets it in the Speed Profile panel.
+   - See **Speed calibration**, What commit writes; **SpeedProfile**, `model`; and **Train Roster**, Profiles are matched by model.
+
+**What can interrupt it**
+
+- **A measurement fault ends the pass and reports why.** Nothing is written. These are the faults:
+  - the train overruns the far outer block;
+  - it starts a crossing and never arrives;
+  - `CALIBRATION_CAP_RETRY_LIMIT` crossings of one step in a row are discarded because the drive was capped;
+  - a step measures slower than a lower step twice;
+  - no step moved the train at all.
+
+  See **Speed calibration**, Auto profiling.
+- **The train stops being able to calibrate.** The run ends on that tick when any of these happens. A speed pass discards its samples, and a lighting run drops its candidate.
+  - EB is raised;
+  - a power-off is pending or completed;
+  - the controller is lost;
+  - a route other than the calibration route is assigned;
+  - a lighting run's train leaves `manual` control mode.
+
+  See **Speed calibration**, Where it runs, `SpeedCalibration.run_still_valid(train_id)`.
+- **The session is stopped.** A stopped session ends no run. The interval clock runs on `operating_time`, which does not advance while the session is stopped. See **Speed calibration**, Where it runs, and Auto profiling, Every calibration interval is measured against `AppState.operating_time`.
+- **A fatal runtime conflict is cleared.** Clearing the `failed_runtime` halt ends every open run. See **Fatal physical-entry conflict procedure**, Clearing the halt.
+
+### Running a train
+
+These steps run a train under ATO. Manual driving and the emergency brake follow after them.
+
+**Train commands are queued.**
+- These train commands are queued on the train's `TrainController` and run in the train's next Action: `power_on_cmd()`, `set_mode(...)`, `/ato/go`, `/ato/stop`, `set_manual_mode_type(...)`, `set_handle(...)`, `set_manual_power_percent(...)`, `eb.activate()`, `eb.activate_cut_out()`, `eb.release()` and `power_off_cmd()`. A route assignment is not queued this way; step 3 says when it takes effect.
+- A request succeeds once it is queued. The command's own result arrives as a command-result event, read at `GET /api/trains/<train_id>/notifications`.
+- The command drain runs only while the session is running, because it is an authoring step. A command sent while the session is stopped waits for the next start.
+- See **Operator-command processing slot** and **Running and stopped**.
+
+1. **Place the train.**
+   - **What the operator does.** The operator places the train with `SimulationController.add_train(...)`, which puts it on the track and sets its position directly.
+   - **From the roster.** A train placed from the roster takes its fields and its instance profile from the roster entry.
+   - **What is true afterwards.** A new train is `OFF`, in manual mode, and not engaged.
+   - **A train nobody placed.** A train the detectors find but nobody placed is an unidentified train. It accepts no command until the operator adopts it.
+   - See **Train Entity**, Initial placement of `current_span`; **TrainController**, Controller retained field schema; **Train Roster**; and **Power**, Unidentified trains.
+2. **Power on.**
+   - **What the operator does.** The operator issues `power_on_cmd()`. It is accepted only while the train is `OFF`.
+   - **What is true afterwards.** The train reads `MANUAL` and holds no reservation, unless it kept a path through a fatal-halt clear.
+   - **EB.** Power-on does not clear an EB latched while the train was off. That train reads `EB` until the operator issues `eb.release()`, and then reads `MANUAL`.
+   - See **Power/mode command contracts** and **TrainController**, After power-on.
+3. **Assign a route.**
+   - **How an assignment is made.** Every operator assignment goes through `RouteExecutor.request_route_assignment(...)`. A Quick Route builds a one-off route with a single `stop` task and assigns it the same way.
+   - **A train with no running route.** `RouteExecutor.request_route_assignment(...)` assigns the new route at once, between ticks.
+   - **A train already running another route.** `RouteExecutor.request_route_assignment(...)` latches a route abort and holds the new route. The train runs to the end of its current reservation and stops. Action assigns the new route when it tears the old run down.
+   - **Engagement.** Every new route starts not engaged.
+   - See **Route assignment writers**, **ATO status**, and **Exact reservation-acquisition calls**, Operator repositions are route-backed.
+4. **Select ATO.**
+   - **What the operator does.** The operator issues `set_mode("ato")`.
+   - **When it is refused.** It is accepted only while the train is stopped. It is refused while a calibration leg or run is open for the train.
+   - **What is true afterwards.** The train reads `ATO`, with `ato_status == READY`, and does not move yet. If the train was `OFF`, this also powers it on.
+   - See **Power/mode command contracts**, Set mode, and **ATO status**.
+5. **Go.**
+   - **What the operator does.** The operator issues `/ato/go`.
+   - **When it is accepted.** Only when both hold:
+     - the train reads `ATO`,
+     - a route is assigned.
+   - **What it does.** It sets `commands.engaged`. On the next Plan pass, Plan may acquire reservation for the train.
+   - See **ATO go** and **ATO engage gate**.
+6. **The train runs its route on its own.**
+   - **How it moves.** Plan grants reservation toward one target at a time, and ATO drives to the end of the reservation (see **ATO driving rule**).
+   - **Waypoints.** The train passes `waypoint` tasks without stopping.
+   - **Stops.** At a `stop` task the train brakes to the stop. The stop is complete once the train is stopped at its reservation end (see **Stop-arrival check**).
+   - **Dwell.** A following `dwell` holds the train until its time is met. Plan then grants the next reservation in the same pass, and the train departs on its own (see **Dwell timer step**).
+   - **Run tasks.** A `run` task acts as a waypoint until its timer runs out, then as a stop (see **Run task resolution**).
+   - **What `ato_status` reads.** `RUNNING` while moving, `DWELLING` during a dwell, and `HELD` while stopped at any other time, including at a platform with no dwell running.
+   - **The same journey through the tick.** **End-To-End ATO Path Run** walks it stage by stage.
+7. **The route ends.**
+   - **A `ONE_OFF` route.** It ends after its last task: a terminal `stop`, or a terminal `run` whose timer has elapsed, followed by any final dwell.
+   - **What Plan does then.** Plan finishes the run and unassigns the train. It deletes the route when no train is assigned to it any longer.
+   - **What `ato_status` reads.** `commands.engaged` stays set, but `ato_status` reads `READY`. No route run is left to drive.
+   - **A `CIRCULAR` or `ROUND_TRIP` route.** It never ends on its own. A `CIRCULAR` route wraps from its last task to its first, and a `ROUND_TRIP` route turns back at each end. It keeps running without a fresh Go.
+   - See **Terminal route completion** and **ATO status**.
+8. **Pause, or hand back to the driver.**
+   - **`/ato/stop`.** It is accepted only while the train reads `ATO`, including while it moves. The train brakes to a stand, reads `ato_status == READY` and keeps its reservation. `/ato/go` resumes it.
+   - **`set_mode("manual")`.** It is accepted only while the train is stopped. It hands the train to the driver and keeps the reservation.
+   - See **ATO stop** and **Power/mode command contracts**, Set mode.
+9. **Power off.**
+   - **What the operator does.** The operator issues `power_off_cmd()`.
+   - **When it is accepted.** Only while the train is stopped, including with EB latched.
+   - **What it does.** It cancels the train's path, tears down its route run, unassigns its route, and leaves the train `OFF`.
+   - See **Power/mode command contracts**, **Power-off procedure**, and the **Latch Table**.
+
+**Manual driving**
+
+- **Two ways to drive.**
+  - **The `simulation` submode.** The driver moves a handle through notches, and physics applies the train's acceleration and braking.
+  - **The `power_percent` submode.** The driver sets a percentage from `0` to `100`, and the speed applies at once.
+  - **Changing submode.** `set_manual_mode_type(...)` changes the submode. It is accepted only while the train is stopped, powered and in manual mode.
+  - See **Power/mode command contracts**; **Manual mode and movement-reservation boundary**; and **Driver input acceptance**.
+- **Manual input moves the train only within a live reservation.** Without a reservation, ATC holds the train at `0`. A powered manual train with an assigned route needs no Go. Plan grants it reservation toward its route's targets on any Plan pass where `RouteExecutor.is_clean_for_create(train_id)` holds. See **TrainController**, Manual movement under reservation; **Manual mode and movement-reservation boundary**; and **Planning Kernel**.
+- **A manual train arrives and dwells like an ATO train.** A driver who stops with the head inside the stop's block completes the stop. See **End-to-end manual-arrival note** and **TrainController**, Read accessors, arrival condition `4b` of `is_stopped_at_reservation_end()`.
+- **A capped command springs back.** When any ceiling lowers the driver's command, the retained power percentage springs back to `0`, and the driver must set it again. See **Propulsion cap step**, Retained-field reset.
+
+**Emergency brake and emergency cut-out**
+
+- **What raises EB.** Any of these:
+  - the operator;
+  - ATC, when the train is more than `OVERSPEED_EB_THRESHOLD_KMH` over its limit;
+  - ATC, when the train still rolls under a zero limit because its head left its reserved path (`deviation`) or it holds no reservation (`no_reservation`);
+  - another train entering a block this train has locked.
+- **What raises the emergency cut-out.** Any of these:
+  - the operator, in a hardware environment;
+  - an overrun entry or an attribution conflict, in any environment;
+  - the layout emergency cut-out, which cuts out every train.
+- **What happens to the train.** The train reads `EB`. Its `control_mode` becomes `manual` and ATO is disengaged. When it holds a live path, its path cancel is latched.
+  - **Under EB.** The train brakes at `emergency_brake_rate`. In the `power_percent` submode it stops at once.
+  - **Under the cut-out.** Its blocks go to `0` V, the train stops that same tick, and it stays detected.
+- **Getting going again.** In this order:
+  1. Wait until the train is stopped and its cancel has committed.
+  2. Issue `eb.release()`. The train reads `MANUAL`.
+  3. Issue `set_mode("ato")`.
+  4. Issue `/ato/go`.
+
+  Plan then grants a fresh reservation.
+- See **EB workflow state machine**, **canonical EB activation effects**, **EB release**, **Emergency cut-out**, **Controller tick order** step `914f`, and **End-to-end EB note**.
+
+### Four questions that decide whether a train moves
+
+Every condition that can keep a train from moving answers one of four questions. The table names, for each question, the conditions that answer it and the sections that define them.
+
+| # | Question | Conditions that answer it | Defined in |
+| --- | --- | --- | --- |
+| 1 | Is the layout live? | The session is running (`AppState.simulation_running`). Neither fatal halt is latched (`failed_runtime`, and `hardware_failure` in a hardware environment). No commissioning session is open. | **Running and stopped**; **Fatal physical-entry conflict procedure**; **Power**, Hardware I/O failure is fatal to the physical session; **Power**, Hardware setup, The operational loop moves no train during commissioning |
+| 2 | Who is driving this train, and is it asking to move? | `train_status`, read from `powered`, `eb.active` and `commands.control_mode`. In ATO: `commands.engaged`. In manual: the driver's handle or power percentage. An open calibration run, whose drive outranks both. A ghosted train (`presence_unknown`) is powered off and frozen. An unidentified train (`is_unidentified`) is never driven. | **Controller state machine**; **ATO status**; **ATO driving rule**; **Driver input acceptance**; **Speed calibration**, Where it runs; **Power**, Ghosted trains; **Power**, Unidentified trains |
+| 3 | How far may it go? | Its live reservation (`received_path_plan`). Plan grants reservation only to a train with an assigned route and a running `RouteRun`, only while `RouteExecutor.is_clean_for_create(train_id)` holds, and only while no teardown latch is pending. Plan grants none during a running `dwell`. Plan grants none while the route has no next target it can reserve toward. A reservation ends at the next unserved `stop` or elapsed `run` target, holding point, or meet ceiling. Plan reserves only track that no other train holds and that is available, so a reservation also stops short of held track, a `disabled` resource, and a `manual` resource without override. A target re-resolution cancels it, and so does an extend that finds no path to the target at all (`failure_kind == no_viable_path`). Any other extend failure keeps the reservation, and Plan retries. Reservation truncation and preemption shorten it. A block past the reservation end is never energized. | **Authority to run is live reservation**; **Planning Kernel**; **Teardown outranks normal progress**; **Dwell timer step**; **Run task resolution**; **Unreachable and broken task handling**; **Reservation termination rule**; **Meet coordination**; **Resource acquisition**; **`disabled` and `manual` availability flags**; **Exact `RouteExecutor` tick calls**, Structural failure_kind rule; **Reservation truncation**; **Preemption**; **Power**, A block past the authority end is never energized |
+| 4 | How fast may it go right now? | The lowest ceiling in the **Propulsion cap step**: EB, a pending power-off, and the ATC limit at distance `0`. The ATC limit covers the reservation end, `CAUTION`, segment speed limits, a deviation, and no reservation. ATC raises EB when the train exceeds its limit by more than `OVERSPEED_EB_THRESHOLD_KMH`, or still rolls under a zero limit whose reason is `deviation` or `no_reservation`. | **Propulsion cap step**; **canonical lookahead payload**; **ATC speed limit**; **Controller tick order** |
+
+- **Where the operator reads the reason.**
+  - **The ATC limit.** When the ATC limit holds the train, the lookahead's distance-`0` `atc_limit_reason_code` names why. See **canonical lookahead payload**.
+  - **No reservation.** When Plan grants no reservation, the train's most recent blocking event names why. It is read through `NotificationCenter.latest_error_for("train", train_id)`.
+  - **ATO.** `ato_status` tells `READY`, `HELD` and `DWELLING` apart.
+- **The detector cap is not a fifth question.** The cap on the calculated span holds back the model's calculated position, not the train's permission to move. It keeps the calculated span from running ahead of the detectors (see **Power**, The calculated span never runs ahead of the detector).
+
+### Changes the system makes to a train without an operator command
+
+Each row is a change to a train that no operator command on that train asked for. It says what the operator must do to get the train going again. The section in the last column defines the rule.
+
+| What happens | What changes on the train | How the operator gets going again | Defined in |
+| --- | --- | --- | --- |
+| ATC raises EB: the train exceeds its limit by more than `OVERSPEED_EB_THRESHOLD_KMH`, or still rolls under a zero limit after its head leaves its reserved path (`deviation`) or with no reservation (`no_reservation`) | `train_status == EB`; `control_mode` becomes `manual`; ATO disengaged; a path cancel is latched when a live path exists | Wait for the stop and the cancel; `eb.release()`; `set_mode("ato")`; `/ato/go` | **canonical EB activation effects**; **Controller tick order** |
+| Another train enters a block this train has locked | Only that block is released, and the train goes under EB | As for EB | **Reservation truncation** |
+| The detectors find the train on a block it has not reserved (an overrun entry) | Emergency cut-out: EB effects plus `0` V that same tick. An open speed calibration pass fails instead. | As for EB | **Power**, An overrun entry or a conflict raises the emergency cut-out |
+| A newly occupied block could belong to more than one train (an attribution conflict) | Every train that could own it is cut out, and the cut-out is raised again on every read | Move the trains by hand until at most one touches the block, then release each one | **Power**, An overrun entry or a conflict raises the emergency cut-out |
+| The operator raises the layout emergency cut-out | Every train is cut out, and the session keeps running | Release each train, as for EB | **Emergency cut-out**, Layout emergency cut-out |
+| Another train takes a block this train reserved but has not locked | The reservation is cut short before that block. The path stays live, and the train brakes to the new end | Nothing: Plan extends it again once the block is free | **Reservation truncation** |
+| A higher-priority train preempts this train's reservation | The reservation is cut short before the contested track. `control_mode` and `commands.engaged` are unchanged | Nothing | **Preemption** |
+| Plan replaces the path: the target re-resolves, or an extend finds no path to the target (`failure_kind == no_viable_path`) | A path cancel is latched. The train runs to its reservation end, the cancel commits, and Plan replans | Nothing: ATO stays engaged | **Live-path target re-resolution**; **Exact `RouteExecutor` tick calls**, Structural failure_kind rule |
+| The detectors lose the train (it is ghosted) | Powered off, path cancelled, route run torn down, route unassigned, frozen at speed `0` | Once it is detected again: power on, assign a route, `set_mode("ato")`, `/ato/go` | **Power**, Ghosted trains |
+| The environment is activated | Every train goes `OFF`, every path is cancelled, and every running route run ends. Route assignments are kept | Start the session, power on, `set_mode("ato")`, `/ato/go` | **Activation starts the railway over** |
+| The session is stopped | The rails go to `0` V and the train coasts to a stand. Nothing on the train changes | Start the session | **Running and stopped** |
+| Hardware failure halts the session | The session stops and the rails go to `0` V. Nothing on the train changes | Repair, activate again (which starts the railway over, so every train is `OFF`), clear the halt, start, power on, `set_mode("ato")`, `/ato/go` | **Power**, Recovery is reactivation followed by an explicit clear; **Activation starts the railway over** |
+| A fatal runtime conflict halts the session | The session stops and the rails go to `0` V. The state is kept for inspection | Clear the halt (it powers every train off and ends every calibration run), start, power on, `set_mode("ato")`, `/ato/go` | **Fatal physical-entry conflict procedure**, Clearing the halt |
+| A new route is assigned | `commands.engaged` is cleared: at once when no route run is live, otherwise when the old run is torn down | `/ato/go` | **ATO status**; **Route assignment writers** |
+| The train's route is edited in a way that changes its shape, or is deleted | The route run is torn down once the train has stopped (a moving train first runs to its reservation end), and `commands.engaged` is cleared. An edit assigns the same route again | Edit: `/ato/go`. Delete: assign another route, then `/ato/go` | **Shared-route edit teardown**; **Route deletion waits for live teardown** |
+| A `ONE_OFF` route finishes its last task: a terminal `stop`, or a terminal `run` whose timer has elapsed | The route run is deleted, and the train is unassigned. The route is deleted when no other train is assigned to it. An ATO train reads `ato_status == READY` | Assign a route, then `/ato/go` | **Terminal route completion** |
+| A calibration run ends: EB, power-off, a non-calibration route assigned, or a measurement fault | The run is dropped. A speed pass discards its samples, and a lighting run drops its candidate | Open the run again | **Speed calibration**, Where it runs; **Speed calibration**, Auto profiling |
+| Any ceiling lowers a manual driver's command | The retained power percentage springs back to `0` | Set the percentage again | **Propulsion cap step**, Retained-field reset |
 
 ## Core Runtime Loop
 
@@ -1987,18 +2322,18 @@ Route-task authoring rules:
 
 **Route-definition validation**
 
-- A valid route definition must contain at least one non-`dwell` task (`waypoint`, `stop`, or `run`). A non-`CIRCULAR` route (`ONE_OFF` / `ROUND_TRIP`) must in addition contain at least one task that brings the train to rest — a `stop` or a `run` — and end in one (see the terminal rule below). Single-stop routes are valid for `ONE_OFF` (e.g. one-off reposition or single-destination delivery); the single stop is both the first and final stop. `ROUND_TRIP` routes are subject to the **`ROUND_TRIP` degenerate-route guard** below, which a single-stop route cannot satisfy. A `CIRCULAR` route never terminates, so it needs no stop at all: a waypoint-only `CIRCULAR` route runs the loop continuously.
+- A valid route definition must contain at least one non-`dwell` task (`waypoint`, `stop`, or `run`). A non-`CIRCULAR` route (`ONE_OFF` / `ROUND_TRIP`) must in addition contain at least one task that brings the train to rest — a `stop` or a `run` — and end in one (see the terminal rule below). Single-stop routes are valid for `ONE_OFF` (e.g. one-off reposition or single-destination delivery); the single stop is both the first and final stop. `ROUND_TRIP` routes are subject to the **`ROUND_TRIP` degenerate-route guard** below, which a single-stop route cannot satisfy. Neither a `CIRCULAR` nor a `ROUND_TRIP` route terminates (see **Terminal route completion**). A `ROUND_TRIP` route still needs a stop or run at its end, because that is where the train comes to rest before it turns back. A `CIRCULAR` route wraps from its last task to its first without turning back, so it needs no stop at all: a waypoint-only `CIRCULAR` route runs the loop continuously.
 - Consecutive stop tasks that resolve to the same concrete target are valid. Route validation must not reject or collapse them merely because their resolved `requested_destination_block_id` / `requested_destination_direction` pair is identical. At runtime the second stop is finished by Plan's covered-task index advance — the train is already stopped with its head in that destination block and no active path, so the covered-stop rule applies — and its following `dwell` row (when present) is then served by the ordinary **Dwell timer step**.
 - Every task must provide `task_kind` explicitly as `"waypoint"`, `"stop"`, `"dwell"`, or `"run"`. Missing `task_kind`, null `task_kind`, or any other value is a validation error at task creation/update time. A `run` additionally requires a finite `task_time > 0` and must omit `target_time`; route creation/update rejects a run that violates either rule.
-- A route made only of `waypoint` tasks is invalid for `ONE_OFF` / `ROUND_TRIP` (they need a task that ends the run at rest). A waypoint-only `CIRCULAR` route is valid and runs the loop with no stop.
+- A route made only of `waypoint` tasks is invalid for `ONE_OFF` / `ROUND_TRIP`. A `ONE_OFF` route needs a task where the run ends at rest, and a `ROUND_TRIP` route needs one where the train rests before it turns back. A waypoint-only `CIRCULAR` route is valid and runs the loop with no stop.
 - A `CIRCULAR` route must contain at least two non-`dwell` tasks whose `task_location` values differ. A circular walk whose moves all name one location has nothing to travel between: when the walk wraps, the only way to serve the repeated task is reservation back into the block the train's head already sits in, and `PathDispatcher.create_path(...)` rejects a request whose destination is the train's current head block.
 - **`ROUND_TRIP` degenerate-route guard.** A `ROUND_TRIP` route must contain at least two non-`dwell` tasks whose `task_location` values differ. A route with only one distinct `task_location` among its non-`dwell` tasks can never give the reflection rule in `RouteRun._append_next_walk_task(...)` (see **Route-run state**) two distinct locations to reflect between, so it has the same unservable-repeated-task problem as the `CIRCULAR` guard above, and the route editor/API rejects it at creation/update time for the same reason.
 - `Route.tasks[0]` must not be a `dwell` task. A dwell is a hold after a preceding task at that location; with no predecessor on the initial walk there is nothing to hold after, so the route editor/API rejects a leading dwell at creation/update time.
 - Every maximal sequence of `dwell` tasks must directly follow a `stop` or `run` task, and every dwell in that sequence must name the same `task_location` as that preceding stop/run. A `waypoint` never establishes a stopped, reservation-free state and therefore may not be followed by dwell. Route creation/update rejects any sequence that violates this rule.
-- **Terminal-task requirement.** For a `ONE_OFF` / `ROUND_TRIP` route, the stored `Route.tasks` list must end in a `stop` or a `run` (optionally followed by a `dwell` at that location) before a `RouteRun` may be created. Those modes must have a defined place for the run to come to rest. The route editor/API must validate that terminal requirement when the route is created or updated.
-- **`CIRCULAR` is exempt.** A `CIRCULAR` route never terminates, so its authored list may end in any task (including a `waypoint`, or a `run` followed by a `dwell`) and there is nothing to "complete" at a terminal task.
-- **Completion for non-circular modes.** For the non-circular modes the terminal task sequence is part of the route: the route is not complete until any terminal `dwell` task's timer has elapsed, or the terminal `stop` / `run` has come to rest when no `dwell` follows it.
-- **Canonical terminal shapes.** A terminal `stop` with no following `dwell` is the canonical "stop and end immediately" shape; a terminal `stop` followed by a `dwell` with `task_time > 0` or `target_time` is the canonical "end after holding at the platform" shape. Both are valid.
+- **Terminal-task requirement.** For a `ONE_OFF` / `ROUND_TRIP` route, the stored `Route.tasks` list must end in a `stop` or a `run` (optionally followed by a `dwell` at that location) before a `RouteRun` may be created. Those modes must have a defined place for the train to come to rest: a `ONE_OFF` run ends there, and a `ROUND_TRIP` walk rests there before it turns back. The route editor/API must validate that terminal requirement when the route is created or updated.
+- **`CIRCULAR` is exempt.** A `CIRCULAR` route wraps from its last task to its first without coming to rest, so its authored list may end in any task (including a `waypoint`, or a `run` followed by a `dwell`).
+- **Completion for `ONE_OFF`.** Only a `ONE_OFF` route completes; `CIRCULAR` and `ROUND_TRIP` walks never end (see **Terminal route completion**). A `ONE_OFF` route's terminal task sequence is part of the route: the route is not complete until any terminal `dwell` task's timer has elapsed, or the terminal `stop` / `run` has come to rest when no `dwell` follows it.
+- **Canonical terminal shapes.** A terminal `stop` with no following `dwell` is the canonical "stop and end immediately" shape; a terminal `stop` followed by a `dwell` with `task_time > 0` or `target_time` is the canonical "end after holding at the platform" shape. Both are valid. On a `ROUND_TRIP` route the same two shapes mean "turn back at once" and "turn back after holding at the platform".
 - A bulb loop or other turnaround that returns to the same stop must be modeled explicitly in the task list (for example `A(stop) -> bulb(waypoint) -> A(stop) -> dwell(A)`). `RouteMode.ROUND_TRIP` does not infer that geometry from one terminal stop.
 - Every `task_kind == "stop"` task must identify a valid stop target through `task_location`: a `BlockTarget`, a `PlatformTarget`, or a `StationTarget` that can be resolved to a platform at runtime.
 - `Route.priority` must be an integer in `0..9` (`9` highest, `0` lowest); out-of-range values are a route-definition validation error rejected at creation/update, per the rule immediately below.
@@ -3550,6 +3885,7 @@ Auto profiling times the locomotive across one block of known length using the b
 
 - **Opening a pass requires all of these**, and every one of them is a condition the commands the pass issues already carry:
   - the train is placed, and it stands in one of the measured block's two outer blocks — a leg starts from a stand in an outer block, so anywhere else is not a place a step can start
+  - the train is powered — `powered` (`train_status != "OFF"`); `set_manual_power_percent(...)` is accepted only from a powered train
   - `control_mode` is `manual` and the manual submode is `power_percent` — `set_manual_power_percent(...)` is a manual-only command
   - the train is stopped and holds no live reservation
   - the train has no assigned route — `RouteExecutor.assigned_route_id_for(train_id) is None` — and has no **Lighting-voltage calibration** run open (that pass states the same exclusion from its side). After opening, **`SpeedCalibration.run_still_valid(train_id)`** below re-reads the route condition every tick: only the route named by `CalibrationRun.active_leg_route_id` may be the assigned route while the pass remains open
@@ -3605,14 +3941,15 @@ Lighting-voltage calibration finds the one voltage at which a locomotive is lit 
 
 **What the run drives**
 
-- **Opening preconditions.** Opening a run requires all five of these to hold:
+- **Opening preconditions.** Opening a run requires all six of these to hold:
   - the train is placed
+  - the train is powered — `powered` (`train_status != "OFF"`)
   - `control_mode` is `manual`
   - the train is stopped and holds no live reservation
   - no route is assigned — `RouteExecutor.assigned_route_id_for(train_id) is None`
   - no other calibration run of any kind is already open for it — neither a **Speed calibration** pass nor another **Lighting-voltage calibration** run
 
-  Only one calibration run of either kind may be open for a train at a time. A lighting run holds no reservation, so ordinary per-block emission signs the candidate by the train's span (see **Power**, A train with no live reservation is signed by its span); no cab is needed, and the operator does not choose a direction. `stopped` and the no-concurrent-calibration rule are opening preconditions only: neither is re-checked while a run is open, so a run survives the train creeping under the candidate voltage.
+  A powered-off train runs no driving source, so a candidate opened on it would never reach the rails. Only one calibration run of either kind may be open for a train at a time. A lighting run holds no reservation, so ordinary per-block emission signs the candidate by the train's span (see **Power**, A train with no live reservation is signed by its span); no cab is needed, and the operator does not choose a direction. `stopped` and the no-concurrent-calibration rule are opening preconditions only: neither is re-checked while a run is open, so a run survives the train creeping under the candidate voltage.
 - **A run ends when the predicate fails.** **`SpeedCalibration.run_still_valid(train_id)`** (canonical home: **Speed calibration**, Where it runs) is the one condition set that keeps a lighting run open, evaluated once per tick at Action step `26f5`. When it is false, the step calls `SpeedCalibration.cancel_lighting(train_id)` on that same tick, the candidate is dropped, and the train's `track_voltage` returns to what its ordinary state outputs on the following tick. Save, Revert, and the other operator-driven endings in **The panel** end a run without waiting for that step. The one voltage already written on the ending tick moves nothing: under a zero ceiling the **Propulsion cap step** withheld the candidate (next bullet), and a still-open candidate is a sub-drive-threshold holding voltage. A fatal-halt clear also ends a run: `SimulationController.clear_failed_runtime()`'s step-`7c41` fan-out calls `SpeedCalibration.cancel_lighting(train_id)` for every train with an open run, alongside its `TrainController.complete_power_off()` call on each controller. That fan-out is not an Action pass, which is why it ends the run there directly.
 - **The candidate is the driving source while the run is open.** While a run remains open, `TrainController.tick(...)` selects the run's exact candidate voltage magnitude as the driving source. The ordinary manual-notch, manual-power, or ATO traction request is not selected while the run is open, and the candidate is not copied into an operator-command field. The candidate goes through the **Propulsion cap step**. Under a zero ceiling — EB or pending power-off — it is withheld before voltage application and the ordinary capped output is emitted, because the candidate is a test voltage rather than the stopped-but-lit output; the run itself ends at step `26f5` when the predicate above fails. Otherwise `TrainPhysics` treats the candidate `track_voltage` as the authoritative magnitude for that tick, and ordinary per-block emission applies the canonical block-relative sign separately to every block. The candidate does not feed the speed solution, so it never moves the modelled train by itself. It reaches that train's ordinary energized set, and each block follows the ordinary direction rule (see **Power**, Block power-controller role and A block voltage carries a direction). A train that may open a run is stopped with nothing reserved ahead of it, so that set is the rail under the locomotive.
 
@@ -4775,6 +5112,8 @@ These rules apply to every edit of this document. Reviewers must reject any patc
 
 8. **Requirement keywords are binding.** `must` and `must not` state required contract behavior. `may` states allowed behavior. `should` is not used in a contract statement: a sentence that states a contract uses `must`, and one that grants permission uses `may`. Readers, including code-generation agents, treat these keywords literally.
 
+9. **Operator-visible changes start in Operator workflows.** A patch that changes what an operator does, sees, or can rely on must update the matching step or table row in **Operator workflows** in the same edit. **Operator workflows** defines no rule of its own. Each step names the section that defines it, and a patch must not add a rule there that no other section defines.
+
 ## Logic Review Checklist
 
 **Review checklist**
@@ -4846,7 +5185,7 @@ These rules apply to every edit of this document. Reviewers must reject any patc
 - Does `SimulationController.enter_hardware_failure(...)` remain the single writer of `hardware_failure = True` and `clear_hardware_failure()` the single clearer, mirroring `enter_failed_runtime(...)` / `clear_failed_runtime()` (see **Hardware I/O failure**)?
 - Is a retired unidentified train's `train_id` never handed to a later one after the gap-hold teardown (the mint counter only counts up), and does adoption re-key an existing unidentified train in place rather than deleting and recreating it (see **Unidentified trains**, The gap and Adoption)?
 - Does `SpeedCalibration` guard a lighting run as follows?
-  - Does `SpeedCalibration` reject opening a **Lighting-voltage calibration** run unless the train is placed and stopped, holding no live reservation, in `manual` mode, has no assigned route, and has no other calibration run already open?
+  - Does `SpeedCalibration` reject opening a **Lighting-voltage calibration** run unless the train is placed, powered and stopped, holding no live reservation, in `manual` mode, has no assigned route, and has no other calibration run already open?
   - Is `SpeedCalibration.run_still_valid(train_id)` the one validity predicate for both a lighting run and a speed pass, evaluated once per tick at Action step `26f5` from live state, with `26f5` ending the run — discarding the lighting candidate through `cancel_lighting(train_id)` — the moment it fails (a stopped train continuing to stand still does not by itself end a run), and does a `clear_failed_runtime()` fatal-halt clear also end it?
 - Is the calibration drive a driving source selected only while a leg or run is open, lowered by the **Propulsion cap step** like any other request, with the lighting candidate withheld under an EB / power-off ceiling, and is a crossing during which the cap step lowered the drive on any tick discarded as a sample?
 - Does a `task_kind == "run"` task do all of these?

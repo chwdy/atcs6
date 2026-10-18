@@ -25,6 +25,8 @@ These are the rules the document expects every patch to honor.
 
 6. **No single-use-case branches in shared contracts.** If a workflow step is written as a per-case branch, it must either be expressed as a general mechanism or explicitly justified as the only case the general mechanism cannot cover.
 
+7. **Operator-visible changes start in Operator workflows.** When a patch changes what an operator does, sees, or can rely on — a command, a refusal, a status, a recovery step — update the matching step or table row in the **Operator workflows** chapter in the same edit (doc Authoring Rule 9). That chapter defines no rule of its own: each step names the section that defines it. If the workflow chapter does not change, the patch must not change operator-visible behavior.
+
 ## Style and language for `design_new.md`
 
 - **Use simple English.** The user reads this doc directly and may push back when wording is jargon-heavy or hard to parse. Plain sentences beat clever phrasing. Spell out what something does instead of using terms like "canonical," "ordained," "defer to," or "anchored to" without context. If you would not say a term out loud to a junior engineer without defining it, do not write it; define overloaded terms in the Glossary section instead.
