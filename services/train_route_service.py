@@ -25,7 +25,7 @@ import uuid
 from typing import Any, Dict, Iterable, List, Optional
 
 from app_state import AppState
-from services.exceptions import NotFoundError, ValidationError
+from services.exceptions import ConflictError, NotFoundError, ValidationError
 from train_route import (
     Route,
     RouteMode,
@@ -138,6 +138,24 @@ def _unassign_train_from_other_routes(
     for other in _registry(state).values():
         if other.route_id != keep_route_id and train_id in other.assigned_train_ids:
             other.unassign_train(train_id)
+
+
+def _refuse_calibrating_trains(state: AppState, train_ids: Iterable[str]) -> None:
+    """Refuse the whole request when any named train has a calibration run open.
+
+    A calibrating train refuses route assignment, unassign included
+    (design_new.md "Route assignment writers", A calibrating train refuses
+    assignment). Checked before the service changes anything, so a refused
+    request leaves the route as it was.
+    """
+    sim_controller = getattr(state, "sim_controller", None)
+    executor = getattr(sim_controller, "route_executor", None) if sim_controller else None
+    if executor is None:
+        return
+    for train_id in train_ids:
+        refusal = executor.calibration_refusal(train_id)
+        if refusal is not None:
+            raise ConflictError(refusal)
 
 
 def _require_route(state: AppState, route_id: str) -> Route:
@@ -280,6 +298,10 @@ def create_route(
             timestamp alone -- the route handler computes this from
             whether any of the edit fields appeared in the JSON.
     """
+    _refuse_calibrating_trains(
+        state,
+        [t for t in (assigned_train_ids or ()) if t in state.network.trains],
+    )
     resolved_id = route_id or f"ROUTE-{uuid.uuid4().hex[:6].upper()}"
     resolved_mode = _coerce_mode(mode)
 
@@ -362,6 +384,11 @@ def update_route(
     """
     route = _require_route(state, route_id)
     push_policies = push_policies or {}
+    if assigned_train_ids is not None:
+        assigned_train_ids = list(assigned_train_ids)
+        _refuse_calibrating_trains(
+            state, set(assigned_train_ids) ^ set(route.assigned_train_ids)
+        )
 
     definition_edit_touched = False
     # Set when the tasks edit changes the walk structure (waypoint set,

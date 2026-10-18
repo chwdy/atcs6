@@ -683,7 +683,7 @@ def assign_route(
         ValidationError when the target route has no tasks or start_mode is
             invalid.
         ConflictError when the train is already on a route and ``force`` is
-            False.
+            False, or when a calibration run is open for the train.
         ValidationError when the train is an unidentified train: an unidentified train is never assigned a
             route (design_new.md "Unidentified trains").
     """
@@ -692,6 +692,13 @@ def assign_route(
     route_executor = (
         state.sim_controller.route_executor if state.sim_controller else None
     )
+
+    # A calibrating train refuses assignment, unassign included (design_new.md
+    # "Route assignment writers", A calibrating train refuses assignment).
+    if route_executor is not None:
+        refusal = route_executor.calibration_refusal(train_id)
+        if refusal is not None:
+            raise ConflictError(refusal)
 
     # Branch 1: unassign (route_id is None). The mechanism -- defer around a
     # live run vs. unassign immediately, plus clearing stale pending start /
@@ -916,20 +923,17 @@ def set_manual_power_percent(
 
 
 def _calibration_profile(state: AppState, train_id: str):
-    """Resolve (train, profile) for a calibration command, enforcing the gates.
+    """Resolve (train, profile, sim) for a calibration command.
 
-    Gate (design_new.md "Speed calibration"): a train following an ATO route is
-    a controlled pass and must not be hijacked for calibration. An unidentified train is
-    rejected outright — calibration drives the train, which the app cannot do
-    for an unidentified train (design_new.md "Unidentified trains").
+    An unidentified train is rejected outright — calibration drives the train,
+    which the app cannot do for an unidentified train (design_new.md
+    "Unidentified trains"). Whether a run may open is
+    `calibration_readiness(...)`'s question, not this lookup's.
     """
     train = require_drivable_train(state, train_id)
     sim = getattr(state, "sim_controller", None)
     if sim is None:
         raise ValidationError("Calibration requires a runtime")
-    executor = getattr(sim, "route_executor", None)
-    if executor is not None and executor.execution_state_for(train_id) is not None:
-        raise ConflictError("Cannot calibrate a train that is running a route")
     profile = (
         state.network.speed_profiles.get(train.speed_profile_id)
         if train.speed_profile_id
@@ -968,52 +972,106 @@ def resolve_calibration_stretch(state: AppState, measured_block_id: str):
     return (outer[0], outer[1]), length_cm
 
 
-def _require_calibration_ready(state: AppState, train_id: str, train, sim) -> None:
-    """The opening preconditions (design_new.md "Speed calibration", Where it runs).
+def calibration_readiness(
+    state: AppState,
+    train_id: str,
+    *,
+    kind: str = "speed",
+    measured_block_id: str = "",
+) -> List[str]:
+    """Every opening condition the train does not yet meet, empty when a run
+    may open (design_new.md "Speed calibration", Opening a run takes control of
+    the train).
 
-    Every one of them is a condition the pass already carries: it drives with
-    `set_manual_power_percent(...)` (a manual-only command) and turns the train
-    around between legs by re-framing the span to its other head end while the
-    train is stopped (design_new.md "Reversed-frame re-expression"); there is no
-    operator cab.
+    `kind` is ``"speed"`` for a speed pass or ``"lighting"`` for a
+    lighting-voltage run. For a speed pass with a `measured_block_id`, the
+    train must also stand in one of that block's two outer blocks. The panel's
+    readiness line shows the whole list, so the operator reads every unmet
+    condition together rather than one at a time.
     """
+    train = require_drivable_train(state, train_id)
+    sim = getattr(state, "sim_controller", None)
+    if sim is None:
+        return ["Calibration requires a runtime"]
     controller = _controller(state, train)
-    if controller.commands.control_mode != "manual":
-        raise ConflictError(
-            "Speed calibration drives the train manually — switch it to manual"
-        )
-    if controller.manual.manual_mode_type != "power_percent":
-        raise ConflictError(
-            "Speed calibration commands a power percent — switch the manual "
-            "mode to power_percent"
-        )
-    if not controller.powered:
-        raise ConflictError(
-            f"Train must be powered to calibrate (currently {controller.train_status.value})"
-        )
+    unmet: List[str] = []
+
+    if not getattr(state, "simulation_running", False):
+        unmet.append("Start the session — a calibration run opens only while it runs")
+    if getattr(controller, "presence_unknown", False):
+        unmet.append(_ghost_refusal_message(train_id))
+    if not train.speed_profile_id or state.network.speed_profiles.get(
+        train.speed_profile_id
+    ) is None:
+        unmet.append("Assign a speed profile to the train")
+
+    span = controller.get_current_span()
+    held = set(getattr(span, "occupied_blocks", []) or [])
+    if not held:
+        unmet.append("Place the train on the layout")
+    elif kind == "speed" and measured_block_id:
+        try:
+            outer, _length_cm = resolve_calibration_stretch(state, measured_block_id)
+        except (NotFoundError, ValidationError) as exc:
+            unmet.append(str(exc))
+        else:
+            if not held.intersection(outer):
+                unmet.append(
+                    f"Stand the train in {outer[0]} or {outer[1]} — a leg starts "
+                    "from a stand in an outer block"
+                )
+
     if not controller.is_stopped():
-        raise ConflictError("Train must be stopped to start a calibration pass")
-    # There is no cab precondition: the pass reverses by re-framing the span to
-    # its other head end between legs (design_new.md "Reversed-frame
-    # re-expression"), not by an operator cab selection.
-    # The train must have no assigned route to open a pass (design_new.md
-    # "Speed calibration", Opening a pass): `assigned_route_id_for(train_id) is
-    # None`, not merely no *running* route. A manual train holding an
-    # assigned-but-not-yet-running route would otherwise open a pass and then
-    # have that route contend with the pass's own leg route. Only the pass's
-    # own `CalibrationRun.active_leg_route_id` may be assigned after opening, so
-    # this is an open-only precondition (the during-pass record/commit commands
-    # legitimately run with the leg route assigned).
+        unmet.append("Stop the train")
+    if controller.path_projection.received_path_plan is not None:
+        unmet.append("The train still holds a reservation — let its path end first")
+    if controller.eb.active:
+        unmet.append("Release the emergency brake")
+    if controller.route_hooks.phase_latches.power_off:
+        unmet.append("Wait for the pending power-off to finish")
     executor = getattr(sim, "route_executor", None)
     if executor is not None and executor.assigned_route_id_for(train_id) is not None:
-        raise ConflictError(
-            "Unassign the train's route first — a calibration pass owns the "
-            "train's movement, and only its own leg route may be assigned"
+        unmet.append(
+            "Unassign the train's route — a calibration run owns the train's "
+            "movement while it is open"
         )
-    if sim.speed_calibration.lighting_runs.get(train_id) is not None:
-        raise ConflictError("A lighting-voltage run is already open for this train")
-    if sim.speed_calibration.runs.get(train_id) is not None:
-        raise ConflictError("A speed-calibration pass is already open for this train")
+
+    calibration = sim.speed_calibration
+    if calibration.lighting_runs.get(train_id) is not None:
+        unmet.append("A lighting-voltage run is already open for this train")
+    run = calibration.runs.get(train_id)
+    if run is not None:
+        if run.is_measured:
+            unmet.append(
+                "A finished speed pass is waiting — save it or discard it before "
+                "measuring again"
+            )
+        else:
+            unmet.append("A speed-calibration pass is already open for this train")
+    return unmet
+
+
+def _require_calibration_ready(
+    state: AppState, train_id: str, *, kind: str, measured_block_id: str = ""
+) -> None:
+    """Raise `ConflictError` naming every unmet opening condition."""
+    unmet = calibration_readiness(
+        state, train_id, kind=kind, measured_block_id=measured_block_id
+    )
+    if unmet:
+        raise ConflictError("; ".join(unmet))
+
+
+def _take_control_for_calibration(controller) -> None:
+    """The writes opening a run makes before the run opens (design_new.md
+    "Speed calibration", Opening a run takes control of the train): the
+    `power_on_cmd()` power-up when the train is OFF, then the
+    `set_mode("manual")` write. Each is the write its own command makes, so
+    opening adds no effect beyond the run itself. The readiness check has
+    already confirmed the train is stopped, so both are accepted."""
+    if not controller.powered:
+        controller.commands.power_on_cmd()
+    controller.commands.set_mode("manual")
 
 
 def calibrate_train(
@@ -1024,28 +1082,31 @@ def calibrate_train(
 ):
     """Open a speed-calibration pass (design_new.md "Speed calibration").
 
-    The pass resolves the measured block's two neighbours and then drives itself
-    from the runtime tick, turning the train around at each end. Returns the
-    `CalibrationRun`.
+    Runs between ticks under the lock, like an operator command. When every
+    opening condition holds it takes control of the train — power-up when OFF,
+    then manual mode — and opens the pass, which resolves the measured block's
+    two neighbours and then drives itself from the runtime tick, turning the
+    train around at each end. Returns the `CalibrationRun`.
     """
-    train, profile, sim = _calibration_profile(state, train_id)
-    _require_calibration_ready(state, train_id, train, sim)
-
     if not measured_block_id:
         raise ValidationError("measured_block_id is required")
-    outer, length_cm = resolve_calibration_stretch(state, measured_block_id)
-    heading_to = _leg_heading(state, train_id, outer)
-
-    return sim.speed_calibration.start(
-        train,
-        profile,
-        measured_block_id=measured_block_id,
-        outer_block_ids=outer,
-        block_length_cm=length_cm,
-        heading_to=heading_to,
-        safe_state_generation=int(getattr(sim, "safe_state_generation", 0) or 0),
-        now=float(sim.operating_clock()),
-    )
+    with _runtime_lock(state):
+        _require_calibration_ready(
+            state, train_id, kind="speed", measured_block_id=measured_block_id
+        )
+        train, profile, sim = _calibration_profile(state, train_id)
+        outer, length_cm = resolve_calibration_stretch(state, measured_block_id)
+        heading_to = _leg_heading(state, train_id, outer)
+        _take_control_for_calibration(_controller(state, train))
+        return sim.speed_calibration.start(
+            train,
+            profile,
+            measured_block_id=measured_block_id,
+            outer_block_ids=outer,
+            block_length_cm=length_cm,
+            heading_to=heading_to,
+            now=float(sim.operating_clock()),
+        )
 
 
 def _leg_heading(state: AppState, train_id: str, outer: tuple) -> int:
@@ -1141,54 +1202,25 @@ def calibrate_commit(
 # ------------------------------------------- lighting-voltage calibration ----
 
 
-def _lighting_calibration_target(state: AppState, train_id: str):
-    """Resolve (train, profile, sim) for a lighting-voltage command.
-
-    Gates (design_new.md "Lighting-voltage calibration", What the run drives):
-    the train must be placed, in manual mode, powered and stopped, with no
-    assigned route, and with no other calibration run of any kind open for it —
-    neither a speed-calibration pass nor another lighting run. The locomotive
-    creeps forward from the span's current head framing (design_new.md
-    "Authority-side head derivation"); there is no operator cab.
-    """
-    train, profile, sim = _calibration_profile(state, train_id)
-    controller = _controller(state, train)
-    if controller.commands.control_mode != "manual":
-        raise ConflictError(
-            "Lighting calibration is a manual-mode pass — switch the train to manual"
-        )
-    if not controller.powered:
-        raise ConflictError(
-            f"Train must be powered to calibrate lighting voltage "
-            f"(status {controller.train_status.name})"
-        )
-    if not controller.is_stopped():
-        raise ConflictError("Train must be stopped to calibrate lighting voltage")
-    executor = getattr(sim, "route_executor", None)
-    if executor is not None and executor.assigned_route_id_for(train_id) is not None:
-        raise ConflictError(
-            "Unassign the train's route first — a lighting run owns the train's "
-            "movement while it is open"
-        )
-    if sim.speed_calibration.runs.get(train_id) is not None:
-        raise ConflictError("A speed-calibration pass is already open for this train")
-    if sim.speed_calibration.lighting_runs.get(train_id) is not None:
-        raise ConflictError("A lighting-voltage run is already open for this train")
-    return train, profile, sim
-
-
 def start_lighting_calibration(state: AppState, train_id: str):
     """Open a lighting-voltage run (design_new.md "Lighting-voltage calibration").
 
-    From here the candidate voltage is on the rails: the operator steps it up
-    until the locomotive creeps, steps back down one, and saves.
+    Opens under the same rule as a speed pass (design_new.md "Speed
+    calibration", Opening a run takes control of the train): between ticks
+    under the lock, every opening condition checked, then power-up when OFF and
+    manual mode before the run opens. From here the candidate voltage is on the
+    rails: the operator steps it up until the locomotive creeps, steps back
+    down one, and saves.
     """
-    train, profile, sim = _lighting_calibration_target(state, train_id)
-    # Seed the candidate and ceiling from the resolved profile (the model's
-    # values fill in where the instance carries none), while the run's write
-    # target stays the instance profile the train names.
-    resolved = state.network.speed_profiles.resolve(profile.profile_id)
-    return sim.speed_calibration.start_lighting(train, resolved or profile)
+    with _runtime_lock(state):
+        _require_calibration_ready(state, train_id, kind="lighting")
+        train, profile, sim = _calibration_profile(state, train_id)
+        _take_control_for_calibration(_controller(state, train))
+        # Seed the candidate and ceiling from the resolved profile (the model's
+        # values fill in where the instance carries none), while the run's write
+        # target stays the instance profile the train names.
+        resolved = state.network.speed_profiles.resolve(profile.profile_id)
+        return sim.speed_calibration.start_lighting(train, resolved or profile)
 
 
 def step_lighting_calibration(state: AppState, train_id: str, direction: int):

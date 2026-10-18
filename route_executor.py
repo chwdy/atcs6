@@ -27,7 +27,7 @@ from typing import Any, ClassVar, Dict, Iterable, List, Optional, Set, Tuple, TY
 from constants import (
     DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS,
 )
-from enums import AtcLimitReasonCode, ControllerCondition, Direction
+from enums import AtcLimitReasonCode, CommandResult, ControllerCondition, Direction
 from train_controller import TrainController, create_controller_for_train
 from train_route import (
     RouteMode,
@@ -824,7 +824,7 @@ class RouteExecutor:
         train_id: str,
         requested_route_id: Optional[str],
         start_override: Optional[Dict[str, Any]] = None,
-    ) -> None:
+    ) -> CommandResult:
         """Canonical assignment-request entry (design_new.md "Route assignment
         writers"). Every HTTP/UI/admin assignment writer routes
         through here instead of mutating `Route.assigned_train_ids` directly.
@@ -834,7 +834,12 @@ class RouteExecutor:
         (`{"start_mode": RouteStartMode, "start_task_index": Optional[int]}`)
         that seeds the next fresh run; `None` means "use the route default".
 
-        Three cases, keyed on whether a live RUNNING run exists:
+        A train with a calibration run open refuses the request — unassign
+        included — and the method changes nothing (design_new.md "Route
+        assignment writers", A calibrating train refuses assignment); the
+        operator ends the run first. Plan step `c9e1` assigns a pass's own leg
+        routes without this entry point. Every other request is accepted, in one
+        of three cases keyed on whether a live RUNNING run exists:
 
           * No RUNNING run -> commit immediately: clear older pending route/start
             state, unassign the train from any old route, assign the requested
@@ -853,18 +858,9 @@ class RouteExecutor:
         This method performs the mechanism only; the caller validates the route
         (existence, non-empty tasks, conflict/force) before invoking it.
         """
-        # External assignment waits for calibration teardown (design_new.md
-        # "Speed calibration", External assignment waits for calibration
-        # teardown). A request to assign a non-calibration route while a speed
-        # pass is open first abandons the pass — which tears its active leg route
-        # down through the ordinary route-deactivate latch — then holds the
-        # requested route so the Action deactivation consumer applies it after the
-        # leg route is gone. Because Plan has already run for this train this tick,
-        # the requested route cannot allocate or move until the next Plan pass.
-        if self._abandon_calibration_for_external_assignment(
-            train_id, requested_route_id, start_override
-        ):
-            return
+        refusal = self.calibration_refusal(train_id)
+        if refusal is not None:
+            return CommandResult(False, refusal)
 
         run = self.execution_state_for(train_id)
 
@@ -872,7 +868,7 @@ class RouteExecutor:
         # no-op. The run already consumed its start mode, so a supplied start
         # override is dropped rather than applied.
         if run is not None and requested_route_id == run.route_id:
-            return
+            return CommandResult(True, "Route already assigned")
 
         # An explicit request supersedes any held same-route structural
         # re-allocation: a stale `_pending_reassign` entry must not fire on a
@@ -903,7 +899,7 @@ class RouteExecutor:
             controller = self._controller_by_id(train_id)
             if controller is not None:
                 controller.commands.engaged = False
-            return
+            return CommandResult(True, "Route assignment committed")
 
         # A live run exists and the request names a different route (or None):
         # defer. Write the abort + inclusive cancel so Action tears the old run
@@ -933,6 +929,7 @@ class RouteExecutor:
             "requested_route_id": requested_route_id,
             "start_override": None if start_override is None else dict(start_override),
         }
+        return CommandResult(True, "Route assignment held until the current run ends")
 
     def _commit_pending_route_assignment(self, train_id: str) -> None:
         """Consume any held `_pending_route_assignments[train_id]` and apply its
@@ -960,55 +957,30 @@ class RouteExecutor:
         if start_override is not None:
             self._pending_start_overrides[train_id] = dict(start_override)
 
-    def _abandon_calibration_for_external_assignment(
-        self,
-        train_id: str,
-        requested_route_id: Optional[str],
-        start_override: Optional[Dict[str, Any]],
-    ) -> bool:
-        """Handle a non-calibration route requested while a speed-calibration
-        pass is open (design_new.md "Speed calibration", External assignment waits
-        for calibration teardown).
+    def calibration_refusal(self, train_id: str) -> Optional[str]:
+        """The reason a route request for this train is refused because a
+        calibration run is open for it, or None (design_new.md "Route
+        assignment writers", A calibrating train refuses assignment).
 
-        Abandons the pass — which tears its active leg route down through the
-        route-deactivate latch — and, when a leg route was armed, holds the
-        requested route so the Action deactivation consumer applies it after the
-        leg route is gone. Returns True when it took over the request (the caller
-        returns), False to fall through to the ordinary assignment flow.
+        A run is open while `SpeedCalibration.get_propulsion_override(train_id)`
+        is not None — an open speed pass or lighting run. A finished pass held
+        for the operator to commit is not an open run, so it refuses nothing.
+        Services that assign several trains read this first, so they refuse the
+        whole request before changing anything.
         """
-        if requested_route_id is None:
-            return False
         sc = getattr(self, "simulation_controller", None)
         calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
-        if calibration is None:
-            return False
-        cal_run = calibration.runs.get(train_id)
-        if cal_run is None:
-            return False
-        # The pass's own leg route arriving here would be pathological; leave it
-        # to the ordinary flow rather than abandoning the pass over it.
-        if requested_route_id == cal_run.active_leg_route_id:
-            return False
-
-        had_leg_route = cal_run.active_leg_route_id is not None
-        # Abandon the pass first. When a leg is armed, abandon() sets the
-        # route-deactivate latch for the active leg route.
-        calibration.abandon(train_id, reason="external route assignment requested")
-        if not had_leg_route:
-            # No leg route to tear down, so no RUNNING run to wait on: let the
-            # ordinary flow assign the requested route immediately.
-            return False
-
-        # Hold the requested route; the Action deactivation consumer
-        # (remove_train_route_run) applies it once the leg route is torn down.
-        self.discard_pending_reassign(train_id)
-        self._pending_route_assignments.pop(train_id, None)
-        self.clear_pending_start_override(train_id)
-        self._pending_route_assignments[train_id] = {
-            "requested_route_id": requested_route_id,
-            "start_override": None if start_override is None else dict(start_override),
-        }
-        return True
+        if calibration is None or calibration.get_propulsion_override(train_id) is None:
+            return None
+        kind = (
+            "a speed-calibration pass"
+            if calibration.runs.get(train_id) is not None
+            else "a lighting-voltage run"
+        )
+        return (
+            f"Train {train_id} has {kind} open — end the calibration run before "
+            "assigning or clearing its route"
+        )
 
     def route_run_summary_for(self, train_id: str) -> Optional[Dict[str, Any]]:
         """Five-field summary of the train's currently-`RUNNING` `RouteRun`,

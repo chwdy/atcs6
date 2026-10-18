@@ -212,11 +212,13 @@ def register(app, state: AppState) -> None:
             # it advances the runtime safe-state generation and delegates to the
             # de-energize sequence, so every block voltage goes to 0 and every
             # point motor de-energizes. Through the runtime-thread wrapper, not
-            # the raw sequence, so the recorded voltages are reconciled and an
-            # open calibration pass sees the generation move.
+            # the raw sequence, so the recorded voltages are reconciled and every
+            # open calibration run ends. The wrapper changes runtime state, so it
+            # runs under the lock, between ticks.
             sim = getattr(state, "sim_controller", None)
             if sim is not None:
-                sim.enter_output_safe_state()
+                with state.simulation_lock:
+                    sim.enter_output_safe_state()
 
         return jsonify(
             {
@@ -302,6 +304,13 @@ def register(app, state: AppState) -> None:
         import threading as _threading
 
         state.simulation_running = False
+        # A restart stops the session, so it enters the safe state like a stop
+        # does: every block voltage goes to 0 and every open calibration run ends
+        # (design_new.md "What ends a calibration run").
+        sim = getattr(state, "sim_controller", None)
+        if sim is not None:
+            with state.simulation_lock:
+                sim.enter_output_safe_state()
         try:
             with state.simulation_lock:
                 state.persistence_manager.save_merged_layout(
@@ -364,6 +373,13 @@ def register(app, state: AppState) -> None:
                     "switches": len(state.network.switches),
                     "tunnels": len(state.network.tunnels_to_list()),
                 }
+
+                # The trains are about to be replaced, so every calibration run
+                # ends and every held result is discarded first (design_new.md
+                # "What ends a calibration run").
+                state.sim_controller.speed_calibration.discard_all(
+                    "calibration ended: the network was cleared"
+                )
 
                 # Clear everything — entity dicts plus the derived tile->owner
                 # reverse indices and caches (see RailwayNetwork.clear). Without

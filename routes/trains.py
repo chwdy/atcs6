@@ -358,6 +358,32 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": str(exc)}), 400
         return jsonify({"status": "success", **run.to_dict()})
 
+    @app.route("/api/trains/<train_id>/calibrate/readiness", methods=["GET"])
+    def calibrate_readiness(train_id):
+        """Every opening condition the train does not yet meet, for the panel's
+        readiness line (design_new.md "Speed calibration", Opening a run takes
+        control of the train).
+
+        Query: ``kind`` (``speed`` or ``lighting``, default ``speed``) and, for a
+        speed pass, ``measured_block_id``. Returns ``{"ready", "unmet"}``.
+        """
+        kind = request.args.get("kind", "speed")
+        if kind not in ("speed", "lighting"):
+            return jsonify({"error": "kind must be 'speed' or 'lighting'"}), 400
+        try:
+            with state.simulation_lock:
+                unmet = train_service.calibration_readiness(
+                    state,
+                    train_id,
+                    kind=kind,
+                    measured_block_id=request.args.get("measured_block_id", ""),
+                )
+        except NotFoundError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"ready": not unmet, "unmet": unmet})
+
     @app.route("/api/trains/<train_id>/calibrate", methods=["GET"])
     def calibrate_status(train_id):
         """Progress of the open pass, for the panel to poll."""

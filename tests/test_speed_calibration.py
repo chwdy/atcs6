@@ -245,8 +245,8 @@ def test_a_leg_that_overruns_the_stretch_fails_the_pass():
 
 def test_a_failed_pass_leaves_no_open_run_to_block_a_restart():
     """A measurement fault ends the pass AND removes its run from the registry,
-    so a spent, failed pass never blocks a new one at the readiness gate
-    (`services.train_service._require_calibration_ready` refuses a start while
+    so a spent, failed pass never blocks a new one at the readiness check
+    (`services.train_service.calibration_readiness` refuses a start while
     `runs.get(train_id)` is set). The `run` object the caller holds still carries
     `PHASE_FAILED` and its reason for inspection (design_new.md "Speed
     calibration", `fail`)."""
@@ -275,13 +275,40 @@ def test_a_slower_step_is_measured_once_more_then_fails():
     assert "slower" in run.failure_reason
 
 
-def test_a_session_stop_abandons_the_pass():
-    cal, run, _profile = _open_run(safe_state_generation=1)
-    command = cal.advance(
-        run, CalibrationObservation(now=0.0, safe_state_generation=2)
-    )
-    assert run.phase == PHASE_FAILED
-    assert command.power_percent == 0.0
+def test_ending_open_runs_drops_an_open_pass():
+    """A session stop ends an open pass (design_new.md "What ends a calibration
+    run"): `SimulationController.enter_output_safe_state()` calls
+    `end_open_runs(...)`."""
+    cal, _run, _profile = _open_run()
+    cal.end_open_runs("session stopped")
+    assert cal.runs.get("T1") is None
+    assert cal.get_propulsion_override("T1") is None
+
+
+def test_ending_open_runs_keeps_a_held_result():
+    """A finished pass is a held result, not an open run, so a session stop
+    leaves it for the operator to commit or discard."""
+    cal, run, _profile = _open_run()
+    _run_full_pass(cal, run)
+    assert run.phase == PHASE_MEASURED
+    cal.end_open_runs("session stopped")
+    assert cal.runs.get("T1") is run
+
+
+def test_ending_open_runs_closes_a_lighting_run():
+    cal = SpeedCalibration()
+    profile = make_default_speed_profile("T1", 100.0)
+    cal.start_lighting(_StubTrain(), profile)
+    cal.end_open_runs("session stopped")
+    assert cal.lighting_runs.get("T1") is None
+
+
+def test_discarding_all_drops_a_held_result_too():
+    """`/api/network/clear` and `load_layout` discard held results as well."""
+    cal, run, _profile = _open_run()
+    _run_full_pass(cal, run)
+    cal.discard_all("network cleared")
+    assert cal.runs.get("T1") is None
 
 
 # --- commit ------------------------------------------------------------------

@@ -1159,20 +1159,24 @@ class SimulationController(SwitchOutputOwner):
 
         Per design_new.md "Power" (Safe state / fail-safe) this wrapper:
 
-          1. advances `safe_state_generation`. An open `CalibrationRun` captured
-             the generation when it opened and compares the live value before
-             issuing each command and before accepting each sample, so a session
-             stop or any other safe-state request abandons the pass rather than
-             letting it measure across the gap. That comparison is the complete
-             handoff — `OutputSafety` never calls into calibration.
-          2. delegates to `enter_safe_state()`, the whole de-energize sequence.
-          3. reconciles the recorded model fields synchronously, immediately
+          1. advances `safe_state_generation`.
+          2. ends every open calibration run (design_new.md "What ends a
+             calibration run"): a stop cuts the rails mid-crossing, so no timing
+             may span one. A finished pass is a held result and is kept.
+             `OutputSafety` never calls into calibration; this wrapper does.
+          3. delegates to `enter_safe_state()`, the whole de-energize sequence.
+          4. reconciles the recorded model fields synchronously, immediately
              after the sequence returns. That reconciliation is always the
              runtime thread's, never the sequence's, which is what lets the
              watchdog run the same sequence off-thread without racing a model
              write.
+
+        Every caller holds `AppState.simulation_lock` or runs inside a tick.
         """
         self.safe_state_generation += 1
+        self.speed_calibration.end_open_runs(
+            "calibration ended: the session stopped or its outputs dropped"
+        )
         try:
             self.enter_safe_state()
         finally:
@@ -1270,7 +1274,12 @@ class SimulationController(SwitchOutputOwner):
         # The daemon dropped the outputs through the non-recording device write,
         # so the runtime advances the generation that write bypassed, reconciles
         # every block's recorded track voltage to zero, and emits one warning.
+        # It also ends every open calibration run, as the wrapper would have
+        # (design_new.md "What ends a calibration run").
         self.safe_state_generation += 1
+        self.speed_calibration.end_open_runs(
+            "calibration ended: the loss-of-control watchdog dropped the outputs"
+        )
         if self.power_controller is not None:
             self.power_controller.reconcile_recorded_voltages()
         self.notification_center.emit(
@@ -2499,8 +2508,8 @@ class SimulationController(SwitchOutputOwner):
         "Speed calibration", Where it runs). When it is false the run ends this
         same tick — a speed pass through `SpeedCalibration.abandon(...)`, a
         lighting run through `SpeedCalibration.cancel_lighting(...)`. It is a
-        `SimulationController`-level step because the predicate reads the route
-        assignment, which lives on `RouteExecutor`.
+        `SimulationController`-level step because the run registry lives at
+        that level.
         """
         calibration = self.speed_calibration
         train_id = train.train_id
@@ -3603,17 +3612,11 @@ class SimulationController(SwitchOutputOwner):
             raise ValueError("The runtime is not halted; there is nothing to clear")
 
         payload = self.failed_runtime_payload
-        for train_id, controller in self.controllers.items():
+        # Entering the halt already ended every open calibration run through
+        # `enter_output_safe_state()`, so there is none left to end here
+        # (design_new.md "What ends a calibration run").
+        for controller in self.controllers.values():
             controller.complete_power_off()
-            # This fan-out is not an Action pass, so step `26f5` does not run
-            # for it — end every open calibration run here instead (design_new.md
-            # "Speed calibration", Where it runs: a fatal-halt clear ends every
-            # open calibration run directly). A speed pass ends through
-            # `abandon(...)` (which tears its leg route down), a lighting run
-            # through `cancel_lighting(...)`.
-            if self.speed_calibration.runs.get(train_id) is not None:
-                self.speed_calibration.abandon(train_id, reason="runtime halted")
-            self.speed_calibration.cancel_lighting(train_id)
 
         self.failed_runtime = False
         self.failed_runtime_payload = None

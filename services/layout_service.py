@@ -77,6 +77,12 @@ def load_layout(state: AppState, name: str) -> Dict[str, Any]:
 
     try:
         with state.simulation_lock:
+            # The trains are about to be replaced, so every calibration run ends
+            # and every held result is discarded first (design_new.md "What ends
+            # a calibration run").
+            state.sim_controller.speed_calibration.discard_all(
+                "calibration ended: a layout was loaded"
+            )
             try:
                 result = state.persistence_manager.load_layout_with_fallback(
                     name, state.network

@@ -19,7 +19,8 @@ import pytest
 from app_state import AppState
 from bootstrap import bootstrap_runtime
 from services import train_service
-from speed_calibration import PHASE_FAILED
+from enums import TrainStatus
+from speed_calibration import PHASE_FAILED, PHASE_MEASURED
 
 pytestmark = pytest.mark.scene("demo_6")
 
@@ -42,7 +43,8 @@ def state():
         sim_controller=sim,
         persistence_manager=persistence,
         simulation_lock=threading.Lock(),
-        simulation_running=False,
+        # A calibration run opens only while the session runs.
+        simulation_running=True,
         simulation_speed=1.0,
         last_update_time=datetime.now(),
     )
@@ -116,20 +118,92 @@ def test_a_block_with_no_recorded_length_is_refused(state):
     pytest.skip("every demo_6 block has a length")
 
 
-def test_the_pass_is_refused_unless_the_train_is_manual_and_stopped(state):
+def test_opening_takes_control_of_a_stopped_ato_train(state):
+    """Opening a run takes control of the train (design_new.md "Speed
+    calibration", Opening a run takes control of the train): a stopped ATO train
+    with no route is switched to manual and reads CALIBRATING."""
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    block_id = _first_calibratable_block(state, train_id)
+    controller = sim.get_or_create_controller(train_id)
+    controller.commands.set_mode("ato")
+    assert controller.commands.control_mode == "ato"
+
+    train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+
+    assert controller.commands.control_mode == "manual"
+    assert controller.ops.train_status == TrainStatus.CALIBRATING
+
+
+def test_opening_names_every_unmet_condition(state):
     from services import ConflictError
 
     sim = state.sim_controller
     train_id = _free_train(state)
     block_id = _first_calibratable_block(state, train_id)
     controller = sim.get_or_create_controller(train_id)
-    controller.commands.power_on_cmd()
-    controller.commands.set_mode("ato")
+    state.simulation_running = False
+    controller.eb.activate()
 
+    unmet = train_service.calibration_readiness(
+        state, train_id, measured_block_id=block_id
+    )
+    assert any("Start the session" in u for u in unmet)
+    assert any("emergency brake" in u for u in unmet)
+    with pytest.raises(ConflictError, match="Start the session.*emergency brake"):
+        train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+    assert sim.speed_calibration.runs.get(train_id) is None
+
+
+def test_a_held_result_blocks_a_new_run(state):
+    """A finished pass waits for the operator to commit or discard it; no new run
+    opens on that train meanwhile (design_new.md "What ends a calibration run",
+    A finished pass is a held result, not an open run)."""
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    block_id = _first_calibratable_block(state, train_id)
+    run = train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+    run.phase = PHASE_MEASURED
+
+    controller = sim.controllers[train_id]
+    assert controller.ops.train_status == TrainStatus.MANUAL
+    unmet = train_service.calibration_readiness(
+        state, train_id, measured_block_id=block_id
+    )
+    assert any("finished speed pass" in u for u in unmet)
+
+
+def test_route_assignment_is_refused_while_calibrating(state):
+    from services import ConflictError
+
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    block_id = _first_calibratable_block(state, train_id)
+    train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+    route_id = next(iter(sim.route_executor.route_registry))
+
+    with pytest.raises(ConflictError, match="speed-calibration pass"):
+        train_service.assign_route(state, train_id, route_id=route_id, force=True)
     with pytest.raises(ConflictError):
-        train_service.calibrate_train(
-            state, train_id, measured_block_id=block_id
+        train_service.assign_route(state, train_id, route_id=None)
+    assert sim.speed_calibration.runs.get(train_id) is not None
+
+
+def test_the_readiness_endpoint_lists_unmet_conditions(state):
+    from app_factory import create_app
+
+    train_id = _free_train(state)
+    state.simulation_running = False
+    app = create_app(state)
+    app.config["TESTING"] = True
+    with app.test_client() as client:
+        response = client.get(
+            f"/api/trains/{train_id}/calibrate/readiness?kind=lighting"
         )
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["ready"] is False
+    assert any("Start the session" in u for u in body["unmet"])
 
 
 def test_the_runtime_tick_arms_the_pass_as_a_one_off_route(state):
@@ -248,7 +322,7 @@ def test_cancelling_a_pass_deactivates_its_leg_route(state):
 def test_powering_off_mid_pass_ends_the_speed_run(state):
     """An ordinary power-off mid-pass ends the speed run on that same Action pass,
     so no spent run leaks (design_new.md "Speed calibration", Where it runs — the
-    OFF gate is passed after the command drain, so step `26f5` finds the pass
+    OFF gate is passed before the OFF cleanup, so step `26f5` finds the pass
     invalid and ends it that tick). A leaked run would otherwise block a new pass
     at the readiness gate."""
     sim = state.sim_controller
@@ -292,10 +366,9 @@ def test_emergency_brake_mid_pass_ends_the_speed_run(state):
     assert sim.speed_calibration.runs.get(train_id) is None
 
 
-def test_fatal_halt_clear_ends_an_open_speed_run(state):
-    """A fatal-halt clear ends every open calibration run directly during step
-    `7c41`, not through an Action pass (design_new.md "Speed calibration", Where
-    it runs)."""
+def test_entering_a_fatal_halt_ends_an_open_speed_run(state):
+    """Entering a fatal halt goes through `enter_output_safe_state()`, which ends
+    every open calibration run (design_new.md "What ends a calibration run")."""
     from runtime_payloads import FatalConflictKind, FatalPhysicalEntryConflict
 
     sim = state.sim_controller
@@ -316,10 +389,39 @@ def test_fatal_halt_clear_ends_an_open_speed_run(state):
             conflict_kind=FatalConflictKind.OCCUPIED_BY_OTHER_TRAIN,
         )
     )
-    sim.clear_failed_runtime()
     assert sim.speed_calibration.runs.get(train_id) is None, (
-        "a fatal-halt clear must end every open calibration run"
+        "entering a fatal halt must end every open calibration run"
     )
+
+
+def test_a_session_stop_ends_an_open_speed_run(state):
+    """A session stop enters the safe state, which ends every open run."""
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    block_id = _first_calibratable_block(state, train_id)
+    train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+    sim.update(0.1)  # arm the leg
+    assert sim.speed_calibration.runs.get(train_id) is not None
+
+    sim.enter_output_safe_state()
+
+    assert sim.speed_calibration.runs.get(train_id) is None
+    assert sim.controllers[train_id].ops.train_status == TrainStatus.MANUAL
+
+
+def test_clearing_the_network_discards_a_held_result(state):
+    from app_factory import create_app
+
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    block_id = _first_calibratable_block(state, train_id)
+    run = train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+    run.phase = PHASE_MEASURED
+    app = create_app(state)
+    app.config["TESTING"] = True
+    with app.test_client() as client:
+        assert client.post("/api/network/clear").status_code == 200
+    assert sim.speed_calibration.runs.get(train_id) is None
 
 
 def test_a_calibration_leg_completes_through_ordinary_stop_completion(state):
@@ -375,29 +477,23 @@ def test_a_calibration_leg_completes_through_ordinary_stop_completion(state):
     assert profile.calibrated_at is None
 
 
-def test_run_still_valid_survives_the_leg_completion_window(state, monkeypatch):
-    """A clean multi-leg speed pass must survive a leg boundary.
+def test_run_still_valid_survives_the_leg_completion_window(state):
+    """A clean multi-leg speed pass survives a leg boundary.
 
     On the tick a calibration leg completes, Plan settlement unassigns the leg's
-    one-off route (so `RouteExecutor.assigned_route_id_for(train_id)` returns
-    `None`) before `_prepare_calibration_leg` clears
-    `CalibrationRun.active_leg_route_id` (that clear runs on the next Plan step
-    `c9e1`). `run_still_valid` must treat `assigned is None` as "between legs" and
-    keep the pass open; otherwise the pass abandons on its first clean leg
-    boundary (design_new.md "Speed calibration", Where it runs — only a
-    non-calibration route ends the pass).
+    one-off route before `_prepare_calibration_leg` clears
+    `CalibrationRun.active_leg_route_id`. `run_still_valid` reads no route
+    assignment, only the controller, power, EB and a pending power-off
+    (design_new.md "Speed calibration", Where it runs), so the pass stays open.
     """
     sim = state.sim_controller
     train_id = _free_train(state)
     block_id = _first_calibratable_block(state, train_id)
-    _ready_manual_train(sim, state.network, train_id)
-    sim.update(0.1)
     train_service.calibrate_train(state, train_id, measured_block_id=block_id)
     sim.update(0.1)  # arm the leg one-off route
     run = sim.speed_calibration.runs.get(train_id)
     assert run is not None and run.active_leg_route_id is not None
     leg_route_id = run.active_leg_route_id
-    # While the leg's own route is assigned, the pass is valid.
     assert sim.route_executor.assigned_route_id_for(train_id) == leg_route_id
     assert sim.speed_calibration.run_still_valid(train_id) is True
 
@@ -405,14 +501,5 @@ def test_run_still_valid_survives_the_leg_completion_window(state, monkeypatch):
     # (assigned -> None) but active_leg_route_id is not yet cleared.
     sim.route_executor.remove_train_route_run(train_id)
     assert sim.route_executor.assigned_route_id_for(train_id) is None
-    assert run.active_leg_route_id == leg_route_id  # cleared only on the next c9e1
-    assert sim.speed_calibration.run_still_valid(train_id) is True, (
-        "the pass must survive the leg-completion window (assigned None while "
-        "active_leg_route_id is still set), not abandon on it"
-    )
-
-    # A genuinely non-calibration route assigned still ends the pass.
-    monkeypatch.setattr(
-        sim.speed_calibration, "_assigned_route_id", lambda _tid: "OTHER_ROUTE"
-    )
-    assert sim.speed_calibration.run_still_valid(train_id) is False
+    assert run.active_leg_route_id == leg_route_id
+    assert sim.speed_calibration.run_still_valid(train_id) is True

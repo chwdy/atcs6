@@ -98,10 +98,6 @@ class CalibrationObservation:
     span, because a consist longer than a block still holds the one behind it,
     and the block the tail is trailing through is not where the train is going."""
 
-    safe_state_generation: int = 0
-    """`SimulationController.safe_state_generation`. A change means a session
-    stop or another safe-state request occurred."""
-
     path_present: bool = False
     """Whether the leg's authority (the controller's `received_path_plan`)
     currently exists. A leg arms by asking for a one-off route; the route's path
@@ -223,7 +219,6 @@ class CalibrationRun:
     at its power, so the pass fails and reports (design_new.md, "A capped
     crossing is discarded")."""
 
-    safe_state_generation: int = 0
     failure_reason: str = ""
     active_leg_route_id: Optional[str] = None
     """The id of this leg's one-off route while it runs, from arming the leg to
@@ -311,10 +306,11 @@ def power_sweep() -> List[float]:
 class SpeedCalibration:
     """Runs calibration passes and commits the measured curves.
 
-    Holds the active `CalibrationRun` per train. The opening preconditions
-    (placed, manual `power_percent`, `READY` and stopped, no ATO route, no
-    lighting run open) are enforced by the caller — the service layer — before
-    `start`.
+    Holds the `CalibrationRun` per train — an open pass, or a finished pass
+    held for the operator to commit or discard — and the open
+    `LightingCalibrationRun` per train. The opening conditions (design_new.md
+    "Speed calibration", Opening a run takes control of the train) are checked
+    by the caller — the service layer — before `start` / `start_lighting`.
     """
 
     def __init__(self, simulation_controller=None) -> None:
@@ -340,7 +336,6 @@ class SpeedCalibration:
         outer_block_ids: Sequence[str] = (),
         block_length_cm: float = 0.0,
         heading_to: int = 1,
-        safe_state_generation: int = 0,
         now: float = 0.0,
     ) -> CalibrationRun:
         """Open a pass over the power sweep.
@@ -362,7 +357,6 @@ class SpeedCalibration:
             outer_block_ids=(outer[0], outer[1]),
             block_length_cm=float(block_length_cm or 0.0),
             heading_to=1 if int(heading_to) else 0,
-            safe_state_generation=int(safe_state_generation),
         )
         self.runs[train.train_id] = run
         self._step0_entries.pop(train.train_id, None)
@@ -372,8 +366,9 @@ class SpeedCalibration:
         """End a speed pass without writing, and report the reason. The samples
         go with it (design_new.md "Speed calibration", `abandon`).
 
-        The one teardown for a speed pass: operator Stop, a mid-run panel close,
-        and Action step `26f5` finding the pass no longer valid all end it here.
+        The one teardown for a speed pass: operator Stop, a panel close, Action
+        step `26f5` finding the pass no longer valid, the safe-state wrapper, and
+        a network clear or layout load all end it here.
         Each commands `power_percent = 0` and tears the active leg route down.
         Dropping the run withdraws the propulsion override, so the controller
         falls back to its ordinary manual source; zeroing that source here is
@@ -427,8 +422,8 @@ class SpeedCalibration:
         The profile's previous curve is left in place — a pass that does not
         measure every step writes nothing. The run is removed from `self.runs`
         so a failed pass never lingers: the caller's next Plan step no longer
-        finds it, and the readiness gate that refuses a new pass while a run is
-        open (`services.train_service._require_calibration_ready`) is not blocked
+        finds it, and the opening check that refuses a new run while one is open
+        or held (`services.train_service.calibration_readiness`) is not blocked
         by a spent, failed one. The reason has already gone out on the
         command-result stream, so the panel still learns why the pass ended. The
         `run` object the caller holds keeps its `PHASE_FAILED` phase and
@@ -480,8 +475,6 @@ class SpeedCalibration:
         """
         if not run.is_measuring:
             return None
-        if obs.safe_state_generation != run.safe_state_generation:
-            return self.fail(run, "session stopped during the pass")
 
         if run.phase == PHASE_LEG:
             return self._advance_leg(run, obs)
@@ -798,9 +791,6 @@ class SpeedCalibration:
             newly_confirmed=self._step0_entries.pop(train_id, ()),
             is_stopped=bool(controller.is_stopped()),
             head_block=self._head_block(controller),
-            safe_state_generation=int(
-                getattr(sc, "safe_state_generation", 0) or 0
-            ),
             path_present=controller.path_projection.received_path_plan is not None,
         )
         return self.advance(run, obs)
@@ -1007,84 +997,70 @@ class SpeedCalibration:
         self.lighting_runs[train.train_id] = run
         return run
 
-    def _assigned_route_id(self, train_id: str) -> Optional[str]:
-        """`RouteExecutor.assigned_route_id_for(train_id)`, or None when no route
-        executor is wired (the state-machine unit tests drive with no runtime)."""
-        sc = self._sc
-        rex = getattr(sc, "route_executor", None) if sc is not None else None
-        if rex is None:
-            return None
-        try:
-            return rex.assigned_route_id_for(train_id)
-        except Exception:
-            return None
-
     def run_still_valid(self, train_id: str) -> bool:
         """Whether this train's open calibration run — a speed pass or a
-        lighting-voltage run — still meets the conditions to stay open.
+        lighting-voltage run — may stay open.
 
         The one validity predicate for both run kinds (design_new.md "Speed
         calibration", Where it runs). Action step `26f5`
         (`SimulationController._reevaluate_calibration_run`) evaluates it once per
         tick from live state; when it is false the run ends that same tick — a
         speed pass through `abandon(train_id, reason)`, a lighting run through
-        `cancel_lighting(train_id)`. A run ends the moment its condition is met,
-        not only on Save, Stop, or panel-close.
+        `cancel_lighting(train_id)`.
 
-        Returns True when no run is open (nothing to end) and when a speed pass
-        has measured every step — a finished result is committable and is never
-        re-evaluated (design_new.md "Speed calibration", a measured pass is not
-        evaluated). Otherwise it is false when any of these holds:
-          - the runtime or controller is gone
-          - the train is powered off — `not controller.powered`
-            (`train_status == OFF`)
-          - `eb.active`
-          - a power-off is pending — `phase_latches.power_off`
-          - for a lighting run: `control_mode != "manual"`, or any route is
-            assigned (a lighting run has no reservation)
-          - for a speed pass: a non-calibration route is assigned — the
-            assigned route is neither `None` nor the leg's own
-            `active_leg_route_id`. `None` is the between-legs value and the
-            value on the tick a finished leg's route has been unassigned while
-            `active_leg_route_id` is not yet cleared, so it does not end the pass
-        There is no cab condition for either kind — the head end is derived from
-        the authority (a speed pass) or the candidate drives positive (a lighting
-        run).
+        Returns True when no run is open (nothing to end) and for a finished
+        pass, which is a held result rather than an open run. Otherwise it is
+        true when all of these hold:
+          - the train's controller is still present
+          - the train is powered — `controller.powered`
+          - `eb.active` is False
+          - no power-off is pending — `phase_latches.power_off` is False
+        A measurement fault is not one of these: it ends the pass earlier, in
+        Plan step `c9e1`, through `fail(...)`.
         """
         speed = self.runs.get(train_id)
         lighting = self.lighting_runs.get(train_id)
         if speed is None and lighting is None:
             return True
-        # A finished speed result is committable and is never invalidated.
         if speed is not None and speed.is_measured:
             return True
         controller = self._controller(train_id)
         if controller is None:
             return False
-        # Conditions shared by both run kinds. A calibration run is valid only
-        # while the train is powered; `train_status != OFF` is the sole
-        # power gate (design_new.md "Speed calibration", run_still_valid).
         if not controller.powered:
             return False
         if controller.eb.active:
             return False
-        if getattr(controller.route_hooks.phase_latches, "power_off", False):
-            return False
-        assigned = self._assigned_route_id(train_id)
-        if lighting is not None:
-            if getattr(controller.commands, "control_mode", None) != "manual":
-                return False
-            return assigned is None
-        # A speed pass. The pass ends only when a non-calibration route is
-        # assigned — neither `None` nor the leg's own one-off route. `None` is
-        # the between-legs value, and also the value on the tick a finished
-        # leg's route has been unassigned by Plan settlement while
-        # `active_leg_route_id` is not yet cleared (that clear runs on the next
-        # `_prepare_calibration_leg`), so the pass survives the leg boundary
-        # rather than abandoning on it. A measurement fault ends the pass
-        # immediately in Plan through SpeedCalibration.fail(...), which pops the
-        # run, so run_still_valid never sees a PHASE_FAILED run here.
-        return assigned is None or assigned == speed.active_leg_route_id
+        return not controller.route_hooks.phase_latches.power_off
+
+    def end_open_runs(self, reason: str) -> None:
+        """End every open run of either kind, keeping held results
+        (design_new.md "What ends a calibration run", The session stops being
+        live, or its outputs drop).
+
+        `SimulationController.enter_output_safe_state()` and the watchdog
+        trip-record consumption call this. Each open speed pass ends through
+        `abandon(...)`, each lighting run through `cancel_lighting(...)`. A
+        finished pass waits for the operator, so it is left alone.
+        """
+        for train_id, run in list(self.runs.items()):
+            if run.is_measuring:
+                self.abandon(train_id, reason=reason)
+        for train_id in list(self.lighting_runs):
+            self.cancel_lighting(train_id)
+
+    def discard_all(self, reason: str) -> None:
+        """End every open run and discard every held result (design_new.md
+        "What ends a calibration run").
+
+        `/api/network/clear` and `load_layout` call this before they replace the
+        trains, because a result measured on a train that is about to be
+        replaced must not be committed to the train that replaces it.
+        """
+        for train_id in list(self.runs):
+            self.abandon(train_id, reason=reason)
+        for train_id in list(self.lighting_runs):
+            self.cancel_lighting(train_id)
 
     def step_lighting(self, train_id: str, direction: int) -> Optional[LightingCalibrationRun]:
         """Move the candidate one `LIGHTING_VOLTAGE_STEP_V` up or down.

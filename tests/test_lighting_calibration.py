@@ -330,7 +330,11 @@ def state_with_train():
     from network import RailwayNetwork
     from path_dispatcher import PathDispatcher
     from persistence import PersistenceManager
+    from enums import Direction
     from simulation import SimulationController
+    from tests.segment_test_helpers import make_segment_block_with_tracks
+    from tests.train_test_helpers import set_train_span
+    from track import TRACK_EW, Tile
     from train import Train, TrainCar
 
     network = RailwayNetwork()
@@ -342,12 +346,18 @@ def state_with_train():
         sim_controller=sim,
         persistence_manager=PersistenceManager(storage_dir="layouts"),
         simulation_lock=threading.Lock(),
-        simulation_running=False,
+        # A calibration run opens only while the session runs.
+        simulation_running=True,
         simulation_speed=1.0,
         last_update_time=datetime.now(),
     )
     profile = make_default_speed_profile("PROF_A", 80.0)
     network.speed_profiles.register(profile)
+    for x in range(2):
+        network.add_track(Tile(x, 0, track_bits=TRACK_EW))
+    make_segment_block_with_tracks(
+        network, "BLK_1", positions=[(0, 0), (1, 0)], name="1", length_cm=200.0
+    )
     train = Train(
         train_id="TRAIN_A",
         consist=[TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=20.0)],
@@ -355,6 +365,11 @@ def state_with_train():
     )
     train.speed_profile_id = profile.profile_id
     network.add_train(train)
+    network.place_train(train, 0, 0, direction=Direction.EAST)
+    controller = sim._get_or_create_controller(train)
+    set_train_span(
+        controller, (0, 0), facing_direction=Direction.EAST, occupied_blocks=["BLK_1"]
+    )
     return state
 
 
@@ -383,13 +398,38 @@ def test_service_opens_a_run_from_ready_manual_with_a_cab(state_with_train):
     )
 
 
-def test_service_rejects_a_run_in_ato_mode(state_with_train):
-    from services import ConflictError
-
+def test_opening_takes_control_of_an_ato_train(state_with_train):
+    """Opening a run takes control of the train (design_new.md "Speed
+    calibration", Opening a run takes control of the train): a stopped ATO train
+    with no route is switched to manual and reads CALIBRATING."""
     train_service, controller = _ready_manual_with_cab(state_with_train)
     controller.commands.set_mode("ato")
 
-    with pytest.raises(ConflictError, match="manual"):
+    train_service.start_lighting_calibration(state_with_train, "TRAIN_A")
+
+    assert controller.commands.control_mode == "manual"
+    assert controller.train_status == TrainStatus.CALIBRATING
+
+
+def test_opening_from_off_powers_the_train_up(state_with_train):
+    from services import train_service
+
+    controller = state_with_train.sim_controller.controllers["TRAIN_A"]
+    assert controller.powered is False
+
+    train_service.start_lighting_calibration(state_with_train, "TRAIN_A")
+
+    assert controller.powered is True
+    assert controller.train_status == TrainStatus.CALIBRATING
+
+
+def test_opening_is_refused_while_the_session_is_stopped(state_with_train):
+    from services import ConflictError
+
+    train_service, _controller = _ready_manual_with_cab(state_with_train)
+    state_with_train.simulation_running = False
+
+    with pytest.raises(ConflictError, match="Start the session"):
         train_service.start_lighting_calibration(state_with_train, "TRAIN_A")
 
 
@@ -459,10 +499,11 @@ def test_open_run_drives_its_candidate_through_the_real_controller(state_with_tr
     assert physics.compute_track_voltage(controller, profile) == pytest.approx(candidate)
 
 
-def test_a_route_assignment_ends_the_run_and_stops_the_override(state_with_train):
-    """A run ends the moment the train is assigned a route (design_new.md
-    "Lighting-voltage calibration", What the run drives); the controller then
-    publishes no track-voltage override, so voltage returns to the stored value."""
+def test_a_route_assignment_is_refused_while_the_run_is_open(state_with_train):
+    """A calibrating train refuses route assignment (design_new.md "Route
+    assignment writers", A calibrating train refuses assignment); once the run
+    ends the controller publishes no track-voltage override, so voltage returns
+    to the stored value."""
     train_service, controller = _ready_manual_with_cab(state_with_train)
     sim = state_with_train.sim_controller
     calibration = sim.speed_calibration
@@ -470,6 +511,10 @@ def test_a_route_assignment_ends_the_run_and_stops_the_override(state_with_train
     train_service.start_lighting_calibration(state_with_train, "TRAIN_A")
     assert calibration.get_propulsion_override("TRAIN_A") is not None
 
-    calibration.cancel_lighting("TRAIN_A")  # the run-ending the 26f5 re-eval performs
+    result = sim.route_executor.request_route_assignment("TRAIN_A", None)
+    assert result.success is False
+    assert "lighting-voltage run" in result.message
+
+    calibration.cancel_lighting("TRAIN_A")
     assert calibration.get_propulsion_override("TRAIN_A") is None
     assert controller.produce_physics_command().voltage_source_track_voltage is None
