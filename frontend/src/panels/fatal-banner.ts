@@ -84,12 +84,21 @@ export function updateFatalBanner(network: any, renderer: ConflictFlashRenderer)
   const banner = document.getElementById('fatal-banner');
   if (!banner) return;
 
-  // Two latches halt the runtime — a fatal track conflict and a hardware I/O
-  // failure — and the banner shows either. `failed_runtime_kind` says which.
-  if (!network || !(network.failed_runtime || network.hardware_failure)) {
+  // The banner shows a session Halted by a failure — a fatal track conflict or
+  // a hardware I/O failure — read from the session state (design_new.md
+  // "Session state"). Emergency stop and a not-activated session are shown by
+  // the header's session chip instead.
+  const haltReason = network?.session_state?.value === 'halted'
+    ? network.session_state.halt_reason
+    : null;
+  const clearBtn = document.getElementById('btn-clear-fatal');
+  if (haltReason !== 'runtime_failure' && haltReason !== 'hardware_failure') {
     banner.hidden = true;
     return;
   }
+  // Clearing in place is the way back from a track conflict only; a hardware
+  // failure is cleared by activating again.
+  if (clearBtn) clearBtn.hidden = haltReason !== 'runtime_failure';
 
   const titleEl = document.querySelector('.fatal-banner-title');
   const detailEl = document.getElementById('fatal-banner-detail');
@@ -102,7 +111,7 @@ export function updateFatalBanner(network: any, renderer: ConflictFlashRenderer)
   // A hardware failure revoked output permission, so it has no clear-in-place
   // path: the only way out is repairing the device and activating again.
   const hw = network.failed_runtime_hardware_failure;
-  if (network.hardware_failure) {
+  if (haltReason === 'hardware_failure') {
     if (titleEl) {
       titleEl.textContent = `${noun} halted — hardware failure`;
     }

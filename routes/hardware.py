@@ -1241,7 +1241,6 @@ def register(app, state: AppState) -> None:
             "active": state.sim_controller.operation_mode.value,
             "is_active": bool(state.sim_controller.environment_active),
             "activation_issues": list(state.sim_controller.activation_issues),
-            "commissioning": bool(state.setup_active),
             # The one session truth the header reads (design_new.md "Session
             # state").
             "session_state": state.session_state().to_dict(),

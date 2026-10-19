@@ -2093,9 +2093,10 @@ export class RouteEditorHandler {
   async _confirmRuntimePreconditions(actionLabel: string, trainId: string | null = null): Promise<boolean> {
     const reasons = [];
     const app = window.app;
-    const simPaused = !(app && app.isSimulationRunning);
-    if (simPaused) {
-      reasons.push('Simulation is paused.');
+    // `isSimulationRunning` is true while the session state is Live.
+    const notLive = !(app && app.isSimulationRunning);
+    if (notLive) {
+      reasons.push('The session is not live.');
     }
 
     let trainOff = false;

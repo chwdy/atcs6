@@ -14,13 +14,19 @@ export interface HoldReason {
   detail: string | null;
 }
 
+const HALTED: Record<string, string> = {
+  layout_emergency_cut_out: 'Emergency stop has cut every train out. Press Reset to release them.',
+  hardware_failure:
+    'A hardware failure has halted the session. Repair the device, then activate the environment again.',
+  runtime_failure:
+    'A fatal track conflict has halted the session. Sort it out on the layout, then clear the conflict.',
+  not_activated: 'The environment is not activated. Activate it in Hardware setup to go live.',
+};
+
 const MESSAGES: Record<string, (detail: string | null) => string> = {
-  failed_runtime: () =>
-    'A fatal track conflict has halted the session. Sort it out on the layout, then clear the halt.',
-  hardware_failure: () =>
-    'A hardware failure has halted the session. Repair it, then activate the environment again.',
-  commissioning: () => 'Hardware commissioning is open. Close it to run trains.',
-  session_stopped: () => 'The session is stopped. Press Play.',
+  halted: (detail) => HALTED[detail ?? ''] ?? 'The session is halted.',
+  setup: () => 'The session is in Setup. Activate the environment to run trains.',
+  paused: () => 'The session is paused. Press Play.',
   unidentified: () => 'This is an unidentified train. The app cannot drive it.',
   detection_lost: () => 'The detectors have lost this train. It accepts no command until it is detected again.',
   powered_off: () => 'The train is powered off.',

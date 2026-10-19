@@ -27,6 +27,8 @@
  */
 import { api } from '../lib/api';
 import { showToast } from '../lib/toast';
+import { showConfirmModal } from '../lib/helpers';
+import { sessionHint, sessionLabel, type SessionStateView } from '../lib/session-controls';
 import {
   VIRTUAL_FAULT_PAIRS,
   clearFaultBody,
@@ -85,7 +87,8 @@ interface EnvironmentInfo {
   selected: 'simulation' | 'virtual_hardware' | 'real_hardware';
   active: string;
   is_active: boolean;
-  commissioning?: boolean;
+  /** The session state (design_new.md "Session state"). */
+  session_state?: SessionStateView;
 }
 interface DevBindings {
   block_occupancy: Record<string, any>;
@@ -1397,13 +1400,22 @@ function gateHtml(): string {
   ).join(' ');
   const activeLabel = labels[environmentInfo.active] || environmentInfo.active;
   const selectedLabel = labels[environmentInfo.selected];
+  const session = environmentInfo.session_state;
   const selectedActive = environmentInfo.is_active
     && environmentInfo.active === environmentInfo.selected;
-  const status = environmentInfo.commissioning
-    ? 'Commissioning owns the device; exit it before activation.'
+  const status = session
+    ? `${activeLabel}: ${sessionLabel(session)}. ${sessionHint(session)}`
     : selectedActive
       ? `${activeLabel} is active.`
       : `${selectedLabel} is selected but not active.`;
+  // Setup exists only for a hardware environment, and Activate is the only way
+  // out of it (design_new.md "Hardware setup", Setup).
+  const canEnterSetup = environmentInfo.selected !== 'simulation'
+    && session?.value !== 'setup'
+    && session?.halt_reason !== 'runtime_failure';
+  const setupButton = canEnterSetup
+    ? '<button type="button" class="btn btn-secondary" data-hw="setup" title="Stop operation and hand the outputs to the Setup tools">Enter Setup</button>'
+    : '';
   const issues = (activationReadiness?.issues || []).map((issue: any) =>
     `<span class="hw-check warn"><i class="ti ti-alert-triangle" aria-hidden="true"></i> ${esc(issue.message || issue.code)}</span>`
   ).join('');
@@ -1429,6 +1441,7 @@ function gateHtml(): string {
     <div class="hw-gate-actions">
       ${deadband}
       <button type="button" class="btn btn-secondary" data-hw="save">Save Hardware Setup</button>
+      ${setupButton}
       <button type="button" class="btn btn-primary" data-hw="activate">Activate ${esc(selectedLabel)}</button>
     </div>`;
 }
@@ -1450,6 +1463,7 @@ async function onClick(e: Event): Promise<void> {
     case 'add-commit': return commitAdd();
     case 'environment': return void selectEnvironment(id);
     case 'activate': return void activateEnvironment();
+    case 'setup': return void enterSetup();
     case 'dev-occ': return void toggleDevOccupancy(id);
     case 'dev-current': return void setDevCurrent(id);
     case 'dev-fault-inject': return void injectDevFault(Number(target.dataset.fp));
@@ -1565,6 +1579,39 @@ export function activationBlockMessage(err: any): string | null {
     const named = esc(ids.slice(0, MAX_TOAST_IDS).join(', '));
     return `${text}: ${named}${rest > 0 ? ` +${rest} more` : ''}`;
   }).join('; ');
+}
+
+/** Enter Setup for the selected hardware environment. From Live this runs
+ *  Emergency stop first, so it asks before stopping a running railway. */
+async function enterSetup(): Promise<void> {
+  if (environmentInfo.session_state?.value === 'live') {
+    const confirmed = await showConfirmModal({
+      title: 'Enter Setup?',
+      message: 'Entering Setup runs Emergency stop first: every train stops and gives up its reservation.',
+      detail: 'Activate takes you back to Live, with every train powered off.',
+      confirmText: 'Enter Setup',
+      cancelText: 'Cancel',
+      confirmVariant: 'danger',
+    });
+    if (!confirmed) return;
+  }
+  try {
+    const res = await api.enterSetup();
+    environmentInfo = await api.getOperationEnvironment() as EnvironmentInfo;
+    render();
+    if (res?.safe_state && res.safe_state.ok === false) {
+      showToast(
+        `In Setup, but the outputs could not be proven safe: ${(res.safe_state.failures || []).join('; ')}`,
+        'error',
+        8000,
+      );
+    } else {
+      showToast('In Setup. The Setup tools own the outputs.', 'success', 2500);
+    }
+  } catch (e: any) {
+    showToast(e?.message || 'Could not enter Setup.', 'error', 5000);
+  }
+  await window.app?.refreshNetwork?.();
 }
 
 async function activateEnvironment(): Promise<void> {

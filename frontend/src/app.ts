@@ -30,6 +30,7 @@ import { updateTileDetails } from './panels/tile-debug-inspector';
 import { showConfirmModal, showFormModal } from './lib/helpers';
 import { setLabelSpacing } from './lib/constants';
 import { api } from './lib/api';
+import { sessionControls, sessionHint, sessionLabel } from './lib/session-controls';
 import { stateManager } from './lib/state-manager';
 import { showToast } from './lib/toast';
 
@@ -111,19 +112,57 @@ class App {
 
 
   setupControls(): void {
+    // Play/Pause exists only in Simulation: Play from Paused, Pause from Live
+    // (design_new.md "Session state"). The server decides; the header follows
+    // the session state the next snapshot carries rather than guessing.
     const playPauseBtn = document.getElementById('btn-play-pause')!;
-    playPauseBtn.addEventListener('click', () => {
-      if (this.isSimulationRunning) {
-        // Pause
-        api.controlSimulation('stop').catch((e: any) => console.error('[App] Pause error:', e));
-        this.isSimulationRunning = false;
-        this.updatePlaybackUI(false);
-      } else {
-        // Play
-        api.controlSimulation('start').catch((e: any) => console.error('[App] Play error:', e));
-        this.isSimulationRunning = true;
-        this.updatePlaybackUI(true);
+    playPauseBtn.addEventListener('click', async () => {
+      const action = this.isSimulationRunning ? 'stop' : 'start';
+      try {
+        await api.controlSimulation(action);
+      } catch (e: any) {
+        console.error('[App] Play/Pause error:', e);
+        showToast(e?.data?.message || e?.message || 'Play/Pause was refused', 'warning', 4000);
       }
+      await this.refreshNetwork();
+    });
+
+    // Emergency stop: the one kill switch, in every environment. It runs at
+    // once — no confirmation — because it is the button pressed when
+    // something is about to go wrong.
+    document.getElementById('btn-emergency-stop')?.addEventListener('click', async () => {
+      try {
+        const result = await api.layoutEmergencyStop();
+        showToast(result?.message || 'Emergency stop', 'warning', 4000);
+      } catch (e: any) {
+        console.error('[App] Emergency stop failed:', e);
+        showToast('Emergency stop failed: ' + (e?.message ?? e), 'error', 6000);
+      }
+      await this.refreshNetwork();
+    });
+
+    // Reset releases every train after Emergency stop; each ATO train then
+    // waits for Go and each manual train for driver input.
+    document.getElementById('btn-reset-layout')?.addEventListener('click', async () => {
+      try {
+        const result = await api.resetLayoutCutOut();
+        showToast(result?.message || 'Reset', 'success', 4000);
+      } catch (e: any) {
+        showToast('Reset was refused: ' + (e?.message ?? e), 'warning', 5000);
+      }
+      await this.refreshNetwork();
+    });
+
+    // Hold all: ATO stop on every ATO train, keeping its reservation.
+    document.getElementById('btn-hold-all')?.addEventListener('click', async () => {
+      try {
+        const result = await api.holdAll();
+        const n = (result?.stopped_train_ids || []).length;
+        showToast(`Held ${n} ATO train${n === 1 ? '' : 's'}. Press Go on each to resume.`, 'info', 4000);
+      } catch (e: any) {
+        showToast('Hold all failed: ' + (e?.message ?? e), 'error', 5000);
+      }
+      await this.refreshNetwork();
     });
 
     // Clearing is the ordinary way out of a fatal conflict: the operator has
@@ -298,6 +337,34 @@ class App {
     if (modeBtn && modeBtn.textContent !== noun) modeBtn.textContent = noun;
     const playBtn = document.getElementById('btn-play-pause');
     if (playBtn) playBtn.setAttribute('title', `Start/Pause ${noun}`);
+  }
+
+  /** Show the session state and offer the controls it allows (design_new.md
+   *  "Session state"). `isSimulationRunning` means the session is Live. */
+  syncSessionUI(network: any): void {
+    const state = network?.session_state ?? null;
+    this.isSimulationRunning = state?.value === 'live';
+
+    const chip = document.getElementById('session-state-chip');
+    if (chip) {
+      const label = sessionLabel(state);
+      if (chip.textContent !== label) chip.textContent = label;
+      chip.title = sessionHint(state);
+      chip.dataset.state = state?.value ?? '';
+      chip.dataset.halt = state?.halt_reason ?? '';
+    }
+
+    const controls = sessionControls(state, network?.operation_environment);
+    const playBtn = document.getElementById('btn-play-pause') as HTMLButtonElement | null;
+    if (playBtn) {
+      playBtn.hidden = !controls.playbackVisible;
+      playBtn.disabled = !controls.playPauseEnabled;
+    }
+    const presets = document.querySelector<HTMLElement>('.speed-presets');
+    if (presets) presets.hidden = !controls.playbackVisible;
+    const resetBtn = document.getElementById('btn-reset-layout');
+    if (resetBtn) resetBtn.hidden = !controls.resetVisible;
+    this.updatePlaybackUI(controls.playPause === 'pause');
   }
 
   updatePlaybackUI(isPlaying: boolean): void {
@@ -863,11 +930,8 @@ class App {
         );
       }
 
-      // Sync play/pause button with server state
-      if (typeof network.simulation_running === 'boolean') {
-        this.isSimulationRunning = network.simulation_running;
-        this.updatePlaybackUI(this.isSimulationRunning);
-      }
+      // Sync the session state and the header's session controls.
+      this.syncSessionUI(network);
 
       // Sync speed-preset active state with server state
       if (typeof network.simulation_speed === 'number') {

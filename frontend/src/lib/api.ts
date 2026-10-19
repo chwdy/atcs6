@@ -348,9 +348,11 @@ export class API implements LayoutDataClient, SimClient {
   }
 
   /**
-   * Control simulation state.
-   * @param action - 'start', 'stop', 'reset', 'set_speed'
-   * @param speed - Simulation speed multiplier
+   * Play, Pause and playback speed — Simulation only (design_new.md "Session
+   * state"). Play is accepted only while Paused, Pause only while Live; every
+   * other case is refused with 409.
+   * @param action - 'start' (Play), 'stop' (Pause), or 'set_speed'
+   * @param speed - Simulation speed multiplier, with 'set_speed'
    */
   async controlSimulation(action: string, speed: number | null = null): Promise<any> {
     const data: { action: string; speed?: number } = { action };
@@ -365,6 +367,25 @@ export class API implements LayoutDataClient, SimClient {
       },
       'controlSimulation'
     );
+  }
+
+  /** Emergency stop: the layout emergency cut-out, in every environment. */
+  async layoutEmergencyStop(): Promise<any> {
+    return this._request(
+      '/simulation/emergency-cut-out',
+      { method: 'POST', body: {} },
+      'layoutEmergencyStop'
+    );
+  }
+
+  /** Reset: release every train after Emergency stop. */
+  async resetLayoutCutOut(): Promise<any> {
+    return this._request('/simulation/reset', { method: 'POST', body: {} }, 'resetLayoutCutOut');
+  }
+
+  /** Hold all: ATO stop on every ATO train. Returns `stopped_train_ids`. */
+  async holdAll(): Promise<any> {
+    return this._request('/simulation/hold-all', { method: 'POST', body: {} }, 'holdAll');
   }
 
   /**

@@ -38,7 +38,7 @@
                     <h1>RAIL</h1>
                 </div>
                 <div class="simulation-controls">
-                    <button id="btn-play-pause" class="btn btn-primary" title="Start/Pause Simulation">
+                    <button id="btn-play-pause" class="btn btn-primary" title="Play / Pause (Simulation only)">
                         <i class="ti ti-player-play"></i> Play
                     </button>
                     <button id="btn-restart-server" class="btn btn-icon-only" title="Restart Server" aria-label="Restart Server">
@@ -162,6 +162,21 @@
                         -->
                         <canvas id="rail-world-canvas"></canvas>
                         <canvas id="rail-canvas"></canvas>
+                        <!-- The session bar: the session state and the controls that act on
+                             the whole layout (design_new.md "Session state"; "Emergency
+                             cut-out"; "Hold all"). -->
+                        <div class="session-bar" role="group" aria-label="Session">
+                            <span id="session-state-chip" class="session-chip" title="">—</span>
+                            <button type="button" id="btn-emergency-stop" class="session-bar-btn session-bar-btn-danger" title="Cut power to every block and stop every train">
+                                <i class="ti ti-hand-stop" aria-hidden="true"></i> Emergency stop
+                            </button>
+                            <button type="button" id="btn-reset-layout" class="session-bar-btn" title="Release every train after Emergency stop" hidden>
+                                <i class="ti ti-rotate" aria-hidden="true"></i> Reset
+                            </button>
+                            <button type="button" id="btn-hold-all" class="session-bar-btn" title="ATO stop on every ATO train; each one resumes with Go">
+                                <i class="ti ti-player-stop" aria-hidden="true"></i> Hold all
+                            </button>
+                        </div>
                         <div class="canvas-overlay">
                             <div class="canvas-view-controls">
                                 <button type="button" class="canvas-view-btn" id="btn-zoom-out" title="Zoom out">−</button>

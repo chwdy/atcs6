@@ -132,3 +132,86 @@
 .canvas-view-toggle:hover {
     color: var(--text-primary);
 }
+
+/* ---- Session bar — the session state and the whole-layout controls,
+   floating at the top centre of the canvas so it stays in view whatever the
+   header holds (design_new.md "Session state"). Live reads success; a halt
+   reads danger only for a failure or Emergency stop; Paused, Setup and
+   not-activated stay neutral. ---- */
+.session-bar {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 3;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background-color: rgba(30, 30, 36, 0.85);
+    border: 1px solid var(--border-color);
+    padding: 4px 6px;
+    border-radius: 4px;
+    backdrop-filter: blur(4px);
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
+.session-chip {
+    padding: 2px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+.session-chip[data-state="live"] {
+    color: var(--success-color);
+    border-color: var(--success-color);
+}
+
+.session-chip[data-state="setup"] {
+    color: var(--info-color);
+    border-color: var(--info-color);
+}
+
+.session-chip[data-halt="layout_emergency_cut_out"],
+.session-chip[data-halt="hardware_failure"],
+.session-chip[data-halt="runtime_failure"] {
+    color: var(--danger-color);
+    border-color: var(--danger-color);
+}
+
+.session-bar-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background-color: var(--bg-dark);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    padding: 3px 10px;
+    border-radius: 3px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.session-bar-btn:hover {
+    background-color: var(--bg-hover);
+    border-color: var(--accent-color);
+}
+
+.session-bar-btn-danger {
+    color: #fff;
+    background-color: var(--danger-color);
+    border-color: var(--danger-color);
+    font-weight: 600;
+}
+
+.session-bar-btn-danger:hover {
+    background-color: var(--danger-color);
+    border-color: #fff;
+}
+
+.session-bar [hidden] {
+    display: none !important;
+}

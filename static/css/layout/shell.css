@@ -159,6 +159,10 @@ textarea {
     color: #fff;
 }
 
+.app-header [hidden] {
+    display: none !important;
+}
+
 /* ---- Speed presets — segmented control ---- */
 .speed-presets {
     display: inline-flex;

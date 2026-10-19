@@ -44,7 +44,6 @@
  */
 
 import { api } from '../lib/api';
-import { showToast } from '../lib/toast';
 import { setBenchOccupancyMirror } from '../lib/bench-occupancy-mirror';
 import { FloatingWindow, windowManager, type WindowGeometry } from '../lib/window-manager';
 import {
@@ -703,14 +702,12 @@ class OccupancyBench {
         }
     }
 
-    /** Give the controller back and let the runtime have its environment again.
+    /** Close the bench. Closing completes the safe state and leaves the
+     *  session in Setup; it never activates an environment (design_new.md
+     *  "Hardware setup", Occupancy bench). Activate is the way back to Live.
      *
      *  Best-effort on the way out: the panel is already closing, and the session
-     *  expires and de-energizes on its own timer regardless. The one thing worth
-     *  saying out loud is a restore that did not happen — the environment came
-     *  down so this bench could hold the device, and if it cannot go back up the
-     *  operator is looking at a railway that is no longer live with this window
-     *  already gone. A toast is the only surface left. */
+     *  expires and de-energizes on its own timer regardless. */
     private async _leave(): Promise<void> {
         if (!this._open) return;
         this._open = false;
@@ -720,18 +717,7 @@ class OccupancyBench {
         // hangs or throws must not leave the layout painted from it.
         this._publishMirror(false);
         try {
-            const result = await api.closeOccupancyBench();
-            if (result?.reactivated === false && Array.isArray(result.issues) && result.issues.length) {
-                const why = result.issues
-                    .map((issue: any) => issue?.message || issue?.code)
-                    .filter(Boolean)
-                    .join('; ');
-                showToast(
-                    `The bench closed, but the environment did not reactivate: ${why}`,
-                    'error',
-                    8000,
-                );
-            }
+            await api.closeOccupancyBench();
         } catch {
             /* the idle timeout is the backstop */
         }
