@@ -1,7 +1,44 @@
 import { describe, expect, it } from 'vitest';
 
 import { holdReasonText } from './hold-reason';
-import { startRouteUnavailableReason, trainDisplayStatus } from './train-status';
+import {
+  atoIsDriving,
+  nextStepToRun,
+  routeAssignedMessage,
+  routeUnassignedMessage,
+  startRouteUnavailableReason,
+  trainDisplayStatus,
+} from './train-status';
+
+describe('nextStepToRun', () => {
+  it('names the command that starts the route for each driver', () => {
+    expect(nextStepToRun({ train_status: 'off' })).toMatch(/Start route/);
+    expect(nextStepToRun({ train_status: 'ato' })).toMatch(/Go/);
+    expect(nextStepToRun({ train_status: 'manual' })).toMatch(/Drive it/);
+    expect(nextStepToRun({ train_status: 'eb' })).toMatch(/Release the emergency brake/);
+  });
+});
+
+describe('routeAssignedMessage', () => {
+  it('says the new route waits for the old run to stop', () => {
+    expect(routeAssignedMessage('T1', { train_status: 'ato' }, true)).toBe(
+      'T1 stops at the end of its reservation, then switches to the new route. Press Go to start it.'
+    );
+  });
+
+  it('says what to press when nothing runs yet', () => {
+    expect(routeAssignedMessage('T1', { train_status: 'off' }, false)).toBe(
+      'T1 is assigned. Press Start route to run it.'
+    );
+  });
+});
+
+describe('routeUnassignedMessage', () => {
+  it('waits for a running train to stop', () => {
+    expect(routeUnassignedMessage('T1', true)).toMatch(/once it has stopped/);
+    expect(routeUnassignedMessage('T1', false)).toBe('T1 is unassigned.');
+  });
+});
 
 describe('trainDisplayStatus', () => {
   it('shows the overall status for a train that is not in ATO', () => {
@@ -18,6 +55,23 @@ describe('trainDisplayStatus', () => {
   });
 });
 
+describe('atoIsDriving', () => {
+  it('is true while ATO pursues a running route run, moving or not', () => {
+    for (const atoStatus of ['RUNNING', 'HELD', 'DWELLING']) {
+      expect(atoIsDriving({ train_status: 'ato', engaged: true }, { ato_status: atoStatus })).toBe(true);
+    }
+  });
+
+  it('is false for an engaged train whose route has finished', () => {
+    expect(atoIsDriving({ train_status: 'ato', engaged: true }, { ato_status: 'READY' })).toBe(false);
+  });
+
+  it('is false for a train that is not in ATO', () => {
+    expect(atoIsDriving({ train_status: 'eb' }, { ato_status: 'OFF' })).toBe(false);
+    expect(atoIsDriving({ train_status: 'manual' })).toBe(false);
+  });
+});
+
 describe('holdReasonText', () => {
   it('is null when nothing holds the train', () => {
     expect(holdReasonText(null)).toBeNull();
@@ -29,6 +83,12 @@ describe('holdReasonText', () => {
     ).toBe('Waiting: stopping to power off.');
     expect(holdReasonText({ code: 'calibrating', question: 2, detail: 'speed' })).toBe(
       'A speed calibration run is driving the train.'
+    );
+  });
+
+  it('reads the error origin behind a missing reservation as words', () => {
+    expect(holdReasonText({ code: 'no_reservation', question: 3, detail: 'no_viable_path' })).toBe(
+      'No reservation yet (no viable path).'
     );
   });
 

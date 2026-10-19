@@ -27,41 +27,6 @@ import { segmentsFromBlocks, type NetworkPayload } from './payload-types';
 import type { OverlayPhase, RendererOverlay } from './renderer-overlay';
 import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
 import { gridPreference } from '../lib/grid-preference';
-import { benchOccupancyMirror } from '../lib/bench-occupancy-mirror';
-
-/**
- * Overlay the Occupancy Bench's readings on the blocks the server just sent.
- *
- * While the bench holds the device the runtime is not detecting at all, so the
- * server's `state` for every block is frozen at whatever was committed before
- * the handover. This is what lets the layout answer from the detectors anyway
- * (see lib/bench-occupancy-mirror). It rewrites ONLY `state`: availability
- * (`disabled` / `manual`) and `occupied_by` are runtime facts the bench cannot
- * know, and `blockTrackColor` already lets availability win over live state.
- *
- * Copy-on-write, and only for the blocks the bench actually reports on. The
- * payload objects are shared with `stateManager` and the editor's cached
- * network, so mutating them in place would leak a diagnostic overlay into every
- * other consumer of the same network — including the ones that write layouts
- * back to disk.
- */
-export function _withBenchOccupancy(
-  blocks: Record<string, BlockInfo>,
-): Record<string, BlockInfo> {
-  const verdicts = benchOccupancyMirror();
-  if (verdicts.size === 0) return blocks;
-  const out: Record<string, BlockInfo> = { ...blocks };
-  for (const [blockId, occupied] of verdicts) {
-    const block = out[blockId];
-    // A verdict for a block this layout does not have is not an error worth
-    // reporting here: the bench reads whatever `hardware_config` binds, and a
-    // channel bound to a block since deleted is exactly the kind of stale
-    // wiring the panel exists to expose. It simply has nothing to paint.
-    if (!block) continue;
-    out[blockId] = { ...block, state: occupied ? 'occupied' : 'free' };
-  }
-  return out;
-}
 
 // Compass heading of one grid step. Matches block.py `_compass_from_delta`
 // (Y positive is north): a +Y step reads N, +X reads E.
@@ -627,7 +592,7 @@ class Renderer {
       return false;
     }
     this.currentNetwork = network;
-    this.currentBlocks = _withBenchOccupancy(network.blocks || {});
+    this.currentBlocks = network.blocks || {};
     // Segment geometry rides nested inside each block's members, so the
     // geometry index is derived here rather than carried as a sibling map.
     this.currentSegments = segmentsFromBlocks(network.blocks);

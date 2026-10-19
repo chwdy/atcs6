@@ -213,7 +213,7 @@ def test_remove_with_no_run_removes_stored_assignment(state_with_train):
 
 
 def test_assign_route_service_defers_around_live_run(state_with_train):
-    """End-to-end through the service: `assign_route(force=True)` on a train with
+    """End-to-end through the service: `assign_route(...)` on a train with
     a live run defers via `request_route_assignment` instead of mutating lists
     inline."""
     state, train = state_with_train
@@ -221,7 +221,7 @@ def test_assign_route_service_defers_around_live_run(state_with_train):
     _make_route(state, "R2", "BLK_2")
     controller = state.sim_controller.get_controller("TRAIN_A")
 
-    train_service.assign_route(state, "TRAIN_A", route_id="R2", force=True)
+    train_service.assign_route(state, "TRAIN_A", route_id="R2")
 
     # Deferred by the service.
     assert rex._pending_route_assignments["TRAIN_A"]["requested_route_id"] == "R2"

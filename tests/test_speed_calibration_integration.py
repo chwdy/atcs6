@@ -183,7 +183,7 @@ def test_route_assignment_is_refused_while_calibrating(state):
     route_id = next(iter(sim.route_executor.route_registry))
 
     with pytest.raises(ConflictError, match="speed-calibration pass"):
-        train_service.assign_route(state, train_id, route_id=route_id, force=True)
+        train_service.assign_route(state, train_id, route_id=route_id)
     with pytest.raises(ConflictError):
         train_service.assign_route(state, train_id, route_id=None)
     assert sim.speed_calibration.runs.get(train_id) is not None

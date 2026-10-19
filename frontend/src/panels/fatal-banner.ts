@@ -92,6 +92,7 @@ export function updateFatalBanner(network: any, renderer: ConflictFlashRenderer)
     ? network.session_state.halt_reason
     : null;
   const clearBtn = document.getElementById('btn-clear-fatal');
+  const activateBtn = document.getElementById('btn-activate-fatal');
   if (haltReason !== 'runtime_failure' && haltReason !== 'hardware_failure') {
     banner.hidden = true;
     return;
@@ -99,6 +100,9 @@ export function updateFatalBanner(network: any, renderer: ConflictFlashRenderer)
   // Clearing in place is the way back from a track conflict only; a hardware
   // failure is cleared by activating again.
   if (clearBtn) clearBtn.hidden = haltReason !== 'runtime_failure';
+  // Activate is the way back from a hardware failure, once the device is
+  // repaired (design_new.md "Power", Recovery is reactivation).
+  if (activateBtn) activateBtn.hidden = haltReason !== 'hardware_failure';
 
   const titleEl = document.querySelector('.fatal-banner-title');
   const detailEl = document.getElementById('fatal-banner-detail');
@@ -106,7 +110,8 @@ export function updateFatalBanner(network: any, renderer: ConflictFlashRenderer)
   const c = network.failed_runtime_conflict;
   const noun = runtimeNoun(network);
   const tail =
-    ' Every train is halted. Sort it out on the layout, then clear the conflict to carry on — every train comes back off.';
+    ' Every train is halted. Sort it out on the layout, then clear the conflict to carry on — every train comes back off.' +
+    ' The session then returns to the state it had before the halt; if that was an Emergency stop, press Reset too.';
 
   // A hardware failure revoked output permission, so it has no clear-in-place
   // path: the only way out is repairing the device and activating again.

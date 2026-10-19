@@ -51,6 +51,7 @@ export class StateManager {
       controllers: new Map(), // trainId → TrainController.to_dict()
       dispatcherProgress: new Map(), // trainId → dispatcher progress dict | null
       assignedRoutes: new Map(), // trainId → assigned route_id | null
+      routeRuns: new Map(), // trainId → {route_id, run_number, state, display_state, last_error} | null
       operatorStatus: new Map(), // trainId → {ato_status, pending_actions, hold_reason}
       blocks: new Map(), // blockId → block data object
       signals: new Map(), // signalId → signal data object
@@ -71,6 +72,7 @@ export class StateManager {
       controllers: new Map(),
       dispatcherProgress: new Map(),
       assignedRoutes: new Map(),
+      routeRuns: new Map(),
       operatorStatus: new Map(),
       blocks: new Map(),
       signals: new Map(),
@@ -238,6 +240,16 @@ export class StateManager {
   }
 
   /**
+   * Get the live route-run summary for a train (or null/undefined when it has
+   * no RUNNING run). Source: `route_runs_by_train_id`: `{route_id, run_number,
+   * state, display_state, last_error}`. Owned by RouteExecutor, so the
+   * controller payload never carries it (design_new.md "Data Flow To UI").
+   */
+  getRouteRun(trainId: string): EntityData | undefined {
+    return this.state.routeRuns.get(trainId);
+  }
+
+  /**
    * Get the operator status read model for a train (or undefined).
    * Source: `operator_status_by_train_id`: `{ato_status, pending_actions,
    * hold_reason}` (design_new.md "Data Flow To UI").
@@ -376,6 +388,18 @@ export class StateManager {
       }
       for (const deletedId of currentAssignedRouteIds) {
         this.removeEntity('assignedRoutes', deletedId);
+      }
+
+      // ─────────────────────────────────────────────────────────
+      // UPDATE ROUTE RUNS (RouteExecutor run summary per train)
+      // ─────────────────────────────────────────────────────────
+      const currentRouteRunIds = new Set(this.state.routeRuns.keys());
+      for (const [tid, run] of Object.entries(network.route_runs_by_train_id || {})) {
+        this.updateEntity('routeRuns', tid, run);
+        currentRouteRunIds.delete(tid);
+      }
+      for (const deletedId of currentRouteRunIds) {
+        this.removeEntity('routeRuns', deletedId);
       }
 
       // ─────────────────────────────────────────────────────────
@@ -527,6 +551,7 @@ export class StateManager {
         controllers: this.state.controllers.size,
         dispatcherProgress: this.state.dispatcherProgress.size,
         assignedRoutes: this.state.assignedRoutes.size,
+        routeRuns: this.state.routeRuns.size,
         operatorStatus: this.state.operatorStatus.size,
         blocks: this.state.blocks.size,
         signals: this.state.signals.size,
@@ -539,6 +564,7 @@ export class StateManager {
         controllers: this._countSubscribers('controllers'),
         dispatcherProgress: this._countSubscribers('dispatcherProgress'),
         assignedRoutes: this._countSubscribers('assignedRoutes'),
+        routeRuns: this._countSubscribers('routeRuns'),
         operatorStatus: this._countSubscribers('operatorStatus'),
         blocks: this._countSubscribers('blocks'),
         signals: this._countSubscribers('signals'),

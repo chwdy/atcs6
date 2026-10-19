@@ -35,6 +35,7 @@
 
 import { api } from '../lib/api';
 import { showToast } from '../lib/toast';
+import { setupToolsAllowed, SETUP_TOOL_HINT } from '../lib/session-controls';
 import {
   VIRTUAL_FAULT_PAIRS,
   clearFaultBody,
@@ -939,12 +940,16 @@ class VirtualBench {
               }.">${escapeHtml(dutyText(row))}</span>`
             : '';
 
+        // The sweep drives the block, so it is a Setup tool.
+        const inSetup = setupToolsAllowed(window.app?.sessionState);
         const sweep = row.hasTrack
             ? `<button type="button" class="vb-btn" data-role="sweep" data-id="${escapeHtml(row.blockId)}"
-                   ${busy ? 'disabled' : ''}
-                   title="Drive this block full forward, off, then full reverse — about three seconds.">${
-                       busy ? '…' : 'Sweep'
-                   }</button>`
+                   ${busy || !inSetup ? 'disabled' : ''}
+                   title="${escapeHtml(
+                       inSetup
+                           ? 'Drive this block full forward, off, then full reverse — about three seconds.'
+                           : SETUP_TOOL_HINT
+                   )}">${busy ? '…' : 'Sweep'}</button>`
             : '<span class="vb-dash">—</span>';
 
         const canPlace = row.hasDigital || row.hasCurrent;

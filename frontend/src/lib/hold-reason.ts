@@ -37,8 +37,10 @@ const MESSAGES: Record<string, (detail: string | null) => string> = {
   pending_action: (detail) => `Waiting: ${detail ?? 'a command is finishing'}.`,
   no_route: () => 'No route is assigned.',
   dwelling: () => 'Dwelling at a station.',
+  // The detail is the `origin` code of the train's latest retained error,
+  // e.g. `no_viable_path`; it reads as words once the underscores go.
   no_reservation: (detail) =>
-    detail ? `No reservation yet (${detail}).` : 'No reservation yet.',
+    detail ? `No reservation yet (${detail.replace(/_/g, ' ')}).` : 'No reservation yet.',
   reservation_end: (detail) =>
     detail ? `Stopped at the end of its reservation (${detail}).` : 'Stopped at the end of its reservation.',
   atc_limit: (detail) => (detail ? `The ATC limit is 0 (${detail}).` : 'The ATC limit is 0.'),

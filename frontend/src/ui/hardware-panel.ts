@@ -28,7 +28,14 @@
 import { api } from '../lib/api';
 import { showToast } from '../lib/toast';
 import { showConfirmModal } from '../lib/helpers';
-import { sessionHint, sessionLabel, type SessionStateView } from '../lib/session-controls';
+import {
+  activateUnavailableReason,
+  sessionHint,
+  sessionLabel,
+  setupToolsAllowed,
+  SETUP_TOOL_HINT,
+  type SessionStateView,
+} from '../lib/session-controls';
 import {
   VIRTUAL_FAULT_PAIRS,
   clearFaultBody,
@@ -1152,9 +1159,13 @@ function chipCardHtml(chip: ChipCfg): string {
   const dirBadge = `<span class="hw-dir ${dir === 'output' ? 'out' : 'in'}">${dir === 'output' ? 'OUTPUT' : 'INPUT'}</span>`;
   const chained = ck?.cascadable ? ` (${Math.max(1, chip.chain_length)} chip${chip.chain_length > 1 ? 's' : ''} chained)` : '';
   const on = activity?.chipId === chip.chip_id;
+  // Sweep and Read live open the commissioning session, a Setup tool; a
+  // running one can always be stopped.
+  const toolOff = !on && !setupToolsAllowed(environmentInfo.session_state);
+  const toolAttrs = toolOff ? ` disabled title="${esc(SETUP_TOOL_HINT)}"` : '';
   const testBtn = dir === 'output'
-    ? `<button type="button" class="hw-chip-action${on ? ' on' : ''}" data-hw="sweep" data-id="${esc(chip.chip_id)}"><i class="ti ti-${on ? 'player-stop' : 'player-play'}" aria-hidden="true"></i> ${on ? 'Stop' : 'Sweep'}</button>`
-    : `<button type="button" class="hw-chip-action${on ? ' on' : ''}" data-hw="live" data-id="${esc(chip.chip_id)}"><i class="ti ti-${on ? 'player-stop' : 'activity'}" aria-hidden="true"></i> ${on ? 'Stop' : 'Read live'}</button>`;
+    ? `<button type="button" class="hw-chip-action${on ? ' on' : ''}" data-hw="sweep" data-id="${esc(chip.chip_id)}"${toolAttrs}><i class="ti ti-${on ? 'player-stop' : 'player-play'}" aria-hidden="true"></i> ${on ? 'Stop' : 'Sweep'}</button>`
+    : `<button type="button" class="hw-chip-action${on ? ' on' : ''}" data-hw="live" data-id="${esc(chip.chip_id)}"${toolAttrs}><i class="ti ti-${on ? 'player-stop' : 'activity'}" aria-hidden="true"></i> ${on ? 'Stop' : 'Read live'}</button>`;
   return `<div class="hw-chip ${stateCls}" data-chip="${esc(chip.chip_id)}">
     <div class="hw-chip-top">
       ${coordCellHtml(chip)}
@@ -1274,7 +1285,10 @@ function portsHtml(chip: ChipCfg): string {
       else if (v) cls += ' live';
     }
     if (dir === 'output') {
-      pills.push(`<button type="button" class="${cls}${extra}" data-hw="pulse" data-id="${esc(chip.chip_id)}" data-port="${p}" title="${name} — click to drive high for 1 s">${txt}</button>`);
+      // A pulse drives an output, so it is a Setup tool.
+      const pulseOk = setupToolsAllowed(environmentInfo.session_state);
+      const pulseTitle = pulseOk ? `${name} — click to drive high for 1 s` : `${name} — ${SETUP_TOOL_HINT}`;
+      pills.push(`<button type="button" class="${cls}${extra}" data-hw="pulse" data-id="${esc(chip.chip_id)}" data-port="${p}" title="${esc(pulseTitle)}"${pulseOk ? '' : ' disabled'}>${txt}</button>`);
     } else {
       pills.push(`<span class="${cls}${extra}" title="${name}">${txt}</span>`);
     }
@@ -1413,6 +1427,7 @@ function gateHtml(): string {
   const canEnterSetup = environmentInfo.selected !== 'simulation'
     && session?.value !== 'setup'
     && session?.halt_reason !== 'runtime_failure';
+  const activateBlocked = activateUnavailableReason(session);
   const setupButton = canEnterSetup
     ? '<button type="button" class="btn btn-secondary" data-hw="setup" title="Stop operation and hand the outputs to the Setup tools">Enter Setup</button>'
     : '';
@@ -1442,7 +1457,7 @@ function gateHtml(): string {
       ${deadband}
       <button type="button" class="btn btn-secondary" data-hw="save">Save Hardware Setup</button>
       ${setupButton}
-      <button type="button" class="btn btn-primary" data-hw="activate">Activate ${esc(selectedLabel)}</button>
+      <button type="button" class="btn btn-primary" data-hw="activate"${activateBlocked ? ` disabled title="${esc(activateBlocked)}"` : ''}>Activate ${esc(selectedLabel)}</button>
     </div>`;
 }
 
@@ -1547,7 +1562,10 @@ function removeChip(id: string): void {
 
 async function selectEnvironment(selected: string): Promise<void> {
   try {
-    environmentInfo = await api.selectOperationEnvironment(selected) as EnvironmentInfo;
+    await api.selectOperationEnvironment(selected);
+    // The PUT reply names only the environments; read the whole view again so
+    // the panel keeps the session state it offers its controls from.
+    environmentInfo = await api.getOperationEnvironment() as EnvironmentInfo;
     activationReadiness = await api.getOperationReadiness();
   } catch (e: any) {
     showToast(e?.message || 'Could not select the environment.', 'error', 3500);
@@ -1616,9 +1634,18 @@ async function enterSetup(): Promise<void> {
 
 async function activateEnvironment(): Promise<void> {
   try {
-    await stopCommissioning();
     await api.setHardwareConfig(payload());
     activationReadiness = await api.getOperationReadiness();
+    // A blocker refuses activation and leaves the session, and any open Setup
+    // tool, in Setup (design_new.md "Hardware setup", Setup). So check first,
+    // and close the commissioning tool only once activation can go ahead.
+    if (environmentInfo.selected !== 'simulation' && activationReadiness && activationReadiness.ready === false) {
+      render();
+      const blocked = activationBlockMessage(activationReadiness);
+      showToast(blocked || 'Environment activation was blocked.', 'error', 8000);
+      return;
+    }
+    await stopCommissioning();
     await api.activateOperationEnvironment();
     const [env, ready, cfg] = await Promise.all([
       api.getOperationEnvironment(),

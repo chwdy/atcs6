@@ -19,6 +19,7 @@
 // Owned by the Editor (`new RouteRunEditorHandler(this)`).
 
 import { showToast } from '../lib/toast';
+import { routeUnassignedMessage } from '../lib/train-status';
 import { copyIdButton } from '../lib/copy-id';
 import type { EditorHost } from './types';
 import { formatBlockDirection, validatePriorityInput, showConfirmModal } from '../lib/helpers';
@@ -80,7 +81,7 @@ export class RouteRunEditorHandler {
     if (!this.runs.length) {
       content += `
                 <div class="empty-state">
-                    No route runs yet — assign a train to an active route to start one.
+                    No route runs yet. Assign a route to a train, then press Start route or Go to start one.
                 </div>
             `;
     } else {
@@ -221,22 +222,12 @@ export class RouteRunEditorHandler {
     });
     const runDirLong = this._longDirection(run.direction, runDirGeom.tile, runDirGeom.heading);
 
-    // Elapsed since start (derived value — rule 7).
-    let elapsedText = '';
-    if (run.started_at != null && run.started_at > 1e9) {
-      const elapsedSec = Date.now() / 1000 - run.started_at;
-      if (elapsedSec > 5) {
-        // skip noise for just-started runs
-        elapsedText = `${this._formatDuration(elapsedSec)} ago`;
-      }
-    }
-
     const modeText = run.route_mode ? String(run.route_mode).toLowerCase().replace(/_/g, '-') : '';
 
-    const timingRow =
-      run.started_at != null
-        ? `started ${this._esc(startedText)}${elapsedText ? ` · ${this._esc(elapsedText)}` : ''}`
-        : '';
+    // Only the start instant: an elapsed figure from the browser clock would
+    // miss a stop and the playback speed (design_new.md "Elapsed values are
+    // server-owned").
+    const timingRow = run.started_at != null ? `started ${this._esc(startedText)}` : '';
 
     const modeDirParts = [
       modeText ? this._esc(modeText) : '',
@@ -310,7 +301,7 @@ export class RouteRunEditorHandler {
                     ${
                       isRunning
                         ? `
-                        <button id="unassign-train-run-btn" class="btn btn-danger btn-sm btn-full" title="Unassign this train from the route — triggers the route teardown latch (Phase 3 path cancel + DEACTIVATED).">
+                        <button id="unassign-train-run-btn" class="btn btn-danger btn-sm btn-full" title="Unassign this train from the route. It runs to the end of its reservation and stops first.">
                             Unassign train
                         </button>
                     `
@@ -425,7 +416,7 @@ export class RouteRunEditorHandler {
     const modifier = modParts.join(' · ');
 
     // Timestamps + derived duration inline.
-    const timeHtml = this._formatTimeRange(t.started_at, t.finished_at);
+    const timeHtml = this._formatTimeRange(t);
 
     // Row tooltip carries the resolved-target details.
     let tooltip = `#${t.walk_position + 1} ${t.task_kind || '?'} ${target.id}`;
@@ -526,14 +517,15 @@ export class RouteRunEditorHandler {
           title: 'Unassign Train',
           message: `Unassign train ${trainId} from route?`,
           detail:
-            'This triggers route teardown: any live path is cancelled (Phase 3) and the run becomes DEACTIVATED.',
+            'The train runs to the end of its reservation and stops, then leaves the route. ' +
+            'Its run then reads DEACTIVATED.',
           confirmText: 'Unassign',
           confirmVariant: 'danger',
         });
         if (!confirmed) return;
         try {
           await this.api.assignRoute(trainId, null);
-          showToast(`Train ${trainId} unassigned`, 'success', 3000);
+          showToast(routeUnassignedMessage(trainId, true), 'success', 5000);
           await this.showRouteRunEditor(this.currentRun.run_number);
         } catch (err: any) {
           console.error('[RouteRunEditor] Unassign failed:', err);
@@ -689,13 +681,23 @@ export class RouteRunEditorHandler {
     return `t=${Number(t).toFixed(1)}s`;
   }
 
-  _formatTimeRange(startedAt: any, finishedAt: any): string {
+  /** A row's start and finish instants, with its duration from the server's
+   *  `elapsed_basis_seconds` (the route's timing clock) and, when that differs,
+   *  `elapsed_wall_seconds` in the tooltip. Both are null until the row
+   *  finishes (design_new.md "Data Flow To UI", the `tasks` projection). */
+  _formatTimeRange(t: any): string {
+    const startedAt = t?.started_at ?? null;
+    const finishedAt = t?.finished_at ?? null;
     if (startedAt == null && finishedAt == null) {
       return '<span class="rr-task-time-muted">—</span>';
     }
     if (startedAt != null && finishedAt != null) {
-      const dur = finishedAt - startedAt;
-      return `<span class="rr-task-time-line">${this._esc(this._formatTime(startedAt))}</span><span class="rr-task-time-line">${this._esc(this._formatTime(finishedAt))}<span class="rr-task-dur">${this._formatDuration(dur)}</span></span>`;
+      const basis = t.elapsed_basis_seconds;
+      const wall = t.elapsed_wall_seconds;
+      const durText = Number.isFinite(basis) ? this._formatDuration(basis) : '';
+      const wallTitle =
+        Number.isFinite(wall) && wall !== basis ? ` title="${this._esc(`wall clock ${this._formatDuration(wall)}`)}"` : '';
+      return `<span class="rr-task-time-line">${this._esc(this._formatTime(startedAt))}</span><span class="rr-task-time-line">${this._esc(this._formatTime(finishedAt))}<span class="rr-task-dur"${wallTitle}>${durText}</span></span>`;
     }
     if (startedAt != null) {
       return `<span class="rr-task-time-line">${this._esc(this._formatTime(startedAt))}</span>`;

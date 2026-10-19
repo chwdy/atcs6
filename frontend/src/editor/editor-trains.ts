@@ -11,6 +11,7 @@
 import { stateManager } from '../lib/state-manager';
 import {
   atoGoUnavailableReason,
+  atoIsDriving,
   startRouteUnavailableReason,
   trainDisplayStatus,
 } from '../lib/train-status';
@@ -24,6 +25,23 @@ import { showConfirmModal, getTrackExits, getNeighborPosition, formatDuration, f
 /** Read the value of an input by id (empty string if missing). */
 function inputValue(id: string): string {
   return (document.getElementById(id) as HTMLInputElement | null)?.value ?? '';
+}
+
+/** The train's live route run as `route_id#run_number`, or null when it has
+ *  no RUNNING run. Read from `route_runs_by_train_id`: the route executor owns
+ *  run state, and the controller payload carries no route fields
+ *  (design_new.md "Data Flow To UI"). */
+function routeRunLabel(trainId: string): string | null {
+  const run: any = stateManager?.getRouteRun(trainId);
+  return run && run.route_id ? `${run.route_id}#${run.run_number}` : null;
+}
+
+/** Whether the active environment is Virtual Hardware or Real Hardware, the
+ *  only place an operator may cut one train out (design_new.md "Emergency
+ *  cut-out"). */
+function inHardwareEnvironment(): boolean {
+  const env = window.app?.operationEnvironment;
+  return env === 'virtual_hardware' || env === 'real_hardware';
 }
 
 export class TrainEditorHandler {
@@ -1186,6 +1204,7 @@ export class TrainEditorHandler {
     // nothing detected, so the panel says so and offers removal.
     const presenceUnknown = controller?.presence_unknown === true;
     const atoEngaged = controller?.engaged ?? false;
+    const atoDriving = atoIsDriving(controller, operatorStatus);
     const atoGoBlockedReason = atoGoUnavailableReason(controller, stateManager.getAssignedRouteId(trainId));
     const startRouteBlockedReason = startRouteUnavailableReason(
       controller,
@@ -1261,13 +1280,9 @@ export class TrainEditorHandler {
     const etaText = formatATOEta(controller, clearanceCm, currentSpeed);
 
     // Route metadata.
-    const fullRunId = controller?.route_run_id || null;
-    const planId = fullRunId ? fullRunId.split('#')[0] : train.assigned_route_id || null;
+    const fullRunId = routeRunLabel(trainId);
+    const planId = fullRunId ? fullRunId.split('#')[0] : stateManager.getAssignedRouteId(trainId) || null;
     const runId = fullRunId ? `#${fullRunId.split('#')[1] || ''}` : null;
-    // Live path-acquisition error: present only while the train is route-
-    // assigned but currently has no path (e.g. a Quick Route destination it
-    // cannot actually reach). Cleared once it acquires authority.
-    const pathError = controller?.path_error || null;
     const requiredCab = controller?.ato_info?.required_cab || '—';
     const pathHeading = controller?.ato_info?.path_heading || '—';
     const truncatedPath = pathName ? middleTruncate(pathName, 22) : '—';
@@ -1289,7 +1304,7 @@ export class TrainEditorHandler {
                             ${copyIdButton(trainId, 'Train ID')}
                         </span>
                         <span class="tc-state-badge train-state-display ${trainStateClass}">${trainState.toUpperCase().replace('_', ' ')}</span>
-                        <span id="obc-ato-running-badge" class="tc-running-badge ${atoEngaged ? '' : 'hidden'}">▶ ATO</span>
+                        <span id="obc-ato-running-badge" class="tc-running-badge ${atoDriving ? '' : 'hidden'}">▶ ATO</span>
                         <span id="train-eb-badge" class="tc-eb-badge tc-status-emergency ${emergencyActive ? '' : 'hidden'}">EB ACTIVE</span>
                     </header>
                     <!-- Filled by _refreshWhyStopped: the first gate standing
@@ -1325,7 +1340,6 @@ export class TrainEditorHandler {
                             <dd class="tc-field-value train-ato-destination-display" title="${destinationName || ''}">${destinationName}</dd>
                         </div>
                     </dl>
-                    <div id="train-path-error-banner" class="banner banner-danger tc-banner ${pathError && pathError.text ? '' : 'hidden'}">${pathError && pathError.text ? `⚠ No path: ${pathError.text}` : ''}</div>
                 </section>
 
                 <!-- ZONE 2: TRAIN STATUS — HMI (cab-style display) -->
@@ -1440,8 +1454,9 @@ export class TrainEditorHandler {
                     </div>
 
                     <div class="tc-emergency-row">
-                        <button id="train-emergency-btn" class="tc-eb-btn" type="button">EMERGENCY STOP</button>
-                        <button id="train-emergency-reset-btn" class="tc-eb-reset-btn ${emergencyActive ? '' : 'hidden'}" type="button">Reset</button>
+                        <button id="train-emergency-btn" class="tc-eb-btn" type="button" title="Apply this train's emergency brake">EMERGENCY BRAKE</button>
+                        <button id="train-cut-out-btn" class="tc-eb-btn tc-cut-out-btn ${inHardwareEnvironment() ? '' : 'hidden'}" type="button" title="Cut this train out: its blocks go to 0 V and it stops at once">CUT OUT</button>
+                        <button id="train-emergency-reset-btn" class="tc-eb-reset-btn ${emergencyActive ? '' : 'hidden'}" type="button" title="Release the emergency brake or cut-out once the train has stopped">Release</button>
                     </div>
                 </section>
 
@@ -1802,15 +1817,8 @@ export class TrainEditorHandler {
       // Commit on release
       handleSlider.onchange = async () => {
         const position = handleOrder[parseInt(handleSlider.value)];
-        await executeAction(`Set Handle ${position}`, () => api.setHandle(trainId, position), false);
-
-        // Quick update of OBC display
-        try {
-          const trainResp = await api.getTrain(trainId);
-          this._updateControllerDisplay(trainResp?.controller);
-        } catch (e) {
-          // Ignore errors here, next poll will update
-        }
+        // The reply carries the train's new status, which updates the card.
+        await executeAction(`Set Handle ${position}`, () => api.setHandle(trainId, position));
       };
     }
 
@@ -1844,15 +1852,29 @@ export class TrainEditorHandler {
       };
     }
 
-    // ── EMERGENCY STOP ──
+    // ── EMERGENCY BRAKE, CUT OUT and RELEASE ──
+    // These act on this train only. The layout-wide Emergency stop and Reset
+    // live in the session bar (design_new.md "Emergency cut-out").
     const emergencyBtn = document.getElementById('train-emergency-btn') as HTMLButtonElement | null;
     if (emergencyBtn) {
       emergencyBtn.onclick = async () => {
         try {
-          await executeAction('Emergency Stop', () => api.emergencyBrake(trainId));
+          await executeAction('Emergency brake', () => api.emergencyBrake(trainId));
         } catch (err: any) {
-          console.error('[TrainControl] Emergency toggle failed:', err);
-          showToast(`Emergency: ${err.message}`, 'error', 5000);
+          console.error('[TrainControl] Emergency brake failed:', err);
+          showToast(`Emergency brake: ${err.message}`, 'error', 5000);
+        }
+      };
+    }
+
+    const cutOutBtn = document.getElementById('train-cut-out-btn') as HTMLButtonElement | null;
+    if (cutOutBtn) {
+      cutOutBtn.onclick = async () => {
+        try {
+          await executeAction('Cut out', () => api.activateCutOut(trainId));
+        } catch (err: any) {
+          console.error('[TrainControl] Cut-out failed:', err);
+          showToast(`Cut out: ${err.message}`, 'error', 5000);
         }
       };
     }
@@ -1861,10 +1883,10 @@ export class TrainEditorHandler {
     if (emergencyResetBtn) {
       emergencyResetBtn.onclick = async () => {
         try {
-          await executeAction('Release Emergency', () => api.releaseEmergency(trainId));
+          await executeAction('Release', () => api.releaseEmergency(trainId));
         } catch (err: any) {
-          console.error('[TrainControl] Emergency reset failed:', err);
-          showToast(`Emergency Reset: ${err.message}`, 'error', 5000);
+          console.error('[TrainControl] Emergency release failed:', err);
+          showToast(`Release: ${err.message}`, 'error', 5000);
         }
       };
     }
@@ -1934,8 +1956,7 @@ export class TrainEditorHandler {
     const routeRunBtn = document.getElementById('train-route-run-btn') as HTMLButtonElement | null;
     if (routeRunBtn) {
       routeRunBtn.onclick = () => {
-        const ctrl: any = stateManager?.getController(trainId);
-        const rrid = ctrl?.route_run_id;
+        const rrid = routeRunLabel(trainId);
         if (!rrid) {
           showToast('No active route run for this train', 'warning', 3000);
           return;
@@ -2084,58 +2105,6 @@ export class TrainEditorHandler {
     this._trainId = null;
   }
 
-  /** Update Controller display elements without full panel refresh. */
-  _updateControllerDisplay(controller: any): void {
-    if (!controller) return;
-
-
-    const handlePosition = controller.handle_position || 'N';
-    const powerOn = controller.power_on ?? false;
-    const emergencyActive = controller.eb_active ?? false;
-    const controlMode = controller.control_mode || 'manual';
-    const atoEngaged = controller.engaged ?? false;
-
-    // Update OBC status display
-    const powerDisplay = document.querySelector('.obc-power-display');
-    const modeDisplay = document.querySelector('.obc-mode-display');
-    const handleDisplay = document.querySelector('.obc-handle-display');
-
-    if (powerDisplay) {
-      powerDisplay.textContent = powerOn ? 'ON' : 'OFF';
-      this._replaceVisualClass(powerDisplay, ['power-on', 'power-off'], powerOn ? 'power-on' : 'power-off');
-    }
-
-    if (modeDisplay) {
-      modeDisplay.textContent = controlMode.toUpperCase();
-      this._replaceVisualClass(modeDisplay, ['mode-manual', 'mode-ato'], controlMode === 'manual' ? 'mode-manual' : 'mode-ato');
-    }
-
-    if (handleDisplay) {
-      handleDisplay.textContent = handlePosition;
-      this._replaceVisualClass(handleDisplay, ['handle-power', 'handle-brake', 'handle-neutral', 'handle-eb'], this.getHandleVisualClass(handlePosition));
-    }
-
-    const atoBadge = document.querySelector('#obc-ato-running-badge');
-    if (atoBadge) {
-      if (atoEngaged) {
-        atoBadge.textContent = '▶ ATO RUNNING';
-        atoBadge.classList.remove('hidden');
-        atoBadge.classList.add('badge', 'badge-success', 'text-xs');
-      } else {
-        atoBadge.textContent = '';
-        atoBadge.classList.add('hidden');
-        atoBadge.classList.remove('badge', 'badge-success', 'text-xs');
-      }
-    }
-
-    // Update speed display
-    const speedDisplay = document.querySelector('.train-speed-display');
-    if (speedDisplay && controller.current_speed !== undefined) {
-      const maxSpeed = 100; // Would need train data for actual max
-      speedDisplay.innerHTML = `${controller.current_speed.toFixed(1)} <span class="text-muted">km/h</span>`;
-    }
-  }
-
   async updateTrainControlPanelValues(trainId: string): Promise<void> {
     const panel = document.querySelector(`.train-control-panel[data-train-id="${trainId}"]`);
     if (!panel) return;
@@ -2171,7 +2140,7 @@ export class TrainEditorHandler {
     if (stateEl) {
       this._replaceVisualClass(
         stateEl,
-        ['train-state-off', 'train-state-idle', 'train-state-standby', 'train-state-running', 'train-state-waiting', 'train-state-station', 'train-state-manual'],
+        ['train-state-off', 'train-state-idle', 'train-state-standby', 'train-state-running', 'train-state-waiting', 'train-state-station', 'train-state-manual', 'train-state-calibrating'],
         this.getTrainStateVisualClass(trainState)
       );
       stateEl.innerHTML = `
@@ -2206,7 +2175,6 @@ export class TrainEditorHandler {
       const powerOn = controller.power_on ?? false;
       const controlMode = controller.control_mode || 'manual';
       const handlePosition = controller.handle_position || 'N';
-      const atoEngaged = controller.engaged ?? false;
 
       if (powerDisplay) {
         powerDisplay.textContent = powerOn ? 'ON' : 'OFF';
@@ -2221,19 +2189,6 @@ export class TrainEditorHandler {
       if (handleDisplay) {
         handleDisplay.textContent = handlePosition;
         this._replaceVisualClass(handleDisplay, ['handle-power', 'handle-brake', 'handle-neutral', 'handle-eb'], this.getHandleVisualClass(handlePosition));
-      }
-
-      const atoBadge = panel.querySelector('#obc-ato-running-badge');
-      if (atoBadge) {
-        if (atoEngaged) {
-          atoBadge.textContent = '▶ ATO RUNNING';
-          atoBadge.classList.remove('hidden');
-          atoBadge.classList.add('badge', 'badge-success', 'text-xs');
-        } else {
-          atoBadge.textContent = '';
-          atoBadge.classList.add('hidden');
-          atoBadge.classList.remove('badge', 'badge-success', 'text-xs');
-        }
       }
 
       // Apply OBC accent class to the Task section wrapper.
@@ -2276,9 +2231,9 @@ export class TrainEditorHandler {
         });
       }
 
-      // Plan ID and Run ID — derived from controller.route_run_id.
-      const fullRunId = controller.route_run_id || null;
-      const livePlanId = fullRunId ? fullRunId.split('#')[0] : train.assigned_route_id || null;
+      // Plan ID and Run ID — from the route executor's run summary.
+      const fullRunId = routeRunLabel(train.id);
+      const livePlanId = fullRunId ? fullRunId.split('#')[0] : stateManager.getAssignedRouteId(train.id) || null;
       const liveRunSuffix = fullRunId ? `#${fullRunId.split('#')[1] || ''}` : null;
       const planEl = panel.querySelector('#train-plan-id-val') as HTMLElement | null;
       if (planEl) {
@@ -2289,20 +2244,6 @@ export class TrainEditorHandler {
       if (runEl) {
         runEl.textContent = liveRunSuffix || '—';
         runEl.title = fullRunId || '';
-      }
-
-      // Path-acquisition error banner — appears when the train is route-
-      // assigned but cannot acquire a path, clears once it has authority.
-      const pathErrorEl = panel.querySelector('#train-path-error-banner') as HTMLElement | null;
-      if (pathErrorEl) {
-        const livePathError = controller.path_error;
-        if (livePathError && livePathError.text) {
-          pathErrorEl.textContent = `⚠ No path: ${livePathError.text}`;
-          pathErrorEl.classList.remove('hidden');
-        } else {
-          pathErrorEl.textContent = '';
-          pathErrorEl.classList.add('hidden');
-        }
       }
 
       const handleSlider = document.getElementById('train-handle-slider') as HTMLInputElement | null;
@@ -2392,19 +2333,19 @@ export class TrainEditorHandler {
       if (powerVal) powerVal.textContent = String(pctValue);
       if (powerFill) powerFill.style.width = `${pctValue}%`;
 
-      // ATO running badge restyle
-      const atoBadgeEl = document.querySelector('#obc-ato-running-badge');
+      // The ATO badge shows while ATO drives the train — `ato_status` is
+      // RUNNING, HELD or DWELLING — not merely while it is engaged.
+      const atoBadgeEl = panel.querySelector('#obc-ato-running-badge');
       if (atoBadgeEl) {
-        if (atoEngaged) {
-          atoBadgeEl.textContent = '▶ ATO';
-          atoBadgeEl.classList.remove('hidden', 'badge', 'badge-success', 'text-xs');
-          atoBadgeEl.classList.add('tc-running-badge');
-        } else {
-          atoBadgeEl.textContent = '';
-          atoBadgeEl.classList.add('hidden');
-          atoBadgeEl.classList.remove('badge', 'badge-success', 'text-xs');
-        }
+        atoBadgeEl.classList.toggle(
+          'hidden',
+          !atoIsDriving(controller, stateManager?.getOperatorStatus(train.id))
+        );
       }
+
+      // Cut out is offered only in Virtual Hardware and Real Hardware.
+      const cutOutBtn = panel.querySelector('#train-cut-out-btn');
+      if (cutOutBtn) cutOutBtn.classList.toggle('hidden', !inHardwareEnvironment());
 
       // ── HMI read-only cells ──
       const simTimeEl = panel.querySelector('#hmi-time');
@@ -2453,9 +2394,8 @@ export class TrainEditorHandler {
       const cabRunEl = panel.querySelector('#hmi-cab-run');
       if (cabRunEl) {
         // There is no operator cab: the head end follows the live reservation.
-        const liveRunSuffix = (controller.route_run_id || '').includes('#')
-          ? `#${controller.route_run_id.split('#')[1] || ''}`
-          : '';
+        const liveRunLabel = routeRunLabel(train.id);
+        const liveRunSuffix = liveRunLabel ? `#${liveRunLabel.split('#')[1] || ''}` : '';
         cabRunEl.textContent = liveRunSuffix ? `RUN ${liveRunSuffix}` : '';
       }
 
@@ -2570,7 +2510,8 @@ export class TrainEditorHandler {
       powerOnBtn.classList.toggle('active', powerOn);
     }
     if (powerOffBtn) {
-      powerOffBtn.disabled = !powerOn;
+      // Power-off is accepted only while the train is stopped.
+      powerOffBtn.disabled = !powerOn || !(controller?.is_stopped ?? true);
       powerOffBtn.classList.toggle('active', !powerOn);
     }
 

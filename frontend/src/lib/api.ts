@@ -1508,6 +1508,20 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
+  /**
+   * Cut one train out (canonical eb.activate_cut_out()): its blocks go to 0 V
+   * and it stops at once with no brake curve. The operator path is accepted
+   * only in Virtual Hardware and Real Hardware (design_new.md "Emergency
+   * cut-out"); `releaseEmergency` releases it like the emergency brake.
+   */
+  async activateCutOut(trainId: string): Promise<any> {
+    return this._request(
+      `/trains/${encodeURIComponent(trainId)}/activate-cut-out`,
+      { method: 'POST' },
+      'activateCutOut'
+    );
+  }
+
   async releaseEmergency(trainId: string): Promise<any> {
     return this._request(
       `/trains/${encodeURIComponent(trainId)}/release-emergency`,
@@ -2003,7 +2017,10 @@ export class API implements LayoutDataClient, SimClient {
   }
 
   /**
-   * Assign/unassign a train to/from a route.
+   * Assign/unassign a train to/from a route. A train already on another
+   * route needs no extra flag: its current run stops at the end of its
+   * reservation and the new route takes over (design_new.md "Route
+   * assignment writers").
    * @param routeId - Route ID or null to unassign
    * @param options.startMode - Optional per-assignment start mode
    *     ('first' | 'nearest' | 'specific'); omit to use the route default.
@@ -2012,11 +2029,10 @@ export class API implements LayoutDataClient, SimClient {
   async assignRoute(
     trainId: string,
     routeId: string | null,
-    options: { force?: boolean; startMode?: string; startTaskIndex?: number | null } = {}
+    options: { startMode?: string; startTaskIndex?: number | null } = {}
   ): Promise<any> {
     const body: Record<string, unknown> = {
       route_id: routeId,
-      force: options.force || false,
     };
     if (options.startMode !== undefined) {
       body.start_mode = options.startMode;

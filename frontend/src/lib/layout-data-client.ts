@@ -202,7 +202,7 @@ export interface SimClient {
   assignRoute(
     trainId: string,
     routeId: string | null,
-    options?: { force?: boolean; startMode?: string; startTaskIndex?: number | null }
+    options?: { startMode?: string; startTaskIndex?: number | null }
   ): Promise<any>;
 
   // --- Speed profiles (train accel/brake curves) ---

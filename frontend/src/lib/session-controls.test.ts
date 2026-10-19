@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { sessionControls, sessionHint, sessionLabel } from './session-controls';
+import {
+  activateUnavailableReason,
+  sessionControls,
+  sessionHint,
+  sessionLabel,
+  setupToolsAllowed,
+} from './session-controls';
 
 describe('sessionLabel', () => {
   it('names each state, with the halt reason', () => {
@@ -57,5 +63,29 @@ describe('sessionControls', () => {
     );
     expect(c.playPauseEnabled).toBe(false);
     expect(c.resetVisible).toBe(true);
+  });
+});
+
+describe('setupToolsAllowed', () => {
+  it('allows the output-driving tools only in Setup', () => {
+    expect(setupToolsAllowed({ value: 'setup', halt_reason: null })).toBe(true);
+    expect(setupToolsAllowed({ value: 'live', halt_reason: null })).toBe(false);
+    expect(setupToolsAllowed({ value: 'halted', halt_reason: 'not_activated' })).toBe(false);
+    expect(setupToolsAllowed(null)).toBe(false);
+  });
+});
+
+describe('activateUnavailableReason', () => {
+  it('refuses Activate while Live or after a fatal track conflict', () => {
+    expect(activateUnavailableReason({ value: 'live', halt_reason: null })).not.toBeNull();
+    expect(activateUnavailableReason({ value: 'halted', halt_reason: 'runtime_failure' })).not.toBeNull();
+  });
+
+  it('offers Activate from Setup, Paused and the other halts', () => {
+    expect(activateUnavailableReason({ value: 'setup', halt_reason: null })).toBeNull();
+    expect(activateUnavailableReason({ value: 'paused', halt_reason: null })).toBeNull();
+    for (const reason of ['not_activated', 'hardware_failure', 'layout_emergency_cut_out']) {
+      expect(activateUnavailableReason({ value: 'halted', halt_reason: reason })).toBeNull();
+    }
   });
 });

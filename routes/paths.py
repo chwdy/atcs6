@@ -52,7 +52,7 @@ def register(app, state: AppState) -> None:
         The handler never calls PathDispatcher.create_path / extend_path
         directly. It creates a RouteMode.ONE_OFF route with a single stop task
         and assigns the train through
-        `train_service.assign_route(force=True)` — which writes the Action
+        `train_service.assign_route(...)` — which writes the Action
         route-abort latch for any current run so Action tears it down, and the
         next eligible Plan builds the path, passing the route's
         `manual_override` down the acquisition chain. Returns the new route_id.
@@ -82,9 +82,7 @@ def register(app, state: AppState) -> None:
             manual_override=manual_override,
         )
         try:
-            train_service.assign_route(
-                state, train_id, route_id=route.route_id, force=True
-            )
+            train_service.assign_route(state, train_id, route_id=route.route_id)
         except Exception:
             if executor is not None:
                 executor.request_route_deletion(route.route_id)
@@ -363,7 +361,7 @@ def register(app, state: AppState) -> None:
                 # design_new.md, "Route Edit And Reconciliation" — operator retarget: abort the current run and
                 # assign a fresh one-off route toward the new destination. The
                 # handler must NOT call PathDispatcher.extend_path inline;
-                # `assign_route(force=True)` writes the route-abort latch and the
+                # `assign_route(...)` writes the route-abort latch and the
                 # next eligible Plan grows the path toward the new target.
                 train_id = path.train_id
                 if not train_id:

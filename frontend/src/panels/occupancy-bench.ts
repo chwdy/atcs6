@@ -31,20 +31,17 @@
  * sign on top of the rail binding's own `reversed` flag and never writes the
  * configuration, so nothing here can leave the layout mis-wired behind you.
  *
- * The bench TAKES the controller (see hardware/occupancy_bench.py): while it is
- * open the runtime is not detecting, attributing, or de-energizing, which is the
- * whole point — with the environment live, the occupancy loop drives every block
- * a bench voltage was just set on back to 0 V about twenty times a second.
- * Closing the panel gives the device back AND puts the environment back the way
- * it was found: the handover is how this panel gets a steady rig to look at, not
- * a mode the operator asked to be left in.
+ * The bench is a Setup tool (design_new.md "Hardware setup", Occupancy bench):
+ * it opens only in Setup, where it owns the outputs while the detectors keep
+ * being read. So the layout beside it goes on showing what the app believes,
+ * and comparing the two is the diagnosis. Closing it never activates anything.
  *
  * Window chrome (drag, resize, z-order, persistence) is owned by FloatingWindow
  * (lib/window-manager.ts); this file builds and updates only its own content.
  */
 
 import { api } from '../lib/api';
-import { setBenchOccupancyMirror } from '../lib/bench-occupancy-mirror';
+import { setupToolsAllowed, SETUP_TOOL_HINT } from '../lib/session-controls';
 import { FloatingWindow, windowManager, type WindowGeometry } from '../lib/window-manager';
 import {
     browserWindowPersistenceEnv,
@@ -678,13 +675,17 @@ class OccupancyBench {
 
     // ----- bench lifecycle -------------------------------------------------
 
-    /** Load the layout, take the controller, and start polling. */
+    /** Load the layout, open the bench, and start polling. The bench is a
+     *  Setup tool, so outside Setup it says so instead of asking the server. */
     private async _enter(): Promise<void> {
         this._busy = true;
         this._error = null;
         this._render();
         try {
             if (!this._schematic) await this._loadSchematic();
+            if (!setupToolsAllowed(window.app?.sessionState)) {
+                throw new Error(`The Occupancy Bench ${SETUP_TOOL_HINT.charAt(0).toLowerCase()}${SETUP_TOOL_HINT.slice(1)}`);
+            }
             const result = await api.openOccupancyBench();
             if (result?.ok === false) throw new Error(result.error || 'could not open the bench');
             this._applyStatus(result);
@@ -712,35 +713,11 @@ class OccupancyBench {
         if (!this._open) return;
         this._open = false;
         this._running = false;
-        // Before the round trip, not after: the overlay is this panel's reading
-        // of a device it is in the middle of letting go, and a close that
-        // hangs or throws must not leave the layout painted from it.
-        this._publishMirror(false);
         try {
             await api.closeOccupancyBench();
         } catch {
             /* the idle timeout is the backstop */
         }
-    }
-
-    /** Push the last read onto the layout, or take the overlay down.
-     *
-     *  Every block the bench reports on is published, clear ones included: the
-     *  overlay stands in for detection that is not running, so a block the
-     *  detectors call free has to read free rather than keep the color the
-     *  runtime committed before the handover. Blocks the bench says nothing
-     *  about are simply absent, and keep painting from the server.
-     */
-    private _publishMirror(active: boolean): void {
-        if (!active) {
-            setBenchOccupancyMirror(null);
-            return;
-        }
-        setBenchOccupancyMirror(
-            Object.entries(this._states).map(
-                ([blockId, state]) => [blockId, !!state?.overall] as const,
-            ),
-        );
     }
 
     private async _loadSchematic(): Promise<void> {
@@ -939,11 +916,6 @@ class OccupancyBench {
                 this._running = false;
                 this._stopPolling();
                 this._error = 'the bench released the controller — reopen it';
-                // The overlay outlived its source. Drop it here rather than
-                // waiting for a close that is no longer coming: a layout still
-                // painted from a bench that let go of the device is showing
-                // readings nothing is taking any more.
-                this._publishMirror(false);
             } else if (payload?.ok === false) {
                 this._error = payload.error || 'the bench read failed';
             } else {
@@ -951,7 +923,6 @@ class OccupancyBench {
                 this._peak = payload?.peak ?? null;
                 this._applyStatus(payload, !this._busy);
                 this._error = null;
-                this._publishMirror(true);
             }
             this._render();
         } catch (err) {
@@ -993,8 +964,8 @@ class OccupancyBench {
         this._statusEl.hidden = false;
         this._statusEl.className = 'bench-status bench-status-info';
         this._statusEl.textContent =
-            'The bench holds the controller — the runtime is not detecting. ' +
-            'Closing this window gives it back.';
+            'The bench holds every bound block at one voltage. The layout beside it ' +
+            'still shows what the app believes, so compare the two. Closing this window ends the bench.';
     }
 
     private _renderStage(): void {

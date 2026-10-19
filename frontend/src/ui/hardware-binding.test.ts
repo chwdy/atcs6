@@ -102,8 +102,14 @@ describe('block hardware section', () => {
   });
 
   it('disables the track Test until both rails are wired', () => {
-    expect(section(cfg({ block_track: {} }))).toMatch(/hw-track-test" disabled/);
-    expect(section(cfg())).not.toMatch(/hw-track-test" disabled/);
+    const setup = { session_state: { value: 'setup', halt_reason: null } };
+    expect(section(cfg({ block_track: {}, ...setup }))).toMatch(/hw-track-test" disabled/);
+    expect(section(cfg(setup))).not.toMatch(/hw-track-test" disabled/);
+  });
+
+  it('offers the track Test only in Setup, where Setup tools run', () => {
+    const html = section(cfg({ session_state: { value: 'live', halt_reason: null } }));
+    expect(html).toMatch(/hw-track-test" disabled title="Runs only in Setup/);
   });
 
   it('splits the two occupancy sources by port kind and offers both sensors', () => {

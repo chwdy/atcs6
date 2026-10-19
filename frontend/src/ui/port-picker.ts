@@ -17,6 +17,7 @@
  */
 import { api } from '../lib/api';
 import { showToast } from '../lib/toast';
+import { setupToolsAllowed, SETUP_TOOL_HINT } from '../lib/session-controls';
 
 /** One named target the picker must fill (a rail, a coil, a detector). */
 export interface PickerSlot {
@@ -315,6 +316,11 @@ export function pickPorts(opts: PickPortsOptions): Promise<Record<string, Picked
       if (opts.direction !== 'output') return;
       const cell = (e.target as HTMLElement).closest<HTMLElement>('.pp-line');
       if (!cell) return;
+      // A pulse drives an output, so it is a Setup tool.
+      if (!setupToolsAllowed(window.app?.sessionState)) {
+        showToast(`Pulse: ${SETUP_TOOL_HINT}`, 'warning', 3500);
+        return;
+      }
       const chipId = cell.dataset.chip!;
       const line = Number(cell.dataset.line);
       cell.classList.add('is-pulsing');
