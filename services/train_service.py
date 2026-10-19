@@ -80,7 +80,7 @@ def _runtime_lock(state: AppState):
         yield
 
 
-def operator_command(operation: str):
+def operator_command(operation: str, refuse_ghost: bool = True):
     """Run an operator train command between ticks (design_new.md
     "Operator-command processing slot").
 
@@ -89,8 +89,12 @@ def operator_command(operation: str):
         (design_new.md "Unidentified trains", Never driven);
       * holds ``state.simulation_lock`` — the runtime loop holds the same lock
         for every whole tick, so the command never runs inside one;
-      * refuses a ghosted train (``presence_unknown``), which accepts no
-        command until detection returns;
+      * refuses a ghosted train (``presence_unknown``) before the command's own
+        gates, unless ``refuse_ghost`` is False. The two EB commands,
+        ``eb.activate()`` and ``eb.activate_cut_out()``, pass False: emergency
+        braking stays available on every train at all times (design_new.md
+        "A ghosted train refuses commands, except EB"), so they keep their own
+        gates only;
       * runs the command, reports its command-result event once through
         ``controller.commands.report_result``, and returns its ``CommandResult``.
     """
@@ -105,7 +109,7 @@ def operator_command(operation: str):
                 )
             with _runtime_lock(state):
                 controller = _controller(state, train)
-                if getattr(controller, "presence_unknown", False):
+                if refuse_ghost and getattr(controller, "presence_unknown", False):
                     result = CommandResult(
                         success=False, message=_ghost_refusal_message(train_id)
                     )
@@ -691,7 +695,7 @@ def set_handle(state: AppState, train_id: str, *, position: Any) -> CommandResul
     )
 
 
-@operator_command("eb.activate")
+@operator_command("eb.activate", refuse_ghost=False)
 def emergency_brake(state: AppState, train_id: str) -> CommandResult:
     """Raise the operator emergency brake via ``eb.activate()``.
 
@@ -703,13 +707,13 @@ def emergency_brake(state: AppState, train_id: str) -> CommandResult:
     return _controller(state, require_train(state, train_id)).eb.activate()
 
 
-@operator_command("activate_cut_out_cmd")
+@operator_command("activate_cut_out_cmd", refuse_ghost=False)
 def activate_cut_out(state: AppState, train_id: str) -> CommandResult:
     """Raise an operator-initiated emergency cut-out via the canonical
     ``commands.activate_cut_out_cmd()`` command (design_new.md "Emergency
     cut-out").
 
-    The operator-initiated cut-out is accepted only while the selected operating
+    The operator-initiated cut-out is accepted only while the active operating
     environment is Virtual Hardware or Real Hardware; in Simulation it is not
     offered — only the emergency brake exists — because there is no physical
     locomotive to stop faster than the modelled brake curve. The hardware-only
@@ -916,15 +920,19 @@ def _require_calibration_ready(
 
 
 def _take_control_for_calibration(controller) -> None:
-    """The writes opening a run makes before the run opens (design_new.md
-    "Speed calibration", Opening a run takes control of the train): the
-    `power_on_cmd()` power-up when the train is OFF, then the
-    `set_mode("manual")` write. Each is the write its own command makes, so
-    opening adds no effect beyond the run itself. The readiness check has
-    already confirmed the train is stopped, so both are accepted."""
+    """The two operator commands opening a run calls before the run opens
+    (design_new.md "Speed calibration", Opening a run takes control of the
+    train): `power_on_cmd()` when the train is OFF, then `set_mode("manual")`.
+    Each is the write its own command makes, so opening adds no effect beyond
+    the run itself, and each emits its own command-result event. The readiness
+    check has already confirmed the train is stopped, so both are accepted."""
     if not controller.powered:
-        controller.commands.power_on_cmd()
-    controller.commands.set_mode("manual")
+        controller.commands.report_result(
+            "power_on_cmd", controller.commands.power_on_cmd()
+        )
+    controller.commands.report_result(
+        "set_mode", controller.commands.set_mode("manual")
+    )
 
 
 def calibrate_train(

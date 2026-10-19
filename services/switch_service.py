@@ -185,6 +185,32 @@ def delete_switch(state: AppState, switch_id: str) -> bool:
     return True
 
 
+#: The reason an operator throw is refused while the session is Halted for
+#: `runtime_failure` (design_new.md, `PUT /api/switches/<switch_id>/state`).
+RUNTIME_HALTED_REASON = "runtime halted"
+
+
+def runtime_halt_refusal(state: AppState) -> Optional[str]:
+    """The refusal reason for an operator switch throw, or None.
+
+    While the session is Halted for `runtime_failure` an operator throw is
+    refused, read through `AppState.session_state()` (design_new.md "Session
+    state", readers; `PUT /api/switches/<switch_id>/state`): a fatal conflict
+    halted the runtime and nothing may drive a coil until the operator clears
+    it. A throw while Halted for `layout_emergency_cut_out` is not refused
+    here: the environment stays active, so the operating-throw gate accepts it.
+    Every operator throw entry point checks this before calling
+    `SwitchManager.request_position_change(...)`.
+    """
+    from enums import HaltReason
+
+    if state.sim_controller is None:
+        return None
+    if state.session_state().halt_reason is HaltReason.RUNTIME_FAILURE:
+        return RUNTIME_HALTED_REASON
+    return None
+
+
 def request_position_change(
     state: AppState,
     switch_id: str,
@@ -223,9 +249,13 @@ def request_position_change(
 
     resolved_command_id = command_id or str(uuid.uuid4())
 
-    success, message = switch_manager.request_position_change(
-        switch_id, new_state, manual_override=bool(manual_override)
-    )
+    refusal = runtime_halt_refusal(state)
+    if refusal is not None:
+        success, message = False, refusal
+    else:
+        success, message = switch_manager.request_position_change(
+            switch_id, new_state, manual_override=bool(manual_override)
+        )
 
     _emit_command_result(state, switch_id, resolved_command_id, success, message)
 

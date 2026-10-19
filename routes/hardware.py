@@ -469,10 +469,16 @@ def register(app, state: AppState) -> None:
             # operating throw IS the test. The operator explicitly asked for
             # this alignment, so a `manual` switch participates — the same
             # override the manual throw controls send.
+            from services.switch_service import runtime_halt_refusal
+
             with state.simulation_lock:
-                ok, message = switch_manager.request_position_change(
-                    switch_id, position, manual_override=True
-                )
+                refusal = runtime_halt_refusal(state)
+                if refusal is not None:
+                    ok, message = False, refusal
+                else:
+                    ok, message = switch_manager.request_position_change(
+                        switch_id, position, manual_override=True
+                    )
         else:
             # Commissioning: pulse the coils ourselves so there is something to
             # watch, then record that alignment on the model.

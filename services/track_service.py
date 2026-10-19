@@ -166,10 +166,17 @@ def update_track(
             # SwitchManager workflow (validate locks/occupancy/protection, write
             # Switch.position, notify BlockManager, drive the power throw +
             # continuity check) per design_new.md "Canonical `Switch.position` mutation workflow" — nothing writes
-            # Switch.position directly while a runtime surface exists.
-            success, message = switch_manager.request_position_change(
-                track.switch_id, int(data["switch_state"])
-            )
+            # Switch.position directly while a runtime surface exists. An
+            # operator throw is refused while Halted for `runtime_failure`.
+            from services.switch_service import runtime_halt_refusal
+
+            refusal = runtime_halt_refusal(state)
+            if refusal is not None:
+                success, message = False, refusal
+            else:
+                success, message = switch_manager.request_position_change(
+                    track.switch_id, int(data["switch_state"])
+                )
             if not success:
                 return {"status": "switch_change_rejected", "reason": message}
         elif switch_entity is not None and switch_entity.is_locked():

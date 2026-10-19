@@ -4,7 +4,8 @@ design_new.md "Operator-command processing slot": an operator command runs the
 moment the API calls it, while the request holds `AppState.simulation_lock`;
 it returns `{success, reason}`, the reply carries the train's status payload on
 acceptance and refusal alike, the command reports one command-result event, and
-a ghosted train refuses every command. "Driver input acceptance": `set_handle(EB)`
+a ghosted train refuses every command except EB (`eb.activate()` and
+`eb.activate_cut_out()`). "Driver input acceptance": `set_handle(EB)`
 is accepted only on a manual train; the operator EB for every train is
 `eb.activate()`, served at `/emergency-brake`.
 """
@@ -148,3 +149,39 @@ def test_the_emergency_brake_route_raises_eb(state):
     body = response.get_json()
     assert body["success"] is True
     assert body["controller"]["train_status"] == "eb"
+
+
+def test_a_ghosted_train_refuses_commands_but_accepts_the_emergency_brake(state):
+    """design_new.md "Operator-command processing slot": EB stays available on
+    every train at all times, so a ghosted train keeps only EB's own gate."""
+    train_id = _train_id(state)
+    controller = state.sim_controller.get_or_create_controller(train_id)
+    controller.presence_unknown = True
+
+    refused = train_service.ato_stop(state, train_id)
+    braked = train_service.emergency_brake(state, train_id)
+
+    assert refused.success is False
+    assert braked.success is True
+    assert controller.eb.active is True
+
+
+def test_opening_a_calibration_run_reports_both_commands():
+    """design_new.md "Opening a run takes control of the train": each of the
+    two commands opening calls emits its own command-result event."""
+    from types import SimpleNamespace
+
+    reported = []
+    commands = SimpleNamespace(
+        power_on_cmd=lambda: "power-on result",
+        set_mode=lambda mode: f"set_mode({mode}) result",
+        report_result=lambda operation, result: reported.append((operation, result)),
+    )
+    controller = SimpleNamespace(powered=False, commands=commands)
+
+    train_service._take_control_for_calibration(controller)
+
+    assert reported == [
+        ("power_on_cmd", "power-on result"),
+        ("set_mode", "set_mode(manual) result"),
+    ]

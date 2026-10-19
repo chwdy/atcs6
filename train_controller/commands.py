@@ -183,20 +183,23 @@ class OperatorCommands:
         """Operator-initiated emergency cut-out (design_new.md "Emergency
         cut-out", The operator-initiated path is gated to hardware environments).
 
-        The operator-initiated cut-out is accepted only while the selected
-        operating environment is Virtual Hardware or Real Hardware; in Simulation
-        it is not offered — only the emergency brake exists — because there is no
-        physical locomotive to stop faster than the modelled brake curve and no
-        output boundary to de-energize. When accepted it runs
-        `eb.activate_cut_out()`. That method itself carries no environment gate,
-        so the cut-out request Observe latches on an overrun is applied by the
-        drain in every environment; this operator gate is the one place the
-        hardware-only rule lives.
+        The operator-initiated cut-out is accepted only while the active
+        operating environment (`SimulationController.operation_mode`, the doc's
+        `active_environment`) is Virtual Hardware or Real Hardware. It reads the
+        active environment, not the selected one, because the gate is about the
+        run the session is driving now. In Simulation it is not offered — only
+        the emergency brake exists — because there is no physical locomotive to
+        stop faster than the modelled brake curve and no output boundary to
+        de-energize. When accepted it runs `eb.activate_cut_out()`. That method
+        itself carries no environment gate, so the cut-out request Observe
+        latches on an overrun is applied by the drain in every environment; this
+        operator gate is the one place the hardware-only rule lives.
         """
-        import operation_environment
         from enums import OperationMode
 
-        if operation_environment.get_selected() is OperationMode.SIMULATION:
+        sim_controller = getattr(self._c, "simulation_controller", None)
+        active = getattr(sim_controller, "operation_mode", None)
+        if active not in (OperationMode.VIRTUAL_HARDWARE, OperationMode.REAL_HARDWARE):
             return CommandResult(
                 False, "Emergency cut-out is only available on a hardware environment"
             )

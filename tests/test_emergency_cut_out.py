@@ -128,23 +128,48 @@ def test_serialization_round_trips_cut_out():
     assert restored.eb.cut_out is True
 
 
-def test_operator_cut_out_is_gated_to_hardware(monkeypatch):
+class _ActiveEnvironment:
+    """Stands in for the SimulationController the gate reads `operation_mode`
+    (the doc's `active_environment`) from."""
+
+    def __init__(self, mode):
+        self.operation_mode = mode
+
+
+def test_operator_cut_out_is_gated_to_hardware():
     _network, controller = _make_powered_controller()
 
     # Simulation: the operator-initiated cut-out is not offered.
-    monkeypatch.setattr(operation_environment, "_selected", OperationMode.SIMULATION)
+    controller.simulation_controller = _ActiveEnvironment(OperationMode.SIMULATION)
     result = controller.commands.activate_cut_out_cmd()
     assert result.success is False
     assert controller.eb.cut_out is False
 
     # Virtual Hardware: accepted.
-    monkeypatch.setattr(
-        operation_environment, "_selected", OperationMode.VIRTUAL_HARDWARE
-    )
+    controller.simulation_controller = _ActiveEnvironment(OperationMode.VIRTUAL_HARDWARE)
     result = controller.commands.activate_cut_out_cmd()
     assert result.success
     assert controller.eb.active is True
     assert controller.eb.cut_out is True
+
+
+def test_operator_cut_out_reads_the_active_environment_not_the_selected_one(
+    monkeypatch,
+):
+    """design_new.md "Emergency cut-out": the gate reads the run the session is
+    driving now, so selecting another environment changes nothing until it is
+    activated."""
+    _network, controller = _make_powered_controller()
+
+    monkeypatch.setattr(
+        operation_environment, "_selected", OperationMode.VIRTUAL_HARDWARE
+    )
+    controller.simulation_controller = _ActiveEnvironment(OperationMode.SIMULATION)
+    assert controller.commands.activate_cut_out_cmd().success is False
+
+    monkeypatch.setattr(operation_environment, "_selected", OperationMode.SIMULATION)
+    controller.simulation_controller = _ActiveEnvironment(OperationMode.REAL_HARDWARE)
+    assert controller.commands.activate_cut_out_cmd().success is True
 
 
 def _make_sim_with_train():
