@@ -590,9 +590,9 @@ default the user did not object to. Any decision can be reopened.
      between ticks under the lock, `CALIBRATING`, EB keeps the mode, Start
      route, the read models in `operator_status_by_train_id`, and the panel
      (Start route button, pending actions, the hold-reason banner).
-     `/why-stopped` is gone. Still open: the hold-reason table has no row for
-     an operating environment that is not active, so a train in that state
-     reads `no_reservation`; that row belongs with the session state (B3).
+     `/why-stopped` is gone. The hold-reason gap for an operating environment
+     that is not active (a train read `no_reservation`) is closed in the doc
+     by B3: such a train reads `halted` with `not_activated`.
    - **Calibrating a locomotive** second (B2).
      Doc written 2026-10-18: opening a run takes control of the train (no Take
      control), commands refused while `CALIBRATING`, one list in **What ends a
@@ -606,6 +606,38 @@ default the user did not object to. Any decision can be reopened.
    - **The session state, hardware setup, the kill switch and Hold all** third: B3, B4,
      and the B5 work for question 1. This can run in parallel with calibration, because it touches
      different code.
+     Doc written 2026-10-18. Rulings from the user that day:
+     - The value is the **session state**: Setup / Live / Paused / **Halted**. "Halted"
+       replaces the proposal's "Stopped", because the doc already uses "stopped" for a
+       session whose authoring steps do not run. Halted always carries a reason:
+       `layout_emergency_cut_out`, `hardware_failure`, `runtime_failure` or `not_activated`.
+     - A hardware environment that is not active, with no failure latched, reads Halted
+       for `not_activated`. Setup is only the state the operator enters on purpose.
+     - Recovery from a hardware failure is Activate alone. A successful hardware
+       activation clears `hardware_failure`. The clear endpoint,
+       `clear_hardware_failure()` and both activation-generation counters are gone.
+     - Boot activates no hardware environment, so a hardware session boots Halted for
+       `not_activated`. Simulation is activated at boot and boots Paused.
+
+     What the doc now says: **Session state** (derivation order and transition table, read
+     through `AppState.session_state()`); "running" means Live; `simulation_running` is the
+     Play/Pause bit, which only Play/Pause, Activate, boot and the structural pauses write;
+     the halts, the cut-out and Setup each have their own flag (`setup_active`,
+     `layout_cut_out_active`). Activate is the one way into Live from Setup or a halt. Play/Pause
+     only in Simulation. The layout emergency cut-out works in every environment: it forces every
+     train's speed to `0`, cancels every live path directly, and cuts every powered train out.
+     **Reset** releases them all. **Hold all** sends ATO stop to every ATO train. Setup is entered
+     with `POST /api/operation/setup` (from Live it runs the cut-out first). The commissioning
+     session and the occupancy bench are tools inside it, and closing them never activates.
+     Hold reason question 1 is three rows (`halted`, `setup`, `paused`), and those rows apply
+     whenever the session is stopped, even to a train frozen with speed still stored.
+
+     Still open for the code phase (gap analysis next): `AppState.session_state()`, the two new
+     flags, the halt entries no longer writing `simulation_running`, the new endpoints
+     (`/api/operation/setup`, `/api/simulation/reset`, `/api/simulation/hold-all`), the cut-out
+     in Simulation, boot behaviour, the bench and commissioning as Setup tools, the hold-reason
+     rows, and the detectors being read in Setup (already in the doc for commissioning; the code
+     returns early while no environment is active).
 4. Write Part C rule 2 into `design_new.md` last, and move the code to it in stages.
 5. After each doc change, run a `gap-analysis` on that area and fix the code phase by phase,
    keeping `./run_all_tests.sh` green between phases.
@@ -621,10 +653,11 @@ in `design_new.md` until it is agreed.
 - **Session state** — the one operator-facing value Setup / Live / Paused / Stopped, where
   Stopped carries a reason (B3). It sits over the existing `environment_active`,
   `simulation_running`, `hardware_failure` and `failed_runtime`. It does not rename them.
+  Agreed 2026-10-18 with "Halted" in place of "Stopped" (see section 7).
 - **Reset** — the one layout-wide action that leaves Stopped after a layout emergency
-  cut-out (B4).
+  cut-out (B4). Agreed 2026-10-18.
 - **Hold all** — the layout-wide action that sends ATO stop to every train in ATO. Those
-  trains keep their reservations, and each one resumes with Go (B4).
+  trains keep their reservations, and each one resumes with Go (B4). Agreed 2026-10-18.
 - **Hold reason** — the reason the UI shows for a train that is not moving: the first of
   the four answers that says no, with that answer's own reason (A2). It extends the idea
   of the existing `speed_limit_reason` from the ATC limit to all four questions.
