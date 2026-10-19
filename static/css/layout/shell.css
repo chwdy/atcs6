@@ -144,9 +144,13 @@ textarea {
 }
 
 /* ---- Primary CTA: Play / Pause (the one filled accent button) ---- */
+.app-header #btn-play-pause {
+    width: var(--control-height-sm);
+    padding: 0;
+    justify-content: center;
+}
+
 .app-header #btn-play-pause.btn-primary {
-    min-width: 84px;
-    padding: 0 16px;
     background-color: var(--accent-color);
     color: #fff;
     border: 1px solid var(--accent-color);
@@ -161,6 +165,58 @@ textarea {
 
 .app-header [hidden] {
     display: none !important;
+}
+
+/* ---- Session state chip — the header's one answer to "is the layout
+   live?" (design_new.md "Session state"). Live reads success; a halt reads
+   danger only for a failure or Emergency stop; Paused, Setup and
+   not-activated stay neutral. A long halt label is cut with an ellipsis; the
+   full label and the way back are in the tooltip. ---- */
+.session-chip {
+    display: inline-flex;
+    align-items: center;
+    height: var(--control-height-sm);
+    max-width: 180px;
+    padding: 0 8px;
+    margin-right: 8px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    color: var(--text-secondary);
+    font-size: var(--font-size-value);
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 1;
+}
+
+.session-chip[data-state="live"] {
+    color: var(--success-color);
+    border-color: var(--success-color);
+}
+
+.session-chip[data-state="setup"] {
+    color: var(--info-color);
+    border-color: var(--info-color);
+}
+
+.session-chip[data-halt="layout_emergency_cut_out"],
+.session-chip[data-halt="hardware_failure"],
+.session-chip[data-halt="runtime_failure"] {
+    color: var(--danger-color);
+    border-color: var(--danger-color);
+}
+
+@media (max-width: 1360px) {
+    .session-chip {
+        max-width: 120px;
+    }
+}
+
+@media (max-width: 1240px) {
+    .session-chip {
+        max-width: 72px;
+    }
 }
 
 /* ---- Speed presets — segmented control ---- */
@@ -178,7 +234,7 @@ textarea {
 
 .speed-btn {
     height: 100%;
-    padding: 0 11px;
+    padding: 0 8px;
     background: transparent;
     border: none;
     border-radius: 0;

@@ -335,8 +335,6 @@ class App {
     const noun = runtimeNoun(network);
     const modeBtn = document.getElementById('mode-sim');
     if (modeBtn && modeBtn.textContent !== noun) modeBtn.textContent = noun;
-    const playBtn = document.getElementById('btn-play-pause');
-    if (playBtn) playBtn.setAttribute('title', `Start/Pause ${noun}`);
   }
 
   /** Show the session state and offer the controls it allows (design_new.md
@@ -371,15 +369,16 @@ class App {
     const btn = document.getElementById('btn-play-pause');
     if (!btn) return;
 
-    if (isPlaying) {
-      btn.innerHTML = '<i class="ti ti-player-pause"></i> Pause';
-      btn.classList.remove('btn-primary');
-      btn.classList.add('btn-secondary');
-    } else {
-      btn.innerHTML = '<i class="ti ti-player-play"></i> Play';
-      btn.classList.remove('btn-secondary');
-      btn.classList.add('btn-primary');
+    // Icon-only to keep the header compact; the label is the tooltip and the
+    // accessible name.
+    const label = isPlaying ? 'Pause' : 'Play';
+    if (btn.getAttribute('aria-label') !== label) {
+      btn.innerHTML = `<i class="ti ti-player-${isPlaying ? 'pause' : 'play'}"></i>`;
+      btn.setAttribute('aria-label', label);
+      btn.setAttribute('title', label);
     }
+    btn.classList.toggle('btn-primary', !isPlaying);
+    btn.classList.toggle('btn-secondary', isPlaying);
   }
 
   syncSpeedPresetUI(serverSpeed: number): void {

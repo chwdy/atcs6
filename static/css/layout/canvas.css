@@ -133,11 +133,10 @@
     color: var(--text-primary);
 }
 
-/* ---- Session bar — the session state and the whole-layout controls,
-   floating at the top centre of the canvas so it stays in view whatever the
-   header holds (design_new.md "Session state"). Live reads success; a halt
-   reads danger only for a failure or Emergency stop; Paused, Setup and
-   not-activated stay neutral. ---- */
+/* ---- Session bar — the whole-layout controls (Emergency stop, Reset, Hold
+   all), floating at the top centre of the canvas so they stay in reach
+   whatever the header holds. The session state itself is the header's chip
+   (design_new.md "Session state"). ---- */
 .session-bar {
     position: absolute;
     top: 10px;
@@ -154,31 +153,6 @@
     backdrop-filter: blur(4px);
     font-size: 0.8rem;
     white-space: nowrap;
-}
-
-.session-chip {
-    padding: 2px 8px;
-    border: 1px solid var(--border-color);
-    border-radius: 3px;
-    color: var(--text-secondary);
-    font-weight: 600;
-}
-
-.session-chip[data-state="live"] {
-    color: var(--success-color);
-    border-color: var(--success-color);
-}
-
-.session-chip[data-state="setup"] {
-    color: var(--info-color);
-    border-color: var(--info-color);
-}
-
-.session-chip[data-halt="layout_emergency_cut_out"],
-.session-chip[data-halt="hardware_failure"],
-.session-chip[data-halt="runtime_failure"] {
-    color: var(--danger-color);
-    border-color: var(--danger-color);
 }
 
 .session-bar-btn {
