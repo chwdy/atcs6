@@ -298,7 +298,11 @@ def test_nearest_skips_stop_targeted_by_another_train():
     # route is heading to A's block, so A is "taken" → B (idx 1) is seeded.
     resolver = _make_nearest_resolver({"A": (2, 20.0), "B": (5, 50.0)})
     resolver._e.execution_states = {"OTHER": SimpleNamespace(route_id="r")}
-    resolver.find_next_move_target = lambda tid: "A" if tid == "OTHER" else None
+    from runtime_payloads import ResolvedRouteTarget
+
+    resolver.find_next_move_target = lambda tid: (
+        ResolvedRouteTarget("A", "forward") if tid == "OTHER" else None
+    )
     route = Route(route_id="r", tasks=[_stop("A"), _stop("B")])
     train = SimpleNamespace(train_id="T1")
     assert resolver.nearest_start_stop_index(train, route) == 1

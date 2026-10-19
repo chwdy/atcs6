@@ -2878,7 +2878,11 @@ class PathDispatcher:
 
         Only the occupant's *immediate* exit block is tested, so an occupant
         that leaves `next_block_id` forward (an ordinary platform pass-through)
-        never restricts the follower.
+        never restricts the follower. The occupant holds no live reservation,
+        so both physical ends of its span take part in predicting the walk its
+        own next `create_path(...)` will choose (see
+        `_predict_reservationless_walk`); the immediate exit block is the first
+        block outside its span on that walk.
         """
         block = self.network.blocks.get(next_block_id)
         if block is None:
@@ -2906,20 +2910,73 @@ class PathDispatcher:
             # exempt). This is the same not-exempt outcome as the no-walk case
             # below.
             return True
-        candidates = self._find_walk_candidates(next_block_id, occ_target, occ)
-        if not candidates:
+        occ_span_blocks = self._span_blocks_for(occ) or [next_block_id]
+        route_id = route_executor.assigned_route_id_for(occ)
+        route = route_executor.get_route(route_id) if route_id else None
+        walk = self._predict_reservationless_walk(
+            occ,
+            occ_span_blocks,
+            occ_target,
+            manual_override=bool(getattr(route, "manual_override", False)),
+        )
+        if walk is None:
             # A next-move target was supplied but no candidate walk resolves it.
             # Per design_new.md best-effort `create_path()` item 11 (the
             # reversal-trap exclusion), an occupant whose exit cannot be
             # resolved is treated as unresolved and is NOT exempt: we cannot
             # prove it leaves forward, so the terminal is barred conservatively.
             return True
-        occ_blocks = candidates[0].walk.blocks
-        try:
-            i = occ_blocks.index(next_block_id)
-        except ValueError:
-            return False
-        return i + 1 < len(occ_blocks) and occ_blocks[i + 1] == terminal_block_id
+        in_span = set(occ_span_blocks)
+        exit_block = next((b for b in walk.walk.blocks if b not in in_span), None)
+        return exit_block == terminal_block_id
+
+    def _span_blocks_for(self, train_id: str) -> List[str]:
+        """The train's span blocks in `end_a` -> `end_b` order, or empty."""
+        ctrl = self._get_controller(train_id)
+        span = ctrl.get_current_span() if ctrl is not None else None
+        return list(getattr(span, "occupied_blocks", None) or []) if span else []
+
+    def _predict_reservationless_walk(
+        self,
+        train_id: str,
+        span_blocks: List[str],
+        target: "ResolvedRouteTarget",
+        manual_override: bool = False,
+    ) -> Optional[GraphWalkCandidate]:
+        """The walk a train with no live reservation would take to `target`
+        (design_new.md "`create_path()` flow", the reversal-trap exclusion and
+        Which train ends participate).
+
+        Both physical ends take part: one graph query from each end's inward
+        occupied block (the first and last of `span_blocks`, which already skip
+        a switch the end may sit on), with the target's direction filter and
+        the train's feasibility filters. The two ends' best candidates are
+        compared with the cross-query key (`estimated_travel_seconds`,
+        `tile_count`, `walk_length_cm`); `end_a` is compared first and replaced
+        only on a strictly smaller key, so an exact tie goes to `end_a`.
+        Returns None when neither end yields a walk.
+        """
+        end_blocks: List[str] = []
+        for block_id in (span_blocks[0], span_blocks[-1]):
+            if block_id and block_id not in end_blocks:
+                end_blocks.append(block_id)
+        best: Optional[GraphWalkCandidate] = None
+        best_key = None
+        for end_block in end_blocks:
+            candidates = self._find_walk_candidates(
+                end_block,
+                target.requested_destination_block_id,
+                train_id,
+                direction_constraint=target.requested_destination_direction,
+                manual_override=manual_override,
+            )
+            if not candidates:
+                continue
+            key = candidates[0].cross_query_key()
+            if best_key is None or key < best_key:
+                best_key = key
+                best = candidates[0]
+        return best
 
     def _terminal_fouls_two_way_switch_block(
         self, segment: "PathSegment", terminal_block_id: str

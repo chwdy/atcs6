@@ -22,7 +22,7 @@ flow.
 from dataclasses import dataclass, field
 import logging
 import time
-from typing import Any, ClassVar, Dict, Iterable, List, Optional, Set, Tuple, TYPE_CHECKING
+from typing import Any, ClassVar, Dict, Iterable, List, Optional, Set, Tuple, TYPE_CHECKING, Union
 
 from constants import (
     DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS,
@@ -4728,7 +4728,9 @@ class RouteExecutor:
             walk_position, train_id
         )
 
-    def find_next_move_target(self, train_id: str) -> Optional[str]:
+    def find_next_move_target(
+        self, train_id: str
+    ) -> Optional[Union[ResolvedRouteTarget, str]]:
         """Forward to `RouteTargetResolver.find_next_move_target(...)`.
 
         Public because `PathDispatcher` calls it (through

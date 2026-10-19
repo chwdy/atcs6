@@ -16,7 +16,7 @@ loop can stay focused on state-machine transitions.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Tuple, Union
 
 from train_route import (
     BlockTarget,
@@ -264,12 +264,16 @@ class RouteTargetResolver:
                 continue
             yield idx, task
 
-    def find_next_move_target(self, train_id: str) -> Optional[str]:
-        """Resolve the block this train will path to on its next *move*,
+    def find_next_move_target(
+        self, train_id: str
+    ) -> Optional[Union["ResolvedRouteTarget", str]]:
+        """Resolve the target this train will path to on its next *move*,
         skipping any `dwell` tasks at the current walk position.
 
-        Read-only, like `find_next_task_target(...)`. Returns the resolved
-        target `block_id` of the first `stop` / `waypoint` task at or after the
+        Read-only, like `find_next_task_target(...)`. Returns the
+        `ResolvedRouteTarget` — the target block plus its resolved
+        block-relative direction, the same direction filter an ordinary
+        acquisition uses — of the first non-`dwell` task at or after the
         train's next planning index; `None` when the occupant has no next move
         at all (no `RUNNING` run, or a route-less parked train); and the
         sentinel string `"unresolved"` when a next move task exists on a running
@@ -324,7 +328,15 @@ class RouteTargetResolver:
                 # (design_new.md "find_next_move_target" canonical definition,
                 # `"unresolved"` is not exempt).
                 return "unresolved"
-            return block
+            from route_executor import ResolvedRouteTarget
+
+            signed_direction = 1 if exec_state.direction == "forward" else -1
+            return ResolvedRouteTarget(
+                requested_destination_block_id=block,
+                requested_destination_direction=self.resolve_task_direction(
+                    train, block, task.task_direction, signed_direction
+                ),
+            )
         return None
 
     def _walk_position_after(
@@ -1230,9 +1242,9 @@ class RouteTargetResolver:
                 continue
             if getattr(st, "route_id", None) != route_id:
                 continue
-            block = self.find_next_move_target(other_id)
-            if block:
-                claimed.add(block)
+            target = self.find_next_move_target(other_id)
+            if target is not None and target != "unresolved":
+                claimed.add(target.requested_destination_block_id)
         return claimed
 
     def nearest_start_stop_index(

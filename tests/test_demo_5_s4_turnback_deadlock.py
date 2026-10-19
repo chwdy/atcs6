@@ -92,7 +92,10 @@ def test_reversing_occupant_blocks_follower_before_crossover():
     ex = sim.route_executor
 
     # LEAD's next move is the PLT_S3_N turn-back (skips the dwell task).
-    assert ex.find_next_move_target("LEAD") == "PLT_S3_N_BLOCK"
+    assert (
+        ex.find_next_move_target("LEAD").requested_destination_block_id
+        == "PLT_S3_N_BLOCK"
+    )
 
     # Trap helper: terminating at the X2 approach traps LEAD; the block before
     # X2 does not (only the occupant's immediate exit block traps).
