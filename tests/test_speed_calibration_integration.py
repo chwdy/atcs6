@@ -321,10 +321,10 @@ def test_cancelling_a_pass_deactivates_its_leg_route(state):
 
 def test_powering_off_mid_pass_ends_the_speed_run(state):
     """An ordinary power-off mid-pass ends the speed run on that same Action pass,
-    so no spent run leaks (design_new.md "Speed calibration", Where it runs — the
-    OFF gate is passed before the OFF cleanup, so step `26f5` finds the pass
-    invalid and ends it that tick). A leaked run would otherwise block a new pass
-    at the readiness gate."""
+    so no spent run leaks (design_new.md "Speed calibration", Where it runs —
+    step `26f5` runs after the power-off consumer, for an `OFF` train too, so it
+    finds the pass invalid and ends it that tick). A leaked run would otherwise
+    block a new pass at the readiness gate."""
     sim = state.sim_controller
     train_id = _free_train(state)
     block_id = _first_calibratable_block(state, train_id)

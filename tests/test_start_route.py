@@ -52,9 +52,11 @@ def _controller(state):
 
 
 def _power_off_now(controller):
-    """Take the stopped train to OFF the way Action's OFF cleanup does."""
+    """Take the stopped train to OFF the way Action's power-off step does: the
+    OFF cleanup, then the step's own clear of the latch."""
     assert controller.commands.power_off_cmd().success
     controller.complete_power_off()
+    controller.route_hooks.phase_latches.clear("power_off")
     assert controller.ops.train_status == TrainStatus.OFF
 
 

@@ -838,8 +838,17 @@ class RouteExecutor:
         included — and the method changes nothing (design_new.md "Route
         assignment writers", A calibrating train refuses assignment); the
         operator ends the run first. Plan step `c9e1` assigns a pass's own leg
-        routes without this entry point. Every other request is accepted, in one
-        of three cases keyed on whether a live RUNNING run exists:
+        routes without this entry point. Every other request is accepted:
+
+          * A teardown latch is already pending for the train (route abort,
+            route deactivate, or power-off) -> hold: commit nothing inline,
+            write no second teardown latch, discard any held structural
+            re-assignment, and overwrite `_pending_route_assignments[train_id]`
+            with this request. The teardown consumer already in flight commits
+            exactly this latest request, so a fresh assignment is never
+            committed inline for a later same-tick consumer to undo.
+
+        Otherwise, keyed on whether a live RUNNING run exists:
 
           * No RUNNING run -> commit immediately: clear older pending route/start
             state, unassign the train from any old route, assign the requested
@@ -863,6 +872,23 @@ class RouteExecutor:
             return CommandResult(False, refusal)
 
         run = self.execution_state_for(train_id)
+        controller = self._controller_by_id(train_id)
+
+        # A pending teardown holds the request (design_new.md "Route assignment
+        # writers", A pending teardown holds the request): the consumer already
+        # scheduled commits whatever `_pending_route_assignments` holds — the
+        # abort/power-off consumer through `remove_train_route_run(...)`, the
+        # deactivate consumer through that same call or, with no run, through
+        # `settle_deactivate_without_run(...)`.
+        teardown_already_pending = controller is not None and bool(
+            controller.active_conditions & _HELD_REQUEST_TEARDOWN_CONDITIONS
+        )
+        if teardown_already_pending:
+            self.discard_pending_reassign(train_id)
+            self._hold_route_assignment(train_id, requested_route_id, start_override)
+            return CommandResult(
+                True, "Route assignment held until the pending teardown commits"
+            )
 
         # A RUNNING run on the very route being (re-)requested: idempotent
         # no-op. The run already consumed its start mode, so a supplied start
@@ -896,7 +922,6 @@ class RouteExecutor:
             # READY`) and the operator issues `/ato/go` to start it. This is an
             # operator-initiated write between ticks, cleared here where the
             # assignment commits immediately.
-            controller = self._controller_by_id(train_id)
             if controller is not None:
                 controller.commands.engaged = False
             return CommandResult(True, "Route assignment committed")
@@ -905,16 +930,7 @@ class RouteExecutor:
         # defer. Write the abort + inclusive cancel so Action tears the old run
         # down through the canonical workflow, then hold the request; do NOT
         # mutate either route's `assigned_train_ids` yet.
-        controller = self._controller_by_id(train_id)
-        # A pending teardown holds the request (design_new.md, "A pending teardown holds the request"): when a
-        # teardown latch is already in flight for this train, write no second
-        # teardown latch — the consumer already scheduled applies whatever
-        # `_pending_route_assignments` holds when it removes the run. Only the
-        # held request below is overwritten.
-        teardown_already_pending = controller is not None and bool(
-            controller.active_conditions & _HELD_REQUEST_TEARDOWN_CONDITIONS
-        )
-        if controller is not None and not teardown_already_pending:
+        if controller is not None:
             has_active_path = (
                 controller.path_projection.received_path_plan is not None
             )
@@ -922,14 +938,24 @@ class RouteExecutor:
                 reason=("unassign" if requested_route_id is None else "retarget"),
                 has_active_path=has_active_path,
             )
-        # Clear any older held request/start state, THEN store the fresh one.
+        self._hold_route_assignment(train_id, requested_route_id, start_override)
+        return CommandResult(True, "Route assignment held until the current run ends")
+
+    def _hold_route_assignment(
+        self,
+        train_id: str,
+        requested_route_id: Optional[str],
+        start_override: Optional[Dict[str, Any]],
+    ) -> None:
+        """Clear any older held request/start state, then store this request in
+        `_pending_route_assignments[train_id]` for a teardown consumer to
+        commit."""
         self._pending_route_assignments.pop(train_id, None)
         self.clear_pending_start_override(train_id)
         self._pending_route_assignments[train_id] = {
             "requested_route_id": requested_route_id,
             "start_override": None if start_override is None else dict(start_override),
         }
-        return CommandResult(True, "Route assignment held until the current run ends")
 
     def _commit_pending_route_assignment(self, train_id: str) -> None:
         """Consume any held `_pending_route_assignments[train_id]` and apply its
@@ -945,6 +971,13 @@ class RouteExecutor:
         pending = self._pending_route_assignments.pop(train_id, None)
         if not pending:
             return
+        # A route assignment resets the ATO engage bit (design_new.md "Route
+        # assignment writers", A route assignment resets `commands.engaged`):
+        # a request that waited on a teardown starts not engaged, the same as
+        # one committed at once.
+        controller = self._controller_by_id(train_id)
+        if controller is not None:
+            controller.commands.engaged = False
         requested_route_id = pending.get("requested_route_id")
         if requested_route_id is None:
             # Held unassign: the train stays on no route; drop the start
@@ -4503,6 +4536,49 @@ class RouteExecutor:
         route.assign_train(train_id)
         return route_id
 
+    def settle_deactivate_without_run(self, train_id: str) -> None:
+        """The Action `pending_route_deactivate` consumer's branch for a train
+        with no RUNNING run (design_new.md "Action latched-cancel consumption",
+        When no `RUNNING` run exists, the operator/admin teardown wins).
+
+        An earlier abort/power-off consumer, a natural finish, or activation
+        already ended the run, or the train never had one. So this never calls
+        `remove_train_route_run(...)`, which would remove an assignment an
+        earlier consumer just committed. In order it:
+
+          1. unassigns the train from its route only when that route is pending
+             deletion, so the deletion can finish;
+          2. commits a request still held in `_pending_route_assignments`
+             (one only a deactivate was holding — an earlier consumer would
+             already have committed it), replacing the stored assignment the
+             way `remove_train_route_run(...)` does when no run exists;
+          3. discards the held structural re-assignment without applying it.
+
+        It is this latch's consume-side emitter on this branch.
+        """
+        route_id = self.assigned_route_id_for(train_id)
+        if route_id is not None and route_id in self.pending_route_deletions:
+            route = self.route_registry.get(route_id)
+            if route is not None:
+                route.unassign_train(train_id)
+        if train_id in self._pending_route_assignments:
+            old_route_id = self.assigned_route_id_for(train_id)
+            if old_route_id:
+                old_route = self.route_registry.get(old_route_id)
+                if old_route is not None:
+                    old_route.unassign_train(train_id)
+            self._commit_pending_route_assignment(train_id)
+        self.discard_pending_reassign(train_id)
+        self.finalize_pending_route_deletions()
+        self._emit_event(
+            "settle_deactivate_without_run",
+            f"route deactivate for {train_id} found no running run",
+            train_id=train_id,
+            payload={"latch": "route_deactivate"},
+            kind=Kind.INFO,
+            latch_event=True,
+        )
+
     def discard_pending_reassign(self, train_id: str) -> None:
         """Drop any held re-assignment for `train_id` WITHOUT applying it.
 
@@ -4516,7 +4592,7 @@ class RouteExecutor:
 
     def _emit_event(
         self, operation, message, train_id=None, payload=None, path_id=None,
-        kind=None,
+        kind=None, latch_event=False,
     ) -> None:
         """Emit an operational event-log notification through NotificationCenter
         (design_new.md "Event log"). Best-effort: resolves the sink defensively,
@@ -4545,6 +4621,7 @@ class RouteExecutor:
                 entities=entities,
                 event_time=self._now(),
                 payload=payload or {},
+                latch_event=latch_event,
             )
         except Exception:
             pass

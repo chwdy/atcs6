@@ -2412,30 +2412,22 @@ class TrainController:
     def complete_power_off(self) -> None:
         """Controller-owned OFF-cleanup entry point (design_new.md, "Power/mode command contracts").
 
-        Invoked by the Action ``pending_power_off`` consumer (step ``886a`` of
-        the Power-off procedure). It is the only ``OFF``-writing site besides the
-        startup default, so the Operational state machine stays the single writer
-        of ``powered``. Callable only while ``power_off`` is latched; on commit it
-        sets ``powered = False`` (so ``train_status`` derives to ``OFF``), resets
-        the span framing to its ``end_a`` head default, clears ``eb.active``,
-        sets ``control_mode = "manual"`` (which clears ``commands.engaged``), and
-        consumes ``pending_power_off``.
+        It is the only ``OFF``-writing site besides the startup default, so the
+        Operational state machine stays the single writer of ``powered``. It
+        sets ``powered = False`` (so ``train_status`` derives to ``OFF``),
+        resets the span framing to its ``end_a`` head default, writes the
+        neutral notch, clears ``eb.active``, and sets ``control_mode =
+        "manual"`` (which clears ``commands.engaged``).
 
-        Per design_new.md "Latch Table" (Clear/consume access) this method is
-        the one place `phase_latches.power_off` is cleared — not the Action
-        power-off consumer step that invokes it — so the field is cleared
-        whichever of its two callers ran: that consumer step in the ordinary
-        case, or `SimulationController.clear_failed_runtime()`'s step-`7c41`
-        fan-out across every controller, which is not an Action step at all. It
-        consumes the latch *when present* rather than requiring it, because the
-        fan-out reaches controllers that never latched one — every entry to
-        `OFF` except the startup default goes through here (Controller state
-        machine, the `OFF` row). It is also that latch's consume-side emitter
-        (Latch consumption events), which is why the event below passes
-        `latch_event=True` — and why it is emitted only when a latch was
-        actually consumed.
+        Idempotent and valid from any state. Its callers are the Action
+        ``pending_power_off`` consumer (step ``886a`` of the Power-off
+        procedure), environment activation, and
+        ``SimulationController.clear_failed_runtime()``. It does not touch
+        ``phase_latches.power_off`` (design_new.md "Latch Table", Clear/consume
+        access): the Action consumer clears that latch after this call returns,
+        so a power-off still pending when a between-tick caller switches the
+        train ``OFF`` keeps its route removal for its own Action step.
         """
-        had_latch = self.route_hooks.phase_latches.power_off
         self.powered = False
         self._reset_head_frame_to_default()
         self.ops.reset_handle_to_neutral()
@@ -2446,15 +2438,6 @@ class TrainController:
         # commands.engaged), so a powered-on train reads MANUAL until the
         # operator re-selects ATO (design_new.md "complete_power_off").
         self.commands._write_control_mode("manual")
-        if had_latch:
-            self.route_hooks.phase_latches.clear("power_off")
-            self.notifications.emit(
-                f"power off committed for {self.train_id}",
-                operation="complete_power_off",
-                kind="info",
-                payload={"latch": "power_off"},
-                latch_event=True,
-            )
 
     # -------------------------------------------------------------------------
     # Serialization

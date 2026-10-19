@@ -275,10 +275,12 @@ class PhaseLatches:
     exposes no `consume_*()` accessor for the five fields. Each is cleared by
     its own named Action consumer step, and the consume-side event is emitted
     by that step's own consume-side call (`PathDispatcher.cancel_path(...)`,
-    `RouteExecutor.remove_train_route_run(...)`,
-    `TrainController.complete_power_off()`, or the `eb.activate()` /
-    `eb.activate_cut_out()` call Action step 01f2 makes) per the Latch
-    consumption events table.
+    `RouteExecutor.remove_train_route_run(...)` or, for a deactivate with no
+    running run, `RouteExecutor.settle_deactivate_without_run(...)`, or the
+    `eb.activate()` / `eb.activate_cut_out()` call Action step 01f2 makes) —
+    except `power_off`, whose Action step emits the event itself after
+    `TrainController.complete_power_off()` returns and it clears the field —
+    per the Latch consumption events table.
 
     The cross-field side effect of `power_off` (disengaging
     `TrainController.commands.engaged`) does NOT live here — that is a controller

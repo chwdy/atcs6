@@ -2188,11 +2188,15 @@ class SimulationController(SwitchOutputOwner):
                     block.release()
 
         # Initiate the Action-committed teardown by writing the power-off latch
-        # (and its inclusive cancel when a live path exists). Skip the write once
-        # the record is already settled — OFF with no live authority — so a ghost
-        # that sits unknown for many ticks does not re-emit the intent every
-        # tick. A record re-powered or re-authorized by an API call between ticks
-        # is not settled, so its teardown is re-initiated and Action commits it.
+        # (and its inclusive cancel when a live path exists). The rising edge
+        # always writes it, even for a train already OFF with no live path: the
+        # power-off consumer runs for an OFF train too and removes its route run
+        # and assignment on this same tick's Action pass (design_new.md "Power",
+        # Ghosted trains). On the later passes while the flag holds, skip the
+        # write once the record is settled — OFF with no live authority — so a
+        # ghost that sits unknown for many ticks does not re-emit the intent
+        # every tick. A record re-powered or re-authorized between ticks is not
+        # settled, so its teardown is re-initiated and Action commits it.
         dispatcher = self.path_dispatcher
         has_active_path = (
             dispatcher is not None
@@ -2201,7 +2205,7 @@ class SimulationController(SwitchOutputOwner):
         already_settled = (
             not controller.powered and not has_active_path
         )
-        if not already_settled:
+        if notify or not already_settled:
             controller.commands._apply_power_off_request(
                 reason="no occupancy backs this train's position"
             )
@@ -2415,18 +2419,14 @@ class SimulationController(SwitchOutputOwner):
         route-abort, power-off, and route-deactivate. Calculating movement and
         committing occupancy already happened in Observe; Action only tears down.
 
-        Skipped, except the persistent-state sync, for any train still OFF
-        after step `01f2`. The OFF gate reads power state alone
-        (design_new.md, "Observe, Plan, and Action structure"): a pending teardown latch or a detector-attributed
-        block change to an OFF train runs none of these steps — those teardown
-        latches wait for a later pass on which power-on has run. The command
-        drain that just ran in Action may have powered the train on, in which
-        case this runs.
+        These steps run for every train, `OFF` included (design_new.md
+        "`SimulationController._act_train(...)` flow", step 6): each is gated
+        only by its own latch and, for the teardown consumers, the inclusive
+        cancel having been consumed. A teardown needs no power — it releases
+        route state — so a latch written against an `OFF` train (a ghost rising
+        edge, a route deletion, or a power-off left by activation) finishes on
+        that train's next running Action without waiting for power-on.
         """
-        if not controller.powered:
-            self._sync_persistent_train_state(train, controller)
-            return
-
         # Consume the teardown latches in canonical order. The inclusive
         # `pending_path_cancel_request` they share was already consumed in the
         # Action early slot, before the control decision (step `7b40`).
@@ -2570,9 +2570,20 @@ class SimulationController(SwitchOutputOwner):
 
         # Controller-owned OFF cleanup. `complete_power_off()` is the single
         # OFF-writing entry point besides startup (design_new.md, "Power/mode command contracts"):
-        # it sets `state = OFF`, resets the span head frame to end_a, clears
-        # eb.active / commands.engaged, and consumes `pending_power_off`.
+        # it sets `powered = False`, resets the span head frame to end_a, and
+        # clears eb.active / commands.engaged. It does not touch
+        # `pending_power_off`: this step clears it once the call returns, and
+        # emits the latch's consume-side event (design_new.md "Latch consumption
+        # events").
         controller.complete_power_off()
+        controller.route_hooks.phase_latches.clear("power_off")
+        controller.notifications.emit(
+            f"power off committed for {train.train_id}",
+            operation="_consume_pending_power_off",
+            kind="info",
+            payload={"latch": "power_off"},
+            latch_event=True,
+        )
 
     def _consume_pending_route_deactivate(
         self, controller: TrainController, train: Train
@@ -2591,22 +2602,22 @@ class SimulationController(SwitchOutputOwner):
         if controller.route_hooks.phase_latches.path_cancel_request is not None:
             return
 
-        # Per design_new.md ("Shared-route edit teardown"): a held
-        # re-assignment is applied only when THIS consumer owned the run teardown
-        # — i.e. its own remove_train_route_run cleared a still-RUNNING run. If an
-        # earlier abort/power-off consumer (or a natural finish) already ended the
-        # run, the operator/admin teardown wins and the stash is discarded, so a
-        # powered-off or aborted train is never silently re-assigned to the route.
-        owned_teardown = (
-            self.route_executor.execution_state_for(train.train_id) is not None
-        )
-        self.route_executor.remove_train_route_run(train.train_id)
-        if owned_teardown:
+        # Per design_new.md ("Action latched-cancel consumption", the
+        # `pending_route_deactivate` consumer): what this step does depends on
+        # whether a RUNNING run exists when it begins.
+        if self.route_executor.execution_state_for(train.train_id) is not None:
+            # This consumer owns the teardown: remove the run, then re-apply
+            # any held structural-edit re-assignment. As with route-abort,
+            # `remove_train_route_run(...)` is the consume-side emitter.
+            self.route_executor.remove_train_route_run(train.train_id)
             self.route_executor.apply_pending_reassign(train.train_id)
         else:
-            self.route_executor.discard_pending_reassign(train.train_id)
-        # As with route-abort, `remove_train_route_run(...)` is the
-        # consume-side emitter and this step clears the field after it returns.
+            # The operator/admin teardown wins: an earlier abort/power-off
+            # consumer, a natural finish, or activation already ended the run,
+            # or the train had no run yet. Never call
+            # `remove_train_route_run(...)` here, so a replacement route an
+            # earlier consumer just committed stays assigned.
+            self.route_executor.settle_deactivate_without_run(train.train_id)
         controller.route_hooks.phase_latches.clear("route_deactivate")
 
     def _reevaluate_calibration_run(self, train: Train) -> None:
@@ -3596,7 +3607,10 @@ class SimulationController(SwitchOutputOwner):
           3. every train's power, through `TrainController.complete_power_off()`.
              A train still rolling stops by itself on its next running pass.
 
-        Pending latches and held assignment requests are left alone.
+        Pending teardown latches and held assignment requests are left alone:
+        the Action teardown consumers run for an `OFF` train too, so each
+        finishes on the first Live tick. `complete_power_off()` does not touch
+        `pending_power_off`, so a pending power-off still removes its route.
         """
         dispatcher = self.path_dispatcher
         if dispatcher is not None:
@@ -3637,10 +3651,12 @@ class SimulationController(SwitchOutputOwner):
         canonical `OFF` writer for every entry but the startup default — rather
         than a queued `power_off_cmd()`, for two reasons: the command is
         stopped-only and the frozen speed may be non-zero, and it defers its
-        work to an Action pass that cannot run while the gate is shut. Routing
-        through `complete_power_off()` is also what clears any `power_off`
-        latch a controller was still holding when the halt shut the gate.
-        Track voltage stays at the `0` `enter_safe_state()` left it at; the next
+        work to an Action pass that cannot run while the gate is shut.
+        `complete_power_off()` leaves any `power_off` latch a controller was
+        still holding when the halt shut the gate: its own Action consumer runs
+        for the `OFF` train on the first running pass and removes the route as
+        an ordinary power-off does (design_new.md "Latch Table", Clear/consume
+        access). Track voltage stays at the `0` `enter_safe_state()` left it at; the next
         tick re-emits from each train's energized set, which is empty while they
         are all `OFF`.
 
