@@ -58,8 +58,11 @@ def register(app, state: AppState) -> None:
         `manual_override` down the acquisition chain. Returns the new route_id.
 
         A train with a calibration run open refuses route assignment, so it is
-        refused here before the one-off route is created, leaving no orphan
-        route behind (design_new.md "Route assignment writers").
+        refused here before the one-off route is created. Any other refusal of
+        the assignment request deletes the route this built, through the
+        ordinary route-deletion finalization, so a refused Quick Route or
+        retarget leaves no route behind (design_new.md "Availability flag REST
+        API surface", `POST /api/paths`).
         """
         executor = state.sim_controller.route_executor if state.sim_controller else None
         refusal = executor.calibration_refusal(train_id) if executor is not None else None
@@ -78,9 +81,15 @@ def register(app, state: AppState) -> None:
             ],
             manual_override=manual_override,
         )
-        train_service.assign_route(
-            state, train_id, route_id=route.route_id, force=True
-        )
+        try:
+            train_service.assign_route(
+                state, train_id, route_id=route.route_id, force=True
+            )
+        except Exception:
+            if executor is not None:
+                executor.request_route_deletion(route.route_id)
+                executor.finalize_pending_route_deletions()
+            raise
         return route.route_id
 
     @app.route("/api/paths", methods=["POST"])

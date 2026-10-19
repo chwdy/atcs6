@@ -145,14 +145,13 @@ def register(app, state: AppState) -> None:
             except ConflictError as exc:
                 return jsonify({"error": str(exc)}), 409
 
-        # Per design_new.md "Route Edit And Reconciliation", structural route edits should
-        # tear down active `RouteRun`s and let Plan allocate fresh
-        # runs. The legacy in-place cursor clamp here was an admin
-        # shortcut that is incompatible with the derived
-        # `current_waypoint_index`. Operator/admin tooling that
-        # actually needs to retarget mid-flight should call
-        # `controller.route_hooks.phase_latches.set_route_abort(...)` for each
-        # affected train (see `PUT /api/trains/<id>/assign-route`).
+        # Per design_new.md "Shared-route edit teardown", a structural route
+        # edit tears down each assigned train's RouteRun and lets Plan allocate
+        # a fresh one; there is no in-place cursor clamp. Tooling that needs to
+        # retarget or abort mid-flight goes through
+        # `RouteExecutor.request_route_assignment(...)` (see
+        # `PUT /api/trains/<id>/assign-route`), never `set_route_abort(...)`
+        # directly (design_new.md "Route assignment writers").
 
         return jsonify(route.to_dict())
 

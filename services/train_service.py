@@ -527,7 +527,8 @@ def assign_route(
         ValidationError when the target route has no tasks or start_mode is
             invalid.
         ConflictError when the train is already on a route and ``force`` is
-            False, or when a calibration run is open for the train.
+            False, when a calibration run is open for the train, or when
+            ``RouteExecutor.request_route_assignment(...)`` refuses the request.
         ValidationError when the train is an unidentified train: an unidentified train is never assigned a
             route (design_new.md "Unidentified trains").
     """
@@ -550,7 +551,9 @@ def assign_route(
     # design_new.md "Route assignment writers").
     if route_id is None:
         if route_executor is not None:
-            route_executor.request_route_assignment(train_id, None)
+            result = route_executor.request_route_assignment(train_id, None)
+            if not result.success:
+                raise ConflictError(result.message)
         return train
 
     # Branch 2: assign / retarget (route_id provided). Validation stays here;
@@ -612,9 +615,11 @@ def assign_route(
         }
 
     if route_executor is not None:
-        route_executor.request_route_assignment(
+        result = route_executor.request_route_assignment(
             train_id, route_id, start_override=start_override
         )
+        if not result.success:
+            raise ConflictError(result.message)
     return train
 
 

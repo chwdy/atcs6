@@ -864,12 +864,28 @@ class RouteExecutor:
             route's `assigned_train_ids`. The Action teardown commits it inside
             `remove_train_route_run(...)`.
 
-        This method performs the mechanism only; the caller validates the route
-        (existence, non-empty tasks, conflict/force) before invoking it.
+        A request naming a route that is pending deletion or not in the route
+        registry is refused and changes nothing. The caller still validates
+        non-empty tasks and conflict/force before invoking it. Overwriting or
+        clearing a held request deletes the one-off route it named when no
+        train is left on it.
         """
         refusal = self.calibration_refusal(train_id)
         if refusal is not None:
             return CommandResult(False, refusal)
+
+        # A route that is being deleted or is unknown refuses assignment
+        # (design_new.md "Route assignment writers"): nothing is committed and
+        # nothing is held.
+        if requested_route_id is not None:
+            if requested_route_id in self.pending_route_deletions:
+                return CommandResult(
+                    False,
+                    f"Route {requested_route_id} is being deleted and accepts no "
+                    "new assignment",
+                )
+            if requested_route_id not in self.route_registry:
+                return CommandResult(False, f"Route {requested_route_id} not found")
 
         run = self.execution_state_for(train_id)
         controller = self._controller_by_id(train_id)
@@ -904,7 +920,7 @@ class RouteExecutor:
 
         if run is None:
             # Commit immediately -- no live run to tear down first.
-            self._pending_route_assignments.pop(train_id, None)
+            self._drop_held_route_assignment(train_id, keep_route_id=requested_route_id)
             self.clear_pending_start_override(train_id)
             old_route_id = self.assigned_route_id_for(train_id)
             if old_route_id:
@@ -950,12 +966,60 @@ class RouteExecutor:
         """Clear any older held request/start state, then store this request in
         `_pending_route_assignments[train_id]` for a teardown consumer to
         commit."""
-        self._pending_route_assignments.pop(train_id, None)
+        self._drop_held_route_assignment(train_id, keep_route_id=requested_route_id)
         self.clear_pending_start_override(train_id)
         self._pending_route_assignments[train_id] = {
             "requested_route_id": requested_route_id,
             "start_override": None if start_override is None else dict(start_override),
         }
+
+    def _drop_held_route_assignment(
+        self, train_id: str, keep_route_id: Optional[str] = None
+    ) -> None:
+        """Clear a held `_pending_route_assignments[train_id]` entry that a new
+        request overwrites or clears.
+
+        A dropped one-off request route is deleted (design_new.md "Route
+        assignment writers"): when the dropped entry named a `ONE_OFF` route
+        that no train is assigned to and no live run uses, the route goes
+        through the ordinary route-deletion finalization — unless it is the
+        route the new request names (`keep_route_id`), which stays.
+        """
+        dropped = self._pending_route_assignments.pop(train_id, None)
+        if not dropped:
+            return
+        dropped_route_id = dropped.get("requested_route_id")
+        if dropped_route_id is None or dropped_route_id == keep_route_id:
+            return
+        if self._delete_if_emptied_one_off(dropped_route_id):
+            self.finalize_pending_route_deletions()
+
+    def _delete_if_emptied_one_off(self, route_id: Optional[str]) -> bool:
+        """Record `route_id` for deletion when it is a `ONE_OFF` route with no
+        assigned train and no live run (design_new.md "Terminal route
+        completion", `ONE_OFF` cascade; "`RouteExecutor.remove_train_route_run
+        (train_id)`", An emptied one-off route is deleted). The caller runs
+        `finalize_pending_route_deletions()`. Returns whether it recorded one.
+
+        A route a held structural-edit re-assignment names (`_pending_reassign`)
+        is kept: the deactivate consumer assigns the train to it again right
+        after the teardown, so a train is still left on it.
+        """
+        if route_id is None or route_id in self._pending_reassign.values():
+            return False
+        route = self.route_registry.get(route_id)
+        if route is None or getattr(route, "mode", None) != RouteMode.ONE_OFF:
+            return False
+        if getattr(route, "assigned_train_ids", []):
+            return False
+        if any(
+            st.route_id == route_id
+            and st.current_route_status == RouteRunStatus.RUNNING
+            for st in self.execution_states.values()
+        ):
+            return False
+        self.request_route_deletion(route_id)
+        return True
 
     def _commit_pending_route_assignment(self, train_id: str) -> None:
         """Consume any held `_pending_route_assignments[train_id]` and apply its
@@ -4020,13 +4084,20 @@ class RouteExecutor:
         "Route deletion waits for live teardown").
 
         A route in `pending_route_deletions` accepts no new assignment, and Plan
-        allocates no fresh run on it (step `9c4f`). It writes no latch: the
-        DELETE service fans out `set_route_deactivate(...)` per assigned train,
-        and `finalize_pending_route_deletions()` removes the route once nothing
-        holds it. Idempotent.
+        allocates no fresh run on it (step `9c4f`). Every held request naming
+        the route is dropped: its `requested_route_id` becomes `None` and its
+        start override is cleared, so that train's own teardown leaves it
+        unassigned instead of committing it to a route being deleted. It writes
+        no latch: the DELETE service fans out `set_route_deactivate(...)` per
+        assigned train, and `finalize_pending_route_deletions()` removes the
+        route once nothing holds it. Idempotent.
         """
         if route_id in self.route_registry:
             self.pending_route_deletions.add(route_id)
+        for held in self._pending_route_assignments.values():
+            if held.get("requested_route_id") == route_id:
+                held["requested_route_id"] = None
+                held["start_override"] = None
 
     def _archive_run(self, exec_state: RouteExecutionState) -> None:
         """Move a now-terminal `RouteRun` to `_historical_runs`.
@@ -4396,7 +4467,9 @@ class RouteExecutor:
                 if old_route is not None:
                     old_route.unassign_train(train_id)
             self._commit_pending_route_assignment(train_id)
-            # A deferred-deletion route may now have lost its last assignment.
+            # An emptied one-off route is deleted, and a deferred-deletion route
+            # may now have lost its last assignment.
+            self._delete_if_emptied_one_off(old_route_id)
             self.finalize_pending_route_deletions()
             return
 
@@ -4428,8 +4501,11 @@ class RouteExecutor:
         # method returns.
         self._commit_pending_route_assignment(train_id)
 
-        # The route just unassigned may have been awaiting deferred deletion and
-        # may now have no assignment and no live run.
+        # An emptied one-off route is deleted the same way a finished one is
+        # (design_new.md "`RouteExecutor.remove_train_route_run(train_id)`"),
+        # and the route just unassigned may have been awaiting deferred deletion
+        # and may now have no assignment and no live run.
+        self._delete_if_emptied_one_off(route_id)
         self.finalize_pending_route_deletions()
 
         # This call is the consume-side emitter for whichever of
@@ -4568,6 +4644,7 @@ class RouteExecutor:
                 if old_route is not None:
                     old_route.unassign_train(train_id)
             self._commit_pending_route_assignment(train_id)
+            self._delete_if_emptied_one_off(old_route_id)
         self.discard_pending_reassign(train_id)
         self.finalize_pending_route_deletions()
         self._emit_event(
