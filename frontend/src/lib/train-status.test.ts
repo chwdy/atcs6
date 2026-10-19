@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { holdReasonText } from './hold-reason';
-import { startRouteUnavailableReason, trainDisplayStatus } from './train-status';
+import { atoIsDriving, startRouteUnavailableReason, trainDisplayStatus } from './train-status';
 
 describe('trainDisplayStatus', () => {
   it('shows the overall status for a train that is not in ATO', () => {
@@ -18,6 +18,23 @@ describe('trainDisplayStatus', () => {
   });
 });
 
+describe('atoIsDriving', () => {
+  it('is true while ATO pursues a running route run, moving or not', () => {
+    for (const atoStatus of ['RUNNING', 'HELD', 'DWELLING']) {
+      expect(atoIsDriving({ train_status: 'ato', engaged: true }, { ato_status: atoStatus })).toBe(true);
+    }
+  });
+
+  it('is false for an engaged train whose route has finished', () => {
+    expect(atoIsDriving({ train_status: 'ato', engaged: true }, { ato_status: 'READY' })).toBe(false);
+  });
+
+  it('is false for a train that is not in ATO', () => {
+    expect(atoIsDriving({ train_status: 'eb' }, { ato_status: 'OFF' })).toBe(false);
+    expect(atoIsDriving({ train_status: 'manual' })).toBe(false);
+  });
+});
+
 describe('holdReasonText', () => {
   it('is null when nothing holds the train', () => {
     expect(holdReasonText(null)).toBeNull();
@@ -29,6 +46,12 @@ describe('holdReasonText', () => {
     ).toBe('Waiting: stopping to power off.');
     expect(holdReasonText({ code: 'calibrating', question: 2, detail: 'speed' })).toBe(
       'A speed calibration run is driving the train.'
+    );
+  });
+
+  it('reads the error origin behind a missing reservation as words', () => {
+    expect(holdReasonText({ code: 'no_reservation', question: 3, detail: 'no_viable_path' })).toBe(
+      'No reservation yet (no viable path).'
     );
   });
 

@@ -17,6 +17,18 @@ export function trainDisplayStatus(controller: any, operatorStatus?: any): strin
 }
 
 /**
+ * Whether ATO is driving the train: it reads `train_status == ato` and its
+ * `ato_status` is `RUNNING`, `HELD` or `DWELLING` — engaged with a running
+ * route run (design_new.md "ATO status"). Engaged alone is not enough: a train
+ * whose one-off route has finished stays engaged but reads `READY`.
+ */
+export function atoIsDriving(controller: any, operatorStatus?: any): boolean {
+  if ((controller?.train_status || 'off') !== 'ato') return false;
+  const atoStatus = String(operatorStatus?.ato_status || '').toUpperCase();
+  return atoStatus === 'RUNNING' || atoStatus === 'HELD' || atoStatus === 'DWELLING';
+}
+
+/**
  * Why ATO Go cannot be pressed right now, or null when it can.
  *
  * Mirrors design_new.md "ATO go": the server accepts Go only while the train

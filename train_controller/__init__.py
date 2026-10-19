@@ -2194,10 +2194,10 @@ class TrainController:
         """Return True when the current run is tied to live path authority or an
         ATO destination.
 
-        This projection means "has live authority" for its consumers — the
-        `path_error` badge suppresses while it is True, so a bare route
-        assignment with no live path must NOT make it True (or a stuck,
-        no-path train would hide its own error). There is correspondingly no
+        This projection means "has live authority" for its consumers, so a
+        bare route assignment with no live path must NOT make it True (or a
+        stuck, no-path train would read as if it held authority). There is
+        correspondingly no
         active-route branch here: `assigned_route_id` is not a `Train` field
         (the canonical store is `RouteExecutor.assigned_route_id_for(...)`,
         design_new.md "Train Entity").

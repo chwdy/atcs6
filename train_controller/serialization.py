@@ -115,41 +115,12 @@ def controller_to_dict(controller: "TrainController") -> Dict[str, Any]:
         # this to convert lookahead distances (model cm) and prototype
         # speeds (km/h) into ETA seconds when time_to_target_sec is None.
         "speed_conversion_factor": get_speed_conversion_factor(),
-        # Run instance identifier — populated when a RouteRun is active.
-        # Composed as `${route_id}#${run_number}` so the cab display can
-        # tell apart multiple runs of the same route.
-        "route_run_id": (
-            f"{controller.route_executor.execution_state_for(controller.train_id).route_id}"
-            f"#{controller.route_executor.execution_state_for(controller.train_id).run_number}"
-            if controller.route_executor is not None
-            and controller.route_executor.execution_state_for(controller.train_id) is not None
-            else None
-        ),
         # True while no wired block backs this train's calculated position —
         # every block its span or its holdings could show current on reads
         # confirmed clear, so the train may physically be gone. The UI marks
         # the train with a question mark and offers removal (design_new.md
         # "Power", Presence unknown).
         "presence_unknown": bool(getattr(controller, "presence_unknown", False)),
-        # Live "current path error" projection for the train panel badge and
-        # the Quick Route no-path toast. Derived from the event stream through
-        # `latest_error_for` — no entity stores an error (design_new.md "Error
-        # events"). Nothing marks an event resolved, so this gates on live
-        # state instead: it is shown ONLY while the train currently has no live
-        # authority (path_backed_run_active is False), which is what keeps a
-        # reason from before the train acquired authority off the screen.
-        "path_error": (
-            (lambda es: (
-                controller.route_executor.latest_run_error(es)
-                if es is not None
-                and not controller.path_projection.path_backed_run_active
-                else None
-            ))(
-                controller.route_executor.execution_state_for(controller.train_id)
-                if controller.route_executor is not None
-                else None
-            )
-        ),
     }
 
 

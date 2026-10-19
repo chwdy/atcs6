@@ -1508,6 +1508,20 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
+  /**
+   * Cut one train out (canonical eb.activate_cut_out()): its blocks go to 0 V
+   * and it stops at once with no brake curve. The operator path is accepted
+   * only in Virtual Hardware and Real Hardware (design_new.md "Emergency
+   * cut-out"); `releaseEmergency` releases it like the emergency brake.
+   */
+  async activateCutOut(trainId: string): Promise<any> {
+    return this._request(
+      `/trains/${encodeURIComponent(trainId)}/activate-cut-out`,
+      { method: 'POST' },
+      'activateCutOut'
+    );
+  }
+
   async releaseEmergency(trainId: string): Promise<any> {
     return this._request(
       `/trains/${encodeURIComponent(trainId)}/release-emergency`,

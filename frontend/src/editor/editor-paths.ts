@@ -4,6 +4,7 @@
 // Behavior is unchanged. Owned by the Editor (`new PathEditorHandler(this)`).
 
 import { showToast } from '../lib/toast';
+import { holdReasonText } from '../lib/hold-reason';
 import type { EditorHost } from './types';
 import {
   renderHeaderId,
@@ -328,32 +329,34 @@ export class PathEditorHandler {
 
   /**
    * After a Quick Route is assigned, the path is acquired asynchronously in
-   * the simulation loop. Poll the train's live controller state briefly and
-   * toast if a path error appears; stop early once the train has authority.
-   * Best-effort: failures to fetch are ignored, and a paused sim simply times
-   * out without a toast (no tick means no acquisition attempt to report on).
+   * the simulation loop. Poll the train briefly and toast when its hold reason
+   * names an error behind a missing reservation; stop early once the train
+   * holds a reservation. Best-effort: failures to fetch are ignored, and a
+   * paused sim simply times out without a toast (no tick means no acquisition
+   * attempt to report on).
    */
   async watchQuickRoutePathResult(trainId: string): Promise<void> {
     const deadline = Date.now() + 8000;
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 800));
-      let controller: any = null;
+      let data: any = null;
       try {
-        const data = await this.api.getTrain(trainId);
-        controller = data?.controller;
+        data = await this.api.getTrain(trainId);
       } catch {
         continue;
       }
-      if (!controller) {
+      if (!data?.controller) {
         continue;
       }
-      // Train acquired authority — nothing to report.
-      if (controller.path_backed_run_active || controller.assigned_path_id) {
+      // Train holds a reservation — nothing to report.
+      if (data.controller.received_path_plan || data.controller.assigned_path_id) {
         return;
       }
-      const pathError = controller.path_error;
-      if (pathError && pathError.text) {
-        showToast(`${trainId} could not find a path: ${pathError.text}`, 'error', 8000);
+      // Every explanation of a stopped train reads its hold reason
+      // (design_new.md "Hold reason").
+      const hold = data.operator_status?.hold_reason;
+      if (hold?.code === 'no_reservation' && hold.detail) {
+        showToast(`${trainId}: ${holdReasonText(hold)}`, 'error', 8000);
         return;
       }
     }

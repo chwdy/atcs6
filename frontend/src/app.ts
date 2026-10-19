@@ -44,6 +44,9 @@ class App {
   hasInitiallyCentered: boolean;
   hasInitiallySelected: boolean;
   isSimulationRunning: boolean;
+  // The active operating environment (`simulation`, `virtual_hardware` or
+  // `real_hardware`), from the network snapshot.
+  operationEnvironment: string | null = null;
   editorMode: 'edit' | 'sim' = 'edit';
   selectedTrainId: string | null;
   lastLookaheadFetch: number;
@@ -352,6 +355,7 @@ class App {
       chip.dataset.halt = state?.halt_reason ?? '';
     }
 
+    this.operationEnvironment = network?.operation_environment ?? null;
     const controls = sessionControls(state, network?.operation_environment);
     const playBtn = document.getElementById('btn-play-pause') as HTMLButtonElement | null;
     if (playBtn) {
