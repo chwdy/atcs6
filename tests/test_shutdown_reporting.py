@@ -171,6 +171,159 @@ def test_supervisor_stamps_the_signal_onto_the_childs_record():
     assert record["child_exit_code"] == 0
 
 
+# --- the device stays open until the safe state is written ----------------
+
+
+@pytest.fixture
+def isolated_hardware(tmp_path, monkeypatch):
+    """A Virtual Hardware setup on temp files, reset before and after."""
+    import hardware_config
+    import operation_environment
+
+    monkeypatch.setattr(
+        hardware_config, "CONFIG_PATH", str(tmp_path / "hardware_config.json")
+    )
+    monkeypatch.setattr(
+        operation_environment,
+        "ENVIRONMENT_PATH",
+        str(tmp_path / "operation_environment.json"),
+    )
+    hardware_config.reset_to_defaults()
+    yield hardware_config
+    hardware_config.reset_to_defaults()
+
+
+def test_finalize_closes_the_device_after_the_safe_state_not_before(
+    isolated_hardware, monkeypatch
+):
+    from hardware.fake import FakeCh347Device
+
+    device = FakeCh347Device()
+    device.open()
+    monkeypatch.setattr(isolated_hardware, "_live_device", device)
+    open_during_safe_state = []
+
+    class Sim:
+        def enter_safe_state(self):
+            open_during_safe_state.append(not device.closed)
+
+    shutdown._finalize(Sim(), FakeState())
+
+    assert open_during_safe_state == [True]
+    assert device.closed is True
+    assert isolated_hardware.get_live_device() is None
+
+
+@pytest.mark.parametrize("activated_after_boot", [False, True])
+def test_sigint_safes_the_outputs_of_a_session_activated_after_boot(
+    isolated_hardware, monkeypatch, tmp_path, activated_after_boot
+):
+    """The 2026-10-16 rig run: Ctrl-C reported `safe_state_applied: false`,
+    every chip refusing with "the CH347 is not open".
+
+    Each device open used to register its own `atexit` close. One opened at
+    boot registered before `_finalize`, so it closed last; one opened by an
+    activation after boot registered after `_finalize`, and atexit runs the
+    newest hook first -- so the device was closed before the safe state was
+    written through it.
+
+    This boots a Virtual Hardware session the way `server.main` does, activates
+    it again through the real route, then runs every exit hook registered along
+    the way in atexit's order. The fake refuses the bus once closed, as the
+    real `Ch347Device` does.
+    """
+    import atexit
+    import threading
+    from datetime import datetime
+
+    import operation_environment
+    from app_factory import create_app
+    from app_state import AppState
+    from block import Block
+    from enums import OperationMode
+    from network import RailwayNetwork
+    from path_dispatcher import PathDispatcher
+    from persistence import PersistenceManager
+    from simulation import SimulationController
+
+    exit_hooks = []
+    monkeypatch.setattr(
+        atexit, "register", lambda fn, *a, **k: exit_hooks.append((fn, a, k))
+    )
+    monkeypatch.setattr(shutdown, "_install_signal_handlers", lambda: None)
+
+    hardware_config = isolated_hardware
+    hardware_config.apply_updates(
+        {
+            "controller": {"kind": "ch347", "device_port": None},
+            "chips": [
+                {"chip_id": "pwm1", "kind": "pca9685", "i2c_address": "0x40"},
+                {"chip_id": "sw1", "kind": "hc595", "spi_select": "cs0", "chain_length": 3},
+                {"chip_id": "in1", "kind": "hc165", "spi_select": "cs1"},
+                {"chip_id": "cur1", "kind": "ina3221", "i2c_address": "0x41"},
+            ],
+            "block_track": {"B1": {"chip_id": "pwm1", "forward": 0, "reverse": 1}},
+            "switch_output": {},
+            "block_occupancy": {"B1": {"chip_id": "in1", "port": 2}},
+            "block_occupancy_current": {
+                "B1": {"chip_id": "cur1", "port": 0, "threshold_ma": 15.0},
+            },
+        },
+        persist=False,
+    )
+    operation_environment.select(OperationMode.VIRTUAL_HARDWARE, persist=False)
+
+    # Boot: the session's device opens before shutdown reporting is installed.
+    network = RailwayNetwork()
+    network.blocks["B1"] = Block(block_id="B1")
+    dispatcher = PathDispatcher(network)
+    interfaces = hardware_config.build_session_interfaces(
+        environment=OperationMode.VIRTUAL_HARDWARE,
+        track_polarity_of=hardware_config.track_polarity_reversed,
+    )
+    sim = SimulationController(
+        network,
+        dispatcher,
+        operation_mode=OperationMode.VIRTUAL_HARDWARE,
+        input_interface=interfaces[0],
+        block_output_interface=interfaces[1],
+        switch_output_interface=interfaces[2],
+        environment_active=True,
+        activation_issues=[],
+    )
+    state = AppState(
+        network=network,
+        path_dispatcher=dispatcher,
+        sim_controller=sim,
+        persistence_manager=PersistenceManager(storage_dir=str(tmp_path / "layouts")),
+        simulation_lock=threading.Lock(),
+        simulation_running=False,
+        simulation_speed=1.0,
+        last_update_time=datetime.now(),
+    )
+    shutdown.install_shutdown_reporting(sim, state=state, port=None)
+
+    if activated_after_boot:
+        app = create_app(state)
+        app.config["TESTING"] = True
+        response = app.test_client().post("/api/operation/activate")
+        assert response.status_code == 200, response.get_json()
+    device = hardware_config.get_live_device()
+    assert device is not None and not device.closed
+
+    # Ctrl-C: the signal handler exits, and atexit runs newest-first.
+    monkeypatch.setattr(shutdown, "_caught_signal", signal.SIGINT)
+    for fn, args, kwargs in reversed(exit_hooks):
+        fn(*args, **kwargs)
+
+    record = shutdown.read_last_shutdown()
+    assert record["safe_state_error"] is None
+    assert record["safe_state_applied"] is True
+    assert record["signal_name"] == "SIGINT"
+    assert device.closed is True
+    assert hardware_config.get_live_device() is None
+
+
 # --- port takeover --------------------------------------------------------
 
 # One lsof -F block per process: `p` opens it, `R`/`c`/`f` describe it. The

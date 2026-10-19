@@ -34,7 +34,9 @@ This module closes that hole from three sides:
    way a file-change reload already died -- cleanly, with atexit running.
 2. `install_shutdown_reporting()` owns the safe-state call for every exit path
    (normal return, SystemExit, unhandled exception, caught signal) and prints
-   exactly what happened and whether the outputs were actually safed.
+   exactly what happened and whether the outputs were actually safed. It also
+   owns closing the session's hardware device at exit, and closes it only
+   after the safe state, because the safe state is written through it.
 3. A run marker catches what no handler can catch -- a real SIGKILL, a host
    crash, a power loss. It is written at boot and removed on a clean exit; a
    marker still present at the *next* boot proves the previous run died with
@@ -340,7 +342,8 @@ def install_shutdown_reporting(
 
     Replaces `atexit.register(sim_controller.enter_safe_state)`: this owns the
     safe-state call so it can also say, in the console and in the record,
-    whether it actually succeeded.
+    whether it actually succeeded. It then closes the hardware device, which
+    nothing else closes at exit (see `_close_hardware_device`).
 
     Returns the previous run's shutdown record when that run died unclean
     (see `claim_run_marker`), otherwise None.
@@ -382,6 +385,10 @@ def _finalize(sim_controller: Any, state: Any) -> None:
     _reported = True
 
     safe_ok, safe_ms, safe_err = _apply_safe_state(sim_controller)
+    # Straight after the safe state, before the record: once the handle is
+    # closed, a tick still running on a daemon thread can no longer re-energize
+    # what was just zeroed.
+    _close_hardware_device()
 
     signum = _caught_signal
     record: dict[str, Any] = {
@@ -432,6 +439,23 @@ def _apply_safe_state(sim_controller: Any) -> tuple[bool, float, Optional[str]]:
     except Exception as exc:  # a failure here is exactly what must be reported
         return False, (time.time() - started) * 1000.0, f"{type(exc).__name__}: {exc}"
     return True, (time.time() - started) * 1000.0, None
+
+
+def _close_hardware_device() -> None:
+    """Close the session's hardware device, now that the safe state is written.
+
+    This is the only place a process exit closes it. Each device open used to
+    register its own `atexit` close, and atexit runs the newest hook first: a
+    device opened by an activation after boot -- which registers after
+    `_finalize` -- was closed before `_finalize` ran, so every safe-state write
+    failed with "the CH347 is not open" and the rig was left energized.
+    """
+    try:
+        import hardware_config
+
+        hardware_config.close_live_device()
+    except Exception as exc:  # the record below must still be written
+        print(f"[Shutdown] Could not close the hardware device: {exc}", flush=True)
 
 
 def _simulation_summary(state: Any) -> dict[str, Any]:

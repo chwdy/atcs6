@@ -35,7 +35,6 @@ def _isolated_hw_config(tmp_path, monkeypatch):
     monkeypatch.setattr(
         hardware_config, "CONFIG_PATH", str(tmp_path / "hardware_config.json")
     )
-    monkeypatch.setattr(hardware_config.atexit, "register", lambda *a, **k: None)
     hardware_config.reset_to_defaults()
     yield
     hardware_config.reset_to_defaults()
