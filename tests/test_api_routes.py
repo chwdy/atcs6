@@ -1165,9 +1165,19 @@ class TestMiscRoutes:
         assert data["status"] == "success"
 
     def test_simulation_control_stop(self, client):
-        """POST /api/simulation/control with action=stop should stop simulation."""
+        """Pause is accepted only while the session is Live (design_new.md
+        "Session state"): refused while Paused, accepted after Play."""
+        assert client.post(
+            "/api/simulation/control", json={"action": "stop"}
+        ).status_code == 409
+        client.post("/api/simulation/control", json={"action": "start"})
         response = client.post("/api/simulation/control", json={"action": "stop"})
         assert response.status_code == 200
+        assert response.get_json()["session_state"]["value"] == "paused"
+
+    def test_simulation_control_refuses_an_unknown_action(self, client):
+        response = client.post("/api/simulation/control", json={"action": "reset"})
+        assert response.status_code == 409
 
     def test_list_layouts(self, client):
         """GET /api/layouts should list layouts."""

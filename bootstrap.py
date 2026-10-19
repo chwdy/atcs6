@@ -217,51 +217,30 @@ def bootstrap_runtime(
     if event_log_path:
         notification_center.enable_event_log(event_log_path)
 
-    # design_new.md "Hardware setup": the hardware backend is
-    # chosen once when the operation session is built. Load the persisted
-    # selection from disk and resolve it to the interface overrides the session
-    # wires. `None` in a slot means "use the simulated default". A real backend
-    # whose driver is not present in this build raises
-    # HardwareBackendUnavailable; fall back to sim mode so the server still boots
-    # (the selection stays on disk, and takes effect once its driver lands).
+    # design_new.md "Activation starts the railway over", Boot activates no
+    # hardware environment: with Simulation selected the runtime activates
+    # Simulation and the session boots Paused; a Virtual Hardware or Real
+    # Hardware selection is not activated at boot, so the session boots Halted
+    # for `not_activated` until the operator activates it. Boot runs no
+    # readiness check of its own. The setup and the selection are still loaded,
+    # because activation reads both.
     hardware_config.load_from_disk()
     operation_environment.load_from_disk()
-    hw_cfg = hardware_config.get_hardware_config()
     selected_environment = operation_environment.get_selected()
-    readiness = hardware_config.activation_report(
-        hw_cfg,
-        selected_environment,
-        network.blocks.keys(),
-        network.switches.keys(),
+    operation_mode = selected_environment
+    environment_active = selected_environment is OperationMode.SIMULATION
+    activation_issues = (
+        []
+        if environment_active
+        else [{
+            "code": "not_activated",
+            "message": (
+                f"{selected_environment.value} is selected but not activated; "
+                "activate it to go live"
+            ),
+        }]
     )
-    environment_active = bool(readiness["ready"])
-    activation_issues = list(readiness["issues"])
-    try:
-        if not environment_active:
-            raise hardware_config.HardwareBackendUnavailable(
-                "; ".join(issue["message"] for issue in activation_issues)
-            )
-        input_interface, block_output_interface, switch_output_interface = (
-            hardware_config.build_session_interfaces(
-                hw_cfg,
-                environment=selected_environment,
-                # Read through to the live configuration, so flipping a block's
-                # rail polarity in the editor lands on the next track write
-                # rather than waiting for a restart.
-                track_polarity_of=hardware_config.track_polarity_reversed,
-            )
-        )
-        operation_mode = selected_environment
-    except hardware_config.HardwareBackendUnavailable as exc:
-        print(f"[bootstrap] {selected_environment.value} inactive: {exc}")
-        input_interface = block_output_interface = switch_output_interface = None
-        operation_mode = selected_environment
-        environment_active = False
-        if not activation_issues:
-            activation_issues = [{
-                "code": "backend_unavailable",
-                "message": str(exc),
-            }]
+    input_interface = block_output_interface = switch_output_interface = None
 
     sim_controller = SimulationController(
         network,

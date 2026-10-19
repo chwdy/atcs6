@@ -785,6 +785,8 @@ def test_closing_the_bench_hands_the_live_environment_back(client):
     test_client, state = client
     _ready_virtual_layout(state)
     assert test_client.post("/api/operation/activate").status_code == 200
+    # Activation goes Live, and the bench opens only from a stopped session.
+    state.simulation_running = False
     assert hardware_config.get_live_device() is not None
 
     assert test_client.post("/api/hardware/bench/open").get_json()["ok"] is True
@@ -852,6 +854,8 @@ def test_a_blocked_rebuild_is_reported_rather_than_swallowed(client):
     test_client, state = client
     _ready_virtual_layout(state)
     assert test_client.post("/api/operation/activate").status_code == 200
+    # Activation goes Live, and the bench opens only from a stopped session.
+    state.simulation_running = False
     assert test_client.post("/api/hardware/bench/open").get_json()["ok"] is True
 
     # A block added while the bench held the device has no bindings.
@@ -885,6 +889,8 @@ def test_an_expired_bench_gives_the_controller_back(client, monkeypatch):
     test_client, state = client
     _ready_virtual_layout(state)
     assert test_client.post("/api/operation/activate").status_code == 200
+    # Activation goes Live, and the bench opens only from a stopped session.
+    state.simulation_running = False
     assert test_client.post("/api/hardware/bench/open").get_json()["ok"] is True
     assert state.setup_active is True
     assert state.sim_controller.environment_active is False
@@ -914,6 +920,8 @@ def test_a_bench_that_fails_to_open_gives_the_controller_straight_back(client):
     test_client, state = client
     _ready_virtual_layout(state)
     assert test_client.post("/api/operation/activate").status_code == 200
+    # Activation goes Live, and the bench opens only from a stopped session.
+    state.simulation_running = False
     assert state.sim_controller.environment_active is True
 
     import hardware.occupancy_bench as bench_module

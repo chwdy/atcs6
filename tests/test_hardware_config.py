@@ -1020,13 +1020,12 @@ def test_bootstrap_keeps_real_environment_inactive_when_device_unavailable(monke
     )
 
 
-def test_bootstrap_real_mode_wires_ch347_interfaces(monkeypatch):
+def test_bootstrap_activates_no_hardware_environment(monkeypatch):
+    """A Real Hardware selection is not activated at boot: the session boots
+    Halted for `not_activated` until the operator activates it, and boot runs no
+    readiness check of its own (design_new.md "Activation starts the railway
+    over", Boot activates no hardware environment)."""
     import bootstrap
-    from hardware.interfaces import (
-        OccupancyDriver,
-        SwitchDriver,
-        TrackDriver,
-    )
     _patch_fake_device(monkeypatch)
     hardware_config.apply_updates(_real_payload(
         block_track={}, switch_output={}, switch_track_source={}, block_occupancy={}
@@ -1035,12 +1034,9 @@ def test_bootstrap_real_mode_wires_ch347_interfaces(monkeypatch):
         demo=False, setup_train=False
     )
     assert sim.operation_mode == OperationMode.REAL
-    assert sim.environment_active is True
-    assert isinstance(sim.input_interface, OccupancyDriver)
-    assert isinstance(sim.power_controller.output_interface, TrackDriver)
-    assert isinstance(
-        sim.switch_output_interface, SwitchDriver
-    )
+    assert sim.environment_active is False
+    assert isinstance(sim.input_interface, SimulatedOccupancyDriver)
+    assert [issue["code"] for issue in sim.activation_issues] == ["not_activated"]
 
 
 def test_bootstrap_sim_config_wires_sim_mode():

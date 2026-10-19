@@ -168,75 +168,64 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/simulation/control", methods=["POST"])
     def control_simulation():
+        """Play, Pause and playback speed, in Simulation only (design_new.md
+        "Session state"; "Running and stopped").
+
+        - `start` (Play) is accepted only while the session is Paused and
+          writes `simulation_running = True`.
+        - `stop` (Pause) is accepted only while it is Live: it enters the safe
+          state, which ends every open calibration run, and writes
+          `simulation_running = False`.
+        - `set_speed` sets `simulation_speed`, the playback multiplier.
+
+        Every other case is refused with 409 and changes nothing, including
+        every request in Virtual Hardware and Real Hardware: those go Live
+        through activation, run at wall-clock speed, and have no Pause.
+        """
+        from enums import OperationMode, SessionStateValue
+
         data = request.json or {}
         action = data.get("action")
+        sim = getattr(state, "sim_controller", None)
 
-        if action == "start":
-            # Refused under a fatal halt (design_new.md "Runtime settings",
-            # POST /api/simulation/control): failed_runtime blocks start in every
-            # environment; a latched hardware_failure blocks start only when the
-            # active environment is hardware-backed — a Simulation environment
-            # starts despite it, per Simulation is independent of Hardware Setup.
-            from enums import OperationMode
+        def refuse(message):
+            return jsonify({"status": "error", "message": message}), 409
 
-            sim = getattr(state, "sim_controller", None)
-            if sim is not None and sim.failed_runtime:
-                return (
-                    jsonify(
-                        {
-                            "status": "error",
-                            "message": (
-                                "cannot start while a fatal-conflict halt is "
-                                "set; clear it first"
-                            ),
-                        }
-                    ),
-                    409,
+        with state.simulation_lock:
+            if sim is None or sim.operation_mode is not OperationMode.SIMULATION:
+                return refuse(
+                    "Play, Pause and playback speed exist only in Simulation"
                 )
-            if (
-                sim is not None
-                and sim.hardware_failure
-                and sim.operation_mode is not OperationMode.SIMULATION
-            ):
-                return (
-                    jsonify(
-                        {
-                            "status": "error",
-                            "message": (
-                                "cannot start a hardware-backed environment "
-                                "while a hardware failure is latched; clear it "
-                                "first"
-                            ),
-                        }
-                    ),
-                    409,
-                )
-            state.simulation_running = True
-        elif action == "stop":
-            state.simulation_running = False
-        elif action == "reset":
-            state.simulation_running = False
-        elif action == "set_speed":
-            state.simulation_speed = data.get("speed", 1.0)
-
-        if action in ("stop", "reset"):
-            # Stopping is a physical act (design_new.md "Running and stopped"):
-            # it advances the runtime safe-state generation and delegates to the
-            # de-energize sequence, so every block voltage goes to 0 and every
-            # point motor de-energizes. Through the runtime-thread wrapper, not
-            # the raw sequence, so the recorded voltages are reconciled and every
-            # open calibration run ends. The wrapper changes runtime state, so it
-            # runs under the lock, between ticks.
-            sim = getattr(state, "sim_controller", None)
-            if sim is not None:
-                with state.simulation_lock:
-                    sim.enter_output_safe_state()
+            session = state.session_state()
+            if action == "start":
+                if session.value is not SessionStateValue.PAUSED:
+                    return refuse(f"Play needs a paused session; it is {session.value.value}")
+                state.simulation_running = True
+            elif action == "stop":
+                if not session.is_live:
+                    return refuse(f"Pause needs a live session; it is {session.value.value}")
+                # Leaving Live enters the safe state (design_new.md "Running
+                # and stopped"): every block voltage goes to 0, every point
+                # motor de-energizes, and every open calibration run ends.
+                sim.enter_output_safe_state()
+                state.simulation_running = False
+            elif action == "set_speed":
+                try:
+                    speed = float(data.get("speed", 1.0))
+                except (TypeError, ValueError):
+                    return jsonify({"status": "error", "message": "speed must be a number"}), 400
+                if speed <= 0:
+                    return jsonify({"status": "error", "message": "speed must be positive"}), 400
+                state.simulation_speed = speed
+            else:
+                return refuse(f"unknown action {action!r}")
 
         return jsonify(
             {
                 "status": "success",
                 "running": state.simulation_running,
                 "speed": state.simulation_speed,
+                "session_state": state.session_state().to_dict(),
             }
         )
 
@@ -253,20 +242,6 @@ def register(app, state: AppState) -> None:
         except ValidationError as exc:
             return jsonify({"status": "error", "message": str(exc)}), 400
         return jsonify({"status": "success", "cleared_conflict": cleared})
-
-    @app.route("/api/runtime/clear-hardware-failure", methods=["POST"])
-    def clear_hardware_failure():
-        """Release a hardware-failure halt.
-
-        Separate from clear-fatal because the way out is different: the safe
-        state revoked physical output permission, and only activation grants it
-        again, so this is refused until the environment has been reactivated.
-        """
-        try:
-            cleared = train_service.clear_hardware_failure(state)
-        except ValidationError as exc:
-            return jsonify({"status": "error", "message": str(exc)}), 400
-        return jsonify({"status": "success", "cleared_failure": cleared})
 
     @app.route("/api/health", methods=["GET"])
     def health():

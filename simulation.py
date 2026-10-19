@@ -173,9 +173,8 @@ class SimulationController(SwitchOutputOwner):
         # hardware failure revoked output permission, and only activation grants
         # that again, so reactivation is the whole of its recovery surface.
         self.hardware_failure: bool = False
-        # The halt retains only the bool latch above and the activation
-        # generation it failed against (`hardware_failure_activation_generation`,
-        # below). It keeps no ErrorRecord or timestamp: the diagnostic lives in
+        # The halt retains only the bool latch above. It keeps no ErrorRecord
+        # or timestamp: the diagnostic lives in
         # the event stream, and every "what went wrong here" read filters that
         # one stream (design_new.md "Error events"; "Power", Hardware I/O
         # failure — "It retains no ErrorRecord or second diagnostic payload
@@ -336,14 +335,6 @@ class SimulationController(SwitchOutputOwner):
         # their own flag and never `AppState.simulation_running`, which is only
         # the Play/Pause bit.
         self.layout_cut_out_active: bool = False
-
-        # Runtime-only counters, both starting at `0` (design_new.md "Power").
-        # `POST /api/operation/activate` bumps the first on every successful
-        # activation; the second records the activation generation at which the
-        # current `hardware_failure` was latched, so a clear can tell a stale
-        # failure from one raised since the last activation.
-        self.environment_activation_generation: int = 0
-        self.hardware_failure_activation_generation: int = 0
 
         # Wire back-references so peer components can reach the notification
         # center, the route executor, and each other.
@@ -1330,20 +1321,34 @@ class SimulationController(SwitchOutputOwner):
         self._bind_interfaces(
             input_interface, block_output_interface, switch_output_interface
         )
-        # Activation does NOT clear a pre-existing fatal-halt latch. Recovery is
-        # reactivation followed by an explicit clear (design_new.md "Power",
-        # Recovery is reactivation followed by an explicit clear): the sole
-        # writers of `failed_runtime = False` / `hardware_failure = False` are
-        # `clear_failed_runtime()` / `clear_hardware_failure()`. Activation only
-        # marks the environment active and advances the generation below, so a
-        # later clear can prove a successful activation happened since the failure.
+        # Binding the interfaces marks the environment active. The session
+        # flags a successful activation clears are written once the railway
+        # has been started over (see `finish_activation`).
         self.activation_issues = []
         self.environment_active = True
-        # Every successful activation is a new generation, so a later reader can
-        # tell a hardware failure raised since the last activation from a stale
-        # one (design_new.md "Power", Recovery is reactivation followed by an
-        # explicit clear).
-        self.environment_activation_generation += 1
+
+    def finish_activation(self) -> None:
+        """Clear the controller's session flags after a successful activation
+        has started the railway over (design_new.md "Session state", Activate
+        succeeds).
+
+        It clears the layout emergency cut-out. For a Virtual Hardware or Real
+        Hardware activation it also clears `hardware_failure`: the activation
+        rebuilt every interface and verified the environment, so its success
+        shows the device answers again (design_new.md "Power", Recovery is
+        reactivation). Activating Simulation leaves the latch set, because
+        running Simulation proves nothing about the rig.
+        """
+        self.layout_cut_out_active = False
+        if self.hardware_failure and self.operation_mode is not OperationMode.SIMULATION:
+            self.hardware_failure = False
+            self.notification_center.emit(
+                source="SimulationController",
+                operation="finish_activation",
+                kind=Kind.INFO,
+                message="hardware failure cleared by a successful activation",
+                event_time=time.time(),
+            )
 
     def release_interfaces(self) -> None:
         """Drop the hardware boundary once its controller handle is released.
@@ -3438,14 +3443,6 @@ class SimulationController(SwitchOutputOwner):
             logger.exception("hardware safe-state command failed")
         finally:
             self.hardware_failure = True
-            # Record which activation generation this failure was raised
-            # against, so a later reader can tell it apart from one latched
-            # before the most recent activation. This int is the only state the
-            # halt retains across ticks; the diagnostic detail (`payload`) is
-            # carried by the event emitted just below, not stored on `self`.
-            self.hardware_failure_activation_generation = (
-                self.environment_activation_generation
-            )
             # Safe state revoked physical output permission. The environment is
             # no longer driving anything, and only activation grants that back.
             self.environment_active = False
@@ -3473,58 +3470,6 @@ class SimulationController(SwitchOutputOwner):
                 "safe_state_error": safe_state_error,
                 "requires_new_activation": True,
             },
-        )
-
-    def clear_hardware_failure(self) -> None:
-        """Release the hardware halt. The only writer of
-        ``hardware_failure = False`` (design_new.md "Power", Hardware I/O
-        failure).
-
-        Refused unless the environment has been reactivated. The safe state
-        revoked physical output permission and only activation grants it again,
-        so reactivation is the whole of the recovery surface: repair or replace
-        the device, activate a newly validated session, then clear. There is
-        nothing to clear in place, which is why
-        :meth:`clear_failed_runtime` does not clear this flag.
-
-        Returns nothing: the halt retains no failure payload to hand back. Its
-        diagnostic was emitted once into the event stream when it latched, and
-        that is where any surface reads it (design_new.md "Error events").
-
-        Raises:
-            ValueError: If there is no hardware halt, or the environment has
-                not been reactivated since it latched.
-        """
-        if not self.hardware_failure:
-            raise ValueError(
-                "There is no hardware failure; there is nothing to clear"
-            )
-        if self.operation_mode is OperationMode.SIMULATION:
-            raise ValueError(
-                "A hardware failure can only be cleared from a Virtual or Real "
-                "Hardware environment; the active environment is Simulation"
-            )
-        if not (
-            self.environment_active
-            and self.environment_activation_generation
-            > self.hardware_failure_activation_generation
-        ):
-            raise ValueError(
-                "A hardware failure cannot be cleared until a newly validated "
-                "hardware environment has been activated since it latched; "
-                "repair the hardware, activate again, then clear"
-            )
-
-        self.hardware_failure = False
-
-        self.notification_center.emit(
-            source="SimulationController",
-            operation="clear_hardware_failure",
-            kind=Kind.INFO,
-            message=(
-                "hardware failure cleared after the environment was reactivated"
-            ),
-            event_time=time.time(),
         )
 
     def start_railway_over(self) -> None:

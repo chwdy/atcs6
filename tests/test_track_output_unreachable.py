@@ -65,80 +65,68 @@ def test_a_refused_write_never_claims_the_block_is_energized():
     assert hw_event.payload["resource_id"] == "BLK_1"
 
 
-def test_a_hardware_failure_cannot_be_cleared_in_place():
-    """The safe state revoked output permission and only a newer activation
-    grants it again, so the halt does not reopen until the environment is
-    reactivated (design_new.md "Power", Recovery is reactivation followed by an
-    explicit clear)."""
+def test_a_hardware_failure_stays_latched_until_an_activation_succeeds():
+    """The safe state revoked output permission and only a successful
+    activation grants it again; the conflict clearer does not touch the latch
+    (design_new.md "Power", Recovery is reactivation)."""
+    import pytest
+
     _network, sim, pc = power_controller({"BLK_1"})
     # A hardware I/O failure only arises in a hardware-backed environment.
     sim.operation_mode = OperationMode.VIRTUAL_HARDWARE
     pc.set_block_voltage("BLK_1", 10.0)
 
-    import pytest
-
-    # The failure deactivated the environment and no newer activation has
-    # happened since it latched, so clearing is refused.
     assert sim.environment_active is False
-    with pytest.raises(ValueError, match="activate again"):
-        sim.clear_hardware_failure()
-
-    # And the conflict clearer does not touch it.
+    assert sim.hardware_failure is True
+    assert not hasattr(sim, "clear_hardware_failure")
     with pytest.raises(ValueError, match="not halted"):
         sim.clear_failed_runtime()
     assert sim.hardware_failure is True
 
 
-def test_a_hardware_failure_clears_once_the_environment_is_reactivated():
+def test_a_successful_hardware_activation_clears_the_latch():
     _network, sim, pc = power_controller({"BLK_1"})
     sim.operation_mode = OperationMode.VIRTUAL_HARDWARE
     pc.set_block_voltage("BLK_1", 10.0)
 
-    # A successful reactivation: the environment is active again, with an
-    # activation generation newer than the one captured when the failure latched.
-    sim.environment_active = True
-    sim.environment_activation_generation = (
-        sim.hardware_failure_activation_generation + 1
-    )
-    # The clear returns nothing: the halt kept no payload to hand back.
-    assert sim.clear_hardware_failure() is None
+    sim.environment_active = True  # the activation bound new interfaces
+    sim.finish_activation()
+
     assert sim.hardware_failure is False
     assert sim.runtime_halted is False
+    cleared = sim.notification_center.latest_by_operation("finish_activation")
+    assert cleared is not None
 
 
-def test_the_halt_retains_only_the_generation_int_not_a_payload():
-    """Across ticks the halt keeps only `hardware_failure_activation_generation`;
-    its diagnostic lives in the event stream, and recovery still works
-    (design_new.md "Power", Hardware I/O failure — "It retains no ErrorRecord or
-    second diagnostic payload across ticks"; "Error events")."""
+def test_activating_simulation_leaves_the_latch_set():
+    """Running Simulation proves nothing about the rig."""
+    _network, sim, pc = power_controller({"BLK_1"})
+    sim.operation_mode = OperationMode.VIRTUAL_HARDWARE
+    pc.set_block_voltage("BLK_1", 10.0)
+
+    sim.operation_mode = OperationMode.SIMULATION
+    sim.environment_active = True
+    sim.finish_activation()
+
+    assert sim.hardware_failure is True
+
+
+def test_the_halt_retains_no_payload():
+    """The halt keeps only its bool latch; its diagnostic lives in the event
+    stream (design_new.md "Power", Hardware I/O failure; "Error events")."""
     _network, sim, pc = power_controller({"BLK_1"})
     sim.operation_mode = OperationMode.VIRTUAL_HARDWARE
 
     assert pc.set_block_voltage("BLK_1", 10.0) is False
 
-    # No retained ErrorRecord payload or timestamp remains on the controller.
     assert not hasattr(sim, "hardware_failure_payload")
     assert not hasattr(sim, "hardware_failure_at")
-    # Only the generation int is retained, capturing the activation it failed
-    # against.
+    assert not hasattr(sim, "hardware_failure_activation_generation")
     assert sim.hardware_failure is True
-    assert (
-        sim.hardware_failure_activation_generation
-        == sim.environment_activation_generation
-    )
-    # The diagnostic reached the one event stream instead.
     hw_event = sim.notification_center.latest_by_operation("enter_hardware_failure")
     assert hw_event is not None
     assert hw_event.kind == "error"
     assert hw_event.payload["resource_id"] == "BLK_1"
-
-    # Recovery still works: reactivate, then clear.
-    sim.environment_active = True
-    sim.environment_activation_generation = (
-        sim.hardware_failure_activation_generation + 1
-    )
-    assert sim.clear_hardware_failure() is None
-    assert sim.hardware_failure is False
 
 
 def test_a_landed_write_still_records_its_voltage():

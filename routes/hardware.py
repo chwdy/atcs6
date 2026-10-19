@@ -1434,8 +1434,11 @@ def register(app, state: AppState) -> None:
         undoing that is exactly this sequence — a second copy of it would be one
         more place for the safe-state ordering below to drift.
 
-        Caller holds `simulation_lock` and has already released whatever else was
-        holding the device.
+        Caller holds `simulation_lock`. Once readiness passes it closes any
+        Setup tool still holding the device; each close completes the safe-state
+        sequence before the new interfaces take the outputs (design_new.md
+        "Hardware setup", Closing a Setup tool restores the safe state). A
+        refused activation leaves the tools as they were.
         """
         report = _readiness()
         if not report["ready"]:
@@ -1443,6 +1446,7 @@ def register(app, state: AppState) -> None:
                 report["issues"], environment=selected
             )
             return {"status": "blocked", **report}
+        _close_setup_tools_locked()
         # A rig that cannot be safed must not stop the rebuild: the outgoing
         # chips are about to be dropped, and building the new ones re-inits
         # every chip — clearing each shift-out chain before anything else on
@@ -1481,34 +1485,67 @@ def register(app, state: AppState) -> None:
             }
         return None
 
+    def _close_setup_tools_locked():
+        """Close the commissioning session and the occupancy bench if either is
+        open. Both closes are idempotent and end in the safe state."""
+        from hardware import commission
+
+        commission.get_session().close()
+        _bench_session().close()
+
     @app.route("/api/operation/readiness", methods=["GET"])
     def get_operation_readiness():
         return jsonify(_readiness())
 
     @app.route("/api/operation/activate", methods=["POST"])
     def activate_operation_environment():
-        if state.setup_active:
-            return jsonify({
-                "status": "error",
-                "error": "exit commissioning before activation",
-            }), 409
-        if state.simulation_running:
-            return jsonify({
-                "status": "error",
-                "error": "stop operation before activating an environment",
-            }), 409
+        """Activate the selected environment and go Live (design_new.md
+        "Activation starts the railway over"; "Session state").
+
+        Refused with 409 while the session is Live, and while it is Halted for
+        `runtime_failure`, which the operator clears first. Otherwise it builds
+        the interfaces, verifies the environment, starts the railway over, and
+        writes the flags of a successful activation: it leaves Setup, clears the
+        layout emergency cut-out, clears a latched hardware failure when the
+        environment is Virtual Hardware or Real Hardware, and writes
+        `simulation_running = True`. A Virtual Hardware or Real Hardware session
+        runs at wall-clock speed, so `simulation_speed` goes back to `1.0`. A
+        refused or failed activation leaves no environment active and changes
+        nothing else.
+        """
+        from enums import HaltReason
+
         selected = operation_environment.get_selected()
         with state.simulation_lock:
+            session = state.session_state()
+            if session.is_live:
+                return jsonify({
+                    "status": "error",
+                    "error": "the session is live; enter Setup or stop it before activating",
+                }), 409
+            if session.halt_reason is HaltReason.RUNTIME_FAILURE:
+                return jsonify({
+                    "status": "error",
+                    "error": "clear the runtime failure before activating",
+                }), 409
             blocked = _activate_locked(selected)
             if blocked is None:
                 # design_new.md "Activation starts the railway over": before the
                 # new environment's first tick, drop live paths, running runs,
                 # and train power; keep the layout, setup, trains, and routes.
                 state.sim_controller.start_railway_over()
+                state.sim_controller.finish_activation()
+                state.setup_active = False
+                state.bench_owns_commissioning = False
+                state.bench_restore_environment = False
+                if selected is not OperationMode.SIMULATION:
+                    state.simulation_speed = 1.0
+                state.simulation_running = True
         if blocked is not None:
             return jsonify(blocked), 409
         return jsonify({
             "status": "success",
             "environment": selected.value,
             "active": True,
+            "session_state": state.session_state().to_dict(),
         })

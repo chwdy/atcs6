@@ -415,28 +415,6 @@ def clear_failed_runtime(state: AppState) -> dict:
     }
 
 
-def clear_hardware_failure(state: AppState) -> dict:
-    """Release a hardware-failure halt after the environment was reactivated.
-
-    Raises:
-        ValidationError when there is no runtime, no hardware halt, or the
-        environment has not been reactivated since the failure latched.
-    """
-    with state.simulation_lock:
-        if state.sim_controller is None:
-            raise ValidationError("No simulation runtime is running")
-        try:
-            payload = state.sim_controller.clear_hardware_failure()
-        except ValueError as exc:
-            raise ValidationError(str(exc)) from exc
-    return {
-        "component": payload.component if payload else None,
-        "operation": payload.operation if payload else None,
-        "resource_id": payload.resource_id if payload else None,
-        "message": payload.message if payload else None,
-    }
-
-
 def delete_train(state: AppState, train_id: str) -> bool:
     """Remove a train from the network. Returns True on success.
 
