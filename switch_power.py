@@ -141,8 +141,69 @@ class SwitchPowerController:
         Returns True when the command reached the device and False when it did
         not. True is not a claim that the points seated — a solenoid point
         motor reports nothing back.
+
+        A refusal or an exception after activation means the device contract
+        failed at runtime (design_new.md "Power", An unissued throw is fatal to
+        a hardware-backed session). This controller is the only reporter of it:
+        it reports the failed command through `NotificationCenter` and the
+        failure to `SimulationController.enter_hardware_failure(...)`, which
+        drives the safe state itself — the same way `BlockPowerController`
+        reports a refused voltage write. `SwitchManager` only sees the False
+        return and rolls back its software locks.
         """
-        return bool(self.output_interface.set_throw(switch_id, int(target_state)))
+        failure: Optional[str] = None
+        try:
+            issued = bool(self.output_interface.set_throw(switch_id, int(target_state)))
+            if not issued:
+                failure = "output driver refused the throw"
+        except Exception as exc:  # noqa: BLE001 - device errors enter one fatal path
+            issued = False
+            failure = f"output throw raised {type(exc).__name__}: {exc}"
+        if not issued:
+            self._report_unissued_throw(
+                switch_id, int(target_state), failure or "throw failed"
+            )
+        return issued
+
+    def _report_unissued_throw(
+        self, switch_id: str, target_state: int, reason: str
+    ) -> None:
+        """Report an unissued throw: one warning event, then the hardware
+        failure latch. No-op when no runtime is wired (editor/unit setups)."""
+        controller = self._sim_controller
+        if controller is None:
+            return
+        center = getattr(controller, "notification_center", None)
+        if center is not None:
+            from notification_center import Kind, switch_ref
+            from runtime_payloads import ErrorRecord
+
+            try:
+                center.emit(
+                    source="SwitchPowerController",
+                    operation="set_throw",
+                    kind=Kind.WARNING,
+                    message=f"switch {switch_id} throw not issued: {reason}",
+                    entities=[switch_ref(switch_id)],
+                    error=ErrorRecord(reason, "throw_not_issued"),
+                )
+            except Exception:
+                pass
+        enter = getattr(controller, "enter_hardware_failure", None)
+        if callable(enter):
+            from runtime_payloads import HardwareFailure
+
+            enter(
+                HardwareFailure(
+                    component="switch_output",
+                    operation="set_throw",
+                    resource_id=switch_id,
+                    message=(
+                        f"Could not command switch {switch_id} to "
+                        f"{target_state}: {reason}"
+                    ),
+                )
+            )
 
     def get_last_throw(self, switch_id: str) -> Optional[int]:
         """The last target alignment this controller commanded, or None."""

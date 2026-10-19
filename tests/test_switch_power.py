@@ -158,28 +158,53 @@ def test_request_position_change_rejects_unissued_throw():
     assert int(sw.position) == 1
 
 
-def test_an_unissued_throw_latches_a_hardware_failure():
-    class RefusingInterface(SimulatedSwitchDriver):
+class _RecordingRuntime:
+    """The two things `SwitchPowerController` reports an unissued throw to."""
+
+    def __init__(self):
+        self.failures = []
+        self.events = []
+        self.notification_center = self
+
+    def enter_hardware_failure(self, failure):
+        self.failures.append(failure)
+
+    def emit(self, **event):
+        self.events.append(event)
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_an_unissued_throw_is_reported_by_the_switch_power_controller(raises):
+    """design_new.md "Power", An unissued throw is fatal to a hardware-backed
+    session: `SwitchPowerController` is the only reporter; `SwitchManager`
+    reports nothing itself."""
+
+    class FailingInterface(SimulatedSwitchDriver):
         def set_throw(self, switch_id, target_state):
+            if raises:
+                raise OSError("read error")
             return False
 
-    failures = []
+    runtime = _RecordingRuntime()
     net, _sw = _standard_switch_network()
-    # The refusing output lives on the network, where SwitchManager resolves it;
-    # the hardware-failure latch is the injected narrow reporter.
-    net.switch_output_interface = RefusingInterface()
+    net.switch_output_interface = FailingInterface()
+    net.switch_power_controller._sim_controller = runtime
+    manager_events = []
     mgr = SwitchManager(
         switches=net.switches,
         network=net,
-        hardware_failure_reporter=failures.append,
+        notification_emitter=lambda **event: manager_events.append(event),
     )
 
     ok, _reason = mgr.request_position_change("SW_1_0", 1)
 
     assert ok is False
-    assert isinstance(failures[0], HardwareFailure)
-    assert failures[0].component == "switch_output"
-    assert failures[0].resource_id == "SW_1_0"
+    assert len(runtime.failures) == 1
+    assert isinstance(runtime.failures[0], HardwareFailure)
+    assert runtime.failures[0].component == "switch_output"
+    assert runtime.failures[0].resource_id == "SW_1_0"
+    assert [e["source"] for e in runtime.events] == ["SwitchPowerController"]
+    assert not any(e.get("kind") == "warning" for e in manager_events)
 
 
 def test_request_position_change_no_interface_is_noop_success():

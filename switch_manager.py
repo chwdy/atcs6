@@ -126,7 +126,6 @@ class SwitchManager:
         fatal_conflict_reporter: Optional[Callable] = None,
         environment_active_getter: Optional[Callable[[], bool]] = None,
         active_path_getter: Optional[Callable[[str], object]] = None,
-        hardware_failure_reporter: Optional[Callable] = None,
     ):
         """Per design_new.md "Switch-manager model", the manager holds the
         network plus narrow injected callbacks only; it never receives or looks
@@ -151,10 +150,10 @@ class SwitchManager:
             active_path_getter: callback taking a `train_id` and returning that
                 train's active `Path` (or `None`), used only to fill a fatal
                 switch-conflict payload's `incoming_path_id`.
-            hardware_failure_reporter: callback taking one `HardwareFailure`,
-                runtime-wired to
-                `SimulationController.enter_hardware_failure(...)`; latches an
-                unissued switch throw. `None` skips the latch.
+
+        A throw that fails to reach the device is reported by
+        `SwitchPowerController`, not here (design_new.md "Power", An unissued
+        throw is fatal to a hardware-backed session).
         """
         self.switches = switches
         self.network = network
@@ -162,7 +161,6 @@ class SwitchManager:
         self.fatal_conflict_reporter = fatal_conflict_reporter
         self.environment_active_getter = environment_active_getter
         self.active_path_getter = active_path_getter
-        self.hardware_failure_reporter = hardware_failure_reporter
 
     # ------------------------------------------------------------------
     # Registry accessor (prefer network over fallback dict)
@@ -309,7 +307,6 @@ class SwitchManager:
                 switch, int(req.locked_state), force=True
             )
             if fail_reason is not None:
-                self._emit_throw_diagnostic(req.switch_id, fail_reason)
                 if not was_present:
                     switch.release_lock(
                         path_id=path_id,
@@ -836,37 +833,12 @@ class SwitchManager:
             last = controller.get_last_throw(switch.switch_id)
             if last is not None and int(last) == int(target_state):
                 return None                # the motor was last driven there
-        try:
-            issued = controller.set_throw(switch.switch_id, int(target_state))
-            failure = "output driver refused the throw" if not issued else None
-        except Exception as exc:  # noqa: BLE001 - device errors enter one fatal path
-            issued = False
-            failure = f"output throw raised {type(exc).__name__}: {exc}"
-        if not issued:
-            self._latch_hardware_failure(
-                switch.switch_id, int(target_state), failure or "throw failed"
-            )
-            return f"throw not issued (no hardware binding or output failure: {failure})"
+        # `SwitchPowerController.set_throw` reports an unissued throw itself
+        # (the warning and the hardware-failure latch); this manager only reads
+        # the False return and lets its caller roll back the software locks.
+        if not controller.set_throw(switch.switch_id, int(target_state)):
+            return "throw not issued (no hardware binding or output failure)"
         return None
-
-    def _latch_hardware_failure(
-        self, switch_id: str, target_state: int, message: str
-    ) -> None:
-        reporter = self.hardware_failure_reporter
-        if reporter is None:
-            return
-        from runtime_payloads import HardwareFailure
-
-        reporter(
-            HardwareFailure(
-                component="switch_output",
-                operation="set_throw",
-                resource_id=switch_id,
-                message=(
-                    f"Could not command switch {switch_id} to {target_state}: {message}"
-                ),
-            )
-        )
 
     def _emit_diagnostic(
         self, message: str, switch_id: str, train_id: Optional[str] = None,
@@ -891,28 +863,6 @@ class SwitchManager:
                     ([train_ref(train_id)] if train_id else [])
                     + ([switch_ref(switch_id)] if switch_id else [])
                 ),
-            )
-        except Exception:
-            pass
-
-    def _emit_throw_diagnostic(self, switch_id: str, reason: str) -> None:
-        """Emit an unissued-throw warning through `NotificationCenter`.
-
-        Mirrors `BlockManager._emit_diagnostic`. The operator/API path surfaces
-        the failure through its own `command_result` (from the `(False, reason)`
-        return), so this direct emit is used by the dispatcher-acquisition path.
-        Skipped when no `notification_emitter` is wired; a receiver error must
-        not mask the underlying operation.
-        """
-        if self.notification_emitter is None:
-            return
-        try:
-            self.notification_emitter(
-                operation="_drive_throw",
-                kind=Kind.WARNING,
-                message=f"switch {switch_id} throw not issued: {reason}",
-                entities=[switch_ref(switch_id)],
-                error=ErrorRecord(reason, "throw_not_issued"),
             )
         except Exception:
             pass

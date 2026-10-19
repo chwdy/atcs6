@@ -15,6 +15,7 @@ commissioning open; going live needs a restart, which frees this handle anyway.
 """
 
 import atexit
+import logging
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
@@ -254,9 +255,12 @@ class CommissionSession:
             self._expire_locked()
             return {"open": self._device is not None, "chips": list(self._chips.keys())}
 
-    def close(self) -> None:
+    def close(self) -> List[str]:
+        """Close the session, zeroing every output of the chips it built.
+        Returns one message per chip whose zeroing failed, for the caller to
+        report as a hardware I/O failure."""
         with self._lock:
-            self._close_locked()
+            return self._close_locked()
 
     # -- internals -------------------------------------------------------
     @staticmethod
@@ -299,23 +303,34 @@ class CommissionSession:
 
     def _expire_locked(self) -> None:
         if self._device is not None and (time.monotonic() - self._last) > self._timeout_s:
-            self._close_locked()
+            errors = self._close_locked()
+            if errors:
+                logging.getLogger(__name__).error(
+                    "commissioning session timed out and could not zero every "
+                    "output: %s",
+                    "; ".join(errors),
+                )
 
-    def _close_locked(self) -> None:
+    def _close_locked(self) -> List[str]:
         if self._device is None:
-            return
-        # Closing a Setup tool restores the safe state (design_new.md
-        # "Hardware setup"): the session runs only in Setup, where no
-        # environment drives the outputs, so its chips are switched off whether
-        # or not the device is borrowed. A borrowed device is the session's
-        # handle, kept open for the next tool and for activation, so only an
-        # owned one is closed.
-        try:
-            for chip in self._chips.values():
-                if hasattr(chip, "all_off"):
-                    chip.all_off()
-        except Exception:
-            pass
+            return []
+        # Closing a Setup tool restores the safe state (design_new.md "Power",
+        # Hardware setup): the session runs only in Setup, where no environment
+        # drives the outputs, so it zeroes every output of every chip it built
+        # itself — not through `OutputSafety`, and without advancing
+        # `safe_state_generation` — whether or not the device is borrowed. Every
+        # chip is attempted even when one fails; the failures go back to the
+        # caller, which reports them as a hardware I/O failure. A borrowed
+        # device is the session's handle, kept open for the next tool and for
+        # activation, so only an owned one is closed.
+        errors: List[str] = []
+        for chip_id, chip in self._chips.items():
+            if not hasattr(chip, "all_off"):
+                continue
+            try:
+                chip.all_off()
+            except Exception as exc:  # noqa: BLE001 - zero the remaining chips
+                errors.append(f"{chip_id}: {exc}")
         if not self._borrowed:
             try:
                 self._device.close()
@@ -327,6 +342,7 @@ class CommissionSession:
         self._kinds = {}
         self._configured = set()
         self._driven = {}
+        return errors
 
 
 _session = CommissionSession()

@@ -378,10 +378,11 @@ class SimulationController(SwitchOutputOwner):
         # "Switch-manager model": a manager never receives or looks up
         # SimulationController). The notification callback is bound to
         # NotificationCenter with the manager's own source; the fatal callback
-        # to enter_failed_runtime(...). SwitchManager also gets three narrow
-        # handles the doc's list omits: the operating-environment gate, the
-        # active-path lookup for a fatal payload's incoming_path_id, and the
-        # hardware-failure latch for an unissued throw.
+        # to enter_failed_runtime(...). SwitchManager also gets the
+        # operating-environment gate and the active-path lookup for a fatal
+        # payload's incoming_path_id. An unissued throw is reported by
+        # SwitchPowerController, not SwitchManager (design_new.md "Power", An
+        # unissued throw is fatal to a hardware-backed session).
         if self.block_manager is not None:
             self.block_manager.network = self.network
             self.block_manager.notification_emitter = make_notification_emitter(
@@ -399,9 +400,6 @@ class SimulationController(SwitchOutputOwner):
                 lambda: self.environment_active
             )
             self.switch_manager.active_path_getter = self._active_path_for_train
-            self.switch_manager.hardware_failure_reporter = (
-                self.enter_hardware_failure
-            )
 
     def _active_path_for_train(self, train_id: str):
         """Return `train_id`'s active `Path`, or `None`.

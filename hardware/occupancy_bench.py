@@ -49,6 +49,7 @@ de-energizes on close and at process exit.
 """
 
 import atexit
+import logging
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
@@ -212,9 +213,12 @@ class OccupancyBenchSession:
             self._touch()
             return self.status()
 
-    def close(self) -> None:
+    def close(self) -> List[str]:
+        """Close the bench, zeroing every channel of the chips it drives.
+        Returns one message per chip whose zeroing failed, for the caller to
+        report as a hardware I/O failure."""
         with self._lock:
-            self._close_locked()
+            return self._close_locked()
 
     def is_open(self) -> bool:
         with self._lock:
@@ -450,19 +454,28 @@ class OccupancyBenchSession:
 
     def _expire_locked(self) -> None:
         if self._device is not None and (time.monotonic() - self._last) > IDLE_TIMEOUT_S:
-            self._close_locked()
+            errors = self._close_locked()
+            if errors:
+                logging.getLogger(__name__).error(
+                    "occupancy bench timed out and could not zero every output: %s",
+                    "; ".join(errors),
+                )
 
-    def _close_locked(self) -> None:
+    def _close_locked(self) -> List[str]:
         if self._device is None:
-            return
-        # De-energize before letting go of the handle: an abandoned bench must
-        # not leave a layout powered, and the safe state is the one thing here
-        # worth attempting past an error on the way out.
+            return []
+        # Closing a Setup tool restores the safe state (design_new.md "Power",
+        # Hardware setup): the bench zeroes every channel of the chips it drives
+        # itself, before letting go of the handle — not through `OutputSafety`,
+        # and without advancing `safe_state_generation`, because the runtime's
+        # power controllers do not own the outputs while the bench holds them.
+        # Every chip is attempted; the failures go back to the caller.
+        errors: List[str] = []
         try:
             if self._track is not None:
-                self._track.enter_safe_state()
-        except Exception:  # noqa: BLE001 - closing is best-effort by design
-            pass
+                errors = self._track.zero_every_channel()
+        except Exception as exc:  # noqa: BLE001 - still let go of the handle
+            errors = [str(exc)]
         if not self._borrowed:
             try:
                 self._device.close()
@@ -478,6 +491,7 @@ class OccupancyBenchSession:
         self._flipped = set()
         self._threshold_ma = None
         self._peaks = {}
+        return errors
 
 
 _session = OccupancyBenchSession()

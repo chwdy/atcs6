@@ -332,6 +332,25 @@ class TrackDriver(TrackOutput):
                 chip.all_off()
         self.forget_commanded_voltages()
 
+    def zero_every_channel(self) -> List[str]:
+        """Write `0` to every channel of every chip this driver drives, bound to
+        a block or not, without `OutputSafety` (design_new.md "Power", Hardware
+        setup, Closing a Setup tool restores the safe state). A Setup tool's
+        close uses it: the runtime's power controllers do not own the outputs
+        while a tool holds them.
+
+        Every chip is attempted even when one fails; returns one message per
+        chip that failed, empty when all landed.
+        """
+        errors: List[str] = []
+        for chip_id, chip in self._chips.items():
+            try:
+                chip.all_off()
+            except Exception as exc:  # noqa: BLE001 - zero the remaining chips
+                errors.append(f"{chip_id}: {exc}")
+        self.forget_commanded_voltages()
+        return errors
+
 
 class SwitchDriver(SwitchOutput):
     """Switch throw over 74HC595 output bits — two coil bits per switch, pulsed.

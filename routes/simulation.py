@@ -155,7 +155,7 @@ def register(app, state: AppState) -> None:
         accepted and changes nothing, because nothing drives the outputs.
         """
         from enums import SessionStateValue
-        from hardware.setup_tools import close_setup_tools
+        from hardware.setup_tools import close_setup_tools, report_close_failures
 
         sim = getattr(state, "sim_controller", None)
         if sim is None:
@@ -163,7 +163,7 @@ def register(app, state: AppState) -> None:
         with state.simulation_lock:
             session = state.session_state()
             if session.value is SessionStateValue.SETUP:
-                close_setup_tools()
+                report_close_failures(sim, close_setup_tools())
                 message = "Setup tools closed; the outputs are in their safe state"
             elif session.value is SessionStateValue.HALTED:
                 message = "The session is halted; nothing drives the outputs"

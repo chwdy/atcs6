@@ -667,8 +667,10 @@ def register(app, state: AppState) -> None:
         """Close the bench. Closing completes the safe-state sequence and
         leaves the session in Setup; it never activates an environment
         (design_new.md "Hardware setup", Occupancy bench)."""
+        from hardware.setup_tools import report_close_failures
+
         with state.simulation_lock:
-            _bench_session().close()
+            report_close_failures(state.sim_controller, _bench_session().close())
         return jsonify({"ok": True})
 
     @app.route("/api/hardware/bench/state", methods=["GET"])
@@ -877,8 +879,12 @@ def register(app, state: AppState) -> None:
     @app.route("/api/hardware/commission/close", methods=["POST"])
     def hardware_commission_close():
         from hardware import commission
+        from hardware.setup_tools import report_close_failures
 
-        commission.get_session().close()
+        with state.simulation_lock:
+            report_close_failures(
+                state.sim_controller, commission.get_session().close()
+            )
         return jsonify({"ok": True})
 
     # -- develop-mode fake-input debug surface ------------------------------
@@ -1447,10 +1453,12 @@ def register(app, state: AppState) -> None:
 
     def _close_setup_tools_locked():
         """Close the commissioning session and the occupancy bench if either is
-        open. Both closes are idempotent and end in the safe state."""
-        from hardware.setup_tools import close_setup_tools
+        open. Both closes are idempotent and zero their own outputs; a failed
+        zeroing is reported as a hardware I/O failure, and the activation that
+        follows still rebuilds and re-inits every chip."""
+        from hardware.setup_tools import close_setup_tools, report_close_failures
 
-        close_setup_tools()
+        report_close_failures(state.sim_controller, close_setup_tools())
 
     @app.route("/api/operation/readiness", methods=["GET"])
     def get_operation_readiness():
