@@ -78,6 +78,24 @@ def test_start_railway_over_drops_paths_runs_and_power_but_keeps_routes():
     assert controller.route_hooks.phase_latches.route_abort is True
 
 
+def test_start_railway_over_discards_a_stopped_pass_emergency_request():
+    """The one latch activation clears itself is the emergency request
+    (design_new.md "Activation starts the railway over")."""
+    from runtime_payloads import ErrorRecord
+
+    _network, sim, _dispatcher, controller, _path_id, _route = (
+        _rolling_train_on_a_route()
+    )
+    latches = controller.route_hooks.phase_latches
+    latches.set_emergency_request("brake", ErrorRecord("moved by a Setup tool", "locked_entry"))
+    latches.set_route_abort(has_active_path=False)
+
+    sim.start_railway_over()
+
+    assert latches.emergency_request is None
+    assert latches.route_abort is True
+
+
 def test_a_successful_activation_starts_the_railway_over(tmp_path, monkeypatch):
     monkeypatch.setattr(
         operation_environment,

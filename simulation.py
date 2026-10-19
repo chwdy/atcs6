@@ -1269,12 +1269,20 @@ class SimulationController(SwitchOutputOwner):
         (design_new.md "Emergency cut-out", Reset).
 
         Runs between ticks under `AppState.simulation_lock`; the caller accepts
-        it only in that session state. It releases the EB on every powered
-        train that holds one and is not ghosted — every such release passes its
-        conditions, because the cut-out stopped every train and left none
-        holding a live path — then clears `layout_cut_out_active`. A ghosted
-        train refuses every command, so Reset leaves it alone. Every train then
-        reads the mode it had, and nothing moves until the operator acts.
+        it only in that session state. In order it:
+
+          1. releases the EB on every powered train that holds one and is not
+             ghosted — every such release passes its conditions, because the
+             cut-out stopped every train and left none holding a live path. A
+             ghosted train refuses `eb.release()`, so Reset leaves it alone;
+          2. discards every pending emergency request through
+             `phase_latches.discard_emergency_request()`, so a request the
+             stopped pass latched while Halted (a locomotive pushed by hand into
+             the next block) does not cut the train out on the first Live tick;
+          3. clears `layout_cut_out_active`.
+
+        Every train then reads the mode it had, and nothing moves until the
+        operator acts.
         """
         if not self.layout_cut_out_active:
             return CommandResult(False, "There is no layout emergency cut-out to reset")
@@ -1287,6 +1295,8 @@ class SimulationController(SwitchOutputOwner):
                 continue
             result = controller.eb.release()
             (released if result.success else refused).append(train_id)
+        for controller in self.controllers.values():
+            controller.route_hooks.phase_latches.discard_emergency_request()
         self.layout_cut_out_active = False
         message = f"Reset released {len(released)} train(s)"
         if refused:
@@ -3611,6 +3621,12 @@ class SimulationController(SwitchOutputOwner):
         the Action teardown consumers run for an `OFF` train too, so each
         finishes on the first Live tick. `complete_power_off()` does not touch
         `pending_power_off`, so a pending power-off still removes its route.
+
+        The one latch it clears itself is the emergency request: a request
+        latched on a stopped pass (for example when a Setup tool moved a
+        locomotive into the next block) describes the railway before it started
+        over, so every controller discards it through
+        `phase_latches.discard_emergency_request()`.
         """
         dispatcher = self.path_dispatcher
         if dispatcher is not None:
@@ -3628,6 +3644,8 @@ class SimulationController(SwitchOutputOwner):
         self.route_executor.end_running_runs()
         for controller in self.controllers.values():
             controller.complete_power_off()
+        for controller in self.controllers.values():
+            controller.route_hooks.phase_latches.discard_emergency_request()
 
     def clear_failed_runtime(self) -> FatalPhysicalEntryConflict:
         """Release the halt so the session can carry on, with every train off.

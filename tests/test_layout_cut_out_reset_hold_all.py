@@ -90,6 +90,25 @@ def test_reset_releases_every_train_and_restores_the_mode(running):
     assert state.session_state().is_live
 
 
+def test_reset_discards_an_emergency_request_latched_while_halted(running):
+    """A request the stopped pass latched while Halted (a locomotive pushed by
+    hand into the next block) is discarded, not applied on the first Live tick
+    (design_new.md "Emergency cut-out", Reset step 2)."""
+    from runtime_payloads import ErrorRecord
+
+    client, state, train_id = running
+    client.post("/api/simulation/emergency-cut-out")
+    latches = state.sim_controller.controllers[train_id].route_hooks.phase_latches
+    latches.set_emergency_request("cut_out", ErrorRecord("pushed by hand", "overrun_entry"))
+
+    assert client.post("/api/simulation/reset").status_code == 200
+
+    assert latches.emergency_request is None
+    state.sim_controller.update(0.1)
+    controller = state.sim_controller.controllers[train_id]
+    assert controller.eb.active is False
+
+
 def test_reset_returns_a_paused_session_to_paused(running):
     client, state, _train_id = running
     state.simulation_running = False

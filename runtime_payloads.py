@@ -516,10 +516,35 @@ class PhaseLatches:
     # outside this aggregate. Each field is cleared by its own named Action
     # consumer step through `clear(...)` below, and the consume-side event is
     # emitted by that step's own consume-side call, not from here: `cancel_path`
-    # for `path_cancel_request`, `remove_train_route_run` for `route_abort` and
-    # `route_deactivate`, `complete_power_off` for `power_off`, and Action step 01f2's
+    # for `path_cancel_request`, `remove_train_route_run` (or
+    # `settle_deactivate_without_run`) for `route_abort` and `route_deactivate`,
+    # the power-off step itself for `power_off`, and Action step 01f2's
     # `eb.activate()` / `eb.activate_cut_out()` for `emergency_request` (Latch
-    # consumption events).
+    # consumption events). `discard_emergency_request()` is the one clear helper
+    # with its own event, for the two between-tick callers that restart the
+    # railway.
+
+    def discard_emergency_request(self) -> None:
+        """Discard a pending `emergency_request` without applying it
+        (design_new.md "Latch Table", Clear/consume access).
+
+        Called only between ticks by environment activation and Reset, which
+        both run while the session is stopped. A request they find was latched
+        on a stopped pass and describes the railway before the operator's act
+        that restarts it; a train with no reservation cannot move, and a real
+        conflict re-latches on the next detector read. Clears the field and
+        emits one `"info"` latch event; does nothing when no request is pending.
+        """
+        request = self.emergency_request
+        if request is None:
+            return
+        self.emergency_request = None
+        self._emit(
+            "discard_emergency_request",
+            f"pending emergency {request.replace('_', ' ')} request discarded",
+            kind=_KIND_INFO,
+            payload={"latch": "emergency_request", "request": request},
+        )
 
     def clear(self, field_name: str) -> None:
         """Clear one latch field by name, for that field's own Action
