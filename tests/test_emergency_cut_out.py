@@ -167,28 +167,22 @@ def _make_sim_with_train():
     return sim, controller
 
 
-def test_layout_emergency_cut_out_is_gated_and_cuts_every_train(monkeypatch):
-    sim, controller = _make_sim_with_train()
+def test_layout_emergency_cut_out_works_in_every_environment(monkeypatch):
+    """The layout cut-out is the one kill switch in every environment, Simulation
+    included (design_new.md "Emergency cut-out", Layout emergency cut-out)."""
+    for mode in (OperationMode.SIMULATION, OperationMode.VIRTUAL_HARDWARE):
+        monkeypatch.setattr(operation_environment, "_selected", mode)
+        sim, controller = _make_sim_with_train()
+        sim.operation_mode = mode
+        controller.physics_sync.current_speed_kmh = 12.0
 
-    # Simulation: not offered; nothing is cut out.
-    monkeypatch.setattr(operation_environment, "_selected", OperationMode.SIMULATION)
-    sim.operation_mode = OperationMode.SIMULATION
-    result = sim.layout_emergency_cut_out()
-    assert result.success is False
-    assert controller.eb.cut_out is False
+        result = sim.layout_emergency_cut_out()
 
-    assert controller.eb.active is False
-
-    # Virtual Hardware: the cut-out is called on every train between ticks
-    # (design_new.md "Emergency cut-out", Layout emergency cut-out).
-    monkeypatch.setattr(
-        operation_environment, "_selected", OperationMode.VIRTUAL_HARDWARE
-    )
-    sim.operation_mode = OperationMode.VIRTUAL_HARDWARE
-    result = sim.layout_emergency_cut_out()
-    assert result.success
-    assert controller.eb.active is True
-    assert controller.eb.cut_out is True
+        assert result.success
+        assert controller.eb.active is True
+        assert controller.eb.cut_out is True
+        assert controller.physics_sync.current_speed_kmh == 0.0
+        assert sim.layout_cut_out_active is True
 
 
 def _make_app_client(tmp_path):
@@ -218,14 +212,22 @@ def _make_app_client(tmp_path):
     return client, controller, sim
 
 
-def test_cut_out_endpoints_reject_in_simulation(tmp_path, monkeypatch):
+def test_only_the_per_train_cut_out_is_refused_in_simulation(tmp_path, monkeypatch):
+    """The operator's per-train cut-out stays hardware-only; the layout
+    Emergency stop works in Simulation too."""
     monkeypatch.setattr(operation_environment, "_selected", OperationMode.SIMULATION)
     client, controller, sim = _make_app_client(tmp_path)
     sim.operation_mode = OperationMode.SIMULATION
 
     assert client.post("/api/trains/T1/activate-cut-out").status_code == 400
-    assert client.post("/api/simulation/emergency-cut-out").status_code == 400
     assert controller.eb.cut_out is False
+    response = client.post("/api/simulation/emergency-cut-out")
+    assert response.status_code == 200
+    assert controller.eb.cut_out is True
+    assert response.get_json()["session_state"] == {
+        "value": "halted",
+        "halt_reason": "layout_emergency_cut_out",
+    }
 
 
 def test_cut_out_endpoints_accept_on_hardware(tmp_path, monkeypatch):

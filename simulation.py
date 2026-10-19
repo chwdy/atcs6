@@ -1173,35 +1173,118 @@ class SimulationController(SwitchOutputOwner):
                 self.power_controller.reconcile_recorded_voltages()
 
     def layout_emergency_cut_out(self) -> CommandResult:
-        """The layout-wide emergency cut-out (design_new.md "Emergency cut-out",
-        Layout emergency cut-out).
+        """The layout emergency cut-out, the one kill switch for the whole
+        layout in every environment (design_new.md "Emergency cut-out", Layout
+        emergency cut-out). Its button is labeled Emergency stop.
 
-        Calls `TrainController.eb.activate_cut_out()` on every train between
-        ticks, skipping a ghosted or unidentified train, which accepts no
-        operator command: every train's traction voltage goes to `0` and every
-        train stops immediately on its next Action,
-        exactly as a per-train cut-out does. It touches only
-        traction voltage — a switch coil carries no standing power, it is pulsed
-        only for the moment it throws and then holds mechanically, so a cut-out
-        has nothing to de-energize there. It does not stop the session
-        (`simulation_running` is unchanged), so the session keeps running and each
-        train is reset with its own `TrainController.eb.release()`. It is a
-        resumable panic stop for the whole layout, distinct from `stop`.
+        Runs between ticks under `AppState.simulation_lock`. The caller accepts
+        it while the session is Live or Paused; in Setup it closes the Setup
+        tools instead, and while Halted it changes nothing. In order it:
 
-        It shares the cut-out's acceptance gate: accepted only while the active
-        operating environment is Virtual Hardware or Real Hardware. In Simulation
-        it is not offered, because there is no physical locomotive to stop faster
-        than the modelled brake curve and no output boundary to de-energize.
+          1. enters the safe state, so every block voltage goes to 0, every
+             point motor de-energizes, and every open calibration run ends;
+          2. forces every train's retained speed to 0, because a model
+             locomotive stops as soon as its power is removed;
+          3. cancels every live path with `error.origin = "eb"`, which releases
+             its reservations, locks and switch claims; each train keeps its
+             route assignment and its `RUNNING` run;
+          4. cuts out every powered train through `eb.activate_cut_out()`; with
+             no live path left, the EB effects latch no cancel, and a train
+             already under EB keeps its latch;
+          5. sets `layout_cut_out_active`, so the session reads Halted for
+             `layout_emergency_cut_out` until Reset.
+
+        Steps 2 and 3 do at once what Action would do, because no Action pass
+        runs while the session is Halted.
         """
-        if self.operation_mode is OperationMode.SIMULATION:
-            return CommandResult(
-                False, "Emergency cut-out is only available on a hardware environment"
-            )
-        # design_new.md "Emergency cut-out", Layout emergency cut-out: the cut-out
-        # is called on every train between ticks, like any operator command. A
-        # ghosted or unidentified train accepts no operator command, so it is
-        # skipped (design_new.md "Operator-command processing slot").
-        train_ids = []
+        self.enter_output_safe_state()
+        for controller in self.controllers.values():
+            controller.physics_sync.current_speed_kmh = 0.0
+        dispatcher = self.path_dispatcher
+        if dispatcher is not None:
+            live_path_ids = [
+                path_id
+                for path_id, path in dispatcher.paths.items()
+                if path.status == PathStatus.ACTIVE
+            ]
+            for path_id in live_path_ids:
+                dispatcher.cancel_path(
+                    path_id,
+                    ErrorRecord("layout emergency cut-out", "eb"),
+                    kind=Kind.WARNING,
+                )
+        cut_out = []
+        for train_id in sorted(self.controllers):
+            controller = self.controllers[train_id]
+            if controller.powered and controller.eb.activate_cut_out().success:
+                cut_out.append(train_id)
+        self.layout_cut_out_active = True
+        self.notification_center.emit(
+            source="SimulationController",
+            operation="layout_emergency_cut_out",
+            kind=Kind.WARNING,
+            message=(
+                f"layout emergency cut-out: every output is off and "
+                f"{len(cut_out)} train(s) are cut out; Reset releases them"
+            ),
+            entities=[],
+            event_time=time.time(),
+        )
+        return CommandResult(
+            True, f"Layout emergency cut-out raised for {len(cut_out)} train(s)"
+        )
+
+    def reset_layout_cut_out(self) -> CommandResult:
+        """Reset: the way back from Halted for `layout_emergency_cut_out`
+        (design_new.md "Emergency cut-out", Reset).
+
+        Runs between ticks under `AppState.simulation_lock`; the caller accepts
+        it only in that session state. It releases the EB on every powered
+        train that holds one and is not ghosted — every such release passes its
+        conditions, because the cut-out stopped every train and left none
+        holding a live path — then clears `layout_cut_out_active`. A ghosted
+        train refuses every command, so Reset leaves it alone. Every train then
+        reads the mode it had, and nothing moves until the operator acts.
+        """
+        if not self.layout_cut_out_active:
+            return CommandResult(False, "There is no layout emergency cut-out to reset")
+        released, refused = [], []
+        for train_id in sorted(self.controllers):
+            controller = self.controllers[train_id]
+            if not controller.powered or not controller.eb.active:
+                continue
+            if getattr(controller, "presence_unknown", False):
+                continue
+            result = controller.eb.release()
+            (released if result.success else refused).append(train_id)
+        self.layout_cut_out_active = False
+        message = f"Reset released {len(released)} train(s)"
+        if refused:
+            message += f"; still under EB: {', '.join(refused)}"
+        self.notification_center.emit(
+            source="SimulationController",
+            operation="reset_layout_cut_out",
+            kind=Kind.INFO if not refused else Kind.WARNING,
+            message=message,
+            entities=[],
+            event_time=time.time(),
+        )
+        return CommandResult(True, message)
+
+    def hold_all(self) -> List[str]:
+        """Hold all: ATO stop on every train that reads `ATO` (design_new.md
+        "Hold all").
+
+        Runs between ticks under `AppState.simulation_lock`, in every session
+        state and environment. Each train gets exactly what its own ATO stop
+        does — it brakes to a stand, keeps its route and its reservation, and
+        `/ato/go` resumes it — and reports the same command result. A ghosted or
+        unidentified train accepts no operator command, and a train in any
+        other status is left alone. Returns the IDs of the trains it stopped.
+        """
+        from enums import TrainStatus
+
+        stopped: List[str] = []
         for train_id in sorted(self.controllers):
             controller = self.controllers[train_id]
             train = self.network.trains.get(train_id)
@@ -1209,19 +1292,13 @@ class SimulationController(SwitchOutputOwner):
                 continue
             if train is not None and getattr(train, "is_unidentified", False):
                 continue
-            controller.eb.activate_cut_out()
-            train_ids.append(train_id)
-        self.notification_center.emit(
-            source="SimulationController",
-            operation="layout_emergency_cut_out",
-            kind=Kind.WARNING,
-            message=f"layout emergency cut-out raised for {len(train_ids)} train(s)",
-            entities=[],
-            event_time=time.time(),
-        )
-        return CommandResult(
-            True, f"Layout emergency cut-out raised for {len(train_ids)} train(s)"
-        )
+            if controller.ops.train_status != TrainStatus.ATO:
+                continue
+            result = controller.commands.ato_stop()
+            controller.commands.report_result("ato_stop", result)
+            if result.success:
+                stopped.append(train_id)
+        return stopped
 
     def consume_watchdog_trip(self) -> None:
         """Consume a loss-of-control watchdog trip once, on the runtime thread.

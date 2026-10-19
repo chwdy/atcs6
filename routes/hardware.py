@@ -1488,10 +1488,9 @@ def register(app, state: AppState) -> None:
     def _close_setup_tools_locked():
         """Close the commissioning session and the occupancy bench if either is
         open. Both closes are idempotent and end in the safe state."""
-        from hardware import commission
+        from hardware.setup_tools import close_setup_tools
 
-        commission.get_session().close()
-        _bench_session().close()
+        close_setup_tools()
 
     @app.route("/api/operation/readiness", methods=["GET"])
     def get_operation_readiness():

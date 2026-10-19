@@ -145,26 +145,76 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/simulation/emergency-cut-out", methods=["POST"])
     def emergency_cut_out():
-        """Raise the layout-wide emergency cut-out (canonical
-        ``SimulationController.layout_emergency_cut_out()``).
+        """Emergency stop: the layout emergency cut-out, in every environment
+        (design_new.md "Emergency cut-out", Layout emergency cut-out).
 
-        A resumable panic stop for the whole layout: every train's traction
-        voltage goes to ``0`` and every train stops on its next Action, without
-        stopping the session. Accepted only on a hardware environment; in
-        Simulation it returns 400 (design_new.md "Emergency cut-out", Layout
-        emergency cut-out).
+        Runs between ticks under the lock. While Live or Paused it cuts every
+        output and every train out and the session reads Halted for
+        `layout_emergency_cut_out`. In Setup it closes whichever Setup tool
+        holds the outputs, and the session stays in Setup. While Halted it is
+        accepted and changes nothing, because nothing drives the outputs.
         """
+        from enums import SessionStateValue
+        from hardware.setup_tools import close_setup_tools
+
         sim = getattr(state, "sim_controller", None)
         if sim is None:
             return jsonify({"error": "No simulation running"}), 400
-        # It cuts every train out directly, so it runs between ticks under the
-        # lock the runtime loop holds for each whole tick (design_new.md
-        # "Emergency cut-out", Layout emergency cut-out).
         with state.simulation_lock:
-            result = sim.layout_emergency_cut_out()
-        if result.success:
-            return jsonify({"status": "success", "message": result.message})
-        return jsonify({"error": result.message}), 400
+            session = state.session_state()
+            if session.value is SessionStateValue.SETUP:
+                close_setup_tools()
+                # The session stays in Setup: nothing the bench took is handed
+                # back by reactivating.
+                state.bench_owns_commissioning = False
+                state.bench_restore_environment = False
+                message = "Setup tools closed; the outputs are in their safe state"
+            elif session.value is SessionStateValue.HALTED:
+                message = "The session is halted; nothing drives the outputs"
+            else:
+                message = sim.layout_emergency_cut_out().message
+            body = {
+                "status": "success",
+                "message": message,
+                "session_state": state.session_state().to_dict(),
+            }
+        return jsonify(body)
+
+    @app.route("/api/simulation/reset", methods=["POST"])
+    def reset_layout_cut_out():
+        """Reset: release every train after Emergency stop (design_new.md
+        "Emergency cut-out", Reset). Refused with 409 unless the session is
+        Halted for `layout_emergency_cut_out`."""
+        from enums import HaltReason
+
+        sim = getattr(state, "sim_controller", None)
+        if sim is None:
+            return jsonify({"error": "No simulation running"}), 400
+        with state.simulation_lock:
+            session = state.session_state()
+            if session.halt_reason is not HaltReason.LAYOUT_EMERGENCY_CUT_OUT:
+                return jsonify({
+                    "error": "Reset applies only after Emergency stop",
+                    "session_state": session.to_dict(),
+                }), 409
+            result = sim.reset_layout_cut_out()
+            body = {
+                "status": "success",
+                "message": result.message,
+                "session_state": state.session_state().to_dict(),
+            }
+        return jsonify(body)
+
+    @app.route("/api/simulation/hold-all", methods=["POST"])
+    def hold_all():
+        """Hold all: ATO stop on every ATO train, in every session state and
+        environment (design_new.md "Hold all"). Returns the trains it stopped."""
+        sim = getattr(state, "sim_controller", None)
+        if sim is None:
+            return jsonify({"error": "No simulation running"}), 400
+        with state.simulation_lock:
+            stopped = sim.hold_all()
+        return jsonify({"status": "success", "stopped_train_ids": stopped})
 
     @app.route("/api/simulation/control", methods=["POST"])
     def control_simulation():
