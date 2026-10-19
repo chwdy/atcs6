@@ -158,7 +158,11 @@ def register(app, state: AppState) -> None:
         sim = getattr(state, "sim_controller", None)
         if sim is None:
             return jsonify({"error": "No simulation running"}), 400
-        result = sim.layout_emergency_cut_out()
+        # It cuts every train out directly, so it runs between ticks under the
+        # lock the runtime loop holds for each whole tick (design_new.md
+        # "Emergency cut-out", Layout emergency cut-out).
+        with state.simulation_lock:
+            result = sim.layout_emergency_cut_out()
         if result.success:
             return jsonify({"status": "success", "message": result.message})
         return jsonify({"error": result.message}), 400

@@ -213,7 +213,9 @@ def _make_app_client(tmp_path):
     )
     app = create_app(state)
     app.config["TESTING"] = True
-    return app.test_client(), controller, sim
+    client = app.test_client()
+    client.app_state = state
+    return client, controller, sim
 
 
 def test_cut_out_endpoints_reject_in_simulation(tmp_path, monkeypatch):
@@ -239,3 +241,31 @@ def test_cut_out_endpoints_accept_on_hardware(tmp_path, monkeypatch):
 
     resp = client.post("/api/simulation/emergency-cut-out")
     assert resp.status_code == 200
+
+
+def test_the_layout_cut_out_route_waits_for_the_tick_lock(tmp_path, monkeypatch):
+    """The layout cut-out changes every train directly, so the route runs it
+    between ticks, holding the lock the runtime loop holds for a whole tick."""
+    import threading
+
+    monkeypatch.setattr(
+        operation_environment, "_selected", OperationMode.VIRTUAL_HARDWARE
+    )
+    client, controller, sim = _make_app_client(tmp_path)
+    sim.operation_mode = OperationMode.VIRTUAL_HARDWARE
+    state_lock = client.app_state.simulation_lock
+
+    assert state_lock.acquire()
+    replies = []
+    worker = threading.Thread(
+        target=lambda: replies.append(client.post("/api/simulation/emergency-cut-out"))
+    )
+    worker.start()
+    worker.join(timeout=0.2)
+    assert worker.is_alive(), "the cut-out ran while the tick held the lock"
+    assert controller.eb.cut_out is False
+    state_lock.release()
+    worker.join(timeout=5)
+    assert replies and replies[0].status_code == 200
+    assert controller.eb.cut_out is True
+
