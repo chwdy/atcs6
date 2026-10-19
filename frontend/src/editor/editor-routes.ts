@@ -9,6 +9,8 @@
 // Owned by the Editor (`new RouteEditorHandler(this)`).
 
 import { showToast } from '../lib/toast';
+import { stateManager } from '../lib/state-manager';
+import { nextStepToRun, routeAssignedMessage, routeUnassignedMessage } from '../lib/train-status';
 import type { EditorHost } from './types';
 import { showConfirmModal, validatePriorityInput } from '../lib/helpers';
 import { showResourcePicker, dismissResourcePicker } from './resource-picker';
@@ -20,7 +22,6 @@ export class RouteEditorHandler {
   currentRouteStatus: any;
   viabilityResults: Map<number, any>;
   _waypointReachablePositions: Set<string> | null;
-  _assignForce: boolean;
   _assignTileTrainMap: Map<string, any> | null;
   _historyExpanded: boolean;
   _historyData: any;
@@ -31,6 +32,7 @@ export class RouteEditorHandler {
   _routesListInterval: ReturnType<typeof setInterval> | null;
   _routesListIntervalMs: number;
   _savedTasksSerialized: string | null;
+  _savedMode: string | null;
   /** A new route that has not been saved yet. The server stores only complete
    *  routes (design_new.md "Route-definition validation"), so "New route"
    *  edits a local draft and the first Save creates it. */
@@ -43,7 +45,6 @@ export class RouteEditorHandler {
     this.currentRouteStatus = null;
     this.viabilityResults = new Map(); // row index -> viability result
     this._waypointReachablePositions = null;
-    this._assignForce = false;
     this._assignTileTrainMap = null;
     this._historyExpanded = true;
     this._historyData = null;
@@ -54,6 +55,7 @@ export class RouteEditorHandler {
     this._routesListInterval = null;
     this._routesListIntervalMs = 1500;
     this._savedTasksSerialized = null;
+    this._savedMode = null;
     this._draftRoute = null;
   }
 
@@ -237,8 +239,21 @@ export class RouteEditorHandler {
       ]);
     } catch (err: any) {
       if (err && err.status === 404) {
-        // Route was deleted server-side; stop polling.
+        // The route is gone from the server. A one-off route is deleted when
+        // its run finishes or its last train leaves it (design_new.md
+        // "Terminal route completion"), so say so and go back to the list
+        // instead of showing a route that no longer exists.
         this._stopRouteSyncPoller();
+        const name = this.currentRoute?.name || routeId;
+        showToast(
+          this.currentRoute?.mode === 'one_off'
+            ? `Route "${name}" has finished and was deleted`
+            : `Route "${name}" no longer exists`,
+          'info',
+          5000
+        );
+        await this.showRoutesPanel();
+        return;
       }
       throw err;
     }
@@ -280,6 +295,7 @@ export class RouteEditorHandler {
   _refreshSavedTasksBaseline(): void {
     const tasks = (this.currentRoute && this.currentRoute.tasks) || [];
     this._savedTasksSerialized = JSON.stringify(tasks);
+    this._savedMode = this.currentRoute?.mode ?? null;
   }
 
   /** Return true when the editor's local task list differs from the saved version. */
@@ -425,24 +441,9 @@ export class RouteEditorHandler {
     deleteBtns.forEach((btn) => {
       btn.onclick = async () => {
         const routeId = btn.dataset.routeId;
+        if (!routeId) return;
         const route = this.routes.find((r) => r.route_id === routeId);
-        const confirmed = await showConfirmModal({
-          title: 'Delete Route',
-          message: `Delete route "${route?.name || routeId}"?`,
-          detail: 'This removes its tasks and train assignments.',
-          confirmText: 'Delete',
-          confirmVariant: 'danger',
-        });
-        if (!confirmed) return;
-
-        try {
-          await this.api.deleteRoute(routeId);
-          showToast('Route deleted', 'success', 3000);
-          await this.showRoutesPanel();
-        } catch (err: any) {
-          console.error('[RouteEditor] Failed to delete route:', err);
-          showToast('Failed to delete route: ' + err.message, 'error', 5000);
-        }
+        await this._deleteRouteWithConfirm(routeId, route?.name || routeId);
       };
     });
   }
@@ -907,10 +908,10 @@ export class RouteEditorHandler {
     const isExpanded = this._taskExpanded.has(task);
     const lastIndex = (this.currentRoute.tasks?.length || 1) - 1;
 
-    const KIND_ICON: Record<string, string> = { waypoint: 'arrow-narrow-right', stop: 'map-pin', dwell: 'clock' };
+    const KIND_ICON: Record<string, string> = { waypoint: 'arrow-narrow-right', stop: 'map-pin', run: 'player-play', dwell: 'clock' };
     const TYPE_ICON: Record<string, string> = { block: 'rectangle', platform: 'train', station: 'home' };
     const DIR_ICON: Record<string, string> = { forward: 'arrow-narrow-right', reverse: 'arrow-narrow-left', either: 'arrows-horizontal' };
-    const KIND_LABEL: Record<string, string> = { waypoint: 'Waypoint', stop: 'Stop', dwell: 'Dwell' };
+    const KIND_LABEL: Record<string, string> = { waypoint: 'Waypoint', stop: 'Stop', run: 'Run', dwell: 'Dwell' };
     const TYPE_LABEL: Record<string, string> = { block: 'Block', platform: 'Platform', station: 'Station' };
     const DIR_LABEL: Record<string, string> = { forward: 'Forward', reverse: 'Reverse', either: 'Either' };
 
@@ -937,7 +938,7 @@ export class RouteEditorHandler {
       return `<div class="switch-group compact route-seg ${segClass}" data-index="${index}">${items}</div>`;
     };
 
-    const kindSeg = renderSeg('task-kind-seg', ['waypoint', 'stop', 'dwell'], kind, 'kind', KIND_ICON, KIND_LABEL);
+    const kindSeg = renderSeg('task-kind-seg', ['waypoint', 'stop', 'run', 'dwell'], kind, 'kind', KIND_ICON, KIND_LABEL);
     const typeSeg = renderSeg('task-target-type-seg', ['block', 'platform', 'station'], targetType, 'type', TYPE_ICON, TYPE_LABEL);
     const dirSeg = renderSeg('task-direction-seg', ['forward', 'reverse', 'either'], direction, 'direction', DIR_ICON, DIR_LABEL);
 
@@ -1009,7 +1010,20 @@ export class RouteEditorHandler {
                     <button class="btn btn-sm btn-secondary btn-icon-only task-target-pick-btn" data-index="${index}" title="Pick element from map" aria-label="Pick element from map">${ti('pointer')}</button>
                 </div>`;
 
-    const timeLabel = isDwell ? 'Dwell' : 'Travel';
+    // `task_time` is the dwell's hold, a run's running time, or the expected
+    // travel time to a waypoint or stop. `target_time` is a wall-clock time:
+    // a dwell's scheduled departure, or the expected arrival at a waypoint or
+    // stop; a run has none (design_new.md "RouteTask data").
+    const isRun = kind === 'run';
+    const timeLabel = isDwell ? 'Dwell' : isRun ? 'Run for' : 'Travel';
+    const targetTimeLabel = isDwell ? 'Depart at' : 'Arrive by';
+    const targetTimeHtml = isRun
+      ? ''
+      : `<label class="task-sublabel">${targetTimeLabel}</label>
+                            <input type="datetime-local" step="1"
+                                   class="property-input input-compact task-target-time-input"
+                                   data-index="${index}" value="${this._unixToLocalInput(task.target_time)}"
+                                   title="Wall-clock time; leave empty for none">`;
 
     return `
             <div class="waypoint-item waypoint-card" data-index="${index}">
@@ -1034,11 +1048,7 @@ export class RouteEditorHandler {
                                    class="property-input input-compact task-time-input"
                                    data-index="${index}" value="${task.task_time ?? ''}"
                                    placeholder="seconds">
-                            <label class="task-sublabel">Depart</label>
-                            <input type="number" min="0" step="1"
-                                   class="property-input input-compact task-target-time-input"
-                                   data-index="${index}" value="${task.target_time ?? ''}"
-                                   placeholder="sim time">
+                            ${targetTimeHtml}
                         </div>
                     </div>
 
@@ -1251,9 +1261,13 @@ export class RouteEditorHandler {
     }
 
     const kind = trainStatus?.current_task_kind || null;
-    const verb = kind ? kind.toUpperCase() : 'IDLE';
+    // A train assigned to the route but with no running run on it has not
+    // started: every new route starts not engaged (design_new.md "ATO status").
+    const run: any = stateManager.getRouteRun(trainId);
+    const started = !!run && run.route_id === this.currentRoute?.route_id;
+    const verb = kind ? kind.toUpperCase() : started ? 'IDLE' : 'NOT STARTED';
     const verbAccent =
-      kind === 'dwell' ? 'warn' : kind === 'stop' ? 'info' : kind === 'waypoint' ? 'info' : 'muted';
+      kind === 'dwell' ? 'warn' : kind === 'stop' || kind === 'run' || kind === 'waypoint' ? 'info' : 'muted';
 
     let dotVariant = '';
     if (!trainStatus) dotVariant = 'danger';
@@ -1271,6 +1285,8 @@ export class RouteEditorHandler {
     let nounText;
     if (!trainStatus) {
       nounText = '—';
+    } else if (!started && !kind) {
+      nounText = nextStepToRun(stateManager.getController(trainId));
     } else if (nextIdx === null || tasks.length === 0) {
       nounText = 'queued';
     } else {
@@ -1339,12 +1355,6 @@ export class RouteEditorHandler {
                 <select id="assign-train-select" class="property-input route-input-compact atr-assign-select">
                     ${trainSelectHtml}
                 </select>
-                <label class="checkbox-wrapper atr-force-label" title="Reassign the train even if it is already on another route">
-                    <input type="checkbox" id="assign-train-force" class="checkbox-input"
-                           ${this._assignForce ? 'checked' : ''}>
-                    <span class="checkbox-custom"></span>
-                    <span class="checkbox-label">Force</span>
-                </label>
                 <button id="assign-train-btn" class="btn btn-sm btn-primary">Assign</button>
             </div>
             <div class="atr-assign-row mt-4">
@@ -1380,24 +1390,10 @@ export class RouteEditorHandler {
           await this.showRoutesPanel();
           return;
         }
-        const confirmed = await showConfirmModal({
-          title: 'Delete Route',
-          message: `Delete route "${this.currentRoute?.name || this.currentRoute?.route_id}"?`,
-          detail: 'This removes all tasks and train assignments for this route.',
-          confirmText: 'Delete',
-          confirmVariant: 'danger',
-        });
-        if (!confirmed) {
-          return;
-        }
-        try {
-          await this.api.deleteRoute(this.currentRoute.route_id);
-          showToast('Route deleted', 'success', 3000);
-          await this.showRoutesPanel();
-        } catch (err: any) {
-          console.error('[RouteEditor] Failed to delete route:', err);
-          showToast('Failed to delete route: ' + err.message, 'error', 5000);
-        }
+        await this._deleteRouteWithConfirm(
+          this.currentRoute.route_id,
+          this.currentRoute?.name || this.currentRoute.route_id
+        );
       };
     }
 
@@ -1563,7 +1559,7 @@ export class RouteEditorHandler {
         const el = e.target as HTMLInputElement;
         const index = parseInt(el.dataset.index ?? '', 10);
         const task = this.currentRoute.tasks[index];
-        if (task) task.target_time = this._parseOptionalNumber(el.value);
+        if (task) task.target_time = this._localInputToUnix(el.value);
       };
     });
 
@@ -1576,16 +1572,6 @@ export class RouteEditorHandler {
     const assignTrainMapBtn = document.getElementById('assign-train-map-btn') as HTMLButtonElement | null;
     if (assignTrainMapBtn) {
       assignTrainMapBtn.onclick = () => this.editor.enterMode(this.buildTrainAssignMode());
-    }
-
-    const forceCheckbox = document.getElementById('assign-train-force') as HTMLInputElement | null;
-    if (forceCheckbox) {
-      forceCheckbox.onchange = (e) => {
-        this._assignForce = !!(e.target as HTMLInputElement).checked;
-        if (this.editor.activeMode?.name === 'route-train-assign') {
-          this.refreshAssignCandidates();
-        }
-      };
     }
 
     // Per-assignment start mode: reveal the Specific-stop picker only for 'specific'.
@@ -1603,6 +1589,24 @@ export class RouteEditorHandler {
         this.unassignTrain(trainId);
       };
     });
+  }
+
+  /** A Unix time in seconds as a `datetime-local` value in local time, or ''. */
+  _unixToLocalInput(unixSeconds: any): string {
+    if (unixSeconds == null || !Number.isFinite(Number(unixSeconds))) return '';
+    const d = new Date(Number(unixSeconds) * 1000);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return (
+      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+      `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+    );
+  }
+
+  /** A `datetime-local` value (local time) as Unix seconds, or null when empty. */
+  _localInputToUnix(value: string): number | null {
+    if (!value) return null;
+    const ms = new Date(value).getTime();
+    return Number.isFinite(ms) ? Math.round(ms / 1000) : null;
   }
 
   _parseOptionalNumber(value: any): number | null {
@@ -1814,14 +1818,9 @@ export class RouteEditorHandler {
 
   /** Highlight the layout tiles of trains eligible for assignment. */
   async refreshAssignCandidates(): Promise<void> {
-    let assignedByTrain: any = {};
-    try {
-      assignedByTrain = await this.api.getAssignedRoutesByTrain();
-    } catch (err) {
-      console.error('[RouteEditor] getAssignedRoutesByTrain failed:', err);
-    }
-
-    const force = this._assignForce;
+    // A train on another route is eligible too: assigning it stops its current
+    // run at the end of its reservation and switches it to this route
+    // (design_new.md "Route assignment writers").
     const alreadyOnThisRoute = new Set(this.currentRoute.assigned_train_ids || []);
     const allTrains = Array.isArray(this.cachedNetwork?.trains)
       ? this.cachedNetwork.trains
@@ -1832,8 +1831,6 @@ export class RouteEditorHandler {
     allTrains.forEach((t: any) => {
       const trainId = t?.train_id || t?.id;
       if (!trainId || alreadyOnThisRoute.has(trainId)) return;
-      const hasRoute = !!assignedByTrain[trainId];
-      if (!force && hasRoute) return;
       const blockId = this._blockOccupiedByTrain(trainId);
       if (!blockId) return;
       this.getBlockPositionSet(blockId).forEach((p) => {
@@ -1846,11 +1843,7 @@ export class RouteEditorHandler {
     this._applyHighlight(positions);
 
     const eligible = new Set(tileTrain.values()).size;
-    this._setStatus(
-      force
-        ? `Route: click any train to assign (force). ${eligible} eligible. Esc to finish.`
-        : `Route: click an unassigned train to assign. ${eligible} eligible. Esc to finish.`
-    );
+    this._setStatus(`Route: click a train to assign it. ${eligible} eligible. Esc to finish.`);
   }
 
   /** Handle a layout click while in train-assign mode. */
@@ -1861,15 +1854,11 @@ export class RouteEditorHandler {
     const dirtyOk = await this._promptSaveIfDirty('Assign train');
     if (!dirtyOk) return true;
 
-    const ok = await this._confirmRuntimePreconditions('Assign train', trainId);
-    if (!ok) return true;
-
     try {
-      await this.api.assignRoute(trainId, this.currentRoute.route_id, {
-        force: this._assignForce,
-      });
+      const replacing = this._runsAnotherRoute(trainId);
+      await this.api.assignRoute(trainId, this.currentRoute.route_id);
       await this._refetchRouteAfterLifecycleOp();
-      showToast(`Train ${trainId} assigned`, 'success', 2500);
+      showToast(routeAssignedMessage(trainId, stateManager.getController(trainId), replacing), 'success', 6000);
       this.rerenderRouteEditor();
       await this.refreshAssignCandidates();
     } catch (err: any) {
@@ -1979,22 +1968,16 @@ export class RouteEditorHandler {
       let location;
 
       if (kind === 'dwell') {
-        // Runtime ignores a dwell's location, but the backend requires a
-        // truthy task_location — inherit the nearest preceding target.
-        let inherited = null;
-        for (let j = i - 1; j >= 0; j--) {
-          const prevLoc = this._taskLocationOrNull(src[j]);
-          if (prevLoc) {
-            inherited = prevLoc;
-            break;
-          }
-        }
+        // A dwell holds the train after the stop or run directly before it
+        // (other dwells in between allowed) and names that task's location
+        // (design_new.md "Route-definition validation").
+        let j = i - 1;
+        while (j >= 0 && (src[j].task_kind || 'waypoint') === 'dwell') j--;
+        const prevKind = j >= 0 ? src[j].task_kind || 'waypoint' : null;
+        const inherited =
+          prevKind === 'stop' || prevKind === 'run' ? this._taskLocationOrNull(src[j]) : null;
         if (!inherited) {
-          showToast(
-            `Dwell task ${i + 1} must follow a stop or waypoint with a target.`,
-            'error',
-            5000
-          );
+          showToast(`Dwell task ${i + 1} must directly follow a stop or run with a target.`, 'error', 5000);
           return false;
         }
         location = inherited;
@@ -2006,12 +1989,17 @@ export class RouteEditorHandler {
         }
       }
 
+      if (kind === 'run' && !(Number(t.task_time) > 0)) {
+        showToast(`Run task ${i + 1} needs a running time in seconds.`, 'error', 5000);
+        return false;
+      }
+
       tasks.push({
         task_kind: kind,
         task_location: location,
         task_direction: t.task_direction || 'either',
         task_time: t.task_time ?? null,
-        target_time: kind === 'stop' ? (t.target_time ?? null) : null,
+        target_time: kind === 'run' ? null : (t.target_time ?? null),
       });
     }
 
@@ -2056,7 +2044,7 @@ export class RouteEditorHandler {
     }
 
     // Warn if the route has no Stop tasks.
-    if (tasks.length > 0 && !tasks.some((t) => t.task_kind === 'stop')) {
+    if (tasks.length > 0 && !tasks.some((t) => t.task_kind === 'stop' || t.task_kind === 'run')) {
       const ok = await showConfirmModal({
         title: 'Route has no Stop tasks',
         message: 'Save without any Stop task?',
@@ -2077,9 +2065,25 @@ export class RouteEditorHandler {
       return this._createDraftOnServer(payload);
     }
 
+    // A change to the tasks or the mode changes the route's shape: each train
+    // running it stops at the end of its reservation, gets the route again,
+    // and needs Go (design_new.md "Shared-route edit teardown").
+    const shapeChanged =
+      this._hasUnsavedTaskChanges() || (this.currentRoute.mode ?? null) !== this._savedMode;
+    const restarted = shapeChanged ? this._trainsRunningRoute(this.currentRoute.route_id) : [];
+
     try {
       await this.api.updateRoute(this.currentRoute.route_id, payload);
-      showToast('Route saved', 'success', 3000);
+      if (restarted.length) {
+        showToast(
+          `Route saved. ${restarted.join(', ')} will stop at the end of the reservation ` +
+            'and start the route again; press Go for each ATO train.',
+          'success',
+          8000
+        );
+      } else {
+        showToast('Route saved', 'success', 3000);
+      }
       this._refreshSavedTasksBaseline();
       return true;
     } catch (err: any) {
@@ -2089,65 +2093,16 @@ export class RouteEditorHandler {
     }
   }
 
-  /** Pre-flight check before a route mutation that needs the per-train phase loop. */
-  async _confirmRuntimePreconditions(actionLabel: string, trainId: string | null = null): Promise<boolean> {
-    const reasons = [];
-    const app = window.app;
-    // `isSimulationRunning` is true while the session state is Live.
-    const notLive = !(app && app.isSimulationRunning);
-    if (notLive) {
-      reasons.push('The session is not live.');
-    }
-
-    let trainOff = false;
-    if (trainId) {
-      try {
-        const payload = await this.api.getTrain(trainId);
-        const controller = payload?.controller;
-        trainOff = controller?.train_status === 'off' || controller?.power_on === false;
-      } catch (err) {
-        console.warn(
-          '[RouteEditor] getTrain pre-flight check failed; proceeding without train-state check:',
-          err
-        );
-      }
-    }
-    if (trainOff) {
-      reasons.push(`Train ${trainId} is powered off.`);
-    }
-
-    if (reasons.length === 0) {
-      return true;
-    }
-
-    const detail =
-      reasons.join(' ') +
-      ` ${actionLabel} will only take effect once the simulation` +
-      ` is running and the train is powered on. The change is` +
-      ` recorded immediately but the train will not react until then.`;
-
-    return await showConfirmModal({
-      title: `${actionLabel}: precondition not met`,
-      message: 'Continue anyway?',
-      detail,
-      confirmText: 'Proceed',
-      confirmVariant: 'primary',
-    });
-  }
-
   /** Assign a train to this route. */
   async assignTrain(): Promise<void> {
     const select = document.getElementById('assign-train-select') as HTMLSelectElement | null;
     if (!select || !select.value) return;
 
     const trainId = select.value;
-    const forceAssign = !!(document.getElementById('assign-train-force') as HTMLInputElement | null)?.checked;
 
     // Per-assignment start-mode override (empty = use the route default).
     const startMode = (document.getElementById('assign-start-mode') as HTMLSelectElement | null)?.value || '';
-    const assignOpts: { force: boolean; startMode?: string; startTaskIndex?: number | null } = {
-      force: forceAssign,
-    };
+    const assignOpts: { startMode?: string; startTaskIndex?: number | null } = {};
     if (startMode) {
       assignOpts.startMode = startMode;
       if (startMode === 'specific') {
@@ -2159,14 +2114,12 @@ export class RouteEditorHandler {
     const dirtyOk = await this._promptSaveIfDirty('Assign train');
     if (!dirtyOk) return;
 
-    const ok = await this._confirmRuntimePreconditions('Assign train', trainId);
-    if (!ok) return;
-
     try {
+      const replacing = this._runsAnotherRoute(trainId);
       await this.api.assignRoute(trainId, this.currentRoute.route_id, assignOpts);
 
       await this._refetchRouteAfterLifecycleOp();
-      showToast(`Train ${trainId} assigned`, 'success', 3000);
+      showToast(routeAssignedMessage(trainId, stateManager.getController(trainId), replacing), 'success', 6000);
 
       this.rerenderRouteEditor();
     } catch (err: any) {
@@ -2178,16 +2131,68 @@ export class RouteEditorHandler {
   /** Unassign a train from this route. */
   async unassignTrain(trainId: any): Promise<void> {
     try {
+      const hadRun = !!stateManager.getRouteRun(trainId);
       await this.api.assignRoute(trainId, null);
 
       await this._refetchRouteAfterLifecycleOp();
-      showToast(`Train ${trainId} unassigned`, 'success', 3000);
+      showToast(routeUnassignedMessage(trainId, hadRun), 'success', 5000);
 
       this.rerenderRouteEditor();
     } catch (err: any) {
       console.error('[RouteEditor] Failed to unassign train:', err);
       showToast('Failed to unassign train: ' + err.message, 'error', 5000);
     }
+  }
+
+  /** Confirm and delete a route. A route a train still runs is removed only
+   *  once every such train has stopped at the end of its reservation
+   *  (design_new.md "Route deletion waits for live teardown"). */
+  async _deleteRouteWithConfirm(routeId: string, name: string): Promise<void> {
+    const running = this._trainsRunningRoute(routeId);
+    const confirmed = await showConfirmModal({
+      title: 'Delete Route',
+      message: `Delete route "${name}"?`,
+      detail: running.length
+        ? `${running.join(', ')} ${running.length === 1 ? 'runs' : 'run'} this route. ` +
+          'Each stops at the end of its reservation and is unassigned; ' +
+          'the route is removed once every one has stopped.'
+        : 'This removes its tasks and unassigns its trains.',
+      confirmText: 'Delete',
+      confirmVariant: 'danger',
+    });
+    if (!confirmed) return;
+    try {
+      await this.api.deleteRoute(routeId);
+      if (running.length) {
+        showToast(`Route "${name}" is removed once its trains have stopped`, 'success', 6000);
+      } else {
+        showToast('Route deleted', 'success', 3000);
+      }
+      await this.showRoutesPanel();
+    } catch (err: any) {
+      console.error('[RouteEditor] Failed to delete route:', err);
+      showToast('Failed to delete route: ' + err.message, 'error', 5000);
+    }
+  }
+
+  /** Whether `trainId` has a running route run on a route other than this one:
+   *  a new assignment then waits for that run to stop at its reservation end. */
+  _runsAnotherRoute(trainId: string): boolean {
+    const run: any = stateManager.getRouteRun(trainId);
+    return !!run && run.route_id !== this.currentRoute?.route_id;
+  }
+
+  /** The trains with a running route run on `routeId`, read from
+   *  `route_runs_by_train_id`. */
+  _trainsRunningRoute(routeId: string): string[] {
+    const route: any =
+      this.currentRoute?.route_id === routeId
+        ? this.currentRoute
+        : this.routes.find((r: any) => r.route_id === routeId);
+    return (route?.assigned_train_ids || []).filter((trainId: string) => {
+      const run: any = stateManager.getRouteRun(trainId);
+      return !!run && run.route_id === routeId;
+    });
   }
 
   /** Pull the server's current view of `currentRoute` after a lifecycle op. */

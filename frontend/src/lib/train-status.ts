@@ -29,6 +29,47 @@ export function atoIsDriving(controller: any, operatorStatus?: any): boolean {
 }
 
 /**
+ * What the operator does next to run a train that has a route assigned
+ * (design_new.md "Running a train", step 3). Every new route starts not
+ * engaged, so nothing moves until the operator acts.
+ */
+export function nextStepToRun(controller: any): string {
+  switch (controller?.train_status || 'off') {
+    case 'off':
+      return 'Press Start route to run it.';
+    case 'eb':
+      return 'Release the emergency brake, then press Start route.';
+    case 'manual':
+      return 'Drive it, or press Start route to run it under ATO.';
+    default:
+      return 'Press Go to start it.';
+  }
+}
+
+/**
+ * The message after a route is assigned. When the train still runs another
+ * route (`replacing`), it first runs to the end of its reservation and stops,
+ * and the new route takes over then (design_new.md "Route assignment
+ * writers").
+ */
+export function routeAssignedMessage(trainId: string, controller: any, replacing: boolean): string {
+  const lead = replacing
+    ? `${trainId} stops at the end of its reservation, then switches to the new route.`
+    : `${trainId} is assigned.`;
+  return `${lead} ${nextStepToRun(controller)}`;
+}
+
+/**
+ * The message after a train is unassigned. A train with a running route run
+ * keeps it until it has stopped at the end of its reservation.
+ */
+export function routeUnassignedMessage(trainId: string, hadRun: boolean): string {
+  return hadRun
+    ? `${trainId} leaves its route once it has stopped at the end of its reservation.`
+    : `${trainId} is unassigned.`;
+}
+
+/**
  * Why ATO Go cannot be pressed right now, or null when it can.
  *
  * Mirrors design_new.md "ATO go": the server accepts Go only while the train

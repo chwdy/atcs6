@@ -16,7 +16,7 @@ this layer owns the domain mutations behind every train endpoint:
     ``message`` (design_new.md "Operator-command processing slot").
 
 Lookup raises ``NotFoundError``; bad input raises ``ValidationError``;
-an already-assigned route without ``force`` raises ``ConflictError``.
+a refused assignment raises ``ConflictError``.
 ``reposition_train`` and ``assign_speed_profile`` take
 ``state.simulation_lock`` (the routes they replace did).
 """
@@ -502,7 +502,6 @@ def assign_route(
     train_id: str,
     *,
     route_id: Optional[str],
-    force: bool = False,
     start_mode: Optional[str] = None,
     start_task_index: Optional[Any] = None,
 ) -> Train:
@@ -515,7 +514,10 @@ def assign_route(
     tick allocates a fresh RouteRun against the newly assigned route.
 
     ``route_id`` None clears the current assignment. A non-None route_id
-    assigns/retargets.
+    assigns/retargets. A train already on another route needs no extra flag:
+    the request stops its current run at the end of its reservation and holds
+    the new route until that run is torn down (design_new.md "Route
+    assignment writers").
 
     ``start_mode`` / ``start_task_index`` are an optional per-assignment
     one-shot start-mode input (per design_new.md "Run start-mode seeding").
@@ -530,8 +532,7 @@ def assign_route(
         NotFoundError when the train or the target route does not exist.
         ValidationError when the target route has no tasks or start_mode is
             invalid.
-        ConflictError when the train is already on a route and ``force`` is
-            False, when a calibration run is open for the train, or when
+        ConflictError when a calibration run is open for the train, or when
             ``RouteExecutor.request_route_assignment(...)`` refuses the request.
         ValidationError when the train is an unidentified train: an unidentified train is never assigned a
             route (design_new.md "Unidentified trains").
@@ -591,12 +592,6 @@ def assign_route(
     # Same-route assign is an idempotent no-op.
     if current_route_id == route_id:
         return train
-
-    if current_route_id and not force:
-        raise ConflictError(
-            f"Train already assigned to route {current_route_id}. "
-            f"Use force=true to reassign."
-        )
 
     # Coerce the per-assignment start-mode input (if any) into the one-shot
     # bundle carried alongside the request; `None` means "use the route

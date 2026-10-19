@@ -789,6 +789,8 @@ Assign a travel plan route to a specific train.
 
 **Note:** Set `route_id` to `null` to unassign the current route.
 
+**A train already on another route** needs no extra flag. When it has no running route run, the new route is assigned at once. When it has one, the train runs to the end of its reservation and stops, and the new route takes over then; until that happens its pending actions read "switching to route `<route_id>` once stopped" (or "leaving its route once stopped" for an unassign). Every new route starts not engaged, so an ATO train needs Go (`/ato/go`) or Start route to run it. A train with a calibration run open is refused (409).
+
 **Response:**
 
 ```json

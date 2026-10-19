@@ -2017,7 +2017,10 @@ export class API implements LayoutDataClient, SimClient {
   }
 
   /**
-   * Assign/unassign a train to/from a route.
+   * Assign/unassign a train to/from a route. A train already on another
+   * route needs no extra flag: its current run stops at the end of its
+   * reservation and the new route takes over (design_new.md "Route
+   * assignment writers").
    * @param routeId - Route ID or null to unassign
    * @param options.startMode - Optional per-assignment start mode
    *     ('first' | 'nearest' | 'specific'); omit to use the route default.
@@ -2026,11 +2029,10 @@ export class API implements LayoutDataClient, SimClient {
   async assignRoute(
     trainId: string,
     routeId: string | null,
-    options: { force?: boolean; startMode?: string; startTaskIndex?: number | null } = {}
+    options: { startMode?: string; startTaskIndex?: number | null } = {}
   ): Promise<any> {
     const body: Record<string, unknown> = {
       route_id: routeId,
-      force: options.force || false,
     };
     if (options.startMode !== undefined) {
       body.start_mode = options.startMode;

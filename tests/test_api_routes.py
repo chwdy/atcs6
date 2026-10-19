@@ -1520,11 +1520,10 @@ class TestRouteRedesignApis:
         assert row.get("walk_direction") in ("forward", "reverse")
         assert "task_direction" not in row
 
-    def test_assign_route_conflict_returns_409_without_force(self, client, app_state):
-        """assign-route returns 409 when the train already has an active
-        route assignment and `force=true` is not supplied. The Quick Route
-        UI uses this 409 to drive a confirmation modal before retrying with
-        force=true. The forced retry must succeed."""
+    def test_assign_route_replaces_another_route_without_a_flag(self, client, app_state):
+        """assign-route accepts a train that is already on another route, with
+        no extra flag (design_new.md "Route assignment writers"). With no
+        running run yet, the new route is assigned at once."""
         self._place_powered_train_on_two_block_line(app_state)
 
         for route_id in ("ROUTE_FIRST", "ROUTE_SECOND"):
@@ -1550,18 +1549,13 @@ class TestRouteRedesignApis:
             == 200
         )
 
-        conflict_resp = client.put(
+        replace_resp = client.put(
             "/api/trains/TRAIN_QR/assign-route",
             json={"route_id": "ROUTE_SECOND"},
         )
-        assert conflict_resp.status_code == 409
-        assert "already assigned" in conflict_resp.get_json()["error"].lower()
-
-        forced_resp = client.put(
-            "/api/trains/TRAIN_QR/assign-route",
-            json={"route_id": "ROUTE_SECOND", "force": True},
-        )
-        assert forced_resp.status_code == 200, forced_resp.get_json()
+        assert replace_resp.status_code == 200, replace_resp.get_json()
+        executor = app_state.sim_controller.route_executor
+        assert executor.assigned_route_id_for("TRAIN_QR") == "ROUTE_SECOND"
 
 
 class TestEventLogRoute:

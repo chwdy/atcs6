@@ -1,7 +1,44 @@
 import { describe, expect, it } from 'vitest';
 
 import { holdReasonText } from './hold-reason';
-import { atoIsDriving, startRouteUnavailableReason, trainDisplayStatus } from './train-status';
+import {
+  atoIsDriving,
+  nextStepToRun,
+  routeAssignedMessage,
+  routeUnassignedMessage,
+  startRouteUnavailableReason,
+  trainDisplayStatus,
+} from './train-status';
+
+describe('nextStepToRun', () => {
+  it('names the command that starts the route for each driver', () => {
+    expect(nextStepToRun({ train_status: 'off' })).toMatch(/Start route/);
+    expect(nextStepToRun({ train_status: 'ato' })).toMatch(/Go/);
+    expect(nextStepToRun({ train_status: 'manual' })).toMatch(/Drive it/);
+    expect(nextStepToRun({ train_status: 'eb' })).toMatch(/Release the emergency brake/);
+  });
+});
+
+describe('routeAssignedMessage', () => {
+  it('says the new route waits for the old run to stop', () => {
+    expect(routeAssignedMessage('T1', { train_status: 'ato' }, true)).toBe(
+      'T1 stops at the end of its reservation, then switches to the new route. Press Go to start it.'
+    );
+  });
+
+  it('says what to press when nothing runs yet', () => {
+    expect(routeAssignedMessage('T1', { train_status: 'off' }, false)).toBe(
+      'T1 is assigned. Press Start route to run it.'
+    );
+  });
+});
+
+describe('routeUnassignedMessage', () => {
+  it('waits for a running train to stop', () => {
+    expect(routeUnassignedMessage('T1', true)).toMatch(/once it has stopped/);
+    expect(routeUnassignedMessage('T1', false)).toBe('T1 is unassigned.');
+  });
+});
 
 describe('trainDisplayStatus', () => {
   it('shows the overall status for a train that is not in ATO', () => {

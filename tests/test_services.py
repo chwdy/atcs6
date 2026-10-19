@@ -510,8 +510,10 @@ class TestTrainService:
         with pytest.raises(ValidationError, match="no tasks"):
             train_service.assign_route(state_with_train, "TRAIN_A", route_id="R_EMPTY")
 
-    def test_assign_route_success_conflict_and_force(self, state_with_train):
-        """Assign succeeds; reassign needs force; same-route is idempotent."""
+    def test_assign_route_success_replace_and_same_route(self, state_with_train):
+        """Assign succeeds; same-route is idempotent; a different route
+        replaces the current one with no extra flag (design_new.md "Route
+        assignment writers")."""
         state = state_with_train
         train_route_service.create_route(
             state, route_id="R1", name="r1",
@@ -526,15 +528,12 @@ class TestTrainService:
         executor = state.sim_controller.route_executor
         assert executor.assigned_route_id_for("TRAIN_A") == "R1"
 
-        with pytest.raises(ConflictError):
-            train_service.assign_route(state, "TRAIN_A", route_id="R2")
-
         # Same-route assign is an idempotent no-op success.
         train_service.assign_route(state, "TRAIN_A", route_id="R1")
         assert executor.assigned_route_id_for("TRAIN_A") == "R1"
 
-        # Force reassign retargets to R2.
-        train_service.assign_route(state, "TRAIN_A", route_id="R2", force=True)
+        # A different route retargets to R2.
+        train_service.assign_route(state, "TRAIN_A", route_id="R2")
         assert executor.assigned_route_id_for("TRAIN_A") == "R2"
 
     def test_set_mode_invalid_raises_validation(self, state_with_train):

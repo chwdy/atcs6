@@ -5,6 +5,8 @@
 
 import { showToast } from '../lib/toast';
 import { holdReasonText } from '../lib/hold-reason';
+import { stateManager } from '../lib/state-manager';
+import { routeAssignedMessage } from '../lib/train-status';
 import type { EditorHost } from './types';
 import {
   renderHeaderId,
@@ -284,7 +286,8 @@ export class PathEditorHandler {
 
     let routeCreated = false;
     try {
-      // Quick Route is a one-off Route + RouteRun, per design_new.md:1297.
+      // Quick Route builds a one-off route with a single stop task and assigns
+      // it like any other route (design_new.md "Running a train", step 2).
       await this.api.createRoute({
         route_id: routeId,
         name: `Quick: ${trainId} → ${endBlockId}`,
@@ -305,6 +308,7 @@ export class PathEditorHandler {
       });
       routeCreated = true;
 
+      const replacing = !!stateManager.getRouteRun(trainId);
       const outcome = await this.assignQuickRouteWithConfirm(trainId, routeId);
       if (outcome === 'cancelled') {
         await this.deleteRouteBestEffort(routeId);
@@ -312,7 +316,11 @@ export class PathEditorHandler {
         return;
       }
 
-      showToast(`Quick Route assigned to ${trainId}`, 'success', 5000);
+      showToast(
+        `Quick Route: ${routeAssignedMessage(trainId, stateManager.getController(trainId), replacing)}`,
+        'success',
+        7000
+      );
       await window.app?.refreshNetwork();
       await this.resetRouteToolState();
       // The path is acquired asynchronously by the sim loop; if it can't be
@@ -359,30 +367,37 @@ export class PathEditorHandler {
         showToast(`${trainId}: ${holdReasonText(hold)}`, 'error', 8000);
         return;
       }
+      // A train that is not asking to move yet (off, not started, braked, or
+      // the session is not live) acquires nothing to report on; the
+      // assignment message already named the next step.
+      if (hold && hold.code !== 'no_reservation' && hold.code !== 'reservation_end') {
+        return;
+      }
     }
   }
 
+  /** Assign the Quick Route, asking first when the train is already on
+   *  another route. A refused assignment (for example while a calibration run
+   *  is open) throws with the server's reason. */
   async assignQuickRouteWithConfirm(trainId: string, routeId: string): Promise<string> {
-    try {
-      await this.api.assignRoute(trainId, routeId);
-      return 'ok';
-    } catch (err: any) {
-      if (err.status !== 409) {
-        throw err;
-      }
+    const currentRouteId = stateManager.getAssignedRouteId(trainId);
+    if (currentRouteId) {
+      const running = !!stateManager.getRouteRun(trainId);
       const confirmed = await showConfirmModal({
-        title: 'Train Already Has a Route',
-        message: `Train ${trainId} is already assigned to another route. Replace it with the new Quick Route?`,
-        detail: err.message || '',
+        title: 'Replace Route',
+        message: `Train ${trainId} is on route ${currentRouteId}. Replace it with the new Quick Route?`,
+        detail: running
+          ? 'The train runs to the end of its reservation and stops, then takes the Quick Route.'
+          : 'The train leaves its current route.',
         confirmText: 'Replace Route',
         confirmVariant: 'danger',
       });
       if (!confirmed) {
         return 'cancelled';
       }
-      await this.api.assignRoute(trainId, routeId, { force: true });
-      return 'ok';
     }
+    await this.api.assignRoute(trainId, routeId);
+    return 'ok';
   }
 
   async deleteRouteBestEffort(routeId: string): Promise<void> {
@@ -1136,7 +1151,17 @@ export class PathEditorHandler {
       });
 
       if (result.success) {
-        showToast(`Path extended to ${newEndBlockId}`, 'success', 5000);
+        // The server gives the train a new one-off route to the block: the
+        // train runs to the end of its reservation and stops, then takes the
+        // new route, which starts not engaged (design_new.md "Route Edit And
+        // Reconciliation", operator retarget).
+        const trainId = this.extendPathState.selectedPath?.train_id || 'The train';
+        showToast(
+          `${routeAssignedMessage(trainId, stateManager.getController(trainId), true)} ` +
+            `Its new route ends at ${newEndBlockId}.`,
+          'success',
+          8000
+        );
         await window.app?.refreshNetwork();
         await this.resetExtendRouteState();
         setStatusState('Extend Path: Click on a path to extend');
