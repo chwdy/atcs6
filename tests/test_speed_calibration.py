@@ -52,6 +52,15 @@ def _open_run(cal=None, **kwargs):
     return cal, run, profile
 
 
+def _observe(cal, run, now, entered=(), **observation):
+    """One tick: Observe records the credited entries on the run, then Plan
+    step `c9e1` advances the pass (design_new.md "Speed calibration",
+    `CalibrationRun`)."""
+    if entered:
+        cal.record_detected_entries(run, entered, now)
+    return cal.advance(run, CalibrationObservation(now=now, **observation))
+
+
 def _crossing(cal, run, clock, *, seconds, overrun_block=None):
     """Drive one whole leg: arm, enter B, enter the far block, then stop.
 
@@ -61,10 +70,10 @@ def _crossing(cal, run, clock, *, seconds, overrun_block=None):
     cal.advance(run, CalibrationObservation(now=clock))  # arm the leg
     far = run.heading_toward_block_id
     clock += 1.0
-    cal.advance(run, CalibrationObservation(now=clock, newly_confirmed=("B",)))
+    _observe(cal, run, clock, ("B",))
     clock += seconds
     entered = (overrun_block,) if overrun_block else (far,)
-    cal.advance(run, CalibrationObservation(now=clock, newly_confirmed=entered))
+    _observe(cal, run, clock, entered)
     if run.phase == PHASE_FAILED:
         return clock
     clock += 1.0
@@ -117,8 +126,8 @@ def test_only_entries_credited_to_this_train_move_the_clock():
     # train, so a block it never names cannot start its clock.
     cal, run, _profile = _open_run()
     cal.advance(run, CalibrationObservation(now=0.0))
-    cal.advance(run, CalibrationObservation(now=1.0, newly_confirmed=()))
-    assert run.clock_started_at is None
+    _observe(cal, run, 1.0, ())
+    assert run.crossing_started_at is None
 
 
 # --- the shuttle -------------------------------------------------------------
@@ -145,12 +154,8 @@ def test_a_leg_arms_a_one_off_route_to_its_far_end_and_finishes_without_a_route_
     arm = cal.advance(run, CalibrationObservation(now=0.0))
     assert arm.arm_leg_to == "C"
     assert arm.power_percent == run.current_power
-    cal.advance(
-        run, CalibrationObservation(now=1.0, newly_confirmed=("B",), path_present=True)
-    )
-    stop = cal.advance(
-        run, CalibrationObservation(now=3.0, newly_confirmed=("C",), path_present=True)
-    )
+    _observe(cal, run, 1.0, ("B",), path_present=True)
+    stop = _observe(cal, run, 3.0, ("C",), path_present=True)
     assert stop.deactivate_route is False
     assert stop.power_percent == 0.0
 
@@ -205,9 +210,7 @@ def test_a_leg_that_starts_crossing_and_never_arrives_fails_the_pass():
     # would put a speed on the curve the locomotive never held.
     cal, run, _profile = _open_run()
     cal.advance(run, CalibrationObservation(now=0.0))  # arm
-    cal.advance(
-        run, CalibrationObservation(now=1.0, newly_confirmed=("B",), path_present=True)
-    )
+    _observe(cal, run, 1.0, ("B",), path_present=True)
     cal.advance(
         run,
         CalibrationObservation(
@@ -241,6 +244,55 @@ def test_a_leg_that_overruns_the_stretch_fails_the_pass():
     _crossing(cal, run, 0.0, seconds=2.0, overrun_block="D")
     assert run.phase == PHASE_FAILED
     assert "overran" in run.failure_reason
+
+
+def test_an_overrun_while_the_train_stops_fails_the_pass():
+    """The stopping half is still the leg: a block past the far outer block
+    confirming while the train brakes fails the pass (design_new.md "Speed
+    calibration", A leg that overruns the stretch fails the pass)."""
+    cal, run, _profile = _open_run()
+    _observe(cal, run, 0.0)  # arm
+    far = run.heading_toward_block_id
+    _observe(cal, run, 1.0, ("B",))
+    _observe(cal, run, 3.0, (far,))
+    assert run.phase != PHASE_FAILED  # crossing measured, now stopping
+
+    _observe(cal, run, 3.5, ("D",), is_stopped=False)
+
+    assert run.phase == PHASE_FAILED
+    assert "overran" in run.failure_reason
+
+
+def test_an_overrun_confirmed_after_the_stop_still_fails_the_pass():
+    """Detector lag can confirm the overrun block after the train stands; the
+    record survives until the next leg arms, so the pass still fails."""
+    cal, run, _profile = _open_run()
+    _observe(cal, run, 0.0)  # arm
+    far = run.heading_toward_block_id
+    _observe(cal, run, 1.0, ("B",))
+    _observe(cal, run, 3.0, (far,))
+    _observe(cal, run, 4.0, is_stopped=True)  # stopped: next tick re-arms
+    assert run.phase != PHASE_FAILED
+
+    _observe(cal, run, 4.5, ("D",))
+
+    assert run.phase == PHASE_FAILED
+
+
+def test_observe_records_the_crossing_and_the_overrun_on_the_run():
+    cal, run, _profile = _open_run()
+    cal.record_detected_entries(run, ("B",), 1.0)
+    assert run.crossing_started_at is None  # the leg is not armed yet
+
+    _observe(cal, run, 1.0)  # arm
+    far = run.heading_toward_block_id
+    cal.record_detected_entries(run, ("B",), 2.0)
+    cal.record_detected_entries(run, (far,), 4.5)
+    cal.record_detected_entries(run, ("D",), 5.0)
+
+    assert run.crossing_started_at == 2.0
+    assert run.crossing_finished_at == 4.5
+    assert run.overrun_seen is True
 
 
 def test_a_failed_pass_leaves_no_open_run_to_block_a_restart():
@@ -397,9 +449,9 @@ def test_a_capped_crossing_is_discarded_and_the_pass_goes_on():
     curve_before = list(profile.power_speed_curve)
     # Arm the leg and enter the measured block so a crossing is being timed.
     cal.advance(run, CalibrationObservation(now=0.0))
-    cal.advance(run, CalibrationObservation(now=1.0, newly_confirmed=("B",)))
+    _observe(cal, run, 1.0, ("B",))
     assert run.is_measuring
-    assert run.clock_started_at is not None
+    assert run.crossing_started_at is not None
 
     tainted = cal.taint_current_crossing(
         "T1", "CAUTION restriction during a measured crossing"
@@ -411,7 +463,7 @@ def test_a_capped_crossing_is_discarded_and_the_pass_goes_on():
 
     # The crossing completes at the far block: it is discarded (nothing banked),
     # the taint is spent, and the pass survives to re-measure the step.
-    cal.advance(run, CalibrationObservation(now=3.0, newly_confirmed=("C",)))
+    _observe(cal, run, 3.0, ("C",))
     assert run.crossings == []
     assert run.current_crossing_tainted is False
     assert run.phase != PHASE_FAILED
@@ -430,13 +482,13 @@ def test_a_stretch_that_caps_every_crossing_fails_the_pass():
         cal.advance(run, CalibrationObservation(now=clock))  # arm the leg
         far = run.heading_toward_block_id
         clock += 1.0
-        cal.advance(run, CalibrationObservation(now=clock, newly_confirmed=("B",)))
+        _observe(cal, run, clock, ("B",))
         assert run.is_measuring
         cal.taint_current_crossing(
             "T1", "reservation-end braking during a measured crossing"
         )
         clock += 2.0
-        cal.advance(run, CalibrationObservation(now=clock, newly_confirmed=(far,)))
+        _observe(cal, run, clock, (far,))
         if i < CALIBRATION_CAP_RETRY_LIMIT - 1:
             # Under the limit: the crossing is discarded, the pass continues, and
             # the train stops so the next leg reverses.

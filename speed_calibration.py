@@ -38,7 +38,7 @@ operator steps up and down and nothing else.
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from constants import (
     CALIBRATION_CAP_RETRY_LIMIT,
@@ -74,20 +74,17 @@ class CalibrationSample:
 class CalibrationObservation:
     """What the world looks like to an open pass on one tick.
 
-    Built by `SpeedCalibration.tick()` from committed runtime state and passed
-    into `advance(...)`, which is the whole of the pass's decision logic. Keeping
-    the two apart is what lets the state machine be driven directly by a test
-    with synthetic confirmations instead of a moving simulation.
+    Built by `SpeedCalibration.plan_tick()` from committed runtime state and
+    passed into `advance(...)`, which is the whole of the pass's decision logic.
+    The confirmed entries are not here: Observe records what they mean on the
+    `CalibrationRun` itself (`record_detected_entries(...)`). Keeping the two
+    apart is what lets the state machine be driven directly by a test with
+    synthetic confirmations instead of a moving simulation.
     """
 
     now: float
     """`AppState.operating_time`. Wall time would count an operator's stop as
     distance covered; `operating_time` advances only while the session runs."""
-
-    newly_confirmed: Tuple[str, ...] = ()
-    """Block ids that became confirmed-OCCUPIED by the calibration train since
-    the last observation. Attribution has already credited these to this train,
-    so another train moving elsewhere cannot start or stop the clock."""
 
     is_stopped: bool = False
     """The canonical stopped predicate, `TrainController.is_stopped()`."""
@@ -204,7 +201,20 @@ class CalibrationRun:
     first appeared, not the tick it armed. `None` until then, so the timeout does
     not run while acquisition is still in progress (design_new.md "Speed
     calibration", Plan acquires leg authority all-or-nothing)."""
-    clock_started_at: Optional[float] = None
+    crossing_started_at: Optional[float] = None
+    """When the current crossing's clock started — the moment B was confirmed
+    occupied for this leg — or `None` before it starts. Written in Observe by
+    `record_detected_entries(...)`, read by Plan step `c9e1`; each new leg
+    resets it (design_new.md "Speed calibration", `CalibrationRun`)."""
+    crossing_finished_at: Optional[float] = None
+    """When the current crossing's clock stopped — the moment the far outer
+    block was confirmed occupied after B — or `None` until then. Written in
+    Observe, read by Plan step `c9e1`, reset by each new leg."""
+    overrun_seen: bool = False
+    """Set in Observe when a block past the stretch was confirmed and credited
+    to the calibration train on this leg, whether the train was still crossing
+    or already stopping. Plan step `c9e1` fails the pass on it; each new leg
+    resets it."""
     current_crossing_tainted: bool = False
     """Whether an ATC restriction (CAUTION / SPEED_LIMIT / the leg's own
     reservation end) lowered the calibration drive during the crossing now being
@@ -317,13 +327,6 @@ class SpeedCalibration:
         self._sc = simulation_controller
         self.runs: Dict[str, CalibrationRun] = {}
         self.lighting_runs: Dict[str, LightingCalibrationRun] = {}
-        # This tick's global detector read for the calibration train, stashed
-        # by `observe_detected_entries(...)` and consumed by `tick_train(...)`
-        # in Action (design_new.md "Speed calibration", The clock is two
-        # confirmed entries). The read happens during the global detector read
-        # because that is where attribution has just written the slice and
-        # before the train's own final movement callback folds and clears it.
-        self._step0_entries: Dict[str, Tuple[str, ...]] = {}
 
     # -- lifecycle --------------------------------------------------------
 
@@ -359,7 +362,6 @@ class SpeedCalibration:
             heading_to=1 if int(heading_to) else 0,
         )
         self.runs[train.train_id] = run
-        self._step0_entries.pop(train.train_id, None)
         return run
 
     def abandon(self, train_id: str, reason: str = "cancelled") -> None:
@@ -378,7 +380,6 @@ class SpeedCalibration:
         `_deactivate_leg_route`).
         """
         run = self.runs.pop(train_id, None)
-        self._step0_entries.pop(train_id, None)
         if run is not None:
             self._stop_manual_traction(train_id)
             self._deactivate_leg_route(train_id, run)
@@ -439,7 +440,6 @@ class SpeedCalibration:
             run.train_id, operation="speed_calibration", success=False, reason=reason
         )
         self.runs.pop(run.train_id, None)
-        self._step0_entries.pop(run.train_id, None)
         return CalibrationCommand(power_percent=0.0, deactivate_route=True)
 
     def taint_current_crossing(self, train_id: str, reason: str) -> bool:
@@ -483,8 +483,16 @@ class SpeedCalibration:
     def _advance_leg(
         self, run: CalibrationRun, obs: CalibrationObservation
     ) -> Optional[CalibrationCommand]:
-        stretch = {run.measured_block_id, *run.outer_block_ids}
         far_block = run.heading_toward_block_id
+
+        # An overrun Observe recorded on this leg fails the pass — including one
+        # the detector confirmed only after the train stopped, before the next
+        # leg arms and resets the record. The locomotive needed more stopping
+        # room than the stretch has. Nothing on the rails prevents this: the
+        # block ahead of a train's head is energized as its pending-entry block
+        # whichever block that turns out to be.
+        if run.overrun_seen:
+            return self._fail_overrun(run)
 
         if not run.leg_armed:
             # Every leg is armed here, the opening one included: ask for a one-off
@@ -503,7 +511,9 @@ class SpeedCalibration:
             run.leg_armed = True
             run.leg_authority_seen = False
             run.leg_started_at = None
-            run.clock_started_at = None
+            run.crossing_started_at = None
+            run.crossing_finished_at = None
+            run.overrun_seen = False
             # A fresh crossing begins clean: any taint from the last one is spent
             # (design_new.md, "A capped crossing is discarded").
             run.current_crossing_tainted = False
@@ -531,23 +541,10 @@ class SpeedCalibration:
             if run.leg_started_at is None:
                 run.leg_started_at = obs.now
 
-        for block_id in obs.newly_confirmed:
-            if block_id not in stretch:
-                # The locomotive needed more stopping room than the stretch
-                # has. Nothing on the rails prevents this: the block ahead of a
-                # train's head is energized as its pending-entry block whichever
-                # block that turns out to be.
-                return self.fail(
-                    run, f"train overran the stretch into block {block_id}"
-                )
-
-        if run.measured_block_id in obs.newly_confirmed and run.clock_started_at is None:
-            run.clock_started_at = obs.now
-            return None
-
-        if far_block in obs.newly_confirmed and run.clock_started_at is not None:
-            elapsed = obs.now - run.clock_started_at
-            run.clock_started_at = None
+        if run.crossing_finished_at is not None and run.crossing_started_at is not None:
+            elapsed = run.crossing_finished_at - run.crossing_started_at
+            run.crossing_started_at = None
+            run.crossing_finished_at = None
             if run.current_crossing_tainted:
                 # An ATC restriction lowered the calibration drive during this
                 # crossing, so the timed speed is not the speed the step
@@ -597,13 +594,19 @@ class SpeedCalibration:
             return None
         return self._resolve_incomplete_leg(run, obs)
 
+    def _fail_overrun(self, run: CalibrationRun) -> CalibrationCommand:
+        """Fail the pass for an overrun Observe recorded on this leg."""
+        return self.fail(
+            run, "train overran the stretch past the far outer block"
+        )
+
     def _resolve_incomplete_leg(
         self, run: CalibrationRun, obs: CalibrationObservation
     ) -> Optional[CalibrationCommand]:
         """Resolve a leg that ran out of authority or time without reaching the
         far block. Two different faults share this exit, and they are not the
         same thing."""
-        if run.clock_started_at is None:
+        if run.crossing_started_at is None:
             # The locomotive never reached the measured block: the low steps may
             # not overcome its stiction at all. The flat bottom this leaves on
             # the curve is that locomotive's real stall band.
@@ -621,6 +624,10 @@ class SpeedCalibration:
     def _advance_stopping(
         self, run: CalibrationRun, obs: CalibrationObservation
     ) -> Optional[CalibrationCommand]:
+        # The stopping half is still this leg: a block past the stretch
+        # confirming while the train brakes is an overrun too.
+        if run.overrun_seen:
+            return self._fail_overrun(run)
         if not obs.is_stopped:
             return None
         if len(run.crossings) >= run.crossings_target:
@@ -746,10 +753,13 @@ class SpeedCalibration:
 
         This is a read against an existing detector-read handoff, not an additional
         one: it writes nothing into the slice (design_new.md "Stage handoff
-        rule", A read is not a handoff).
+        rule", A read is not a handoff). What it sees it records on the run
+        through `record_detected_entries(...)`, which Plan step `c9e1` reads
+        later that tick.
         """
         if not self.runs:
             return
+        now = self._operating_time()
         for train_id, run in self.runs.items():
             if not run.is_measuring:
                 continue
@@ -760,7 +770,41 @@ class SpeedCalibration:
                 controller.physics_sync, "pending_detected_entered_blocks", None
             )
             if entered:
-                self._step0_entries[train_id] = tuple(sorted(entered))
+                self.record_detected_entries(run, entered, now)
+
+    def record_detected_entries(
+        self, run: CalibrationRun, entered: Iterable[str], now: float
+    ) -> None:
+        """Record what this tick's confirmed entries mean for the run, in
+        Observe (design_new.md "Speed calibration", `CalibrationRun`; The clock
+        is two confirmed entries; A leg that overruns the stretch fails the
+        pass).
+
+        `entered` holds only entries attribution credited to the calibration
+        train, so another train moving elsewhere cannot start or stop the clock.
+        It writes three facts that Plan step `c9e1` reads the same tick:
+
+          * `overrun_seen` when any entry lies outside the stretch, in either
+            half of the leg;
+          * `crossing_started_at` when B confirms on an armed leg whose clock has
+            not started;
+          * `crossing_finished_at` when the far outer block confirms on a later
+            read after the clock started.
+
+        A leg that is not armed yet records no crossing: the leg arms in Plan
+        after this, and arming resets all three.
+        """
+        entered = set(entered)
+        stretch = {run.measured_block_id, *run.outer_block_ids}
+        if entered - stretch:
+            run.overrun_seen = True
+        if run.phase != PHASE_LEG or not run.leg_armed:
+            return
+        if run.crossing_started_at is None:
+            if run.measured_block_id in entered:
+                run.crossing_started_at = now
+        elif run.crossing_finished_at is None and run.heading_toward_block_id in entered:
+            run.crossing_finished_at = now
 
     def plan_tick(self, train_id: str) -> Optional[CalibrationCommand]:
         """Build this tick's observation for the train's open auto pass, advance
@@ -788,7 +832,6 @@ class SpeedCalibration:
             return None
         obs = CalibrationObservation(
             now=self._operating_time(),
-            newly_confirmed=self._step0_entries.pop(train_id, ()),
             is_stopped=bool(controller.is_stopped()),
             head_block=self._head_block(controller),
             path_present=controller.path_projection.received_path_plan is not None,
@@ -964,7 +1007,6 @@ class SpeedCalibration:
             clear_profile.power_speed_curve = None
             clear_profile.calibrated_at = None
         self.runs.pop(train_id, None)
-        self._step0_entries.pop(train_id, None)
         self._emit_command_result(
             train_id,
             operation="speed_calibration",
