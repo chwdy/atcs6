@@ -862,8 +862,12 @@ def calibration_readiness(
     controller = _controller(state, train)
     unmet: List[str] = []
 
-    if not getattr(state, "simulation_running", False):
-        unmet.append("Start the session — a calibration run opens only while it runs")
+    session = state.session_state()
+    if not session.is_live:
+        unmet.append(
+            f"The session is {session.value.value}, not live — a calibration run "
+            "opens only while the session is live"
+        )
     if getattr(controller, "presence_unknown", False):
         unmet.append(_ghost_refusal_message(train_id))
     if not train.speed_profile_id or state.network.speed_profiles.get(

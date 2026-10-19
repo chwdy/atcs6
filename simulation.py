@@ -76,6 +76,7 @@ from runtime_payloads import (
 
 if TYPE_CHECKING:
     from path_dispatcher import PathDispatcher
+    from session_state import SessionState
 
 logger = logging.getLogger(__name__)
 
@@ -329,15 +330,12 @@ class SimulationController(SwitchOutputOwner):
         # in Simulation / Virtual Hardware, which start no watchdog.
         self._watchdog_trip_record: Optional[WatchdogTripRecord] = None
 
-        # Seam onto `AppState.simulation_running`, wired by `AppState` the same
-        # way `operating_clock` is. `POST /api/simulation/control` writes the
-        # flag for ordinary start/stop; the two fatal halt entries
-        # (`enter_failed_runtime` / `enter_hardware_failure`) write it `False`
-        # through this seam before latching their gates. No other writer exists
-        # (design_new.md "Running and stopped"). A controller built without an
-        # `AppState` — a unit test, a scenario runner — has no session flag to
-        # stop, so the default is a no-op.
-        self.request_session_stop: Callable[[], None] = lambda: None
+        # Set by the layout emergency cut-out and cleared by Reset; while set
+        # the session reads Halted for `layout_emergency_cut_out`
+        # (design_new.md "Session state"). The halts and the cut-out each write
+        # their own flag and never `AppState.simulation_running`, which is only
+        # the Play/Pause bit.
+        self.layout_cut_out_active: bool = False
 
         # Runtime-only counters, both starting at `0` (design_new.md "Power").
         # `POST /api/operation/activate` bumps the first on every successful
@@ -467,7 +465,7 @@ class SimulationController(SwitchOutputOwner):
         # escalates a failed drop to hardware failure). It reads neither clock,
         # so running it ahead of the clock advance changes nothing on a normal
         # pass.
-        self._consume_watchdog_trip()
+        self.consume_watchdog_trip()
 
         # A fatal physical-entry conflict (`failed_runtime`) halts train ticks
         # (Observe/Plan/Action skipped) in every environment; its release path is
@@ -1234,7 +1232,7 @@ class SimulationController(SwitchOutputOwner):
             True, f"Layout emergency cut-out raised for {len(train_ids)} train(s)"
         )
 
-    def _consume_watchdog_trip(self) -> None:
+    def consume_watchdog_trip(self) -> None:
         """Consume a loss-of-control watchdog trip once, on the runtime thread.
 
         The watchdog daemon dropped the physical outputs to the safe state
@@ -1284,7 +1282,7 @@ class SimulationController(SwitchOutputOwner):
             self.power_controller.reconcile_recorded_voltages()
         self.notification_center.emit(
             source="SimulationController",
-            operation="_consume_watchdog_trip",
+            operation="consume_watchdog_trip",
             kind=Kind.WARNING,
             message=(
                 "loss-of-control watchdog drove every output to the safe "
@@ -1381,7 +1379,7 @@ class SimulationController(SwitchOutputOwner):
         """
         # Wire the loss-of-control watchdog's trip record (Real Hardware only;
         # the block and switch drivers share one watchdog). The runtime consumes
-        # it each tick in `_consume_watchdog_trip()`.
+        # it each tick in `consume_watchdog_trip()`.
         self._watchdog_trip_record = None
         for iface in (block_output_interface, switch_output_interface):
             watchdog = getattr(iface, "_watchdog", None) if iface is not None else None
@@ -3379,17 +3377,15 @@ class SimulationController(SwitchOutputOwner):
         configured block and switch output interface, zeroing track voltage and
         switching off point motors — the safe-state write touches hardware
         outputs only, never controller/path/route/resource/occupancy state.
-        It also stops the session: this is one of the three writers of
-        ``AppState.simulation_running``, and it writes ``False`` through the
-        same stop-state transition an ordinary stop uses before latching the
-        failure gate (design_new.md "Running and stopped"). Then sets
+        It writes no other session flag: the latch alone makes the session read
+        Halted for ``runtime_failure`` (design_new.md "Session state"), and
+        clearing it returns the session to the state it had. Then sets
         :attr:`failed_runtime`, stores the typed fatal payload for inspection,
         and emits a FATAL notification carrying the conflict details. While the
         flag is set, :meth:`update` only advances ``simulation_time`` and skips
         Observe/Plan/Action for every train.
         """
         self.enter_output_safe_state()
-        self.request_session_stop()
         self.failed_runtime = True
         self.failed_runtime_payload: Optional[FatalPhysicalEntryConflict] = payload
         self.failed_runtime_at = self.simulation_time
@@ -3435,11 +3431,6 @@ class SimulationController(SwitchOutputOwner):
         if self.runtime_halted:
             return
         safe_state_error: Optional[str] = None
-        # The other of the two fatal halt entries that stop the session; it
-        # writes `simulation_running = False` through the same stop-state
-        # transition before latching its gate (design_new.md "Running and
-        # stopped").
-        self.request_session_stop()
         try:
             self.enter_output_safe_state()
         except Exception as exc:  # noqa: BLE001 - the failure still must latch
@@ -3697,8 +3688,7 @@ def train_runtime_entry(
     sim_controller: "SimulationController",
     train: Train,
     *,
-    session_running: bool,
-    commissioning: bool,
+    session_state: "SessionState",
 ) -> Dict[str, Any]:
     """One train's live runtime data, in the sibling-payload shape.
 
@@ -3755,8 +3745,7 @@ def train_runtime_entry(
         "operator_status": operator_status_for(
             sim_controller,
             train,
-            session_running=session_running,
-            commissioning=commissioning,
+            session_state=session_state,
         ),
     }
 
@@ -3765,8 +3754,7 @@ def build_train_runtime_maps(
     network: RailwayNetwork,
     sim_controller: Optional["SimulationController"],
     *,
-    session_running: bool,
-    commissioning: bool,
+    session_state: "SessionState",
 ) -> Dict[str, Dict[str, Any]]:
     """The five per-train sibling maps, keyed by `train_id` (design_new.md
     "Data Flow To UI"): `controllers_by_train_id`,
@@ -3786,8 +3774,7 @@ def build_train_runtime_maps(
         entry = train_runtime_entry(
             sim_controller,
             train,
-            session_running=session_running,
-            commissioning=commissioning,
+            session_state=session_state,
         )
         maps["controllers_by_train_id"][train_id] = entry["controller"]
         maps["dispatcher_progress_by_train_id"][train_id] = entry["dispatcher_progress"]
@@ -3801,8 +3788,7 @@ def build_network_payload(
     network: RailwayNetwork,
     sim_controller: Optional["SimulationController"],
     *,
-    session_running: bool = True,
-    commissioning: bool = False,
+    session_state: Optional["SessionState"] = None,
 ) -> Dict[str, Any]:
     """Build network payload in the canonical sibling-payload shape.
 
@@ -3810,20 +3796,23 @@ def build_network_payload(
     sibling maps alongside the persistent `trains` list, never merged into
     Train.to_dict() output (see `build_train_runtime_maps`).
 
-    `session_running` and `commissioning` are the session state on `AppState`
-    that the hold reason's first question reads. The HTTP snapshot passes them;
+    `session_state` is `AppState.session_state()`, served as `session_state`
+    and read by the hold reason's first question. The HTTP snapshot passes it;
     a caller with no `AppState` (the scenario runner) is ticking the runtime
-    itself, so the defaults read it as running and not commissioning.
+    itself, so the default reads the session as Live.
     """
+    from session_state import LIVE
+
+    session_state = session_state or LIVE
     payload = network.to_dict()
     payload.update(
         build_train_runtime_maps(
             network,
             sim_controller,
-            session_running=session_running,
-            commissioning=commissioning,
+            session_state=session_state,
         )
     )
+    payload["session_state"] = session_state.to_dict()
 
     if not sim_controller:
         payload["simulation_time"] = 0.0

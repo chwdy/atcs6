@@ -759,7 +759,7 @@ def test_commissioning_enter_reports_a_rig_it_could_not_safe(client):
     assert hw_event.payload["component"] == "OutputSafety"
     assert state.sim_controller.environment_active is False
     # ...and commissioning still owns the device, which is the point.
-    assert state.commissioning_active is True
+    assert state.setup_active is True
     assert hardware_config.get_live_device() is None
 
 
@@ -788,14 +788,14 @@ def test_closing_the_bench_hands_the_live_environment_back(client):
     assert hardware_config.get_live_device() is not None
 
     assert test_client.post("/api/hardware/bench/open").get_json()["ok"] is True
-    assert state.commissioning_active is True
+    assert state.setup_active is True
     assert state.sim_controller.environment_active is False
 
     data = test_client.post("/api/hardware/bench/close").get_json()
 
     assert data["reactivated"] is True
     assert data["issues"] == []
-    assert state.commissioning_active is False
+    assert state.setup_active is False
     assert state.sim_controller.environment_active is True
     # The reason the bench recorded for the environment being down goes with it.
     assert state.sim_controller.activation_issues == []
@@ -822,7 +822,7 @@ def test_closing_the_bench_does_not_activate_what_it_never_took(client):
     data = test_client.post("/api/hardware/bench/close").get_json()
 
     assert data["reactivated"] is False
-    assert state.commissioning_active is False
+    assert state.setup_active is False
     assert state.sim_controller.environment_active is False
     assert hardware_config.get_live_device() is None
 
@@ -835,14 +835,14 @@ def test_closing_the_bench_leaves_hardware_setup_s_commissioning_alone(client):
     test_client, state = client
     _ready_virtual_layout(state)
     assert test_client.post("/api/operation/commissioning/enter").status_code == 200
-    assert state.commissioning_active is True
+    assert state.setup_active is True
 
     test_client.post("/api/hardware/bench/open")
     data = test_client.post("/api/hardware/bench/close").get_json()
 
     assert data["commissioning"] is True
     assert data["reactivated"] is False
-    assert state.commissioning_active is True
+    assert state.setup_active is True
 
 
 def test_a_blocked_rebuild_is_reported_rather_than_swallowed(client):
@@ -867,7 +867,7 @@ def test_a_blocked_rebuild_is_reported_rather_than_swallowed(client):
         "missing_track_binding",
         "missing_occupancy_binding",
     ]
-    assert state.commissioning_active is False
+    assert state.setup_active is False
     assert state.sim_controller.environment_active is False
 
 
@@ -875,7 +875,7 @@ def test_an_expired_bench_gives_the_controller_back(client, monkeypatch):
     """A bench that ends on its idle timer must hand back what its open took.
 
     `IDLE_TIMEOUT_S` closes the session from the inside — it drops the device and
-    de-energizes — but `commissioning_active` and the environment belong to the
+    de-energizes — but `setup_active` and the environment belong to the
     app, not the session, so the expiry alone could not restore them. That left
     the runtime locked out of a controller nothing was holding: no detection, no
     drive, and no window on screen to explain it, until someone opened and closed
@@ -886,7 +886,7 @@ def test_an_expired_bench_gives_the_controller_back(client, monkeypatch):
     _ready_virtual_layout(state)
     assert test_client.post("/api/operation/activate").status_code == 200
     assert test_client.post("/api/hardware/bench/open").get_json()["ok"] is True
-    assert state.commissioning_active is True
+    assert state.setup_active is True
     assert state.sim_controller.environment_active is False
 
     import hardware.occupancy_bench as bench_module
@@ -899,7 +899,7 @@ def test_an_expired_bench_gives_the_controller_back(client, monkeypatch):
 
     assert data["open"] is False
     assert data["reactivated"] is True
-    assert state.commissioning_active is False
+    assert state.setup_active is False
     assert state.bench_owns_commissioning is False
     assert state.sim_controller.environment_active is True
     assert hardware_config.get_live_device() is not None
@@ -908,7 +908,7 @@ def test_an_expired_bench_gives_the_controller_back(client, monkeypatch):
 def test_a_bench_that_fails_to_open_gives_the_controller_straight_back(client):
     """The handover happens before the device is opened, so a failed open had
     taken the controller and produced no bench to hold it — environment down,
-    `commissioning_active` latched, and no panel polling `bench/state` to notice,
+    `setup_active` latched, and no panel polling `bench/state` to notice,
     because there was nothing open to poll. Opening the bench with the rig
     unplugged left a silently dead railway behind an error about the device."""
     test_client, state = client
@@ -931,7 +931,7 @@ def test_a_bench_that_fails_to_open_gives_the_controller_straight_back(client):
     assert data["ok"] is False
     assert "read error" in data["error"]
     # The railway is back, not stranded behind the failure.
-    assert state.commissioning_active is False
+    assert state.setup_active is False
     assert state.bench_owns_commissioning is False
     assert data["reactivated"] is True
     assert state.sim_controller.environment_active is True
@@ -943,14 +943,14 @@ def test_polling_a_bench_that_was_never_open_restores_nothing(client):
     activate an environment on nobody's request."""
     test_client, state = client
     _ready_virtual_layout(state)
-    assert state.commissioning_active is False
+    assert state.setup_active is False
     before = state.sim_controller.environment_active
 
     data = test_client.get("/api/hardware/bench/state").get_json()
 
     assert data["open"] is False
     assert data["reactivated"] is False
-    assert state.commissioning_active is False
+    assert state.setup_active is False
     # Whatever the environment was, the poll left it there.
     assert state.sim_controller.environment_active is before
 
@@ -973,7 +973,7 @@ def test_an_expired_bench_leaves_hardware_setup_s_commissioning_alone(client):
     assert data["open"] is False
     assert data["reactivated"] is False
     # The port grid is still driving the device; the bench never took it.
-    assert state.commissioning_active is True
+    assert state.setup_active is True
 
 
 def test_commissioning_enter_reports_a_clean_safe_state(client):

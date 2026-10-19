@@ -11,16 +11,17 @@ and stored nowhere, and no control logic reads them.
   `route_deactivate`, `route_abort`, the held assignment, `path_cancel_request`.
   Each entry is `{latch, label}`; the labels are the Latch Table's
   "Operator sees (pending action)" column.
-- **Hold reason** (canonical home in the doc): for a stopped train, the first
-  row of the doc's 18-row table whose condition holds, as
-  `{code, question, detail}`; `None` while the train moves or when no row holds.
+- **Hold reason** (canonical home in the doc): the first row of the doc's
+  17-row table whose condition holds, as `{code, question, detail}`. It is
+  `None` while the session is Live and the train moves, and when no row holds.
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from enums import AtcLimitReasonCode, HandlePosition, OperationMode, TrainStatus
+from enums import AtcLimitReasonCode, HandlePosition, SessionStateValue, TrainStatus
+from session_state import SessionState
 
 # The Latch Table's "Operator sees (pending action)" column, in the order the
 # doc lists pending actions. The held route assignment sits between
@@ -89,33 +90,28 @@ def hold_reason_for(
     controller,
     pending_actions: List[Dict[str, Any]],
     *,
-    session_running: bool,
-    commissioning: bool,
+    session_state: SessionState,
 ) -> Optional[Dict[str, Any]]:
-    """Why a stopped train is not moving: the first row of design_new.md
-    "Hold reason" whose condition holds, or None.
+    """Why a train is not moving: the first row of design_new.md "Hold reason"
+    whose condition holds, or None.
 
     The rows follow the four questions in order — is the layout live, who is
     driving and is it asking to move, how far may it go, how fast may it go —
-    with `driver_idle` last.
+    with `driver_idle` last. Question 1 is answered by the session state; it
+    holds whenever the session is not Live, even for a train a halt froze with
+    speed still stored, because a stopped session moves no train.
     """
+    # Question 1: is the layout live?
+    if session_state.value is SessionStateValue.HALTED:
+        return _hold("halted", 1, session_state.halt_reason.value)
+    if session_state.value is SessionStateValue.SETUP:
+        return _hold("setup", 1)
+    if session_state.value is SessionStateValue.PAUSED:
+        return _hold("paused", 1)
     if not controller.is_stopped():
         return None
     train_id = train.train_id
     route_executor = getattr(sim_controller, "route_executor", None)
-
-    # Question 1: is the layout live?
-    if getattr(sim_controller, "failed_runtime", False):
-        return _hold("failed_runtime", 1)
-    if getattr(sim_controller, "hardware_failure", False) and (
-        getattr(sim_controller, "operation_mode", OperationMode.SIMULATION)
-        is not OperationMode.SIMULATION
-    ):
-        return _hold("hardware_failure", 1)
-    if commissioning:
-        return _hold("commissioning", 1)
-    if not session_running:
-        return _hold("session_stopped", 1)
 
     # Question 2: who is driving this train, and is it asking to move?
     if getattr(train, "is_unidentified", False):
@@ -174,8 +170,7 @@ def operator_status_for(
     sim_controller,
     train,
     *,
-    session_running: bool,
-    commissioning: bool,
+    session_state: SessionState,
 ) -> Dict[str, Any]:
     """One train's `{ato_status, pending_actions, hold_reason}`."""
     controller = sim_controller._get_or_create_controller(train)
@@ -190,7 +185,6 @@ def operator_status_for(
         train,
         controller,
         pending,
-        session_running=session_running,
-        commissioning=commissioning,
+        session_state=session_state,
     )
     return {"ato_status": ato_status, "pending_actions": pending, "hold_reason": hold}

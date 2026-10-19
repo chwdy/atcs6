@@ -123,6 +123,27 @@ class BlockState(Enum):
     CAUTION = "caution"  # 警告（列车刚离开，下一区段仍被占用，需减速）
 
 
+class SessionStateValue(Enum):
+    """The four values of the session state (design_new.md "Session state").
+
+    Read through `AppState.session_state()`; nothing stores it.
+    """
+
+    SETUP = "setup"  # Building and testing the rig; Virtual/Real Hardware only.
+    LIVE = "live"  # Trains may be driven; the whole tick runs.
+    PAUSED = "paused"  # Simulation only: time is frozen.
+    HALTED = "halted"  # Nothing drives; always carries a HaltReason.
+
+
+class HaltReason(Enum):
+    """Why a Halted session is halted (design_new.md "Session state")."""
+
+    LAYOUT_EMERGENCY_CUT_OUT = "layout_emergency_cut_out"
+    HARDWARE_FAILURE = "hardware_failure"
+    RUNTIME_FAILURE = "runtime_failure"
+    NOT_ACTIVATED = "not_activated"
+
+
 class TrainStatus(Enum):
     """Overall train status, derived (never stored) per design_new.md
     "Controller state machine".

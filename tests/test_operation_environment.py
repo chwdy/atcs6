@@ -83,6 +83,9 @@ def test_environment_api_reports_selected_separately_from_active(
             # pending against one (design_new.md "Hardware setup", A binding is
             # read per write).
             "awaits_activation": False,
+            # Simulation is active and Play is off (design_new.md "Session
+            # state").
+            "session_state": {"value": "paused", "halt_reason": None},
         }
 
 

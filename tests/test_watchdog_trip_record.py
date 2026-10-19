@@ -86,7 +86,7 @@ def test_a_successful_drop_warns_without_ending_the_session():
     assert sim.hardware_failure is False
     assert sim.safe_state_generation == generation_before + 1
     ops = [n.operation for n in sim.notification_center.peek_recent(50)]
-    assert "_consume_watchdog_trip" in ops
+    assert "consume_watchdog_trip" in ops
 
 
 def test_no_trip_is_a_no_op():

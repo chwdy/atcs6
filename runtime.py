@@ -101,19 +101,46 @@ class FaultLog:
             )
 
 
-def _reads_hardware(state: AppState) -> bool:
-    """True when this session reads a setup-aware occupancy device.
+# The passes a runtime-loop iteration can run (design_new.md "Running and
+# stopped", Which pass runs).
+PASS_TICK = "tick"  # the whole tick
+PASS_STOPPED = "stopped"  # the observing steps only
+PASS_WATCHDOG = "watchdog"  # only consume a loss-of-control watchdog trip
 
-    Read without the simulation lock: the backend is chosen once when the
-    session is built and never changes under a running loop, so there is
-    nothing here to race with — and taking the lock on every idle pass of a
-    sim-mode session would contend with request handlers for no reason.
+
+def runtime_pass(state: AppState) -> Optional[str]:
+    """Which pass this iteration runs, read from the session state.
+
+    - Live: the whole tick.
+    - Halted for a runtime or hardware failure: no pass, apart from consuming a
+      watchdog trip record (step `ee19`).
+    - Any other stopped state in Virtual Hardware or Real Hardware — Setup, or
+      Halted for the layout emergency cut-out — the stopped pass, because the
+      detectors go on detecting. Setup with a hardware failure latched runs no
+      pass, since step `ee19` keeps the runtime off the failed device.
+    - Everything else runs no pass: a Paused or cut-out Simulation session has
+      nothing to observe, and a session Halted for `not_activated` has no
+      interfaces built.
     """
-    controller = getattr(state, "sim_controller", None)
-    return getattr(controller, "operation_mode", None) in (
+    from enums import HaltReason, SessionStateValue
+
+    session = state.session_state()
+    if session.is_live:
+        return PASS_TICK
+    if session.halt_reason in (HaltReason.RUNTIME_FAILURE, HaltReason.HARDWARE_FAILURE):
+        return PASS_WATCHDOG
+    controller = state.sim_controller
+    hardware = getattr(controller, "operation_mode", None) in (
         OperationMode.VIRTUAL_HARDWARE,
         OperationMode.REAL_HARDWARE,
     )
+    if not hardware or session.halt_reason is HaltReason.NOT_ACTIVATED:
+        return None
+    if session.value is SessionStateValue.SETUP and getattr(
+        controller, "hardware_failure", False
+    ):
+        return None
+    return PASS_STOPPED
 
 
 def create_simulation_loop(state: AppState) -> Callable[[], None]:
@@ -135,7 +162,8 @@ def create_simulation_loop(state: AppState) -> Callable[[], None]:
                 delta_seconds = (current_time - last_update_time).total_seconds()
                 last_update_time = current_time
 
-                if state.simulation_running:
+                which = runtime_pass(state)
+                if which == PASS_TICK:
                     # The operating clock advances by the uncapped wall x speed
                     # delta (a faithful clock a schedule measures against); the
                     # physics integrator uses the same delta CLAMPED to
@@ -150,16 +178,21 @@ def create_simulation_loop(state: AppState) -> Callable[[], None]:
                         state.sim_controller.update(
                             sim_delta, operating_delta_seconds=operating_delta
                         )
-                elif _reads_hardware(state):
+                elif which == PASS_STOPPED:
                     # Stopped, but the detectors have not stopped detecting.
                     # Occupancy is what the hardware says it is, so it is read
                     # and committed on the same cadence whether or not trains
-                    # are being ticked; `poll_hardware_occupancy` runs the Observe read
-                    # and its commit alone, so nothing else about "stopped"
-                    # changes. The mode is checked before taking the lock so a
-                    # sim-mode session never contends for it while idle.
+                    # are being ticked; `poll_hardware_occupancy` runs the
+                    # Observe read and its commit alone, so nothing else about
+                    # "stopped" changes.
                     with state.simulation_lock:
                         state.sim_controller.poll_hardware_occupancy()
+                elif which == PASS_WATCHDOG:
+                    # A failure halt runs no pass, but a watchdog trip is still
+                    # consumed so the recorded voltages follow the drop and a
+                    # failed drop escalates (design_new.md step `ee19`).
+                    with state.simulation_lock:
+                        state.sim_controller.consume_watchdog_trip()
             except Exception as e:
                 faults.report(e)
             else:

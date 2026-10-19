@@ -99,8 +99,6 @@ def _develop_opener(cfg):
 
 def register(app, state: AppState) -> None:
     """Register the hardware-configuration routes."""
-    if not hasattr(state, "commissioning_active"):
-        state.commissioning_active = False
     # What the occupancy bench took from the runtime, so its close can put back
     # exactly that and no more. Both are only meaningful while a bench is open.
     if not hasattr(state, "bench_owns_commissioning"):
@@ -140,6 +138,7 @@ def register(app, state: AppState) -> None:
                 # per-entity binding panels can say "saved, but not running"
                 # without a second request on every render.
                 "awaits_activation": hardware_config.setup_awaits_activation(),
+                "session_state": state.session_state().to_dict(),
             },
         })
 
@@ -617,7 +616,7 @@ def register(app, state: AppState) -> None:
         closed, and the runtime handed back the simulated boundary — leaving the
         dead chips bound would make the next safe state raise.
 
-        `commissioning_active` is the flag that keeps the two bench-style screens
+        `setup_active` is the flag that keeps the two bench-style screens
         (this and Hardware Setup's port grid) off the controller at the same time,
         and blocks activation until one of them gives it back.
 
@@ -641,7 +640,7 @@ def register(app, state: AppState) -> None:
             return jsonify({"status": "error", "error": str(exc)}), 400
 
         with state.simulation_lock:
-            if not state.commissioning_active:
+            if not state.setup_active:
                 # Only a session this bench actually takes something from is
                 # worth restoring on the way out — otherwise closing a diagnostic
                 # window would energize a rig on nobody's request. Both halves
@@ -660,7 +659,7 @@ def register(app, state: AppState) -> None:
                 )
                 hardware_config.close_live_device()
                 state.sim_controller.release_interfaces()
-                state.commissioning_active = True
+                state.setup_active = True
                 state.bench_owns_commissioning = True
             try:
                 status = _bench_session().open(
@@ -671,7 +670,7 @@ def register(app, state: AppState) -> None:
             except Exception as exc:  # noqa: BLE001 - reported to the panel
                 # The handover above already happened, so a failure here has
                 # taken the controller and produced no bench to hold it: the
-                # environment is down, `commissioning_active` is latched, and
+                # environment is down, `setup_active` is latched, and
                 # the panel never starts polling `bench/state` because it has
                 # nothing open to poll — so nothing else will notice. An
                 # operator who opened the bench with the rig unplugged was left
@@ -710,7 +709,7 @@ def register(app, state: AppState) -> None:
         Split out of the close route because closing is not the only way a bench
         ends. `IDLE_TIMEOUT_S` closes the session from the inside — dropping the
         device and de-energizing — but it can only reach the objects it owns, and
-        `commissioning_active` and the environment are the app's, not the
+        `setup_active` and the environment are the app's, not the
         session's. An expiry alone therefore left the runtime locked out of a
         controller that nothing was holding any more: no detection, no drive, and
         no window on screen to explain it, until someone opened and closed a
@@ -725,11 +724,11 @@ def register(app, state: AppState) -> None:
             # holding the device before this bench opened and is holding it
             # still. Neither is ours to undo.
             return {
-                "commissioning": bool(state.commissioning_active),
+                "commissioning": bool(state.setup_active),
                 "reactivated": False,
                 "issues": [],
             }
-        state.commissioning_active = False
+        state.setup_active = False
         state.bench_owns_commissioning = False
         restore = state.bench_restore_environment
         state.bench_restore_environment = False
@@ -838,7 +837,7 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/hardware/commission/open", methods=["POST"])
     def hardware_commission_open():
-        if not state.commissioning_active:
+        if not state.setup_active:
             return jsonify({
                 "ok": False,
                 "error": "enter commissioning before opening the device",
@@ -1312,7 +1311,10 @@ def register(app, state: AppState) -> None:
             "active": state.sim_controller.operation_mode.value,
             "is_active": bool(state.sim_controller.environment_active),
             "activation_issues": list(state.sim_controller.activation_issues),
-            "commissioning": bool(state.commissioning_active),
+            "commissioning": bool(state.setup_active),
+            # The one session truth the header reads (design_new.md "Session
+            # state").
+            "session_state": state.session_state().to_dict(),
             # Saved setup changes the running session is not using. Without it
             # an operator re-picks a chip or a channel, sees it save, and has
             # nothing telling them the rig is still running the old wiring.
@@ -1370,7 +1372,7 @@ def register(app, state: AppState) -> None:
             # state — this route on a second enter, or `activate` on the way
             # back out — raise instead.
             state.sim_controller.release_interfaces()
-            state.commissioning_active = True
+            state.setup_active = True
         return jsonify({
             "status": "success",
             "commissioning": True,
@@ -1386,7 +1388,7 @@ def register(app, state: AppState) -> None:
 
         with state.simulation_lock:
             commission.get_session().close()
-            state.commissioning_active = False
+            state.setup_active = False
         return jsonify({
             "status": "success",
             "commissioning": False,
@@ -1485,7 +1487,7 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/operation/activate", methods=["POST"])
     def activate_operation_environment():
-        if state.commissioning_active:
+        if state.setup_active:
             return jsonify({
                 "status": "error",
                 "error": "exit commissioning before activation",

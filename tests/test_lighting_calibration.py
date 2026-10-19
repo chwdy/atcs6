@@ -429,7 +429,7 @@ def test_opening_is_refused_while_the_session_is_stopped(state_with_train):
     train_service, _controller = _ready_manual_with_cab(state_with_train)
     state_with_train.simulation_running = False
 
-    with pytest.raises(ConflictError, match="Start the session"):
+    with pytest.raises(ConflictError, match="not live"):
         train_service.start_lighting_calibration(state_with_train, "TRAIN_A")
 
 

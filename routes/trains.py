@@ -60,8 +60,7 @@ def register(app, state: AppState) -> None:
         entry = train_runtime_entry(
             state.sim_controller,
             train,
-            session_running=bool(state.simulation_running),
-            commissioning=bool(getattr(state, "commissioning_active", False)),
+            session_state=state.session_state(),
         )
         return {
             "train": train.to_dict(network=network),
@@ -117,8 +116,7 @@ def register(app, state: AppState) -> None:
             maps = build_train_runtime_maps(
                 state.network,
                 state.sim_controller,
-                session_running=bool(state.simulation_running),
-                commissioning=bool(getattr(state, "commissioning_active", False)),
+                session_state=state.session_state(),
             )
             trains_list = [
                 train.to_dict(network=state.network)

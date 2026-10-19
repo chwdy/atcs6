@@ -148,9 +148,9 @@ def test_opening_names_every_unmet_condition(state):
     unmet = train_service.calibration_readiness(
         state, train_id, measured_block_id=block_id
     )
-    assert any("Start the session" in u for u in unmet)
+    assert any("not live" in u for u in unmet)
     assert any("emergency brake" in u for u in unmet)
-    with pytest.raises(ConflictError, match="Start the session.*emergency brake"):
+    with pytest.raises(ConflictError, match="not live.*emergency brake"):
         train_service.calibrate_train(state, train_id, measured_block_id=block_id)
     assert sim.speed_calibration.runs.get(train_id) is None
 
@@ -203,7 +203,7 @@ def test_the_readiness_endpoint_lists_unmet_conditions(state):
     assert response.status_code == 200
     body = response.get_json()
     assert body["ready"] is False
-    assert any("Start the session" in u for u in body["unmet"])
+    assert any("not live" in u for u in body["unmet"])
 
 
 def test_the_runtime_tick_arms_the_pass_as_a_one_off_route(state):

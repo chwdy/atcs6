@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from datetime import datetime
 import threading
 
+from session_state import SessionState, derive_session_state
+
 from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
@@ -42,29 +44,34 @@ class AppState:
     # than on `SimulationController` because loading a layout builds a fresh
     # controller and must not reset it; only a process restart does.
     operating_time: float = 0.0
+    # Set while the session is in Setup: the operator is building and testing
+    # the rig, and the Setup tools own the outputs (design_new.md "Session
+    # state", "Hardware setup", Setup).
+    setup_active: bool = False
+
+    def session_state(self) -> SessionState:
+        """The session state, derived from the six stored flags on every read
+        (design_new.md "Session state"). Every reader asks here rather than
+        combining the flags itself."""
+        return derive_session_state(
+            self.sim_controller,
+            setup_active=self.setup_active,
+            simulation_running=self.simulation_running,
+        )
 
     def __post_init__(self) -> None:
         """Hand the runtime the seams it reaches `AppState` through.
 
         The `operating_time` accumulator stays here — a layout load builds a
         fresh `SimulationController` and must not reset it — so the controller
-        only ever reads the value, never owns it. `simulation_running` stays
-        here for the same reason, and the runtime stops the session through the
-        seam rather than owning the flag.
+        only ever reads the value, never owns it.
         """
         def _advance(delta_seconds: float) -> None:
             self.operating_time += max(delta_seconds, 0.0)
 
-        def _stop_session() -> None:
-            self.simulation_running = False
-
         try:
             self.sim_controller.operating_clock = lambda: self.operating_time
             self.sim_controller.operating_clock_advance = _advance
-            # The two fatal halt entries stop the session through this seam, so
-            # `simulation_running` reads False the moment the gate latches
-            # (design_new.md "Running and stopped").
-            self.sim_controller.request_session_stop = _stop_session
         except AttributeError:
             # A stand-in controller that accepts no attributes (a smoke-test
             # double) keeps its own fallback clock; see

@@ -75,7 +75,7 @@ def test_failed_current_read_raises_instead_of_reading_clear():
 
 def test_failed_detector_read_latches_hardware_failure():
     """A failed detector transaction inside Observe escalates to
-    `enter_hardware_failure` and stops the session, rather than propagating out
+    `enter_hardware_failure` and halts the session, rather than propagating out
     of the tick as a software runtime failure (design_new.md "Power", Hardware
     I/O failure)."""
     network = _line()

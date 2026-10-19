@@ -51,13 +51,12 @@ def _train(state):
     return train, state.sim_controller.get_or_create_controller(train.train_id)
 
 
-def _status(state, *, commissioning=False):
+def _status(state):
     train, _controller = _train(state)
     return operator_status_for(
         state.sim_controller,
         train,
-        session_running=bool(state.simulation_running),
-        commissioning=commissioning,
+        session_state=state.session_state(),
     )
 
 
@@ -106,22 +105,43 @@ def test_a_held_route_assignment_is_listed_after_the_abort(state):
 # --- hold reason --------------------------------------------------------------
 
 
-def test_a_moving_train_has_no_hold_reason(state):
+def test_a_moving_train_in_a_live_session_has_no_hold_reason(state):
     _train_obj, controller = _train(state)
     controller.physics_sync.current_speed_kmh = 20.0
     assert _status(state)["hold_reason"] is None
 
 
-def test_a_stopped_session_comes_before_the_train(state):
+def test_a_paused_session_comes_before_the_train(state):
     _train_obj, controller = _train(state)
     controller.eb.activate()
     state.simulation_running = False
     hold = _status(state)["hold_reason"]
-    assert hold == {"code": "session_stopped", "question": 1, "detail": None}
+    assert hold == {"code": "paused", "question": 1, "detail": None}
 
 
-def test_commissioning_holds_every_train(state):
-    assert _hold_code(state, commissioning=True) == "commissioning"
+def test_a_train_frozen_with_speed_reads_the_session_row(state):
+    """A stopped session moves no train, so a train it froze with speed still
+    stored reads its question-1 row like a standing one."""
+    _train_obj, controller = _train(state)
+    controller.physics_sync.current_speed_kmh = 20.0
+    state.simulation_running = False
+    assert _hold_code(state) == "paused"
+
+
+def test_setup_holds_every_train(state):
+    state.setup_active = True
+    assert _hold_code(state) == "setup"
+
+
+def test_an_inactive_environment_reads_halted_not_activated(state):
+    state.sim_controller.environment_active = False
+    hold = _status(state)["hold_reason"]
+    assert hold == {"code": "halted", "question": 1, "detail": "not_activated"}
+
+
+def test_a_runtime_failure_reads_halted_runtime_failure(state):
+    state.sim_controller.failed_runtime = True
+    assert _status(state)["hold_reason"]["detail"] == "runtime_failure"
 
 
 def test_an_off_train_reads_powered_off(state):
@@ -181,7 +201,8 @@ def test_the_network_snapshot_serves_operator_status(state):
         body = client.get("/api/network").get_json()
     status = body["operator_status_by_train_id"][train.train_id]
     assert status["ato_status"] == "READY"
-    assert status["hold_reason"]["code"] == "session_stopped"
+    assert status["hold_reason"]["code"] == "paused"
+    assert body["session_state"] == {"value": "paused", "halt_reason": None}
     assert "ato_status" not in body["controllers_by_train_id"][train.train_id]
 
 

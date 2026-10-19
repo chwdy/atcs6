@@ -25,8 +25,7 @@ def register(app, state: AppState) -> None:
             payload = build_network_payload(
                 state.network,
                 state.sim_controller,
-                session_running=bool(state.simulation_running),
-                commissioning=bool(getattr(state, "commissioning_active", False)),
+                session_state=state.session_state(),
             )
         payload["simulation_running"] = state.simulation_running
         payload["simulation_speed"] = state.simulation_speed
