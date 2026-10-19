@@ -636,13 +636,12 @@ default the user did not object to. Any decision can be reopened.
      the two new flags, the halts no longer writing `simulation_running`, Play/Pause and
      `set_speed` in Simulation only, Activate's rules (it clears a hardware failure), boot
      activating no hardware, the full Emergency stop with Reset and Hold all, Setup with its
-     tools and the detectors read in Setup, the hold-reason rows, and the UI. The
+     tools and the detectors read in Setup, the hold-reason rows, and the UI: the session
+     state in the header (`940052c`), with Emergency stop, Reset and Hold all in a bar at
+     the top of the canvas. The
      clear-hardware-failure endpoint is gone. Two doc gaps were settled on the way: `set_speed`
      is Simulation-only playback speed, and a port-test output pulse is Setup-only.
      Still open:
-     - The doc says the header shows the session state. The UI shows it in a bar at the top of
-       the canvas, with Emergency stop, Reset and Hold all, because the header has no room
-       beside Simulation's playback controls. Either the doc's wording or the UI should move.
      - `GET /api/operation/environment` still names its fields `selected` and `active`, not
        `requested_environment` and `active_environment`, and the `PUT` body uses `selected`
        where the doc says `environment`.
