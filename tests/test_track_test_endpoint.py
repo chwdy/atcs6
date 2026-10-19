@@ -83,6 +83,9 @@ def client():
         simulation_speed=1.0,
         last_update_time=datetime.now(),
     )
+    # The track direction sweep runs only in Setup (design_new.md "Hardware
+    # setup", Track direction sweep).
+    state.setup_active = True
     app = create_app(state)
     app.config["TESTING"] = True
     with app.test_client() as test_client:

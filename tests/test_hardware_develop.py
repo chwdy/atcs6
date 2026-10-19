@@ -665,7 +665,7 @@ def test_commission_session_opens_on_fake(client):
     test_client, _ = client
     payload = _develop_payload()
     hardware_config.apply_updates(payload, persist=False)
-    assert test_client.post("/api/operation/commissioning/enter").status_code == 200
+    assert test_client.post("/api/operation/setup").status_code == 200
     resp = test_client.post("/api/hardware/commission/open", json={"config": payload})
     assert resp.get_json()["ok"] is True
     resp = test_client.post("/api/hardware/commission/inputs", json={"chip_id": "in1"})
@@ -674,96 +674,100 @@ def test_commission_session_opens_on_fake(client):
     assert len(data["ports"]) == 8
 
 
-def test_commissioning_enter_releases_the_boundary_with_its_device(client, monkeypatch):
-    """`enter` must leave nothing bound to the handle it closes.
+def test_setup_tools_are_refused_outside_setup(client):
+    """The tools that drive the outputs run only in Setup (design_new.md
+    "Hardware setup", Setup); doc gap B adds a port-test output pulse."""
+    test_client, _state = client
+    payload = _develop_payload()
+    hardware_config.apply_updates(payload, persist=False)
+    assert test_client.post(
+        "/api/hardware/commission/open", json={"config": payload}
+    ).status_code == 409
+    assert test_client.post("/api/hardware/bench/open").status_code == 409
+    assert test_client.post(
+        "/api/hardware/port-test",
+        json={"config": payload, "chip_id": "sw1", "port": 0, "action": "pulse_output"},
+    ).status_code == 409
 
-    A hardware-backed session builds every chip on one open device, and entering
-    commissioning closes that device. While the session's drivers stayed bound to
-    it, the next safe state wrote through a dead handle and `OutputSafety` raised
-    "the CH347 is not open" — which 500'd a second `enter` and `activate` alike,
-    leaving no way back to operation short of restarting the server.
-    """
+
+def test_entering_setup_keeps_the_session_device_and_detectors(client):
+    """Entering Setup for the environment the session was built for keeps its
+    device and `OccupancyInput` open, so the detectors keep being read and
+    every Setup tool reaches the rig through that one handle; no environment
+    is active (design_new.md "Hardware setup", Setup)."""
+    from hardware.interfaces import OccupancyDriver
+
     test_client, state = client
-
-    class StrictFake(FakeCh347Device):
-        """`Ch347Device` refuses bus ops once closed; the plain fake does not,
-        so a stale binding would go unnoticed here."""
-
-        def i2c_write(self, addr, data):
-            if self.closed:
-                raise RuntimeError("i2c_write: the CH347 is not open")
-            return super().i2c_write(addr, data)
-
-        def latch_out(self, data, select):
-            if self.closed:
-                raise RuntimeError("latch_out: the CH347 is not open")
-            return super().latch_out(data, select)
-
-    monkeypatch.setattr("hardware.fake.FakeCh347Device", StrictFake)
     device = _activate_virtual_session(state)
-    assert isinstance(device, StrictFake)
 
-    assert test_client.post("/api/operation/commissioning/enter").status_code == 200
-    assert device.closed is True
-    assert hardware_config.get_live_device() is None
-    # The boundary follows the device out — the outputs were safed on the way.
-    from block_occupancy import SimulatedOccupancyDriver
-    from block_power import SimulatedTrackDriver
+    response = test_client.post("/api/operation/setup")
 
-    assert isinstance(
-        state.sim_controller.power_controller.output_interface, SimulatedTrackDriver
-    )
-    assert isinstance(state.sim_controller.input_interface, SimulatedOccupancyDriver)
+    assert response.status_code == 200
+    assert response.get_json()["session_state"] == {"value": "setup", "halt_reason": None}
+    assert device.closed is False
+    assert hardware_config.get_live_device() is device
+    assert isinstance(state.sim_controller.input_interface, OccupancyDriver)
     assert state.sim_controller.environment_active is False
-    # Releasing the boundary must not erase why the environment is inactive.
-    assert state.sim_controller.activation_issues == [
-        {"code": "commissioning", "message": "commissioning owns the device"}
-    ]
-
-    assert test_client.post("/api/operation/commissioning/exit").status_code == 200
-    # The re-entry that used to 500 on the closed handle.
-    assert test_client.post("/api/operation/commissioning/enter").status_code == 200
+    assert state.setup_active is True
+    # Already in Setup: refused.
+    assert test_client.post("/api/operation/setup").status_code == 409
 
 
-def test_commissioning_enter_reports_a_rig_it_could_not_safe(client):
-    """A bridge that has left the bus must not turn `enter` into a 500.
+def test_entering_setup_is_refused_in_simulation(client, monkeypatch):
+    test_client, _state = client
+    monkeypatch.setattr(operation_environment, "_selected", OperationMode.SIMULATION)
+    assert test_client.post("/api/operation/setup").status_code == 409
 
-    Refusing entry de-energizes nothing, and it takes away the one tool that
-    still reaches the rig — opening a commissioning session clears every
-    shift-out chain on the way in. So entry completes, the response reports that
-    the outputs were never proven safe and names every chip that did not answer,
-    and the hardware-failure latch holds the session until a new activation.
-    """
+
+def test_the_stopped_pass_reads_the_detectors_in_setup_and_writes_nothing(client):
+    test_client, state = client
+    _activate_virtual_session(state)
+    assert test_client.post("/api/operation/setup").status_code == 200
+    sim = state.sim_controller
+    writes = []
+    sim.power_controller.set_block_voltage = lambda *a, **k: writes.append(a)
+    reads = []
+    real_read = sim.input_interface.read_block_currents
+
+    def counting_read(*a, **k):
+        reads.append(True)
+        return real_read(*a, **k)
+
+    sim.input_interface.read_block_currents = counting_read
+    sim.block_occupancy_detector.input_interface = sim.input_interface
+
+    sim.poll_hardware_occupancy()
+
+    assert reads, "the detectors are read in Setup"
+    assert writes == [], "the drain writes no output while the Setup tools own them"
+
+
+def test_entering_setup_reports_a_rig_it_could_not_safe(client):
+    """A bridge that has left the bus must not turn Enter Setup into a 500.
+
+    Setup's tools are how the operator reaches the rig, so entry completes: the
+    response names every chip that did not answer, and the hardware-failure
+    latch says the outputs were never proven safe. The session reads Setup,
+    which outranks the hardware failure until an activation succeeds."""
     test_client, state = client
     device = _activate_virtual_session(state)
     device.set_fault("disconnect")           # the bridge leaves the bus
 
-    resp = test_client.post("/api/operation/commissioning/enter")
+    resp = test_client.post("/api/operation/setup")
 
     assert resp.status_code == 200
     data = resp.get_json()
-    assert data["commissioning"] is True
     assert data["safe_state"]["ok"] is False
-    # Every chip is attempted and they are reported together, not just the first.
     failures = data["safe_state"]["failures"]
     assert {line.split(":")[0] for line in failures} == {"sw1", "pwm1"}
     assert all("disconnected" in line for line in failures)
-    # Latched as the fatal it is, through the one writer of that flag. The halt
-    # keeps no diagnostic payload; the component that failed is carried by the
-    # event it emitted (design_new.md "Power", Hardware I/O failure).
     assert state.sim_controller.hardware_failure is True
-    hw_event = state.sim_controller.notification_center.latest_by_operation(
-        "enter_hardware_failure"
-    )
-    assert hw_event is not None
-    assert hw_event.payload["component"] == "OutputSafety"
     assert state.sim_controller.environment_active is False
-    # ...and commissioning still owns the device, which is the point.
     assert state.setup_active is True
-    assert hardware_config.get_live_device() is None
+    assert data["session_state"]["value"] == "setup"
 
 
-# --- occupancy bench: the handover it undoes --------------------------------
+# --- occupancy bench: a Setup tool -------------------------------------------
 def _ready_virtual_layout(state):
     """A layout and setup that pass readiness together: one block bound on every
     map, and no bindings for entities the layout does not have."""
@@ -773,227 +777,58 @@ def _ready_virtual_layout(state):
     hardware_config.apply_updates(_develop_payload(switch_output={}), persist=False)
 
 
-def test_closing_the_bench_hands_the_live_environment_back(client):
-    """The bench deactivates the environment to take the device; closing it must
-    put the environment back.
-
-    It used to answer `requires_activation: true` and leave the rebuild to the
-    caller, which nothing did — so an operator who opened the bench, looked at a
-    block and closed the window was left on the simulated boundary, with the
-    railway no longer live and nothing on screen saying why.
-    """
+def test_the_bench_borrows_the_setup_device_and_closing_it_never_activates(client):
+    """The bench reaches the rig through the session's device in Setup, and
+    closing it completes the safe state and leaves the session in Setup
+    (design_new.md "Hardware setup", Occupancy bench)."""
     test_client, state = client
     _ready_virtual_layout(state)
     assert test_client.post("/api/operation/activate").status_code == 200
-    # Activation goes Live, and the bench opens only from a stopped session.
-    state.simulation_running = False
-    assert hardware_config.get_live_device() is not None
-
-    assert test_client.post("/api/hardware/bench/open").get_json()["ok"] is True
-    assert state.setup_active is True
-    assert state.sim_controller.environment_active is False
-
-    data = test_client.post("/api/hardware/bench/close").get_json()
-
-    assert data["reactivated"] is True
-    assert data["issues"] == []
-    assert state.setup_active is False
-    assert state.sim_controller.environment_active is True
-    # The reason the bench recorded for the environment being down goes with it.
-    assert state.sim_controller.activation_issues == []
-    # ...and the runtime is back on the hardware drivers, not the fallback it was
-    # handed while the bench held the device.
-    from block_occupancy import SimulatedOccupancyDriver
-    from block_power import SimulatedTrackDriver
-
-    assert not isinstance(state.sim_controller.input_interface, SimulatedOccupancyDriver)
-    assert not isinstance(
-        state.sim_controller.power_controller.output_interface, SimulatedTrackDriver
-    )
-    assert hardware_config.get_live_device() is not None
-
-
-def test_closing_the_bench_does_not_activate_what_it_never_took(client):
-    """A bench opened without a live session took nothing from the runtime, so
-    closing it must not energize a rig on the strength of a window being shut."""
-    test_client, state = client
-    _ready_virtual_layout(state)
-    assert hardware_config.get_live_device() is None   # never activated
+    device = hardware_config.get_live_device()
+    assert device is not None
+    assert test_client.post("/api/operation/setup").status_code == 200
 
     assert test_client.post("/api/hardware/bench/open").get_json()["ok"] is True
     data = test_client.post("/api/hardware/bench/close").get_json()
 
-    assert data["reactivated"] is False
-    assert state.setup_active is False
+    assert data == {"ok": True}
+    assert state.setup_active is True
     assert state.sim_controller.environment_active is False
-    assert hardware_config.get_live_device() is None
+    assert hardware_config.get_live_device() is device
+    assert device.closed is False
 
 
-def test_closing_the_bench_leaves_hardware_setup_s_commissioning_alone(client):
-    """Hardware Setup holding the device is why the bench's open does no
-    handover; its close must then take no ownership away either. Clearing the
-    flag unconditionally handed the runtime a controller the port grid was still
-    driving."""
-    test_client, state = client
-    _ready_virtual_layout(state)
-    assert test_client.post("/api/operation/commissioning/enter").status_code == 200
-    assert state.setup_active is True
-
-    test_client.post("/api/hardware/bench/open")
-    data = test_client.post("/api/hardware/bench/close").get_json()
-
-    assert data["commissioning"] is True
-    assert data["reactivated"] is False
-    assert state.setup_active is True
-
-
-def test_a_blocked_rebuild_is_reported_rather_than_swallowed(client):
-    """The layout can change under an open bench. When the rebuild is blocked the
-    close still succeeds — the device is genuinely back — but it says so, because
-    the panel is the only thing left that can tell the operator."""
+def test_an_expired_bench_leaves_the_session_in_setup(client, monkeypatch):
     test_client, state = client
     _ready_virtual_layout(state)
     assert test_client.post("/api/operation/activate").status_code == 200
-    # Activation goes Live, and the bench opens only from a stopped session.
-    state.simulation_running = False
+    assert test_client.post("/api/operation/setup").status_code == 200
     assert test_client.post("/api/hardware/bench/open").get_json()["ok"] is True
 
-    # A block added while the bench held the device has no bindings.
-    from block import Block
+    from hardware import occupancy_bench
 
-    state.network.blocks["B2"] = Block(block_id="B2")
-
-    data = test_client.post("/api/hardware/bench/close").get_json()
-
-    assert data["ok"] is True
-    assert data["reactivated"] is False
-    assert [issue["code"] for issue in data["issues"]] == [
-        "missing_track_binding",
-        "missing_occupancy_binding",
-    ]
-    assert state.setup_active is False
-    assert state.sim_controller.environment_active is False
-
-
-def test_an_expired_bench_gives_the_controller_back(client, monkeypatch):
-    """A bench that ends on its idle timer must hand back what its open took.
-
-    `IDLE_TIMEOUT_S` closes the session from the inside — it drops the device and
-    de-energizes — but `setup_active` and the environment belong to the
-    app, not the session, so the expiry alone could not restore them. That left
-    the runtime locked out of a controller nothing was holding: no detection, no
-    drive, and no window on screen to explain it, until someone opened and closed
-    a bench by hand. The state poll is where the expiry is observed, so it is
-    where the handover is now undone.
-    """
-    test_client, state = client
-    _ready_virtual_layout(state)
-    assert test_client.post("/api/operation/activate").status_code == 200
-    # Activation goes Live, and the bench opens only from a stopped session.
-    state.simulation_running = False
-    assert test_client.post("/api/hardware/bench/open").get_json()["ok"] is True
-    assert state.setup_active is True
-    assert state.sim_controller.environment_active is False
-
-    import hardware.occupancy_bench as bench_module
-
-    session = bench_module.get_session()
-    later = session._last + bench_module.IDLE_TIMEOUT_S + 1
-    monkeypatch.setattr(bench_module.time, "monotonic", lambda: later)
-
+    monkeypatch.setattr(occupancy_bench, "IDLE_TIMEOUT_S", -1.0)
     data = test_client.get("/api/hardware/bench/state").get_json()
 
     assert data["open"] is False
-    assert data["reactivated"] is True
-    assert state.setup_active is False
-    assert state.bench_owns_commissioning is False
-    assert state.sim_controller.environment_active is True
-    assert hardware_config.get_live_device() is not None
+    assert state.setup_active is True
+    assert state.sim_controller.environment_active is False
 
 
-def test_a_bench_that_fails_to_open_gives_the_controller_straight_back(client):
-    """The handover happens before the device is opened, so a failed open had
-    taken the controller and produced no bench to hold it — environment down,
-    `setup_active` latched, and no panel polling `bench/state` to notice,
-    because there was nothing open to poll. Opening the bench with the rig
-    unplugged left a silently dead railway behind an error about the device."""
+def test_activate_closes_an_open_bench_and_leaves_setup(client):
     test_client, state = client
     _ready_virtual_layout(state)
     assert test_client.post("/api/operation/activate").status_code == 200
-    # Activation goes Live, and the bench opens only from a stopped session.
-    state.simulation_running = False
-    assert state.sim_controller.environment_active is True
+    assert test_client.post("/api/operation/setup").status_code == 200
+    assert test_client.post("/api/hardware/bench/open").get_json()["ok"] is True
 
-    import hardware.occupancy_bench as bench_module
+    assert test_client.post("/api/operation/activate").status_code == 200
 
-    def _boom(*_args, **_kwargs):
-        raise OSError("read error")
+    from hardware import occupancy_bench
 
-    original = bench_module.OccupancyBenchSession.open
-    bench_module.OccupancyBenchSession.open = _boom
-    try:
-        data = test_client.post("/api/hardware/bench/open").get_json()
-    finally:
-        bench_module.OccupancyBenchSession.open = original
-
-    assert data["ok"] is False
-    assert "read error" in data["error"]
-    # The railway is back, not stranded behind the failure.
+    assert occupancy_bench.get_session().is_open() is False
     assert state.setup_active is False
-    assert state.bench_owns_commissioning is False
-    assert data["reactivated"] is True
-    assert state.sim_controller.environment_active is True
-
-
-def test_polling_a_bench_that_was_never_open_restores_nothing(client):
-    """The restore rides on a route the panel polls, so it has to be inert when
-    there is nothing outstanding — otherwise a poll from a closed panel would
-    activate an environment on nobody's request."""
-    test_client, state = client
-    _ready_virtual_layout(state)
-    assert state.setup_active is False
-    before = state.sim_controller.environment_active
-
-    data = test_client.get("/api/hardware/bench/state").get_json()
-
-    assert data["open"] is False
-    assert data["reactivated"] is False
-    assert state.setup_active is False
-    # Whatever the environment was, the poll left it there.
-    assert state.sim_controller.environment_active is before
-
-
-def test_an_expired_bench_leaves_hardware_setup_s_commissioning_alone(client):
-    """Same rule the close route follows: a bench that took nothing gives nothing
-    back. Hardware Setup holding the device must survive the bench expiring."""
-    test_client, state = client
-    _ready_virtual_layout(state)
-    assert test_client.post("/api/operation/commissioning/enter").status_code == 200
-    test_client.post("/api/hardware/bench/open")
-
-    import hardware.occupancy_bench as bench_module
-
-    session = bench_module.get_session()
-    session._last -= bench_module.IDLE_TIMEOUT_S + 1
-
-    data = test_client.get("/api/hardware/bench/state").get_json()
-
-    assert data["open"] is False
-    assert data["reactivated"] is False
-    # The port grid is still driving the device; the bench never took it.
-    assert state.setup_active is True
-
-
-def test_commissioning_enter_reports_a_clean_safe_state(client):
-    """The ordinary entry says so explicitly, so `safe_state.ok` is a fact the
-    caller can read rather than an absence it has to infer."""
-    test_client, state = client
-    _activate_virtual_session(state)
-
-    data = test_client.post("/api/operation/commissioning/enter").get_json()
-
-    assert data["safe_state"] == {"ok": True, "failures": []}
-    assert state.sim_controller.hardware_failure is False
+    assert state.session_state().is_live
 
 
 def test_virtual_hardware_fault_api_controls_the_live_fake(client):

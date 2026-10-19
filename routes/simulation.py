@@ -164,10 +164,6 @@ def register(app, state: AppState) -> None:
             session = state.session_state()
             if session.value is SessionStateValue.SETUP:
                 close_setup_tools()
-                # The session stays in Setup: nothing the bench took is handed
-                # back by reactivating.
-                state.bench_owns_commissioning = False
-                state.bench_restore_environment = False
                 message = "Setup tools closed; the outputs are in their safe state"
             elif session.value is SessionStateValue.HALTED:
                 message = "The session is halted; nothing drives the outputs"

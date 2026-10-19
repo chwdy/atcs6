@@ -942,7 +942,7 @@ def test_commission_currents_endpoint_with_fake(client, monkeypatch):
     cfg_payload = {"enabled": True,
                    "chips": [{"chip_id": "cur1", "kind": "ina3221", "i2c_address": "0x41"}]}
     operation_environment.select(OperationMode.REAL_HARDWARE, persist=False)
-    assert client.post("/api/operation/commissioning/enter").status_code == 200
+    assert client.post("/api/operation/setup").status_code == 200
     assert client.post("/api/hardware/commission/open",
                        json={"config": cfg_payload}).get_json()["ok"] is True
     resp = client.post("/api/hardware/commission/currents",
@@ -959,7 +959,7 @@ def test_commission_endpoints_with_fake(client, monkeypatch):
     monkeypatch.setattr(chdev, "open_ch347_device", lambda port=None: fake)
 
     client.put("/api/hardware/config", json=_real_payload())
-    assert client.post("/api/operation/commissioning/enter").status_code == 200
+    assert client.post("/api/operation/setup").status_code == 200
     assert client.post("/api/hardware/commission/open",
                        json={"config": _real_payload()}).get_json()["ok"] is True
     # Port 5 is SW_A's main coil: holding it on would burn the point motor, so
@@ -990,7 +990,7 @@ def test_commission_open_clears_the_shift_out_chain(client, monkeypatch):
     fake.latch_out(bytes([0xFF, 0xFF, 0xFF]), "cs0")     # as if left energized
     assert fake.latched_bit("cs0", 5) is True
     operation_environment.select(OperationMode.REAL_HARDWARE, persist=False)
-    assert client.post("/api/operation/commissioning/enter").status_code == 200
+    assert client.post("/api/operation/setup").status_code == 200
 
     assert client.post("/api/hardware/commission/open",
                        json={"config": _real_payload()}).get_json()["ok"] is True

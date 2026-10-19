@@ -693,13 +693,16 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
-  /** Open a held commissioning session on the controller (for live input / sweep). */
+  /** Enter Setup for the selected hardware environment (design_new.md
+   *  "Hardware setup", Setup). From Live it runs the layout emergency cut-out
+   *  first; only Activate leaves Setup. */
+  async enterSetup(): Promise<any> {
+    return this._request('/operation/setup', { method: 'POST', body: {} }, 'enterSetup');
+  }
+
+  /** Open a held commissioning session on the controller (for live input /
+   *  sweep). Accepted only in Setup. */
   async commissionOpen(config: any): Promise<any> {
-    await this._request(
-      '/operation/commissioning/enter',
-      { method: 'POST', body: {} },
-      'enterCommissioning'
-    );
     return this._request(
       '/hardware/commission/open',
       { method: 'POST', body: { config } },
@@ -781,17 +784,11 @@ export class API implements LayoutDataClient, SimClient {
 
   /** Close the held commissioning session (de-energizes + releases the device). */
   async commissionClose(): Promise<any> {
-    const closed = await this._request(
+    return this._request(
       '/hardware/commission/close',
       { method: 'POST', body: {} },
       'commissionClose'
     );
-    await this._request(
-      '/operation/commissioning/exit',
-      { method: 'POST', body: {} },
-      'exitCommissioning'
-    );
-    return closed;
   }
 
   /**

@@ -671,9 +671,15 @@ class SimulationController(SwitchOutputOwner):
         """
         return self.unidentified_clock()
 
-    def _settle_after_commits(self) -> None:
+    def _settle_after_commits(self, write_outputs: bool = True) -> None:
         """Drain the de-energize queue and refresh signals, after every train's
         Action has committed.
+
+        `write_outputs` is False while no environment owns the outputs — in
+        Setup, where the Setup tools own every write. The drain then issues no
+        device write: it clears the queued block IDs as already handled, since
+        each tool completes the safe state when it ends (design_new.md "Running
+        and stopped", The stopped pass, step 3).
 
         After every train has emitted its voltages, drop any block that left the
         energized set this pass to 0V. Two things put a block in that state and
@@ -716,11 +722,12 @@ class SimulationController(SwitchOutputOwner):
             dropped |= physics.take_blocks_dropped_from_energized()
         if self.block_manager is not None:
             queued = set(self.block_manager.take_blocks_to_deenergize())
-            for block_id in sorted(queued | dropped):
-                if block_id in held:
-                    continue
-                self.power_controller.set_block_voltage(block_id, 0.0)
-        else:
+            if write_outputs:
+                for block_id in sorted(queued | dropped):
+                    if block_id in held:
+                        continue
+                    self.power_controller.set_block_voltage(block_id, 0.0)
+        elif write_outputs:
             self.power_controller.deenergize_unheld_blocks(skip=held)
 
         self.network.update_signals_from_blocks()
@@ -1080,8 +1087,14 @@ class SimulationController(SwitchOutputOwner):
         live spans, so a poll with no motion between it and the last one can
         only re-report what is already committed — real work for a guaranteed
         no-op, on every idle pass.
+
+        It runs whenever real detectors are bound, including in Setup, where no
+        environment is active but the session's `OccupancyInput` stays open
+        (design_new.md "Hardware setup", The detector pipeline keeps running
+        throughout Setup). With no environment active the outputs belong to the
+        Setup tools, so the drain writes nothing.
         """
-        if not self.environment_active or self.operation_mode is OperationMode.SIMULATION:
+        if self.operation_mode is OperationMode.SIMULATION or not self.occupancy_is_real:
             return
         if self.runtime_halted:
             return
@@ -1119,7 +1132,7 @@ class SimulationController(SwitchOutputOwner):
                     return
 
             self.unidentified_trains.reconcile(self._unidentified_clock())
-            self._settle_after_commits()
+            self._settle_after_commits(write_outputs=self.environment_active)
             self._accrue_block_occupied_seconds()
             net.bump_lookahead_world_version()
         finally:
@@ -1196,8 +1209,17 @@ class SimulationController(SwitchOutputOwner):
 
         Steps 2 and 3 do at once what Action would do, because no Action pass
         runs while the session is Halted.
+
+        A safe state that cannot be completed does not stop the rest: every
+        train is still stopped and cut out, and the failure is then latched as
+        a hardware failure (design_new.md "Power", Hardware I/O failure is
+        fatal to the physical session).
         """
-        self.enter_output_safe_state()
+        safe_state_failures: List[str] = []
+        try:
+            self.enter_output_safe_state()
+        except SafeStateError as exc:
+            safe_state_failures = list(exc.failures)
         for controller in self.controllers.values():
             controller.physics_sync.current_speed_kmh = 0.0
         dispatcher = self.path_dispatcher
@@ -1219,6 +1241,14 @@ class SimulationController(SwitchOutputOwner):
             if controller.powered and controller.eb.activate_cut_out().success:
                 cut_out.append(train_id)
         self.layout_cut_out_active = True
+        if safe_state_failures:
+            self.enter_hardware_failure(
+                HardwareFailure(
+                    component="OutputSafety",
+                    operation="layout_emergency_cut_out",
+                    message="; ".join(safe_state_failures),
+                )
+            )
         self.notification_center.emit(
             source="SimulationController",
             operation="layout_emergency_cut_out",

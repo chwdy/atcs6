@@ -85,6 +85,8 @@ class OccupancyBenchSession:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._device: Optional[Any] = None
+        # True when `_device` is the session's handle, borrowed in Setup.
+        self._borrowed = False
         self._track: Optional[Any] = None
         self._occupancy: Optional[Any] = None
         self._block_ids: List[str] = []
@@ -122,9 +124,16 @@ class OccupancyBenchSession:
         cfg: Any,
         open_device: Optional[Callable[[], Any]] = None,
         track_polarity_of: Optional[Callable[[str], bool]] = None,
+        device: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Open the controller for `cfg` and build the real track + occupancy
         interfaces on it.
+
+        `device` borrows the session's already-open device: in Setup every tool
+        reaches the rig through that one handle (design_new.md "Hardware
+        setup", Setup tools own the writes; the detectors stay shared). A
+        borrowed device is not closed when the bench closes; the safe state is
+        still applied.
 
         Reopening an already-open bench is a no-op on the device but re-reads the
         configuration, so an operator who rebinds a channel in Hardware Setup and
@@ -142,8 +151,13 @@ class OccupancyBenchSession:
         with self._lock:
             self._expire_locked()
             if self._device is None:
-                opener = open_device or (lambda: self._open_real(cfg))
-                self._device = opener()
+                if device is not None:
+                    self._device = device
+                    self._borrowed = True
+                else:
+                    opener = open_device or (lambda: self._open_real(cfg))
+                    self._device = opener()
+                    self._borrowed = False
             # Resolved through hardware_config's own binding helpers, not
             # hand-rolled here: they are what a real session is built from, and
             # the current-sense one carries the per-channel default fill and the
@@ -449,11 +463,13 @@ class OccupancyBenchSession:
                 self._track.enter_safe_state()
         except Exception:  # noqa: BLE001 - closing is best-effort by design
             pass
-        try:
-            self._device.close()
-        except Exception:  # noqa: BLE001 - same
-            pass
+        if not self._borrowed:
+            try:
+                self._device.close()
+            except Exception:  # noqa: BLE001 - same
+                pass
         self._device = None
+        self._borrowed = False
         self._track = None
         self._occupancy = None
         self._block_ids = []

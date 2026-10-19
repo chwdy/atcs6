@@ -304,16 +304,19 @@ class CommissionSession:
     def _close_locked(self) -> None:
         if self._device is None:
             return
-        # A borrowed device is the running session's: it keeps driving after
-        # this screen is done with it, so neither the de-energizing sweep nor
-        # the close applies. Letting go of the reference is the whole of it.
+        # Closing a Setup tool restores the safe state (design_new.md
+        # "Hardware setup"): the session runs only in Setup, where no
+        # environment drives the outputs, so its chips are switched off whether
+        # or not the device is borrowed. A borrowed device is the session's
+        # handle, kept open for the next tool and for activation, so only an
+        # owned one is closed.
+        try:
+            for chip in self._chips.values():
+                if hasattr(chip, "all_off"):
+                    chip.all_off()
+        except Exception:
+            pass
         if not self._borrowed:
-            try:
-                for chip in self._chips.values():
-                    if hasattr(chip, "all_off"):
-                        chip.all_off()
-            except Exception:
-                pass
             try:
                 self._device.close()
             except Exception:
