@@ -126,3 +126,23 @@ export function lightingVoltage(vpCurve: Curve, fallback: number): number {
   if (!vpCurve.length) return fallback;
   return vpCurve[0][0];
 }
+
+/**
+ * A voltage_power_curve with its 0%-power point moved to `anchor`. Mirrors
+ * speed_profile.reanchor_voltage_power_curve: every point at or below the new
+ * anchor is dropped, and so is the old 0%-power point, then `(anchor, 0%)` is
+ * prepended. The lighting-voltage row draws its candidate through this, so the
+ * curve on screen shows what Save would write.
+ */
+export function reanchorVoltagePowerCurve(
+  vpCurve: Curve,
+  anchor: number,
+  maxVoltageFallback: number,
+): Curve {
+  const kept = vpCurve
+    .filter(([v, p]) => v > anchor && p > 0)
+    .map(([v, p]) => [v, p] as CurvePoint);
+  if (!kept.length) kept.push([maxVoltageFallback, 100]);
+  kept.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  return [[anchor, 0], ...kept];
+}

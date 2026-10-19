@@ -600,9 +600,36 @@ default the user did not object to. Any decision can be reopened.
      Code done 2026-10-18, in `6df4ec8` and the panel part of `b0b1907`: the
      readiness check and taking control, the safe-state entry ending runs,
      route assignment refused while calibrating, and Stop / cancel-on-close /
-     the readiness line in the speed panel. Still open: the shared locomotive
-     row with its train picker, the lighting run in place on its row, and the
-     measured curve drawn against the stored one.
+     the readiness line in the speed panel. The rest of the panel was done
+     2026-10-18 in `editor-speed-profiles.ts`:
+     - The calibration group has a locomotive row. It lists every placed train
+       whose resolved profile is the profile on screen, with its car number and
+       state, and picks none by itself. The readiness line under it comes from
+       the server's readiness check for the named train. Naming another train,
+       leaving the profile or closing the panel ends the run on screen.
+     - The lighting run opens in place on its row (− / + / Save / Revert, ↑ / ↓
+       while the row has focus). The lighting-voltage field is read-only, and
+       the voltage/power curve's 0% point follows the candidate while the run
+       is open.
+     - The speed pass also opens in place, under Calibrate speed. That keeps the
+       row's readiness line on screen while the measured block is chosen. It
+       draws the measured points against the stored curve while it runs and
+       while a finished pass waits for Save to this locomotive or Promote to
+       model.
+     - `GET /api/trains/<id>/calibrate/lighting` reads an open lighting run, so
+       a run left open by a page reload shows on its row and can be ended.
+
+     Seen while checking the panel, diagnosed 2026-10-18: a pass on demo_6's
+     PLT_YA_1_BLOCK never moved. That platform ends at a buffer stop. The
+     stretch resolver stepped over the buffer stop and named PLT_YA_8_APPROACH
+     as an outer block, so the first leg had no track to plan on
+     (`No path exists … direction=forward`). Which way the train faces does
+     not matter. The fix makes the resolver follow only real track connections,
+     so the readiness line says the block does not have a block at both ends.
+     It is on branch `claude/eager-curie-10bcc2` and not merged yet. Still open
+     from that work: the path planner can also step across a buffer stop onto
+     the destination block, and the doc does not say what stretch a crossing
+     block (four neighbours) should resolve to.
    - **The session state, hardware setup, the kill switch and Hold all** third: B3, B4,
      and the B5 work for question 1. This can run in parallel with calibration, because it touches
      different code.

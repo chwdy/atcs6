@@ -11,10 +11,25 @@
 
 import { showToast } from '../lib/toast';
 import { escapeAttr, showConfirmModal, showFormModal } from '../lib/helpers';
+import { stateManager } from '../lib/state-manager';
+import { trainDisplayStatus } from '../lib/train-status';
+import {
+  type CalibrationRunView,
+  calibrationControls,
+  calibrationTrainChoices,
+  compareAxisTop,
+  measuredCurve,
+  readinessApplies,
+  readinessKind,
+  trainChoiceLabel,
+  trainStoredValue,
+  viewForOpenRuns,
+} from '../lib/calibration-panel';
 import type { EditorHost } from './types';
 import {
   type Curve,
   type CurvePoint,
+  reanchorVoltagePowerCurve,
   voltageToPower,
   powerToVoltage,
   powerPercentToSpeed,
@@ -83,6 +98,42 @@ interface CurvePlotOptions {
   onRemove: (index: number) => void;
 }
 
+/** What the calibration group holds while the profile editor is open. */
+interface CalibrationGroupState {
+  /** The group's element; once it leaves the page the operator has left the profile. */
+  root: HTMLElement;
+  profileId: string;
+  /** Every profile, to read an instance profile's own values. */
+  profiles: any[];
+  /** Profile ids a train named that the list did not hold, already re-read for. */
+  profilesReadFor: Set<string>;
+  view: CalibrationRunView;
+  /** The last readiness check: `unmet` is null until the first reply. */
+  ready: boolean;
+  unmet: string[] | null;
+  readinessError: string | null;
+  /** The open lighting run's candidate and ceiling. */
+  lighting: { candidate: number; ceiling: number } | null;
+  /** The open speed pass or held result, as the last poll returned it. */
+  speedRun: any | null;
+  measuredBlockId: string;
+  stretchText: string;
+  stretchResolved: boolean;
+  /** How the last speed pass ended, shown in the setup. */
+  message: string;
+  timer: number | null;
+  /** A request is on its way; the refresh tick skips rather than piles up. */
+  busy: boolean;
+  /** Step presses run one after another, so a quick double press counts twice. */
+  stepChain: Promise<void>;
+  compare: CurveComparePlot | null;
+  /** Bumped when another train is named, so a late reply for the old one is dropped. */
+  generation: number;
+}
+
+/** How often the calibration group re-reads the readiness check and the open run. */
+const CALIBRATION_REFRESH_MS = 1000;
+
 const EPS_X = 0.5; // min power gap between adjacent points (keeps X strictly ascending)
 const EPS_Y = 0.02; // min gap to keep Y strictly ascending (invertibility)
 const HIT_R = 9; // px hit radius for grabbing a point handle
@@ -92,6 +143,82 @@ const PAD = { left: 40, right: 14, top: 14, bottom: 26 };
 /** Round for display without trailing-zero noise. */
 function fmt(n: number, digits = 2): string {
   return String(Number(n.toFixed(digits)));
+}
+
+/**
+ * Size a canvas's backing store to device pixels (crisp on retina) so drawing
+ * stays in CSS px. False while the canvas is not laid out yet.
+ */
+function fitCanvasToDevice(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D): boolean {
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width < 2 || rect.height < 2) return false;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(rect.width * dpr);
+  canvas.height = Math.round(rect.height * dpr);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.scale(dpr, dpr);
+  return true;
+}
+
+/** The gridlines, tick labels and axes every power-axis plot shares. */
+function drawPlotFrame(
+  ctx: CanvasRenderingContext2D,
+  rect: DOMRect,
+  axis: PlotAxis,
+  xToPx: (x: number) => number,
+  yToPx: (y: number) => number
+): void {
+  const css = getComputedStyle(document.documentElement);
+  const border = css.getPropertyValue('--border-color').trim() || '#333';
+  const textMuted = css.getPropertyValue('--text-secondary').trim() || '#999';
+
+  const x0 = PAD.left;
+  const y0 = rect.height - PAD.bottom;
+  const x1 = rect.width - PAD.right;
+  const y1 = PAD.top;
+
+  // gridlines + ticks
+  ctx.font = '9px ui-monospace, monospace';
+  ctx.fillStyle = textMuted;
+  ctx.strokeStyle = border;
+  ctx.lineWidth = 1;
+  // X gridlines (power 0..100 every 25)
+  for (let gx = 0; gx <= 100; gx += 25) {
+    const px = xToPx(gx);
+    ctx.globalAlpha = 0.4;
+    ctx.setLineDash([2, 3]);
+    ctx.beginPath();
+    ctx.moveTo(px, y1);
+    ctx.lineTo(px, y0);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+    ctx.textAlign = 'center';
+    ctx.fillText(String(gx), px, y0 + 12);
+  }
+  // Y gridlines (axis range, 4 divisions)
+  const { yMin, yMax } = axis;
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= 4; i++) {
+    const yv = yMin + ((yMax - yMin) * i) / 4;
+    const py = yToPx(yv);
+    ctx.globalAlpha = 0.4;
+    ctx.setLineDash([2, 3]);
+    ctx.beginPath();
+    ctx.moveTo(x0, py);
+    ctx.lineTo(x1, py);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+    ctx.fillText(fmt(yv, 1), x0 - 5, py + 3);
+  }
+
+  // axes (solid)
+  ctx.beginPath();
+  ctx.moveTo(x0, y1);
+  ctx.lineTo(x0, y0);
+  ctx.lineTo(x1, y0);
+  ctx.stroke();
 }
 
 /**
@@ -117,6 +244,7 @@ class CurvePlot {
   private xMax = 100;
   private dragIndex: number | null = null;
   private hoverIndex: number | null = null;
+  private editable = true;
   private ro: ResizeObserver | null = null;
   private onDown: (e: MouseEvent) => void;
   private onMove: (e: MouseEvent) => void;
@@ -158,6 +286,16 @@ class CurvePlot {
     this.resize();
   }
 
+  /** Turn editing off while the plot shows a preview rather than the stored
+   *  curve, so a drag cannot save the preview. */
+  setEditable(editable: boolean): void {
+    this.editable = editable;
+    this.dragIndex = null;
+    this.hoverIndex = null;
+    this.canvas.style.cursor = editable ? 'default' : 'not-allowed';
+    this.draw();
+  }
+
   destroy(): void {
     this.canvas.removeEventListener('mousedown', this.onDown);
     window.removeEventListener('mousemove', this.onMove);
@@ -193,17 +331,11 @@ class CurvePlot {
 
   /** Size the backing store to device pixels (crisp on retina), draw in CSS px. */
   resize(): void {
-    const rect = this.canvas.getBoundingClientRect();
-    if (rect.width < 2 || rect.height < 2) {
+    if (!fitCanvasToDevice(this.canvas, this.ctx)) {
       // Not laid out yet — retry next frame.
       requestAnimationFrame(() => this.resize());
       return;
     }
-    const dpr = window.devicePixelRatio || 1;
-    this.canvas.width = Math.round(rect.width * dpr);
-    this.canvas.height = Math.round(rect.height * dpr);
-    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
-    this.ctx.scale(dpr, dpr);
     this.draw();
   }
 
@@ -213,57 +345,13 @@ class CurvePlot {
     if (rect.width < 2) return;
     ctx.clearRect(0, 0, rect.width, rect.height);
 
-    const css = getComputedStyle(document.documentElement);
-    const border = css.getPropertyValue('--border-color').trim() || '#333';
-    const textMuted = css.getPropertyValue('--text-secondary').trim() || '#999';
-
-    const x0 = PAD.left;
-    const y0 = rect.height - PAD.bottom;
-    const x1 = rect.width - PAD.right;
-    const y1 = PAD.top;
-
-    // gridlines + ticks
-    ctx.font = '9px ui-monospace, monospace';
-    ctx.fillStyle = textMuted;
-    ctx.strokeStyle = border;
-    ctx.lineWidth = 1;
-    // X gridlines (power 0..100 every 25)
-    for (let gx = 0; gx <= 100; gx += 25) {
-      const px = this.xToPx(gx, rect);
-      ctx.globalAlpha = 0.4;
-      ctx.setLineDash([2, 3]);
-      ctx.beginPath();
-      ctx.moveTo(px, y1);
-      ctx.lineTo(px, y0);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.globalAlpha = 1;
-      ctx.textAlign = 'center';
-      ctx.fillText(String(gx), px, y0 + 12);
-    }
-    // Y gridlines (axis range, 4 divisions)
-    const { yMin, yMax } = this.axis;
-    ctx.textAlign = 'right';
-    for (let i = 0; i <= 4; i++) {
-      const yv = yMin + ((yMax - yMin) * i) / 4;
-      const py = this.yToPx(yv, rect);
-      ctx.globalAlpha = 0.4;
-      ctx.setLineDash([2, 3]);
-      ctx.beginPath();
-      ctx.moveTo(x0, py);
-      ctx.lineTo(x1, py);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.globalAlpha = 1;
-      ctx.fillText(fmt(yv, 1), x0 - 5, py + 3);
-    }
-
-    // axes (solid)
-    ctx.beginPath();
-    ctx.moveTo(x0, y1);
-    ctx.lineTo(x0, y0);
-    ctx.lineTo(x1, y0);
-    ctx.stroke();
+    drawPlotFrame(
+      ctx,
+      rect,
+      this.axis,
+      (x) => this.xToPx(x, rect),
+      (y) => this.yToPx(y, rect)
+    );
 
     if (this.points.length === 0) return;
 
@@ -358,7 +446,7 @@ class CurvePlot {
   }
 
   private handleDown(e: MouseEvent): void {
-    if (e.button !== 0) return; // left button only; right-click is handled by contextmenu
+    if (e.button !== 0 || !this.editable) return; // left button only; right-click is handled by contextmenu
     const { px, py, rect } = this.localPoint(e);
     const idx = this.handleAt(px, py, rect);
     if (idx !== null) {
@@ -376,6 +464,7 @@ class CurvePlot {
   }
 
   private handleMove(e: MouseEvent): void {
+    if (!this.editable) return;
     const { px, py, rect } = this.localPoint(e);
     if (this.dragIndex === null) {
       const idx = this.handleAt(px, py, rect);
@@ -426,12 +515,97 @@ class CurvePlot {
   /** Right-click an interior handle to remove it; the two endpoints are locked. */
   private handleContext(e: MouseEvent): void {
     e.preventDefault(); // keep the browser context menu off the plot
+    if (!this.editable) return;
     const { px, py, rect } = this.localPoint(e);
     const idx = this.handleAt(px, py, rect);
     if (idx === null || idx === 0 || idx === this.points.length - 1) return;
     this.hoverIndex = null;
     this.dragIndex = null;
     this.onRemove(idx);
+  }
+}
+
+/**
+ * A read-only plot of the measured power/speed curve over the stored one, for
+ * a speed pass in progress and for a held result (design_new.md "Speed
+ * calibration", The panel). The stored curve is drawn dashed and dim and the
+ * measured one solid with a dot per point, so the two read apart without
+ * relying on colour.
+ */
+class CurveComparePlot {
+  private canvas: HTMLCanvasElement;
+  private ctx: CanvasRenderingContext2D;
+  private stored: Curve = [];
+  private measured: Curve = [];
+  private axis: PlotAxis = { yMin: 0, yMax: 1 };
+  private ro: ResizeObserver | null;
+
+  constructor(canvas: HTMLCanvasElement) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d')!;
+    this.ro = new ResizeObserver(() => this.resize());
+    this.ro.observe(canvas);
+  }
+
+  setData(stored: Curve, measured: Curve, axis: PlotAxis): void {
+    this.stored = stored;
+    this.measured = measured;
+    this.axis = axis;
+    this.resize();
+  }
+
+  destroy(): void {
+    this.ro?.disconnect();
+    this.ro = null;
+  }
+
+  private resize(): void {
+    if (!this.ro) return;
+    if (!fitCanvasToDevice(this.canvas, this.ctx)) {
+      requestAnimationFrame(() => this.resize());
+      return;
+    }
+    this.draw();
+  }
+
+  private draw(): void {
+    const ctx = this.ctx;
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width < 2) return;
+    ctx.clearRect(0, 0, rect.width, rect.height);
+    const w = rect.width - PAD.left - PAD.right;
+    const h = rect.height - PAD.top - PAD.bottom;
+    const span = this.axis.yMax - this.axis.yMin || 1;
+    const xToPx = (x: number) => PAD.left + (x / 100) * w;
+    const yToPx = (y: number) => PAD.top + (1 - (y - this.axis.yMin) / span) * h;
+    drawPlotFrame(ctx, rect, this.axis, xToPx, yToPx);
+
+    const css = getComputedStyle(document.documentElement);
+    const line = (points: Curve) => {
+      ctx.beginPath();
+      points.forEach(([x, y], i) => {
+        if (i === 0) ctx.moveTo(xToPx(x), yToPx(y));
+        else ctx.lineTo(xToPx(x), yToPx(y));
+      });
+      ctx.stroke();
+    };
+
+    ctx.strokeStyle = css.getPropertyValue('--text-secondary').trim() || '#999';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 4]);
+    line(this.stored);
+    ctx.setLineDash([]);
+
+    const measured = css.getPropertyValue('--success-color').trim() || '#4ade80';
+    ctx.strokeStyle = measured;
+    ctx.fillStyle = measured;
+    ctx.lineWidth = 2;
+    line(this.measured);
+    for (const [x, y] of this.measured) {
+      ctx.beginPath();
+      ctx.arc(xToPx(x), yToPx(y), 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 }
 
@@ -454,6 +628,7 @@ export class SpeedProfileEditorHandler {
   // === Manager list ===
 
   async showProfilesPanel(): Promise<void> {
+    this._teardownCalibration();
     this._teardownPlots();
     this.editor._currentEditorType = 'speed-profiles-list';
     this.editor._currentEditorId = null;
@@ -565,6 +740,7 @@ export class SpeedProfileEditorHandler {
   // === Per-profile editor ===
 
   async showProfileEditor(profileId: string): Promise<void> {
+    this._teardownCalibration();
     this._teardownPlots();
     this.editor._currentEditorType = 'speed-profile';
     this.editor._currentEditorId = profileId;
@@ -644,7 +820,7 @@ export class SpeedProfileEditorHandler {
             <div class="sp-editor">
                 <div class="control-section">
                     <div class="control-section-header">Voltage ↔ Power</div>
-                    <div class="text-muted text-xs mb-8">X = power %, Y = track voltage. Click the line to add a point · drag to move · right-click a point to remove.</div>
+                    <div class="text-muted text-xs mb-8">X = power %, Y = track voltage. Click the line to add a point · drag to move · right-click a point to remove. The 0% point is the lighting voltage; its Calibrate below is the one way to move it.</div>
                     <div class="sp-plot-block">
                         <div class="sp-point-list" id="sp-vp-list"></div>
                         <canvas class="sp-canvas" id="sp-vp-canvas"></canvas>
@@ -687,35 +863,7 @@ export class SpeedProfileEditorHandler {
                     </div>
                 </div>
 
-                <div class="control-section">
-                    <div class="control-section-header">Calibration</div>
-                    <div class="input-small-row mb-8">
-                        <label class="input-small-label input-small-label-inline" for="sp-model">Model</label>
-                        <input type="text" id="sp-model" class="input-small-field input-small-field-compact" value="${escapeAttr(p.model || '')}" placeholder="e.g. Kato EF66">
-                    </div>
-                    <div class="text-muted text-xs mb-8">${
-                      p.calibrated_at
-                        ? `Measured ${escapeAttr(String(p.calibrated_at).replace('T', ' ').replace('+00:00', ' UTC'))}`
-                        : 'Not measured — the curve is still the seeded linear default.'
-                    }</div>
-                    <div class="input-small-row mb-8">
-                        <label class="input-small-label input-small-label-inline" for="sp-lighting">Lighting voltage (0% power)</label>
-                        <input type="number" id="sp-lighting" class="input-small-field input-small-field-compact" value="${fmt(p.lighting_voltage)}" min="0" step="0.1">
-                        <button id="sp-lighting-calibrate" class="btn btn-secondary btn-sm" title="Find this locomotive's lighting voltage on the track">Calibrate</button>
-                    </div>
-                    <div class="input-small-row mb-8">
-                        <label class="input-small-label input-small-label-inline">Power → speed curve</label>
-                        <button id="sp-speed-calibrate" class="btn btn-secondary btn-sm" title="Measure this locomotive by running it back and forth across a block">Calibrate speed</button>
-                    </div>
-                    <div class="input-small-row mb-8">
-                        <label class="input-small-label input-small-label-inline" for="sp-maxv">Max voltage (100% power)</label>
-                        <input type="number" id="sp-maxv" class="input-small-field input-small-field-compact" value="${fmt(p.max_voltage)}" min="0" step="0.1">
-                    </div>
-                    <div class="input-small-row mb-8">
-                        <label class="input-small-label input-small-label-inline" for="sp-topspeed">Top speed (100% power)</label>
-                        <input type="number" id="sp-topspeed" class="input-small-field input-small-field-compact" value="${fmt(topSpeed(p.power_speed_curve))}" min="0" step="1">
-                    </div>
-                </div>
+${this._calibrationGroupHtml(p)}
 
                 <details class="tc-disclosure">
                     <summary>Motion &amp; drag</summary>
@@ -773,7 +921,10 @@ export class SpeedProfileEditorHandler {
       this._vpPlot = new CurvePlot({
         canvas: vpCanvas,
         color: getComputedStyle(document.documentElement).getPropertyValue('--info-color').trim() || '#4aa3ff',
-        lockLeftY: false,
+        // The 0% point is the lighting voltage. design_new.md "Lighting-voltage
+        // calibration", The panel: the field is read-only and its step controls
+        // are the one way to move it, so the plot does not drag it either.
+        lockLeftY: true,
         onChange: (pts, dragging) => this._applyVpPlot(pts, dragging),
         onInsert: (seg, x, y) => this._insertPlotPoint('vp', seg, x, y),
         onRemove: (i) => this._removePoint('vp', i),
@@ -801,58 +952,961 @@ export class SpeedProfileEditorHandler {
     const del = document.getElementById('sp-delete-btn');
     if (del) del.onclick = () => this._deleteProfile(this._profile!.profile_id);
 
-    const calibrate = document.getElementById('sp-lighting-calibrate');
-    if (calibrate) calibrate.onclick = () => this._openLightingCalibration();
-
-    const speedCalibrate = document.getElementById('sp-speed-calibrate');
-    if (speedCalibrate) speedCalibrate.onclick = () => this._openSpeedCalibration();
-
     const model = document.getElementById('sp-model') as HTMLInputElement | null;
     if (model)
       model.onchange = () => {
         this._profile!.model = model.value.trim();
         this._commit();
       };
+
+    void this._initCalibration();
   }
 
-  // === Speed calibration ===
+  // === Calibration group ===
   //
-  // design_new.md "Speed calibration". The pass times the locomotive across one
-  // operator-named measured block and turns it around at each end itself, so a
-  // plain length of track measures a locomotive with no loop to lap. It writes
-  // nothing until the operator picks a commit target: Save to this locomotive
-  // writes the measurement onto this loco's instance profile alone, Promote to
-  // model writes it onto the model profile every locomotive of that model
-  // shares (and clears this loco's override).
+  // design_new.md "Calibrating a locomotive", "Speed calibration" (The panel)
+  // and "Lighting-voltage calibration" (The panel). The group's locomotive row
+  // names the train both runs drive; neither run picks a train for itself. The
+  // readiness line under it names every opening condition the named train does
+  // not yet meet, read from the server's readiness check. Both runs open in
+  // place: the lighting run on the lighting-voltage row, the speed pass under
+  // its Calibrate speed control. A run the group shows ends when the operator
+  // names another train, leaves the profile, or closes the panel.
 
-  private _calPoll: number | null = null;
+  /** The train the locomotive row names. Kept when the panel shows a profile
+   *  again (after a Save, or coming back from the list) while the train is
+   *  still listed; closing the panel forgets it. */
+  private _calTrainId: string | null = null;
+  private _cal: CalibrationGroupState | null = null;
 
-  private async _openSpeedCalibration(): Promise<void> {
-    const train = await this._calibrationTrain();
-    if (!train) return;
-    this._showSpeedCalibrationPanel(train);
+  private _calibrationGroupHtml(p: SpeedProfileData): string {
+    return `
+                <div class="control-section" id="sp-cal-group">
+                    <div class="control-section-header">Calibration</div>
+                    <div class="input-small-row mb-8">
+                        <label class="input-small-label input-small-label-inline" for="sp-model">Model</label>
+                        <input type="text" id="sp-model" class="input-small-field input-small-field-compact" value="${escapeAttr(p.model || '')}" placeholder="e.g. Kato EF66">
+                    </div>
+                    <div class="input-small-row mb-8">
+                        <label class="input-small-label input-small-label-inline" for="sp-maxv">Max voltage (100% power)</label>
+                        <input type="number" id="sp-maxv" class="input-small-field input-small-field-compact" value="${fmt(p.max_voltage)}" min="0" step="0.1">
+                    </div>
+                    <div class="input-small-row mb-8">
+                        <label class="input-small-label input-small-label-inline" for="sp-topspeed">Top speed (100% power)</label>
+                        <input type="number" id="sp-topspeed" class="input-small-field input-small-field-compact" value="${fmt(topSpeed(p.power_speed_curve))}" min="0" step="1">
+                    </div>
+                    <div class="input-small-row sp-cal-train-row">
+                        <label class="input-small-label input-small-label-inline" for="sp-cal-train">Locomotive</label>
+                        <select id="sp-cal-train" class="input-small-field" title="The placed train both calibration runs drive. Naming another train ends a run that is open."></select>
+                    </div>
+                    <div class="sp-cal-readiness" id="sp-cal-readiness"></div>
+                    <div id="sp-lighting-row"></div>
+                    <div id="sp-speed-row"></div>
+                </div>`;
   }
 
-  /** A placed train running this profile — the pass has to drive one. */
-  private async _calibrationTrain(): Promise<any | null> {
-    let trains: any[] = [];
+  private async _initCalibration(): Promise<void> {
+    const root = document.getElementById('sp-cal-group');
+    if (!root || !this._profile) return;
+    const cal: CalibrationGroupState = {
+      root,
+      profileId: this._profile.profile_id,
+      profiles: [],
+      profilesReadFor: new Set(),
+      view: 'none',
+      ready: false,
+      unmet: null,
+      readinessError: null,
+      lighting: null,
+      speedRun: null,
+      measuredBlockId: '',
+      stretchText: '',
+      stretchResolved: false,
+      message: '',
+      timer: null,
+      busy: false,
+      stepChain: Promise.resolve(),
+      compare: null,
+      generation: 0,
+    };
+    this._cal = cal;
     try {
-      trains = await this.api.getTrains();
+      cal.profiles = (await this.api.getSpeedProfiles()) || [];
     } catch (err: any) {
-      showToast('Failed to load trains: ' + (err.message || err), 'error', 5000);
-      return null;
+      showToast('Failed to load speed profiles: ' + (err.message || err), 'error', 5000);
     }
-    const profileId = this._profile!.profile_id;
-    const matches = (trains || []).filter((t: any) => t?.speed_profile_id === profileId);
-    if (!matches.length) {
-      showToast(
-        'Place a train that uses this profile first — calibration drives the locomotive',
-        'warning',
-        5000
-      );
-      return null;
+    if (this._cal !== cal) return;
+
+    const select = root.querySelector('#sp-cal-train') as HTMLSelectElement;
+    select.onchange = () => void this._nameTrain(select.value || null);
+
+    // The pick survives a reload of the panel (after a Save) only while the
+    // train is still one the row lists.
+    const keep = this._calTrainId;
+    this._calTrainId = null;
+    if (keep && this._calChoices().some((t) => t.id === keep)) {
+      this._calTrainId = keep;
+      await this._pickUpOpenRuns(cal, keep);
     }
-    return matches[0];
+    if (this._cal !== cal) return;
+    this._renderCalibration();
+    cal.timer = window.setInterval(() => void this._calTick(), CALIBRATION_REFRESH_MS);
+    void this._refreshReadiness();
+  }
+
+  /** The trains the row lists, from the train list every network refresh
+   *  brings; the picker re-reads it on each refresh tick. */
+  private _calChoices(): any[] {
+    const cal = this._cal;
+    if (!cal || !this._profile) return [];
+    return calibrationTrainChoices(stateManager.getAll('trains'), cal.profiles, cal.profileId);
+  }
+
+  private _namedTrain(): any | null {
+    if (!this._calTrainId) return null;
+    return this._calChoices().find((t) => t.id === this._calTrainId) || null;
+  }
+
+  private _trainStatus(trainId: string): string | null {
+    const controller = stateManager.getController(trainId);
+    if (!controller) return null;
+    return trainDisplayStatus(controller, stateManager.getOperatorStatus(trainId));
+  }
+
+  /** Name a train in the locomotive row. Naming another train ends the run
+   *  the group is showing for the previous one (design_new.md "What ends a
+   *  calibration run"). */
+  private async _nameTrain(trainId: string | null): Promise<void> {
+    const cal = this._cal;
+    if (!cal || trainId === this._calTrainId) return;
+    void this._endShownRun(cal);
+    this._calTrainId = trainId;
+    cal.generation += 1;
+    cal.view = cal.view === 'speed-setup' ? 'speed-setup' : 'none';
+    cal.lighting = null;
+    cal.speedRun = null;
+    cal.ready = false;
+    cal.unmet = null;
+    cal.readinessError = null;
+    cal.message = '';
+    if (trainId) await this._pickUpOpenRuns(cal, trainId);
+    if (this._cal !== cal) return;
+    this._renderCalibration();
+    void this._refreshReadiness();
+  }
+
+  /**
+   * A run already open for the named train — opened before a page reload,
+   * say — or a finished pass waiting for a commit is shown so the operator
+   * can end it, rather than left to block a new run with nothing on screen.
+   */
+  private async _pickUpOpenRuns(cal: CalibrationGroupState, trainId: string): Promise<void> {
+    const generation = cal.generation;
+    const [speedRun, lightingRun] = await Promise.all([
+      this.api.getCalibration(trainId).catch(() => null),
+      this.api.getLightingCalibration(trainId).catch(() => null),
+    ]);
+    if (this._cal !== cal || cal.generation !== generation) return;
+    const view = viewForOpenRuns(speedRun, lightingRun);
+    if (view === 'none') return;
+    cal.view = view;
+    if (view === 'lighting') {
+      cal.lighting = {
+        candidate: Number(lightingRun.candidate_voltage) || 0,
+        ceiling: Number(lightingRun.ceiling_voltage) || 0,
+      };
+    } else {
+      cal.speedRun = speedRun;
+      cal.measuredBlockId = String(speedRun.measured_block_id || '');
+      this._highlightStretch(cal.measuredBlockId, speedRun.outer_block_ids || []);
+    }
+  }
+
+  /** End whatever run the group is showing, writing nothing. Resolves once
+   *  the server has ended it. */
+  private _endShownRun(cal: CalibrationGroupState): Promise<void> {
+    const trainId = this._calTrainId;
+    if (!trainId) return Promise.resolve();
+    let ended: Promise<unknown> = Promise.resolve();
+    if (cal.view === 'lighting') {
+      ended = this.api.cancelLightingCalibration(trainId);
+      this._previewLightingAnchor(null);
+    } else if (cal.view === 'speed-running' || cal.view === 'speed-held') {
+      // One call ends an open pass and discards a held result alike.
+      ended = this.api.cancelCalibration(trainId);
+    }
+    if (cal.view !== 'speed-setup') this._clearStretchHighlight();
+    cal.lighting = null;
+    cal.speedRun = null;
+    return ended.then(
+      () => {},
+      () => {}
+    );
+  }
+
+  /** Leaving the profile or closing the panel ends the shown run. */
+  private _teardownCalibration(): void {
+    const cal = this._cal;
+    if (!cal) return;
+    if (cal.timer !== null) window.clearInterval(cal.timer);
+    cal.timer = null;
+    void this._endShownRun(cal);
+    this._clearStretchHighlight();
+    cal.compare?.destroy();
+    cal.compare = null;
+    this._cal = null;
+  }
+
+  private async _calTick(): Promise<void> {
+    const cal = this._cal;
+    if (!cal) return;
+    // The panel's content was replaced (another inspector opened in its
+    // place): the operator left the profile.
+    if (!cal.root.isConnected) {
+      this._teardownCalibration();
+      return;
+    }
+    this._refreshTrainPicker();
+    if (!this._calTrainId || cal.busy) return;
+    if (cal.view === 'speed-running') await this._pollSpeedPass(cal);
+    else if (cal.view === 'lighting') await this._pollLightingRun(cal);
+    else await this._refreshReadiness();
+  }
+
+  private _renderCalibration(): void {
+    this._refreshTrainPicker(true);
+    this._renderReadiness();
+    this._renderLightingRow();
+    this._renderSpeedRow();
+  }
+
+  /** Fill the picker, or refresh its rows' states in place. Options are only
+   *  rebuilt when the set of trains changes, and never while it is open. */
+  private _refreshTrainPicker(force = false): void {
+    const cal = this._cal;
+    const select = cal?.root.querySelector('#sp-cal-train') as HTMLSelectElement | null;
+    if (!cal || !select) return;
+    this._rereadProfilesForNewTrains(cal);
+    const choices = this._calChoices();
+    const named = this._calTrainId;
+    const ids = choices.map((t) => t.id).join('\n');
+    if (force || (select.dataset.ids !== ids && document.activeElement !== select)) {
+      const placeholder = choices.length
+        ? '<option value="">Choose a locomotive…</option>'
+        : '<option value="">No placed train uses this profile</option>';
+      // A named train that left the list (its profile changed, say) stays
+      // named until the operator picks another, so its run is not dropped
+      // behind the operator's back. A deleted train is forgotten once the
+      // readiness check no longer finds it.
+      const missing = named && !choices.some((t) => t.id === named);
+      select.innerHTML =
+        placeholder +
+        (missing ? `<option value="${escapeAttr(named)}">${escapeAttr(named)}</option>` : '') +
+        choices
+          .map((t) => `<option value="${escapeAttr(t.id)}"></option>`)
+          .join('');
+      select.dataset.ids = ids;
+      select.disabled = !choices.length && !named;
+      select.value = named || '';
+    }
+    for (const option of Array.from(select.options)) {
+      const train = choices.find((t) => t.id === option.value);
+      if (!train) continue;
+      const label = trainChoiceLabel(train, this._trainStatus(train.id));
+      if (option.textContent !== label) option.textContent = label;
+    }
+  }
+
+  /**
+   * A train placed while the panel is open names a new instance profile the
+   * list read at open does not hold, so the row could not tell it derives from
+   * the profile on screen. Re-read the list once for each such id.
+   */
+  private _rereadProfilesForNewTrains(cal: CalibrationGroupState): void {
+    const known = new Set(cal.profiles.map((p: any) => p.profile_id));
+    const unseen = stateManager
+      .getAll('trains')
+      .map((t: any) => t.speed_profile_id)
+      .filter((id: any) => id && !known.has(id) && !cal.profilesReadFor.has(id));
+    if (!unseen.length) return;
+    unseen.forEach((id: string) => cal.profilesReadFor.add(id));
+    this.api
+      .getSpeedProfiles()
+      .then((profiles: any[]) => {
+        if (this._cal !== cal) return;
+        cal.profiles = profiles || [];
+        this._refreshTrainPicker();
+      })
+      .catch(() => {});
+  }
+
+  private async _refreshReadiness(): Promise<void> {
+    const cal = this._cal;
+    const trainId = this._calTrainId;
+    if (!cal || !trainId || !readinessApplies(cal.view)) {
+      this._renderReadiness();
+      return;
+    }
+    const generation = cal.generation;
+    const view = cal.view;
+    cal.busy = true;
+    try {
+      const block = view === 'speed-setup' ? cal.measuredBlockId : '';
+      const r = await this.api.getCalibrationReadiness(trainId, readinessKind(view), block);
+      if (this._cal !== cal || cal.generation !== generation || cal.view !== view) return;
+      cal.ready = !!r.ready;
+      cal.unmet = r.unmet || [];
+      cal.readinessError = null;
+    } catch (err: any) {
+      if (this._cal !== cal || cal.generation !== generation) return;
+      if (err.status === 404) {
+        // The train is gone (deleted, or the layout was cleared or replaced).
+        // Its runs went with it, so there is nothing to end: stop naming it.
+        this._forgetNamedTrain(cal);
+        return;
+      }
+      cal.ready = false;
+      cal.unmet = null;
+      cal.readinessError = err.message || 'Cannot check the train';
+    } finally {
+      cal.busy = false;
+    }
+    this._renderReadiness();
+    this._updateCalibrationControls();
+  }
+
+  private _forgetNamedTrain(cal: CalibrationGroupState): void {
+    if (cal.view === 'lighting') this._previewLightingAnchor(null);
+    this._calTrainId = null;
+    cal.generation += 1;
+    cal.view = cal.view === 'speed-setup' ? 'speed-setup' : 'none';
+    cal.lighting = null;
+    cal.speedRun = null;
+    cal.ready = false;
+    cal.unmet = null;
+    cal.readinessError = null;
+    this._renderCalibration();
+  }
+
+  private _renderReadiness(): void {
+    const cal = this._cal;
+    const el = cal?.root.querySelector('#sp-cal-readiness') as HTMLElement | null;
+    if (!cal || !el) return;
+    el.classList.remove('is-warn');
+    if (!this._calTrainId) {
+      el.textContent = this._calChoices().length
+        ? 'Choose the locomotive both runs drive.'
+        : 'Place a train that uses this profile — calibration drives the locomotive.';
+      return;
+    }
+    if (!readinessApplies(cal.view)) {
+      el.textContent = '';
+      return;
+    }
+    if (cal.readinessError) {
+      el.classList.add('is-warn');
+      el.textContent = cal.readinessError;
+      return;
+    }
+    if (cal.unmet === null) return; // first check still on its way
+    if (cal.ready) {
+      el.textContent =
+        'Ready. Opening a run powers the train on if it is off and selects manual.';
+      return;
+    }
+    el.classList.add('is-warn');
+    el.innerHTML =
+      'Not ready:<ul>' + cal.unmet.map((u) => `<li>${escapeAttr(u)}</li>`).join('') + '</ul>';
+  }
+
+  private _controls(): ReturnType<typeof calibrationControls> {
+    const cal = this._cal!;
+    return calibrationControls({
+      trainNamed: !!this._calTrainId,
+      ready: cal.ready,
+      view: cal.view,
+      stretchResolved: cal.stretchResolved,
+    });
+  }
+
+  /** Enable / disable the group's buttons without redrawing the rows. */
+  private _updateCalibrationControls(): void {
+    const cal = this._cal;
+    if (!cal) return;
+    const c = this._controls();
+    const set = (sel: string, enabled: boolean) => {
+      const btn = cal.root.querySelector(sel) as HTMLButtonElement | null;
+      if (btn) btn.disabled = !enabled;
+    };
+    set('#sp-lighting-calibrate', c.lightingCalibrate);
+    set('#sp-speed-calibrate', c.speedCalibrate);
+    set('#sp-cal-start', c.speedStart);
+  }
+
+  // --- lighting-voltage row ---
+  //
+  // design_new.md "Lighting-voltage calibration", The panel. The row is the
+  // run's panel: Calibrate opens it in place, and the row then holds the
+  // candidate, a step down and a step up, Save and Revert. Nothing on the rig
+  // can tell whether the locomotive moved, so the operator's eye is the
+  // measurement: step up until it creeps, step back down one, and save. The
+  // voltage/power curve above follows the candidate, so the operator sees what
+  // Save will write before writing it.
+
+  private _renderLightingRow(): void {
+    const cal = this._cal;
+    const row = cal?.root.querySelector('#sp-lighting-row') as HTMLElement | null;
+    if (!cal || !row || !this._profile) return;
+    const train = this._namedTrain();
+    // The field is read-only: it shows the value the named train runs on,
+    // and the step controls are the one way to move it.
+    const stored = Number(
+      trainStoredValue(train, cal.profiles, this._profile, 'lighting_voltage')
+    );
+    const head = `
+            <div class="input-small-row sp-cal-run-head">
+                <label class="input-small-label input-small-label-inline">Lighting voltage (0% power)</label>
+                <span class="sp-cal-value" id="sp-lighting" title="Read-only: moved by Calibrate">${fmt(stored)}<small>V</small></span>
+                ${
+                  cal.view === 'lighting'
+                    ? ''
+                    : `<button id="sp-lighting-calibrate" class="btn btn-outline btn-sm" title="Put a test voltage on the rails under this locomotive and step it until the locomotive just creeps">Calibrate</button>`
+                }
+            </div>`;
+    if (cal.view !== 'lighting' || !cal.lighting) {
+      row.innerHTML = head;
+      const open = row.querySelector('#sp-lighting-calibrate') as HTMLButtonElement | null;
+      if (open) open.onclick = () => void this._openLightingRun();
+      this._updateCalibrationControls();
+      return;
+    }
+    row.innerHTML = `${head}
+            <div class="sp-cal-run-body" id="sp-lighting-run" tabindex="-1">
+                <div class="sp-lighting-stepper">
+                    <button class="btn btn-outline sp-lighting-step" data-dir="-1" aria-label="Step down" title="Step down (↓)">−</button>
+                    <div class="sp-lighting-readout"><span id="sp-lighting-value"></span><small>V</small></div>
+                    <button class="btn btn-outline sp-lighting-step" data-dir="1" aria-label="Step up" title="Step up (↑)">+</button>
+                </div>
+                <div class="text-muted text-xs mb-8">Step up until the locomotive just creeps, then step back down one and save.</div>
+                <div class="sp-cal-actions">
+                    <button id="sp-lighting-revert" class="btn btn-outline btn-sm" title="End the run and keep the stored value (Esc)">Revert</button>
+                    <button id="sp-lighting-save" class="btn btn-accent btn-sm" title="Write the candidate to this locomotive's lighting voltage">Save</button>
+                </div>
+            </div>`;
+    const body = row.querySelector('#sp-lighting-run') as HTMLElement;
+    row.querySelectorAll<HTMLButtonElement>('.sp-lighting-step').forEach((btn) => {
+      btn.onclick = () => void this._stepLightingRun(Number(btn.dataset.dir));
+    });
+    (row.querySelector('#sp-lighting-revert') as HTMLButtonElement).onclick = () =>
+      void this._revertLightingRun();
+    (row.querySelector('#sp-lighting-save') as HTMLButtonElement).onclick = () =>
+      void this._saveLightingRun();
+    // The arrow keys step while the row has focus; Esc reverts.
+    body.addEventListener('keydown', (e: KeyboardEvent) => {
+      const action =
+        e.key === 'ArrowUp' ? () => this._stepLightingRun(1)
+        : e.key === 'ArrowDown' ? () => this._stepLightingRun(-1)
+        : e.key === 'Escape' ? () => this._revertLightingRun()
+        : null;
+      if (!action) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void action();
+    });
+    this._paintLightingRun();
+  }
+
+  private _paintLightingRun(): void {
+    const cal = this._cal;
+    if (!cal?.lighting) return;
+    const { candidate, ceiling } = cal.lighting;
+    const value = cal.root.querySelector('#sp-lighting-value');
+    if (value) value.textContent = candidate.toFixed(2);
+    // The step controls stop at 0 and at the ceiling, so the row never shows
+    // a value Save would refuse.
+    const [down, up] = Array.from(
+      cal.root.querySelectorAll<HTMLButtonElement>('.sp-lighting-step')
+    );
+    if (down) down.disabled = candidate <= 0;
+    if (up) up.disabled = candidate >= ceiling;
+    this._previewLightingAnchor(candidate);
+  }
+
+  /** Draw the voltage/power curve with its 0% point at the candidate, or put
+   *  the stored curve back (`null`). The stored profile is not touched. */
+  private _previewLightingAnchor(candidate: number | null): void {
+    if (!this._profile || !this._vpPlot) return;
+    const vp = this._profile.voltage_power_curve;
+    const curve =
+      candidate === null || !vp.length
+        ? vp
+        : reanchorVoltagePowerCurve(vp, candidate, this._profile.max_voltage);
+    const plotPts = curve.map((pt) => [pt[1], pt[0]] as CurvePoint);
+    this._vpPlot.setData(plotPts, this._vpAxis());
+    // While they show the candidate, both views of plot 1 are a preview: a
+    // drag or a typed point would save the candidate as the curve, so both
+    // lock until the run ends.
+    const previewing = candidate !== null;
+    this._vpPlot.setEditable(!previewing);
+    this._rebuildPointList('vp', previewing ? plotPts : undefined);
+    if (previewing) {
+      document
+        .querySelectorAll<HTMLInputElement | HTMLButtonElement>('#sp-vp-list input, #sp-vp-list button')
+        .forEach((el) => (el.disabled = true));
+    }
+  }
+
+  private async _openLightingRun(): Promise<void> {
+    const cal = this._cal;
+    const trainId = this._calTrainId;
+    if (!cal || !trainId) return;
+    const generation = cal.generation;
+    let run: any;
+    try {
+      run = await this.api.startLightingCalibration(trainId);
+    } catch (err: any) {
+      showToast(err.message || 'Cannot start lighting calibration', 'error', 6000);
+      void this._refreshReadiness();
+      return;
+    }
+    if (this._cal !== cal || cal.generation !== generation) {
+      void this.api.cancelLightingCalibration(trainId).catch(() => {});
+      return;
+    }
+    cal.view = 'lighting';
+    cal.message = '';
+    cal.lighting = {
+      candidate: Number(run.candidate_voltage) || 0,
+      ceiling: Number(run.ceiling_voltage) || 0,
+    };
+    this._renderCalibration();
+    (cal.root.querySelector('#sp-lighting-run') as HTMLElement | null)?.focus();
+  }
+
+  private _stepLightingRun(dir: number): Promise<void> {
+    const cal = this._cal;
+    if (!cal || cal.view !== 'lighting') return Promise.resolve();
+    cal.stepChain = cal.stepChain.then(() => this._sendLightingStep(cal, dir));
+    return cal.stepChain;
+  }
+
+  private async _sendLightingStep(cal: CalibrationGroupState, dir: number): Promise<void> {
+    const trainId = this._calTrainId;
+    if (this._cal !== cal || !trainId || cal.view !== 'lighting') return;
+    try {
+      const next = await this.api.stepLightingCalibration(trainId, dir);
+      if (this._cal !== cal || !cal.lighting) return;
+      cal.lighting = {
+        candidate: Number(next.candidate_voltage),
+        ceiling: Number(next.ceiling_voltage),
+      };
+      this._paintLightingRun();
+    } catch (err: any) {
+      showToast(err.message || 'Step failed', 'error', 5000);
+    }
+  }
+
+  private async _revertLightingRun(): Promise<void> {
+    const cal = this._cal;
+    if (!cal || cal.view !== 'lighting') return;
+    // A step still on its way would otherwise reach a run that has ended.
+    await cal.stepChain;
+    if (this._cal !== cal || cal.view !== 'lighting') return;
+    const ended = this._endShownRun(cal);
+    cal.view = 'none';
+    this._renderCalibration();
+    await ended;
+    void this._refreshReadiness();
+  }
+
+  private async _saveLightingRun(): Promise<void> {
+    const cal = this._cal;
+    const trainId = this._calTrainId;
+    if (!cal || !trainId || cal.view !== 'lighting') return;
+    // Save writes the candidate the operator last saw, so let every step
+    // pressed before it land first.
+    await cal.stepChain;
+    if (this._cal !== cal || cal.view !== 'lighting') return;
+    let result: any;
+    try {
+      result = await this.api.saveLightingCalibration(trainId);
+    } catch (err: any) {
+      showToast(err.message || 'Failed to save lighting voltage', 'error', 5000);
+      return;
+    }
+    if (this._cal !== cal) return;
+    // The run ended with the Save, so there is nothing left to end.
+    cal.view = 'none';
+    cal.lighting = null;
+    const written = this._namedTrain()?.speed_profile_id || this._profile!.profile_id;
+    showToast(
+      `Lighting voltage saved at ${Number(result.lighting_voltage).toFixed(2)} V on ${written}`,
+      'success',
+      3000
+    );
+    // The commit moved the 0%-power anchor of the curve this train runs on,
+    // so reload rather than patch the field.
+    await this.showProfileEditor(this._profile!.profile_id);
+  }
+
+  /** A lighting run can end without the operator (EB, a power-off, the
+   *  session leaving Live); drop the stepper when it has. */
+  private async _pollLightingRun(cal: CalibrationGroupState): Promise<void> {
+    const trainId = this._calTrainId!;
+    const generation = cal.generation;
+    cal.busy = true;
+    const run = await this.api.getLightingCalibration(trainId).catch(() => null);
+    cal.busy = false;
+    if (!run || this._cal !== cal || cal.generation !== generation) return;
+    if (cal.view !== 'lighting' || run.open) return;
+    this._previewLightingAnchor(null);
+    cal.view = 'none';
+    cal.lighting = null;
+    showToast('The lighting run ended. Nothing was written.', 'info', 4000);
+    this._renderCalibration();
+    void this._refreshReadiness();
+  }
+
+  // --- speed pass ---
+  //
+  // design_new.md "Speed calibration". The pass times the locomotive across
+  // one operator-named measured block and turns it around at each end itself,
+  // so a plain length of track measures a locomotive with no loop to lap. It
+  // writes nothing until the operator picks a commit target: Save to this
+  // locomotive writes the measurement onto this loco's instance profile alone,
+  // Promote to model writes it onto the model profile every locomotive of that
+  // model shares (and clears this loco's own curve).
+
+  private _renderSpeedRow(): void {
+    const cal = this._cal;
+    const row = cal?.root.querySelector('#sp-speed-row') as HTMLElement | null;
+    if (!cal || !row || !this._profile) return;
+    cal.compare?.destroy();
+    cal.compare = null;
+    const p = this._profile;
+    const stamp = p.calibrated_at
+      ? `Measured ${escapeAttr(String(p.calibrated_at).replace('T', ' ').replace('+00:00', ' UTC'))}`
+      : 'Not measured — the curve is still the seeded linear default.';
+    const head = `
+            <div class="input-small-row sp-cal-run-head">
+                <label class="input-small-label input-small-label-inline">Power → speed curve</label>
+                ${
+                  cal.view === 'none' || cal.view === 'lighting'
+                    ? `<button id="sp-speed-calibrate" class="btn btn-outline btn-sm" title="Measure this locomotive by running it back and forth across a block">Calibrate speed</button>`
+                    : ''
+                }
+            </div>
+            <div class="text-muted text-xs mb-8">${stamp}</div>`;
+
+    let body = '';
+    if (cal.view === 'speed-setup') {
+      const options = this._blockChoices()
+        .map(
+          (c) =>
+            `<option value="${escapeAttr(c.id)}" ${c.id === cal.measuredBlockId ? 'selected' : ''}>${escapeAttr(c.label)}</option>`
+        )
+        .join('');
+      body = `
+            <div class="sp-cal-run-body">
+                <div class="text-muted text-xs mb-8">The train runs back and forth across the measured block. The blocks either side are its run-up and its stopping room.</div>
+                <div class="input-small-row mb-8">
+                    <label class="input-small-label input-small-label-inline" for="sp-cal-block">Measured block</label>
+                    <select id="sp-cal-block" class="input-small-field">
+                        <option value="">Choose a block…</option>
+                        ${options}
+                    </select>
+                    <button id="sp-cal-pick" class="btn btn-outline btn-sm" title="Pick on map (click the block on the layout; Esc cancels)"><i class="ti ti-map-pin"></i></button>
+                </div>
+                <div class="text-muted text-xs mb-8" id="sp-cal-stretch">${escapeAttr(cal.stretchText || 'Choose a block to see the stretch.')}</div>
+                ${cal.message ? `<div class="text-xs mb-8">${escapeAttr(cal.message)}</div>` : ''}
+                <div class="sp-cal-actions">
+                    <button id="sp-cal-cancel" class="btn btn-outline btn-sm">Cancel</button>
+                    <button id="sp-cal-start" class="btn btn-accent btn-sm" title="Take control of the train and run the pass">Start</button>
+                </div>
+            </div>`;
+    } else if (cal.view === 'speed-running' || cal.view === 'speed-held') {
+      const held = cal.view === 'speed-held';
+      const modelName = (p.model || '').trim();
+      body = `
+            <div class="sp-cal-run-body">
+                <div class="text-xs mb-8" id="sp-cal-progress"></div>
+                <div class="sp-plot-block">
+                    <div class="sp-point-list" id="sp-cal-points"></div>
+                    <div>
+                        <canvas class="sp-canvas sp-compare-canvas" id="sp-cal-compare"></canvas>
+                        <div class="sp-compare-legend">
+                            <span><i class="sp-legend-line sp-legend-measured"></i>Measured</span>
+                            <span><i class="sp-legend-line sp-legend-stored"></i>Stored</span>
+                        </div>
+                    </div>
+                </div>
+                ${
+                  held
+                    ? `<div class="text-muted text-xs mb-8">Save to this locomotive changes only this locomotive. Promote to model updates every locomotive of ${modelName ? escapeAttr(modelName) : 'this model'} and clears this locomotive's own curve.</div>
+                <div class="sp-cal-actions">
+                    <button id="sp-cal-discard" class="btn btn-outline btn-sm" title="Throw the measurement away; nothing is written">Discard</button>
+                    <button id="sp-cal-model" class="btn btn-outline btn-sm">Promote to model</button>
+                    <button id="sp-cal-locomotive" class="btn btn-accent btn-sm">Save to this locomotive</button>
+                </div>`
+                    : `<div class="sp-cal-actions">
+                    <button id="sp-cal-stop" class="btn btn-outline btn-sm" title="End the pass; nothing is written">Stop</button>
+                </div>`
+                }
+            </div>`;
+    }
+    row.innerHTML = head + body;
+
+    const open = row.querySelector('#sp-speed-calibrate') as HTMLButtonElement | null;
+    if (open) open.onclick = () => this._openSpeedSetup();
+    if (cal.view === 'speed-setup') {
+      const blockEl = row.querySelector('#sp-cal-block') as HTMLSelectElement;
+      blockEl.onchange = () => void this._resolveStretch(blockEl.value.trim());
+      (row.querySelector('#sp-cal-pick') as HTMLButtonElement).onclick = () =>
+        this.editor.enterMode(this._buildMeasuredBlockPickMode());
+      (row.querySelector('#sp-cal-cancel') as HTMLButtonElement).onclick = () =>
+        this._closeSpeedSetup();
+      (row.querySelector('#sp-cal-start') as HTMLButtonElement).onclick = () =>
+        void this._startSpeedPass();
+    } else if (cal.view === 'speed-running') {
+      (row.querySelector('#sp-cal-stop') as HTMLButtonElement).onclick = () =>
+        void this._stopSpeedPass();
+    } else if (cal.view === 'speed-held') {
+      (row.querySelector('#sp-cal-locomotive') as HTMLButtonElement).onclick = () =>
+        void this._commitSpeedResult('locomotive');
+      (row.querySelector('#sp-cal-model') as HTMLButtonElement).onclick = () =>
+        void this._commitSpeedResult('model');
+      (row.querySelector('#sp-cal-discard') as HTMLButtonElement).onclick = () =>
+        void this._discardSpeedResult();
+    }
+    const canvas = row.querySelector('#sp-cal-compare') as HTMLCanvasElement | null;
+    if (canvas) {
+      cal.compare = new CurveComparePlot(canvas);
+      this._paintSpeedPass();
+    }
+    this._updateCalibrationControls();
+  }
+
+  /** The progress line, the measured points, and the measured curve drawn
+   *  against the curve the train runs on now. */
+  private _paintSpeedPass(): void {
+    const cal = this._cal;
+    const run = cal?.speedRun;
+    if (!cal || !run || !this._profile) return;
+    const progress = cal.root.querySelector('#sp-cal-progress');
+    if (progress) {
+      progress.textContent =
+        cal.view === 'speed-held'
+          ? `Measured every step: ${run.samples.length} points across ${run.measured_block_id}.`
+          : `Measuring ${run.current_power_percent}% — step ${run.step_index + 1} of ` +
+            `${run.step_count}, crossing ` +
+            `${Math.min(run.crossings_done + 1, run.crossings_target)} of ${run.crossings_target}`;
+    }
+    const measured = measuredCurve(run.samples || []);
+    const list = cal.root.querySelector('#sp-cal-points');
+    if (list) {
+      list.innerHTML =
+        `<div class="sp-point-head sp-point-head-readonly"><span>P%</span><span>km/h</span></div>` +
+        measured
+          .slice(1)
+          .map(
+            ([pw, s]) =>
+              `<div class="sp-point-readonly"><span>${fmt(pw, 0)}</span><span>${fmt(s, 1)}</span></div>`
+          )
+          .join('');
+    }
+    const stored: Curve =
+      trainStoredValue(this._namedTrain(), cal.profiles, this._profile, 'power_speed_curve') ||
+      [];
+    cal.compare?.setData(stored, measured, { yMin: 0, yMax: compareAxisTop(stored, measured) });
+  }
+
+  private _openSpeedSetup(): void {
+    const cal = this._cal;
+    if (!cal || cal.view !== 'none') return;
+    cal.view = 'speed-setup';
+    cal.message = '';
+    cal.ready = false;
+    cal.unmet = null;
+    this._renderCalibration();
+    if (cal.measuredBlockId) void this._resolveStretch(cal.measuredBlockId);
+    else void this._refreshReadiness();
+  }
+
+  private _closeSpeedSetup(): void {
+    const cal = this._cal;
+    if (!cal || cal.view !== 'speed-setup') return;
+    cal.view = 'none';
+    cal.message = '';
+    cal.unmet = null;
+    this._clearStretchHighlight();
+    this._renderCalibration();
+    void this._refreshReadiness();
+  }
+
+  /**
+   * Resolve the stretch before Start, so the operator sees which two blocks
+   * the points currently lead to rather than finding out by watching the
+   * locomotive run into one. The same three blocks light up on the layout, so
+   * "which stretch is this?" is answered by looking at the map.
+   */
+  private async _resolveStretch(blockId: string): Promise<void> {
+    const cal = this._cal;
+    if (!cal) return;
+    cal.measuredBlockId = blockId;
+    cal.stretchResolved = false;
+    cal.stretchText = blockId ? 'Resolving the stretch…' : '';
+    cal.unmet = null;
+    this._updateCalibrationControls();
+    this._clearStretchHighlight();
+    let outer: string[] = [];
+    if (blockId) {
+      try {
+        const s = await this.api.getCalibrationStretch(this._calTrainId || '_', blockId);
+        if (this._cal !== cal || cal.measuredBlockId !== blockId) return;
+        outer = s.outer_block_ids || [];
+        cal.stretchText =
+          `Run-up / stopping room: ${outer.join(' ↔ ')} · measured length ${s.length_cm} cm`;
+        cal.stretchResolved = true;
+      } catch (err: any) {
+        if (this._cal !== cal || cal.measuredBlockId !== blockId) return;
+        // The measured block still lights up on a rejection: seeing where it
+        // sits is how the operator works out which end has no room.
+        cal.stretchText = err.message || 'Cannot use that block';
+      }
+      this._highlightStretch(blockId, outer);
+    }
+    const stretch = cal.root.querySelector('#sp-cal-stretch');
+    if (stretch) stretch.textContent = cal.stretchText || 'Choose a block to see the stretch.';
+    this._updateCalibrationControls();
+    void this._refreshReadiness();
+  }
+
+  /** Light the measured block and its two outer blocks on the layout. */
+  private _highlightStretch(blockId: string, outer: string[]): void {
+    const lit = this._blockTiles(blockId);
+    for (const b of outer) this._blockTiles(b).forEach((k) => lit.add(k));
+    this.editor.highlighter.show({ keys: lit }, { channel: 'reachable' });
+    this.editor.renderer?.requestRedraw();
+  }
+
+  private _clearStretchHighlight(): void {
+    this.editor.highlighter?.clear('reachable');
+    this.editor.renderer?.requestRedraw();
+  }
+
+  // Start opens the pass; the server takes control of the train itself —
+  // powering it up if off and selecting manual — once every opening condition
+  // holds (design_new.md "Speed calibration", Opening a run takes control of
+  // the train).
+  private async _startSpeedPass(): Promise<void> {
+    const cal = this._cal;
+    const trainId = this._calTrainId;
+    if (!cal || !trainId || cal.view !== 'speed-setup') return;
+    const generation = cal.generation;
+    const start = cal.root.querySelector('#sp-cal-start') as HTMLButtonElement | null;
+    if (start) start.disabled = true;
+    let run: any;
+    try {
+      run = await this.api.startCalibration(trainId, { measured_block_id: cal.measuredBlockId });
+    } catch (err: any) {
+      showToast(err.message || 'Cannot start calibration', 'error', 6000);
+      void this._refreshReadiness();
+      return;
+    }
+    if (this._cal !== cal || cal.generation !== generation) {
+      void this.api.cancelCalibration(trainId).catch(() => {});
+      return;
+    }
+    cal.view = 'speed-running';
+    cal.message = '';
+    cal.speedRun = run;
+    this._renderCalibration();
+  }
+
+  /** Poll the open pass: its progress, then the held result once every step
+   *  is measured, or the setup again when the pass ended. */
+  private async _pollSpeedPass(cal: CalibrationGroupState): Promise<void> {
+    const trainId = this._calTrainId!;
+    const generation = cal.generation;
+    cal.busy = true;
+    let run: any;
+    try {
+      run = await this.api.getCalibration(trainId);
+    } catch {
+      return;
+    } finally {
+      cal.busy = false;
+    }
+    if (this._cal !== cal || cal.generation !== generation || cal.view !== 'speed-running') return;
+    if (!run.open) {
+      // EB, a power-off, a session stop, or a measurement fault ended it
+      // (design_new.md "What ends a calibration run").
+      cal.view = 'speed-setup';
+      cal.speedRun = null;
+      cal.message = 'The pass ended. Nothing was written.';
+      this._renderCalibration();
+      void this._refreshReadiness();
+      return;
+    }
+    cal.speedRun = run;
+    if (run.phase === 'measured') {
+      cal.view = 'speed-held';
+      this._renderCalibration();
+      return;
+    }
+    this._paintSpeedPass();
+  }
+
+  // Stop ends the pass through `SpeedCalibration.abandon(...)`: it commands 0%
+  // power, tears the leg route down, and writes nothing.
+  private async _stopSpeedPass(): Promise<void> {
+    const cal = this._cal;
+    if (!cal || cal.view !== 'speed-running') return;
+    const ended = this._endShownRun(cal);
+    cal.view = 'speed-setup';
+    cal.message = 'Stopped. Nothing was written.';
+    this._renderCalibration();
+    await ended;
+    void this._resolveStretch(cal.measuredBlockId);
+  }
+
+  private async _discardSpeedResult(): Promise<void> {
+    const cal = this._cal;
+    if (!cal || cal.view !== 'speed-held') return;
+    const ended = this._endShownRun(cal);
+    cal.view = 'none';
+    this._renderCalibration();
+    await ended;
+    void this._refreshReadiness();
+  }
+
+  /** Write the held result. Nothing is written until the operator picks one
+   *  of the two targets. */
+  private async _commitSpeedResult(target: 'locomotive' | 'model'): Promise<void> {
+    const cal = this._cal;
+    const trainId = this._calTrainId;
+    if (!cal || !trainId || cal.view !== 'speed-held') return;
+    let result: any;
+    try {
+      result = await this.api.commitCalibration(trainId, target);
+    } catch (err: any) {
+      showToast(err.message || 'Commit failed', 'error', 6000);
+      return;
+    }
+    if (this._cal !== cal) return;
+    // The commit ended the pass, so there is nothing left to end.
+    cal.view = 'none';
+    cal.speedRun = null;
+    this._clearStretchHighlight();
+    showToast(
+      target === 'model' ? 'Promoted to the model profile' : 'Saved to this locomotive',
+      'success',
+      4000
+    );
+    // Promote to model wrote a different profile (the model's) and cleared
+    // this loco's own curve, so open the profile that was actually written
+    // rather than the one on screen.
+    await this.showProfileEditor(result?.profile?.profile_id || this._profile!.profile_id);
   }
 
   /** The "x,y" tiles of a block, from the editor's cached track list. */
@@ -882,215 +1936,12 @@ export class SpeedProfileEditorHandler {
       .sort((a, b) => a.label.localeCompare(b.label));
   }
 
-  private _showSpeedCalibrationPanel(train: any): void {
-    document.querySelector('.app-modal-overlay')?.remove();
-
-    const options = this._blockChoices()
-      .map((c) => `<option value="${escapeAttr(c.id)}">${escapeAttr(c.label)}</option>`)
-      .join('');
-
-    const overlay = document.createElement('div');
-    overlay.className = 'app-modal-overlay';
-    overlay.innerHTML = `
-      <div class="app-modal sp-calibration-modal">
-        <div class="app-modal-header">Calibrate speed — ${escapeAttr(train.car_number || train.id)}</div>
-        <div class="app-modal-body">
-          <div class="app-modal-message">The train runs back and forth across the
-          measured block. The two blocks either side are its run-up and its
-          stopping room, so give it a stretch long enough to get up to speed and
-          pull up again.</div>
-          <div class="input-small-row mb-8">
-            <label class="input-small-label input-small-label-inline" for="sp-cal-block">Measured block</label>
-            <select id="sp-cal-block" class="input-small-field input-small-field-compact">
-              <option value="">Choose a block…</option>
-              ${options}
-            </select>
-            <button id="sp-cal-pick" class="btn btn-secondary btn-sm" title="Click the block on the layout">Pick on layout</button>
-          </div>
-          <div class="text-muted text-xs mb-8" id="sp-cal-stretch">Choose a block to see the stretch.</div>
-          <div class="text-xs mb-8" id="sp-cal-readiness"></div>
-          <div id="sp-cal-progress" class="text-muted text-xs mb-8"></div>
-        </div>
-        <div class="app-modal-footer">
-          <button class="btn btn-secondary btn-sm" id="sp-cal-close">Close</button>
-          <button class="btn btn-secondary btn-sm hidden" id="sp-cal-stop">Stop</button>
-          <button class="btn btn-primary btn-sm" id="sp-cal-start" disabled>Start</button>
-        </div>
-      </div>`;
-
-    const blockEl = overlay.querySelector('#sp-cal-block') as HTMLSelectElement;
-    const pickBtn = overlay.querySelector('#sp-cal-pick') as HTMLButtonElement;
-    const stretchEl = overlay.querySelector('#sp-cal-stretch') as HTMLElement;
-    const progressEl = overlay.querySelector('#sp-cal-progress') as HTMLElement;
-    const startBtn = overlay.querySelector('#sp-cal-start') as HTMLButtonElement;
-    const closeBtn = overlay.querySelector('#sp-cal-close') as HTMLButtonElement;
-    const stopBtn = overlay.querySelector('#sp-cal-stop') as HTMLButtonElement;
-    const readinessEl = overlay.querySelector('#sp-cal-readiness') as HTMLElement;
-
-    // Start is offered only when the stretch resolved and every opening
-    // condition holds; the readiness line names every one the train does not
-    // yet meet, so the operator reads them together.
-    let stretchOk = false;
-    let ready = false;
-    let passOpen = false;
-    const updateStart = () => {
-      startBtn.disabled = passOpen || !stretchOk || !ready;
-    };
-    const refreshReadiness = async () => {
-      try {
-        const r = await this.api.getCalibrationReadiness(train.id, 'speed', blockEl.value.trim());
-        ready = r.ready;
-        readinessEl.textContent = r.ready
-          ? 'Ready: Start takes control of the train and runs the pass.'
-          : `Not ready: ${r.unmet.join('; ')}.`;
-      } catch (err: any) {
-        ready = false;
-        readinessEl.textContent = err.message || 'Cannot check the train';
-      }
-      updateStart();
-    };
-
-    // Resolving the stretch before Start is what lets the operator see which
-    // two blocks the points currently lead to, rather than finding out by
-    // watching the locomotive run into one. The same three blocks light up on
-    // the layout, so "which stretch is this?" is answered by looking at the map
-    // rather than by reading three ids.
-    const resolveStretch = async () => {
-      const blockId = blockEl.value.trim();
-      stretchOk = false;
-      updateStart();
-      void refreshReadiness();
-      this.editor.highlighter.clear('reachable');
-      if (!blockId) {
-        stretchEl.textContent = 'Choose a block to see the stretch.';
-        this.editor.renderer?.requestRedraw();
-        return;
-      }
-      const lit = this._blockTiles(blockId);
-      try {
-        const s = await this.api.getCalibrationStretch(train.id, blockId);
-        stretchEl.textContent =
-          `Run-up / stopping room: ${s.outer_block_ids.join(' ↔ ')} · ` +
-          `measured length ${s.length_cm} cm`;
-        stretchOk = true;
-        updateStart();
-        for (const outer of s.outer_block_ids) {
-          this._blockTiles(outer).forEach((k: string) => lit.add(k));
-        }
-      } catch (err: any) {
-        // The measured block still lights up on a rejection: seeing where it
-        // sits is how the operator works out which end has no room.
-        stretchEl.textContent = err.message || 'Cannot use that block';
-      }
-      this.editor.highlighter.show({ keys: lit }, { channel: 'reachable' });
-      this.editor.renderer?.requestRedraw();
-    };
-    blockEl.onchange = resolveStretch;
-
-    // Picking on the layout is the same choice by a different gesture: the
-    // modal steps aside, the next click on a block fills the menu, and the
-    // stretch resolves exactly as if the block had been chosen from the list.
-    pickBtn.onclick = () => {
-      overlay.style.display = 'none';
-      this.editor.enterMode(this._buildMeasuredBlockPickMode(overlay, blockEl, resolveStretch));
-    };
-
-    // Start opens the pass; the server takes control of the train itself —
-    // powering it up if off and selecting manual — once every opening
-    // condition holds (design_new.md "Speed calibration", Opening a run takes
-    // control of the train).
-    startBtn.onclick = async () => {
-      startBtn.disabled = true;
-      try {
-        await this.api.startCalibration(train.id, {
-          measured_block_id: blockEl.value.trim(),
-        });
-      } catch (err: any) {
-        showToast(err.message || 'Cannot start calibration', 'error', 6000);
-        await refreshReadiness();
-        return;
-      }
-      passOpen = true;
-      blockEl.disabled = true;
-      pickBtn.disabled = true;
-      readinessEl.textContent = '';
-      startBtn.classList.add('hidden');
-      stopBtn.classList.remove('hidden');
-      this._pollCalibration(train, overlay, progressEl, () => {
-        passOpen = false;
-        stopBtn.classList.add('hidden');
-      });
-    };
-
-    const stopPolling = () => {
-      if (this._calPoll !== null) {
-        window.clearInterval(this._calPoll);
-        this._calPoll = null;
-      }
-    };
-
-    // Stop ends the pass through `SpeedCalibration.abandon(...)`: it commands
-    // 0% power, tears the leg route down, and writes nothing.
-    stopBtn.onclick = async () => {
-      stopBtn.disabled = true;
-      stopPolling();
-      await this.api.cancelCalibration(train.id).catch(() => {});
-      passOpen = false;
-      stopBtn.classList.add('hidden');
-      progressEl.textContent = 'Stopped. Nothing was written.';
-    };
-
-    // Closing the panel mid-run ends the pass exactly like Stop.
-    const close = () => {
-      stopPolling();
-      if (passOpen) void this.api.cancelCalibration(train.id).catch(() => {});
-      this.editor.highlighter.clear('reachable');
-      this.editor.renderer?.requestRedraw();
-      overlay.remove();
-    };
-    closeBtn.onclick = close;
-    document.body.appendChild(overlay);
-
-    // A pass already open for this train, or a finished result waiting to be
-    // committed (for example after a page reload), is picked up here rather
-    // than left to block a new run with nothing on screen to end it.
-    void (async () => {
-      let run: any = null;
-      try {
-        run = await this.api.getCalibration(train.id);
-      } catch {
-        /* no pass to pick up */
-      }
-      if (run?.open && run.phase === 'measured') {
-        this._showCommitControls(train, overlay, run);
-        return;
-      }
-      if (run?.open) {
-        passOpen = true;
-        blockEl.disabled = true;
-        pickBtn.disabled = true;
-        startBtn.classList.add('hidden');
-        stopBtn.classList.remove('hidden');
-        this._pollCalibration(train, overlay, progressEl, () => {
-          passOpen = false;
-          stopBtn.classList.add('hidden');
-        });
-        return;
-      }
-      await refreshReadiness();
-    })();
-  }
-
   /**
-   * Layout-click mode for the measured block. The modal is hidden while it
-   * runs and restored by `onExit`, so both endings — a click on a block and
-   * an Esc through the mode manager — put the dialog back the same way.
+   * Layout-click mode for the measured block: the next click on a block names
+   * it, exactly as if it had been chosen from the menu. Esc through the mode
+   * manager leaves the choice as it was.
    */
-  private _buildMeasuredBlockPickMode(
-    overlay: HTMLElement,
-    blockEl: HTMLSelectElement,
-    onPicked: () => void
-  ): any {
+  private _buildMeasuredBlockPickMode(): any {
     const setStatus = (text: string) => {
       const status = this.editor.$id?.('status-state');
       if (status) status.textContent = text;
@@ -1115,286 +1966,21 @@ export class SpeedProfileEditorHandler {
       },
       onExit: () => {
         setStatus('Ready');
-        overlay.style.display = '';
-        if (!picked) return;
+        const cal = this._cal;
+        if (!picked || !cal || cal.view !== 'speed-setup') return;
+        const blockEl = cal.root.querySelector('#sp-cal-block') as HTMLSelectElement | null;
         // A block the cached network did not carry when the menu was built
         // still has to be selectable — add the row rather than drop the pick.
-        if (!Array.from(blockEl.options).some((o) => o.value === picked)) {
+        if (blockEl && !Array.from(blockEl.options).some((o) => o.value === picked)) {
           const opt = document.createElement('option');
           opt.value = picked;
           opt.textContent = picked;
           blockEl.appendChild(opt);
         }
-        blockEl.value = picked;
-        onPicked();
+        if (blockEl) blockEl.value = picked;
+        void this._resolveStretch(picked);
       },
     };
-  }
-
-  /** Poll the open pass and render its progress, then its commit controls. */
-  private _pollCalibration(
-    train: any,
-    overlay: HTMLElement,
-    progressEl: HTMLElement,
-    onEnded: () => void
-  ): void {
-    if (this._calPoll !== null) window.clearInterval(this._calPoll);
-    this._calPoll = window.setInterval(async () => {
-      let run: any;
-      try {
-        run = await this.api.getCalibration(train.id);
-      } catch {
-        return;
-      }
-      if (!run.open) {
-        // EB, a power-off, a session stop, or a measurement fault ended it
-        // (design_new.md "What ends a calibration run").
-        progressEl.textContent = 'The pass ended. Nothing was written.';
-        window.clearInterval(this._calPoll!);
-        this._calPoll = null;
-        onEnded();
-        return;
-      }
-      if (run.phase === 'failed') {
-        progressEl.textContent = `Failed: ${run.failure_reason}`;
-        window.clearInterval(this._calPoll!);
-        this._calPoll = null;
-        onEnded();
-        return;
-      }
-      if (run.phase === 'measured') {
-        window.clearInterval(this._calPoll!);
-        this._calPoll = null;
-        onEnded();
-        this._showCommitControls(train, overlay, run);
-        return;
-      }
-      progressEl.textContent =
-        `Measuring ${run.current_power_percent}% — step ${run.step_index + 1} of ` +
-        `${run.step_count}, crossing ${run.crossings_done + 1} of ${run.crossings_target}`;
-    }, 1000);
-  }
-
-  /** The measured curve plus the two commit targets. Nothing is written until
-   *  the operator picks one; closing discards the pass. */
-  private _showCommitControls(train: any, overlay: HTMLElement, run: any): void {
-    const body = overlay.querySelector('.app-modal-body') as HTMLElement;
-    const footer = overlay.querySelector('.app-modal-footer') as HTMLElement;
-    const points = (run.samples || [])
-      .map((s: any) => `${s.power_percent}% → ${s.speed_kmh.toFixed(1)} km/h`)
-      .join('<br>');
-    const modelName = (this._profile!.model || '').trim();
-    const modelLabel = modelName ? escapeAttr(modelName) : 'this model';
-    body.innerHTML = `
-      <div class="app-modal-message">Measured ${run.samples.length} points.</div>
-      <div class="text-muted text-xs mb-8">${points}</div>
-      <div class="text-muted text-xs mb-8">Save to this locomotive changes only this loco. Promote to model updates every locomotive of ${modelLabel} and clears this loco's own override.</div>`;
-    footer.innerHTML = `
-      <button class="btn btn-secondary btn-sm" id="sp-cal-discard">Discard</button>
-      <button class="btn btn-secondary btn-sm" id="sp-cal-model">Promote to model</button>
-      <button class="btn btn-primary btn-sm" id="sp-cal-locomotive">Save to this locomotive</button>`;
-
-    const commit = async (target: 'locomotive' | 'model') => {
-      let result: any;
-      try {
-        result = await this.api.commitCalibration(train.id, target);
-      } catch (err: any) {
-        showToast(err.message || 'Commit failed', 'error', 6000);
-        return;
-      }
-      // Clear the measured/outer-block highlight the reachable channel is
-      // holding (only the X-button close() did this), so committing doesn't
-      // leave stale blocks lit on the canvas after the modal closes.
-      this.editor.highlighter.clear('reachable');
-      this.editor.renderer?.requestRedraw();
-      overlay.remove();
-      showToast(
-        target === 'model'
-          ? 'Promoted to the model profile'
-          : 'Saved to this locomotive',
-        'success',
-        4000
-      );
-      // Promote to model wrote a different profile (the model's) and cleared
-      // this loco's override, so open the profile that was actually written
-      // rather than the one on screen.
-      const written = result?.profile?.profile_id || this._profile!.profile_id;
-      this.showProfileEditor(written);
-    };
-
-    (footer.querySelector('#sp-cal-locomotive') as HTMLButtonElement).onclick = () =>
-      commit('locomotive');
-    (footer.querySelector('#sp-cal-model') as HTMLButtonElement).onclick = () =>
-      commit('model');
-    (footer.querySelector('#sp-cal-discard') as HTMLButtonElement).onclick = async () => {
-      await this.api.cancelCalibration(train.id).catch(() => {});
-      // Clear the reachable-channel highlight (as close() does) so discarding
-      // doesn't leave stale blocks lit on the canvas.
-      this.editor.highlighter.clear('reachable');
-      this.editor.renderer?.requestRedraw();
-      overlay.remove();
-    };
-  }
-
-  // === Lighting-voltage calibration ===
-  //
-  // design_new.md "Lighting-voltage calibration". The panel is deliberately
-  // three controls: the candidate voltage, a step up and a step down, and
-  // Save. Everything else about the pass is the locomotive in front of the
-  // operator — nothing on the rig can tell whether it moved, so the operator's
-  // eye is the measurement. The value to save is the highest step at which it
-  // still held still, so the operator steps up until it creeps, steps back
-  // down one, and saves.
-
-  /** Find a placed train running this profile, or explain why there is none. */
-  private async _lightingCalibrationTrain(): Promise<any | null> {
-    let trains: any[] = [];
-    try {
-      trains = await this.api.getTrains();
-    } catch (err: any) {
-      showToast('Failed to load trains: ' + (err.message || err), 'error', 5000);
-      return null;
-    }
-    const profileId = this._profile!.profile_id;
-    // `/api/trains` returns flat `Train.to_dict()` payloads in `trains`.
-    const matches = (trains || []).filter(
-      (t: any) => t?.speed_profile_id === profileId
-    );
-    if (!matches.length) {
-      showToast(
-        'Place a train that uses this profile first — calibration drives the locomotive',
-        'warning',
-        5000
-      );
-      return null;
-    }
-    return matches[0];
-  }
-
-  private async _openLightingCalibration(): Promise<void> {
-    const train = await this._lightingCalibrationTrain();
-    if (!train) return;
-
-    let run: any;
-    try {
-      run = await this.api.startLightingCalibration(train.id);
-    } catch (err: any) {
-      showToast(err.message || 'Cannot start lighting calibration', 'error', 6000);
-      return;
-    }
-    this._showLightingPanel(train, run);
-  }
-
-  private _showLightingPanel(train: any, run: any): void {
-    document.querySelector('.app-modal-overlay')?.remove();
-
-    const overlay = document.createElement('div');
-    overlay.className = 'app-modal-overlay';
-    overlay.innerHTML = `
-      <div class="app-modal sp-lighting-modal">
-        <div class="app-modal-header">Lighting voltage — ${train.car_number || train.id}</div>
-        <div class="app-modal-body">
-          <div class="app-modal-message">Step up until the locomotive just starts to
-          creep, then step back down one and save.</div>
-          <div class="sp-lighting-stepper">
-            <button class="btn btn-secondary sp-lighting-step" data-dir="-1" aria-label="Lower">−</button>
-            <div class="sp-lighting-readout"><span id="sp-lighting-value">—</span><small>V</small></div>
-            <button class="btn btn-secondary sp-lighting-step" data-dir="1" aria-label="Raise">+</button>
-          </div>
-        </div>
-        <div class="app-modal-footer">
-          <button class="btn btn-secondary btn-sm" id="sp-lighting-cancel">Cancel</button>
-          <button class="btn btn-primary btn-sm" id="sp-lighting-save">Save</button>
-        </div>
-      </div>`;
-
-    const valueEl = overlay.querySelector('#sp-lighting-value') as HTMLElement;
-    const stepBtns = Array.from(
-      overlay.querySelectorAll('.sp-lighting-step')
-    ) as HTMLButtonElement[];
-    let candidate = Number(run.candidate_voltage) || 0;
-    let ceiling = Number(run.ceiling_voltage) || 0;
-
-    const paint = () => {
-      valueEl.textContent = candidate.toFixed(2);
-      // The step control stops at the ceiling and at 0, so the panel can never
-      // show a value Save would refuse.
-      stepBtns[0].disabled = candidate <= 0;
-      stepBtns[1].disabled = candidate >= ceiling;
-    };
-    paint();
-
-    let busy = false;
-    const step = async (dir: number) => {
-      if (busy) return;
-      busy = true;
-      try {
-        const next = await this.api.stepLightingCalibration(train.id, dir);
-        candidate = Number(next.candidate_voltage);
-        ceiling = Number(next.ceiling_voltage);
-        paint();
-      } catch (err: any) {
-        showToast(err.message || 'Step failed', 'error', 5000);
-      } finally {
-        busy = false;
-      }
-    };
-
-    const close = () => {
-      document.removeEventListener('keydown', onKey);
-      overlay.remove();
-    };
-
-    const cancel = async () => {
-      close();
-      try {
-        await this.api.cancelLightingCalibration(train.id);
-      } catch {
-        /* the run is transient; a failed cancel leaves nothing to clean up */
-      }
-    };
-
-    const save = async () => {
-      try {
-        const result = await this.api.saveLightingCalibration(train.id);
-        close();
-        showToast(
-          `Lighting voltage saved at ${Number(result.lighting_voltage).toFixed(2)} V`,
-          'success',
-          3000
-        );
-        // The commit moved the profile's 0%-power anchor, so reload rather
-        // than patching the field: the voltage/power curve changed with it.
-        await this.showProfileEditor(this._profile!.profile_id);
-      } catch (err: any) {
-        showToast(err.message || 'Failed to save lighting voltage', 'error', 5000);
-      }
-    };
-
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        void cancel();
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        void step(1);
-      } else if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        void step(-1);
-      }
-    };
-
-    stepBtns.forEach((btn) => {
-      btn.onclick = () => void step(Number(btn.dataset.dir));
-    });
-    (overlay.querySelector('#sp-lighting-cancel') as HTMLElement).onclick = () =>
-      void cancel();
-    (overlay.querySelector('#sp-lighting-save') as HTMLElement).onclick = () => void save();
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) void cancel();
-    });
-    document.addEventListener('keydown', onKey);
-    document.body.appendChild(overlay);
   }
 
   // --- plot edits → working profile ---
@@ -1418,17 +2004,21 @@ export class SpeedProfileEditorHandler {
   }
 
   // --- numeric point list ---
-  private _rebuildPointList(which: 'vp' | 'ps'): void {
+  /** `preview` draws points that are not the stored curve (the lighting
+   *  run's candidate anchor); the caller locks the list while it does. */
+  private _rebuildPointList(which: 'vp' | 'ps', preview?: CurvePoint[]): void {
     const container = document.getElementById(which === 'vp' ? 'sp-vp-list' : 'sp-ps-list');
     if (!container || !this._profile) return;
     const isVp = which === 'vp';
-    const plotPts = isVp ? this._vpPlotPoints() : this._psPlotPoints();
+    const plotPts = preview ?? (isVp ? this._vpPlotPoints() : this._psPlotPoints());
     const yLabel = isVp ? 'V' : 'km/h';
     let html = `<div class="sp-point-head"><span>P%</span><span>${yLabel}</span><span></span></div>`;
     plotPts.forEach((pt, i) => {
       const isEnd = i === 0 || i === plotPts.length - 1;
       const lockX = isEnd; // endpoints' power is fixed at 0 / 100
-      const lockY = !isVp && i === 0; // plot-2 origin Y locked
+      // Plot 1: the 0%-power voltage is the read-only lighting voltage.
+      // Plot 2: the origin is pinned at (0, 0).
+      const lockY = i === 0;
       html += `
                 <div class="sp-point-row" data-i="${i}">
                     <input type="number" class="property-input sp-px" data-which="${which}" data-i="${i}" value="${fmt(pt[0])}" step="1" ${lockX ? 'disabled' : ''}>
@@ -1542,18 +2132,9 @@ export class SpeedProfileEditorHandler {
 
   // --- scalar fields ---
   private _bindScalars(): void {
-    const lighting = document.getElementById('sp-lighting') as HTMLInputElement | null;
     const maxv = document.getElementById('sp-maxv') as HTMLInputElement | null;
     const top = document.getElementById('sp-topspeed') as HTMLInputElement | null;
 
-    if (lighting)
-      lighting.oninput = () => this._onScalar(lighting, (v) => {
-        const vp = this._profile!.voltage_power_curve;
-        if (v >= vp[vp.length - 1][0]) return; // keep below max_voltage
-        vp[0][0] = v;
-        this._profile!.lighting_voltage = v;
-        this._vpPlot?.setData(this._vpPlotPoints(), this._vpAxis());
-      });
     if (maxv)
       maxv.oninput = () => this._onScalar(maxv, (v) => {
         const vp = this._profile!.voltage_power_curve;
@@ -1662,7 +2243,6 @@ export class SpeedProfileEditorHandler {
     };
     refill('vp', this._vpPlotPoints(), 2);
     refill('ps', this._psPlotPoints(), 1);
-    setVal(document.getElementById('sp-lighting'), fmt(this._profile.lighting_voltage));
     setVal(document.getElementById('sp-maxv'), fmt(this._profile.max_voltage));
     setVal(document.getElementById('sp-topspeed'), fmt(topSpeed(this._profile.power_speed_curve)));
     this._recomputeConverter();
@@ -1683,6 +2263,7 @@ export class SpeedProfileEditorHandler {
       this._vpPlot?.setData(this._vpPlotPoints(), this._vpAxis());
       this._psPlot?.setData(this._psPlotPoints(), this._psAxis());
       this._syncValues();
+      if (this._cal?.lighting) this._paintLightingRun();
     } catch (err: any) {
       console.error('[SpeedProfileEditorHandler] save failed:', err);
       showToast('Failed to save profile: ' + (err.message || err), 'error', 5000);
@@ -1693,6 +2274,7 @@ export class SpeedProfileEditorHandler {
       this._vpPlot?.setData(this._vpPlotPoints(), this._vpAxis());
       this._psPlot?.setData(this._psPlotPoints(), this._psAxis());
       this._syncValues();
+      if (this._cal?.lighting) this._paintLightingRun();
     }
   }
 
@@ -1707,7 +2289,11 @@ export class SpeedProfileEditorHandler {
     this._psPlot = null;
   }
 
+  /** Closing the panel ends the run the calibration group shows, and
+   *  forgets the named train. */
   _cleanup(): void {
+    this._teardownCalibration();
+    this._calTrainId = null;
     this._teardownPlots();
     this._profile = null;
     this._lastSaved = null;
