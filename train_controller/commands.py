@@ -142,8 +142,10 @@ class OperatorCommands:
         if c.powered:
             return CommandResult(False, "Power already on")
 
+        # The handle is already at rest: OFF cleanup left it at N, or EB holds
+        # it at EB. Power-on writes no handle (design_new.md Module boundaries
+        # rule 5, One neutral helper).
         c.powered = True
-        c.ops.handle_position = HandlePosition.N
 
         return CommandResult(True, "Power on")
 
