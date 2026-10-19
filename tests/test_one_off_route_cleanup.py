@@ -179,3 +179,42 @@ def test_a_refused_quick_route_leaves_no_route_behind(state):
         name.startswith("Quick:")
         for name in (r.name for r in _rex(state).route_registry.values())
     )
+
+
+def test_replacing_an_unstarted_one_off_route_deletes_it(state):
+    """A one-off route assigned to a train with no run yet (a Quick Route made
+    while paused), then replaced through the no-run branch, is deleted rather
+    than left in the registry with no train on it."""
+    rex = _rex(state)
+    _one_off(state, "Q")
+    _one_off(state, "Q2")
+    assert rex.request_route_assignment("TRAIN_A", "Q").success   # no run
+    assert rex.execution_state_for("TRAIN_A") is None
+
+    assert rex.request_route_assignment("TRAIN_A", "Q2").success  # replaces it
+
+    assert "Q" not in rex.route_registry
+    assert rex.get_historical_route("Q") is not None
+    assert rex.assigned_route_id_for("TRAIN_A") == "Q2"
+
+
+def test_unassigning_an_unstarted_one_off_route_deletes_it(state):
+    rex = _rex(state)
+    _one_off(state, "Q")
+    assert rex.request_route_assignment("TRAIN_A", "Q").success
+
+    assert rex.request_route_assignment("TRAIN_A", None).success
+
+    assert "Q" not in rex.route_registry
+    assert rex.assigned_route_id_for("TRAIN_A") is None
+
+
+def test_re_requesting_the_assigned_unstarted_route_keeps_it(state):
+    rex = _rex(state)
+    _one_off(state, "Q")
+    assert rex.request_route_assignment("TRAIN_A", "Q").success
+
+    assert rex.request_route_assignment("TRAIN_A", "Q").success
+
+    assert "Q" in rex.route_registry
+    assert rex.assigned_route_id_for("TRAIN_A") == "Q"

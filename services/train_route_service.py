@@ -605,14 +605,12 @@ def delete_route(state: AppState, route_id: str) -> bool:
          `RouteExecutor.request_route_deletion(route_id)`; Plan then allocates
          no fresh run on it;
       2. for every assigned train, clears any held same-route re-assignment
-         (a route pending deletion is never re-applied by `_pending_reassign`).
-         A train with a live controller then gets its per-train
-         `route_deactivate` latch set, letting the inclusive cancel + Action
-         deactivate consumer perform the ordinary authority and run teardown. A
-         train the sim has never ticked has no controller (paused, just-loaded,
-         or assigned while paused) and so no live run -- the Action consumer
-         would never run for it, so it is unassigned inline through
-         `remove_train_route_run(...)`, which nothing else would otherwise do;
+         (a route pending deletion is never re-applied by `_pending_reassign`)
+         and sets its per-train `route_deactivate` latch, letting the inclusive
+         cancel + Action deactivate consumer perform the ordinary authority and
+         run teardown; a train with no RUNNING run is unassigned by that
+         consumer's no-run branch. A train the sim has never ticked gets its
+         controller created here, so the latch has somewhere to live;
       3. leaves the `Route` in the active registry while any train remains
          assigned or any RUNNING run names it, so `get_route(...)` keeps
          resolving for every live run during Plan and Action; and
@@ -648,22 +646,23 @@ def delete_route(state: AppState, route_id: str) -> bool:
     # `remove_train_route_run(...)`, which archives + unassigns its run.
     for train_id in list(route.assigned_train_ids):
         executor.discard_pending_reassign(train_id)
-        controller = state.sim_controller.get_controller(train_id)
-        if controller is not None:
-            controller.route_hooks.phase_latches.set_route_deactivate(
-                reason=f"route_deleted:{route_id}",
-                has_active_path=(
-                    controller.path_projection.received_path_plan is not None
-                ),
-            )
-        else:
-            # No controller yet (train assigned before its first Plan
-            # allocation, a paused or just-loaded sim): no Action pass will ever
-            # consume a deactivate latch, so run the same teardown now. Its
-            # no-run branch removes the assignment, so `finalize_pending_route_
-            # deletions()` below can archive + unregister the route instead of
-            # stranding it in the active registry forever.
-            executor.remove_train_route_run(train_id)
+        if state.network.trains.get(train_id) is None:
+            # The train was deleted from the layout but its assignment stayed:
+            # no controller can hold a latch for it and no Action pass will run
+            # for it. With no train there is no run either, so the assignment
+            # entry's no-run branch clears the stale assignment.
+            executor.request_route_assignment(train_id, None)
+            continue
+        # A train the sim has never ticked (assigned while paused, or a
+        # just-loaded layout) has no controller yet; create it so the latch has
+        # somewhere to live. The next running Action consumes it like any other.
+        controller = state.sim_controller.get_or_create_controller(train_id)
+        controller.route_hooks.phase_latches.set_route_deactivate(
+            reason=f"route_deleted:{route_id}",
+            has_active_path=(
+                controller.path_projection.received_path_plan is not None
+            ),
+        )
 
     # Archive + unregister now when nothing holds the route (no assignment, no
     # live run); otherwise the later teardown consumers trigger the same

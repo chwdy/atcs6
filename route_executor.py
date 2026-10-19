@@ -805,7 +805,7 @@ class RouteExecutor:
           * No RUNNING run -> commit immediately: clear older pending route/start
             state, unassign the train from any old route, assign the requested
             route when non-None, and stash the start override for the next fresh
-            run allocation.
+            run allocation. A one-off old route left with no train is deleted.
           * A RUNNING run exists and the request names that same route -> an
             idempotent no-op; a supplied start override is dropped because the
             run already consumed its start mode.
@@ -885,6 +885,13 @@ class RouteExecutor:
                     new_route.assign_train(train_id)
                 if start_override is not None:
                     self._pending_start_overrides[train_id] = dict(start_override)
+            # An emptied one-off route is deleted (design_new.md "Route
+            # assignment writers", no-`RUNNING`-run branch): a one-off route
+            # this unassign left with no train goes the same way as one that
+            # finished or was torn down. Checked after the assignment, so a
+            # request naming the same route keeps it.
+            if old_route_id and self._delete_if_emptied_one_off(old_route_id):
+                self.finalize_pending_route_deletions()
             # A new route assignment resets the ATO engage bit (design_new.md
             # "ATO status"): the fresh run starts not engaged (`ato_status ==
             # READY`) and the operator issues `/ato/go` to start it. This is an

@@ -305,19 +305,18 @@ def test_delete_route_with_assigned_but_unrun_train_finalizes_on_teardown(
     assert rex.get_historical_route("R") is route
 
 
-def test_delete_route_with_assigned_never_ticked_train_finalizes_now(
+def test_delete_route_with_assigned_never_ticked_train_latches_like_any_train(
     state_with_train,
 ):
-    """A train assigned but never ticked has no controller (paused / just-loaded
-    / assigned through the API while paused), so there is no `route_deactivate`
-    latch to arm and no Action consumer that would ever unassign it. `delete_route`
-    must still remove the route: it unassigns the train inline through
-    `remove_train_route_run(...)` so `finalize_pending_route_deletions()` archives
-    the route in the same call. Regression: previously the no-controller train was
-    skipped, the train stayed in `assigned_train_ids`, and the route lingered
-    forever while DELETE returned True.
+    """A train assigned but never ticked has no controller yet (paused /
+    just-loaded / assigned through the API while paused). `delete_route` does not
+    unassign it inline (design_new.md "Route deletion waits for live teardown";
+    request handlers make no inline state changes): it creates the controller,
+    sets the `route_deactivate` latch, and the next Action's deactivate consumer
+    unassigns the train through its no-run branch, after which the route is
+    archived.
     """
-    state, _train = state_with_train
+    state, train = state_with_train
     route = _make_route(state, "R", "BLK_1")
     rex = state.sim_controller.route_executor
     route.assign_train("TRAIN_A")                            # assigned, no run
@@ -327,14 +326,41 @@ def test_delete_route_with_assigned_never_ticked_train_finalizes_now(
 
     assert train_route_service.delete_route(state, "R") is True
 
-    # Finalized in the same call -- nothing held it once the train was unassigned.
-    assert "TRAIN_A" not in route.assigned_train_ids         # unassigned inline
-    assert "R" not in rex.route_registry                     # removed from active
-    assert "R" not in rex.pending_route_deletions            # nothing left pending
-    assert rex.get_historical_route("R") is route            # archived definition
-    assert rex.get_route("R") is route                       # resolves via fallback
+    # Nothing changed inline: the train stays assigned and the route pending.
+    controller = state.sim_controller.get_controller("TRAIN_A")
+    assert controller is not None
+    assert controller.route_hooks.phase_latches.route_deactivate is True
+    assert "TRAIN_A" in route.assigned_train_ids
+    assert "R" in rex.route_registry
+    assert "R" in rex.pending_route_deletions
+
+    # The Action deactivate consumer's no-run branch unassigns; finalize archives.
+    state.sim_controller._consume_pending_route_deactivate(controller, train)
+
+    assert "TRAIN_A" not in route.assigned_train_ids
+    assert "R" not in rex.route_registry
+    assert "R" not in rex.pending_route_deletions
+    assert rex.get_historical_route("R") is route
     # Re-delete is an idempotent success against the archived route.
     assert train_route_service.delete_route(state, "R") is True
+
+
+def test_delete_route_clears_an_assignment_left_by_a_deleted_train(
+    state_with_train,
+):
+    """A train deleted from the layout leaves its route assignment behind; no
+    controller or Action pass will ever run for it, so DELETE clears the stale
+    assignment through the assignment entry and the route archives at once."""
+    state, _train = state_with_train
+    route = _make_route(state, "R", "BLK_1")
+    rex = state.sim_controller.route_executor
+    route.assign_train("GONE")                               # no such train
+
+    assert train_route_service.delete_route(state, "R") is True
+
+    assert "GONE" not in route.assigned_train_ids
+    assert "R" not in rex.route_registry
+    assert rex.get_historical_route("R") is route
 
 
 def test_redelete_after_archival_is_idempotent(state_with_train):
